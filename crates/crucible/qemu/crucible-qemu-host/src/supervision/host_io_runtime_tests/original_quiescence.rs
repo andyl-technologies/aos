@@ -237,6 +237,8 @@ fn original_pause_rollback_retains_cancelled_first_cause_when_wake_fails()
             .message
             .contains("pause release failure: signal plugin wake")
     );
+    assert!(failure.message.contains(&cancelled.to_string()));
+    assert!(failure.to_string().contains(&failure.message));
     assert!(!plugin.header().pause_requested());
     Ok(())
 }

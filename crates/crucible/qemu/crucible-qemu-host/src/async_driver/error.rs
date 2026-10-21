@@ -8,14 +8,24 @@ use thiserror::Error;
 pub struct QemuAsyncDriverRuntimeError {
     /// Operation being attempted.
     pub operation: &'static str,
-    /// Deterministic failure detail.
+    /// Authored failure text; typed supervision and storage refusals keep this empty.
+    ///
+    /// Formatting renders a retained supervision cause directly unless a later
+    /// combined diagnostic was explicitly saved here.
     pub message: String,
     detail: QemuAsyncDriverRuntimeErrorDetail,
 }
 
 impl std::fmt::Display for QemuAsyncDriverRuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} failed: {}", self.operation, self.message)
+        match self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source)
+                if self.message.is_empty() =>
+            {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            _ => write!(formatter, "{} failed: {}", self.operation, self.message),
+        }
     }
 }
 
@@ -47,7 +57,9 @@ impl QemuAsyncDriverRuntimeError {
     ) -> Self {
         Self {
             operation,
-            message: source.to_string(),
+            // The typed cause already owns every diagnostic coordinate. Render
+            // it only when requested; exhaustion must not format another String.
+            message: String::new(),
             detail: QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source),
         }
     }
@@ -212,4 +224,62 @@ pub enum QemuAsyncDriverError {
         /// Forbidden operation plane.
         plane: QemuQuantumOperationPlane,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    #[test]
+    fn actual_original_refusal_retains_typed_diagnostic_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        supervisor.cancel()?;
+        let source = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (error, counts) = TestAllocationObserver::count(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision("quantum wait", source)
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(error.message.is_empty());
+        assert_eq!(error.operational_supervision_source(), Some(source));
+        assert_eq!(error.to_string(), format!("quantum wait failed: {source}"));
+        assert_eq!(
+            std::error::Error::source(&error).and_then(|cause| {
+                cause.downcast_ref::<
+                    crucible_host_resources::host_supervision::HostSupervisionError,
+                >()
+            }),
+            Some(&source),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn authored_runtime_diagnostic_keeps_its_actual_owned_text() {
+        let message = String::from("actual adapter refusal");
+        let pointer = message.as_ptr();
+
+        let (error, counts) = TestAllocationObserver::count(|| {
+            QemuAsyncDriverRuntimeError::new("adapter wait", message)
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert_eq!(error.message.as_ptr(), pointer);
+        assert_eq!(
+            error.to_string(),
+            "adapter wait failed: actual adapter refusal"
+        );
+        assert_eq!(error.operational_supervision_source(), None);
+    }
 }
