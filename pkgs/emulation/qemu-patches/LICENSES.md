@@ -10,6 +10,35 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-apic-getter.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-fault-retirement.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-publisher-construction.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-publisher-subscription.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `hw/intc/crucible-apic-getter.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-apic-getter.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-clock-custody.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-publisher-protocol.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qobject/qobject-lifetime.h` | LGPL-2.1-or-later | Explicit SPDX identifier |
+| `plugins/crucible-apic-getter.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-clock-custody.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-envelope.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `qobject/qobject-lifetime.inc.h` | LGPL-2.1-or-later | Explicit SPDX identifier |
+| `stubs/crucible-clock-custody.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-session.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-storage.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-action-edge-post.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-apic-getter-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-apic-getter-errors.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-apic-timer-storage.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-clock-callback-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-clock-canonical-rows.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-clock-storage-return.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-flatview-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-memory-discard-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-memory-region-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-provider-metadata.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-protocol.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-shmem-callback-return.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-cached-writer-memory.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/extract-crucible-cached-writer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/run-crucible-cached-writer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
