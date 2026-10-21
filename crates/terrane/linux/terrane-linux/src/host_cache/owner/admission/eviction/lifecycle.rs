@@ -433,15 +433,25 @@ fn close_removed(
         let payloads = original_payloads(&job);
         for (index, member) in job.files.iter_mut().enumerate() {
             let expected = unit.inodes[index];
-            let observed = original_inspection(&reply.files, expected)?;
-            let mut inspection = vec![observed.try_clone()?];
+            // InspectBody returns only the primary body. Its correlated final
+            // acknowledgment covers the complete retained pack/index unit.
+            // The index comparison uses the owner's original census descriptor,
+            // already checked as unlinked with unchanged bytes by check_held.
+            let observed = if index + 1 == unit.inodes.len() {
+                original_inspection(&reply.files, expected)?
+            } else {
+                unit.files
+                    .get(index)
+                    .ok_or_else(|| invalid("removed encoded unit lost original index custody"))?
+            };
+            let mut comparison = vec![observed.try_clone()?];
             member.close_finished_source(
                 &owner,
                 expected,
                 payloads
                     .get(index)
                     .ok_or_else(|| invalid("removed encoded member input changed"))?,
-                &mut inspection,
+                &mut comparison,
             )?;
         }
         released.push((
