@@ -42,6 +42,8 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/crucible-fault-command-restore-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-fault-manifest-live-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-fault-node-restore-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-quantum-execution.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-execution.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-fault-node-live-main.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-fault-node-live.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-fault-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier |

@@ -1,7 +1,7 @@
-From 9b3c140c4ed0bbbd9513b69183684e83acf576c8 Mon Sep 17 00:00:00 2001
+From e043d35971c4c33132fbeb6699aa2c9af65d0f32 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: round-trip the actual ordinary fault aggregate
+Subject: [PATCH] crucible: retain factual RR CPU custody before execution
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -497,6 +497,33 @@ physical-return assertion and all original limits. These are ordinary aggregate
 component observations; selected funding, full handler retirement, deferred
 consumers, CPU borrowers and launched Source lifecycle remain unqualified.
 Reference returns do not establish whole shared body or allocator destruction.
+
+Retain RR's factual CPU custody in the actual prepaid CPUState/QOM instance.
+Acquire its canonical same-thread/process/nonwrapping holder and real QOM
+reference before BQL unlock, distinguish physical executor start, cleanup
+revocation and execution end, and return the actual QOM hold only after the
+real executor/child obligations close. Selected Source authenticates its real
+allocation receipt/generation then refuses ENOTSUP; no Advance or accepting
+semantic child issuer exists. Preserve ordinary exception continuation and
+refuse owned continuation after permission revocation. This adds no activation,
+clock renewal, completion, ACK or peer-return authority.
+
+Run the new literal local-state predicate and eight independently compiled
+omission controls through the actual native component closure. Preserve the
+configured compiler's inherited working directory and authenticate all new
+producer/header/test inputs. Sample component state supplies no actual RR/QOM
+hold or Source admission; genuine selected admission, owned continuation and
+physical child return remain unexecuted. The CPUState layout change requires
+a fresh complete matched system object cohort before later full-executable
+controls; the retained earlier e12 cohort cannot be reused across that change.
+Preserve all prior failed attempts, refusal assertions and resource ceilings.
+
+Remove the prepark supplemental RR pin after the same exact producer moves
+into the primary extractor inventory. Preserve exact inventory equality,
+all literal body hashes and every observation/refusal assertion. Retain the
+first complete build failure: all 3863 targets built, with mandatory launched
+lifecycle refusal and prepark duplicate-inventory refusal (24 of 26 fixtures).
+The corrected pin ownership grants no execution or admission authority.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -996,7 +1023,7 @@ index 44e84344f3b37897c2158aa055b58f33f5f82d43..2b719a55b62e84fc57dee93bb91ab18c
      return cflags;
  }
 diff --git a/accel/tcg/cpu-exec.c b/accel/tcg/cpu-exec.c
-index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5fa438209 100644
+index 257211235dbb94d6d9cce1862126bc248c399f17..384efcdc6eb423b9b8dd25b954bf7c761674a024 100644
 --- a/accel/tcg/cpu-exec.c
 +++ b/accel/tcg/cpu-exec.c
 @@ -18,6 +18,7 @@
@@ -1158,7 +1185,16 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
  
  #ifdef CONFIG_USER_ONLY
      clear_helper_retaddr();
-@@ -553,6 +670,8 @@ void cpu_exec_step_atomic(CPUState *cpu)
+@@ -547,12 +664,17 @@ static void cpu_exec_longjmp_cleanup(CPUState *cpu)
+         bql_unlock();
+     }
+     assert_no_pages_locked();
++#ifndef CONFIG_USER_ONLY
++    qemu_crucible_quantum_cpu_cleanup_v1(cpu);
++#endif
+ }
+ 
+ void cpu_exec_step_atomic(CPUState *cpu)
  {
      TranslationBlock *tb;
      int tb_exit;
@@ -1167,7 +1203,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
  
      if (sigsetjmp(cpu->jmp_env, 0) == 0) {
          start_exclusive();
-@@ -560,32 +679,63 @@ void cpu_exec_step_atomic(CPUState *cpu)
+@@ -560,32 +682,63 @@ void cpu_exec_step_atomic(CPUState *cpu)
          g_assert(!cpu->running);
          cpu->running = true;
  
@@ -1254,7 +1290,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
      } else {
          cpu_exec_longjmp_cleanup(cpu);
      }
-@@ -886,12 +1036,19 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
+@@ -886,12 +1039,19 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
  
  static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
                                      vaddr pc, TranslationBlock **last_tb,
@@ -1276,7 +1312,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
          return;
      }
  
-@@ -945,7 +1102,25 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -945,7 +1105,25 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
          while (!cpu_handle_interrupt(cpu, &last_tb)) {
              TranslationBlock *tb;
              TCGTBCPUState s = cpu->cc->tcg_ops->get_tb_cpu_state(cpu);
@@ -1302,7 +1338,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
  
              /*
               * When requested, use an exact setting for cflags for the next
-@@ -964,14 +1139,35 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -964,14 +1142,35 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  break;
              }
  
@@ -1341,7 +1377,7 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
  
                  /*
                   * We add the TB in the virtual pc hash table
-@@ -994,12 +1190,33 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
+@@ -994,12 +1193,33 @@ cpu_exec_loop(CPUState *cpu, SyncClocks *sc)
                  last_tb = NULL;
              }
  #endif
@@ -1376,6 +1412,20 @@ index 257211235dbb94d6d9cce1862126bc248c399f17..7d95ef43e6ca75773fbf6260b95a66e5
  
              /* Try to align the host and virtual clocks
                 if the guest is in advance */
+@@ -1014,6 +1234,13 @@ static int cpu_exec_setjmp(CPUState *cpu, SyncClocks *sc)
+     /* Prepare setjmp context for exception handling. */
+     if (unlikely(sigsetjmp(cpu->jmp_env, 0) != 0)) {
+         cpu_exec_longjmp_cleanup(cpu);
++#ifndef CONFIG_USER_ONLY
++        if (cpu->crucible_quantum_execution.child &&
++            cpu->crucible_quantum_execution.permission_revoked) {
++            /* Cleanup cannot reissue permission for this same outer loop. */
++            return EXCP_INTERRUPT;
++        }
++#endif
+     }
+ 
+     return cpu_exec_loop(cpu, sc);
 diff --git a/accel/tcg/cputlb.c b/accel/tcg/cputlb.c
 index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..59d7bf0132df89cc873bb34d64e5d3005ec4612d 100644
 --- a/accel/tcg/cputlb.c
@@ -5641,10 +5691,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9eddcffe2 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..d66659b3214292fb1439d6ab085c45055d526209 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1818 @@
+@@ -27,45 +27,1937 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5666,6 +5716,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
  #include "tcg-accel-ops-icount.h"
 +#include "tcg-accel-ops-sim-shmem.h"
 +#include "qemu/crucible-fault.h"
++#include "qemu/crucible-preexec-setup.h"
 +#include "internal-common.h"
 +#include "system/crucible-sim-preemption.h"
 +#include "system/crucible-plugin-wake.h"
@@ -5730,6 +5781,111 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +static void rr_crucible_sim_reset_exit_request(CPUState *cpu);
 +static bool rr_crucible_sim_external_main_loop_work_pending(void);
 +static void rr_crucible_sim_handoff_main_loop(void);
++
++int qemu_crucible_quantum_cpu_rr_current_v1(CPUState *cpu)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++
++    return execution->retained && execution->cpu == cpu &&
++        execution->holder && *execution->holder == execution &&
++        execution->process == getpid() && execution->serial &&
++        qemu_thread_is_self(&execution->thread) && !execution->rr_returned ?
++        0 : -ESTALE;
++}
++
++static int rr_quantum_cpu_acquire(CPUState *cpu,
++                                 QemuCrucibleQuantumCpuExecution **holder)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++    uint64_t serial = execution->serial;
++
++    if (!bql_locked() || !holder || *holder || execution->retained) {
++        return -EBUSY;
++    }
++    if (serial == UINT64_MAX) {
++        return -EOVERFLOW;
++    }
++    object_ref(OBJECT(cpu));
++    *execution = (QemuCrucibleQuantumCpuExecution) {
++        .cpu = cpu, .holder = holder, .process = getpid(),
++        .serial = serial + 1, .retained = true,
++    };
++    qemu_thread_get_self(&execution->thread);
++    *holder = execution;
++
++    if (qatomic_load_acquire(&qemu_crucible_selected_process_id)) {
++#if defined(CONFIG_PLUGIN) && defined(CONFIG_LINUX)
++        return qemu_crucible_source_quantum_cpu_admit_v1(cpu);
++#else
++        return -ENOTSUP;
++#endif
++    }
++    /* Ordinary RR retains factual QOM custody, with no operation child. */
++    return 0;
++}
++
++void qemu_crucible_quantum_cpu_execution_start_v1(CPUState *cpu)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++
++    if (!execution->retained) {
++        return;
++    }
++    g_assert(!qemu_crucible_quantum_cpu_rr_current_v1(cpu));
++    g_assert(!execution->execution_started && !execution->execution_ended);
++    /* Starting the physical executor cannot restore revoked permission. */
++    execution->execution_started = true;
++}
++
++void qemu_crucible_quantum_cpu_execution_end_v1(CPUState *cpu)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++
++    if (!execution->retained) {
++        return;
++    }
++    g_assert(!qemu_crucible_quantum_cpu_rr_current_v1(cpu));
++    g_assert(execution->execution_started && !execution->execution_ended);
++    execution->permission_revoked = true;
++    execution->execution_ended = true;
++}
++
++void qemu_crucible_quantum_cpu_cleanup_v1(CPUState *cpu)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++
++    if (!execution->retained) {
++        return;
++    }
++    g_assert(!qemu_crucible_quantum_cpu_rr_current_v1(cpu));
++    execution->permission_revoked = true;
++    execution->cleanup_completed = true;
++    /* cpu_exec_setjmp separately decides whether continuation is permitted.
++     * Cleanup alone cannot certify cpu_exec_end or return a physical child. */
++}
++
++static void rr_quantum_cpu_return(CPUState *cpu,
++                                 QemuCrucibleQuantumCpuExecution **holder)
++{
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++
++    g_assert(bql_locked());
++    g_assert(!qemu_crucible_quantum_cpu_rr_current_v1(cpu));
++    g_assert(execution->holder == holder);
++    g_assert(!execution->execution_started || execution->execution_ended);
++    /* A real Source child must physically return before its QOM custodian.
++     * There is deliberately no issuer/return bypass for such a child here. */
++    g_assert(!execution->child);
++    execution->permission_revoked = true;
++    execution->rr_returned = true;
++    execution->retained = false;
++    execution->holder = NULL;
++    execution->allocation = NULL;
++    execution->receipt = NULL;
++    execution->allocation_generation = 0;
++    *holder = NULL;
++    object_unref(OBJECT(cpu));
++}
 +
 +static bool rr_crucible_sim_wake_boundary_pending(void)
 +{
@@ -7159,6 +7315,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +        bql_lock();
 +        acquired_replay = true;
 +    }
++
++    icount_account_warp_timer();
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    icount_handle_deadline();
++    rr_crucible_sim_drain_pending_ipis();
++    cpu_count = rr_cpu_count();
++    *cpu_budget = icount_percpu_budget(cpu_count);
  
 -/*
 - * TCG vCPU kick timer
@@ -7171,20 +7334,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 - * The timer is removed if all vCPUs are idle and restarted again once
 - * idleness is complete.
 - */
-+    icount_account_warp_timer();
-+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
-+    icount_handle_deadline();
-+    rr_crucible_sim_drain_pending_ipis();
-+    cpu_count = rr_cpu_count();
-+    *cpu_budget = icount_percpu_budget(cpu_count);
- 
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
 +}
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +static bool rr_crucible_sim_complete_dispatch_boundary(
 +    CPUState **cpu_ptr, uint64_t current_icount)
 +{
@@ -7220,6 +7376,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +        uint64_t service_after;
 +        int64_t unthrottled_budget;
 +        bool ready_marker_boundary_requested;
++        QemuCrucibleQuantumCpuExecution *execution = NULL;
 +
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_is_pending()) {
@@ -7352,6 +7509,16 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +            return true;
 +        }
 +        service_before = qemu_plugin_icount_raw();
++        r = rr_quantum_cpu_acquire(cpu, &execution);
++        if (r) {
++            if (execution) {
++                rr_quantum_cpu_return(cpu, &execution);
++            }
++            error_report("Crucible RR CPU admission refused: %s", strerror(-r));
++            qemu_system_shutdown_request_with_code(SHUTDOWN_CAUSE_HOST_ERROR,
++                                                   EXIT_FAILURE);
++            return true;
++        }
 +        bql_unlock();
 +        if (icount_enabled()) {
 +            if (retain_replay) {
@@ -7370,6 +7537,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +                    icount_process_data(cpu);
 +                }
 +                bql_lock();
++                rr_quantum_cpu_return(cpu, &execution);
 +                *icount_retry = true;
 +                return true;
 +            }
@@ -7383,6 +7551,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
 +            }
 +        }
 +        bql_lock();
++        rr_quantum_cpu_return(cpu, &execution);
 +        /* Serialized RR translation never carries CF_PARALLEL. */
 +        g_assert(r != EXCP_ATOMIC);
 +        service_after = qemu_plugin_icount_raw();
@@ -7482,7 +7651,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1857,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1976,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -7515,7 +7684,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
      }
  }
  
-@@ -110,15 +1895,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2014,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -7649,7 +7818,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
      }
  }
  
-@@ -140,6 +2041,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2160,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -7668,7 +7837,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2097,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2216,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -7677,7 +7846,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2119,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2238,199 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -7895,7 +8064,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2327,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2446,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -7928,7 +8097,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2369,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2488,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -8067,7 +8236,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2493,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2612,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -8207,7 +8376,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
      }
  
      g_assert_not_reached();
-@@ -318,13 +2632,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2751,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -8244,7 +8413,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..501372587b44307db5ccfe97229162b9
          single_tcg_halt_cond = cpu->halt_cond;
          single_tcg_cpu_thread = cpu->thread;
  
-@@ -335,11 +2670,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
+@@ -335,11 +2789,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
                             cpu, QEMU_THREAD_JOINABLE);
      } else {
          /* we share the thread, dump spare data */
@@ -9013,10 +9182,21 @@ index 0000000000000000000000000000000000000000..d03425ef1bac0c12281ad625b050ea75
 +}
 +type_init(sim_accel_ops_register_types);
 diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
-index 560fe2554baf226da665b12e26056a59f7b0a7ec..6ba06a883cf0914e2b53fed05e095fa9abd845e9 100644
+index 560fe2554baf226da665b12e26056a59f7b0a7ec..c29799de19c8aa0d2c18c00ebd7c584beb848903 100644
 --- a/accel/tcg/tcg-accel-ops.c
 +++ b/accel/tcg/tcg-accel-ops.c
-@@ -207,11 +207,12 @@ static void tcg_accel_ops_init(AccelClass *ac)
+@@ -80,8 +80,10 @@ int tcg_cpu_exec(CPUState *cpu)
+     int ret;
+     assert(tcg_enabled());
+     cpu_exec_start(cpu);
++    qemu_crucible_quantum_cpu_execution_start_v1(cpu);
+     ret = cpu_exec(cpu);
+     cpu_exec_end(cpu);
++    qemu_crucible_quantum_cpu_execution_end_v1(cpu);
+ 
+     return ret;
+ }
+@@ -207,11 +209,12 @@ static void tcg_accel_ops_init(AccelClass *ac)
      } else {
          ops->create_vcpu_thread = rr_start_vcpu_thread;
          ops->kick_vcpu_thread = rr_kick_vcpu_thread;
@@ -9030,7 +9210,7 @@ index 560fe2554baf226da665b12e26056a59f7b0a7ec..6ba06a883cf0914e2b53fed05e095fa9
          } else {
              ops->handle_interrupt = tcg_handle_interrupt;
          }
-@@ -223,7 +224,7 @@ static void tcg_accel_ops_init(AccelClass *ac)
+@@ -223,7 +226,7 @@ static void tcg_accel_ops_init(AccelClass *ac)
      ops->remove_all_gdbstub_breakpoints = tcg_remove_all_gdbstub_breakpoints;
  }
  
@@ -62621,10 +62801,18 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088bdbd84195 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..af7e1daaa5eedc8abc1e32764d0ee0ccc7f84f22 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
+@@ -35,6 +35,7 @@
+ #include "qemu/queue.h"
+ #include "qemu/lockcnt.h"
+ #include "qemu/thread.h"
++#include "system/crucible-quantum-execution.h"
+ #include "qom/object.h"
+ 
+ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
+@@ -63,6 +64,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
   * cpu_exec_realizefn() for use in hot code paths.
   */
  typedef struct CPUClass CPUClass;
@@ -62632,7 +62820,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  DECLARE_CLASS_CHECKERS(CPUClass, CPU,
                         TYPE_CPU)
  
-@@ -98,6 +99,90 @@ struct AccelCPUClass;
+@@ -98,6 +100,90 @@ struct AccelCPUClass;
  /* see sysemu-cpu-ops.h */
  struct SysemuCPUOps;
  
@@ -62723,7 +62911,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  /**
   * CPUClass:
   * @class_by_name: Callback to map -cpu command line model name to an
-@@ -128,6 +213,10 @@ struct SysemuCPUOps;
+@@ -128,6 +214,10 @@ struct SysemuCPUOps;
   * @gdb_adjust_breakpoint: Callback for adjusting the address of a
   *       breakpoint.  Used by AVR to handle a gdb mis-feature with
   *       its Harvard architecture split code and data.
@@ -62734,7 +62922,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
   * @gdb_core_xml_file: File name for core registers GDB XML description.
   * @gdb_num_core_regs: Number of core registers accessible to GDB if no
   *                     @gdb_core_xml_file available (otherwise inferred).
-@@ -171,6 +260,17 @@ struct CPUClass {
+@@ -171,6 +261,17 @@ struct CPUClass {
      int (*gdb_write_register)(CPUState *cpu, uint8_t *buf, int reg);
      vaddr (*gdb_adjust_breakpoint)(CPUState *cpu, vaddr addr);
  
@@ -62752,7 +62940,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -442,6 +542,14 @@ struct qemu_work_item;
+@@ -442,6 +543,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -62767,7 +62955,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -486,12 +594,20 @@ struct CPUState {
+@@ -486,12 +595,20 @@ struct CPUState {
      int nr_threads;
  
      struct QemuThread *thread;
@@ -62788,7 +62976,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
      bool thread_kicked;
      bool created;
      bool stop;
-@@ -508,6 +624,19 @@ struct CPUState {
+@@ -508,6 +625,21 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -62796,6 +62984,8 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
 +    bool crucible_rr_pause_exit;
 +    uint64_t crucible_fetch_service_ticks;
 +    uint64_t crucible_memory_service_ticks;
++    /* Physical RR custody is separate from Source operation permission. */
++    QemuCrucibleQuantumCpuExecution crucible_quantum_execution;
 +    void *crucible_fetch_transaction;
 +    bool crucible_page_table_walk_active;
 +    bool crucible_page_table_walk_has_instruction;
@@ -62808,7 +62998,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -552,6 +681,9 @@ struct CPUState {
+@@ -552,6 +684,9 @@ struct CPUState {
  
  #ifdef CONFIG_PLUGIN
      CPUPluginState *plugin_state;
@@ -62818,7 +63008,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  #endif
  
      /* TODO Move common fields from CPUArchState here. */
-@@ -738,6 +870,138 @@ enum CPUDumpFlags {
+@@ -738,6 +873,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -62957,7 +63147,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -927,6 +1191,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+@@ -927,6 +1194,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
   */
  void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -62968,7 +63158,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  /**
   * async_safe_run_on_cpu:
   * @cpu: The vCPU to run on.
-@@ -941,6 +1209,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+@@ -941,6 +1212,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
   */
  void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -63006,7 +63196,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..614074665a78f2cd365832017aa2088b
  /**
   * cpu_in_exclusive_context()
   * @cpu: The vCPU to check
-@@ -1088,6 +1387,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1390,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -81531,6 +81721,59 @@ index 0000000000000000000000000000000000000000..e44b2f07791f09347e1879f204cccbb8
 +void qemu_plugin_wake_notifier_remove(Notifier *notifier);
 +bool qemu_plugin_crucible_wake_fd_readable(void);
 +bool crucible_shmem_is_active(void);
++
++#endif
+diff --git a/include/system/crucible-quantum-execution.h b/include/system/crucible-quantum-execution.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..67b84c63f485315d014e0b84c9e6f8546686f550
+--- /dev/null
++++ b/include/system/crucible-quantum-execution.h
+@@ -0,0 +1,47 @@
++/*
++ * Private RR CPU custody; observations do not issue Quantum authority.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef SYSTEM_CRUCIBLE_QUANTUM_EXECUTION_H
++#define SYSTEM_CRUCIBLE_QUANTUM_EXECUTION_H
++
++#include "qemu/thread.h"
++
++struct CPUState;
++struct QemuCrucibleCpuSourceAllocationOwner;
++struct QemuCrucibleCpuAllocationReceipt;
++struct QemuCrucibleQuantumCpuChild;
++
++/* The real QOM CPU allocation includes this body in its requested extent.
++ * The RR stack coordinate is a witness, never an action or allocation payer.
++ * No accepting Source Quantum/Advance child issuer exists yet. */
++typedef struct QemuCrucibleQuantumCpuExecution {
++    struct CPUState *cpu;
++    struct QemuCrucibleCpuSourceAllocationOwner *allocation;
++    struct QemuCrucibleCpuAllocationReceipt *receipt;
++    struct QemuCrucibleQuantumCpuChild *child;
++    struct QemuCrucibleQuantumCpuExecution **holder;
++    QemuThread thread;
++    pid_t process;
++    uint64_t serial;
++    uint64_t allocation_generation;
++    bool retained;
++    bool execution_started;
++    bool execution_ended;
++    bool cleanup_completed;
++    bool permission_revoked;
++    bool rr_returned;
++} QemuCrucibleQuantumCpuExecution;
++
++/* The private RR producer alone publishes the canonical holder. These
++ * consumers cannot create it or manufacture an admitted Source child. */
++int qemu_crucible_quantum_cpu_rr_current_v1(struct CPUState *cpu);
++void qemu_crucible_quantum_cpu_execution_start_v1(struct CPUState *cpu);
++void qemu_crucible_quantum_cpu_execution_end_v1(struct CPUState *cpu);
++void qemu_crucible_quantum_cpu_cleanup_v1(struct CPUState *cpu);
++
++#if defined(CONFIG_PLUGIN) && defined(CONFIG_LINUX)
++int qemu_crucible_source_quantum_cpu_admit_v1(struct CPUState *cpu);
++#endif
 +
 +#endif
 diff --git a/include/system/crucible-ram-fork.h b/include/system/crucible-ram-fork.h
@@ -180697,10 +180940,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9b3e655a40ecb97e723fd198df2a744f1a6635fa
+index 0000000000000000000000000000000000000000..31aad2e15a00f00cb4c670475a58914c1cae688b
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8131 @@
+@@ -0,0 +1,8158 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -186669,6 +186912,33 @@ index 0000000000000000000000000000000000000000..9b3e655a40ecb97e723fd198df2a744f
 +    }
 +    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
 +    return status;
++}
++
++int qemu_crucible_source_quantum_cpu_admit_v1(CPUState *cpu)
++{
++#ifdef CONFIG_TCG
++    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
++    int status = qemu_crucible_quantum_cpu_rr_current_v1(cpu);
++
++    if (status || !bql_locked() || execution->child ||
++        execution->execution_started || execution->permission_revoked) {
++        return status ? status : -EPERM;
++    }
++    status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++        OBJECT(cpu), &execution->allocation, &execution->receipt,
++        &execution->allocation_generation);
++    if (status) {
++        return status;
++    }
++    /* This retains factual allocation identity under RR's actual QOM hold.
++     * Initial construction custody and Main fingerprint callbacks cannot
++     * issue class-1 authority. No scheduler-generation/stop-mode conversion,
++     * retained Advance, runtime/handler children or completion payer exists.
++     * Refuse before BQL unlock; never retag those different operations. */
++    return -ENOTSUP;
++#else
++    return -ENOTSUP;
++#endif
 +}
 +
 +int qemu_crucible_startup_source_cpu_allocation_result_v1(
@@ -202554,7 +202824,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d0b40d6a791e778ddc0bdff14ced1a333a9432a
+index 0000000000000000000000000000000000000000..cbe1b37e6ffbea0a57df4df27796232ed9f2dc50
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -202582,7 +202852,7 @@ index 0000000000000000000000000000000000000000..2d0b40d6a791e778ddc0bdff14ced1a3
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
++        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -245238,10 +245508,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..30da6f6c5583048d15d355512e41f48600028d36
+index 0000000000000000000000000000000000000000..63c0a3b9816613d65f534ef0e319330c978e9f2f
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,647 @@
+@@ -0,0 +1,713 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -245889,6 +246159,72 @@ index 0000000000000000000000000000000000000000..30da6f6c5583048d15d355512e41f486
 +returns do not prove destruction of shared GLib bodies. Deferred hang execution,
 +CPU consumers, full handler/impulse retirement, selected allocation funding and
 +the mandatory launched Source lifecycle remain unqualified.
++
++Quantum RR custody and the missing Advance producer
++--------------------------------------------------
++
++``QemuCrucibleQuantumCpuExecution`` is inline in the actual ``CPUState``.
++The QOM type's real ``instance_size`` and selected allocation request therefore
++include its full extent. It has no separate allocation, static journal or TLS
++capacity grant. RR alone installs its canonical stack holder before unlocking
++BQL and retains an actual QOM reference. Process, thread and nonwrapping serial
++checks reject stale holders. On the selected route Source also authenticates
++the actual QOM allocation owner, receipt and allocation generation under that
++reference, then refuses ``-ENOTSUP`` before the unlock. Construction participants
++and fingerprint action Originals cannot issue a Quantum child.
++
++The ordinary RR execution order now records factual custody as follows:
++
++1. With BQL held, retain QOM and install the exact RR holder.
++2. Unlock BQL and prepare icount. A zero-budget retry relocks BQL and returns
++   this unentered custody without claiming that CPU execution occurred.
++3. ``cpu_exec_start`` precedes the execution-start observation. Neither creates
++   Source permission. Longjmp cleanup revokes permission and records completed
++   cleanup, while leaving the QOM reference and execution-end obligation held.
++4. ``cpu_exec_setjmp`` retains ordinary exception continuation when no semantic
++   child exists. A child with revoked permission returns ``EXCP_INTERRUPT`` to
++   RR, rather than continuing that same outer ``cpu_exec_loop``.
++5. Only the return of actual ``cpu_exec_end`` publishes execution end. RR
++   relocks BQL before physically returning QOM custody. A nonreturned semantic
++   child prevents that physical return; no child-return bypass is supplied.
++
++No Source Advance or semantic CPU child issuer is implemented. In particular,
++the selected admission, owned-child continuation and child-return paths remain
++unexecuted by the component checks. The test compiles literal Native state
++methods with real CPU/thread declarations and actual pthread identity methods;
++its input journal supplies no QOM reference, RR frame, action or payment.
++Eight compiled omission controls check the local identity and revocation
++predicates. Actual configured object compilation checks the changed producers
++and consumers, including system and user ``cpu-exec``. Neither check qualifies
++a launched Quantum lifecycle or proves provider-backed ownership.
++
++The paired producer contract still needed before admission can exist is:
++
++* The module's actual class-1 action entry must retain its canonical Advance
++  output under the genuine entered Original before any scheduler mutation.
++  Core must retain that same callback/module and nominal holder, process,
++  thread, action serial and scheduler generation. Preparation/reset and
++  external restore use their own operation boundaries.
++* The scheduler itself must lend its actual nonzero, nonwrapping even
++  generation together with max-advance icount, explicit stop mode and the
++  effective logical/native ceiling. The existing scalar ceiling callbacks
++  expose observations only; a copied tuple is not that loan. A paired
++  independent post must reauthenticate the same module/holder and exact final
++  atomic sequence. Unproved conversion refuses and retains any born debt.
++* Source must join that retained Advance to its publisher action and exact
++  sequence, cancellation and original limits. Its real CPU child must retain
++  this parent, the actual allocation/QOM generation and the private RR holder
++  before the unlock edge. Execution revocation cannot discharge the child.
++* All runtime, handlers, callbacks, allocators and other children need their
++  actual owners and payments. Physical return waits for execution end and
++  every child return, including failure and asynchronous cleanup paths.
++* Only genuine retired-ceiling evidence or an authenticated next-idle
++  completion after actual icount and exactly one work-unit publication may
++  supply the outcome. Loop, instruction and ACK observations supply no
++  progress or completion credit.
++
++This contract is an inventory of missing producers, not an accepting API,
++compatibility route or license to activate an existing callback group.
 diff --git a/tests/unit/crucible-fault-command-restore-fixture.inc.h b/tests/unit/crucible-fault-command-restore-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..ccee61df89ecf56a18b6faf1c268f7dc5646275a
@@ -249275,7 +249611,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..960987c1b44ff2a800b339cd9b19c61bce4d6ca1
+index 0000000000000000000000000000000000000000..758165f3e71a90257b0158806dd5271ef64aef55
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -249293,7 +249629,7 @@ index 0000000000000000000000000000000000000000..960987c1b44ff2a800b339cd9b19c61b
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
++        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
 +}
 +
 +FUNCTIONS = (
@@ -249381,7 +249717,7 @@ index 0000000000000000000000000000000000000000..960987c1b44ff2a800b339cd9b19c61b
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c59886d6e2a3efd12aa8ddef87b201851a17e2a4
+index 0000000000000000000000000000000000000000..7b6c0aaa9bbc3a9f2857a98b13b7dee35a55a25c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -249402,7 +249738,7 @@ index 0000000000000000000000000000000000000000..c59886d6e2a3efd12aa8ddef87b20185
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'c22d5b06891c63ea52fc3debb272708434aa8a0a86b74e5ed13913b3e0aaf39b',
++        '9a21ba01d9299e067748872382e37a317a9c6203daac3eac1dfeea1fbee40f44',
 +    'plugins/crucible-startup-source.h':
 +        'f80878ed9e4bcc5fa4a0b1cee7d2ac619c20344cf1244c30d7397bcb10b2f0da',
 +    'include/plugins/qemu-plugin.h':
@@ -249412,7 +249748,7 @@ index 0000000000000000000000000000000000000000..c59886d6e2a3efd12aa8ddef87b20185
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
++        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
 +}
 +
 +FUNCTIONS = (
@@ -249628,7 +249964,7 @@ index 0000000000000000000000000000000000000000..c59886d6e2a3efd12aa8ddef87b20185
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..129562abe4f31f6dfb092bfb30bdd6f0180e6e9d
+index 0000000000000000000000000000000000000000..f4d526d6d898646f9e104332db96c97355bf7de2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -249652,7 +249988,7 @@ index 0000000000000000000000000000000000000000..129562abe4f31f6dfb092bfb30bdd6f0
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
++        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
 +}
 +
 +FUNCTIONS = (
@@ -249746,7 +250082,7 @@ index 0000000000000000000000000000000000000000..129562abe4f31f6dfb092bfb30bdd6f0
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..08303d829baaa39baa26c289d8a6d21efb7db728
+index 0000000000000000000000000000000000000000..3fe8c59f3755225b9c6fdbb269f499e61c21bfa8
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -249787,9 +250123,9 @@ index 0000000000000000000000000000000000000000..08303d829baaa39baa26c289d8a6d21e
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
++        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '6054bf12a7e081ba8426440c4c79f9088e915f360c91b9aa0d9502963a56452a',
++        '33a89a79b61c4124b8ea53ca37e9de9b2918060560c779ae9a3f6c2134d49879',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -249925,10 +250261,10 @@ index 0000000000000000000000000000000000000000..08303d829baaa39baa26c289d8a6d21e
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ad9575b0c910c8eb57bcd828851a7abcb73d1498
+index 0000000000000000000000000000000000000000..8ef4a98a34099fab982597be74103fe4e0c6f4ea
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1240 @@
+@@ -0,0 +1,1250 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -249938,6 +250274,16 @@ index 0000000000000000000000000000000000000000..ad9575b0c910c8eb57bcd828851a7abc
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'include/system/crucible-quantum-execution.h':
++        '6fff4b03ad6e029bdbe9c8fdc4bb11ba1af8daa1b2f56ed02f757a54aa5286e6',
++    'tests/unit/test-crucible-quantum-execution.py':
++        'f0c75fe3bc02fecf3c87f82303be0a80768d5a26539bc4bb0284c391feb674d4',
++    'accel/tcg/tcg-accel-ops-rr.c':
++        'b9c2a62089fe389fd9d5be22fc176c05d4722a14d3a9afb898e488374e287037',
++    'accel/tcg/tcg-accel-ops.c':
++        '8409338d306334ae8fa98be4c86b11f6fcc3b9b204576acd541733eaf4a21aad',
++    'accel/tcg/cpu-exec.c':
++        'ff54318400247378056b7e6e9aefd952b9d82e547864135f927db8a4b3b43ba8',
 +    'plugins/crucible-fault-storage.inc.h':
 +        '3a4cac2c5c1960c46a943a1c9cdc296c3e9b64eeb553ec8d1f298bd1cd756852',
 +    'tests/unit/test-crucible-fault-storage.py':
@@ -250097,7 +250443,7 @@ index 0000000000000000000000000000000000000000..ad9575b0c910c8eb57bcd828851a7abc
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'c22d5b06891c63ea52fc3debb272708434aa8a0a86b74e5ed13913b3e0aaf39b',
++        '9a21ba01d9299e067748872382e37a317a9c6203daac3eac1dfeea1fbee40f44',
 +    'plugins/crucible-startup-source.h':
 +        'f80878ed9e4bcc5fa4a0b1cee7d2ac619c20344cf1244c30d7397bcb10b2f0da',
 +    'plugins/crucible-device-workspace.c':
@@ -250133,7 +250479,7 @@ index 0000000000000000000000000000000000000000..ad9575b0c910c8eb57bcd828851a7abc
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
-+        '36be9ba4f74bc75c3ea825cef29baea12d51f441e5ff12f3406093ce7be7bdbd',
++        '26c008e776cf798c3454e6e9419ccc6e3f5957ca1059872f9caab8ebc8e8e92b',
 +    'include/qemu/plugin.h':
 +        '9ac1df437c3d56b857016aa465782364de9bcc81dd28e242603a827779779546',
 +    'plugins/plugin.h':
@@ -266175,7 +266521,7 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d7802fa42aae
+index 0000000000000000000000000000000000000000..a3398a6116a12a7580f1afafdb2215cfc9adca55
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -266215,7 +266561,7 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    "accel/tcg/icount-common.c":
 +        "580137f73146ba656ab7ca0b1f0c6ed18c88765d6e0115b871a31a1673eb51dd",
 +    "accel/tcg/tcg-accel-ops-rr.c":
-+        "9138eaed9c3924f7a3508bd3457b2884a0601231184f3b17d7cde1f3d01eab50",
++        "b9c2a62089fe389fd9d5be22fc176c05d4722a14d3a9afb898e488374e287037",
 +    "accel/tcg/tcg-accel-ops-rr.h":
 +        "93b2e3a3b4b395e98733317e8411420b7ef1331f84d59af6a0ab87ad9c884d98",
 +    "monitor/qmp-cmds.c":
@@ -266926,10 +267272,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb4cc991ae95fc9ac7f3c9eb3051267da7c42cea
+index 0000000000000000000000000000000000000000..45bbcf85109bb95d7a33e281e0fac9733ec2f7ff
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2360 @@
+@@ -0,0 +1,2361 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -269277,6 +269623,7 @@ index 0000000000000000000000000000000000000000..cb4cc991ae95fc9ac7f3c9eb3051267d
 +        ("test-crucible-arm-register-preflight.py", "arm-register-preflight"),
 +        ("test-crucible-register-description.py", "register-description"),
 +        ("test-crucible-register-workspace.py", "register-workspace"),
++        ("test-crucible-quantum-execution.py", "quantum-execution"),
 +        ("test-crucible-fault-registration.py", "fault-registration"),
 +        ("test-crucible-fault-storage.py", "fault-storage"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
@@ -296769,6 +297116,160 @@ index 0000000000000000000000000000000000000000..49b54cb72fc04601b3021c5cdaf7fb62
 +    }
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-quantum-execution.py b/tests/unit/test-crucible-quantum-execution.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2d43f07392e421ddca227ec9c278eb4776d17c9b
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-execution.py
+@@ -0,0 +1,148 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check literal Native custody predicates without a Source Quantum issuer.
++
++The sample journal below is component input. It does not acquire QOM custody,
++enter RR, issue a semantic child, execute guest code or qualify a lifecycle.
++Use configured QEMU include/compiler flags through CC, CFLAGS and LDFLAGS.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++CHECKS = r"""
++#include <assert.h>
++#include <sys/wait.h>
++
++static CPUState cpu;
++
++static void *foreign_thread(void *unused)
++{
++    assert(qemu_crucible_quantum_cpu_rr_current_v1(&cpu) == -ESTALE);
++    return NULL;
++}
++
++int main(void)
++{
++    QemuCrucibleQuantumCpuExecution *holder = &cpu.crucible_quantum_execution;
++    QemuCrucibleQuantumCpuExecution *execution = holder;
++    pthread_t thread;
++    int status;
++
++    /* Exercise the absent factual journal without any semantic child. */
++    qemu_crucible_quantum_cpu_execution_start_v1(&cpu);
++    qemu_crucible_quantum_cpu_cleanup_v1(&cpu);
++    qemu_crucible_quantum_cpu_execution_end_v1(&cpu);
++    assert(!execution->execution_started && !execution->execution_ended);
++
++    *execution = (QemuCrucibleQuantumCpuExecution) {
++        .cpu = &cpu, .holder = &holder, .process = getpid(),
++        .serial = 1, .retained = true,
++    };
++    qemu_thread_get_self(&execution->thread);
++    assert(!qemu_crucible_quantum_cpu_rr_current_v1(&cpu));
++
++    holder = NULL;
++    assert(qemu_crucible_quantum_cpu_rr_current_v1(&cpu) == -ESTALE);
++    holder = execution;
++    execution->serial = 0;
++    assert(qemu_crucible_quantum_cpu_rr_current_v1(&cpu) == -ESTALE);
++    execution->serial = 1;
++    execution->rr_returned = true;
++    assert(qemu_crucible_quantum_cpu_rr_current_v1(&cpu) == -ESTALE);
++    execution->rr_returned = false;
++
++    assert(!pthread_create(&thread, NULL, foreign_thread, NULL));
++    assert(!pthread_join(thread, NULL));
++    pid_t child = fork();
++    assert(child >= 0);
++    if (!child) {
++        assert(qemu_crucible_quantum_cpu_rr_current_v1(&cpu) == -ESTALE);
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++
++    qemu_crucible_quantum_cpu_execution_start_v1(&cpu);
++    assert(execution->execution_started && !execution->execution_ended);
++    qemu_crucible_quantum_cpu_cleanup_v1(&cpu);
++    assert(execution->cleanup_completed && execution->permission_revoked);
++    assert(execution->retained && holder == execution);
++    assert(!execution->execution_ended && !execution->rr_returned);
++    assert(!execution->child && !execution->allocation && !execution->receipt);
++    qemu_crucible_quantum_cpu_execution_end_v1(&cpu);
++    assert(execution->execution_ended && execution->permission_revoked);
++    assert(execution->retained && holder == execution && !execution->rr_returned);
++    puts("PASS literal Native state predicates; no RR/QOM/Source admission or guest execution");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    rr = (source / "accel/tcg/tcg-accel-ops-rr.c").read_text()
++    literal = "\n\n".join(extract["function"](rr, signature) for signature in (
++        "int qemu_crucible_quantum_cpu_rr_current_v1(",
++        "void qemu_crucible_quantum_cpu_execution_start_v1(",
++        "void qemu_crucible_quantum_cpu_execution_end_v1(",
++        "void qemu_crucible_quantum_cpu_cleanup_v1(",
++    ))
++    threads = (source / "util/qemu-thread-posix.c").read_text()
++    literal = "\n\n".join(extract["function"](threads, signature) for signature in (
++        "void qemu_thread_get_self(", "bool qemu_thread_is_self(",
++    )) + "\n\n" + literal
++    controls = {
++        "positive": literal,
++        "omit-holder": literal.replace("*execution->holder == execution", "true"),
++        "omit-process": literal.replace("execution->process == getpid()", "true"),
++        "omit-thread": literal.replace("qemu_thread_is_self(&execution->thread)", "true"),
++        "omit-serial": literal.replace("execution->serial &&", "true &&"),
++        "omit-return": literal.replace("!execution->rr_returned ?", "true ?"),
++        "omit-revocation": literal.replace("execution->permission_revoked = true;", ""),
++        "omit-cleanup": literal.replace("execution->cleanup_completed = true;", ""),
++        "omit-execution-end": literal.replace("execution->execution_ended = true;", ""),
++    }
++    proof = {}
++    for name, definitions in controls.items():
++        if name != "positive" and definitions == literal:
++            raise ValueError(f"literal control did not change: {name}")
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n'
++                             '#include "hw/core/cpu.h"\n' + definitions + CHECKS)
++        binary = output / name
++        command = [os.environ.get("CC", "cc"),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.command.json").write_text(json.dumps(command, indent=2) + "\n")
++        # Relative configured compiler flags belong to the inherited build cwd.
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name}: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS eight literal omission controls; owned continuation remains unexecuted")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-ram-arena.py b/tests/unit/test-crucible-ram-arena.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e30f95787
@@ -303070,10 +303571,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1778d7aa43f2ff395b53edef0420e5a86e1475a9
+index 0000000000000000000000000000000000000000..e3e5369967042422305394f9a48b5fa9d3d4fee0
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,725 @@
+@@ -0,0 +1,723 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -303111,8 +303612,6 @@ index 0000000000000000000000000000000000000000..1778d7aa43f2ff395b53edef0420e5a8
 +# These literal inputs are absent from the owning extractor's inventory. Their
 +# pins bind the same reviewed source cohort and cannot replace existing pins.
 +SUPPLEMENTAL_SOURCE_HASHES = {
-+    "accel/tcg/tcg-accel-ops-rr.c":
-+        "9138eaed9c3924f7a3508bd3457b2884a0601231184f3b17d7cde1f3d01eab50",
 +    "util/event.c":
 +        "bc9693b7bf9efef552377aa484ed5b8892cfc6f866964d87895923e914591033",
 +    "util/qsp.c":
