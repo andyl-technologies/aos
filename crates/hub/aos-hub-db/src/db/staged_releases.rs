@@ -17,6 +17,8 @@ use crate::backend::CheckedStatement;
 
 use super::{Database, Row};
 
+mod inventory;
+
 /// Retains superseded or discarded inventory roots for one day.
 pub const STAGED_RELEASE_GRACE_SECONDS: i64 = 86_400;
 
@@ -979,42 +981,14 @@ impl Database {
             ));
         }
         drop(json);
-        // Bound parameters for the Worker storage bridge while admitting each
-        // inventory page as one checked write rather than one call per object.
-        let page_size = (super::SNAPSHOT_MAX_BOUND_PARAMETERS - 3) / 4;
-        for page in revision.inventory.chunks(page_size) {
-            let mut params = vals![registry_id, revision.id, number];
-            let mut tuples = Vec::with_capacity(page.len());
-            for (index, object) in page.iter().enumerate() {
-                let hash = object
-                    .sha256
-                    .strip_prefix("sha256:")
-                    .context("invalid stage digest")?;
-                let size = i64::try_from(object.byte_size).context("stage object is too large")?;
-                let first = 4 + index * 4;
-                tuples.push(format!(
-                    "(?{first}, ?{}, ?{}, ?{})",
-                    first + 1,
-                    first + 2,
-                    first + 3
-                ));
-                params.extend(vals![object.path, hash, size, object.media_type]);
-            }
-            writes.push(CheckedStatement::exact(
-                format!("WITH input(object_key, sha256, byte_size, media_type) AS (VALUES {})
-                  INSERT INTO staged_release_objects (registry_id, stage_id, revision, object_key, sha256, byte_size, media_type)
-                  SELECT ?1, ?2, ?3, input.object_key, input.sha256, input.byte_size, input.media_type
-                    FROM input WHERE NOT EXISTS (SELECT 1 FROM surface_objects object
-                      WHERE object.registry_id = ?1 AND object.object_key = input.object_key
-                        AND (object.lifecycle_state <> 'active' OR EXISTS (
-                          SELECT 1 FROM object_deletion_jobs job
-                           WHERE job.surface_object_id = object.id AND job.active_slot IS NOT NULL)))
-                      AND NOT EXISTS (SELECT 1 FROM oci_untracked_repair_plans repair
-                        WHERE repair.registry_id = ?1 AND repair.object_key = input.object_key
-                          AND repair.state IN('pending', 'claimed', 'failed'))", tuples.join(", ")),
-                params, u64::try_from(page.len())?,
-            ));
-        }
+
+        writes.extend(inventory::inventory_statements(
+            registry_id,
+            &revision.id,
+            number,
+            &revision.inventory,
+        )?);
+
         // A retained byte identity does not change, but its catalog version
         // fences a collector that reviewed the object before this transaction.
         // Preserve only placement evidence that was exact at the old version.
