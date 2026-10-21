@@ -298,6 +298,7 @@ fn apply(
     let path = io::owned_path(&invocation.input.path)?;
     let permissions = io::mode(&invocation.input.mode)?;
     let (uid, gid) = ownership(&invocation.input)?;
+    let keep_readonly = io::matches_readonly(path, &expected, permissions, uid, gid)?;
     for entry in fs::read_dir(state_directory)? {
         let entry = entry?;
         if entry.path() == receipt_path
@@ -352,12 +353,17 @@ fn apply(
         previous_path_digest,
     };
     save(receipt_path, &pending)?;
-    io::write(path, contents, permissions)?;
-    if uid.is_some() || gid.is_some() {
-        let file =
-            io::regular(path)?.context("configuration disappeared before ownership update")?;
-        fchown(&file, uid.map(Uid::from_raw), gid.map(Gid::from_raw))?;
-        file.sync_all()?;
+    // A matching immutable image file is already durable. Only its boot-local
+    // ownership receipt changes; mismatched bytes or metadata still require
+    // the ordinary replacement and cannot bypass read-only protection.
+    if !keep_readonly {
+        io::write(path, contents, permissions)?;
+        if uid.is_some() || gid.is_some() {
+            let file =
+                io::regular(path)?.context("configuration disappeared before ownership update")?;
+            fchown(&file, uid.map(Uid::from_raw), gid.map(Gid::from_raw))?;
+            file.sync_all()?;
+        }
     }
     if let Some(old_path) = &pending.previous_path {
         if old_path != &invocation.input.path {

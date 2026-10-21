@@ -56,6 +56,13 @@
     config = stageConfig;
     inherit lib;
   }));
+  initrdConfiguration = import ./_initrd-configuration.nix {
+    inherit lib;
+    inherit (buildContext) runCommand;
+    jq = artifacts.buildPackages.jq;
+    configurationProvider = artifacts.buildPackages.aos-configuration-provider;
+    effects = stageConfig.aos.abilities.configuration.operations.file.effects;
+  };
   initrdUnits =
     buildContext.runCommand "systemd-initrd-native-bootstrap" {
       inherit bootstrapJSON bootstrapGroupsJSON;
@@ -144,7 +151,7 @@
   };
   artifact = import ./_initrd-builder.nix {
     inherit accountSeed;
-    inherit lib runtimePackages handoff initrdNetworkDir initrdUnits;
+    inherit lib runtimePackages handoff initrdConfiguration initrdNetworkDir initrdUnits;
     inherit (buildContext) mkDerivation;
     diffutils = buildContext.packageSet.diffutils;
     kernel = selectedKernel;

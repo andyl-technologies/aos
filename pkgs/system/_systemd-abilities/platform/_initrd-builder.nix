@@ -55,6 +55,7 @@
   firmwarePackages ? [],
   loadModules,
   initrdUnits,
+  initrdConfiguration ? null,
   initrdRuntimeRoots,
   initrdNetworkDir ? null,
   handoff,
@@ -128,6 +129,11 @@
         available_stage = "build";
       }
     ]
+    ++ lib.optional (initrdConfiguration != null) {
+      kind = "file-configuration";
+      store_path = "${initrdConfiguration}";
+      available_stage = "build";
+    }
     ++ lib.optional (initrdNetworkDir != null) {
       kind = "network-configuration";
       store_path = "${initrdNetworkDir}";
@@ -681,6 +687,20 @@
           if [ -d ${initrdUnits} ]; then
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
+
+          ${lib.optionalString (initrdConfiguration != null) ''
+            # Preserve the exact provider-rendered files in the immutable root.
+            # Existing platform files cannot be silently replaced by an effect.
+            find ${initrdConfiguration}/etc -type f -print | while IFS= read -r source; do
+              destination="root/''${source#${initrdConfiguration}/}"
+              if [ -e "$destination" ] || [ -L "$destination" ]; then
+                echo "initrd configuration collides with a platform file: $destination" >&2
+                exit 1
+              fi
+              mkdir -p "$(dirname "$destination")"
+              cp -p "$source" "$destination"
+            done
+          ''}
 
           # ── 7a. Network configuration rendered from native bootstrap policy.
           mkdir -p root/etc/systemd/network
