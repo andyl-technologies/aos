@@ -6,8 +6,9 @@
 use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::measure_original_restore_current_executable;
 use crate::reference_packet::service::complete_restore::import18::{
-    PacketNativeImport18SelectedLaunchWireData, derive_native_import18_launch_identity_data,
-    inert_bootstrap_fixtures, initial_construction_from_wire_data,
+    PacketNativeImport18PrebirthRecipeWireData, PacketNativeImport18SelectedLaunchWireData,
+    derive_native_import18_launch_identity_data, inert_bootstrap_fixtures,
+    initial_construction_from_wire_data,
 };
 use crucible_node_format::{Bytes, Id, canonical};
 use serde_json::{Value, json};
@@ -60,6 +61,19 @@ fn operands(case: &str) -> [Value; 3] {
     boot["source_birth"]["declaration"]["source_birth"] =
         json!(Bytes::new(canonical::canonical_json(&source).unwrap()));
     boot["source_birth"]["declaration"]["fresh_restore_allocation_selection"] = json!(null);
+    let commitment =
+        serde_json::from_value::<PacketNativeImport18PrebirthRecipeWireData>(recipe.clone())
+            .unwrap()
+            .reconstructed_identity_data(typed::bounds().requested_peak)
+            .unwrap();
+    recipe["identity"] = json!(commitment);
+    if case == "initial_bad_recipe_identity" {
+        recipe["identity"] = json!(([7u8; 32]));
+    }
+    if case == "initial_changed_recipe_operand" {
+        recipe["geometry_identity"] = json!(([1u8; 32]));
+    }
+    selected["prebirth_recipe_identity"] = recipe["identity"].clone();
     boot["source_birth"]["prebirth_recipe"] = recipe.clone();
     boot["host_executable"] = selected["launch"]["controller_executable"].clone();
     boot["birth_id"] = json!(Bytes::new(
@@ -129,11 +143,11 @@ fn flight(case: &str) {
     }
     let raw = encode(&values);
     let mut prefix = prefix_for_bodies(row, raw.each_ref().map(Vec::as_slice));
-    prefix[136..168].fill(if case == "initial_bad_prefix_recipe" {
-        9
-    } else {
-        0
-    });
+    let recipe_identity: [u8; 32] = serde_json::from_value(values[0]["identity"].clone()).unwrap();
+    prefix[136..168].copy_from_slice(&recipe_identity);
+    if case == "initial_bad_prefix_recipe" {
+        prefix[136..168].fill(9);
+    }
     let key = blake3::derive_key(NATIVE_IMPORT17_PRIVATE_PREFIX_DOMAIN, &[23; 32]);
     let mac = blake3::keyed_hash(&key, &prefix[..224]);
     prefix[224..].copy_from_slice(mac.as_bytes());
@@ -213,6 +227,17 @@ pub(super) fn assert_child(
                 ))
             ));
         }
+        if matches!(
+            case,
+            "initial_bad_recipe_identity" | "initial_changed_recipe_operand"
+        ) {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 recipe commitment DATA"
+                ))
+            ));
+        }
         if matches!(case, "initial_producer" | "initial_reactive") {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -251,6 +276,8 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_selected_launch_identity",
         "initial_bad_private_launch_identity",
         "initial_changed_private_launch",
+        "initial_bad_recipe_identity",
+        "initial_changed_recipe_operand",
         "initial_short_key",
         "initial_short_birth",
         "initial_bad_prefix_recipe",

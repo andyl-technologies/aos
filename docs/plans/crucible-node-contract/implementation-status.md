@@ -858,10 +858,58 @@ and sixteen existing ignores. All six architecture checks pass. The first
 standard run had one existing gem5 secondary-process containment refusal
 (`ESRCH` while polling the original group); its isolated rerun and the subsequent
 complete standard and raw-value suites pass without source changes. Affected
-all-feature/all-target checking, Engine/Daemon suites, required application
-compilation and the funded-Source VM are running. The registered application
-source at `/nix/store/kijm5h7hkmbakz1sbb6q6zdbp1hj0bm4-aos-workspace-src`
-matches all 139 currently changed Rust paths byte for byte.
+all-feature/all-target checking passes. The Engine suite passes 2,036 tests,
+zero failures and thirty-four existing ignores. The Daemon suite passes 1,826
+tests, zero failures and 165 existing ignores in 240.64 seconds. Required
+application compilation and the funded-Source VM pass. The application output is
+`/nix/store/9z9q647gi6f0jircz704c32r8lpjsgvb-aos-test-targets-0.1.0`; its
+registered source at
+`/nix/store/kijm5h7hkmbakz1sbb6q6zdbp1hj0bm4-aos-workspace-src` matches all
+139 Rust paths changed through `92632f3f01` byte for byte. Its artifact inventory
+contains 180 test executables across 58 package identities, including 71
+integration targets.
+
+The funded-Source VM output is
+`/nix/store/a3p4gjnxdz4rsafmrs1728lnd3pcq8ci-aos-vm-test-crucible-funded-source-templates-0`.
+All three component derivations use
+`/nix/store/jcb1qjwi37axc8328ddwainlmd2w8c5r-crucible-workspace-src`, with all
+139 Rust paths byte-exact to `92632f3f01`. Two independent consumers retain three
+actual worker results, private Births, declaration banks, initial projections and
+new launch commitments. Spent retries, policy failures and terminal namespace
+and credit release pass. This remains the genuine Source precursor; no native18
+model, Bootstrap ACK, Prepare/upload or common Ready path is selected.
+
+## Complete recipe commitment self-consistency
+
+The new recipe commitment definition hashes canonical JSON of all twenty-three
+actual fields other than `identity`, under the separate BLAKE3 derive-key domain
+`source-owned.packet-native-import-prebirth-recipe-identity/18`. Its borrowed
+serializer has an exhaustive field roster. The complete Import18 SchemaRef binds
+this definition explicitly. No old transfer12/import17 definition changes.
+
+The initial construction formula adds this sequential canonicalization window
+using the existing fixed-width twenty-four-field declaration as a conservative
+bound before recipe values exist. Its actual transient owners, fixed counter
+and result controls remain separate from retained raw/typed bodies. Native
+header checking recomputes the commitment after the exact body/copy/launch joins;
+matching stale digests in all announcements no longer satisfy that check.
+
+New component controls compare the actual borrowed roster with independent
+removal of the digest from the full wire object, perturb every variable operand,
+verify that only the digest itself is excluded, and refuse one-byte-short encoded
+and complete-construction bounds. Two inherited-socket controls retain matching
+prefix/selected/Boot recipe announcements while changing the digest or an actual
+committed geometry operand. All three commitment controls and all three
+inherited-socket reconstruction tests pass; the latter cover twenty-seven
+separate flights in both standard and raw-value configurations. The initial
+one-byte-short control exposed an irrelevant parser restriction in the shared
+serialization report. The fixed finite declaration is now calculated before
+applying the independent restriction to actual canonicalization owners; no
+parser bank is executed or priced as this constructor's demand. Both full
+Transport configurations pass 1,800 tests, zero failures, no filtering and
+sixteen existing ignores. All-feature/all-target, architecture, required
+application and funded-Source VM qualification are running. Self-consistency supplies no opaque Recipe/Initial or phase grant; independent full recipe reconstruction
+from completed seven-bank inputs remains required before model adoption.
 
 ## Original launch custody and shared startup geometry
 

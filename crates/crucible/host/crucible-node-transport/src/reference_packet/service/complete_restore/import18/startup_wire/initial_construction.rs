@@ -145,6 +145,9 @@ fn combine(
     row[2] = add(row[2], source[2])?.max(add(raw[2], formatter[2])?);
     row[1] = row[1].max(launch_identity.0);
     row[2] = row[2].max(add(raw[2], launch_identity.1)?);
+    let recipe_identity = native_import18_recipe_identity_construction_data(maximum)?;
+    row[1] = row[1].max(recipe_identity.0);
+    row[2] = row[2].max(add(raw[2], recipe_identity.1)?);
     // Executable measurement follows all parser/Source/header work. Its actual
     // temporary reference and fixed read bank overlap the same retained owners.
     let measurement = original_import18_controller_measurement_construction_data();
@@ -184,9 +187,10 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + source_authentication_counter_scratch_data()
         + native_import18_startup_wire_counter_scratch_data()
         + native_import18_launch_identity_counter_scratch_data()
+        + native_import18_recipe_identity_counter_scratch_data()
         + size_of::<PacketNativeImport18LaunchIdentityData>()
         + size_of::<Result<PacketNativeImport18LaunchIdentityData, ProviderError>>()
-        + size_of::<(usize, usize)>() * 2
+        + size_of::<(usize, usize)>() * 3
         + size_of::<Result<(usize, usize), ProviderError>>()
         + size_of::<[u8; 32]>() * 4
         + size_of::<InitialConstructionData>()
@@ -268,6 +272,7 @@ pub(in crate::reference_packet) fn authenticate_initial_headers_data(
             "original import18 recipe launch DATA",
         ));
     }
+    recipe.authenticate_identity_data(derived.maximum_encoded_bytes[0])?;
     Ok(())
 }
 

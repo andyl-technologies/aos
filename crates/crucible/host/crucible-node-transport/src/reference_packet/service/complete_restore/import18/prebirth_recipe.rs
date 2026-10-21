@@ -27,6 +27,13 @@ use crate::protocol_snapshot::restored_settled17::{
 };
 use std::mem::size_of;
 
+#[path = "prebirth_recipe/identity.rs"]
+mod identity;
+pub use identity::{
+    native_import18_recipe_identity_construction_data,
+    native_import18_recipe_identity_counter_scratch_data,
+};
+
 #[path = "prebirth_recipe/decoder_partials.rs"]
 mod decoder_partials;
 

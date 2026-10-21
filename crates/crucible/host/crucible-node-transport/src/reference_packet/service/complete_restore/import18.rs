@@ -69,6 +69,8 @@ pub use prebirth_recipe::{
     PacketNativeImport18PrebirthRecipeData, PacketNativeImport18PrebirthRecipeWireData,
     native_import18_prebirth_recipe_construction_transient_data,
     native_import18_prebirth_recipe_counter_scratch_data,
+    native_import18_recipe_identity_construction_data,
+    native_import18_recipe_identity_counter_scratch_data,
 };
 pub use receipt::{
     native_import18_commit_receipt_data, native_import18_prepare_receipt_data,
