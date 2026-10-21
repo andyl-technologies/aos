@@ -12,7 +12,7 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Isolated parent private Birth construction
 
-The next working-tree change connects the accepted original worker result and
+Commit `07aad75c6f` connects the accepted original worker result and
 bank-free seed to genuine private Birth construction. The Source separately
 quotes both startup-bank copies, authenticates the unchanged original launch
 and completion, and transfers the original executable File, private identity
@@ -36,14 +36,39 @@ than its developer-tools-only output; the measured adapter path also follows
 its existing `semantic/` module location.
 
 All-feature/all-target Engine and Daemon checking, the six registered
-architecture gates and changed-file Rust/Nix formatting pass. The three new
-File/key/bank-transfer controls pass in the ordinary Engine run. That run has
-2,029 passing tests and five missing-installed-packet-executable failures;
-the complete configured rerun is pending. The required application test-target
-gate passes for an earlier construction snapshot and is being refreshed for
-the final Rust inputs. Native funded-worker/Birth VM execution and complete
-Daemon regression results remain pending. These are component results and
-do not qualify common Ready or full RFC-0025 completion.
+architecture gates and changed-file Rust/Nix formatting pass. Full configured
+library runs pass 2,034 Engine and 1,823 Daemon tests with zero failures and no
+filtering; existing ignored populations remain 33 and 164. The Engine run uses
+the actual built packet executable. Daemon uses the measured device and the
+source-built gem5 closed-profile manifest, including its two fresh restorations
+on each of x86_64 and AArch64. This fixed profile does not establish device parity.
+
+The required application test-target gate passes for the final construction Rust
+inputs: 180 test executables across 58 package IDs, including 71 integration
+targets. All eleven changed Rust files match the captured source. This gate
+compiles without running tests and emits no Crucible runtime unit-test ELF.
+Native funded-worker/Birth VM execution remains pending after the first actual
+VM run refused its process reservation before worker execution. These component
+results do not qualify common Ready or full RFC-0025 completion.
+
+## Process-child census and transport lint repairs
+
+The actual VM refusal exposed an absent runtime prerequisite. The pinned Linux
+source guards `/proc/<pid>/task/<tid>/children` with `CONFIG_PROC_CHILDREN`, which
+was disabled in the system kernel. The deployment supervisor requires this
+original census before actors or children exist; it correctly refuses an
+unavailable file rather than assuming an empty process tree. The required kernel
+fragment now enables it. The resolved kernel configuration gate passes, and the
+funded-Source VM also checks the configuration and actual readable interface
+before attempting its consumers. Its corrected end-to-end run remains pending.
+
+Commit `450087ad6c` removes four redundant field initializers and expresses nine
+eight-word counter terms using equivalent fixed array layouts. All 1,746
+Transport library tests pass, with zero failures, no filtering and 15 existing
+ignores; formatting passes. Library Clippy errors fall from 176 to 163 without
+new allowances or accounting changes. All-target checking also finds test-only
+diagnostics; neither Clippy scope is qualified by this repair. The required
+application compilation gate is being refreshed for these final lint inputs.
 
 ## Original launch custody and shared startup geometry
 

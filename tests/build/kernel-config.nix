@@ -87,6 +87,7 @@
 
   # Functional symbols required by higher-level roles.
   enabledFunctionalCommon = [
+    "PROC_CHILDREN"
     "CGROUP_SCHED"
     "FAIR_GROUP_SCHED"
     "CFS_BANDWIDTH"

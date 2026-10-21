@@ -30,9 +30,10 @@ in
     ];
     testScript = ''
       set -eu
-      for option in CFS_BANDWIDTH MEMCG CGROUP_PIDS QUOTA QFMT_V2 QUOTACTL SECURITY_LANDLOCK SECCOMP_FILTER; do
+      for option in PROC_CHILDREN CFS_BANDWIDTH MEMCG CGROUP_PIDS QUOTA QFMT_V2 QUOTACTL SECURITY_LANDLOCK SECCOMP_FILTER; do
         grep -Fxq "CONFIG_$option=y" ${pkgs.linux}/boot/config-*
       done
+      test -r "/proc/$$/task/$$/children"
       test ! -e /etc/ld.so.preload
       test ! -L /etc/ld.so.preload
       mkdir -p /sys/fs/cgroup
