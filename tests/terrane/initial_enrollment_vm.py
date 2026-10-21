@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 
 IMAGE = pathlib.Path(sys.argv[1])
 SOURCE = pathlib.Path(sys.argv[2])
@@ -154,6 +155,28 @@ def broker_ready(process):
     return output
 
 
+def wait_released_consumer_grace():
+    """Allows original durable deadlines to elapse before reusing the bounded owner."""
+    deadlines = []
+    for domain in ["public", "private"]:
+        path = ROOT / "positive" / domain / "state/cache/records.toml"
+        state = tomllib.loads(path.read_text())
+        released = [row["expires"] for row in state["leases"]
+                    if row["owner"].startswith("consumer-grace:")]
+        require(released, "preceding native reads retained no consumer release grace")
+        deadlines.extend(released)
+    latest = max(deadlines)
+    require(latest <= time.time() + 31, "consumer grace exceeds configured 30-second bound")
+
+    # Earlier cases retain independent grace promises in this 64-record owner.
+    # The native owner must expire its cold grants before another complete object
+    # can fit; the supervisor waits on their original persisted deadlines.
+    while time.time() <= latest:
+        require(time.monotonic() < DEADLINE, "fixture deadline while waiting for release grace")
+        time.sleep(min(0.25, max(0.01, latest - time.time())))
+    print("PASS original consumer release grace elapsed before bounded native object reopening", flush=True)
+
+
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
     publisher = subprocess.Popen(role_command("publisher-positive", 841, [845]),
@@ -167,6 +190,7 @@ def configured_publication():
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
         run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
+        wait_released_consumer_grace()
         run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
