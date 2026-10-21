@@ -20,6 +20,7 @@ use super::{PacketCompleteGraphRequest, QualificationError, refused};
 #[path = "records/host_capture17.rs"]
 mod host_capture17;
 
+mod import18;
 mod restored_settled;
 
 pub(super) fn host_capture17_counter_scratch_data() -> usize {
@@ -973,6 +974,7 @@ fn selected_native_definition_bodies(
         definitions.extend(restored_settled::declared_contracts_data(
             source.installation(),
         )?);
+        definitions.extend(import18::declared_contracts_data(source.installation())?);
     }
     Ok(definitions)
 }

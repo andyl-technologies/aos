@@ -209,6 +209,49 @@ The fresh VM must still establish actual fit, retained failure/retry, worker
 results and private Births. No native qualification or full RFC completion is
 claimed.
 
+## Complete Import18 declaration before identity construction
+
+The traced 180-second-parent VM reaches isolated Source declaration binding,
+then reports a typed preparation refusal before starting a worker. Its fixture
+requests Import18 while its immutable provider and binding rosters contain only
+the forty older definitions. An independent actual-artifact selection check
+refuses that same incomplete launch.
+
+The fixture producer now includes both full Import18 schemas, their canonical
+bodies and all three required features before constructing provider, binding,
+World or coordinator identities. The ordinary graph validator authenticates
+both exact immutable rosters and every required feature before adding those
+two compiled definitions to its expected roster. Missing, duplicate, changed
+and unknown definitions still refuse; older declarations remain unchanged.
+This declaration supplies no native mechanism or startup permission.
+
+All 1,747 Transport library tests pass with zero failures, no filtering and
+15 existing ignores, including the new incomplete-roster controls. Changed-file
+Rust formatting and all six architecture gates pass. The explicitly run fresh
+packaged configuration regression passes: its actual measured test ELF is bound
+before fresh World construction, its original code authority and graph install,
+and all three unchanged launches bind distinct fresh Import18 Source templates.
+Daemon all-feature/all-target checking also passes. The required application
+compilation gate passes with 180 test executables across 58 package IDs,
+including 71 integration targets; all 55 owned changed Rust paths exactly match
+its registered source capture. This gate does not run tests or emit Crucible
+runtime unit-test executables. The rebuilt funded VM must still establish the
+subsequent actual worker/private Birth path. Native startup,
+Initial/Recipe production, common Ready and full preservation remain unqualified.
+
+The ordinary Authority currentness check now measures all original files at
+entry and exit around its closed retained-data body. It preserves all four
+original Source/Host guards and both scope comparisons, performs no SDK,
+transport, vendor or evidence callbacks inside the interval, and always checks
+the terminal measurement even when the retained-data check refuses. No earlier
+read is cached as later native permission. This reduces full file passes from
+four to two for this interval only. The complete configured Daemon library run
+with `test-support` passes 1,835 tests with zero failures, no filtering and
+166 ignores. An earlier default-feature run had one QEMU child-lease
+descriptor-count failure that passes on a focused recheck; that earlier full
+run is not recorded as passing. The current run changes no test or assertion
+in that QEMU control.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

@@ -154,9 +154,9 @@ impl World {
         )
     }
 
-    /// Selects complete17 declarations before any participant or world identity.
+    /// Selects complete import18 declarations before any participant or world identity.
     #[cfg(feature = "test-support")]
-    pub(super) fn with_settled17_fixture(
+    pub(super) fn with_import18_fixture(
         peer: ContentRef,
         host_executable: ContentRef,
         proof_bytes: Vec<u8>,
@@ -188,12 +188,12 @@ impl World {
         ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         report_startup: bool,
         full_restore: bool,
-        settled17: bool,
+        import18: bool,
     ) -> Self {
         let mut content = BTreeMap::new();
         let proof = canonical::content_ref(&proof_bytes, "application/json").unwrap();
         content.insert(proof.clone(), proof_bytes.clone());
-        let host = if settled17 {
+        let host = if import18 {
             Host::new_restored17(host_executable, proof.clone())
         } else {
             Host::new(host_executable, proof.clone())
@@ -270,7 +270,7 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
-                settled17,
+                import18,
             ),
             Definition::with_fixture_family(
                 peer.clone(),
@@ -282,7 +282,7 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
-                settled17,
+                import18,
             ),
             Definition::with_fixture_family(
                 peer,
@@ -294,7 +294,7 @@ impl World {
                 ack,
                 report_startup,
                 full_restore,
-                settled17,
+                import18,
             ),
         ];
         for member in &members {

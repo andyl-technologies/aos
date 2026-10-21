@@ -32,6 +32,18 @@ const CONTRACT: &[u8] = br#"{
   "compatibility":"no old activation1/observation1 proofs, transfer12 tokens, native-record13 relabel or Initial15 released witness accepted; selected route remains closed until complete paired issuer/adopter"
 }"#;
 
+/// Returns the canonical compiled stage18 contract body as DATA.
+///
+/// The existing stage factory quote bounds this parser and writer. Reading
+/// this body creates no transaction, physical gate or phase permission.
+///
+/// # Errors
+/// Refuses compiled literal parsing or canonical encoding failure.
+pub fn native_import18_stage_contract_data() -> Result<Vec<u8>, ProviderError> {
+    let value = canonical::parse_json(CONTRACT, CONTRACT.len())?;
+    Ok(canonical::canonical_json(&value)?)
+}
+
 /// Constructs the complete separate18 stage schema without installing a verifier.
 ///
 /// # Errors

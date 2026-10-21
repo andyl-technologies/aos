@@ -51,7 +51,8 @@ pub use assigned::{
 };
 pub use contract::{
     authenticate_native_import18_schema_data, native_import18_contract_counter_scratch_data,
-    native_import18_contract_storage_data, native_import18_schema_data,
+    native_import18_contract_data, native_import18_contract_storage_data,
+    native_import18_schema_data,
 };
 pub use families::{
     PacketNativeImport18NativeFamily, PacketNativeImport18SemanticSpendFamily,
@@ -156,12 +157,13 @@ pub use launch_identity::{
     native_import18_launch_identity_projection_data,
 };
 pub use selection::{
-    PacketNativeImport18Selection, native_import18_selection_construction_storage_data,
+    PacketNativeImport18Selection, authenticate_native_import18_immutable_declaration_data,
+    native_import18_declared_features_data, native_import18_selection_construction_storage_data,
     native_import18_selection_counter_scratch_data, native_import18_selection_prewalk_data,
 };
 pub use stage_contract::{
     NATIVE_IMPORT18_STAGE_SELECTION, authenticate_native_import18_stage_schema_data,
-    native_import18_stage_contract_counter_scratch_data,
+    native_import18_stage_contract_counter_scratch_data, native_import18_stage_contract_data,
     native_import18_stage_contract_storage_data, native_import18_stage_schema_data,
 };
 

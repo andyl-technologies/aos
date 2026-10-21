@@ -150,3 +150,51 @@ pub(in super::super) fn with_settled17_declaration(
     declaration.peer.provider.validate().unwrap();
     declaration
 }
+
+/// Adds full import18 DATA before provider, binding and World identities exist.
+pub(in super::super) fn with_import18_declaration(
+    declaration: PacketNative5CompleteRestoreDeclaration,
+) -> PacketNative5CompleteRestoreDeclaration {
+    use crucible_node_transport::reference_packet::service::complete_restore::import18::{
+        native_import18_contract_data, native_import18_declared_features_data,
+        native_import18_schema_data, native_import18_stage_contract_data,
+        native_import18_stage_schema_data,
+    };
+
+    let mut declaration = with_settled17_declaration(declaration);
+    for (schema, bytes) in [
+        (
+            native_import18_schema_data().unwrap(),
+            native_import18_contract_data().unwrap(),
+        ),
+        (
+            native_import18_stage_schema_data().unwrap(),
+            native_import18_stage_contract_data().unwrap(),
+        ),
+    ] {
+        schema.definition.verify(&bytes).unwrap();
+        declaration
+            .peer
+            .provider
+            .implementation
+            .formats
+            .push(schema.clone());
+        declaration.restoration.push((schema, bytes));
+    }
+    for feature in native_import18_declared_features_data() {
+        declaration
+            .peer
+            .provider
+            .extensions_supported
+            .push(id(feature));
+    }
+    declaration
+        .peer
+        .provider
+        .implementation
+        .formats
+        .sort_by(|a, b| a.id.cmp(&b.id));
+    declaration.peer.provider.extensions_supported.sort();
+    declaration.peer.provider.validate().unwrap();
+    declaration
+}

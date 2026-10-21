@@ -109,13 +109,13 @@ pub fn write_complete_scene_fixture(
         measurements.clone(),
         measurements.clone(),
     ])?;
-    let mut world = World::with_settled17_fixture(peer, host, proof);
+    let mut world = World::with_import18_fixture(peer, host, proof);
     let interpretation = records::packet_complete_independent_graph_contract()?;
     world.content.insert(
         canonical::content_ref(&interpretation, "application/json")?,
         interpretation,
     );
-    // The builder has already selected full17 provider and Host definitions;
+    // The builder has already selected full18 provider and full17 Host definitions;
     // all provider/binding/world/coordinator hashes therefore name those bodies.
     let storage = storage_selection()?;
     let mut participants = Vec::with_capacity(3);

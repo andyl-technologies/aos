@@ -86,6 +86,49 @@ enum Definition {
     Stage,
 }
 
+/// Authenticates both immutable rosters and all three import18 feature names.
+///
+/// This checks declared contract DATA only. A launch must independently pass
+/// its full typed comparison and explicit mechanism selection; no Source,
+/// native owner or phase permission follows from these rosters.
+///
+/// # Errors
+/// Refuses a missing, duplicate or changed definition or required feature.
+pub fn authenticate_native_import18_immutable_declaration_data(
+    provider: &[SchemaRef],
+    binding: &[SchemaRef],
+    features: &[Id],
+) -> Result<(), ProviderError> {
+    for which in [Definition::Import, Definition::Stage] {
+        let schema = match which {
+            Definition::Import => native_import18_schema_data()?,
+            Definition::Stage => native_import18_stage_schema_data()?,
+        };
+        full_definition(provider, &schema)?;
+        full_definition(binding, &schema)?;
+    }
+    for required in native_import18_declared_features_data() {
+        if features
+            .iter()
+            .filter(|feature| feature.as_str() == required)
+            .count()
+            != 1
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+/// Returns the complete immutable import18 feature roster without selection.
+pub const fn native_import18_declared_features_data() -> [&'static str; 3] {
+    [
+        NATIVE_IMPORT18_EXTENSION,
+        NATIVE_IMPORT18_STAGE_SELECTION,
+        bootstrap_ack::NATIVE_IMPORT18_BOOTSTRAP_FEATURE,
+    ]
+}
+
 fn full_definition(formats: &[SchemaRef], expected: &SchemaRef) -> Result<(), ProviderError> {
     let mut found = None;
     for schema in formats {
@@ -155,6 +198,68 @@ pub fn native_import18_selection_counter_scratch_data() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immutable_import18_rosters_require_both_full_definitions_and_all_features() {
+        let formats = vec![
+            native_import18_schema_data().unwrap(),
+            native_import18_stage_schema_data().unwrap(),
+        ];
+        let features: Vec<_> = native_import18_declared_features_data()
+            .into_iter()
+            .map(|feature| Id::new(feature).unwrap())
+            .collect();
+        authenticate_native_import18_immutable_declaration_data(&formats, &formats, &features)
+            .unwrap();
+        formats[0]
+            .definition
+            .verify(&native_import18_contract_data().unwrap())
+            .unwrap();
+        formats[1]
+            .definition
+            .verify(&native_import18_stage_contract_data().unwrap())
+            .unwrap();
+
+        for side in 0..2 {
+            for index in 0..formats.len() {
+                let mut missing = formats.clone();
+                missing.remove(index);
+                let mut duplicate = formats.clone();
+                duplicate.push(formats[index].clone());
+                let mut changed = formats.clone();
+                changed[index].definition =
+                    canonical::content_ref(b"changed", "application/json").unwrap();
+                for altered in [&missing, &duplicate, &changed] {
+                    let mut rosters = [&formats, &formats];
+                    rosters[side] = altered;
+                    assert!(
+                        authenticate_native_import18_immutable_declaration_data(
+                            rosters[0], rosters[1], &features
+                        )
+                        .is_err()
+                    );
+                }
+            }
+        }
+        for index in 0..features.len() {
+            let mut missing = features.clone();
+            missing.remove(index);
+            let mut duplicate = features.clone();
+            duplicate.push(features[index].clone());
+            assert!(
+                authenticate_native_import18_immutable_declaration_data(
+                    &formats, &formats, &missing
+                )
+                .is_err()
+            );
+            assert!(
+                authenticate_native_import18_immutable_declaration_data(
+                    &formats, &formats, &duplicate
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn requested_mechanism_does_not_accept_legacy_selection_aliases() {

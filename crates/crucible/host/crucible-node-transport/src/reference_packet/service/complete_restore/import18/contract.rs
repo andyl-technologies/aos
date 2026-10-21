@@ -58,6 +58,18 @@ const CONTRACT: &[u8] = br#"{
   "public_route":"requires complete actual producer, native adopter and Window conjunction; no route follows from this definition"
 }"#;
 
+/// Returns the canonical compiled import18 contract body as DATA.
+///
+/// The existing contract factory quote bounds this parser and writer. Reading
+/// this body selects no Source mechanism or native phase.
+///
+/// # Errors
+/// Refuses compiled literal parsing or canonical encoding failure.
+pub fn native_import18_contract_data() -> Result<Vec<u8>, ProviderError> {
+    let value = canonical::parse_json(CONTRACT, CONTRACT.len())?;
+    Ok(canonical::canonical_json(&value)?)
+}
+
 /// Constructs the exact immutable Native17 import SchemaRef as DATA.
 ///
 /// Both actual producer and native policy still require their independently

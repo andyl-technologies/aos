@@ -1,15 +1,17 @@
 //! Exercises real code installation from a fresh independently measured configuration.
 //!
 //! The fixture producer measures this actual test ELF before creating any World
-//! identity. The code-only route creates no isolated template, worker, archive
-//! ticket, native child or Ready witness and installs no deployment reservation.
+//! identity. Code installation and fresh declaration templates create no worker,
+//! archive ticket, native child or Ready witness, and install no deployment.
 
 use super::*;
 use crate::node_qualification::packet_collection::complete::installed::manifest::{
     FundedSelection, load_funded,
 };
 use crate::node_qualification::{CompleteSceneFixtureInputs, write_complete_scene_fixture};
+use crucible_engine::node_adapters::cnp::OriginalNativeSourceTemplate18Attempt;
 use crucible_engine::node_admission::AdmissionEvidence;
+use crucible_node_transport::reference_packet::service::complete_restore::import18::PacketNativeImport18Selection;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
@@ -92,5 +94,43 @@ fn fresh_packaged_configuration_installs_original_code_authority_and_plan() {
         let body = authority.content(reference, 1024 * 1024).unwrap();
         reference.verify(&body).unwrap();
         assert_eq!(body, encoded(original).unwrap());
+    }
+
+    // A new producer includes the complete immutable import18 definitions
+    // before identity construction. Bind all three unchanged current launches
+    // to distinct fresh templates, without a deployment or native capability.
+    let selection = PacketNativeImport18Selection::SourceSignedImport18;
+    for (source, launch) in authority
+        .roster()
+        .sources
+        .iter()
+        .zip(prepared.launches.originals().unwrap())
+    {
+        selection.authenticate_launch_data(launch).unwrap();
+        assert_eq!(
+            source.installation().provider.implementation.formats.len(),
+            42
+        );
+        let row = source
+            .native_source_template18_construction_data(usize::MAX)
+            .unwrap();
+        let mut attempt = OriginalNativeSourceTemplate18Attempt::default();
+        source
+            .native_source_template18_into(&row, &mut attempt)
+            .unwrap();
+        let fresh = attempt.completed_unique_data().unwrap();
+        fresh
+            .bind_native_import18_declaration_data(selection, launch)
+            .unwrap();
+        assert!(
+            fresh
+                .is_original_native_import18_declaration_data()
+                .unwrap()
+        );
+        assert!(
+            !source
+                .is_original_native_import18_declaration_data()
+                .unwrap()
+        );
     }
 }

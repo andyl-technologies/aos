@@ -74,9 +74,9 @@ impl Definition {
         ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         report_startup: bool,
         full_restore: bool,
-        settled17: bool,
+        import18: bool,
     ) -> Self {
-        if !settled17 {
+        if !import18 {
             return Self::with_native_fixture(
                 executable,
                 model,
@@ -115,7 +115,7 @@ impl Definition {
         ack: Option<crucible_node_transport::reference_packet::service::ack_emitter::PacketNative5AckEmitterSelection>,
         report_startup: bool,
         full_restore: bool,
-        settled17: bool,
+        import18: bool,
     ) -> Self {
         let id = |value: &str| match value {
             "packet"
@@ -373,8 +373,8 @@ impl Definition {
                 )
                 .unwrap()
             };
-            let declaration = if settled17 {
-                super::fixture::continuation::with_settled17_declaration(declaration)
+            let declaration = if import18 {
+                super::fixture::continuation::with_import18_declaration(declaration)
             } else {
                 declaration
             };
