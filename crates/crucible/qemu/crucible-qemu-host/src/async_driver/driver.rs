@@ -136,6 +136,11 @@ where
             .transpose()
             .map_err(supervision_error)?
     };
+
+    // Publication and every later cut borrow this same entered operation.
+    // A driver-issued Quantum needs the same cancellation checks as a loan.
+    let active_operation = original.or(host_operation.as_ref());
+
     target
         .operational_health()
         .map_err(QemuAsyncDriverError::OperationalHealth)?;
@@ -146,13 +151,13 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
-    check_original(original)?;
+    check_original(active_operation)?;
     let mut pending = target
         .start_quantum(horizon)
         .map_err(QemuAsyncDriverError::Channel)?;
-    check_original(original)?;
+    check_original(active_operation)?;
     after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
-    check_original(original)?;
+    check_original(active_operation)?;
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;
@@ -167,7 +172,7 @@ where
     };
     let mut first_wait = true;
     let completion = loop {
-        let wait_timeout = match original.or(host_operation.as_ref()) {
+        let wait_timeout = match active_operation {
             Some(operation) => match operation.wait_slice() {
                 Ok(slice) => slice,
                 Err(source) => {
@@ -210,7 +215,7 @@ where
             .operational_health()
             .map_err(QemuAsyncDriverError::OperationalHealth)?;
         let wait_outcome = wait_result.map_err(QemuAsyncDriverError::Runtime)?;
-        check_original(original)?;
+        check_original(active_operation)?;
         let observed_wait = QemuAsyncDriverOperation::AwaitChild {
             wait: QemuAsyncWait::AdvanceCompletion,
             timeout: wait_timeout,
@@ -265,13 +270,13 @@ where
             }
             continue;
         }
-        check_original(original)?;
+        check_original(active_operation)?;
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {
                 target
                     .operational_health()
                     .map_err(QemuAsyncDriverError::OperationalHealth)?;
-                check_original(original)?;
+                check_original(active_operation)?;
                 break Some(completion);
             }
             Err(error) => {
@@ -306,10 +311,7 @@ where
             async_operations,
         });
     };
-    if let Some(operation) = host_operation {
-        operation.complete().map_err(supervision_error)?;
-    }
-    check_original(original)?;
+    check_original(active_operation)?;
     assert_async_driver_quantum_hot_path_is_shmem_only(&completion.operations)?;
 
     runtime
@@ -317,7 +319,10 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
-    check_original(original)?;
+    check_original(active_operation)?;
+    if let Some(operation) = host_operation {
+        operation.complete().map_err(supervision_error)?;
+    }
     Ok(QemuAsyncNodeStepReport {
         ceiling: Some(completion.ceiling),
         outcome: QemuAsyncNodeStepOutcome::Completed {

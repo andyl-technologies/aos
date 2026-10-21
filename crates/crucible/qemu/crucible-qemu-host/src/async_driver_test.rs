@@ -894,3 +894,6 @@ fn reset_original_wait_refusal_precedes_later_health_and_guard_loss()
     assert!(original.wait_slice().is_err());
     Ok(())
 }
+
+#[path = "async_driver_test/supervision.rs"]
+mod supervision;
