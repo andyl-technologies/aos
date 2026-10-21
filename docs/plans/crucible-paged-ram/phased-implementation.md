@@ -2308,6 +2308,32 @@ lender, queued alias, mapping, native session or operation. Genuine producer
 construction, matched transport integration, physical returns, class-one
 execution and activation remain unfinished.
 
+### 2026-10-21 paired publisher setup transport preparation
+
+Commit `28bc78d341` adds the preparation-only 125-byte Setup6 frame and exact
+SCM_RIGHTS transport for eight roles without a workspace or nine with one.
+The optional workspace remains sixth, before the publisher region and its two
+distinct notification events. A literal vector preserves the old common
+payload; strict codecs refuse mixed editions, truncation, padding, invalid
+identities and roster mismatches. The activated control registry is unchanged.
+
+All 165 protocol unit tests and 95 integration tests pass, together with strict
+protocol Clippy, 73 focused policy checks and five hygiene checks. Real Unix
+socket transfers verify every received alias identity and use each distinct
+endpoint; malformed frames and rosters send no bytes. Mandatory application
+compilation and the expanded 206-case exact supervision gate remain pending.
+All 5,271 tracked crate Rust/TOML files in immutable
+`dr7h3bbzvhkz3wa68vj1fg68rashf8nn-aos-workspace-src` match committed Git blobs;
+source manifest SHA256 is
+`740c0537c6cfa8ea64172d949e3314d380953089af002ea4baa7599429423dc2`.
+
+The inventory contains 323 bindings (304 component and nineteen native), with
+148 requirements uncovered and none qualified. This transport returns an I/O
+receipt only: the actual paid host lender/session construction, matched queued
+owner, native module transfer, class-one operation and activation remain
+unfinished. It does not authenticate the physical role meanings or issue an
+Original from matching bytes.
+
 ### 2026-10-21 native rule and reservation storage custody
 
 Commit `765ecc56c0` integrates atomic
