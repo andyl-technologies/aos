@@ -353,6 +353,9 @@ in
             printf 'shmem_generated_header_hash=sha256-test-shmem-header\n'
             printf 'plugin_abi=crucible-shmem-abi-v30\n'
           } > "$plugin_fixture/nix-support/crucible-qemu-plugin-build-info"
+          # Exception to the prebuilt Crucible test families: these paths are
+          # compile-time hints (`option_env!`), so this gate compiles the CLI
+          # tests itself with the fixture paths in its environment.
           export CRUCIBLE_AOS_QEMU="$qemu_fixture/bin/qemu-system-x86_64"
           export CRUCIBLE_AOS_PLUGIN="$plugin_fixture/lib/libcrucible_qemu_plugin.so"
 

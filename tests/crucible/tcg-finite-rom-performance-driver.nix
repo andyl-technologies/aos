@@ -64,6 +64,8 @@ in
         name = "qualify-and-build-public-protocol-helper";
         script = ''
           set -eu
+          # Exception to the prebuilt Crucible test families: this helper is a
+          # separate one-crate workspace assembled above, so it runs Cargo.
           export CARGO_HOME="$TMPDIR/cargo"
           cargo test --release --offline --target-dir "$TMPDIR/target"
           cargo build --release --offline --target-dir "$TMPDIR/target"
