@@ -1,8 +1,6 @@
 //! Keeps custody republication distinct from cleanup and failed-test reruns.
 
-use super::super::{
-    Contract, mask_contract, read_companions, replace_one_obligation, source_pattern,
-};
+use super::super::{Contract, mask_contract, read_companions, replace_one_obligation, source_pattern};
 use super::CONTRACTS;
 
 fn rejected(contract: &Contract, code: &str, companions: &[String]) -> bool {
@@ -151,8 +149,18 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         ),
         (
             "crucible-control-api/src/cleanup_owner.rs",
-            r#"ReturnDestination = Self::ReturnDestination"#,
+            r#"ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, Self::ReturnDestination>"#,
+            r#"ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, ForeignReturn>"#,
+        ),
+        (
+            "crucible-control-api/src/cleanup_owner.rs",
+            r#"ReturnDestination = ReturnDestination"#,
             r#"ReturnDestination = ForeignReturn"#,
+        ),
+        (
+            "crucible-control-api/src/cleanup_owner.rs",
+            r#"Box<dyn ProductionVmCleanupOwner<Failure = Failure, PostBody = PostBody>>"#,
+            r#"Box<dyn ProductionVmCleanupOwner<Failure = Failure, PostBody = ForeignPostBody>>"#,
         ),
         (
             "lifecycle_cleanup/reservation.rs",

@@ -276,7 +276,7 @@ fn run_uninterrupted(scenario: ScenarioDef, quanta: u64) -> UninterruptedRun {
     let snapshot = engine.snapshot();
     let event_log_entries = engine
         .into_quantum_loop()
-        .expect("the engine retains its loop")
+        .unwrap_or_else(|error| panic!("the engine should retain its loop: {error}"))
         .emitted_event_log_entries;
     UninterruptedRun {
         snapshot,

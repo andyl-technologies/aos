@@ -10,44 +10,24 @@ use super::Companion;
 pub(super) const CONTROL_API: Companion = Companion {
     path: "crates/crucible/control/crucible-control-api/src/cleanup_owner.rs",
     required: &[
+        (super::super::cleanup_delegation::CLEANUP_BOX_ALIASES, 1),
         (
             r#"pub trait ProductionVmCleanupReservation: Send { type Failure: std::error::Error + Send + 'static;"#,
             1,
         ),
         (
             r#"fn retain(
-    self: Box<Self>,
-    owner: Box<
-        dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
-    >,
-) -> Result<
-    Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
-    (
-        Box<
-            dyn ProductionVmCleanupReservation<
-                Failure = Self::Failure,
-                PostBody = Self::PostBody,
-                ReturnDestination = Self::ReturnDestination,
-            >,
+        self: Box<Self>,
+        owner: Box<
+            dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
         >,
-        Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
-    ),
->;"#,
+    ) -> ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;"#,
             1,
         ),
         (
             r#"fn prepare_return(
         self: Box<Self>,
-    ) -> Result<
-        Self::ReturnDestination,
-        Box<
-            dyn ProductionVmCleanupReservation<
-                    Failure = Self::Failure,
-                    PostBody = Self::PostBody,
-                    ReturnDestination = Self::ReturnDestination,
-                >,
-        >,
-    >;"#,
+    ) -> ProductionVmCleanupPrepareResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;"#,
             1,
         ),
         (
@@ -56,19 +36,7 @@ pub(super) const CONTROL_API: Companion = Companion {
         owner: Box<
             dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
         >,
-    ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        (
-            Box<
-                dyn ProductionVmCleanupReservation<
-                        Failure = Self::Failure,
-                        PostBody = Self::PostBody,
-                        ReturnDestination = Self::ReturnDestination,
-                    >,
-            >,
-            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        ),
-    >;"#,
+    ) -> ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;"#,
             1,
         ),
     ],

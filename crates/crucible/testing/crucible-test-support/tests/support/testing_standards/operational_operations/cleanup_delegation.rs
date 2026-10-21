@@ -16,7 +16,42 @@ const OWNER_DECLARATION: &str = r#"pub trait ProductionVmCleanupOwner: Send {
 const HANDOFF_SIGNATURE: &str =
     "fn retry(&mut self) -> Result<ProductionVmCleanupStage, LifecycleApiError>;";
 
+pub(super) const CLEANUP_BOX_ALIASES: &str = r##"pub type ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination> = Box<
+    dyn ProductionVmCleanupReservation<
+            Failure = Failure,
+            PostBody = PostBody,
+            ReturnDestination = ReturnDestination,
+        >,
+>;
+
+/// Returns the original reservation when preparation cannot transfer its destination.
+///
+/// The refusal carries the same token and preserves its occupied cleanup cell.
+pub type ProductionVmCleanupPrepareResult<Failure, PostBody, ReturnDestination> = Result<
+    ReturnDestination,
+    ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination>,
+>;
+
+/// Names the existing boxed driver for one authenticated cleanup cell.
+///
+/// The same allocation remains responsible for its physical stage and history.
+pub type ProductionVmCleanupHandoffBox<Failure, PostBody> =
+    Box<dyn ProductionVmCleanupHandoff<Failure = Failure, PostBody = PostBody>>;
+
+/// Preserves both original owners when a cleanup-cell transfer refuses.
+///
+/// Success carries the existing handoff token. Failure returns that same
+/// reservation and containing body together, without allocating replacements.
+pub type ProductionVmCleanupRetainResult<Failure, PostBody, ReturnDestination> = Result<
+    ProductionVmCleanupHandoffBox<Failure, PostBody>,
+    (
+        ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination>,
+        Box<dyn ProductionVmCleanupOwner<Failure = Failure, PostBody = PostBody>>,
+    ),
+>;"##;
+
 const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
+    (CLEANUP_BOX_ALIASES, 1),
     (OWNER_DECLARATION, 1),
     ("type Failure: std::error::Error + Send + 'static;", 3),
     ("type PostBody: Send + 'static;", 3),
@@ -40,21 +75,15 @@ const CLEANUP_DECLARATIONS: &[(&str, usize)] = &[
     ),
     ("fn dispose(self: Box<Self>);", 1),
     (
-        r#"fn into_post_body(self: Box<Self>,) -> Result<
-    Self::PostBody,
-    Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
->;"#,
+        r#"fn into_post_body(
+        self: Box<Self>,
+    ) -> Result<Self::PostBody, ProductionVmCleanupHandoffBox<Self::Failure, Self::PostBody>>;"#,
         1,
     ),
     (
-        r#"fn prepare_return(self: Box<Self>,) -> Result<
-    Self::ReturnDestination,
-    Box<dyn ProductionVmCleanupReservation<
-        Failure = Self::Failure,
-        PostBody = Self::PostBody,
-        ReturnDestination = Self::ReturnDestination,
-    >,>,
->;"#,
+        r#"fn prepare_return(
+        self: Box<Self>,
+    ) -> ProductionVmCleanupPrepareResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;"#,
         1,
     ),
     (

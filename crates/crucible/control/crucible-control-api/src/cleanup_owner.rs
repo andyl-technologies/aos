@@ -6,6 +6,44 @@
 
 use crate::LifecycleApiError;
 
+/// Names the existing boxed reservation for one cleanup cell and return destination.
+///
+/// This alias adds no allocation or authority. The concrete implementation
+/// retains the same preallocated token through handoff and refusal.
+pub type ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination> = Box<
+    dyn ProductionVmCleanupReservation<
+            Failure = Failure,
+            PostBody = PostBody,
+            ReturnDestination = ReturnDestination,
+        >,
+>;
+
+/// Returns the original reservation when preparation cannot transfer its destination.
+///
+/// The refusal carries the same token and preserves its occupied cleanup cell.
+pub type ProductionVmCleanupPrepareResult<Failure, PostBody, ReturnDestination> = Result<
+    ReturnDestination,
+    ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination>,
+>;
+
+/// Names the existing boxed driver for one authenticated cleanup cell.
+///
+/// The same allocation remains responsible for its physical stage and history.
+pub type ProductionVmCleanupHandoffBox<Failure, PostBody> =
+    Box<dyn ProductionVmCleanupHandoff<Failure = Failure, PostBody = PostBody>>;
+
+/// Preserves both original owners when a cleanup-cell transfer refuses.
+///
+/// Success carries the existing handoff token. Failure returns that same
+/// reservation and containing body together, without allocating replacements.
+pub type ProductionVmCleanupRetainResult<Failure, PostBody, ReturnDestination> = Result<
+    ProductionVmCleanupHandoffBox<Failure, PostBody>,
+    (
+        ProductionVmCleanupReservationBox<Failure, PostBody, ReturnDestination>,
+        Box<dyn ProductionVmCleanupOwner<Failure = Failure, PostBody = PostBody>>,
+    ),
+>;
+
 /// Retains an existing backend body while retrying its physical cleanup.
 ///
 /// Implementations keep their actual partial or complete resources together.
@@ -67,16 +105,7 @@ pub trait ProductionVmCleanupReservation: Send {
     /// destination cannot be reserved. No replacement token is allocated.
     fn prepare_return(
         self: Box<Self>,
-    ) -> Result<
-        Self::ReturnDestination,
-        Box<
-            dyn ProductionVmCleanupReservation<
-                    Failure = Self::Failure,
-                    PostBody = Self::PostBody,
-                    ReturnDestination = Self::ReturnDestination,
-                >,
-        >,
-    >;
+    ) -> ProductionVmCleanupPrepareResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;
 
     /// Transfers the actual owner into this reservation's already occupied cell.
     ///
@@ -95,19 +124,7 @@ pub trait ProductionVmCleanupReservation: Send {
         owner: Box<
             dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
         >,
-    ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        (
-            Box<
-                dyn ProductionVmCleanupReservation<
-                        Failure = Self::Failure,
-                        PostBody = Self::PostBody,
-                        ReturnDestination = Self::ReturnDestination,
-                    >,
-            >,
-            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        ),
-    >;
+    ) -> ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;
 
     /// Accepts the original externally returned body without waiting on its
     /// prepared-owner borrow. This is fixed custody delivery, not cleanup.
@@ -124,19 +141,7 @@ pub trait ProductionVmCleanupReservation: Send {
         owner: Box<
             dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>,
         >,
-    ) -> Result<
-        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        (
-            Box<
-                dyn ProductionVmCleanupReservation<
-                        Failure = Self::Failure,
-                        PostBody = Self::PostBody,
-                        ReturnDestination = Self::ReturnDestination,
-                    >,
-            >,
-            Box<dyn ProductionVmCleanupOwner<Failure = Self::Failure, PostBody = Self::PostBody>>,
-        ),
-    >;
+    ) -> ProductionVmCleanupRetainResult<Self::Failure, Self::PostBody, Self::ReturnDestination>;
 }
 
 /// Reports physical facts about one actual cleanup cell and epoch.
@@ -218,8 +223,5 @@ pub trait ProductionVmCleanupHandoff: Send {
     /// Returns this same driver while any actual obligation or role is pending.
     fn into_post_body(
         self: Box<Self>,
-    ) -> Result<
-        Self::PostBody,
-        Box<dyn ProductionVmCleanupHandoff<Failure = Self::Failure, PostBody = Self::PostBody>>,
-    >;
+    ) -> Result<Self::PostBody, ProductionVmCleanupHandoffBox<Self::Failure, Self::PostBody>>;
 }
