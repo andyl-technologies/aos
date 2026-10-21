@@ -1059,6 +1059,8 @@ pub trait LocalFs {
     /// The recipe supplies whole read data or an ordinary layout rejection;
     /// it grants no authority and imposes no protected-record owner, mode or
     /// link-count policy. Callers retain all surrounding validation fences.
+    /// A separate fixed ancestor recipe validates protected parents in order
+    /// before descending and returns their actual original physical stamps.
     /// A separate private physical closing recipe checks every original whole
     /// preimage and named fence while owning genuine exclusion duplicates. It
     /// returns only an explicit checked observation, never a body or mutation ACK.

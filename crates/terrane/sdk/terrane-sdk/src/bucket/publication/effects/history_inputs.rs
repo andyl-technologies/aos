@@ -213,7 +213,8 @@ pub(crate) async fn close_history_inputs<'scope, 'history, 'held, F: LocalFs + B
 
     match record.into_outcome() {
         OrdinaryReadOutcome::ProjectionChecked => {}
-        OrdinaryReadOutcome::Absent
+        OrdinaryReadOutcome::PayloadAncestors(_)
+        | OrdinaryReadOutcome::Absent
         | OrdinaryReadOutcome::Present(_, _)
         | OrdinaryReadOutcome::InvalidLayout => return Err(corrupt()),
     }

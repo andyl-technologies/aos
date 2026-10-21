@@ -1,6 +1,9 @@
 //! Executes ordinary leaf reads and fixed physical read closures without authority.
 //!
-//! Parent validation remains with the caller. This recipe preserves ordinary
+//! Ordinary leaf parent validation remains with the caller. A separate fixed
+//! recipe captures each original protected ancestor in order, stopping before
+//! descending through any rejected ancestor. Neither recipe grants authority.
+//! The leaf recipe preserves ordinary
 //! whole-body and absence semantics without protected owner or link policies.
 //! A separate private recipe closes genuine retained publication inputs and
 //! reports a physical observation alone; it performs no mutation or durability ACK.
@@ -23,6 +26,7 @@ pub struct NativeOrdinaryRead {
 #[cfg(all(feature = "tokio", unix))]
 enum Recipe {
     Leaf(PathBuf),
+    PayloadAncestors { path: PathBuf, owner: u32 },
     Projection(super::native_effect::NativeReadProjection),
 }
 
@@ -38,6 +42,8 @@ pub(crate) enum OrdinaryReadOutcome {
     #[cfg(all(feature = "tokio", unix))]
     ProjectionChecked,
     #[cfg(all(feature = "tokio", unix))]
+    PayloadAncestors(super::native_effect::publication::PayloadReadCapture),
+    #[cfg(all(feature = "tokio", unix))]
     Absent,
     #[cfg(all(feature = "tokio", unix))]
     Present(Vec<u8>, std::fs::Metadata),
@@ -51,6 +57,19 @@ impl NativeOrdinaryRead {
     pub(crate) fn for_leaf(path: &Path) -> Self {
         Self {
             recipe: Recipe::Leaf(path.to_owned()),
+            #[cfg(test)]
+            observation: None,
+        }
+    }
+
+    /// Retains one exact path for an ordered original-ancestor capture.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) fn for_payload_ancestors(path: &Path, owner: u32) -> Self {
+        Self {
+            recipe: Recipe::PayloadAncestors {
+                path: path.to_owned(),
+                owner,
+            },
             #[cfg(test)]
             observation: None,
         }
@@ -96,6 +115,15 @@ impl NativeOrdinaryRead {
                 #[cfg(test)]
                 &mut observation,
             ),
+            Recipe::PayloadAncestors { path, owner } => {
+                let captured =
+                    super::native_effect::publication::PayloadReadCapture::capture_native(
+                        &path, owner,
+                    )?;
+                Ok(NativeOrdinaryRecord {
+                    outcome: OrdinaryReadOutcome::PayloadAncestors(captured),
+                })
+            }
             Recipe::Projection(projection) => {
                 // Entry runs inside the submitted worker, while it owns every
                 // real exclusion; the observer never supplies a checked result.
@@ -229,7 +257,7 @@ impl NativeOrdinaryRead {
     /// Physical projections have several fixed inputs and no single leaf path.
     pub(crate) fn path_for_test(&self) -> Option<&Path> {
         match &self.recipe {
-            Recipe::Leaf(path) => Some(path),
+            Recipe::Leaf(path) | Recipe::PayloadAncestors { path, .. } => Some(path),
             Recipe::Projection(_) => None,
         }
     }

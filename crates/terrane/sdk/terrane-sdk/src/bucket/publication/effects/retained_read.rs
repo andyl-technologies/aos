@@ -36,6 +36,24 @@ impl PayloadReadCapture {
         path: &Path,
         owner: u32,
     ) -> Result<Self, StoreFailure> {
+        #[cfg(all(feature = "tokio", unix))]
+        if let Some(record) = fs
+            .read_ordinary_record(crate::store::NativeOrdinaryRead::for_payload_ancestors(
+                path, owner,
+            ))
+            .await
+            .map_err(io_failure)?
+        {
+            return match record.into_outcome() {
+                crate::store::OrdinaryReadOutcome::PayloadAncestors(captured)
+                    if captured.path == path && captured.owner == owner =>
+                {
+                    Ok(captured)
+                }
+                _ => Err(unsupported()),
+            };
+        }
+
         let mut parents = Vec::new();
         for path in super::super::parent_paths(path).map_err(io_failure)? {
             let metadata = fs.symlink_metadata(&path).await.map_err(io_failure)?;
@@ -43,6 +61,31 @@ impl PayloadReadCapture {
             FencePolicy::ProtectedAncestor { owner }
                 .validate(stamp)
                 .map_err(io_failure)?;
+            parents.push(ParentFence { path, stamp });
+        }
+        Ok(Self {
+            path: path.to_owned(),
+            parents,
+            owner,
+            policy: FencePolicy::Payload { owner },
+        })
+    }
+
+    /// Executes the original scalar ancestor checks in one native reader turn.
+    ///
+    /// Each ancestor is validated before querying its descendant. The result
+    /// retains fresh physical stamps only; body verification and all later
+    /// closing checks still use the caller's original retained read.
+    ///
+    /// # Errors
+    /// Preserves the first original path, metadata or custody-policy failure.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) fn capture_native(path: &Path, owner: u32) -> std::io::Result<Self> {
+        let mut parents = Vec::new();
+        for path in super::super::parent_paths(path)? {
+            let metadata = std::fs::symlink_metadata(&path)?;
+            let stamp = MetadataStamp::checked(&metadata)?;
+            FencePolicy::ProtectedAncestor { owner }.validate(stamp)?;
             parents.push(ParentFence { path, stamp });
         }
         Ok(Self {
@@ -179,7 +222,10 @@ impl RetainedPayloadRead {
         {
             match record.into_outcome() {
                 #[cfg(all(feature = "tokio", unix))]
-                crate::store::OrdinaryReadOutcome::ProjectionChecked => return Err(unsupported()),
+                crate::store::OrdinaryReadOutcome::ProjectionChecked
+                | crate::store::OrdinaryReadOutcome::PayloadAncestors(_) => {
+                    return Err(unsupported());
+                }
                 #[cfg(all(feature = "tokio", unix))]
                 crate::store::OrdinaryReadOutcome::Present(bytes, metadata) => {
                     self.matches(Some(&bytes), Some(&metadata))?;

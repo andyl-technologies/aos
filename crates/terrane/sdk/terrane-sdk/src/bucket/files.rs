@@ -433,7 +433,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if let Some(record) = record {
             match record.into_outcome() {
                 #[cfg(all(feature = "tokio", unix))]
-                crate::store::OrdinaryReadOutcome::ProjectionChecked => {
+                crate::store::OrdinaryReadOutcome::ProjectionChecked
+                | crate::store::OrdinaryReadOutcome::PayloadAncestors(_) => {
                     return Err(StoreFailure::new(StoreErrorKind::Unsupported));
                 }
                 #[cfg(all(feature = "tokio", unix))]
@@ -561,3 +562,7 @@ mod payload_namespace_tests;
 
 #[cfg(all(test, feature = "tokio", unix))]
 mod ordinary_receipt_tests;
+
+#[cfg(all(test, feature = "tokio", unix))]
+#[path = "files/native_ancestor_tests.rs"]
+mod native_ancestor_tests;
