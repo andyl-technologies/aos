@@ -27,6 +27,8 @@
 //! composite setup descriptor body; `preemption` owns deterministic IPI
 //! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
 //! its fuzz target and corpus.
+//! `publisher_subscription` owns pure codecs for the proposed retained command
+//! region; those observations do not enable its unimplemented capability.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -66,6 +68,7 @@ pub mod parent_park_return;
 mod plugin_observation;
 pub mod plugin_setup_plan;
 mod preemption;
+pub mod publisher_subscription;
 pub mod ram_control;
 pub mod ram_fork;
 pub mod ram_page;
