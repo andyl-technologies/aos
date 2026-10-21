@@ -1380,6 +1380,75 @@ also pass. The complete private QEMU library run has the unchanged six capture/f
 failures recorded above. Integrated qualification and VM performance parity
 remain outstanding.
 
+### 2026-10-21 retained semantic and publisher checkpoint
+
+The v5 module child first-binds its actual semantic Enter/Current/Outcome/Return
+callbacks. Its pinned payload borrower authenticates canonical output fields,
+process/thread identity, checked local serials and the same pending request.
+Callback first/post history remains independent of the actual worker's receipt
+journal. Final immutable 48-byte action evidence precedes holder consumption;
+a later negative post cannot resurrect physically returned custody. Worker
+completion requires the actual material acknowledgement and physical children,
+not callback success, a control token or a copied completion flag.
+
+The standing publisher compares every one of its 187 atomic payload words
+under its existing publisher lock. Identical complete facts preserve the actual
+even publication epoch; any changed field still publishes a fresh checked
+epoch. Notifications and cancellation observations remain required even for
+identical bytes. This prevents periodic identical publications from invalidating
+an ongoing native action without relaxing its captured-epoch check or renewing
+any Original's interval.
+
+Fresh fingerprint capture refuses an exhausted request/acknowledgement pair
+before Source admission or mapped mutation. Sample publication separately
+refuses generation exhaustion or an occupied writer before changing payload
+words. The legacy coalescing sampler API does not supply a fresh operational
+request; these results do not establish that every operational counter is fixed.
+
+The semantic component checkpoint passes 1,137 plugin unit tests and four
+integration tests. Independent actual rebuilds reject copied semantic holders,
+omitted payload-borrow retention and missing final evidence. The standing
+publisher passes 29 focused controls. The fingerprint-counter checkpoint passes
+109 shared-memory unit controls and five focused host fingerprint controls.
+The refreshed hermetic supervision gate passes all 113 exact cases at
+`/nix/store/sfwwmkhyh9knpmdysczwasxysqjydkzb-crucible-gate-ram-supervision-0`.
+These are component results, not Source activation or launched qualification.
+
+The signed native publisher checkpoint is atomic commit
+`529ca2ec448fa0120d328b3977a5a267ddf19b4d`, tree
+`2899728ccc1905728e78ceabed2576bcfad50fed`, on the sole pinned parent
+`1ed046750938db278a12dc55c6a7934d5fc68c14`. It retains the actual Ready
+publisher subscription and a separate prepaid return writer through Main,
+semantic and canonical payload closure. Local CRUCRET1 publication never clears
+the Host's frontier hold or unlinks its producer rows. Full owning controls
+pass all 187 scenarios, and all 34 independently rebuilt deliberate defects
+reach their intended assertion failures with zero timeouts. The maximum combined
+rebuild/run is 30.199 seconds within the unchanged 60-second limit. Raw ABI,
+signed reconstruction and the 262-file license ledger pass. Full native
+compilation completes all 3,863 targets; 25 of 26 fixtures pass. The mandatory
+launched Source/Root/read/post/rearm/ACK/physical-return fixture still refuses.
+The entered ActionOriginal assertion hooks are present but unexecuted.
+
+Earlier failed candidates remain failed observations. In particular, candidate
+`c798d104f9a5b8cbf767caf35633fb2658754db4` reaches sixteen intended causal
+assertions before its malformed four-field mutation tuple prevents the next
+compilation. Correcting that harness tuple does not qualify the failed attempt.
+The missing extractor predicate references and stale fingerprint attempts also
+remain recorded independently in the signed checkpoint's description.
+
+The exact construction-custody cleanup forwarder now has its own source-policy
+contract, bound to its complete cleanup and post-body companions. Foreign
+receivers, added effects and erased failures remain visible to the unchanged
+scanner. All 72 focused controls, five hygiene controls and mandatory application
+test-target compilation pass. The broad gate still reports thirteen daemon
+paths. The last full license-gate attempt fails at its strict controller
+prerequisite with 943 host test-target lint errors; direct ABI and license-ledger
+passes do not replace that gate. Eight known guarded-helper integrations remain
+unresolved. The published inventory binds 211 component and nineteen native
+cases to 243 requirements, with 149 uncovered and none fully qualified.
+Activation, general low-residency progress, complete fork/rearm and performance
+parity remain unqualified.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
