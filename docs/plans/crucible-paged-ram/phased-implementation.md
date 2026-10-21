@@ -66,7 +66,29 @@ failed attempts appear in the dated entries below.
 | Native integration | `83ecde0031` retains signed `9770a340c3`, tree `ca1face2`, including bounded registries, real RAM disposal exclusion, receiver lifetime, workspace pairs and fixture corrections. Signed reconstruction, 187 owning scenarios and the 319-file license inventory pass. The configured delivery entry passes in 49.089 seconds. | The full package completes 3,991 compile/link actions and passes 25 of 26 fixtures; mandatory launched capture lifecycle remains the sole failure. Fresh ABI and all twelve prior independent custody suites pass; all thirteen custody suites pass at `sdg49q1ywai7b0nij91wcs18nzlqwj59`. The canonical license-boundary gate is blocked by strict controller Clippy. Later header observation and mapping changes remain outside this artifact. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The canonical license-boundary check is blocked by strict controller Clippy (1,177 host-library and 1,250 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
-| Requirements | 335 bindings: 316 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
+| Requirements | 341 bindings: 322 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Rust publisher receiver and paid Runtime custody
+
+`c37c5a1808` adds the strict v4 process-private Setup6 receiver. It borrows the
+Native-owned base and publisher roles without importing descriptor ownership,
+retains the first current-view failure, and refuses mixed output or plan
+editions. The actual component registration path transfers service custody into
+a canonical field of the same prepaid pinned Runtime. Teardown returns actual
+Source registration groups and workspace custody before the component can drain
+the service; uncertain return retains the entire Runtime.
+
+All 1,150 plugin unit tests pass, including six new ABI, real-alias and refusal
+controls. The hermetic setup gate passes 45 selected tests at
+`6q2bbd72gg45ixw7iw40r0111xsr5mq0`; engineering hygiene passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`. Mandatory application test-target compilation
+passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`. All 5,277 committed Rust/TOML files
+match immutable source `lwlbbzllsj404ymsqvx8447syi3k4mwv`; the comparison record
+has SHA-256 `1d998b932d19b365999593ee7df8f1f8aa88f1ebb2404bdd3ed6a59a358dda67`.
+These are component and compilation results. The paired host producer and new
+Native artifact are still being integrated; actual installed service transfer,
+its physical return, Source activation and command execution remain unqualified.
 
 #### Installing plan reads and setup gate correction
 
