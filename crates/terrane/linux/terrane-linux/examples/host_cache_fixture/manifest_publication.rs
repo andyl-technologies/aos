@@ -23,7 +23,7 @@ use terrane_format::{
     manifest::{ChunkRef, Manifest},
 };
 use terrane_linux::{
-    host_cache::{NativeManifestPublication, NativeMetadataOwner},
+    host_cache::{NativeManifestPublication, NativeMetadataAdmission, NativeMetadataOwner},
     host_quota::synchronized_allocated_bytes,
 };
 use terrane_sdk::{
@@ -351,6 +351,19 @@ pub(super) fn admit_manifest(
     runtime: &tokio::runtime::Runtime,
     data: &Data,
 ) -> io::Result<(Identity, Vec<u8>, Vec<u8>)> {
+    let (_, identity, pack, index) = admit_manifest_retained(owner, runtime, data)?;
+    Ok((identity, pack, index))
+}
+
+/// Retains the actual metadata producer receipt for an explicit cache handoff.
+///
+/// # Errors
+/// Refuses invalid metadata construction, native admission or synchronization.
+pub(super) fn admit_manifest_retained(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    data: &Data,
+) -> io::Result<(NativeMetadataAdmission, Identity, Vec<u8>, Vec<u8>)> {
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let id = PackId::from_random_bytes(random);
@@ -364,10 +377,10 @@ pub(super) fn admit_manifest(
     let pack_identity = TERRANE_V1
         .calculate(IdentityKind::Pack, &pack)
         .map_err(io::Error::other)?;
-    runtime
+    let admission = runtime
         .block_on(owner.admit_metadata_pack(id, pack.clone(), index.clone()))
         .map_err(io::Error::other)?;
-    Ok((pack_identity, pack, index))
+    Ok((admission, pack_identity, pack, index))
 }
 
 fn check_resident_reads(

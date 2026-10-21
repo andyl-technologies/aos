@@ -37,7 +37,7 @@ pub(crate) fn run(
         ChunkPosition::Final,
         [vec![0], first.tail.clone()].concat(),
     )?;
-    admit_manifest(owner, runtime, &first)?;
+    let (first_metadata, ..) = admit_manifest_retained(owner, runtime, &first)?;
     let original = runtime.block_on(owner.publish_manifest(first.identity.clone()))?;
     admit(
         owner,
@@ -46,7 +46,7 @@ pub(crate) fn run(
         ChunkPosition::Final,
         [vec![0], second.tail.clone()].concat(),
     )?;
-    admit_manifest(owner, runtime, &second)?;
+    let (other_metadata, ..) = admit_manifest_retained(owner, runtime, &second)?;
     let other = runtime.block_on(owner.publish_manifest(second.identity.clone()))?;
     let inode = original.handle().metadata()?;
     emit(&format!(
@@ -90,6 +90,15 @@ pub(crate) fn run(
         return Err(invalid("pinned shared body changed its actual residence"));
     }
     runtime.block_on(owner.release_consumer_lease(&protected))?;
+    // Publishing a body does not relinquish its independent metadata producer.
+    // Transfer both original receipts before expecting either object to evict;
+    // their retained reconstruction pins continue to protect the actual pairs.
+    let first_metadata_handoff = runtime
+        .block_on(first_metadata.into_cache(owner))
+        .map_err(io::Error::other)?;
+    let other_metadata_handoff = runtime
+        .block_on(other_metadata.into_cache(owner))
+        .map_err(io::Error::other)?;
     let state = load(runtime, inputs)?;
     let grace = state
         .pins
@@ -99,7 +108,9 @@ pub(crate) fn run(
         .max()
         .unwrap_or(0)
         .max(first_handoff.release_grace_ends_at)
-        .max(other_handoff.release_grace_ends_at);
+        .max(other_handoff.release_grace_ends_at)
+        .max(first_metadata_handoff.release_grace_ends_at)
+        .max(other_metadata_handoff.release_grace_ends_at);
     emit(&format!("SHARED_EXTRACTION_GRACE expires={grace}"))?;
     emit("READY pinned shared eviction refused; original body and range retained")?;
     control("extract")?;
