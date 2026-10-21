@@ -26,6 +26,8 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-hardware-catalogue.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-interrupt-catalogue.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-arm-register-preflight.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/hw/core/crucible-register-helpers.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-register-description.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-initial-manifest-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-publisher-subscription.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-action-original-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

@@ -1,7 +1,7 @@
-From 2db28e26f017864cb54b04c00047ec42ee72f45e Mon Sep 17 00:00:00 2001
+From b8af185116a394543b1741d926e18cb453df0301 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: count realized ARM registers without allocation
+Subject: [PATCH] crucible: describe realized registers into caller storage
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -318,6 +318,23 @@ driver with its real configured GLib dependency and guard exact source inputs.
 Preserve every original ceiling/refusal, prior failed attempt, unexecuted
 initial hook and mandatory launched Source/Root lifecycle refusal. Descriptor
 workspace, runtime/read and lifetime funding remain separate and unavailable.
+
+Add architecture-owned factual register geometry, complete sorted key views
+and allocation-free descriptor writers for realized ARM and x86 cohorts.
+Use caller-retained name and four independent mask spans; check actual current
+geometry, eligibility, ordering, capacities, overflow and disjoint spans before
+publishing each descriptor. Preserve allocating wrappers' ownership and prior
+feature/exception/SVE names and mask semantics. These process-private CPUClass
+hooks issue no Source payer, manifest constructor, callback or operational use.
+
+Exercise literal producer/helper bodies with explicit feature/registry and
+caller-storage inputs. Rebuild capacity, geometry, key-order and eligibility
+defects to their intended assertions; retain count and prebirth refusal controls.
+Integrate exact helper/producer/header dependencies and two explicitly
+GPL-2.0-or-later files into the corresponding source and ledger. Keep selected acceptance
+closed; runtime/read/lifetime funding and installed callback qualification remain
+unavailable. Preserve previous failures, unchanged limits and mandatory launched
+Source/Root lifecycle refusal; no workspace lease, activation, ACK or peer return.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -62442,7 +62459,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9daba9036f87 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..a91d0500575e0423208891c4d85f2e7efb7e32ec 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -62453,7 +62470,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  DECLARE_CLASS_CHECKERS(CPUClass, CPU,
                         TYPE_CPU)
  
-@@ -98,6 +99,40 @@ struct AccelCPUClass;
+@@ -98,6 +99,87 @@ struct AccelCPUClass;
  /* see sysemu-cpu-ops.h */
  struct SysemuCPUOps;
  
@@ -62473,6 +62490,36 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
 +    size_t mask_bytes;
 +} CrucibleCPURegisterCapability;
 +
++/* Factual storage geometry and views, never Source authority or an allocation
++ * account. The caller retains every supplied buffer and the realized CPU,
++ * serializes against CPU feature/registry mutation, and supplies actual extents.
++ * name_bytes includes terminators for every row; mask_bytes is the aggregate
++ * extent of ONE mask, so four independent mask extents are needed. Buffer
++ * capacities count bytes; keys_into capacity counts uint32_t elements. */
++typedef struct CrucibleCPURegisterGeometry {
++    CPUState *cpu;
++    size_t register_count;
++    size_t key_count;
++    size_t name_bytes;
++    size_t mask_bytes;
++} CrucibleCPURegisterGeometry;
++
++typedef struct CrucibleCPURegisterKeyView {
++    CPUState *cpu;
++    const uint32_t *keys;
++    size_t count;
++} CrucibleCPURegisterKeyView;
++
++typedef struct CrucibleCPURegisterBuffers {
++    char *name;
++    size_t name_capacity;
++    uint8_t *writable_mask;
++    uint8_t *reserved_mask;
++    uint8_t *ignored_mask;
++    uint8_t *read_only_mask;
++    size_t mask_capacity;
++} CrucibleCPURegisterBuffers;
++
 +/*
 + * The architecture owns target enumeration and read/write semantics.  A
 + * successful descriptor call transfers its name and mask allocations to the
@@ -62482,6 +62529,23 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
 +typedef size_t (*CrucibleCPURegisterCountFn)(CPUState *cpu);
 +typedef bool (*CrucibleCPURegisterDescribeFn)(
 +    CPUState *cpu, size_t index, CrucibleCPURegisterCapability *capability);
++/* Writers use only caller-prepaid storage. Geometry and the complete key view
++ * are checked again before publishing a descriptor. None grants permission to
++ * construct a selected manifest or borrow an Original. The descriptor and five
++ * written spans must be mutually disjoint and cannot overlap input records or
++ * keys. Refusal leaves
++ * the descriptor unpublished. Capacity refusal precedes buffer writes; callers
++ * must keep CPU geometry stable throughout keys_into/describe_into. */
++typedef bool (*CrucibleCPURegisterGeometryFn)(
++    CPUState *cpu, CrucibleCPURegisterGeometry *out);
++typedef bool (*CrucibleCPURegisterKeysIntoFn)(
++    CPUState *cpu, uint32_t *keys, size_t capacity,
++    CrucibleCPURegisterKeyView *out);
++typedef bool (*CrucibleCPURegisterDescribeIntoFn)(
++    CPUState *cpu, size_t index, const CrucibleCPURegisterGeometry *geometry,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
++    CrucibleCPURegisterCapability *out);
 +typedef int (*CrucibleCPURegisterReadFn)(
 +    CPUState *cpu, uint32_t numeric_id, uint8_t *value, size_t value_len);
 +typedef int (*CrucibleCPURegisterValidateWriteFn)(
@@ -62494,7 +62558,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  /**
   * CPUClass:
   * @class_by_name: Callback to map -cpu command line model name to an
-@@ -128,6 +163,10 @@ struct SysemuCPUOps;
+@@ -128,6 +210,10 @@ struct SysemuCPUOps;
   * @gdb_adjust_breakpoint: Callback for adjusting the address of a
   *       breakpoint.  Used by AVR to handle a gdb mis-feature with
   *       its Harvard architecture split code and data.
@@ -62505,13 +62569,16 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
   * @gdb_core_xml_file: File name for core registers GDB XML description.
   * @gdb_num_core_regs: Number of core registers accessible to GDB if no
   *                     @gdb_core_xml_file available (otherwise inferred).
-@@ -171,6 +210,14 @@ struct CPUClass {
+@@ -171,6 +257,17 @@ struct CPUClass {
      int (*gdb_write_register)(CPUState *cpu, uint8_t *buf, int reg);
      vaddr (*gdb_adjust_breakpoint)(CPUState *cpu, vaddr addr);
  
 +    uint16_t crucible_register_scope;
 +    CrucibleCPURegisterCountFn crucible_register_count;
 +    CrucibleCPURegisterDescribeFn crucible_register_describe;
++    CrucibleCPURegisterGeometryFn crucible_register_geometry;
++    CrucibleCPURegisterKeysIntoFn crucible_register_keys_into;
++    CrucibleCPURegisterDescribeIntoFn crucible_register_describe_into;
 +    CrucibleCPURegisterReadFn crucible_register_read;
 +    CrucibleCPURegisterValidateWriteFn crucible_register_validate_write;
 +    CrucibleCPURegisterWriteFn crucible_register_write;
@@ -62520,7 +62587,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
      const char *gdb_core_xml_file;
      const char * (*gdb_arch_name)(CPUState *cpu);
      const char * (*gdb_get_core_xml_file)(CPUState *cpu);
-@@ -442,6 +489,14 @@ struct qemu_work_item;
+@@ -442,6 +539,14 @@ struct qemu_work_item;
   * @crash_occurred: Indicates the OS reported a crash (panic) for this CPU
   * @singlestep_flags: Flags for single-stepping.
   * @icount_extra: Instructions until next timer event.
@@ -62535,7 +62602,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
   * @cpu_ases: Pointer to array of CPUAddressSpaces (which define the
   *            AddressSpaces this CPU has)
   * @as: Pointer to the first AddressSpace, for the convenience of targets which
-@@ -486,12 +541,20 @@ struct CPUState {
+@@ -486,12 +591,20 @@ struct CPUState {
      int nr_threads;
  
      struct QemuThread *thread;
@@ -62556,7 +62623,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
      bool thread_kicked;
      bool created;
      bool stop;
-@@ -508,6 +571,19 @@ struct CPUState {
+@@ -508,6 +621,19 @@ struct CPUState {
      unsigned singlestep_flags;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -62576,7 +62643,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -552,6 +628,9 @@ struct CPUState {
+@@ -552,6 +678,9 @@ struct CPUState {
  
  #ifdef CONFIG_PLUGIN
      CPUPluginState *plugin_state;
@@ -62586,7 +62653,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  #endif
  
      /* TODO Move common fields from CPUArchState here. */
-@@ -738,6 +817,138 @@ enum CPUDumpFlags {
+@@ -738,6 +867,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -62725,7 +62792,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -927,6 +1138,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+@@ -927,6 +1188,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
   */
  void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -62736,7 +62803,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  /**
   * async_safe_run_on_cpu:
   * @cpu: The vCPU to run on.
-@@ -941,6 +1156,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+@@ -941,6 +1206,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
   */
  void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -62774,7 +62841,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  /**
   * cpu_in_exclusive_context()
   * @cpu: The vCPU to check
-@@ -1088,6 +1334,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1384,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -62782,6 +62849,207 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9dab
  
  /**
   * cpu_exec_end:
+diff --git a/include/hw/core/crucible-register-helpers.h b/include/hw/core/crucible-register-helpers.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..af258413bbef3fa44c0f2ae599def924fbca529c
+--- /dev/null
++++ b/include/hw/core/crucible-register-helpers.h
+@@ -0,0 +1,195 @@
++/*
++ * Allocation-free helpers for factual register descriptions
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef HW_CORE_CRUCIBLE_REGISTER_HELPERS_H
++#define HW_CORE_CRUCIBLE_REGISTER_HELPERS_H
++
++#include "hw/core/cpu.h"
++
++/* A NULL destination measures exact geometry without constructing payload. */
++typedef struct CrucibleRegisterNameBuilder {
++    char *destination;
++    size_t capacity;
++    size_t length;
++    bool failed;
++} CrucibleRegisterNameBuilder;
++
++static inline void crucible_register_name_append(
++    CrucibleRegisterNameBuilder *builder, const char *text, size_t length)
++{
++    if (builder->failed || length >= SIZE_MAX - builder->length ||
++        (builder->destination &&
++         builder->length + length >= builder->capacity)) {
++        builder->failed = true;
++        return;
++    }
++    if (builder->destination) {
++        memcpy(builder->destination + builder->length, text, length);
++        builder->destination[builder->length + length] = 0;
++    }
++    builder->length += length;
++}
++
++static inline void crucible_register_name_text(
++    CrucibleRegisterNameBuilder *builder, const char *text)
++{
++    crucible_register_name_append(builder, text, strlen(text));
++}
++
++static inline void crucible_register_name_decimal(
++    CrucibleRegisterNameBuilder *builder, uint32_t value)
++{
++    char digits[10];
++    size_t offset = sizeof(digits);
++
++    do {
++        digits[--offset] = '0' + value % 10;
++        value /= 10;
++    } while (value);
++    crucible_register_name_append(builder, digits + offset,
++                                  sizeof(digits) - offset);
++}
++
++static inline void crucible_register_name_hex_key(
++    CrucibleRegisterNameBuilder *builder, uint32_t value)
++{
++    static const char digits[] = "0123456789abcdef";
++    char encoded[8];
++
++    for (size_t index = 0; index < sizeof(encoded); index++) {
++        encoded[index] = digits[(value >> (28 - 4 * index)) & 15];
++    }
++    crucible_register_name_append(builder, encoded, sizeof(encoded));
++}
++
++static inline bool crucible_register_geometry_add(
++    CrucibleCPURegisterGeometry *geometry, size_t name_bytes,
++    uint32_t width_bits)
++{
++    size_t mask_bytes = ((uint64_t)width_bits + 7) / 8;
++
++    if (!name_bytes || !width_bits || geometry->register_count == SIZE_MAX ||
++        name_bytes > SIZE_MAX - geometry->name_bytes ||
++        mask_bytes > SIZE_MAX - geometry->mask_bytes) {
++        return false;
++    }
++    geometry->register_count++;
++    geometry->name_bytes += name_bytes;
++    geometry->mask_bytes += mask_bytes;
++    return true;
++}
++
++static inline bool crucible_register_geometry_equal(
++    const CrucibleCPURegisterGeometry *left,
++    const CrucibleCPURegisterGeometry *right)
++{
++    return left && right && left->cpu == right->cpu &&
++        left->register_count == right->register_count &&
++        left->key_count == right->key_count &&
++        left->name_bytes == right->name_bytes &&
++        left->mask_bytes == right->mask_bytes;
++}
++
++static inline bool crucible_register_buffers_fit(
++    const CrucibleCPURegisterBuffers *buffers, size_t name_bytes,
++    size_t mask_bytes)
++{
++    return buffers && buffers->name && buffers->name_capacity >= name_bytes &&
++        buffers->writable_mask && buffers->reserved_mask &&
++        buffers->ignored_mask && buffers->read_only_mask &&
++        buffers->mask_capacity >= mask_bytes;
++}
++
++/* Checked address spans are only storage facts, never object identity. */
++static inline bool crucible_register_spans_disjoint(
++    const void *left, size_t left_bytes, const void *right, size_t right_bytes)
++{
++    uintptr_t first = (uintptr_t)left;
++    uintptr_t second = (uintptr_t)right;
++
++    if ((left_bytes && !left) || (right_bytes && !right) ||
++        left_bytes > UINTPTR_MAX - first ||
++        right_bytes > UINTPTR_MAX - second) {
++        return false;
++    }
++    return !left_bytes || !right_bytes || first + left_bytes <= second ||
++        second + right_bytes <= first;
++}
++
++static inline bool crucible_register_output_spans(
++    const CrucibleCPURegisterBuffers *buffers, size_t name_bytes,
++    size_t mask_bytes, const CrucibleCPURegisterGeometry *geometry,
++    const CrucibleCPURegisterKeyView *keys,
++    CrucibleCPURegisterCapability *out)
++{
++    const void *writes[] = { buffers->name, buffers->writable_mask,
++        buffers->reserved_mask, buffers->ignored_mask, buffers->read_only_mask,
++        out };
++    size_t lengths[] = { name_bytes, mask_bytes, mask_bytes, mask_bytes,
++        mask_bytes, sizeof(*out) };
++    const void *reads[] = { buffers, geometry, keys, keys->keys };
++    size_t read_lengths[] = {
++        sizeof(*buffers), sizeof(*geometry), sizeof(*keys), 0,
++    };
++
++    if (keys->count > SIZE_MAX / sizeof(*keys->keys)) {
++        return false;
++    }
++    read_lengths[3] = keys->count * sizeof(*keys->keys);
++    for (size_t index = 0; index < G_N_ELEMENTS(writes); index++) {
++        for (size_t other = index + 1; other < G_N_ELEMENTS(writes); other++) {
++            if (!crucible_register_spans_disjoint(
++                    writes[index], lengths[index],
++                    writes[other], lengths[other])) {
++                return false;
++            }
++        }
++        for (size_t other = 0; other < G_N_ELEMENTS(reads); other++) {
++            if (!crucible_register_spans_disjoint(
++                    writes[index], lengths[index],
++                    reads[other], read_lengths[other])) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static inline void crucible_register_key_sift(
++    uint32_t *keys, size_t root, size_t length)
++{
++    while (root < length / 2) {
++        size_t child = root * 2 + 1;
++        uint32_t saved;
++
++        if (child + 1 < length && keys[child] < keys[child + 1]) {
++            child++;
++        }
++        if (keys[root] >= keys[child]) {
++            return;
++        }
++        saved = keys[root];
++        keys[root] = keys[child];
++        keys[child] = saved;
++        root = child;
++    }
++}
++
++/* libc and GLib sorting may allocate scratch storage. This heap sort uses
++ * only the caller-prepaid key span, with no stack proportional to the cohort. */
++static inline void crucible_register_keys_sort(uint32_t *keys, size_t count)
++{
++    for (size_t start = count / 2; start; start--) {
++        crucible_register_key_sift(keys, start - 1, count);
++    }
++    for (size_t end = count; end > 1; end--) {
++        uint32_t saved = keys[0];
++
++        keys[0] = keys[end - 1];
++        keys[end - 1] = saved;
++        crucible_register_key_sift(keys, 0, end - 1);
++    }
++}
++
++#endif
 diff --git a/include/hw/core/qdev.h b/include/hw/core/qdev.h
 index e147622341151c110e22695d26d8a0600355322c..8fb414d3a9111a6eeb24371bcb563325bcf1222d 100644
 --- a/include/hw/core/qdev.h
@@ -198705,7 +198973,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..499532fa28f38e96cf72506c926ee14c302cfa5a
+index 0000000000000000000000000000000000000000..82e93e8b9e81952b33dbd56a512df7426347b278
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -198733,7 +199001,7 @@ index 0000000000000000000000000000000000000000..499532fa28f38e96cf72506c926ee14c
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
++        '12a6287720debdac2f522f875cc44accbc0580b2e4f3f94e38ad9fce34d300c5',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -219802,7 +220070,7 @@ index 883e8a176c3b519406a0e80a292413cd680dddbe..959461eb56b034d33739dadc6a8b7087
  }
 -
 diff --git a/target/arm/cpu.c b/target/arm/cpu.c
-index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296d6f35bf6 100644
+index 787e4dc7ab23377fb9bc50e2532e841b193a1968..f634a6ebab5f2b00435b1785fb23405f96af6897 100644
 --- a/target/arm/cpu.c
 +++ b/target/arm/cpu.c
 @@ -22,6 +22,8 @@
@@ -219963,7 +220231,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
      .asidx_from_attrs = arm_asidx_from_attrs,
      .write_elf32_note = arm_cpu_write_elf32_note,
      .write_elf64_note = arm_cpu_write_elf64_note,
-@@ -2638,6 +2692,15 @@ static void arm_cpu_class_init(ObjectClass *oc, const void *data)
+@@ -2638,6 +2692,19 @@ static void arm_cpu_class_init(ObjectClass *oc, const void *data)
      cc->gdb_read_register = arm_cpu_gdb_read_register;
      cc->gdb_write_register = arm_cpu_gdb_write_register;
  #ifndef CONFIG_USER_ONLY
@@ -219971,6 +220239,10 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
 +        cc->crucible_register_scope = 3;
 +        cc->crucible_register_count = aarch64_crucible_register_count;
 +        cc->crucible_register_describe = aarch64_crucible_register_describe;
++        cc->crucible_register_geometry = aarch64_crucible_register_geometry;
++        cc->crucible_register_keys_into = aarch64_crucible_register_keys_into;
++        cc->crucible_register_describe_into =
++            aarch64_crucible_register_describe_into;
 +        cc->crucible_register_read = aarch64_crucible_register_read;
 +        cc->crucible_register_validate_write =
 +            aarch64_crucible_register_validate_write;
@@ -219979,7 +220251,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
      cc->max_as = ARMASIdx_MAX;
      cc->sysemu_ops = &arm_sysemu_ops;
  #endif
-@@ -2699,6 +2762,11 @@ static const TypeInfo arm_cpu_type_info = {
+@@ -2699,6 +2766,11 @@ static const TypeInfo arm_cpu_type_info = {
  static void arm_cpu_register_types(void)
  {
      type_register_static(&arm_cpu_type_info);
@@ -219992,7 +220264,7 @@ index 787e4dc7ab23377fb9bc50e2532e841b193a1968..fce472cfd2aedf257fbeff0ac53a0296
  
  type_init(arm_cpu_register_types)
 diff --git a/target/arm/cpu.h b/target/arm/cpu.h
-index c0492c8dfbc4d77aecd6a17ec7ef434f1ccdf90f..dafb9dc13f29907e2e443c26e475ad9f99193fef 100644
+index c0492c8dfbc4d77aecd6a17ec7ef434f1ccdf90f..079b8d9060df74ac5b87c301f6f2607d7bbbe09e 100644
 --- a/target/arm/cpu.h
 +++ b/target/arm/cpu.h
 @@ -65,6 +65,7 @@
@@ -220092,7 +220364,7 @@ index c0492c8dfbc4d77aecd6a17ec7ef434f1ccdf90f..dafb9dc13f29907e2e443c26e475ad9f
  #endif /* !CONFIG_USER_ONLY */
  
  int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
-@@ -2674,6 +2722,21 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
+@@ -2674,6 +2722,31 @@ void arm_register_el_change_hook(ARMCPU *cpu, ARMELChangeHookFn *hook, void
   */
  void arm_rebuild_hflags(CPUARMState *env);
  
@@ -220101,6 +220373,16 @@ index c0492c8dfbc4d77aecd6a17ec7ef434f1ccdf90f..dafb9dc13f29907e2e443c26e475ad9f
 +bool aarch64_crucible_register_describe(
 +    CPUState *cpu, size_t index,
 +    CrucibleCPURegisterCapability *capability);
++bool aarch64_crucible_register_geometry(
++    CPUState *cpu, CrucibleCPURegisterGeometry *out);
++bool aarch64_crucible_register_keys_into(
++    CPUState *cpu, uint32_t *keys, size_t capacity,
++    CrucibleCPURegisterKeyView *out);
++bool aarch64_crucible_register_describe_into(
++    CPUState *cpu, size_t index, const CrucibleCPURegisterGeometry *geometry,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
++    CrucibleCPURegisterCapability *out);
 +int aarch64_crucible_register_read(
 +    CPUState *cpu, uint32_t numeric_id, uint8_t *value, size_t value_len);
 +int aarch64_crucible_register_validate_write(
@@ -220254,10 +220536,10 @@ index 0000000000000000000000000000000000000000..611e1fe055c3d66c75646978a4e2d604
 +#endif
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f658ff147
+index 0000000000000000000000000000000000000000..e8fd71f3429f1a5066764bf9933e807cf6d584d6
 --- /dev/null
 +++ b/target/arm/crucible-register.c
-@@ -0,0 +1,565 @@
+@@ -0,0 +1,859 @@
 +/*
 + * Crucible AArch64 architecture register fault targets
 + *
@@ -220268,6 +220550,7 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +
 +#include "qemu/osdep.h"
 +#include "cpu.h"
++#include "hw/core/crucible-register-helpers.h"
 +#include "cpregs.h"
 +#include "internals.h"
 +#include "exec/tb-flush.h"
@@ -220311,10 +220594,9 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +    size_t bytes = DIV_ROUND_UP(capability->width_bits, 8);
 +
 +    capability->mask_bytes = bytes;
-+    capability->writable_mask = g_malloc0(bytes);
-+    capability->reserved_mask = g_malloc0(bytes);
-+    capability->ignored_mask = g_malloc0(bytes);
-+    capability->read_only_mask = g_malloc0(bytes);
++    memset(capability->writable_mask, 0, bytes);
++    memset(capability->ignored_mask, 0, bytes);
++    memset(capability->read_only_mask, 0, bytes);
 +    memset(capability->reserved_mask, 0xff, bytes);
 +    if (capability->width_bits % 8) {
 +        capability->reserved_mask[bytes - 1] =
@@ -220475,18 +220757,6 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +                              g_array_index(keys, uint32_t, index));
 +}
 +
-+static char *a64_crucible_sysreg_name(const ARMCPRegInfo *ri, uint32_t key)
-+{
-+    g_autofree char *stem = g_ascii_strdown(ri->name ?: "unnamed", -1);
-+
-+    for (char *p = stem; *p; p++) {
-+        if (!g_ascii_isalnum(*p)) {
-+            *p = '-';
-+        }
-+    }
-+    return g_strdup_printf("sysreg-%s-%08x", stem, key);
-+}
-+
 +size_t aarch64_crucible_register_count(CPUState *cs)
 +{
 +    ARMCPU *cpu = ARM_CPU(cs);
@@ -220495,7 +220765,8 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +    size_t count = a64_crucible_fixed_count(cpu);
 +
 +    /* Preflight observes the actual realized registry without constructing a
-+     * sorted descriptor workspace. Description still owns its separate storage. */
++     * sorted workspace. The allocating descriptor wrapper still owns its
++     * separate storage. */
 +    g_hash_table_iter_init(&iter, cpu->cp_regs);
 +    while (g_hash_table_iter_next(&iter, NULL, &raw_value)) {
 +        if (a64_crucible_sysreg_in_manifest(raw_value)) {
@@ -220508,8 +220779,238 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +    return count;
 +}
 +
-+bool aarch64_crucible_register_describe(
++static bool a64_crucible_sysreg_shape(
++    const ARMCPRegInfo *ri, uint32_t key, char *name, size_t capacity,
++    size_t *name_bytes, uint32_t *width_bits)
++{
++    CrucibleRegisterNameBuilder builder = {
++        .destination = name, .capacity = capacity,
++    };
++    const unsigned char *stem = (const unsigned char *)(ri->name ?: "unnamed");
++
++    crucible_register_name_text(&builder, "sysreg-");
++    for (; *stem; stem++) {
++        char value = g_ascii_tolower(*stem);
++
++        if (!g_ascii_isalnum(value)) {
++            value = '-';
++        }
++        crucible_register_name_append(&builder, &value, 1);
++    }
++    crucible_register_name_text(&builder, "-");
++    crucible_register_name_hex_key(&builder, key);
++    if (builder.failed) {
++        return false;
++    }
++    *name_bytes = builder.length + 1;
++    *width_bits = cpreg_field_type(ri) == MO_64 ? 64 : 32;
++    return true;
++}
++
++static bool aarch64_crucible_register_shape(
++    CPUState *cs, size_t index, const CrucibleCPURegisterKeyView *keys,
++    char *name, size_t capacity, size_t *name_bytes, uint32_t *width_bits)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++    CrucibleRegisterNameBuilder builder = {
++        .destination = name, .capacity = capacity,
++    };
++    size_t fixed = a64_crucible_fixed_count(cpu);
++    unsigned int exception_el;
++    bool exception_spsr;
++    uint32_t width, id;
++
++    if (index >= UINT32_MAX) {
++        return false;
++    }
++    id = index + 1;
++    if (id <= A64_CRUCIBLE_X_LAST) {
++        crucible_register_name_text(&builder, "x");
++        crucible_register_name_decimal(&builder, id - 1);
++        width = 64;
++    } else if (id == A64_CRUCIBLE_SP || id == A64_CRUCIBLE_PC) {
++        crucible_register_name_text(
++            &builder, id == A64_CRUCIBLE_SP ? "sp" : "pc");
++        width = 64;
++    } else if (id == A64_CRUCIBLE_PSTATE) {
++        crucible_register_name_text(&builder, "pstate");
++        width = 32;
++    } else if (id <= A64_CRUCIBLE_V_LAST) {
++        crucible_register_name_text(&builder, "v");
++        crucible_register_name_decimal(&builder, id - A64_CRUCIBLE_V_FIRST);
++        width = 128;
++    } else if (id == A64_CRUCIBLE_FPSR || id == A64_CRUCIBLE_FPCR) {
++        crucible_register_name_text(
++            &builder, id == A64_CRUCIBLE_FPSR ? "fpsr" : "fpcr");
++        width = 32;
++    } else if (a64_crucible_exception_register(
++                   cpu, id, &exception_el, &exception_spsr)) {
++        crucible_register_name_text(
++            &builder, exception_spsr ? "spsr-el" : "elr-el");
++        crucible_register_name_decimal(&builder, exception_el);
++        width = 64;
++    } else if (a64_crucible_has_sve(cpu) && id <= fixed) {
++        uint32_t relative = id - A64_CRUCIBLE_BASE_COUNT -
++            a64_crucible_exception_count(&cpu->env) - 1;
++
++        if (cpu->sve_max_vq > UINT32_MAX / 128) {
++            return false;
++        }
++        if (relative < A64_CRUCIBLE_SVE_Z_COUNT) {
++            crucible_register_name_text(&builder, "z");
++            crucible_register_name_decimal(&builder, relative);
++            width = cpu->sve_max_vq * 128;
++        } else if (relative < A64_CRUCIBLE_SVE_Z_COUNT +
++                   A64_CRUCIBLE_SVE_P_COUNT) {
++            crucible_register_name_text(&builder, "p");
++            crucible_register_name_decimal(
++                &builder, relative - A64_CRUCIBLE_SVE_Z_COUNT);
++            width = cpu->sve_max_vq * 16;
++        } else {
++            crucible_register_name_text(&builder, "ffr");
++            width = cpu->sve_max_vq * 16;
++        }
++    } else {
++        size_t sys_index = index - fixed;
++        const ARMCPRegInfo *ri;
++        uint32_t key;
++
++        if (!keys || sys_index >= keys->count) {
++            return false;
++        }
++        key = keys->keys[sys_index];
++        ri = get_arm_cp_reginfo(cpu->cp_regs, key);
++        return ri && a64_crucible_sysreg_in_manifest(ri) &&
++            a64_crucible_sysreg_shape(ri, key, name, capacity,
++                                      name_bytes, width_bits);
++    }
++    if (builder.failed) {
++        return false;
++    }
++    *name_bytes = builder.length + 1;
++    *width_bits = width;
++    return true;
++}
++
++bool aarch64_crucible_register_geometry(
++    CPUState *cs, CrucibleCPURegisterGeometry *out)
++{
++    CrucibleCPURegisterGeometry geometry = { .cpu = cs };
++    GHashTableIter iter;
++    gpointer raw_key, raw_value;
++    ARMCPU *cpu;
++    size_t fixed;
++
++    if (!cs || !out) {
++        return false;
++    }
++    cpu = ARM_CPU(cs);
++    fixed = a64_crucible_fixed_count(cpu);
++    for (size_t index = 0; index < fixed; index++) {
++        size_t name_bytes;
++        uint32_t width_bits;
++
++        if (!aarch64_crucible_register_shape(cs, index, NULL, NULL, 0,
++                                             &name_bytes, &width_bits) ||
++            !crucible_register_geometry_add(&geometry, name_bytes,
++                                             width_bits)) {
++            return false;
++        }
++    }
++    g_hash_table_iter_init(&iter, cpu->cp_regs);
++    while (g_hash_table_iter_next(&iter, &raw_key, &raw_value)) {
++        const ARMCPRegInfo *ri = raw_value;
++        size_t name_bytes;
++        uint32_t width_bits;
++
++        if (!a64_crucible_sysreg_in_manifest(ri)) {
++            continue;
++        }
++        if (geometry.register_count == UINT32_MAX ||
++            !a64_crucible_sysreg_shape(ri, (uintptr_t)raw_key, NULL, 0,
++                                       &name_bytes, &width_bits) ||
++            !crucible_register_geometry_add(&geometry, name_bytes,
++                                             width_bits)) {
++            return false;
++        }
++        geometry.key_count++;
++    }
++    *out = geometry;
++    return true;
++}
++
++static bool aarch64_crucible_register_keys_current(
++    CPUState *cs, const CrucibleCPURegisterKeyView *view,
++    const CrucibleCPURegisterGeometry *geometry)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++
++    if (!view || view->cpu != cs || view->count != geometry->key_count ||
++        (view->count && !view->keys)) {
++        return false;
++    }
++    /* Strict order, actual eligibility and independently counted cardinality
++     * establish the factual set; these bytes still issue no authority. */
++    for (size_t index = 0; index < view->count; index++) {
++        const ARMCPRegInfo *ri =
++            get_arm_cp_reginfo(cpu->cp_regs, view->keys[index]);
++
++        if ((index && view->keys[index - 1] >= view->keys[index]) ||
++            !ri || !a64_crucible_sysreg_in_manifest(ri)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++bool aarch64_crucible_register_keys_into(
++    CPUState *cs, uint32_t *keys, size_t capacity,
++    CrucibleCPURegisterKeyView *out)
++{
++    CrucibleCPURegisterGeometry geometry, current;
++    CrucibleCPURegisterKeyView view;
++    GHashTableIter iter;
++    gpointer raw_key, raw_value;
++    size_t count = 0;
++    ARMCPU *cpu;
++
++    if (!out || !aarch64_crucible_register_geometry(cs, &geometry) ||
++        capacity < geometry.key_count || (geometry.key_count && !keys) ||
++        geometry.key_count > SIZE_MAX / sizeof(*keys) ||
++        !crucible_register_spans_disjoint(
++            keys, geometry.key_count * sizeof(*keys), out, sizeof(*out))) {
++        return false;
++    }
++    cpu = ARM_CPU(cs);
++    g_hash_table_iter_init(&iter, cpu->cp_regs);
++    while (g_hash_table_iter_next(&iter, &raw_key, &raw_value)) {
++        if (a64_crucible_sysreg_in_manifest(raw_value)) {
++            if (count >= geometry.key_count) {
++                return false;
++            }
++            keys[count++] = (uintptr_t)raw_key;
++        }
++    }
++    if (count != geometry.key_count) {
++        return false;
++    }
++    crucible_register_keys_sort(keys, count);
++    view = (CrucibleCPURegisterKeyView) {
++        .cpu = cs, .keys = keys, .count = count,
++    };
++    if (!aarch64_crucible_register_geometry(cs, &current) ||
++        !crucible_register_geometry_equal(&geometry, &current) ||
++        !aarch64_crucible_register_keys_current(cs, &view, &current)) {
++        return false;
++    }
++    *out = view;
++    return true;
++}
++
++static bool aarch64_crucible_register_describe_prepaid(
 +    CPUState *cs, size_t index,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
 +    CrucibleCPURegisterCapability *capability)
 +{
 +    ARMCPU *cpu = ARM_CPU(cs);
@@ -220523,38 +221024,38 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +    if (!capability || id > aarch64_crucible_register_count(cs)) {
 +        return false;
 +    }
-+    *capability = (CrucibleCPURegisterCapability) { .numeric_id = id };
++    *capability = (CrucibleCPURegisterCapability) {
++        .numeric_id = id, .name = buffers->name,
++        .writable_mask = buffers->writable_mask,
++        .reserved_mask = buffers->reserved_mask,
++        .ignored_mask = buffers->ignored_mask,
++        .read_only_mask = buffers->read_only_mask,
++    };
 +    if (id >= A64_CRUCIBLE_X_FIRST && id <= A64_CRUCIBLE_X_LAST) {
-+        capability->name = g_strdup_printf("x%u", id - 1);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_GPR;
 +        a64_crucible_all_writable(capability);
 +    } else if (id == A64_CRUCIBLE_SP) {
-+        capability->name = g_strdup("sp");
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_GPR;
 +        a64_crucible_all_writable(capability);
 +    } else if (id == A64_CRUCIBLE_PC) {
-+        capability->name = g_strdup("pc");
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_CONTROL_FLOW;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
 +        a64_crucible_all_writable(capability);
 +    } else if (id == A64_CRUCIBLE_PSTATE) {
-+        capability->name = g_strdup("pstate");
 +        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_FLAGS;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_FLAGS | CRUCIBLE_REG_SIDE_INTERRUPT;
 +        a64_crucible_writable(capability, PSTATE_NZCV | PSTATE_DAIF);
 +    } else if (id >= A64_CRUCIBLE_V_FIRST && id <= A64_CRUCIBLE_V_LAST) {
-+        capability->name = g_strdup_printf("v%u", id - A64_CRUCIBLE_V_FIRST);
 +        capability->width_bits = 128;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        a64_crucible_all_writable(capability);
 +    } else if (id == A64_CRUCIBLE_FPSR || id == A64_CRUCIBLE_FPCR) {
-+        capability->name = g_strdup(id == A64_CRUCIBLE_FPSR ? "fpsr" : "fpcr");
 +        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_FLAGS;
@@ -220562,8 +221063,6 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +                               FPSCR_FPSR_MASK : FPSCR_FPCR_MASK);
 +    } else if (a64_crucible_exception_register(
 +                   cpu, id, &exception_el, &exception_spsr)) {
-+        capability->name = g_strdup_printf(
-+            "%s-el%u", exception_spsr ? "spsr" : "elr", exception_el);
 +        capability->width_bits = 64;
 +        capability->group = exception_spsr ? CRUCIBLE_REG_GROUP_FLAGS :
 +            CRUCIBLE_REG_GROUP_CONTROL_FLOW;
@@ -220582,30 +221081,107 @@ index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f
 +
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        if (relative < A64_CRUCIBLE_SVE_Z_COUNT) {
-+            capability->name = g_strdup_printf("z%u", relative);
 +            capability->width_bits = cpu->sve_max_vq * 128;
 +        } else if (relative < A64_CRUCIBLE_SVE_Z_COUNT +
 +                   A64_CRUCIBLE_SVE_P_COUNT) {
-+            capability->name = g_strdup_printf(
-+                "p%u", relative - A64_CRUCIBLE_SVE_Z_COUNT);
 +            capability->width_bits = cpu->sve_max_vq * 16;
 +        } else {
-+            capability->name = g_strdup("ffr");
 +            capability->width_bits = cpu->sve_max_vq * 16;
 +        }
 +        a64_crucible_all_writable(capability);
 +    } else {
-+        g_autoptr(GArray) keys = a64_crucible_sysreg_keys(cpu);
 +        size_t sys_index = id - fixed - 1;
-+        uint32_t key = g_array_index(keys, uint32_t, sys_index);
++        uint32_t key = keys->keys[sys_index];
 +        const ARMCPRegInfo *ri = get_arm_cp_reginfo(cpu->cp_regs, key);
 +
-+        capability->name = a64_crucible_sysreg_name(ri, key);
 +        capability->width_bits = cpreg_field_type(ri) == MO_64 ? 64 : 32;
 +        capability->group = CRUCIBLE_REG_GROUP_SYSTEM;
 +        a64_crucible_read_only(capability);
 +    }
 +    return capability->name != NULL;
++}
++
++bool aarch64_crucible_register_describe_into(
++    CPUState *cs, size_t index, const CrucibleCPURegisterGeometry *expected,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
++    CrucibleCPURegisterCapability *out)
++{
++    CrucibleCPURegisterGeometry current;
++    CrucibleCPURegisterCapability capability;
++    size_t name_bytes;
++    uint32_t width_bits;
++
++    if (!out || !aarch64_crucible_register_geometry(cs, &current) ||
++        !crucible_register_geometry_equal(expected, &current) ||
++        !aarch64_crucible_register_keys_current(cs, keys, &current) ||
++        !aarch64_crucible_register_shape(cs, index, keys, NULL, 0,
++                                       &name_bytes, &width_bits) ||
++        !crucible_register_buffers_fit(buffers, name_bytes,
++                                      ((uint64_t)width_bits + 7) / 8) ||
++        !crucible_register_output_spans(buffers, name_bytes,
++                                       ((uint64_t)width_bits + 7) / 8,
++                                       expected, keys, out)) {
++        return false;
++    }
++    if (!aarch64_crucible_register_shape(cs, index, keys,
++                                       buffers->name, buffers->name_capacity,
++                                       &name_bytes, &width_bits) ||
++        !aarch64_crucible_register_describe_prepaid(cs, index, keys,
++                                                  buffers, &capability)) {
++        return false;
++    }
++    *out = capability;
++    return true;
++}
++
++bool aarch64_crucible_register_describe(
++    CPUState *cs, size_t index, CrucibleCPURegisterCapability *out)
++{
++    CrucibleCPURegisterGeometry geometry;
++    CrucibleCPURegisterKeyView view;
++    CrucibleCPURegisterCapability capability;
++    CrucibleCPURegisterBuffers buffers;
++    g_autofree uint32_t *keys = NULL;
++    size_t name_bytes, mask_bytes;
++    uint32_t width_bits;
++
++    if (!out || !aarch64_crucible_register_geometry(cs, &geometry) ||
++        index >= geometry.register_count) {
++        return false;
++    }
++    if (geometry.key_count > SIZE_MAX / sizeof(*keys)) {
++        return false;
++    }
++    if (geometry.key_count) {
++        keys = g_new(uint32_t, geometry.key_count);
++    }
++    if (!aarch64_crucible_register_keys_into(cs, keys, geometry.key_count,
++                                             &view) ||
++        !aarch64_crucible_register_shape(cs, index, &view, NULL, 0,
++                                       &name_bytes, &width_bits)) {
++        return false;
++    }
++    mask_bytes = ((uint64_t)width_bits + 7) / 8;
++    buffers = (CrucibleCPURegisterBuffers) {
++        .name = g_malloc(name_bytes), .name_capacity = name_bytes,
++        .writable_mask = g_malloc0(mask_bytes),
++        .reserved_mask = g_malloc0(mask_bytes),
++        .ignored_mask = g_malloc0(mask_bytes),
++        .read_only_mask = g_malloc0(mask_bytes),
++        .mask_capacity = mask_bytes,
++    };
++    if (!aarch64_crucible_register_describe_into(cs, index, &geometry, &view,
++                                               &buffers, &capability)) {
++        g_free(buffers.name);
++        g_free(buffers.writable_mask);
++        g_free(buffers.reserved_mask);
++        g_free(buffers.ignored_mask);
++        g_free(buffers.read_only_mask);
++        return false;
++    }
++    *out = capability;
++    return true;
 +}
 +
 +static int a64_crucible_width(ARMCPU *cpu, uint32_t id)
@@ -223012,7 +223588,7 @@ index 88109f0181a12518eabe9d92fde1cca17672ad40..8178bd8d0259041a62812f42106d6044
      uint64_t timeout;
  
 diff --git a/target/i386/cpu.c b/target/i386/cpu.c
-index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..a852cae5ab85dbf210b2c4879ee43f3b1baa6d5b 100644
+index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..8190db7b7fa515c4cc29a4e38b2e662ea6afe402 100644
 --- a/target/i386/cpu.c
 +++ b/target/i386/cpu.c
 @@ -41,6 +41,8 @@
@@ -223178,7 +223754,7 @@ index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..a852cae5ab85dbf210b2c4879ee43f3b
      .asidx_from_attrs = x86_asidx_from_attrs,
      .get_crash_info = x86_cpu_get_crash_info,
      .write_elf32_note = x86_cpu_write_elf32_note,
-@@ -10923,6 +11030,18 @@ static void x86_cpu_common_class_init(ObjectClass *oc, const void *data)
+@@ -10923,6 +11030,21 @@ static void x86_cpu_common_class_init(ObjectClass *oc, const void *data)
      cc->get_pc = x86_cpu_get_pc;
      cc->gdb_read_register = x86_cpu_gdb_read_register;
      cc->gdb_write_register = x86_cpu_gdb_write_register;
@@ -223187,6 +223763,9 @@ index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..a852cae5ab85dbf210b2c4879ee43f3b
 +#ifndef CONFIG_USER_ONLY
 +    cc->crucible_register_count = x86_crucible_register_count;
 +    cc->crucible_register_describe = x86_crucible_register_describe;
++    cc->crucible_register_geometry = x86_crucible_register_geometry;
++    cc->crucible_register_keys_into = x86_crucible_register_keys_into;
++    cc->crucible_register_describe_into = x86_crucible_register_describe_into;
 +    cc->crucible_register_read = x86_crucible_register_read;
 +    cc->crucible_register_validate_write =
 +        x86_crucible_register_validate_write;
@@ -223197,7 +223776,7 @@ index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..a852cae5ab85dbf210b2c4879ee43f3b
      cc->get_arch_id = x86_cpu_get_arch_id;
  
  #ifndef CONFIG_USER_ONLY
-@@ -11029,6 +11148,11 @@ static void x86_cpu_register_types(void)
+@@ -11029,6 +11151,11 @@ static void x86_cpu_register_types(void)
      }
      type_register_static(&max_x86_cpu_type_info);
      type_register_static(&x86_base_cpu_type_info);
@@ -223210,10 +223789,10 @@ index 5805d33ab92d74155c5382e0acb0bb5781d2ce0b..a852cae5ab85dbf210b2c4879ee43f3b
  
  type_init(x86_cpu_register_types)
 diff --git a/target/i386/cpu.h b/target/i386/cpu.h
-index e6a197602d874bec5e99fa936675052f7759d44f..eb816c9d4e7148ad30b8f79b2d44a90ddb98011c 100644
+index e6a197602d874bec5e99fa936675052f7759d44f..a1161e945aa5b19a95dddb0c48d0a42198dcede7 100644
 --- a/target/i386/cpu.h
 +++ b/target/i386/cpu.h
-@@ -2579,6 +2579,20 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
+@@ -2579,6 +2579,30 @@ void x86_cpu_dump_state(CPUState *cs, FILE *f, int flags);
  
  int x86_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
  int x86_cpu_gdb_write_register(CPUState *cpu, uint8_t *buf, int reg);
@@ -223222,6 +223801,16 @@ index e6a197602d874bec5e99fa936675052f7759d44f..eb816c9d4e7148ad30b8f79b2d44a90d
 +bool x86_crucible_register_describe(
 +    CPUState *cpu, size_t index,
 +    CrucibleCPURegisterCapability *capability);
++bool x86_crucible_register_geometry(
++    CPUState *cpu, CrucibleCPURegisterGeometry *out);
++bool x86_crucible_register_keys_into(
++    CPUState *cpu, uint32_t *keys, size_t capacity,
++    CrucibleCPURegisterKeyView *out);
++bool x86_crucible_register_describe_into(
++    CPUState *cpu, size_t index, const CrucibleCPURegisterGeometry *geometry,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
++    CrucibleCPURegisterCapability *out);
 +int x86_crucible_register_read(
 +    CPUState *cpu, uint32_t numeric_id, uint8_t *value, size_t value_len);
 +int x86_crucible_register_validate_write(
@@ -223234,7 +223823,7 @@ index e6a197602d874bec5e99fa936675052f7759d44f..eb816c9d4e7148ad30b8f79b2d44a90d
  void x86_cpu_gdb_init(CPUState *cs);
  
  int cpu_x86_support_mca_broadcast(CPUX86State *env);
-@@ -2588,6 +2602,27 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
+@@ -2588,6 +2612,27 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
  
  bool x86_cpu_translate_for_debug(CPUState *cpu, vaddr addr,
                                   TranslateForDebugResult *result);
@@ -223262,7 +223851,7 @@ index e6a197602d874bec5e99fa936675052f7759d44f..eb816c9d4e7148ad30b8f79b2d44a90d
  int cpu_get_pic_interrupt(CPUX86State *s);
  
  /* MS-DOS compatibility mode FPU exception support */
-@@ -2789,6 +2824,23 @@ void cpu_x86_update_dr7(CPUX86State *env, uint32_t new_dr7);
+@@ -2789,6 +2834,23 @@ void cpu_x86_update_dr7(CPUX86State *env, uint32_t new_dr7);
  /* hw/pc.c */
  uint64_t cpu_get_tsc(CPUX86State *env);
  
@@ -223286,7 +223875,7 @@ index e6a197602d874bec5e99fa936675052f7759d44f..eb816c9d4e7148ad30b8f79b2d44a90d
  #define CPU_RESOLVING_TYPE TYPE_X86_CPU
  
  #ifdef TARGET_X86_64
-@@ -2947,6 +2999,7 @@ int get_pg_mode(CPUX86State *env);
+@@ -2947,6 +3009,7 @@ int get_pg_mode(CPUX86State *env);
  void cpu_init_fp_statuses(CPUX86State *env);
  void update_fp_status(CPUX86State *env);
  void update_mxcsr_status(CPUX86State *env);
@@ -223395,10 +223984,10 @@ index 0000000000000000000000000000000000000000..2d9a51585444f15cae159772e306d8b5
 +#endif
 diff --git a/target/i386/crucible-register.c b/target/i386/crucible-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c25c864221
+index 0000000000000000000000000000000000000000..932187ffc4d20333427ab94b2a264e40e82ed4e7
 --- /dev/null
 +++ b/target/i386/crucible-register.c
-@@ -0,0 +1,1015 @@
+@@ -0,0 +1,1230 @@
 +/*
 + * Crucible x86-64 architecture register fault targets
 + *
@@ -223408,6 +223997,7 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 + */
 +
 +#include "qemu/osdep.h"
++#include "hw/core/crucible-register-helpers.h"
 +#include "cpu.h"
 +#include "exec/cputlb.h"
 +#include "exec/tb-flush.h"
@@ -223634,10 +224224,9 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +    size_t bytes = DIV_ROUND_UP(capability->width_bits, 8);
 +
 +    capability->mask_bytes = bytes;
-+    capability->writable_mask = g_malloc0(bytes);
-+    capability->reserved_mask = g_malloc0(bytes);
-+    capability->ignored_mask = g_malloc0(bytes);
-+    capability->read_only_mask = g_malloc0(bytes);
++    memset(capability->writable_mask, 0, bytes);
++    memset(capability->ignored_mask, 0, bytes);
++    memset(capability->read_only_mask, 0, bytes);
 +    memset(capability->reserved_mask, 0xff, bytes);
 +    if (capability->width_bits % 8) {
 +        capability->reserved_mask[bytes - 1] =
@@ -223698,8 +224287,174 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +        x86_crucible_register_count_for_env(&X86_CPU(cs)->env) : 0;
 +}
 +
-+bool x86_crucible_register_describe(
++static bool x86_crucible_register_shape(
++    CPUState *cs, size_t index, const CrucibleCPURegisterKeyView *keys,
++    char *name, size_t capacity,
++    size_t *name_bytes, uint32_t *width_bits)
++{
++    CPUX86State *env = &X86_CPU(cs)->env;
++    CrucibleRegisterNameBuilder builder = {
++        .destination = name, .capacity = capacity,
++    };
++    X86CrucibleOptionalRegister optional;
++    uint32_t width, id;
++
++    if (index >= UINT32_MAX ||
++        index >= x86_crucible_register_count_for_env(env)) {
++        return false;
++    }
++    id = index + 1;
++    optional = x86_crucible_optional_register(env, id);
++    if (id <= X86_CRUCIBLE_GPR_LAST) {
++        crucible_register_name_text(&builder, x86_crucible_gpr_names[id - 1]);
++        width = 64;
++    } else if (id == X86_CRUCIBLE_RIP || id == X86_CRUCIBLE_RFLAGS) {
++        crucible_register_name_text(
++            &builder, id == X86_CRUCIBLE_RIP ? "rip" : "rflags");
++        width = id == X86_CRUCIBLE_RIP ? 64 : 32;
++    } else if (id <= X86_CRUCIBLE_SEG_LAST) {
++        static const char *const suffixes[] = {
++            "selector", "base", "limit", "attributes",
++        };
++        uint32_t relative = id - X86_CRUCIBLE_SEG_FIRST;
++        uint32_t field = relative % 4;
++
++        crucible_register_name_text(
++            &builder, x86_crucible_segment_names[relative / 4]);
++        crucible_register_name_text(&builder, "-");
++        crucible_register_name_text(&builder, suffixes[field]);
++        width = field == 0 ? 16 : ((field == 2 || field == 3) ? 32 : 64);
++    } else if (id == X86_CRUCIBLE_KERNEL_GS_BASE) {
++        crucible_register_name_text(&builder, "kernel-gs-base");
++        width = 64;
++    } else if (id <= X86_CRUCIBLE_EFER) {
++        static const char *const names[] = {
++            "cr0", "cr2", "cr3", "cr4", "cr8", "efer",
++        };
++
++        crucible_register_name_text(&builder, names[id - X86_CRUCIBLE_CR0]);
++        width = 64;
++    } else if (id <= X86_CRUCIBLE_DR_LAST) {
++        crucible_register_name_text(&builder, "dr");
++        crucible_register_name_decimal(&builder, id - X86_CRUCIBLE_DR_FIRST);
++        width = 64;
++    } else if (id <= X86_CRUCIBLE_ST_LAST) {
++        crucible_register_name_text(&builder, "st");
++        crucible_register_name_decimal(&builder, id - X86_CRUCIBLE_ST_FIRST);
++        width = 80;
++    } else if (id <= X86_CRUCIBLE_MM_LAST) {
++        crucible_register_name_text(&builder, "mm");
++        crucible_register_name_decimal(&builder, id - X86_CRUCIBLE_MM_FIRST);
++        width = 64;
++    } else if (id <= X86_CRUCIBLE_FPU_DP) {
++        static const char *const names[] = {
++            "fpu-control", "fpu-status", "fpu-abridged-tag", "fpu-opcode",
++            "fpu-instruction-pointer", "fpu-data-pointer",
++        };
++        static const uint32_t widths[] = { 16, 16, 8, 16, 64, 64 };
++        uint32_t relative = id - X86_CRUCIBLE_FPU_CONTROL;
++
++        crucible_register_name_text(&builder, names[relative]);
++        width = widths[relative];
++    } else if (id <= X86_CRUCIBLE_XMM_LAST) {
++        crucible_register_name_text(&builder, "xmm");
++        crucible_register_name_decimal(&builder, id - X86_CRUCIBLE_XMM_FIRST);
++        width = 128;
++    } else if (id == X86_CRUCIBLE_MXCSR) {
++        crucible_register_name_text(&builder, "mxcsr");
++        width = 32;
++    } else if (optional.kind >= X86_CRUCIBLE_OPTIONAL_SYSENTER_CS &&
++               optional.kind <= X86_CRUCIBLE_OPTIONAL_TSC_AUX) {
++        static const char *const names[] = {
++            "sysenter-cs", "sysenter-esp", "sysenter-eip", "star", "lstar",
++            "cstar", "fmask", "pat", "tsc-aux",
++        };
++
++        crucible_register_name_text(
++            &builder, names[optional.kind - X86_CRUCIBLE_OPTIONAL_SYSENTER_CS]);
++        width = optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS ||
++            optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX ? 32 : 64;
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER ||
++               optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER ||
++               optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH ||
++               optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK) {
++        crucible_register_name_text(&builder,
++            optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER ? "ymm" :
++            optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK ? "k" : "zmm");
++        crucible_register_name_decimal(&builder, optional.index);
++        if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER) {
++            crucible_register_name_text(&builder, "-upper-128");
++            width = 128;
++        } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER) {
++            crucible_register_name_text(&builder, "-upper-256");
++            width = 256;
++        } else {
++            width = optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH ? 512 : 64;
++        }
++    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PKRU) {
++        crucible_register_name_text(&builder, "pkru");
++        width = 32;
++    } else {
++        return false;
++    }
++    if (builder.failed) {
++        return false;
++    }
++    *name_bytes = builder.length + 1;
++    *width_bits = width;
++    return true;
++}
++
++bool x86_crucible_register_geometry(
++    CPUState *cs, CrucibleCPURegisterGeometry *out)
++{
++    CrucibleCPURegisterGeometry geometry = { .cpu = cs };
++    size_t count;
++
++    if (!cs || !out) {
++        return false;
++    }
++    count = x86_crucible_register_count(cs);
++    for (size_t index = 0; index < count; index++) {
++        size_t name_bytes;
++        uint32_t width_bits;
++
++        if (!x86_crucible_register_shape(cs, index, NULL, NULL, 0,
++                                             &name_bytes, &width_bits) ||
++            !crucible_register_geometry_add(&geometry, name_bytes,
++                                             width_bits)) {
++            return false;
++        }
++    }
++    *out = geometry;
++    return true;
++}
++
++bool x86_crucible_register_keys_into(
++    CPUState *cs, uint32_t *keys, size_t capacity,
++    CrucibleCPURegisterKeyView *out)
++{
++    CrucibleCPURegisterGeometry geometry;
++
++    if (!out || !x86_crucible_register_geometry(cs, &geometry)) {
++        return false;
++    }
++    *out = (CrucibleCPURegisterKeyView) { .cpu = cs };
++    return true;
++}
++
++static bool x86_crucible_register_keys_current(
++    CPUState *cs, const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterGeometry *geometry)
++{
++    return keys && keys->cpu == cs && !keys->keys && !keys->count &&
++        !geometry->key_count;
++}
++
++static bool x86_crucible_register_describe_prepaid(
 +    CPUState *cs, size_t index,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
 +    CrucibleCPURegisterCapability *capability)
 +{
 +    CPUX86State *env = &X86_CPU(cs)->env;
@@ -223712,22 +224467,23 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +        return false;
 +    }
 +    *capability = (CrucibleCPURegisterCapability) {
-+        .numeric_id = id,
++        .numeric_id = id, .name = buffers->name,
++        .writable_mask = buffers->writable_mask,
++        .reserved_mask = buffers->reserved_mask,
++        .ignored_mask = buffers->ignored_mask,
++        .read_only_mask = buffers->read_only_mask,
 +    };
 +    if (id >= X86_CRUCIBLE_GPR_FIRST && id <= X86_CRUCIBLE_GPR_LAST) {
-+        capability->name = g_strdup(x86_crucible_gpr_names[id - 1]);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_GPR;
 +        x86_crucible_all_writable(capability);
 +    } else if (id == X86_CRUCIBLE_RIP) {
-+        capability->name = g_strdup("rip");
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_CONTROL_FLOW;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
 +            CRUCIBLE_REG_SIDE_CONTROL_FLOW;
 +        x86_crucible_all_writable(capability);
 +    } else if (id == X86_CRUCIBLE_RFLAGS) {
-+        capability->name = g_strdup("rflags");
 +        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_FLAGS;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
@@ -223737,14 +224493,8 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +        capability->reserved_mask[0] &= ~(1U << 1);
 +    } else if (id >= X86_CRUCIBLE_SEG_FIRST && id <= X86_CRUCIBLE_SEG_LAST) {
 +        uint32_t relative = id - X86_CRUCIBLE_SEG_FIRST;
-+        uint32_t segment = relative / 4;
 +        uint32_t field = relative % 4;
-+        static const char * const suffixes[4] = {
-+            "selector", "base", "limit", "attributes",
-+        };
 +
-+        capability->name = g_strdup_printf(
-+            "%s-%s", x86_crucible_segment_names[segment], suffixes[field]);
 +        capability->width_bits = field == 0 ? 16 :
 +            ((field == 2 || field == 3) ? 32 : 64);
 +        capability->group = CRUCIBLE_REG_GROUP_SEGMENT;
@@ -223761,19 +224511,14 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +            x86_crucible_all_writable(capability);
 +        }
 +    } else if (id == X86_CRUCIBLE_KERNEL_GS_BASE) {
-+        capability->name = g_strdup("kernel-gs-base");
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_SYSTEM;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TLB |
 +            CRUCIBLE_REG_SIDE_TB;
 +        x86_crucible_all_writable(capability);
 +    } else if (id >= X86_CRUCIBLE_CR0 && id <= X86_CRUCIBLE_EFER) {
-+        static const char * const names[6] = {
-+            "cr0", "cr2", "cr3", "cr4", "cr8", "efer",
-+        };
 +        uint64_t writable = UINT64_MAX;
 +
-+        capability->name = g_strdup(names[id - X86_CRUCIBLE_CR0]);
 +        capability->width_bits = 64;
 +        capability->group = id == X86_CRUCIBLE_EFER ?
 +            CRUCIBLE_REG_GROUP_SYSTEM : CRUCIBLE_REG_GROUP_CONTROL;
@@ -223818,7 +224563,6 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +            capability->reserved_mask[0] &= ~CR0_ET_MASK;
 +        }
 +    } else if (id >= X86_CRUCIBLE_DR_FIRST && id <= X86_CRUCIBLE_DR_LAST) {
-+        capability->name = g_strdup_printf("dr%u", id - X86_CRUCIBLE_DR_FIRST);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_DEBUG;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TB |
@@ -223841,24 +224585,17 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +            x86_crucible_read_only(capability);
 +        }
 +    } else if (id >= X86_CRUCIBLE_ST_FIRST && id <= X86_CRUCIBLE_ST_LAST) {
-+        capability->name = g_strdup_printf("st%u", id - X86_CRUCIBLE_ST_FIRST);
 +        capability->width_bits = 80;
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        x86_crucible_all_writable(capability);
 +    } else if (id >= X86_CRUCIBLE_MM_FIRST && id <= X86_CRUCIBLE_MM_LAST) {
-+        capability->name = g_strdup_printf("mm%u", id - X86_CRUCIBLE_MM_FIRST);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        x86_crucible_all_writable(capability);
 +    } else if (id >= X86_CRUCIBLE_FPU_CONTROL && id <= X86_CRUCIBLE_FPU_DP) {
-+        static const char * const names[6] = {
-+            "fpu-control", "fpu-status", "fpu-abridged-tag", "fpu-opcode",
-+            "fpu-instruction-pointer", "fpu-data-pointer",
-+        };
 +        static const uint32_t widths[6] = { 16, 16, 8, 16, 64, 64 };
 +        uint32_t relative = id - X86_CRUCIBLE_FPU_CONTROL;
 +
-+        capability->name = g_strdup(names[relative]);
 +        capability->width_bits = widths[relative];
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        capability->side_effects = relative < 3 ?
@@ -223871,26 +224608,16 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +            x86_crucible_all_writable(capability);
 +        }
 +    } else if (id >= X86_CRUCIBLE_XMM_FIRST && id <= X86_CRUCIBLE_XMM_LAST) {
-+        capability->name = g_strdup_printf("xmm%u", id - X86_CRUCIBLE_XMM_FIRST);
 +        capability->width_bits = 128;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        x86_crucible_all_writable(capability);
 +    } else if (id == X86_CRUCIBLE_MXCSR) {
-+        capability->name = g_strdup("mxcsr");
 +        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_FLOAT;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_FLAGS;
 +        x86_crucible_writable(capability, 0x0000ffff);
 +    } else if (optional.kind >= X86_CRUCIBLE_OPTIONAL_SYSENTER_CS &&
 +               optional.kind <= X86_CRUCIBLE_OPTIONAL_TSC_AUX) {
-+        static const char * const names[] = {
-+            "sysenter-cs", "sysenter-esp", "sysenter-eip", "star", "lstar",
-+            "cstar", "fmask", "pat", "tsc-aux",
-+        };
-+        uint32_t relative = optional.kind -
-+            X86_CRUCIBLE_OPTIONAL_SYSENTER_CS;
-+
-+        capability->name = g_strdup(names[relative]);
 +        capability->width_bits =
 +            optional.kind == X86_CRUCIBLE_OPTIONAL_SYSENTER_CS ||
 +            optional.kind == X86_CRUCIBLE_OPTIONAL_TSC_AUX ? 32 : 64;
@@ -223909,33 +224636,110 @@ index 0000000000000000000000000000000000000000..495042ce2c1fae09e23ec17adba8b7c2
 +            x86_crucible_all_writable(capability);
 +        }
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_YMM_UPPER) {
-+        capability->name = g_strdup_printf("ymm%u-upper-128", optional.index);
 +        capability->width_bits = 128;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        x86_crucible_all_writable(capability);
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_UPPER) {
-+        capability->name = g_strdup_printf("zmm%u-upper-256", optional.index);
 +        capability->width_bits = 256;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        x86_crucible_all_writable(capability);
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_ZMM_HIGH) {
-+        capability->name = g_strdup_printf("zmm%u", optional.index);
 +        capability->width_bits = 512;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        x86_crucible_all_writable(capability);
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_OPMASK) {
-+        capability->name = g_strdup_printf("k%u", optional.index);
 +        capability->width_bits = 64;
 +        capability->group = CRUCIBLE_REG_GROUP_VECTOR;
 +        x86_crucible_all_writable(capability);
 +    } else if (optional.kind == X86_CRUCIBLE_OPTIONAL_PKRU) {
-+        capability->name = g_strdup("pkru");
 +        capability->width_bits = 32;
 +        capability->group = CRUCIBLE_REG_GROUP_SYSTEM;
 +        capability->side_effects = CRUCIBLE_REG_SIDE_TLB;
 +        x86_crucible_all_writable(capability);
 +    }
 +    return capability->name != NULL;
++}
++
++bool x86_crucible_register_describe_into(
++    CPUState *cs, size_t index, const CrucibleCPURegisterGeometry *expected,
++    const CrucibleCPURegisterKeyView *keys,
++    const CrucibleCPURegisterBuffers *buffers,
++    CrucibleCPURegisterCapability *out)
++{
++    CrucibleCPURegisterGeometry current;
++    CrucibleCPURegisterCapability capability;
++    size_t name_bytes;
++    uint32_t width_bits;
++
++    if (!out || !x86_crucible_register_geometry(cs, &current) ||
++        !crucible_register_geometry_equal(expected, &current) ||
++        !x86_crucible_register_keys_current(cs, keys, &current) ||
++        !x86_crucible_register_shape(cs, index, keys, NULL, 0,
++                                          &name_bytes, &width_bits) ||
++        !crucible_register_buffers_fit(buffers, name_bytes,
++                                      ((uint64_t)width_bits + 7) / 8) ||
++        !crucible_register_output_spans(buffers, name_bytes,
++                                       ((uint64_t)width_bits + 7) / 8,
++                                       expected, keys, out)) {
++        return false;
++    }
++    if (!x86_crucible_register_shape(cs, index, keys,
++                                          buffers->name, buffers->name_capacity,
++                                          &name_bytes, &width_bits) ||
++        !x86_crucible_register_describe_prepaid(cs, index, keys,
++                                              buffers, &capability)) {
++        return false;
++    }
++    *out = capability;
++    return true;
++}
++
++bool x86_crucible_register_describe(
++    CPUState *cs, size_t index, CrucibleCPURegisterCapability *out)
++{
++    CrucibleCPURegisterGeometry geometry;
++    CrucibleCPURegisterKeyView view;
++    CrucibleCPURegisterCapability capability;
++    CrucibleCPURegisterBuffers buffers;
++    g_autofree uint32_t *keys = NULL;
++    size_t name_bytes, mask_bytes;
++    uint32_t width_bits;
++
++    if (!out || !x86_crucible_register_geometry(cs, &geometry) ||
++        index >= geometry.register_count) {
++        return false;
++    }
++    if (geometry.key_count > SIZE_MAX / sizeof(*keys)) {
++        return false;
++    }
++    if (geometry.key_count) {
++        keys = g_new(uint32_t, geometry.key_count);
++    }
++    if (!x86_crucible_register_keys_into(cs, keys, geometry.key_count, &view) ||
++        !x86_crucible_register_shape(cs, index, &view, NULL, 0,
++                                          &name_bytes, &width_bits)) {
++        return false;
++    }
++    mask_bytes = ((uint64_t)width_bits + 7) / 8;
++    buffers = (CrucibleCPURegisterBuffers) {
++        .name = g_malloc(name_bytes), .name_capacity = name_bytes,
++        .writable_mask = g_malloc0(mask_bytes),
++        .reserved_mask = g_malloc0(mask_bytes),
++        .ignored_mask = g_malloc0(mask_bytes),
++        .read_only_mask = g_malloc0(mask_bytes),
++        .mask_capacity = mask_bytes,
++    };
++    if (!x86_crucible_register_describe_into(cs, index, &geometry, &view,
++                                              &buffers, &capability)) {
++        g_free(buffers.name);
++        g_free(buffers.writable_mask);
++        g_free(buffers.reserved_mask);
++        g_free(buffers.ignored_mask);
++        g_free(buffers.read_only_mask);
++        return false;
++    }
++    *out = capability;
++    return true;
 +}
 +
 +static int x86_crucible_exact_length(CPUX86State *env, uint32_t id)
@@ -240853,10 +241657,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..e45922cca81ea5ce7115a03ba1371f34c530956d
+index 0000000000000000000000000000000000000000..1e274c678593286362fd88a71bee7d76e57e532d
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,261 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -241086,6 +241890,38 @@ index 0000000000000000000000000000000000000000..e45922cca81ea5ce7115a03ba1371f34
 +accounts. The selected constructor guards remain unchanged. Literal tests of
 +realized evidence, target bounds and binding behavior do not qualify those
 +accounts or the initial callback.
++
++Architecture register storage geometry
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++The private CPUClass register geometry, keys-into and describe-into hooks measure
++and fill caller-owned storage without constructing a manifest. Geometry includes
++all realized rows, terminating name bytes and the aggregate bytes of each of the
++four masks. AArch64 derives the complete system-register cohort from its actual
++eligible registry, retains its ascending encoded-key order, and derives exception
++levels and SVE widths from the realized CPU. The x86 producer retains its actual
++feature-dependent optional rows and mask semantics. Neither producer reserves a
++speculative maximum-sized payload.
++
++The caller retains the CPU and serializes against feature or registry mutation.
++Each describe-into call recomputes geometry and checks the entire key view,
++including CPU, cardinality, strict ordering and current eligibility. Written name,
++mask and descriptor spans must be disjoint from each other and all input records
++and keys. Capacity or stale-input refusal precedes writes; the descriptor is
++published only after its complete construction. Key collection checks capacity
++before effects and uses an in-place heap sort with no allocated sorting scratch.
++The allocating wrapper still returns one separately owned name and four
++separately owned masks, each released with ``g_free``.
++
++These records are factual storage descriptions. A copied matching geometry or
++key set cannot issue a Source allocation account, constructor participant or
++borrowed Original. Connecting storage to the selected manifest still requires
++its actual prepaid owner, allocator/control extent, canonical construction lease,
++complete dependencies and physical return. Selected SDK guards and activation
++remain unchanged. The focused literal component test checks both architecture
++writers, capacities, changed geometry and membership, foreign views, ordering,
++EL/SVE and optional-feature widths, and allocating-wrapper ownership; it does
++not run an installed initial callback or a launched lifecycle.
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
@@ -243650,7 +244486,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a8c2ed565d2d8fbd0749c7f52d8cea7d560edbea
+index 0000000000000000000000000000000000000000..0813f7008246ac1596597aca7cd7170d615daf96
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -243668,7 +244504,7 @@ index 0000000000000000000000000000000000000000..a8c2ed565d2d8fbd0749c7f52d8cea7d
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
++        '12a6287720debdac2f522f875cc44accbc0580b2e4f3f94e38ad9fce34d300c5',
 +}
 +
 +FUNCTIONS = (
@@ -243756,7 +244592,7 @@ index 0000000000000000000000000000000000000000..a8c2ed565d2d8fbd0749c7f52d8cea7d
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d203d6ab81ecbfea8491b19dca70684f1a6c995
+index 0000000000000000000000000000000000000000..3b15c973b9a94e13ecf2a32fb2dcfb1686e33681
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -243787,7 +244623,7 @@ index 0000000000000000000000000000000000000000..5d203d6ab81ecbfea8491b19dca70684
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
++        '12a6287720debdac2f522f875cc44accbc0580b2e4f3f94e38ad9fce34d300c5',
 +}
 +
 +FUNCTIONS = (
@@ -244003,7 +244839,7 @@ index 0000000000000000000000000000000000000000..5d203d6ab81ecbfea8491b19dca70684
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b2ef419d38b27c5ae668a8b8a423e134ecb02815
+index 0000000000000000000000000000000000000000..c1dde8bc9d4dbd9e348b662c6db391370193f5f1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -244027,7 +244863,7 @@ index 0000000000000000000000000000000000000000..b2ef419d38b27c5ae668a8b8a423e134
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
++        '12a6287720debdac2f522f875cc44accbc0580b2e4f3f94e38ad9fce34d300c5',
 +}
 +
 +FUNCTIONS = (
@@ -244121,7 +244957,7 @@ index 0000000000000000000000000000000000000000..b2ef419d38b27c5ae668a8b8a423e134
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..981d40faf491194b4710cc9df1249dbd6d8e3141
+index 0000000000000000000000000000000000000000..eb1704bf2dd0fa000dd537acadc9b702e3f6c14e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -244162,15 +244998,15 @@ index 0000000000000000000000000000000000000000..981d40faf491194b4710cc9df1249dbd
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
++        '12a6287720debdac2f522f875cc44accbc0580b2e4f3f94e38ad9fce34d300c5',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '657336b9f0a3bafc3a3a43979b2f0f66c875417495a0bba568042e4e315bd0f6',
++        'f160b19c157651dec7bfed402f8d6ce0a4d82fffbd0abf0b55907d9c302805e5',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        'ddd29a0200ee0a2d51ebc1e18a56b75429f0949a6e752b86453ef502dbfebcb7',
++        '1b0e9a0b1d8a97d769be80098bc64619e94c241bfc9edb9355bd9dc7c73f5055',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -244300,10 +245136,10 @@ index 0000000000000000000000000000000000000000..981d40faf491194b4710cc9df1249dbd
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e3e4cb27c0c56a7c3a9f23c5bf8f1c446d77e7a5
+index 0000000000000000000000000000000000000000..03adc0ef5ab6019c833f75b01b21aa6baf94de2f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1171 @@
+@@ -0,0 +1,1185 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -244313,12 +245149,26 @@ index 0000000000000000000000000000000000000000..e3e4cb27c0c56a7c3a9f23c5bf8f1c44
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'tests/unit/test-crucible-register-description.py':
++        'c2685ac0905511bbfc750ba239680ce74bfd30fd39b64cd20a9c1bb5a90cb1a5',
++    'include/hw/core/crucible-register-helpers.h':
++        'c900ff28d08c764b7dc54bc96df6d1acaf6b95fb50f9900ba33dd5c66fd8051e',
++    'target/arm/helper.c':
++        '1ec5c4930860cf77dd69bdb60196635895aa350ae0294d26e6ab9ef7a9e6352a',
++    'target/arm/cpu.c':
++        '838ef3452ebaf7d83d061ed88204261327655886d41eed44049ff07db8b09d24',
++    'target/i386/cpu.c':
++        'faac9402584c8794c619edd505881cfd8a6fa0adf59aecbc2f6cf25ebcbe8e1c',
++    'target/i386/cpu.h':
++        '5a2c296b6479e4d932072e6a0f31bb6bad3d8dfa08df8037aeaa39011dcf2270',
++    'target/i386/crucible-register.c':
++        '3142fd4893e647196353b38078374ddade2a667c1682f575a95caf6a410bb619',
 +    'tests/unit/test-crucible-arm-register-preflight.py':
 +        '9b40ecc4589fa9873ecc04581f5b4abdc72b158c5d26753fa73b128758101a79',
 +    'target/arm/crucible-register.c':
-+        '2303a12773645ecb61b9eb4f158e0a1cf87e74809c444b19f72de149cd923ef8',
++        'a23aa35cc8c13990beda7c7974877f35de5b080cb09920f8a85e1e38e45ea2fd',
 +    'target/arm/cpu.h':
-+        '1169bb845eb9f7d003d4f3524f80e3e7304a6575cd8ada0899312801a7f923bf',
++        '4f814b7046e9632be5ac562a129598861a0f5f73bdc1ece16865d767cd516cc3',
 +    'target/arm/cpregs.h':
 +        'fd2f7bad764b12ee83716f08571ced23d7549125e52b2574e3597eb8bf190724',
 +    'target/arm/internals.h':
@@ -244468,7 +245318,7 @@ index 0000000000000000000000000000000000000000..e3e4cb27c0c56a7c3a9f23c5bf8f1c44
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
-+        '8f9ad9044f5723b24cf10c49847524242f552225cbf47f79ff9f59ef85046aeb',
++        '254c5531bd4621ddd6c00b89ef5b6cffa36f165aa3e005e7dcbfdacad1289663',
 +    'include/qemu/plugin.h':
 +        '9ac1df437c3d56b857016aa465782364de9bcc81dd28e242603a827779779546',
 +    'plugins/plugin.h':
@@ -245574,7 +246424,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..17b7da124d46d77f7049b35e30c73d338e6ddacf 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dd02f895756b5707346c19a8b32a1bf821b20f8c 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -245649,7 +246499,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..17b7da124d46d77f7049b35e30c73d33
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1187 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1194 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -246468,6 +247318,13 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..17b7da124d46d77f7049b35e30c73d33
 +                        'test-crucible-hardware-catalogue.py',
 +                        'test-crucible-interrupt-catalogue.py',
 +                        'test-crucible-arm-register-preflight.py',
++                        'test-crucible-register-description.py',
++                        '../../include/hw/core/crucible-register-helpers.h',
++                        '../../target/arm/helper.c',
++                        '../../target/arm/cpu.c',
++                        '../../target/i386/cpu.c',
++                        '../../target/i386/cpu.h',
++                        '../../target/i386/crucible-register.c',
 +                        '../../target/arm/crucible-register.c',
 +                        '../../target/arm/cpu.h',
 +                        '../../target/arm/cpregs.h',
@@ -261213,10 +262070,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc87fd1b69687d0835da44e00af46510826126f8
+index 0000000000000000000000000000000000000000..c1d561fa73fa427b2d3e2eac78660ee1fdc7368b
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2356 @@
+@@ -0,0 +1,2357 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -263562,6 +264419,7 @@ index 0000000000000000000000000000000000000000..fc87fd1b69687d0835da44e00af46510
 +        ("test-crucible-hardware-catalogue.py", "hardware-catalogue"),
 +        ("test-crucible-interrupt-catalogue.py", "interrupt-catalogue"),
 +        ("test-crucible-arm-register-preflight.py", "arm-register-preflight"),
++        ("test-crucible-register-description.py", "register-description"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
 +    ):
 +        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
@@ -292270,6 +293128,515 @@ index 0000000000000000000000000000000000000000..06f28b20984bed4d5ecd308bcaa3d0ff
 +                         test_migration);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-register-description.py b/tests/unit/test-crucible-register-description.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..972efd8cd49fc50e04d30bff70acd87ee7ec8e7e
+--- /dev/null
++++ b/tests/unit/test-crucible-register-description.py
+@@ -0,0 +1,503 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise literal architecture writers with caller-owned component storage.
++
++CPU feature/registry inputs are factual component inputs. These tests issue no
++Source payer, construction participant, borrowed Original or activation.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import runpy
++import subprocess
++
++
++OBSERVERS = r"""
++static size_t allocation_calls;
++static gpointer counted_malloc(gsize size)
++{
++    allocation_calls++;
++    return g_malloc(size);
++}
++static gpointer counted_malloc0(gsize size)
++{
++    allocation_calls++;
++    return g_malloc0(size);
++}
++static gpointer counted_malloc_n(gsize count, gsize size)
++{
++    allocation_calls++;
++    return g_malloc_n(count, size);
++}
++static gchar *counted_strdup(const gchar *text)
++{
++    allocation_calls++;
++    return g_strdup(text);
++}
++static gchar *counted_strdup_printf(const gchar *format, ...) G_GNUC_PRINTF(1, 2);
++static gchar *counted_strdup_printf(const gchar *format, ...)
++{
++    va_list arguments;
++    gchar *result;
++
++    allocation_calls++;
++    va_start(arguments, format);
++    result = g_strdup_vprintf(format, arguments);
++    va_end(arguments);
++    return result;
++}
++static gchar *counted_strdown(const gchar *text, gssize length)
++{
++    allocation_calls++;
++    return g_ascii_strdown(text, length);
++}
++static GArray *counted_array(gboolean terminated, gboolean clear, guint size)
++{
++    allocation_calls++;
++    return g_array_new(terminated, clear, size);
++}
++#define g_malloc counted_malloc
++#define g_malloc0 counted_malloc0
++#define g_malloc_n counted_malloc_n
++#define g_array_new counted_array
++#define g_strdup counted_strdup
++#define g_strdup_printf counted_strdup_printf
++#define g_ascii_strdown counted_strdown
++"""
++
++CHECKS = r"""
++static char name_storage[512];
++static uint8_t masks[4][512];
++static uint32_t key_storage[32];
++static CrucibleCPURegisterBuffers buffers;
++static CrucibleCPURegisterCapability result;
++
++static void reset_storage(void)
++{
++    memset(name_storage, 0xa5, sizeof(name_storage));
++    memset(masks, 0xa5, sizeof(masks));
++    memset(&result, 0xa5, sizeof(result));
++    buffers = (CrucibleCPURegisterBuffers) {
++        .name = name_storage, .name_capacity = sizeof(name_storage),
++        .writable_mask = masks[0], .reserved_mask = masks[1],
++        .ignored_mask = masks[2], .read_only_mask = masks[3],
++        .mask_capacity = sizeof(masks[0]),
++    };
++}
++
++static void unchanged(void)
++{
++    unsigned char expected[sizeof(result)];
++
++    memset(expected, 0xa5, sizeof(expected));
++    assert(!memcmp(&result, expected, sizeof(result)));
++    for (size_t index = 0; index < sizeof(name_storage); index++) {
++        assert((unsigned char)name_storage[index] == 0xa5);
++    }
++    for (size_t row = 0; row < 4; row++) {
++        for (size_t index = 0; index < sizeof(masks[row]); index++) {
++            assert(masks[row][index] == 0xa5);
++        }
++    }
++}
++
++static void check_checked_geometry(void)
++{
++    CrucibleCPURegisterGeometry geometry = { .cpu = cs };
++    CrucibleCPURegisterGeometry saved;
++    uint32_t keys[257];
++
++    geometry.name_bytes = SIZE_MAX;
++    saved = geometry;
++    assert(!crucible_register_geometry_add(&geometry, 1, 64));
++    assert(!memcmp(&geometry, &saved, sizeof(saved)));
++    geometry.name_bytes = 0;
++    geometry.mask_bytes = SIZE_MAX;
++    saved = geometry;
++    assert(!crucible_register_geometry_add(&geometry, 1, 64));
++    assert(!memcmp(&geometry, &saved, sizeof(saved)));
++    geometry.mask_bytes = 0;
++    geometry.register_count = SIZE_MAX;
++    saved = geometry;
++    assert(!crucible_register_geometry_add(&geometry, 1, 64));
++    assert(!memcmp(&geometry, &saved, sizeof(saved)));
++    for (size_t count = 0; count <= G_N_ELEMENTS(keys); count++) {
++        for (size_t index = 0; index < count; index++) {
++            keys[index] = count - index;
++        }
++        allocation_calls = 0;
++        crucible_register_keys_sort(keys, count);
++        assert(allocation_calls == 0);
++        for (size_t index = 0; index < count; index++) {
++            assert(keys[index] == index + 1);
++        }
++    }
++}
++
++static void check_image(size_t expected_rows, size_t expected_keys)
++{
++    CrucibleCPURegisterGeometry geometry, foreign;
++    CrucibleCPURegisterKeyView view, bad;
++    CPUState foreign_cpu;
++    size_t names = 0, mask_bytes = 0;
++
++    allocation_calls = 0;
++    assert(GEOMETRY(cs, &geometry));
++    assert(geometry.cpu == cs && geometry.register_count == expected_rows);
++    assert(geometry.key_count == expected_keys);
++    assert(KEYS(cs, key_storage, G_N_ELEMENTS(key_storage), &view));
++    assert(view.cpu == cs && view.count == expected_keys);
++    assert(allocation_calls == 0);
++    CHECK_KEY_ORDER(view);
++
++    for (size_t index = 0; index < geometry.register_count; index++) {
++        CrucibleCPURegisterCapability allocated;
++        reset_storage();
++        allocation_calls = 0;
++        assert(DESCRIBE(cs, index, &geometry, &view, &buffers, &result));
++        assert(allocation_calls == 0);
++        assert(result.name == name_storage && result.numeric_id == index + 1);
++        assert(result.mask_bytes == (result.width_bits + 7) / 8);
++        assert(result.writable_mask == masks[0] && result.reserved_mask == masks[1]);
++        assert(result.ignored_mask == masks[2] && result.read_only_mask == masks[3]);
++        CHECK_ROW(index, result);
++        names += strlen(result.name) + 1;
++        mask_bytes += result.mask_bytes;
++        for (size_t byte = 0; byte < result.mask_bytes; byte++) {
++            unsigned full = byte + 1 == result.mask_bytes && result.width_bits % 8 ?
++                (1U << (result.width_bits % 8)) - 1 : 255;
++            assert((masks[0][byte] | masks[1][byte] | masks[2][byte] |
++                    masks[3][byte]) == full);
++            for (size_t left = 0; left < 4; left++) {
++                for (size_t right = left + 1; right < 4; right++) {
++                    assert(!(masks[left][byte] & masks[right][byte]));
++                }
++            }
++        }
++        assert(ALLOCATING(cs, index, &allocated));
++        assert(allocation_calls >= 5);
++        assert(!strcmp(result.name, allocated.name));
++        assert(allocated.name != name_storage);
++        assert(result.width_bits == allocated.width_bits &&
++               result.group == allocated.group &&
++               result.model_phase_mask == allocated.model_phase_mask &&
++               result.side_effects == allocated.side_effects &&
++               result.capabilities == allocated.capabilities);
++        uint8_t *owned[] = { allocated.writable_mask, allocated.reserved_mask,
++            allocated.ignored_mask, allocated.read_only_mask };
++        for (size_t mask = 0; mask < 4; mask++) {
++            assert(owned[mask] != masks[mask]);
++            assert(!memcmp(owned[mask], masks[mask], result.mask_bytes));
++            for (size_t other = mask + 1; other < 4; other++) {
++                assert(owned[mask] != owned[other]);
++            }
++            g_free(owned[mask]);
++        }
++        g_free(allocated.name);
++    }
++    assert(names == geometry.name_bytes && mask_bytes == geometry.mask_bytes);
++
++    reset_storage();
++    buffers.name_capacity = 1;
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    reset_storage();
++    buffers.mask_capacity = 0;
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    reset_storage();
++    foreign = geometry;
++    foreign.cpu = &foreign_cpu;
++    assert(!DESCRIBE(cs, 0, &foreign, &view, &buffers, &result));
++    unchanged();
++    bad = view;
++    bad.cpu = &foreign_cpu;
++    assert(!DESCRIBE(cs, 0, &geometry, &bad, &buffers, &result));
++    unchanged();
++    assert(!DESCRIBE(cs, geometry.register_count, &geometry, &view, &buffers, &result));
++    unchanged();
++    buffers.reserved_mask = buffers.writable_mask;
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    reset_storage();
++    buffers.name = (char *)&result;
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    reset_storage();
++    CHECK_BAD_KEYS(geometry, view);
++    CHANGE_GEOMETRY();
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    RESTORE_GEOMETRY();
++}
++"""
++
++ARM_INPUTS = r"""
++static ARMCPU input_cpu;
++static CPUState *cs = &input_cpu.parent_obj;
++#undef ARM_CPU
++#define ARM_CPU(cpu) (&input_cpu)
++__ACTUAL_CPREG_LOOKUP__
++#define GEOMETRY aarch64_crucible_register_geometry
++#define KEYS aarch64_crucible_register_keys_into
++#define DESCRIBE aarch64_crucible_register_describe_into
++#define ALLOCATING aarch64_crucible_register_describe
++#define CHANGE_GEOMETRY() do { saved_vq = input_cpu.sve_max_vq; \
++    input_cpu.sve_max_vq = saved_vq == 1 ? 16 : 1; \
++    FIELD_DP64_IDREG(&input_cpu.isar, ID_AA64PFR0, SVE, 1); } while (0)
++#define RESTORE_GEOMETRY() do { input_cpu.sve_max_vq = saved_vq; \
++    FIELD_DP64_IDREG(&input_cpu.isar, ID_AA64PFR0, SVE, saved_sve); } while (0)
++static unsigned saved_sve, saved_vq;
++static ARMCPRegInfo rows[] = {
++    { .name = "UPPER / Name", .state = ARM_CP_STATE_AA64, .type = ARM_CP_64BIT },
++    { .name = NULL, .state = ARM_CP_STATE_AA64 },
++    { .name = "ordinary", .state = ARM_CP_STATE_AA64 },
++    { .name = "hidden", .state = ARM_CP_STATE_AA64, .type = ARM_CP_NO_RAW },
++    { .name = "ELR_EL1", .state = ARM_CP_STATE_AA64 },
++    { .name = "aa32", .state = ARM_CP_STATE_AA32 },
++};
++static void check_key_order(CrucibleCPURegisterKeyView view)
++{
++    GArray *old = a64_crucible_sysreg_keys(&input_cpu);
++    assert(view.count == old->len);
++    assert(view.count == 3);
++    for (size_t index = 0; index < view.count; index++) {
++        assert(view.keys[index] == g_array_index(old, uint32_t, index));
++    }
++    assert(view.keys[0] == 2 && view.keys[1] == 7 && view.keys[2] == 19);
++    g_array_unref(old);
++}
++#define CHECK_KEY_ORDER(view) check_key_order(view)
++static void check_row(size_t index, CrucibleCPURegisterCapability row)
++{
++    if (index == 0) { assert(!strcmp(row.name, "x0") && row.width_bits == 64); }
++    if (index == 34) { assert(!strcmp(row.name, "v0") && row.width_bits == 128); }
++    size_t fixed = a64_crucible_fixed_count(&input_cpu);
++    if (index == fixed) {
++        assert(!strcmp(row.name, "sysreg-unnamed-00000002") && row.width_bits == 64);
++    }
++    if (index == fixed + 1) {
++        assert(!strcmp(row.name, "sysreg-upper---name-00000007") && row.width_bits == 64);
++    }
++    if (!strncmp(row.name, "z", 1)) { assert(row.width_bits == input_cpu.sve_max_vq * 128); }
++    if ((!strncmp(row.name, "p", 1) && strcmp(row.name, "pc") && strcmp(row.name, "pstate")) ||
++        !strcmp(row.name, "ffr")) { assert(row.width_bits == input_cpu.sve_max_vq * 16); }
++}
++#define CHECK_ROW(index, row) check_row(index, row)
++static void check_bad_keys(CrucibleCPURegisterGeometry geometry,
++                           CrucibleCPURegisterKeyView view)
++{
++    CrucibleCPURegisterKeyView bad = view, untouched;
++    uint32_t copied[32];
++    union {
++        CrucibleCPURegisterKeyView view;
++        uint32_t keys[32];
++    } alias;
++    unsigned char alias_before[sizeof(alias)];
++
++    memset(&alias, 0xa5, sizeof(alias));
++    memcpy(alias_before, &alias, sizeof(alias));
++    assert(!KEYS(cs, alias.keys, G_N_ELEMENTS(alias.keys), &alias.view));
++    assert(!memcmp(alias_before, &alias, sizeof(alias)));
++    memcpy(copied, view.keys, view.count * sizeof(*copied));
++    bad.keys = copied;
++    copied[1] = copied[0];
++    assert(!DESCRIBE(cs, 0, &geometry, &bad, &buffers, &result));
++    unchanged();
++    copied[1] = view.keys[2];
++    copied[2] = view.keys[1];
++    assert(!DESCRIBE(cs, 0, &geometry, &bad, &buffers, &result));
++    unchanged();
++    copied[1] = 999;
++    assert(!DESCRIBE(cs, 0, &geometry, &bad, &buffers, &result));
++    unchanged();
++    rows[0].type |= ARM_CP_NO_RAW;
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    rows[0].type &= ~ARM_CP_NO_RAW;
++    /* Same count/geometry, changed actual eligible membership. */
++    g_hash_table_steal(input_cpu.cp_regs, GUINT_TO_POINTER(7));
++    g_hash_table_insert(input_cpu.cp_regs, GUINT_TO_POINTER(8), &rows[0]);
++    assert(!DESCRIBE(cs, 0, &geometry, &view, &buffers, &result));
++    unchanged();
++    g_hash_table_steal(input_cpu.cp_regs, GUINT_TO_POINTER(8));
++    g_hash_table_insert(input_cpu.cp_regs, GUINT_TO_POINTER(7), &rows[0]);
++    memset(copied, 0xa5, sizeof(copied));
++    memset(&bad, 0xa5, sizeof(bad));
++    untouched = bad;
++    assert(!KEYS(cs, copied, view.count - 1, &bad));
++    assert(!memcmp(&bad, &untouched, sizeof(bad)));
++    for (size_t index = 0; index < G_N_ELEMENTS(copied); index++) {
++        assert(copied[index] == UINT32_C(0xa5a5a5a5));
++    }
++}
++#define CHECK_BAD_KEYS(geometry, view) check_bad_keys(geometry, view)
++int main(void)
++{
++    check_checked_geometry();
++    input_cpu.cp_regs = g_hash_table_new(g_direct_hash, g_direct_equal);
++    unsigned keys[] = { 7, 2, 19, 4, 5, 6 };
++    for (size_t index = 0; index < G_N_ELEMENTS(rows); index++) {
++        g_hash_table_insert(input_cpu.cp_regs, GUINT_TO_POINTER(keys[index]), &rows[index]);
++    }
++    for (unsigned features = 0; features < 4; features++) {
++        input_cpu.env.features =
++            (features & 1 ? UINT64_C(1) << ARM_FEATURE_EL2 : 0) |
++            (features & 2 ? UINT64_C(1) << ARM_FEATURE_EL3 : 0);
++        for (unsigned sve = 0; sve < 3; sve++) {
++            saved_sve = sve != 0;
++            FIELD_DP64_IDREG(&input_cpu.isar, ID_AA64PFR0, SVE, saved_sve);
++            input_cpu.sve_max_vq = sve == 2 ? 16 : sve;
++            check_image(73 + (features & 1 ? 2 : 0) + (features & 2 ? 2 : 0) +
++                        (sve ? 49 : 0), 3);
++        }
++    }
++    g_hash_table_unref(input_cpu.cp_regs);
++    puts("PASS actual AArch64 geometry, caller-buffer writers, eligibility, order, EL/SVE widths and legacy ownership; no issuer");
++    return 0;
++}
++"""
++
++X86_INPUTS = r"""
++static X86CPU input_cpu;
++static CPUState *cs = &input_cpu.parent_obj;
++#undef X86_CPU
++#define X86_CPU(cpu) (&input_cpu)
++#define GEOMETRY x86_crucible_register_geometry
++#define KEYS x86_crucible_register_keys_into
++#define DESCRIBE x86_crucible_register_describe_into
++#define ALLOCATING x86_crucible_register_describe
++#define CHECK_KEY_ORDER(view) assert((view).keys == NULL && (view).count == 0)
++#define CHANGE_GEOMETRY() (input_cpu.env.features[FEAT_1_ECX] ^= CPUID_EXT_AVX)
++#define RESTORE_GEOMETRY() CHANGE_GEOMETRY()
++static void check_row(size_t index, CrucibleCPURegisterCapability row)
++{
++    if (index == 0) { assert(!strcmp(row.name, "rax") && row.width_bits == 64); }
++    if (index == 57) { assert(!strcmp(row.name, "st0") && row.width_bits == 80); }
++    if (!strncmp(row.name, "xmm", 3)) { assert(row.width_bits == 128); }
++    if (!strncmp(row.name, "ymm", 3)) { assert(row.width_bits == 128); }
++    if (!strncmp(row.name, "zmm", 3)) {
++        assert(row.width_bits == (strstr(row.name, "upper") ? 256 : 512));
++    }
++}
++#define CHECK_ROW(index, row) check_row(index, row)
++#define CHECK_BAD_KEYS(geometry, view) do { \
++    CrucibleCPURegisterKeyView bad = (view); \
++    bad.keys = key_storage; \
++    assert(!DESCRIBE(cs, 0, &(geometry), &bad, &buffers, &result)); \
++    unchanged(); \
++} while (0)
++int main(void)
++{
++    check_checked_geometry();
++    input_cpu.phys_bits = 48;
++    for (unsigned features = 0; features < 128; features++) {
++        input_cpu.env.features[FEAT_1_EDX] =
++            (features & 1 ? CPUID_SEP : 0) | (features & 2 ? CPUID_PAT : 0);
++        input_cpu.env.features[FEAT_8000_0001_EDX] =
++            (features & 4 ? CPUID_EXT2_SYSCALL : 0) | (features & 8 ? CPUID_EXT2_RDTSCP : 0);
++        input_cpu.env.features[FEAT_1_ECX] = features & 16 ? CPUID_EXT_AVX : 0;
++        input_cpu.env.features[FEAT_7_0_EBX] = features & 32 ? CPUID_7_0_EBX_AVX512F : 0;
++        input_cpu.env.features[FEAT_7_0_ECX] = features & 64 ? CPUID_7_0_ECX_PKU : 0;
++        check_image(96 + (features & 1 ? 3 : 0) + (features & 2 ? 1 : 0) +
++                    (features & 4 ? 4 : 0) + (features & 8 ? 1 : 0) +
++                    (features & 16 ? 16 : 0) + (features & 32 ? 40 : 0) +
++                    (features & 64 ? 1 : 0), 0);
++    }
++    puts("PASS actual x86 geometry, caller-buffer writers, feature widths and legacy ownership; no issuer");
++    return 0;
++}
++"""
++
++
++def translation_unit(source, architecture):
++    body = (source / f"target/{architecture}/crucible-register.c").read_text()
++    prefix = body[body.index("#define CRUCIBLE_REG_GROUP_GPR"):
++                  body.index("static int a64_crucible_width(" if architecture == "arm"
++                             else "static int x86_crucible_exact_length(")]
++    helper = (source / "include/hw/core/crucible-register-helpers.h").read_text()
++    headers = ('#define COMPILING_PER_TARGET\n'
++               '#define CONFIG_TARGET "x86_64-softmmu-config-target.h"\n'
++               if architecture == "i386" else "")
++    headers += '#include "qemu/osdep.h"\n#include <assert.h>\n#define CPU_DEFS_H\n'
++    headers += f'#include "target/{architecture}/cpu.h"\n'
++    if architecture == "arm":
++        headers += '#include "target/arm/cpregs.h"\n#include "target/arm/internals.h"\n'
++    inputs = ARM_INPUTS if architecture == "arm" else X86_INPUTS
++    if architecture == "arm":
++        extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++        lookup = extract["function"](
++            (source / "target/arm/helper.c").read_text(),
++            "const ARMCPRegInfo *get_arm_cp_reginfo(")
++        inputs = inputs.replace("__ACTUAL_CPREG_LOOKUP__", lookup)
++    # Helpers used by architecture-specific checks are defined after the literal
++    # producer; the common checker calls their prototypes, then their bodies.
++    split = inputs.index("static void check_row") if architecture == "i386" else inputs.index("static void check_key_order")
++    declarations, checks = inputs[:split], inputs[split:]
++    declarations += '\nstatic void unchanged(void);\n'
++    declarations += 'static void check_row(size_t, CrucibleCPURegisterCapability);\n'
++    if architecture == "arm":
++        declarations += 'static void check_key_order(CrucibleCPURegisterKeyView);\n'
++        declarations += 'static void check_bad_keys(CrucibleCPURegisterGeometry, CrucibleCPURegisterKeyView);\n'
++        declarations += '#define CHECK_KEY_ORDER(view) check_key_order(view)\n'
++        declarations += '#define CHECK_ROW(index, row) check_row(index, row)\n'
++        declarations += '#define CHECK_BAD_KEYS(geometry, view) check_bad_keys(geometry, view)\n'
++    else:
++        # Preserve the multi-line CHECK_BAD_KEYS definition before common use.
++        macro_start = checks.index("#define CHECK_BAD_KEYS")
++        macro_end = checks.index("int main(void)")
++        declarations += '#define CHECK_ROW(index, row) check_row(index, row)\n'
++        declarations += checks[macro_start:macro_end]
++        checks = checks[:macro_start] + checks[macro_end:]
++    return headers + helper + OBSERVERS + declarations + prefix + CHECKS + checks
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    proof = {}
++    for architecture in ("arm", "i386"):
++        literal = translation_unit(source, architecture)
++        variants = {"positive": literal,
++                    "omit-mask-capacity": literal.replace("buffers->mask_capacity >= mask_bytes", "true"),
++                    "omit-geometry-shape": literal.replace(
++                        "left->register_count == right->register_count &&\n        left->key_count == right->key_count &&\n        left->name_bytes == right->name_bytes &&\n        left->mask_bytes == right->mask_bytes", "true")}
++        if architecture == "arm":
++            variants.update({
++                "omit-key-capacity": literal.replace("capacity < geometry.key_count", "false"),
++                "omit-key-order": literal.replace(
++                    "(index && view->keys[index - 1] >= view->keys[index])", "false"),
++                "include-ineligible": literal.replace("(ARM_CP_NO_RAW | ARM_CP_NO_GDB)", "ARM_CP_NO_GDB"),
++            })
++        for name, definitions in variants.items():
++            if name != "positive" and definitions == literal:
++                raise ValueError(f"ineffective {architecture}/{name} mutation")
++            generated = output / f"{architecture}-{name}.c"
++            binary = output / f"{architecture}-{name}"
++            generated.write_text(definitions)
++            command = [*shlex.split(os.environ.get("CC", "cc")),
++                       *shlex.split(os.environ.get("CFLAGS", "")),
++                       str(generated), "-o", str(binary),
++                       *shlex.split(os.environ.get("LDFLAGS", ""))]
++            (output / f"{architecture}-{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++            subprocess.run(command, check=True)
++            result = subprocess.run([str(binary)], cwd=output, text=True,
++                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
++            (output / f"{architecture}-{name}.log").write_text(result.stdout)
++            expected = 0 if name == "positive" else -6
++            if result.returncode != expected:
++                raise RuntimeError(f"unexpected {architecture}/{name}: {result.returncode}\n{result.stdout}")
++            proof[f"{architecture}/{name}"] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print("PASS both literal architecture writers and seven capacity/geometry/order/eligibility omission controls; no constructor authority")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-replay-owner.c b/tests/unit/test-crucible-replay-owner.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..50292fedec724765e21fcc9857703ca5d368b08a
