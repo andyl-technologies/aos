@@ -1854,11 +1854,23 @@ Six new model-callback controls exercise genuine SDK issuance for both program
 families, actual diagnostic capacity, post-SDK expiry, later containment,
 request/response correspondence refusal, incomplete/resumed operands and spent
 retries. All 98 bootstrap controls pass, with zero failures and the existing
-private child ignored. Complete qualification remains pending. These SDK unit
-controls establish no native process qualification. The original bootstrap
-still needs the complete separately admitted SDK constructor row and genuine
-Native18 verifier before invoking this primitive; response publication, ACK,
-model-absent policy and opaque Initial/Recipe production remain unfinished.
+private child ignored. These SDK unit controls establish no native process
+qualification. The original bootstrap still needs the complete separately
+admitted SDK constructor row and genuine Native18 verifier before invoking this
+primitive; response publication, ACK, model-absent policy and opaque
+Initial/Recipe production remain unfinished.
+
+For `7f03e6b84c`, both complete standard and raw-value Transport libraries pass
+1,904 tests each, with zero failures, no filtering and 16 existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 235 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three exact VM component source captures.
+Subsequent selection lookup and SDK backing projection changes are excluded.
+Full Engine and Daemon library runtime qualification remains at `f2150ce5c7`.
 
 ## Direct SDK selection lookup
 
