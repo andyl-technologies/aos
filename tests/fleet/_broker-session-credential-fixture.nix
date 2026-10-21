@@ -21,7 +21,11 @@ pkgs.mkCargoPackage {
   postBuild = ''
     mkdir -p credential-fixture
     count=0
-    artifact_dir="''${CARGO_TARGET_DIR:-target}/debug/deps"
+    cargo_target_dir="''${CARGO_TARGET_DIR:-target}"
+    if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
+      cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
+    fi
+    artifact_dir="$cargo_target_dir/debug/deps"
     for candidate in "$artifact_dir"/aos_sandbox_broker_session_security-*; do
       if [ -f "$candidate" ] && [ -x "$candidate" ]; then
         install -m 0755 "$candidate" credential-fixture/broker-session-credential-fixture
@@ -29,7 +33,7 @@ pkgs.mkCargoPackage {
       fi
     done
     if [ "$count" -ne 1 ]; then
-      echo "expected exactly one broker credential fixture, found $count" >&2
+      echo "expected exactly one broker credential fixture under $artifact_dir, found $count" >&2
       exit 1
     fi
   '';
