@@ -33,8 +33,24 @@ systems.server-secureboot-lockdown.extendModules {
         }) ["Manifest" "HelloKey" "RecordKey"])
       ["Host" "Storage" "Mount" "Network"]);
     in {
-      aos.image.allowTestArtifacts = true;
-      aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 8192;
+      aos.image = {
+        allowTestArtifacts = true;
+        # Match the full-service test image's A/B slots and fast compression.
+        # These fixtures include every online Controller and broker closure.
+        erofsCompressionLevel = 1;
+        rootPartitionMiB = 2048;
+        budgets = {
+          maxRuntimeClosureMiB = lib.mkForce 8192;
+          maxRootMiB = 1536;
+          maxDownloadMiB = 2048;
+          maxConvertedDownloadMiB = 2048;
+          # The signed stage-one archive measures 240.61 MiB before its kernel
+          # and boot executable. Retain two normal and three recovery slots.
+          maxInitrdMiB = 256;
+          maxBootExecutableMiB = 288;
+          maxFirmwarePartitionMiB = 832;
+        };
+      };
       aos.boot.kernelParams = ["systemd.log_level=info" "rd.systemd.log_level=info" "systemd.log_target=journal-or-kmsg"];
 
       aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
