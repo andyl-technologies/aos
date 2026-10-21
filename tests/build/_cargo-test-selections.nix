@@ -253,6 +253,8 @@ in
   assert invalid "not-a-list";
   assert lib.length rolePackages == 12;
   assert lib.all sharedVendorRetained rolePackages;
+  assert builtins.pathExists (expectedWorkspaceSource + "/crates/sandbox/model/aos-sandbox-policy/src/native/target/opening.rs");
+  assert !(builtins.pathExists (expectedWorkspaceSource + "/crates/target"));
   assert lib.length (lib.unique roleArtifactFamilies) == 12;
   assert controllerSelectionsRetained false;
   assert controllerSelectionsRetained true;

@@ -39,6 +39,13 @@ in
       pathString = toString path;
       base = baseNameOf path;
       daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
+      # A Rust module may itself be named target. Cargo output directories
+      # belong beside a manifest, rather than anywhere below a source tree.
+      cargoOutputDirectory =
+        (base == "target" || lib.hasPrefix "target-" base)
+        && (builtins.dirOf pathString
+          == repoRootString
+          || builtins.pathExists "${builtins.dirOf pathString}/Cargo.toml");
       generatedDir =
         type
         == "directory"
@@ -49,8 +56,7 @@ in
           || base == ".worktrees"
           || base == "result"
           || lib.hasPrefix "result-" base
-          || base == "target"
-          || lib.hasPrefix "target-" base
+          || cargoOutputDirectory
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,
       # and API manifests consumed by build scripts. Nix-only test edits must
