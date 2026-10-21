@@ -562,7 +562,7 @@
           # prefixes, so collect those rules into the initrd's vendor view.
           # Without 10-dm.rules/13-dm-disk.rules, veritysetup can create
           # /dev/dm-0 while systemd waits forever for dev-mapper-root.device.
-          $CONFIG_SHELL ${./collect-udev-rules.sh} "$PWD/root"
+          $CONFIG_SHELL ${./collect-udev-rules.sh} "$PWD/root" ${systemd}
 
           # ── 3. Short /bin symlinks for the binaries we need by name ────
           ${binarySymlinks}
