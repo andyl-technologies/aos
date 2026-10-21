@@ -34,17 +34,18 @@ fn fixture() -> Fixture {
         operation: "actual helper cause",
         source: std::io::Error::from_raw_os_error(libc::EIO),
     };
-    let (cause, allocation, counts) =
+    let (journal, allocation, counts) =
         TestAllocationObserver::capture_layout_and_count(layout, || {
-            SharedOperationalCause::new(HelperCause {
-                source,
-                _funding: funding,
-            })
+            HelperFirstJournal::new(funding)
         });
 
     assert_eq!(counts.allocations, 1);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
+    let (cause, recording) = TestAllocationObserver::count(|| journal.record_body(source));
+    assert_eq!(recording.allocations, 0);
+    assert_eq!(recording.reallocations, 0);
+    assert!(!recording.overflow);
     let original = cause.source_ref().source().unwrap();
     assert!(matches!(original.downcast_ref::<QemuSpawnError>(),
         Some(QemuSpawnError::Io { source, .. }) if source.raw_os_error() == Some(libc::EIO)));
@@ -55,6 +56,43 @@ fn fixture() -> Fixture {
         allocation: allocation.unwrap(),
         cause,
     }
+}
+
+#[test]
+fn unused_preborn_helper_journal_closes_before_returning_paired_credit() {
+    let accounts = [
+        HostServiceAllocator::new(1, 1, 4096).unwrap(),
+        HostServiceAllocator::new(1, 1, 4096).unwrap(),
+    ];
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<HelperCause<HostServiceLeasePair>>())
+        .unwrap();
+    let layout = layout.pad_to_align();
+    let bytes = u64::try_from(layout.size()).unwrap();
+    let funding = HostServiceLeasePair::new(
+        accounts[0].reserve_resources(0, 0, bytes).unwrap(),
+        accounts[1].reserve_resources(0, 0, bytes).unwrap(),
+    );
+    let (journal, allocation, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout, || {
+            HelperFirstJournal::new(funding)
+        });
+
+    assert_eq!(counts.allocations, 1);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(journal.first.source_ref().source.get().is_none());
+    let ((), observations) = TestAllocationObserver::observe_controls(
+        [&accounts[0], &accounts[1]],
+        None,
+        [Some(allocation.unwrap()), None, None],
+        || drop(journal),
+    );
+
+    let observed = observations[0].unwrap();
+    assert_eq!(observed.before.original_bytes, [Some(bytes); 2]);
+    assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+    assert_returned(&accounts);
 }
 
 #[test]

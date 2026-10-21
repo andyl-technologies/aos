@@ -1,12 +1,13 @@
 //! Retains a helper's concrete first error under its own prepaid Main loan.
 //!
-//! The journal receives the loan before helper effects. Publishing the first
-//! error moves that loan into its closed shared body; independent diagnostics
+//! The journal receives the loan and allocates its shared body before helper
+//! effects. Publishing the first error initializes that same body; diagnostics
 //! cannot outlive its allocation funding. Error-owned heap payloads require
 //! separate admission and are not covered by this fixed control extent.
 
 use std::error::Error;
 use std::fmt;
+use std::sync::OnceLock;
 
 use crucible_engine::SharedOperationalCause;
 use crucible_host_resources::host_services::process_birth::SourceHostControlLease;
@@ -15,19 +16,60 @@ use super::QemuSpawnError;
 
 #[derive(Debug)]
 struct HelperCause<Funding> {
-    source: QemuSpawnError,
+    source: OnceLock<QemuSpawnError>,
     _funding: Funding,
 }
 
 impl<Funding> fmt::Display for HelperCause<Funding> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.source.fmt(formatter)
+        match self.source.get() {
+            Some(source) => source.fmt(formatter),
+            None => formatter.write_str("helper failure is not recorded"),
+        }
     }
 }
 
 impl<Funding: fmt::Debug> Error for HelperCause<Funding> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.source)
+        self.source.get().map(|source| source as _)
+    }
+}
+
+/// Owns the sole unpublished helper diagnostic before any helper effect.
+///
+/// Recording consumes this owner. No observer can clone its shared allocation
+/// until the concrete first error has been installed in the private body.
+pub(crate) struct HelperFirstJournal<
+    Funding: fmt::Debug + Send + Sync + 'static = SourceHostControlLease,
+> {
+    first: SharedOperationalCause<HelperCause<Funding>>,
+}
+
+impl<Funding: fmt::Debug + Send + Sync + 'static> HelperFirstJournal<Funding> {
+    pub(crate) fn new(funding: Funding) -> Self {
+        Self {
+            first: SharedOperationalCause::new(HelperCause {
+                source: OnceLock::new(),
+                _funding: funding,
+            }),
+        }
+    }
+
+    fn record_body(self, source: QemuSpawnError) -> SharedOperationalCause<HelperCause<Funding>> {
+        // The linear journal is the only initializer, and no observer exists
+        // until this consuming method publishes the completed first error.
+        if self.first.source_ref().source.set(source).is_err() {
+            unreachable!("a linear unpublished helper journal is recorded once");
+        }
+        self.first
+    }
+}
+
+impl HelperFirstJournal {
+    pub(crate) fn record(self, source: QemuSpawnError) -> QemuIssuedHelperFailure {
+        QemuIssuedHelperFailure {
+            first: self.record_body(source),
+        }
     }
 }
 
@@ -42,19 +84,13 @@ pub struct QemuIssuedHelperFailure {
 }
 
 impl QemuIssuedHelperFailure {
-    pub(crate) fn new(source: QemuSpawnError, funding: SourceHostControlLease) -> Self {
-        Self {
-            first: SharedOperationalCause::new(HelperCause {
-                source,
-                _funding: funding,
-            }),
-        }
-    }
-
     /// Borrows the same concrete first error without detaching its funding.
     #[must_use]
     pub fn source_ref(&self) -> &QemuSpawnError {
-        &self.first.source_ref().source
+        match self.first.source_ref().source.get() {
+            Some(source) => source,
+            None => unreachable!("only a recorded helper journal can be published"),
+        }
     }
 }
 

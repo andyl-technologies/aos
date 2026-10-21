@@ -44,7 +44,7 @@ pub(super) const CONTROLLER: Companion = Companion {
             r#"pub(in crate::linux_attempt_host) struct LaunchControllerFunding {
     pub(in crate::linux_attempt_host) host: AuthenticatedSourceHostPurpose,
     _control: SourceHostControlLease,
-    pub(super) helper_first: Option<SourceHostControlLease>,
+    pub(super) helper_first: Option<crate::spawn::helper_first::HelperFirstJournal>,
 }"#,
             1,
         ),
@@ -70,7 +70,9 @@ pub(super) const CONTROLLER: Companion = Companion {
         Ok(Self {
             host,
             _control: control,
-            helper_first: Some(helper_first),
+            helper_first: Some(crate::spawn::helper_first::HelperFirstJournal::new(
+                helper_first,
+            )),
         })
     }
 }"#,
@@ -368,7 +370,7 @@ pub(super) const FIRST: Companion = Companion {
     required: &[
         (
             r#"struct HelperCause<Funding> {
-    source: QemuSpawnError,
+    source: OnceLock<QemuSpawnError>,
     _funding: Funding,
 }"#,
             1,
@@ -376,7 +378,7 @@ pub(super) const FIRST: Companion = Companion {
         (
             r#"impl<Funding: fmt::Debug> Error for HelperCause<Funding> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.source)
+        self.source.get().map(|source| source as _)
     }
 }"#,
             1,
@@ -388,20 +390,50 @@ pub(super) const FIRST: Companion = Companion {
             1,
         ),
         (
-            r#"impl QemuIssuedHelperFailure {
-    pub(crate) fn new(source: QemuSpawnError, funding: SourceHostControlLease) -> Self {
+            r#"pub(crate) struct HelperFirstJournal<
+    Funding: fmt::Debug + Send + Sync + 'static = SourceHostControlLease,
+> {
+    first: SharedOperationalCause<HelperCause<Funding>>,
+}
+
+impl<Funding: fmt::Debug + Send + Sync + 'static> HelperFirstJournal<Funding> {
+    pub(crate) fn new(funding: Funding) -> Self {
         Self {
             first: SharedOperationalCause::new(HelperCause {
-                source,
+                source: OnceLock::new(),
                 _funding: funding,
             }),
         }
     }
 
+    fn record_body(self, source: QemuSpawnError) -> SharedOperationalCause<HelperCause<Funding>> {
+        // The linear journal is the only initializer, and no observer exists
+        // until this consuming method publishes the completed first error.
+        if self.first.source_ref().source.set(source).is_err() {
+            unreachable!("a linear unpublished helper journal is recorded once");
+        }
+        self.first
+    }
+}
+
+impl HelperFirstJournal {
+    pub(crate) fn record(self, source: QemuSpawnError) -> QemuIssuedHelperFailure {
+        QemuIssuedHelperFailure {
+            first: self.record_body(source),
+        }
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl QemuIssuedHelperFailure {
     /// Borrows the same concrete first error without detaching its funding.
     #[must_use]
     pub fn source_ref(&self) -> &QemuSpawnError {
-        &self.first.source_ref().source
+        match self.first.source_ref().source.get() {
+            Some(source) => source,
+            None => unreachable!("only a recorded helper journal can be published"),
+        }
     }
 }"#,
             1,
@@ -427,8 +459,7 @@ pub(super) const JOURNAL: Companion = Companion {
     lender: Option<crate::linux_attempt_host::SourceCleanupLender>,
     first: Option<SharedFirst>,
     unshared_first: Option<crate::QemuSpawnError>,
-    first_funding:
-        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
+    first_journal: Option<crate::spawn::helper_first::HelperFirstJournal>,
     before: Option<HostSupervisionError>,
     source_after: Option<HostSupervisionError>,
     after: Option<HostSupervisionError>,
@@ -445,12 +476,10 @@ pub(super) const JOURNAL: Companion = Companion {
         ),
         (
             r#"pub(super) fn new(
-        first_funding: Option<
-            crucible_host_resources::host_services::process_birth::SourceHostControlLease,
-        >,
+        first_journal: Option<crate::spawn::helper_first::HelperFirstJournal>,
     ) -> Self {
         let mut debt = Self::default();
-        debt.first_funding = first_funding;
+        debt.first_journal = first_journal;
         debt
     }"#,
             1,
@@ -469,8 +498,8 @@ pub(super) const JOURNAL: Companion = Companion {
         if self.first_cause().is_some() {
             return;
         }
-        match self.first_funding.take() {
-            Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+        match self.first_journal.take() {
+            Some(journal) => self.first = Some(journal.record(first)),
             // An unissued fixture can retain a local refusal in its existing
             // journal, but cannot publish a shared diagnostic without a payer.
             None => self.unshared_first = Some(first),

@@ -15,8 +15,7 @@ pub(super) struct HelperDebt {
     lender: Option<crate::linux_attempt_host::SourceCleanupLender>,
     first: Option<SharedFirst>,
     unshared_first: Option<crate::QemuSpawnError>,
-    first_funding:
-        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
+    first_journal: Option<crate::spawn::helper_first::HelperFirstJournal>,
     before: Option<HostSupervisionError>,
     source_after: Option<HostSupervisionError>,
     after: Option<HostSupervisionError>,
@@ -64,12 +63,10 @@ pub struct QemuIssuedHelperHistory<'a> {
 
 impl HelperDebt {
     pub(super) fn new(
-        first_funding: Option<
-            crucible_host_resources::host_services::process_birth::SourceHostControlLease,
-        >,
+        first_journal: Option<crate::spawn::helper_first::HelperFirstJournal>,
     ) -> Self {
         let mut debt = Self::default();
-        debt.first_funding = first_funding;
+        debt.first_journal = first_journal;
         debt
     }
 
@@ -124,8 +121,8 @@ impl HelperDebt {
         if self.first_cause().is_some() {
             return;
         }
-        match self.first_funding.take() {
-            Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+        match self.first_journal.take() {
+            Some(journal) => self.first = Some(journal.record(first)),
             // An unissued fixture can retain a local refusal in its existing
             // journal, but cannot publish a shared diagnostic without a payer.
             None => self.unshared_first = Some(first),
@@ -270,7 +267,7 @@ impl OriginalNativeFreshLaunchError {
                 receiver,
             ));
         }
-        if slot.first_funding.is_none()
+        if slot.first_journal.is_none()
             || slot.unshared_first.is_some()
             || (T::CAPTURES_PROBE && slot.probe_prepared)
             || slot.controls.is_some()
@@ -559,7 +556,7 @@ mod tests {
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
         assert!(slot.first.is_none());
-        assert!(slot.first_funding.is_none());
+        assert!(slot.first_journal.is_none());
         assert!(matches!(slot.history().first,
             Some(crate::QemuSpawnError::Io { source, .. })
             if source.raw_os_error() == Some(libc::EIO)));

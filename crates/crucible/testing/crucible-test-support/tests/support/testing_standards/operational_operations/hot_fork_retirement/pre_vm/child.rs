@@ -51,8 +51,8 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     if self.first_cause().is_some() {
         return;
     }
-    match self.first_funding.take() {
-        Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+    match self.first_journal.take() {
+        Some(journal) => self.first = Some(journal.record(first)),
         // An unissued fixture can retain a local refusal in its existing
         // journal, but cannot publish a shared diagnostic without a payer.
         None => self.unshared_first = Some(first),
@@ -125,7 +125,7 @@ pub(crate) fn with_spawned_helper_original<T: HelperOutput>(
                 receiver,
             ));
         }
-        if slot.first_funding.is_none()
+        if slot.first_journal.is_none()
             || slot.unshared_first.is_some()
             || (T::CAPTURES_PROBE && slot.probe_prepared)
             || slot.controls.is_some()

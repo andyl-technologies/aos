@@ -17,7 +17,7 @@ use std::ops::Deref;
 pub(in crate::linux_attempt_host) struct LaunchControllerFunding {
     pub(in crate::linux_attempt_host) host: AuthenticatedSourceHostPurpose,
     _control: SourceHostControlLease,
-    pub(super) helper_first: Option<SourceHostControlLease>,
+    pub(super) helper_first: Option<crate::spawn::helper_first::HelperFirstJournal>,
 }
 
 impl LaunchControllerFunding {
@@ -41,7 +41,9 @@ impl LaunchControllerFunding {
         Ok(Self {
             host,
             _control: control,
-            helper_first: Some(helper_first),
+            helper_first: Some(crate::spawn::helper_first::HelperFirstJournal::new(
+                helper_first,
+            )),
         })
     }
 }
