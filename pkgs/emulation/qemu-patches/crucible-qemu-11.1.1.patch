@@ -1,6 +1,6 @@
-From 7b2ddb9d9aebbf9bf1488e90cf691f69e48bf34d Mon Sep 17 00:00:00 2001
+From f5ef71914d35c55a1e1e8c78dec2c84544e4f352 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 20 Oct 2026 09:56:31 +0000
+Date: Wed, 21 Oct 2026 12:31:30 -0700
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -16,7 +16,7 @@ test-crucible-control-deferred runs the production arm and bridge over one halte
 
 test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
-A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline or such an event at or before the ceiling. A dispatch boundary whose next retirement would cross the ceiling, with no event before it, is published as settled through the ceiling QEMU sampled, and the final post-execution ceiling completion defers to the advance while an event is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events, so their stops are unchanged. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; five negative controls restore the old ceiling credits or fallbacks and fail. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
+A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline at or before the ceiling. A runnable vCPU never moves its clock without a retirement, so it never crosses to a plugin event: it takes the event at its first boundary at or after it, and the event does not hold a boundary unsettled. A dispatch boundary whose next retirement would cross the ceiling, with no timer or fault deadline before it, is published as settled through the ceiling QEMU sampled, including an exact-event ceiling it cannot land on, and the final post-execution ceiling completion defers to the advance while such a deadline is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; six negative controls restore the old ceiling credits, the crossing to a plugin event, or the fallbacks and fail. An exact-event ceiling and an inbound delivery inside the final gap settle the boundary with the clock at its last retirement. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4221,10 +4221,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723aa687bdd5 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14dba548676 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2098 @@
+@@ -27,45 +27,2103 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5234,17 +5234,20 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
 +}
 +
 +/*
-+ * Returns the earliest exact event strictly after @now: a QEMU timer or fault
-+ * deadline, or a plugin-owned event. A bare ceiling is never an event
-+ * (RFC-0010 SCHED-12).
++ * Returns the earliest QEMU-owned exact event strictly after @now: a timer or
++ * a fault or preemption deadline. A bare ceiling is never an event (RFC-0010
++ * SCHED-12). A plugin-owned event (an inbound delivery, a device completion
++ * or an exact-event ceiling) is not one either: a running vCPU never moves
++ * its clock without a retirement, so it takes such an event at its first
++ * boundary at or after it, and the event never holds a boundary unsettled
++ * (TIME-30).
 + */
-+static uint64_t rr_crucible_sim_next_gap_event(int64_t now,
-+                                               uint64_t logical_ceiling)
++static uint64_t rr_crucible_sim_next_gap_event(int64_t now)
 +{
 +    int64_t timer_remaining = qemu_clock_deadline_ps_all(
 +        QEMU_CLOCK_VIRTUAL, QEMU_TIMER_ATTR_ALL);
 +    uint64_t deadline = rr_crucible_sim_next_exact_deadline();
-+    uint64_t event = rr_crucible_sim_plugin_event_after(now, logical_ceiling);
++    uint64_t event = UINT64_MAX;
 +
 +    if (qemu_crucible_fault_lifecycle_virtual_timers_paused()) {
 +        timer_remaining = -1;
@@ -5260,8 +5263,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
 +
 +/*
 + * Whether the current clock is settled through @logical_ceiling: the next
-+ * retirement would end past the ceiling and no exact event lies in
-+ * (now, ceiling]. The clock then stays at its last retirement.
++ * retirement would end past the ceiling and no QEMU-owned exact event lies in
++ * (now, ceiling]. The clock then stays at its last retirement, including
++ * below an exact-event ceiling it cannot land on (TIME-30).
 + */
 +static bool rr_crucible_sim_settled_through(uint64_t logical_ceiling)
 +{
@@ -5272,13 +5276,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
 +            CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +        return false;
 +    }
-+    return rr_crucible_sim_next_gap_event(now, logical_ceiling) >
-+           logical_ceiling;
++    return rr_crucible_sim_next_gap_event(now) > logical_ceiling;
 +}
 +
 +/*
-+ * Whether an exact event lies after the clock and at or before the logical
-+ * ceiling, so the node must reach it before its boundary can settle.
++ * Whether a QEMU-owned exact event lies after the clock and at or before the
++ * logical ceiling, so the node must reach it before its boundary can settle.
 + */
 +static bool rr_crucible_sim_gap_event_pending(void)
 +{
@@ -5290,14 +5293,16 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
 +    if (now < 0 || (uint64_t)now >= logical_ceiling) {
 +        return false;
 +    }
-+    return rr_crucible_sim_next_gap_event(now, logical_ceiling) <=
-+           logical_ceiling;
++    return rr_crucible_sim_next_gap_event(now) <= logical_ceiling;
 +}
 +
 +/*
-+ * Crosses the final partial instruction only to an exact event at or before
-+ * the ceiling. The ceiling bounds the node; it is not a target, so the gap
-+ * below it is never credited to the guest (RFC-0010 SCHED-12).
++ * Crosses the final partial instruction only to a QEMU-owned exact event (a
++ * timer or a fault or preemption deadline) at or before the ceiling. The
++ * ceiling bounds the node; it is not a target, so the gap below it is never
++ * credited to the guest (RFC-0010 SCHED-12). A plugin-owned event is never a
++ * target here: this vCPU is runnable, and it takes such an event at its first
++ * boundary at or after it rather than by a time-only advance (TIME-30).
 + */
 +static bool rr_crucible_sim_advance_to_exact_event(
 +    const CrucibleConsoleDispatchResult *console_receipt)
@@ -5331,7 +5336,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
 +    } else if (crucible_sim_shmem_dispatch_registered()) {
 +        ceiling = crucible_sim_shmem_logical_ceiling();
 +    }
-+    target = MIN(deadline, rr_crucible_sim_plugin_event_after(now, ceiling));
++    target = deadline;
 +    if (target > ceiling || target <= (uint64_t)now ||
 +        target - (uint64_t)now >= CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +        return false;
@@ -6342,7 +6347,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2137,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2142,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6375,7 +6380,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
      }
  }
  
-@@ -110,15 +2175,138 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2180,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6516,7 +6521,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
      }
  }
  
-@@ -140,6 +2328,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2333,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6535,7 +6540,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2384,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2389,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6544,7 +6549,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2406,203 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2411,203 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6766,7 +6771,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2618,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2623,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6799,7 +6804,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2660,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2665,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -6956,7 +6961,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2802,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2807,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7096,7 +7101,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723a
      }
  
      g_assert_not_reached();
-@@ -318,13 +2941,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2946,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -188645,18 +188650,21 @@ index 0000000000000000000000000000000000000000..6a18a6e4dcca7ec12163834700cc92a3
 +}
 diff --git a/tests/unit/test-crucible-rr-bound-ceiling.py b/tests/unit/test-crucible-rr-bound-ceiling.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d7e2e2d2f
+index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110ca51ad62f
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-bound-ceiling.py
-@@ -0,0 +1,510 @@
+@@ -0,0 +1,523 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise bounded scheduler ceilings in the production RR Sim bodies.
 +
 +A published logical ceiling is an upper bound. A vCPU that cannot retire
-+another instruction at or before it keeps its clock, unless an exact event
-+lies before the ceiling: a timer or fault deadline, or an event the plugin
-+reports. The boundary is then published as settled, and the gap below the
-+ceiling is never credited to the guest. A sim node whose plugin dispatches
++another instruction at or before it keeps its clock, unless a timer or fault
++deadline lies before the ceiling. The boundary is then published as settled,
++and the gap below the ceiling is never credited to the guest. An event the
++plugin reports (an inbound delivery, a device completion or an exact-event
++ceiling) never moves a runnable vCPU's clock: the boundary settles below it
++and the plugin takes the event at the next boundary. Only a stalled node,
++which cannot retire, advances to such an event. A sim node whose plugin dispatches
 +ceilings without the settlement bridge is refused before it starts, and no
 +fallback treats its ceiling as an exact stop.
 +
@@ -188681,6 +188689,7 @@ index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d
 +SHMEM = "accel/tcg/tcg-accel-ops-sim-shmem.c"
 +NEGATIVES = [
 +    "credit-ceiling",
++    "cross-plugin-event",
 +    "stalled-ceiling-jump",
 +    "legacy-ceiling-fallback",
 +    "launch-without-bridge",
@@ -188883,29 +188892,34 @@ index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d
 +    printf("PASS timer at 990 is reached, then the boundary settles\n");
 +}
 +
-+static void check_exact_event_ceiling_is_reached(void)
++/*
++ * A runnable vCPU never moves its clock without a retirement. An exact-event
++ * ceiling it cannot land on settles with the clock at its last boundary, and
++ * the plugin takes the event at the next boundary.
++ */
++static void check_exact_event_ceiling_settles_below_it(void)
 +{
 +    reset(951, 1000, true);
 +    plugin_event = 1000;
-+    assert(rr_crucible_sim_gap_event_pending());
-+    assert(rr_crucible_sim_advance_to_exact_event(NULL));
-+    assert(now_tick == 1000);
++    assert(!rr_crucible_sim_gap_event_pending());
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 951);
 +    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
-+    assert(settled_publications == 1 && published_tick == 1000);
-+    printf("PASS exact-event ceiling is reached at 1000\n");
++    assert(settled_publications == 1 && published_tick == 951);
++    assert(settled_ceiling_seen == 1000);
++    printf("PASS exact-event ceiling at 1000 settles with the clock at 951\n");
 +}
 +
-+static void check_inbound_delivery_in_gap_is_reached(void)
++static void check_inbound_delivery_in_gap_waits_for_the_next_boundary(void)
 +{
 +    reset(951, 1000, true);
 +    plugin_event = 980;
-+    assert(rr_crucible_sim_gap_event_pending());
-+    assert(rr_crucible_sim_advance_to_exact_event(NULL));
-+    assert(now_tick == 980);
-+    plugin_event = UINT64_MAX;
++    assert(!rr_crucible_sim_gap_event_pending());
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 951);
 +    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
-+    assert(settled_publications == 1 && published_tick == 980);
-+    printf("PASS inbound delivery at 980 is reached, then the boundary settles\n");
++    assert(settled_publications == 1 && published_tick == 951);
++    printf("PASS inbound delivery at 980 leaves the clock at 951 and settles\n");
 +}
 +
 +static void check_due_plugin_event_does_not_block_settlement(void)
@@ -189055,8 +189069,8 @@ index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d
 +{
 +    check_bare_ceiling_settles_below_it();
 +    check_timer_in_gap_is_an_exact_target();
-+    check_exact_event_ceiling_is_reached();
-+    check_inbound_delivery_in_gap_is_reached();
++    check_exact_event_ceiling_settles_below_it();
++    check_inbound_delivery_in_gap_waits_for_the_next_boundary();
 +    check_due_plugin_event_does_not_block_settlement();
 +    check_whole_instruction_gap_is_not_settled();
 +    check_zero_budget_gaps_settle_in_place();
@@ -189110,9 +189124,13 @@ index 0000000000000000000000000000000000000000..2c74788b086ba3d90e5f1ccaa7f8bd8d
 +            "        crucible_sim_shmem_publish_current_icount(current_icount);\n"
 +            "        return;\n    }\n", 1)
 +    if negative == "credit-ceiling":
++        return body.replace("    target = deadline;\n",
++                            "    target = MIN(deadline, ceiling);\n")
++    if negative == "cross-plugin-event":
 +        return body.replace(
-+            "target = MIN(deadline, rr_crucible_sim_plugin_event_after(now, ceiling));",
-+            "target = MIN(deadline, ceiling);")
++            "    target = deadline;\n",
++            "    target = MIN(deadline, "
++            "rr_crucible_sim_plugin_event_after(now, ceiling));\n")
 +    if negative == "stalled-ceiling-jump":
 +        return body.replace("settled = target_tick > logical_ceiling;",
 +                            "target_tick = MIN(deadline, logical_ceiling);\n"

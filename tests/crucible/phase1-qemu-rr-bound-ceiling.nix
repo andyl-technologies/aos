@@ -1,7 +1,9 @@
 # Runs the production RR Sim stop decisions against bounded scheduler ceilings
-# (RFC-0010 SCHED-12): a ceiling bounds the clock, only exact events move it
-# across a partial instruction, and a stalled node settles without moving. A
-# sim node without the plugin settlement bridge is refused, never credited.
+# (RFC-0010 SCHED-12): a ceiling bounds the clock, only a timer or fault
+# deadline moves a runnable vCPU across a partial instruction, a plugin event
+# there settles the boundary below it (TIME-30), and a stalled node settles
+# without moving. A sim node without the plugin settlement bridge is refused,
+# never credited.
 # Clocks, timers, fault deadlines and plugin callbacks are bounded providers.
 #
 # The same check runs the production timer/icount version gate: streams older
@@ -11,6 +13,7 @@
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
   negatives = [
     "credit-ceiling"
+    "cross-plugin-event"
     "stalled-ceiling-jump"
     "legacy-ceiling-fallback"
     "launch-without-bridge"
@@ -58,6 +61,9 @@ in
           # A ceiling less than one retirement ahead settles with a zero budget.
           grep -Fxq 'PASS zero-budget gaps of 1 and 49 settle at 2000000' "$out/production-proof.result"
           grep -Fxq 'PASS a timer in a one-tick gap is reached, then settles' "$out/production-proof.result"
+          # A runnable vCPU never crosses to a plugin event; it settles below.
+          grep -Fxq 'PASS exact-event ceiling at 1000 settles with the clock at 951' "$out/production-proof.result"
+          grep -Fxq 'PASS inbound delivery at 980 leaves the clock at 951 and settles' "$out/production-proof.result"
 
           # Each negative restores one pre-fix ceiling credit or fallback and
           # must fail a compiled assertion, not the build.
