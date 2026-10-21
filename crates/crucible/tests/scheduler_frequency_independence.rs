@@ -1,11 +1,10 @@
 //! RFC-0010 SCHED-12 regression: RUN ceilings never perturb the guest.
 //!
-//! A ceiling is an upper bound. A node stops at its last retirement at or
-//! below the ceiling unless its own timer inside the remaining gap permits a
-//! time-only advance (TIME-4), and it attests settlement through the ceiling
-//! separately from its actual clock. A running node takes a frame at its
-//! first boundary at or after the delivery tick; a halted node wakes exactly
-//! there. These tests drive the real
+//! A ceiling is an upper bound. A running node stops at its last retirement
+//! at or below the ceiling and attests settlement through the ceiling
+//! separately from its actual clock; its clock never moves without a
+//! retirement. It meets a frame or its own timer at its first boundary at or
+//! after the delivery or deadline tick; a halted node wakes exactly there. These tests drive the real
 //! [`SingleScheduler`] through the bounded-control host path with a costed
 //! test double whose retirements cost picoseconds and cannot land on an
 //! arbitrary ceiling:
@@ -80,8 +79,13 @@ struct Program {
 /// A guest-visible event observed by one node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TraceKind {
+    /// The node's timer fired at this coordinate; `due` is its deadline.
+    ///
+    /// A halted node wakes exactly at `due`. A running node fires it at its
+    /// first retirement boundary at or after `due`.
     Timer {
         fired: u64,
+        due: u64,
     },
     Halt,
     Wake,
@@ -229,11 +233,13 @@ impl CostedNode {
                 self.record(TraceKind::Wake);
             }
         }
-        if self.timer == self.now {
+        if self.timer <= self.now {
+            let due = self.timer;
             self.timers_fired += 1;
             self.timer += self.program.timer_period;
             self.record(TraceKind::Timer {
                 fired: self.timers_fired,
+                due,
             });
             if self.halted {
                 self.halted = false;
@@ -262,10 +268,9 @@ impl CostedNode {
     /// Executes one RUN toward `ceiling` and reports how it returned control.
     ///
     /// A halted node advances time only to its real wake or to an exact-event
-    /// ceiling (TIME-4). A running node moves its clock by retirements, and by
-    /// a time-only advance only onto its own timer inside the final gap. It
-    /// takes frames at its first boundary at or after their delivery, and
-    /// settles an exact-event ceiling it cannot land on (TIME-30).
+    /// ceiling (TIME-4). A running node moves its clock only by retirements. It
+    /// takes frames and fires its timer at its first boundary at or after their
+    /// tick, and settles an exact-event ceiling it cannot land on (TIME-30).
     fn run(
         &mut self,
         ceiling: u64,
@@ -304,17 +309,17 @@ impl CostedNode {
                 return (self.park(ceiling_time), Vec::new());
             }
 
-            let timer = self.timer;
-            assert!(timer > self.now, "timer left behind");
-            let bound = ceiling.min(timer);
-            // Whole cycles stop short of a pending delivery so that the frame
-            // is taken at the first boundary at or after it.
+            assert!(self.timer > self.now, "timer left behind");
+            // Whole cycles stop short of the timer and of a pending delivery,
+            // so each is met at the first boundary at or after its tick.
             let cycle_limit = self
                 .next_inbound()
-                .map_or(bound, |delivery| bound.min(delivery));
+                .map_or(ceiling.min(self.timer), |delivery| {
+                    ceiling.min(self.timer).min(delivery)
+                });
             self.retire_whole_cycles(cycle_limit);
             let next_retirement = self.now + self.cost(self.raw);
-            if next_retirement <= bound {
+            if next_retirement <= ceiling {
                 self.raw += 1;
                 self.now = next_retirement;
                 if self.raw == self.next_emit_raw {
@@ -322,14 +327,8 @@ impl CostedNode {
                 }
                 continue;
             }
-            if timer <= ceiling {
-                // TIME-4: the gap holds the node's own timer and no retirement.
-                if timer == ceiling {
-                    arrival_from = Some(self.now);
-                }
-                self.now = timer;
-                continue;
-            }
+            // No retirement fits. A timer or frame in the gap waits for the
+            // next boundary; the clock never moves without a retirement.
             if exact {
                 self.record(TraceKind::ExactSettle { ceiling });
             }
@@ -1015,6 +1014,63 @@ fn bounded_ceilings_leave_every_guest_event_independent_of_the_schedule() {
             );
         }
         assert_same_trajectory(baseline, trajectory, label);
+    }
+}
+
+/// Returns `(tick, due)` for every timer a node fired while running.
+///
+/// A fire that wakes a halted node is followed by its wake; every other fire
+/// happened on a running node.
+fn running_timer_fires(trace: &[TraceEvent]) -> Vec<(u64, u64)> {
+    trace
+        .iter()
+        .zip(trace.iter().skip(1).map(Some).chain([None]))
+        .filter_map(|(event, next)| match event.kind {
+            TraceKind::Timer { due, .. }
+                if next.is_none_or(|next| next.kind != TraceKind::Wake) =>
+            {
+                Some((event.tick, due))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_running_node_fires_a_timer_between_boundaries_at_its_next_boundary() {
+    // Both timers run at picosecond phases off every retirement lattice. A
+    // running node never moves its clock without a retirement, so it fires
+    // each one at its first boundary at or after the deadline, under every
+    // ceiling schedule alike.
+    const LONGEST_RETIREMENT: u64 = 70;
+
+    let runs = t1_schedules().map(|(label, schedule)| {
+        let (trajectory, _) = drive(StopModel::Bound, LINK_LATENCY, TIME_LIMIT, &schedule);
+        (label, trajectory)
+    });
+
+    let (baseline_label, baseline) = &runs[0];
+    for node in ["vm-a", "vm-b"] {
+        let fires = running_timer_fires(&baseline.traces[node]);
+        assert!(
+            fires.iter().any(|(tick, due)| tick != due),
+            "{baseline_label}: {node} must fire a timer between boundaries"
+        );
+        for (tick, due) in &fires {
+            assert!(
+                tick >= due && tick - due < LONGEST_RETIREMENT,
+                "{baseline_label}: {node} fired its {due} timer at {tick}"
+            );
+        }
+    }
+    for (label, trajectory) in &runs[1..] {
+        for node in ["vm-a", "vm-b"] {
+            assert_eq!(
+                running_timer_fires(&baseline.traces[node]),
+                running_timer_fires(&trajectory.traces[node]),
+                "{label}: {node} running timer fires"
+            );
+        }
     }
 }
 

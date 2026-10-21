@@ -30,7 +30,11 @@ struct ScriptedPhysicalReplay {
     preemption: ScriptedPreemption,
 }
 
-/// Models patched QEMU's exact preemption event and a halted guest.
+/// Models patched QEMU's preemption boundary and a halted guest.
+///
+/// A halted guest takes the command exactly at its counter. A running guest
+/// retires on a 50-tick lattice anchored at its armed counter and takes the
+/// command at its first boundary at or after it.
 #[derive(Default)]
 struct ScriptedPreemption {
     /// Commanded counter armed for a later run.
@@ -66,16 +70,35 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
             ));
         }
         self.advances.push(ceiling);
-        if let Some(at) = self.preemption.armed.filter(|at| *at <= ceiling) {
-            // The commanded counter is an exact event: a running guest stops
-            // there and a halted guest's clock moves there.
-            self.preemption.armed = None;
-            self.preemption.applied.push(at);
-            return Ok(ReplayPhysicalAdvance {
-                state: at,
-                outcome: AdvanceOutcome::ReachedHorizon,
-                idle_deadline: None,
-            });
+        if let Some(at) = self.preemption.armed {
+            // A halted guest's clock moves exactly to the command. A running
+            // guest never moves its clock without a retirement.
+            let instruction = crucible::SIM_TICKS_PER_INSTRUCTION;
+            let taken = if self.preemption.halted {
+                at.retired
+            } else {
+                state.retired + (at.retired - state.retired).div_ceil(instruction) * instruction
+            };
+            if taken <= ceiling.retired {
+                let taken = Icount { retired: taken };
+                self.preemption.armed = None;
+                self.preemption.applied.push(taken);
+                return Ok(ReplayPhysicalAdvance {
+                    state: taken,
+                    outcome: AdvanceOutcome::ReachedHorizon,
+                    idle_deadline: None,
+                });
+            }
+            if !self.preemption.halted {
+                // Settle at the last boundary at or below the ceiling.
+                let settled =
+                    state.retired + (ceiling.retired - state.retired) / instruction * instruction;
+                return Ok(ReplayPhysicalAdvance {
+                    state: Icount { retired: settled },
+                    outcome: AdvanceOutcome::ReachedHorizon,
+                    idle_deadline: None,
+                });
+            }
         }
         if self.preemption.halted {
             return Ok(ReplayPhysicalAdvance {
@@ -162,7 +185,9 @@ impl GuardedReplayPhysicalNode for ScriptedPhysicalReplay {
         let at = Icount {
             retired: decision.at.ticks,
         };
-        if *state != at || self.preemption.applied.last() != Some(&at) {
+        let window = state.retired >= at.retired
+            && state.retired - at.retired < crucible::SIM_TICKS_PER_INSTRUCTION;
+        if !window || self.preemption.applied.last() != Some(state) {
             return Err(invalid_replay_selection(
                 "scripted preemption was not applied at its counter",
             ));
@@ -448,10 +473,12 @@ fn delivery_order_keeps_interleaved_inputs_at_their_physical_counts()
     )?;
 
     assert_eq!(state.retired, second_delivery_ps);
+    // The replay ceiling admits the preemption window: a running guest may
+    // take the command at its first boundary at or after the counter.
     assert_eq!(
         replay.advances,
         vec![Icount {
-            retired: second_delivery_ps,
+            retired: second_delivery_ps + crucible::SIM_TICKS_PER_INSTRUCTION - 1,
         }]
     );
     assert_eq!(

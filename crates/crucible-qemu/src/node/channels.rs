@@ -307,9 +307,9 @@ pub trait QemuShmemHotPathChannel: Send {
     /// Reports whether a published preemption still awaits plugin admission.
     ///
     /// The plugin acknowledges a command only after patched QEMU accepted
-    /// its exact-counter injection, so `false` after publication means QEMU
-    /// owns the command. A channel without a readable mailbox refuses rather
-    /// than report an admission it cannot observe.
+    /// its injection, so `false` after publication means QEMU owns the
+    /// command. A channel without a readable mailbox refuses rather than
+    /// report an admission it cannot observe.
     ///
     /// # Errors
     ///

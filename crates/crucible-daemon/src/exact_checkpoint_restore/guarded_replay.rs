@@ -495,15 +495,18 @@ fn replay_one_nonselection_decision_boundary<T: GuardedReplayPhysicalNode>(
     }
 }
 
-/// Stops the thin node exactly at a recorded preemption and applies it there.
+/// Replays a recorded preemption on the thin node where the live guest took it.
 ///
-/// `preemption.at` is the node-local physical counter the live RUN stopped at
-/// (the scheduler plans it as the RUN's target counter). Replay arms the same
-/// scheduler preemption command the live RUN published, then takes bounded
-/// steps whose ceilings never pass that counter. Patched QEMU treats the
-/// commanded counter as an exact event, so a running guest stops there and a
-/// halted guest's clock moves there. Arriving anywhere else, or leaving the
-/// command unapplied, refuses replay.
+/// `preemption.at` is the node-local physical counter the scheduler commanded.
+/// Replay arms the same scheduler preemption command the live RUN published,
+/// then takes bounded steps whose ceilings never pass the last coordinate at
+/// which QEMU may apply it. A halted guest's clock moves exactly to `at`. A
+/// running guest never moves its clock without a retirement, so it takes the
+/// command at its first boundary at or after `at`, less than one retirement
+/// later (RFC-0010 SCHED-12, TIME-30). That boundary depends only on the
+/// guest's own retirements, so the live run took it at the same coordinate.
+/// Stopping short of `at`, passing that window, or leaving the command
+/// unapplied refuses replay.
 fn replay_local_preemption<T: GuardedReplayPhysicalNode>(
     node: &mut T,
     state: T::Observation,
@@ -530,14 +533,22 @@ fn replay_local_preemption<T: GuardedReplayPhysicalNode>(
         ));
     }
 
+    // The latest coordinate at which a running guest may take the command:
+    // its first boundary at or after `at`.
+    let latest = Icount {
+        retired: at
+            .retired
+            .saturating_add(crucible::SIM_TICKS_PER_INSTRUCTION - 1)
+            .min(target_icount.retired),
+    };
     let mut state = node.arm_preemption(state, preemption)?;
     let mut progress = ReplayPhysicalProgress::new(current);
-    while node.current_icount(&state)? != at {
+    while node.current_icount(&state)? < at {
         // A guest request before the commanded counter was never recorded.
         reject_unrecorded_local_request(node)?;
-        // The progress cursor refuses once its frontier reaches `at` without
-        // the node arriving there, so a settled miss cannot loop.
-        let ceiling = progress.next_ceiling(at)?;
+        // The progress cursor refuses once its frontier reaches the window's
+        // end without the node arriving in it, so a settled miss cannot loop.
+        let ceiling = progress.next_ceiling(latest)?;
         let advance = node.advance_to_ceiling(state, ceiling)?;
         state = advance.state;
         progress.observe(

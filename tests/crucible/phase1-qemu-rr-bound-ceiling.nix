@@ -1,10 +1,13 @@
 # Runs the production RR Sim stop decisions against bounded scheduler ceilings
-# (RFC-0010 SCHED-12): a ceiling bounds the clock, only a timer or fault
-# deadline moves a runnable vCPU across a partial instruction, a plugin event
-# there settles the boundary below it (TIME-30), and a stalled node settles
-# without moving. A sim node without the plugin settlement bridge is refused,
-# never credited.
-# Clocks, timers, fault deadlines and plugin callbacks are bounded providers.
+# (RFC-0010 SCHED-12): a ceiling bounds the clock, and a runnable vCPU never
+# moves its clock without a retirement. It meets a timer, fault or preemption
+# deadline or a plugin event between boundaries at its first boundary at or
+# after it, and a ceiling it cannot reach settles below it (TIME-30). Only an
+# all-halted node idles to a QEMU-owned event in the gap, and a stalled node
+# settles without moving. A sim node without the plugin settlement bridge is
+# refused, never credited.
+# Clocks, timers, fault and preemption deadlines and plugin callbacks are
+# bounded providers.
 #
 # The same check runs the production timer/icount version gate: streams older
 # than version 6 may carry credited bias and must be refused.
@@ -12,6 +15,10 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
   negatives = [
+    "runnable-cross-qemu-event"
+    "floor-deadline-budget"
+    "floor-timer-limit"
+    "exact-preemption-tick"
     "credit-ceiling"
     "cross-plugin-event"
     "stalled-ceiling-jump"
@@ -57,10 +64,15 @@ in
           ${pkgs.python3}/bin/python3 tests/unit/test-crucible-rr-bound-ceiling.py \
             --output-dir "$out/proof" > "$out/production-proof.result"
           cat "$out/production-proof.result"
-          grep -Fxq 'PASS production bounded ceilings: 13 cases' "$out/production-proof.result"
+          grep -Fxq 'PASS production bounded ceilings: 15 cases' "$out/production-proof.result"
           # A ceiling less than one retirement ahead settles with a zero budget.
           grep -Fxq 'PASS zero-budget gaps of 1 and 49 settle at 2000000' "$out/production-proof.result"
-          grep -Fxq 'PASS a timer in a one-tick gap is reached, then settles' "$out/production-proof.result"
+          grep -Fxq 'PASS a halted node reaches a timer in a one-tick gap, then settles' "$out/production-proof.result"
+          # A runnable vCPU never moves its clock to a QEMU-owned deadline; it
+          # meets timers, faults and preemptions at its next boundary.
+          grep -Fxq 'PASS timer at 990 waits on a runnable vCPU; a halted one idles to it' "$out/production-proof.result"
+          grep -Fxq 'PASS timer, fault and preemption 24 ps ahead fire at the next boundary' "$out/production-proof.result"
+          grep -Fxq 'PASS a preemption a whole retirement late is still refused' "$out/production-proof.result"
           # A runnable vCPU never crosses to a plugin event; it settles below.
           grep -Fxq 'PASS exact-event ceiling at 1000 settles with the clock at 951' "$out/production-proof.result"
           grep -Fxq 'PASS inbound delivery at 980 leaves the clock at 951 and settles' "$out/production-proof.result"
@@ -101,12 +113,13 @@ in
           PASS
           check=checks.crucible.phase1.qemuRrBoundCeiling
           bare_ceiling_keeps_the_last_retirement_and_settles=true
-          timer_and_plugin_exact_events_are_the_only_gap_targets=true
+          runnable_vcpu_meets_qemu_deadlines_at_its_next_boundary=true
+          halted_node_idles_to_qemu_events_in_the_gap=true
           exact_event_ceiling_is_reached=true
           sim_dispatch_without_settlement_bridge_is_refused=true
           stalled_node_settles_without_moving=true
           timer_icount_version_5_is_refused=true
-          five_compiled_causal_negative_controls_rejected=true
+          ten_compiled_causal_negative_controls_rejected=true
           two_compiled_version_negative_controls_rejected=true
           guest_execution_host_scheduler_and_migration_are_separate=true
           RESULT

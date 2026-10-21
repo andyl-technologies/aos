@@ -1,6 +1,6 @@
-From ee39b24d91681ea0511a9d8d63b7ea9c537e94f7 Mon Sep 17 00:00:00 2001
+From 45e08b2107cc9603fd6e00b5e649da80bd0f72f6 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 21 Oct 2026 20:14:32 +0000
+Date: Wed, 21 Oct 2026 21:57:45 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -19,6 +19,8 @@ test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim 
 A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline at or before the ceiling. A runnable vCPU never moves its clock without a retirement, so it never crosses to a plugin event: it takes the event at its first boundary at or after it, and the event does not hold a boundary unsettled. A dispatch boundary whose next retirement would cross the ceiling, with no timer or fault deadline before it, is published as settled through the ceiling QEMU sampled, including an exact-event ceiling it cannot land on, and the final post-execution ceiling completion defers to the advance while such a deadline is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; six negative controls restore the old ceiling credits, the crossing to a plugin event, or the fallbacks and fail. An exact-event ceiling and an inbound delivery inside the final gap settle the boundary with the clock at its last retirement. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
 
 A vCPU's synchronous block I/O polls the main loop on the RR thread itself, mid-instruction, so a queued time advance runs and completes there. Completion left the advance in SETTLE_READY for the outer RR loop, which cannot run again until the guest access returns. When the blocked access needed a second advance, because the first stopped at a virtual timer below the device deadline, every later enqueue found the first advance outstanding and returned -EBUSY. The waiter retried for ever and the node stopped advancing. A completion that runs nested inside RR guest execution now releases the advance barrier itself, after the plugin committed the advance and before the device waiters are re-entered, so the waiter can enqueue the advance to its deadline. The RR thread is executing rather than parked, so this path publishes no durable idle wake; completions on the main loop still settle at the outer RR idle boundary. test-crucible-control-deferred adds a nested-io case: a waiter re-entered by the first completion enqueues a second advance, which is accepted and completes, and no idle wake is published. The nested-settle negative control leaves the completion to the outer loop and reproduces the -EBUSY refusal.
+
+A runnable vCPU also never moves its clock to a QEMU-owned deadline. The RR loop crossed the final partial instruction to a virtual timer or a fault or preemption deadline, so the guest's clock moved without a retirement. Now it fires each one at the vCPU's first instruction boundary at or after its deadline: the timer instruction limit, the boundary-deadline clamp, the fault and preemption budgets round up to that boundary, and the partial-instruction advance only runs a timer that is already due. A boundary whose next retirement would cross the ceiling settles through it with a QEMU deadline still pending in the gap, and the deadline fires at that boundary in the next quantum. The firing boundary depends only on the clock and the deadline, not on where the host split quanta. A fault command whose target lies less than one retirement before the boundary is applied there, and only a later boundary reports PAST_BOUNDARY. A commanded preemption is applied at the first boundary at or after its tick, and one a whole retirement late still aborts. An all-halted node, which cannot retire, still idles exactly to a QEMU-owned event in the gap, and the stalled-node and nested device-wait advances are unchanged. test-crucible-rr-bound-ceiling adds a runnable vCPU with a timer, a fault deadline and a preemption 24 ps ahead, each met at the next boundary with no clock move, a halted node idling to a timer in the gap, and a preemption a whole retirement late that still aborts. Four new negative controls restore the time-only crossing, the floored deadline budget, the floored timer limit and the exact preemption tick, and each fails. test-crucible-tcg-fast-paths applies fault targets 24 ticks ahead of and 999 ticks behind the boundary, and reports one a whole retirement behind as PAST_BOUNDARY.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3695,7 +3697,7 @@ index 4313864d2c5d24e30dc1cfbcdf9a81eb7eb0e323..60629a0a66e5e5556e30d46bab1912fb
  }
  
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
-index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf747623a074b0 100644
+index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..738775e254920ae937fae3e82790f63683946b2b 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -27,6 +27,7 @@
@@ -3706,7 +3708,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
  #include "qemu/guest-random.h"
  #include "hw/core/cpu.h"
  
-@@ -36,31 +37,48 @@
+@@ -36,31 +37,55 @@
  
  static int64_t icount_get_limit(void)
  {
@@ -3720,7 +3722,14 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
 +            if (deadline_ps < 0) {
 +                return INT32_MAX;
 +            }
-+            return deadline_ps / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++            /*
++             * A running vCPU meets a timer between boundaries at its first
++             * boundary at or after the deadline; its clock never moves
++             * without a retirement (RFC-0010 SCHED-12).
++             */
++            return MIN(DIV_ROUND_UP(deadline_ps,
++                                    CRUCIBLE_SIM_TICKS_PER_INSTRUCTION),
++                       INT32_MAX);
 +        }
          /*
           * Include all the timers, because they may need an attention.
@@ -3772,7 +3781,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
      } else {
          return replay_get_instructions();
      }
-@@ -76,7 +94,16 @@ static void icount_notify_aio_contexts(void)
+@@ -76,7 +101,16 @@ static void icount_notify_aio_contexts(void)
  void icount_handle_deadline(void)
  {
      assert(qemu_in_vcpu_thread());
@@ -3790,7 +3799,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
                                                    QEMU_TIMER_ATTR_ALL);
  
      /*
-@@ -93,7 +120,29 @@ void icount_handle_deadline(void)
+@@ -93,7 +127,29 @@ void icount_handle_deadline(void)
  int64_t icount_percpu_budget(int cpu_count)
  {
      int64_t limit = icount_get_limit();
@@ -3821,7 +3830,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
  
      if (timeslice == 0) {
          timeslice = limit;
-@@ -102,8 +151,12 @@ int64_t icount_percpu_budget(int cpu_count)
+@@ -102,8 +158,12 @@ int64_t icount_percpu_budget(int cpu_count)
      return timeslice;
  }
  
@@ -3835,7 +3844,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
      int insns_left;
  
      /*
-@@ -114,9 +167,18 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+@@ -114,9 +174,18 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
      g_assert(cpu->neg.icount_decr.u16.low == 0);
      g_assert(cpu->icount_extra == 0);
  
@@ -3856,7 +3865,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
      insns_left = MIN(0xffff, cpu->icount_budget);
      cpu->neg.icount_decr.u16.low = insns_left;
      cpu->icount_extra = cpu->icount_budget - insns_left;
-@@ -132,7 +194,19 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+@@ -132,7 +201,19 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
      }
  }
  
@@ -3877,7 +3886,7 @@ index d0f7b410fab3186f0359eed2b0c50dcab7d58b3e..ab3d984e1c76c500e35fe8cfd2cf7476
  {
      /* Account for executed instructions */
      icount_update(cpu);
-@@ -144,7 +218,19 @@ void icount_process_data(CPUState *cpu)
+@@ -144,7 +225,19 @@ void icount_process_data(CPUState *cpu)
  
      replay_account_executed_instructions();
  
@@ -3916,10 +3925,10 @@ index 16a301b6dc0ba515ecbc4073b28968f0a0604d14..b74307a0ba8684fe0c68fcfe5817fcc2
  
 diff --git a/accel/tcg/tcg-accel-ops-preemption.c b/accel/tcg/tcg-accel-ops-preemption.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a1472a20c
+index 0000000000000000000000000000000000000000..3500c8a07beb162bbfbb615dc5b2de3661cabac1
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-preemption.c
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,308 @@
 +/*
 + * QEMU TCG Crucible commanded preemption injection.
 + */
@@ -4149,9 +4158,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +        return 0;
 +    }
 +
-+    remaining_instructions =
-+        (crucible_sim_preemption_command.at_tick - (uint64_t)current_tick) /
-+        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    /* A runnable vCPU applies the command at its first boundary at or after it. */
++    remaining_instructions = DIV_ROUND_UP(
++        crucible_sim_preemption_command.at_tick - (uint64_t)current_tick,
++        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
 +    if (remaining_instructions > (uint64_t)INT64_MAX ||
 +        (uint64_t)cpu_budget <= remaining_instructions) {
 +        return cpu_budget;
@@ -4180,7 +4190,12 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +        (uint64_t)current_tick < crucible_sim_preemption_command.at_tick) {
 +        return false;
 +    }
-+    if ((uint64_t)current_tick > crucible_sim_preemption_command.at_tick) {
++    /*
++     * A runnable vCPU reaches the first boundary at or after the commanded
++     * tick, less than one retirement past it. Anything later missed it.
++     */
++    if ((uint64_t)current_tick - crucible_sim_preemption_command.at_tick >=
++        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +        error_report("crucible preemption missed commanded tick: "
 +                     "current=%" PRIu64 " commanded=%" PRIu64,
 +                     (uint64_t)current_tick,
@@ -4223,10 +4238,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d644114241 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61261c5f15 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2116 @@
+@@ -27,45 +27,2135 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5211,8 +5226,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +    if (deadline <= (uint64_t)now) {
 +        return 0;
 +    }
-+    remaining = (deadline - (uint64_t)now) /
-+                CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    /*
++     * A running vCPU never moves its clock without a retirement, so it meets
++     * a deadline between boundaries at its first boundary at or after it.
++     */
++    remaining = DIV_ROUND_UP(deadline - (uint64_t)now,
++                             CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
 +    return remaining < (uint64_t)budget ? (int64_t)remaining : budget;
 +}
 +
@@ -5248,6 +5267,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +    return tick > (uint64_t)now ? tick : UINT64_MAX;
 +}
 +
++static bool rr_crucible_sim_all_vcpus_halted(void);
++
 +/*
 + * Returns the earliest QEMU-owned exact event strictly after @now: a timer or
 + * a fault or preemption deadline. A bare ceiling is never an event (RFC-0010
@@ -5278,9 +5299,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +
 +/*
 + * Whether the current clock is settled through @logical_ceiling: the next
-+ * retirement would end past the ceiling and no QEMU-owned exact event lies in
-+ * (now, ceiling]. The clock then stays at its last retirement, including
-+ * below an exact-event ceiling it cannot land on (TIME-30).
++ * retirement would end past the ceiling. The clock then stays at its last
++ * retirement, including below an exact-event ceiling it cannot land on
++ * (TIME-30). A runnable node also settles past a QEMU timer, fault or
++ * preemption deadline in that gap: it fires at the first boundary at or after
++ * it. Only an all-halted node, which idles to its next event, must reach a
++ * QEMU-owned event in the gap before it settles.
 + */
 +static bool rr_crucible_sim_settled_through(uint64_t logical_ceiling)
 +{
@@ -5291,18 +5315,23 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +            CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {
 +        return false;
 +    }
-+    return rr_crucible_sim_next_gap_event(now) > logical_ceiling;
++    return !rr_crucible_sim_all_vcpus_halted() ||
++           rr_crucible_sim_next_gap_event(now) > logical_ceiling;
 +}
 +
 +/*
 + * Whether a QEMU-owned exact event lies after the clock and at or before the
-+ * logical ceiling, so the node must reach it before its boundary can settle.
++ * logical ceiling, so an all-halted node must idle to it before its boundary
++ * can settle. A runnable node meets such an event at a boundary instead.
 + */
 +static bool rr_crucible_sim_gap_event_pending(void)
 +{
 +    uint64_t logical_ceiling;
 +    int64_t now;
 +
++    if (!rr_crucible_sim_all_vcpus_halted()) {
++        return false;
++    }
 +    now = icount_crucible_sim_tick_observed();
 +    logical_ceiling = crucible_sim_shmem_logical_ceiling();
 +    if (now < 0 || (uint64_t)now >= logical_ceiling) {
@@ -5312,12 +5341,14 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +}
 +
 +/*
-+ * Crosses the final partial instruction only to a QEMU-owned exact event (a
-+ * timer or a fault or preemption deadline) at or before the ceiling. The
-+ * ceiling bounds the node; it is not a target, so the gap below it is never
-+ * credited to the guest (RFC-0010 SCHED-12). A plugin-owned event is never a
-+ * target here: this vCPU is runnable, and it takes such an event at its first
-+ * boundary at or after it rather than by a time-only advance (TIME-30).
++ * Runs a QEMU timer that is already due. Only when every vCPU is halted does
++ * it cross the final partial instruction, to a QEMU-owned exact event (a
++ * timer or a fault or preemption deadline) at or before the ceiling: that
++ * node is idling to its next real event. A runnable vCPU never moves its clock
++ * without a retirement, so it meets any deadline at its first boundary at or
++ * after it (RFC-0010 SCHED-12, TIME-30). The ceiling bounds the node; it is
++ * not a target, so the gap below it is never credited to the guest. A
++ * plugin-owned event is never a target here.
 + */
 +static bool rr_crucible_sim_advance_to_exact_event(
 +    const CrucibleConsoleDispatchResult *console_receipt)
@@ -5339,6 +5370,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
 +    if (timer_remaining == 0) {
 +        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
 +        return true;
++    }
++    if (!rr_crucible_sim_all_vcpus_halted()) {
++        return false;
 +    }
 +    if (timer_remaining >= 0 && timer_remaining <= INT64_MAX - now) {
 +        deadline = MIN(deadline, (uint64_t)(now + timer_remaining));
@@ -6362,7 +6396,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2155,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2174,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6395,7 +6429,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
      }
  }
  
-@@ -110,15 +2193,138 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2212,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6536,7 +6570,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
      }
  }
  
-@@ -140,6 +2346,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2365,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6555,7 +6589,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2402,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2421,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6564,7 +6598,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2424,203 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2443,203 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6786,7 +6820,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2636,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2655,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6819,7 +6853,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2678,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2697,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -6976,7 +7010,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2820,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2839,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7116,7 +7150,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d6
      }
  
      g_assert_not_reached();
-@@ -318,13 +2959,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2978,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -123611,10 +123645,10 @@ index 0000000000000000000000000000000000000000..d035f6c68a7d8e4bff25b4d76130f01f
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4896f052c
+index 0000000000000000000000000000000000000000..b49bda5438aabb63ec5c5c398c1bafc5c8b2b1e7
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1645 @@
+@@ -0,0 +1,1652 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -124473,9 +124507,15 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +            pending->command.command_kind !=
 +                CRUCIBLE_FAULT_COMMAND_BOUNDARY_PROBE) {
 +            result.status = CRUCIBLE_FAULT_STATUS_NOT_APPLICABLE;
-+        } else if ((uint64_t)observed_tick > pending->command.target_tick ||
-+            (uint64_t)observed_tick >
-+                pending->command.authorization_ceiling_tick) {
++        } else if ((uint64_t)observed_tick - pending->command.target_tick >=
++                       CRUCIBLE_SIM_TICKS_PER_INSTRUCTION ||
++                   (uint64_t)observed_tick >
++                       pending->command.authorization_ceiling_tick) {
++            /*
++             * A runnable vCPU meets a target between boundaries at its first
++             * boundary at or after it, less than one retirement late; only a
++             * later boundary missed the target.
++             */
 +            result.status = CRUCIBLE_FAULT_STATUS_PAST_BOUNDARY;
 +        } else {
 +            status = pending->handler->prepare(
@@ -124623,8 +124663,9 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +    if (next_tick <= (uint64_t)observed_tick) {
 +        return raw_now;
 +    }
-+    remaining_instructions = (next_tick - (uint64_t)observed_tick) /
-+        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    /* A runnable vCPU meets the target at its first boundary at or after it. */
++    remaining_instructions = DIV_ROUND_UP(next_tick - (uint64_t)observed_tick,
++                                          CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);
 +
 +    return remaining_instructions <= UINT64_MAX - raw_now ?
 +        raw_now + remaining_instructions : UINT64_MAX;
@@ -160554,10 +160595,10 @@ index aa1f719b08169025f3d9f9f0fd82113d27325c78..cfa736135e6e2e50cd1bab20a17004d2
          g_test_add_func("/perf/nesting", perf_nesting);
 diff --git a/tests/unit/test-crucible-accel-classification.py b/tests/unit/test-crucible-accel-classification.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2fce3c93f85f69500792a8315cb78bed81dd91b
+index 0000000000000000000000000000000000000000..c6fd4393760d0afb0f4a789936466e12f161a849
 --- /dev/null
 +++ b/tests/unit/test-crucible-accel-classification.py
-@@ -0,0 +1,787 @@
+@@ -0,0 +1,788 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise instance classification and hot mode predicates from production.
 +
@@ -160790,6 +160831,7 @@ index 0000000000000000000000000000000000000000..e2fce3c93f85f69500792a8315cb78be
 +#define QEMU_TIMER_ATTR_ALL 7
 +#define REPLAY_MODE_PLAY 1
 +#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 50
++#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 +#define PICOSECONDS_PER_NANOSECOND 1000
 +static int replay_mode;
 +static int64_t virtual_deadline = 2000;
@@ -188777,27 +188819,30 @@ index 0000000000000000000000000000000000000000..6a18a6e4dcca7ec12163834700cc92a3
 +}
 diff --git a/tests/unit/test-crucible-rr-bound-ceiling.py b/tests/unit/test-crucible-rr-bound-ceiling.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110ca51ad62f
+index 0000000000000000000000000000000000000000..bfa1346a5f807c95371972e385fe238f9e409ede
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-bound-ceiling.py
-@@ -0,0 +1,523 @@
+@@ -0,0 +1,713 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise bounded scheduler ceilings in the production RR Sim bodies.
 +
-+A published logical ceiling is an upper bound. A vCPU that cannot retire
-+another instruction at or before it keeps its clock, unless a timer or fault
-+deadline lies before the ceiling. The boundary is then published as settled,
-+and the gap below the ceiling is never credited to the guest. An event the
-+plugin reports (an inbound delivery, a device completion or an exact-event
-+ceiling) never moves a runnable vCPU's clock: the boundary settles below it
-+and the plugin takes the event at the next boundary. Only a stalled node,
-+which cannot retire, advances to such an event. A sim node whose plugin dispatches
++A published logical ceiling is an upper bound. A runnable vCPU that cannot
++retire another instruction at or before it keeps its clock: it never moves
++without a retirement. The boundary is then published as settled, and the gap
++below the ceiling is never credited to the guest. Any event in that gap (a
++QEMU timer, fault or preemption deadline, an inbound delivery, a device
++completion or an exact-event ceiling) is met at the vCPU's first boundary at
++or after it, and the instruction budget to a QEMU-owned deadline rounds up to
++that boundary. Only an all-halted node idles to a QEMU-owned event in the gap,
++and only a stalled node, which cannot retire, advances to a plugin event. A sim node whose plugin dispatches
 +ceilings without the settlement bridge is refused before it starts, and no
 +fallback treats its ceiling as an exact stop.
 +
-+The exact-event advance, the stalled-deadline advance, the dispatch boundary
-+publication, the launch refusal and their predicates are extracted from
-+tcg-accel-ops-rr.c; the settlement bridge is extracted from
++The exact-event advance, the stalled-deadline advance, the deadline budget
++clamp, the dispatch boundary publication, the launch refusal and their
++predicates are extracted from tcg-accel-ops-rr.c; the timer instruction limit
++from tcg-accel-ops-icount.c; the preemption budget clamp and application from
++tcg-accel-ops-preemption.c; the settlement bridge is extracted from
 +tcg-accel-ops-sim-shmem.c. Clocks, timers,
 +fault deadlines and plugin callbacks are bounded providers. This proves the
 +local stop decisions, not running guests, the host scheduler or migration.
@@ -188814,7 +188859,13 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +ROOT = Path(__file__).resolve().parents[2]
 +RR = "accel/tcg/tcg-accel-ops-rr.c"
 +SHMEM = "accel/tcg/tcg-accel-ops-sim-shmem.c"
++ICOUNT = "accel/tcg/tcg-accel-ops-icount.c"
++PREEMPTION = "accel/tcg/tcg-accel-ops-preemption.c"
 +NEGATIVES = [
++    "runnable-cross-qemu-event",
++    "floor-deadline-budget",
++    "floor-timer-limit",
++    "exact-preemption-tick",
 +    "credit-ceiling",
 +    "cross-plugin-event",
 +    "stalled-ceiling-jump",
@@ -188849,8 +188900,19 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +#include <sys/wait.h>
 +#include <unistd.h>
 +
++#include <inttypes.h>
++#include <stdarg.h>
++#include <string.h>
++
 +#define MIN(a, b) ((a) < (b) ? (a) : (b))
++#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 +#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 50
++#define QEMU_CLOCK_REALTIME 0
++#define PICOSECONDS_PER_NANOSECOND 1000
++#define REPLAY_MODE_PLAY 2
++#define ICOUNT_PRECISE 1
++#define QEMU_PLUGIN_PREEMPTION_KIND_VCPU_SWITCH 1
++#define QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT 2
 +#define QEMU_CLOCK_VIRTUAL 1
 +#define QEMU_TIMER_ATTR_ALL 0
 +#define CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY 2
@@ -188887,7 +188949,63 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +static qemu_plugin_sim_shmem_exact_event_cb_t crucible_exact_event_cb;
 +static void *crucible_sim_settlement_userdata;
 +
-+static void error_report(const char *message) { fprintf(stderr, "%s\n", message); }
++static void error_report(const char *format, ...)
++{
++    va_list arguments;
++
++    va_start(arguments, format);
++    vfprintf(stderr, format, arguments);
++    va_end(arguments);
++    fputc('\n', stderr);
++}
++
++/* Whether every vCPU is halted, so the node idles instead of retiring. */
++static bool all_halted;
++static bool rr_crucible_sim_all_vcpus_halted(void) { return all_halted; }
++
++/* Timer instruction limit providers: precise sim icount, no replay. */
++static int replay_mode;
++static bool icount_crucible_sim_mode(void) { return true; }
++static bool current_accel_is_sim(void) { return true; }
++static int icount_enabled(void) { return ICOUNT_PRECISE; }
++static int64_t qemu_clock_deadline_ns_all(int clock, int attributes)
++{
++    (void)clock;
++    (void)attributes;
++    abort();
++}
++static int64_t qemu_soonest_timeout(int64_t a, int64_t b) { (void)b; return a; }
++static int64_t icount_round_ps(int64_t deadline) { (void)deadline; abort(); }
++static int64_t replay_get_instructions(void) { abort(); }
++
++/* Preemption providers: one vCPU owner and an interrupt adapter. */
++typedef struct CPUState { int index; } CPUState;
++static CPUState vcpus[2] = { { 0 }, { 1 } };
++static CPUState *current_cpu;
++static unsigned interrupts_delivered;
++static CPUState *qemu_get_cpu(int index) { return &vcpus[index]; }
++static uint64_t icount_crucible_rr_current_vcpu(void) { return 0; }
++static bool icount_crucible_rr_commanded_switch(uint32_t from, uint32_t to)
++{
++    return from == 0 && to == 1;
++}
++static int crucible_sim_det_ipi_deliver_commanded(unsigned int vcpu,
++                                                  unsigned int vector)
++{
++    (void)vcpu;
++    (void)vector;
++    interrupts_delivered++;
++    return 0;
++}
++typedef struct CrucibleSimPreemptionCommand {
++    bool pending;
++    uint64_t at_tick;
++    unsigned int kind;
++    uint32_t arg0;
++    uint32_t arg1;
++    uint32_t arg2;
++} CrucibleSimPreemptionCommand;
++static CrucibleSimPreemptionCommand crucible_sim_preemption_command;
 +static int64_t icount_crucible_sim_tick_observed(void) { return now_tick; }
 +static uint64_t qemu_plugin_icount_raw(void) { return raw_icount; }
 +static int64_t qemu_clock_deadline_ps_all(int clock, int attributes)
@@ -188987,36 +189105,119 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +    plain_publications = settled_publications = 0;
 +    published_raw = published_tick = settled_ceiling_seen = 0;
 +    sim_mode = dispatch_registered = true;
++    all_halted = false;
++    memset(&crucible_sim_preemption_command, 0,
++           sizeof(crucible_sim_preemption_command));
++    interrupts_delivered = 0;
 +    qemu_plugin_register_sim_shmem_settlement_cb(
 +        settlement ? plugin_publish_settled : NULL,
 +        settlement ? plugin_exact_event : NULL,
 +        settlement ? &plugin_event : NULL);
 +}
 +
++static bool aborts(void (*operation)(void));
++
 +static void check_bare_ceiling_settles_below_it(void)
 +{
 +    /* The next retirement would end at 1001, past the ceiling. */
-+    reset(951, 1000, true);
-+    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
-+    assert(now_tick == 951);
-+    assert(!rr_crucible_sim_gap_event_pending());
-+    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
-+    assert(settled_publications == 1 && plain_publications == 0);
-+    assert(published_tick == 951 && settled_ceiling_seen == 1000);
++    for (int halted = 0; halted <= 1; halted++) {
++        reset(951, 1000, true);
++        all_halted = halted;
++        assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++        assert(now_tick == 951);
++        assert(!rr_crucible_sim_gap_event_pending());
++        rr_crucible_sim_publish_dispatch_boundary(raw_icount);
++        assert(settled_publications == 1 && plain_publications == 0);
++        assert(published_tick == 951 && settled_ceiling_seen == 1000);
++    }
 +    printf("PASS bare ceiling keeps the clock at 951 and settles through 1000\n");
 +}
 +
-+static void check_timer_in_gap_is_an_exact_target(void)
++/*
++ * A runnable vCPU never moves its clock without a retirement: a timer in the
++ * final gap waits for the next boundary and the boundary settles. An
++ * all-halted node idles to it and settles there.
++ */
++static void check_timer_in_gap_waits_unless_halted(void)
 +{
 +    reset(951, 1000, true);
 +    timer_remaining = 39;
++    assert(!rr_crucible_sim_gap_event_pending());
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 951 && timer_runs == 0);
++    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
++    assert(settled_publications == 1 && published_tick == 951);
++    assert(settled_ceiling_seen == 1000);
++
++    reset(951, 1000, true);
++    all_halted = true;
++    timer_remaining = 39;
 +    assert(rr_crucible_sim_gap_event_pending());
++    assert(!rr_crucible_sim_settled_through(1000));
 +    assert(rr_crucible_sim_advance_to_exact_event(NULL));
 +    assert(now_tick == 990 && timer_runs == 1);
 +    timer_remaining = -1;
 +    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
 +    assert(settled_publications == 1 && published_tick == 990);
-+    printf("PASS timer at 990 is reached, then the boundary settles\n");
++    printf("PASS timer at 990 waits on a runnable vCPU; a halted one idles to it\n");
++}
++
++/* Applies a preemption commanded at 974 at the boundary at 1000. */
++static void apply_preemption_at_the_next_boundary(void)
++{
++    assert(crucible_sim_preemption_apply_due(NULL));
++    assert(interrupts_delivered == 1);
++    assert(!crucible_sim_preemption_command.pending);
++}
++
++/*
++ * Timer, fault and preemption deadlines 24 ps ahead of a runnable vCPU: no
++ * time-only advance moves its clock, and the instruction budget reaches its
++ * first boundary at or after each deadline, at 1000.
++ */
++static void check_deadlines_between_boundaries_take_the_next_boundary(void)
++{
++    reset(950, 2000, true);
++    timer_remaining = 24;
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 950 && timer_runs == 0);
++    assert(icount_get_limit() == 1);
++
++    reset(950, 2000, true);
++    fault_deadline = 974;
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 950);
++    assert(rr_crucible_sim_clamp_boundary_deadline(1000) == 1);
++
++    reset(950, 2000, true);
++    crucible_sim_preemption_command = (CrucibleSimPreemptionCommand) {
++        .pending = true,
++        .at_tick = 974,
++        .kind = QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT,
++    };
++    assert(crucible_sim_preemption_clamp_cpu_budget(1000) == 1);
++    assert(!crucible_sim_preemption_apply_due(NULL));
++    now_tick = 1000;
++    assert(crucible_sim_preemption_clamp_cpu_budget(1000) == 0);
++    assert(!aborts(apply_preemption_at_the_next_boundary));
++    printf("PASS timer, fault and preemption 24 ps ahead fire at the next boundary\n");
++}
++
++static void apply_preemption_one_retirement_late(void)
++{
++    reset(1024, 2000, true);
++    crucible_sim_preemption_command = (CrucibleSimPreemptionCommand) {
++        .pending = true,
++        .at_tick = 974,
++        .kind = QEMU_PLUGIN_PREEMPTION_KIND_INTERRUPT_AT,
++    };
++    crucible_sim_preemption_apply_due(NULL);
++}
++
++static void check_a_missed_preemption_still_aborts(void)
++{
++    assert(aborts(apply_preemption_one_retirement_late));
++    printf("PASS a preemption a whole retirement late is still refused\n");
 +}
 +
 +/*
@@ -189027,6 +189228,7 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +static void check_exact_event_ceiling_settles_below_it(void)
 +{
 +    reset(951, 1000, true);
++    all_halted = true;
 +    plugin_event = 1000;
 +    assert(!rr_crucible_sim_gap_event_pending());
 +    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
@@ -189040,6 +189242,7 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +static void check_inbound_delivery_in_gap_waits_for_the_next_boundary(void)
 +{
 +    reset(951, 1000, true);
++    all_halted = true;
 +    plugin_event = 980;
 +    assert(!rr_crucible_sim_gap_event_pending());
 +    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
@@ -189091,9 +189294,10 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +    printf("PASS zero-budget gaps of 1 and 49 settle at 2000000\n");
 +}
 +
-+static void check_event_in_one_tick_gap_is_reached(void)
++static void check_event_in_one_tick_gap_is_reached_when_halted(void)
 +{
 +    reset(2000000, 2000001, true);
++    all_halted = true;
 +    timer_remaining = 1;
 +    assert(rr_crucible_sim_gap_event_pending());
 +    assert(rr_crucible_sim_advance_to_exact_event(NULL));
@@ -189102,7 +189306,7 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
 +    assert(settled_publications == 1 && published_tick == 2000001);
 +    assert(settled_ceiling_seen == 2000001);
-+    printf("PASS a timer in a one-tick gap is reached, then settles\n");
++    printf("PASS a halted node reaches a timer in a one-tick gap, then settles\n");
 +}
 +
 +/* Whether @operation aborts the process, observed from a forked child. */
@@ -189195,19 +189399,21 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +int main(void)
 +{
 +    check_bare_ceiling_settles_below_it();
-+    check_timer_in_gap_is_an_exact_target();
++    check_timer_in_gap_waits_unless_halted();
++    check_deadlines_between_boundaries_take_the_next_boundary();
++    check_a_missed_preemption_still_aborts();
 +    check_exact_event_ceiling_settles_below_it();
 +    check_inbound_delivery_in_gap_waits_for_the_next_boundary();
 +    check_due_plugin_event_does_not_block_settlement();
 +    check_whole_instruction_gap_is_not_settled();
 +    check_zero_budget_gaps_settle_in_place();
-+    check_event_in_one_tick_gap_is_reached();
++    check_event_in_one_tick_gap_is_reached_when_halted();
 +    check_sim_dispatch_without_bridge_is_refused();
 +    check_generic_qemu_needs_no_bridge();
 +    check_stalled_node_settles_without_moving();
 +    check_stalled_node_reaches_a_deadline_before_the_ceiling();
 +    check_stalled_node_delivers_a_plugin_event_then_settles();
-+    printf("PASS production bounded ceilings: 13 cases\n");
++    printf("PASS production bounded ceilings: 15 cases\n");
 +    return 0;
 +}
 +"""
@@ -189223,12 +189429,16 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +        (RR, ["static uint64_t rr_crucible_sim_plugin_event_after(",
 +              "static uint64_t rr_crucible_sim_next_gap_event(",
 +              "static bool rr_crucible_sim_settled_through(",
++              "static int64_t rr_crucible_sim_clamp_boundary_deadline(",
 +              "static bool rr_crucible_sim_gap_event_pending(void)\n{",
 +              "static bool rr_crucible_sim_advance_to_exact_event(",
 +              "static bool rr_crucible_sim_advance_stalled_deadline(void)\n{",
 +              "static void rr_crucible_sim_publish_dispatch_boundary(",
 +              "static bool rr_crucible_sim_settlement_bridge_missing(void)\n{",
 +              "static void rr_crucible_sim_require_settlement_bridge(void)\n{"]),
++        (ICOUNT, ["static int64_t icount_get_limit(void)"]),
++        (PREEMPTION, ["int64_t crucible_sim_preemption_clamp_cpu_budget(",
++                      "bool crucible_sim_preemption_apply_due("]),
 +    ]
 +    return [(path, signature,
 +             definition((ROOT / path).read_text(), signature))
@@ -189250,6 +189460,28 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +            "        abort();\n    }\n",
 +            "        crucible_sim_shmem_publish_current_icount(current_icount);\n"
 +            "        return;\n    }\n", 1)
++    if negative == "runnable-cross-qemu-event":
++        return body.replace(
++            "    if (!rr_crucible_sim_all_vcpus_halted()) {\n        return false;\n    }\n"
++            "    if (timer_remaining >= 0",
++            "    if (timer_remaining >= 0")
++    if negative == "floor-deadline-budget":
++        return body.replace(
++            "    remaining = DIV_ROUND_UP(deadline - (uint64_t)now,\n"
++            "                             CRUCIBLE_SIM_TICKS_PER_INSTRUCTION);",
++            "    remaining = (deadline - (uint64_t)now) /\n"
++            "                CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;")
++    if negative == "floor-timer-limit":
++        return body.replace(
++            "            return MIN(DIV_ROUND_UP(deadline_ps,\n"
++            "                                    CRUCIBLE_SIM_TICKS_PER_INSTRUCTION),\n"
++            "                       INT32_MAX);",
++            "            return deadline_ps / CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;")
++    if negative == "exact-preemption-tick":
++        return body.replace(
++            "    if ((uint64_t)current_tick - crucible_sim_preemption_command.at_tick >=\n"
++            "        CRUCIBLE_SIM_TICKS_PER_INSTRUCTION) {",
++            "    if ((uint64_t)current_tick > crucible_sim_preemption_command.at_tick) {")
 +    if negative == "credit-ceiling":
 +        return body.replace("    target = deadline;\n",
 +                            "    target = MIN(deadline, ceiling);\n")
@@ -189277,7 +189509,7 @@ index 0000000000000000000000000000000000000000..c71c6d22dede0728ac4abb06df48110c
 +    changes = 0
 +    for path, signature, body in extracted_parts():
 +        # Production exports become fixture-local definitions.
-+        if path == SHMEM:
++        if path in (SHMEM, PREEMPTION):
 +            body = "static " + body
 +        changed = mutated(body, arguments.negative_control)
 +        changes += changed != body
@@ -194972,10 +195204,10 @@ index 0000000000000000000000000000000000000000..4cfe85bd0dffb73724aab8bc15eb6f83
 +    main()
 diff --git a/tests/unit/test-crucible-tcg-fast-paths.py b/tests/unit/test-crucible-tcg-fast-paths.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e07b767cb3
+index 0000000000000000000000000000000000000000..e5416c1ac7a123b4052fc9a3f3c8df64c2726637
 --- /dev/null
 +++ b/tests/unit/test-crucible-tcg-fast-paths.py
-@@ -0,0 +1,797 @@
+@@ -0,0 +1,848 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise queue and instruction-completion production bodies.
 +
@@ -195022,6 +195254,9 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +#define CRUCIBLE_FAULT_PHASE_DEVICE 5
 +#define CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES 65536
 +#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 1000
++#ifndef DIV_ROUND_UP
++#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
++#endif
 +#define QEMU_CRUCIBLE_FAULT_STATUS_DEFERRED_INTERNAL UINT16_MAX
 +#define CRUCIBLE_FAULT_STATUS_APPLIED 1
 +#define CRUCIBLE_FAULT_STATUS_PREPARED 2
@@ -195447,6 +195682,53 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +    g_assert_cmpuint(GUINT32_FROM_BE(encoded), ==, expected);
 +}
 +
++/* Returns the status of the completed result for @sequence. */
++static uint16_t completed_status(uint64_t sequence)
++{
++    CrucibleCompletedFault *completed;
++
++    QTAILQ_FOREACH(completed, &crucible_completed_faults, link) {
++        if (completed->result.command_sequence == sequence) {
++            return completed->result.status;
++        }
++    }
++    g_assert_not_reached();
++}
++
++/*
++ * A running vCPU never moves its clock without a retirement, so it meets a
++ * target between boundaries at its first boundary at or after it. Only a
++ * target a whole retirement behind that boundary was missed.
++ */
++static void boundary_target_checks(void)
++{
++    struct qemu_plugin_crucible_fault_command early = command(30);
++    struct qemu_plugin_crucible_fault_command late = command(31);
++    struct qemu_plugin_crucible_fault_command missed = command(32);
++
++    early.target_tick = tick_now + 24;
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&early, NULL, 0), ==, 0);
++    g_assert_cmpuint(qemu_crucible_fault_next_icount(1), ==, raw_now + 1);
++    g_assert_cmpint(qemu_crucible_fault_clamp_budget(1, raw_now, 19), ==, 1);
++    g_assert_false(qemu_crucible_fault_has_pending_at_or_before(1, raw_now));
++
++    raw_now += 1;
++    tick_now += CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    late.target_tick = tick_now - (CRUCIBLE_SIM_TICKS_PER_INSTRUCTION - 1);
++    missed.target_tick = tick_now - CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++    late.target_icount = missed.target_icount = raw_now - 1;
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&late, NULL, 0), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_fault_submit(&missed, NULL, 0), ==, 0);
++    qemu_crucible_fault_dispatch_boundary(1, raw_now);
++
++    g_assert_cmpuint(qatomic_load_acquire(&crucible_pending_count), ==, 0);
++    g_assert_cmpuint(completed_status(30), ==, CRUCIBLE_FAULT_STATUS_APPLIED);
++    g_assert_cmpuint(completed_status(31), ==, CRUCIBLE_FAULT_STATUS_APPLIED);
++    g_assert_cmpuint(completed_status(32), ==, CRUCIBLE_FAULT_STATUS_PAST_BOUNDARY);
++    raw_now -= 1;
++    tick_now -= CRUCIBLE_SIM_TICKS_PER_INSTRUCTION;
++}
++
 +static void queue_checks(void)
 +{
 +    struct qemu_plugin_crucible_fault_command first = command(10);
@@ -195516,6 +195798,7 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +    g_assert_cmpuint(completions, ==, callbacks);
 +    defer_commit = false;
 +    crucible_fault_command_vmstate_commit(staged(0));
++    boundary_target_checks();
 +    g_assert_cmpuint(boundary_entries, ==, boundary_leaves);
 +    g_assert_cmpuint(observer_calls, ==, boundary_entries);
 +}

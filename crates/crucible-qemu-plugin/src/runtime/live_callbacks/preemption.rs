@@ -248,8 +248,9 @@ impl LiveVcpuTimeCallbackState {
             .get()
             .acknowledge_preemption_command(published.sequence)
             .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?;
-        // A fractional command is enforced by QEMU's exact boundary. The raw
-        // budget must retain the scheduler grant, not round the command down.
+        // QEMU applies a fractional command at the running guest's first
+        // boundary at or after it. The raw budget must retain the scheduler
+        // grant, not round the command down.
         Ok((raw_ceiling, effective_ceiling))
     }
 

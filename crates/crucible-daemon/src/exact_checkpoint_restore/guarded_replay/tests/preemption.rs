@@ -167,21 +167,60 @@ fn recorded_interrupt_at_replays_physically_at_its_rebased_counter()
         .ok_or("preemption decision entry is absent")?;
     assert_eq!(entry.at().ticks, PREEMPTION_TIME);
 
-    // A running guest stops at the commanded counter; a halted guest's clock
-    // moves there. The removed one-instruction hop applied nothing.
-    for halted in [false, true] {
+    // A halted guest's clock moves to the commanded counter. A running guest
+    // takes the command at its first boundary at or after it, never by a
+    // time-only advance; the counter lies 5 ticks past its ready boundary.
+    let first_boundary = Icount {
+        retired: READY_COUNTER + crucible::SIM_TICKS_PER_INSTRUCTION,
+    };
+    let window_end = Icount {
+        retired: preemption_counter.retired + crucible::SIM_TICKS_PER_INSTRUCTION - 1,
+    };
+    for (halted, taken) in [(false, first_boundary), (true, preemption_counter)] {
         let (replay, state) = replay_recorded_steps(&recorded, halted)?;
 
-        assert_eq!(state, preemption_counter);
-        assert_eq!(replay.preemption.applied, vec![preemption_counter]);
+        assert_eq!(state, taken, "halted={halted}");
+        assert_eq!(replay.preemption.applied, vec![taken], "halted={halted}");
         assert!(
-            replay
-                .advances
-                .iter()
-                .all(|ceiling| *ceiling <= preemption_counter)
+            replay.advances.iter().all(|ceiling| *ceiling <= window_end),
+            "halted={halted}: {:?}",
+            replay.advances
         );
     }
     Ok(())
+}
+
+#[test]
+fn a_running_replay_that_cannot_reach_the_preemption_boundary_refuses() {
+    // The checkpoint target ends inside the window, below the running
+    // guest's first boundary after the command, so the preemption cannot be
+    // taken where the live guest took it.
+    let mut replay = empty_physical_replay();
+    let state = Icount { retired: 2_000 };
+    let decision = PreemptionDecision {
+        node: replay.node.clone(),
+        at: SimInstant { ticks: 2_010 },
+        kind: PreemptionKind::InterruptAt {
+            target_vcpu: VcpuId { index: 0 },
+            irq: IrqVector { vector: 32 },
+        },
+    };
+
+    let result = replay_one_nonselection_decision_boundary(
+        &mut replay,
+        state,
+        Icount { retired: 2_030 },
+        &Decision::Preemption(decision),
+    );
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(replay.preemption.applied.is_empty());
+    assert!(
+        replay
+            .advances
+            .iter()
+            .all(|ceiling| ceiling.retired <= 2_030)
+    );
 }
 
 #[test]

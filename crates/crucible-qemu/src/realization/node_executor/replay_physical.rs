@@ -179,10 +179,11 @@ impl QemuReplayValidationExecutor {
 
     /// Arms one recorded preemption on the thin replay node.
     ///
-    /// `decision.at` is the node-local physical counter at which the live run
-    /// applied the preemption. The command authorizes the window from the thin
-    /// node's current counter through `decision.at`; bounded steps up to that
-    /// counter then let patched QEMU apply it exactly there, as in the live RUN.
+    /// `decision.at` is the node-local physical counter the scheduler
+    /// commanded. The command authorizes the window from the thin node's
+    /// current counter through `decision.at`. Patched QEMU then applies it
+    /// where the live RUN did: exactly at `decision.at` for a halted guest, and
+    /// at a running guest's first boundary at or after it.
     ///
     /// # Errors
     ///
@@ -254,9 +255,10 @@ impl QemuReplayValidationExecutor {
 
     /// Confirms that QEMU took an armed preemption at its recorded counter.
     ///
-    /// The thin node must stand exactly at `decision.at`, and the plugin must
-    /// have handed the command to patched QEMU, which acknowledges only an
-    /// accepted exact-counter injection.
+    /// The thin node must stand at `decision.at`, or less than one retirement
+    /// past it, which is where a running guest meets the command at its first
+    /// boundary at or after it. The plugin must also have handed the command
+    /// to patched QEMU, which acknowledges only an accepted injection.
     ///
     /// # Errors
     ///
@@ -285,7 +287,7 @@ impl QemuReplayValidationExecutor {
         let pending = node
             .scheduler_preemption_pending()
             .map_err(|source| node_backend_error("confirm guarded replay preemption", source))?;
-        if current.retired != decision.at.ticks || pending {
+        if !preemption_taken_at(current, decision) || pending {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded replay preemption",
                 message: format!(
@@ -514,6 +516,17 @@ fn replay_node_icount(
     })
 }
 
+/// Returns whether a node standing at `current` can have taken `decision`.
+///
+/// A halted guest takes a preemption exactly at `decision.at`. A running guest
+/// never moves its clock without a retirement, so it takes it at its first
+/// boundary at or after `decision.at`, less than one retirement later
+/// (RFC-0010 SCHED-12, TIME-30).
+fn preemption_taken_at(current: Icount, decision: &crucible::PreemptionDecision) -> bool {
+    current.retired >= decision.at.ticks
+        && current.retired - decision.at.ticks < crucible::SIM_TICKS_PER_INSTRUCTION
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -521,6 +534,35 @@ mod tests {
     use crucible::{Configuration, EventLogOffset, ScenarioDef, Schedule, SchedulerState};
 
     use super::*;
+
+    #[test]
+    fn a_preemption_is_taken_at_its_counter_or_the_first_boundary_after_it() {
+        let decision = crucible::PreemptionDecision {
+            node: NodeId {
+                name: String::from("node"),
+            },
+            at: crucible::SimInstant { ticks: 1_024 },
+            kind: crucible::PreemptionKind::InterruptAt {
+                target_vcpu: crucible::VcpuId { index: 0 },
+                irq: crucible::IrqVector { vector: 32 },
+            },
+        };
+
+        for (current, taken) in [
+            (1_000, false),
+            (1_023, false),
+            (1_024, true),
+            (1_050, true),
+            (1_073, true),
+            (1_074, false),
+        ] {
+            assert_eq!(
+                preemption_taken_at(Icount { retired: current }, &decision),
+                taken,
+                "current={current}"
+            );
+        }
+    }
 
     #[test]
     fn physical_replay_reads_only_the_owned_node_clock() -> Result<(), QemuVmRealizationError> {

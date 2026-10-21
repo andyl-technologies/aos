@@ -2733,9 +2733,12 @@ impl QemuNode {
     ///
     /// The authorization window opens at the node's last observed counter and
     /// closes at `ceiling`. The plugin admits the command once a published
-    /// RUN ceiling reaches `ceiling`; patched QEMU then treats `decision.at`
-    /// as an exact event, stopping a running guest there and moving a halted
-    /// guest's clock to it.
+    /// RUN ceiling reaches `ceiling`. Patched QEMU then moves a halted guest's
+    /// clock exactly to `decision.at`. A running guest never moves its clock
+    /// without a retirement, so it takes the command at its first boundary at
+    /// or after `decision.at`; when that boundary lies past this RUN, the node
+    /// settles below it and QEMU keeps the command for the next RUN (RFC-0010
+    /// SCHED-12, TIME-30).
     ///
     /// # Errors
     ///

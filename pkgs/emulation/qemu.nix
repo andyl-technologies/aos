@@ -2099,7 +2099,7 @@ in
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
               grep -q '^PASS all-halted control claim settles its own IDLE/ACTIVE wake' rr-sim-barriers.result
               cat rr-bound-ceiling.result
-              grep -Fxq 'PASS production bounded ceilings: 13 cases' rr-bound-ceiling.result
+              grep -Fxq 'PASS production bounded ceilings: 15 cases' rr-bound-ceiling.result
               cat icount-vmstate-version.result
               grep -Fxq 'PASS production timer/icount version gate: 4 cases' \
                 icount-vmstate-version.result
