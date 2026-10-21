@@ -1,33 +1,46 @@
-From bb4478755b7db3ab7b7212f0213d94d92c649ede Mon Sep 17 00:00:00 2001
+From 8c77badcb988809f3c7630d41aab99c499f1458c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: exercise RAM inventory with the complete native
- provider
+Subject: [PATCH] crucible: refresh native startup runtime request fixtures
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
-Use the full native thread translation unit in the RAM inventory fixture,
-with appended test-only accessors into its actual private registry. Build
-the coordinator through its real constructor and preserve the historical
-negative records as explicit standalone corruption inputs. Keep actual
-membership identity, lock observations, diagnostics and return assertions.
+Supply required run and teardown rows with real compiled fixture layouts
+and same-module exported C component providers. Derive modeled allowance
+from the genuine backing planner and retain the original 1 MiB refusal.
+Assert exact issued claims, retained roster/worker charges and task plans,
+while preserving required-role omissions and every cleanup behavior.
 
-Recover the provider compile tuple and genuine utility, event-loop and QOM
-support from the owning configured build. Retain the component and both
-provider objects, record their identities and verify a single provider in
-each link. Remove original dependency-output side effects and preserve
-configured inputs. Delete only the two actual end gate-clear writes in
-the mutant and require its existing native_end_complete assertion.
+Admit the actual source-built glibc 2.39 cohort after auditing its GNU
+release allocator, TLS and user-stack thread paths. Keep the existing
+2.42 cohort and every loader, allocator, environment and THP refusal.
+The unchanged bound covers 32 KiB heap/header minimum, 128 KiB top-pad,
+1 MiB morecore fallback, backing-page rounding, actual control requests,
+DTV max-module-id plus 14 surplus and two headers, tcache (64 bins under
+2.39, bounded by 76), and each loaded TLS size plus alignment. Explicit
+user stacks contain pthread/first TSD/static TLS and bypass stack caches;
+first-thread signal setup allocates nothing. Refuse changed environment
+inputs and invalid stacks without charge or birth. Task/TLS accounting
+does not prove physical libc backing return.
 
-Validate the stopped-rearm fixture's authoritative QOM header before output
-creation and emit its actual object_unref declaration. Retain that component
-object for the owning runner's symbol audit. Refresh the RAM emitter's
-genuine incoming fingerprints without changing inventories or validators.
+Repair serialized component dependency closures with literal native helper
+bodies and configured genuine QOM support/linker objects. Keep bounded
+component providers separate from that linked support and preserve original
+compiler target options. Retain the genuine linked RCU worker after its
+actual callback drain, including its native registry and task census;
+never erase or relabel the record. Refresh exact input fingerprints.
 
-Preserve all other source blobs, modes, licenses, ABI, assertions, causal
-controls, limits and experimental support policy. Actual component symbol
-isolation, genuine provider linkage and runtime controls remain for the
-normal owning runner. No Source or CPU activation, positive RCU grace,
-launched lifecycle, physical-return or performance qualification is implied.
+Preserve configured healthy completion with actual C Bridge/Child placement,
+registration holder transfer, bounded RUN/teardown task enrollment and entry,
+RUN socket handoff, semaphore lifetime, close/join/control destruction and
+stack/Bridge/Child storage return. Bound join observations by the same
+retained installing and containing deadlines, without renewing admission.
+Keep exact residual history charged. Reach the unavailable-runtime negative
+through actual controller reservation before its disclosed scratch input.
+Prepared-family and completion enrollment remain isolated modeled inputs;
+no worker born, ready or returned flag is seeded. These component lifetimes
+qualify no standing, entered Original, production Rust module, Source/CPU
+activation or launched lifecycle/VM behavior. The mandatory launched capture
+lifecycle refusal remains unchanged.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -162270,10 +162283,10 @@ index 0000000000000000000000000000000000000000..56e7923907c8519e4999fb98608e1136
 +}
 diff --git a/plugins/crucible-plugin-worker.inc.h b/plugins/crucible-plugin-worker.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9b8732a6b4bc5c4aa8319792c00082cf28f9d2f0
+index 0000000000000000000000000000000000000000..285bcb3d2bfe4f61b54d877cbb931c9830a35411
 --- /dev/null
 +++ b/plugins/crucible-plugin-worker.inc.h
-@@ -0,0 +1,1108 @@
+@@ -0,0 +1,1120 @@
 +/*
 + * Shared Source-owned native lifetime for fingerprint, RUN and teardown workers
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -162479,7 +162492,8 @@ index 0000000000000000000000000000000000000000..9b8732a6b4bc5c4aa8319792c00082cf
 +    uint64_t hugepage;
 +    int status;
 +
-+    if (strcmp(gnu_get_libc_version(), "2.42") ||
++    if ((strcmp(gnu_get_libc_version(), "2.39") &&
++         strcmp(gnu_get_libc_version(), "2.42")) ||
 +        !dladdr((void *)malloc, &allocator) ||
 +        !dladdr((void *)gnu_get_libc_version, &libc) ||
 +        allocator.dli_fbase != libc.dli_fbase) {
@@ -162529,8 +162543,9 @@ index 0000000000000000000000000000000000000000..9b8732a6b4bc5c4aa8319792c00082cf
 +#endif
 +}
 +
-+/* Audited against glibc-2.42 malloc/{malloc,arena}.c, elf/dl-tunables.list
-+ * and elf/dl-tls.c. These are committed-backing allowances, not the 64MiB
++/* Audited against glibc-2.39 and glibc-2.42 malloc/{malloc,arena}.c,
++ * elf/dl-tunables.list, elf/dl-tls.c and nptl/{allocatestack,pthread_create}.c.
++ * These are committed-backing allowances, not the 64MiB
 + * PROT_NONE arena address reservation. Default top_pad is 128KiB; a new heap
 + * has a 32KiB minimum (also exceeding this build's heap_info + malloc_state +
 + * chunk headers). mmap-as-morecore has a 1MiB minimum. Two pages cover initial
@@ -162542,6 +162557,16 @@ index 0000000000000000000000000000000000000000..9b8732a6b4bc5c4aa8319792c00082cf
 + * one dynamic TLS allocation per loaded TLS module. Entry/job APIs allocate
 + * nothing. This reserve is historical: free, entry exit and join never refund
 + * allocator arenas, caches or TLS history. memory.max remains enforcement.
++ * The AOS glibc-2.39 source pin is the unmodified GNU release. Its 64-bin
++ * tcache is smaller than the 76-bin allowance below; heap/arena headers fit
++ * within the 32KiB minimum. Its DTV has the same 14 surplus entries and
++ * two header entries. User stacks contain the pthread/first TSD/static TLS,
++ * bypass guards/cache, and allocate only DTV plus dynamic TLS externally.
++ * First-thread late_init installs signals without allocating. Default attrs
++ * contain no extension allocation; this constructor uses explicit attrs.
++ * These bounds cover committed backing, including retained allocator/TLS
++ * history. Thread exit or join does not prove physical libc backing return.
++ * https://sourceware.org/git/?p=glibc.git;a=tree;hb=glibc-2.39
 + * https://sourceware.org/git/?p=glibc.git;a=tree;hb=glibc-2.42
 + */
 +static int plugin_worker_backing(QemuCruciblePluginWorker *worker)
@@ -192962,7 +192987,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..562e48107caa5fadc446d702960cc150460a3dd1
+index 0000000000000000000000000000000000000000..7e549c941453bb08c172e9a1c74205731eeb06ae
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -192990,7 +193015,7 @@ index 0000000000000000000000000000000000000000..562e48107caa5fadc446d702960cc150
 +    'include/plugins/qemu-plugin.h':
 +        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
++        '58e5a9c7af08eb4e79cfe75130a83cacbf8e29804d0f67dcef915630bd166dc4',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -235015,10 +235040,10 @@ index 0000000000000000000000000000000000000000..ebc84426ae724da008941bafc2760177
 +implemented and run, retain the explicit mandatory lifecycle failure.
 diff --git a/tests/unit/crucible-net-stop-support.py b/tests/unit/crucible-net-stop-support.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69e4d05b32
+index 0000000000000000000000000000000000000000..b0a6ceda6d413ce2cc91ed4153408ba72b549a5c
 --- /dev/null
 +++ b/tests/unit/crucible-net-stop-support.py
-@@ -0,0 +1,296 @@
+@@ -0,0 +1,568 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Select literal dependencies for the ordinary serialized stop fixtures.
 +
@@ -235028,6 +235053,8 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +
 +from pathlib import Path
 +import runpy
++import os
++import shlex
 +
 +
 +ROOT = Path(__file__).resolve().parents[2]
@@ -235072,14 +235099,16 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    ),
 +    "plugins/crucible-callback-publication.inc.h": (
 +        "qemu_crucible_startup_source_native_selection_v1",
++        "qemu_crucible_startup_source_native_dispatch_hint_v1",
 +    ),
 +    "plugins/crucible-native-invocation.c": (
-+        "native_selection", "registry_process_current",
++        "native_selection", "native_dispatch_hint", "registry_process_current",
 +        "registry_identity_locked", "registry_current_locked",
 +        "group_index", "group_source_object_identity", "group_identity_locked",
 +        "qemu_plugin_crucible_native_group_member_count_v1",
 +        "top_locked", "registration_locked", "frame_member_locked",
-+        "frame_reclaim_locked", "qemu_plugin_crucible_native_enter_v1",
++        "frame_reclaim_locked", "frame_identity_locked", "frame_cpu_pin_return",
++        "qemu_plugin_crucible_native_enter_v1",
 +        "qemu_plugin_crucible_native_group_use_begin_v1",
 +        "qemu_plugin_crucible_native_group_use_end_v1",
 +        "qemu_plugin_crucible_native_mask_v1",
@@ -235127,6 +235156,7 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +FUNCTION_GROUPS = {
 +    "native": set(FUNCTIONS["plugins/crucible-native-invocation.c"]) | {
 +        "qemu_crucible_startup_source_native_selection_v1",
++        "qemu_crucible_startup_source_native_dispatch_hint_v1",
 +        "qemu_plugin_crucible_startup_source_retained",
 +        "qemu_thread_get_self", "qemu_thread_is_self",
 +    },
@@ -235163,6 +235193,263 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    "tx": {"tx-slots"},
 +    "stop": {"vmstop", "control-stop", "receiving"},
 +}
++
++# Keep bounded component providers separate from genuine linked QEMU support.
++NATIVE_COMPONENT_NAMESPACE = r"""
++#define aio_bh_schedule_oneshot_full \
++    native_stop_component_aio_bh_schedule_oneshot_full
++#define aio_set_fd_handler \
++    native_stop_component_aio_set_fd_handler
++#define bdrv_drain_all \
++    native_stop_component_bdrv_drain_all
++#define bdrv_flush_all \
++    native_stop_component_bdrv_flush_all
++#define bql_lock_impl \
++    native_stop_component_bql_lock_impl
++#define bql_locked \
++    native_stop_component_bql_locked
++#define bql_unlock \
++    native_stop_component_bql_unlock
++#define cpu_exit \
++    native_stop_component_cpu_exit
++#define cpu_stop_current \
++    native_stop_component_cpu_stop_current
++#define cpus_queue \
++    native_stop_component_cpus_queue
++#define current_cpu \
++    native_stop_component_current_cpu
++#define error_printf \
++    native_stop_component_error_printf
++#define error_report \
++    native_stop_component_error_report
++#define icount_advance_virtual_time_to_tick \
++    native_stop_component_icount_advance_virtual_time_to_tick
++#define iov_size \
++    native_stop_component_iov_size
++#define iov_to_buf_full \
++    native_stop_component_iov_to_buf_full
++#define pause_all_vcpus \
++    native_stop_component_pause_all_vcpus
++#define plugin \
++    native_stop_component_plugin
++#define qapi_event_send_stop \
++    native_stop_component_qapi_event_send_stop
++
++#define qemu_bh_new_full \
++    native_stop_component_qemu_bh_new_full
++#define qemu_bh_schedule \
++    native_stop_component_qemu_bh_schedule
++#define qemu_clock_notify \
++    native_stop_component_qemu_clock_notify
++#define qemu_clock_run_timers \
++    native_stop_component_qemu_clock_run_timers
++#define qemu_cond_broadcast \
++    native_stop_component_qemu_cond_broadcast
++#define qemu_cond_timedwait_bql \
++    native_stop_component_qemu_cond_timedwait_bql
++#define qemu_cond_wait_bql \
++    native_stop_component_qemu_cond_wait_bql
++#define qemu_cpu_is_self \
++    native_stop_component_qemu_cpu_is_self
++#define qemu_cpu_kick \
++    native_stop_component_qemu_cpu_kick
++
++#define qemu_crucible_checkpoint_main_loop_current \
++    native_stop_component_qemu_crucible_checkpoint_main_loop_current
++#define qemu_crucible_checkpoint_pager_binding_current \
++    native_stop_component_qemu_crucible_checkpoint_pager_binding_current
++#define qemu_crucible_checkpoint_paused_reap_v1 \
++    native_stop_component_qemu_crucible_checkpoint_paused_reap_v1
++#define qemu_crucible_checkpoint_stop_admission_current_v1 \
++    native_stop_component_qemu_crucible_checkpoint_stop_admission_current_v1
++#define qemu_crucible_checkpoint_stop_admitted_v1 \
++    native_stop_component_qemu_crucible_checkpoint_stop_admitted_v1
++#define qemu_crucible_checkpoint_stop_completed_v1 \
++    native_stop_component_qemu_crucible_checkpoint_stop_completed_v1
++#define qemu_crucible_checkpoint_stop_intent_control_v1 \
++    native_stop_component_qemu_crucible_checkpoint_stop_intent_control_v1
++#define qemu_crucible_checkpoint_storage_current_v1 \
++    native_stop_component_qemu_crucible_checkpoint_storage_current_v1
++#define qemu_crucible_cold_stop_competing_stop \
++    native_stop_component_qemu_crucible_cold_stop_competing_stop
++#define qemu_crucible_cold_stop_receipt_valid \
++    native_stop_component_qemu_crucible_cold_stop_receipt_valid
++#define qemu_crucible_cold_stop_transaction_active \
++    native_stop_component_qemu_crucible_cold_stop_transaction_active
++#define qemu_crucible_fingerprint_main_execution_enroll_v1 \
++    native_stop_component_qemu_crucible_fingerprint_main_execution_enroll_v1
++#define qemu_crucible_selected_process_id \
++    native_stop_component_qemu_crucible_selected_process_id
++#define qemu_crucible_source_control_invocation_current_v1 \
++    native_stop_component_qemu_crucible_source_control_invocation_current_v1
++#define qemu_crucible_startup_source_fingerprint_enrollment_required_v1 \
++    native_stop_component_qemu_crucible_startup_source_fingerprint_enrollment_required_v1
++#define qemu_crucible_startup_source_native_dispatch_hint_v1 \
++    native_stop_component_qemu_crucible_startup_source_native_dispatch_hint_v1
++#define qemu_crucible_startup_source_native_selection_v1 \
++    native_stop_component_qemu_crucible_startup_source_native_selection_v1
++#define qemu_crucible_startup_source_watcher_borrow_v1 \
++    native_stop_component_qemu_crucible_startup_source_watcher_borrow_v1
++#define qemu_crucible_startup_source_watcher_current_v1 \
++    native_stop_component_qemu_crucible_startup_source_watcher_current_v1
++#define qemu_crucible_startup_source_watcher_prebirth_current_v1 \
++    native_stop_component_qemu_crucible_startup_source_watcher_prebirth_current_v1
++
++#define qemu_force_shutdown_requested \
++    native_stop_component_qemu_force_shutdown_requested
++#define qemu_get_aio_context \
++    native_stop_component_qemu_get_aio_context
++#define qemu_in_coroutine \
++    native_stop_component_qemu_in_coroutine
++#define qemu_in_main_thread \
++    native_stop_component_qemu_in_main_thread
++#define qemu_in_vcpu_thread \
++    native_stop_component_qemu_in_vcpu_thread
++#define qemu_mutex_destroy \
++    native_stop_component_qemu_mutex_destroy
++#define qemu_mutex_init \
++    native_stop_component_qemu_mutex_init
++#define qemu_mutex_lock_func \
++    native_stop_component_qemu_mutex_lock_func
++#define qemu_mutex_lock_impl \
++    native_stop_component_qemu_mutex_lock_impl
++#define qemu_mutex_unlock_impl \
++    native_stop_component_qemu_mutex_unlock_impl
++
++#define qemu_plugin_advance_time_ticks \
++    native_stop_component_qemu_plugin_advance_time_ticks
++#define qemu_plugin_control_boundary_cb \
++    native_stop_component_qemu_plugin_control_boundary_cb
++#define qemu_plugin_control_boundary_userdata \
++    native_stop_component_qemu_plugin_control_boundary_userdata
++#define qemu_plugin_crucible_control_boundary_outstanding \
++    native_stop_component_qemu_plugin_crucible_control_boundary_outstanding
++#define qemu_plugin_crucible_control_drain_settled \
++    native_stop_component_qemu_plugin_crucible_control_drain_settled
++#define qemu_plugin_crucible_exact_boundary_enter \
++    native_stop_component_qemu_plugin_crucible_exact_boundary_enter
++#define qemu_plugin_crucible_exact_boundary_leave \
++    native_stop_component_qemu_plugin_crucible_exact_boundary_leave
++#define qemu_plugin_crucible_native_control_descriptor_observe_v1 \
++    native_stop_component_qemu_plugin_crucible_native_control_descriptor_observe_v1
++#define qemu_plugin_crucible_native_enter_v1 \
++    native_stop_component_qemu_plugin_crucible_native_enter_v1
++#define qemu_plugin_crucible_native_exit_v1 \
++    native_stop_component_qemu_plugin_crucible_native_exit_v1
++#define qemu_plugin_crucible_native_group_member_count_v1 \
++    native_stop_component_qemu_plugin_crucible_native_group_member_count_v1
++#define qemu_plugin_crucible_native_group_use_begin_v1 \
++    native_stop_component_qemu_plugin_crucible_native_group_use_begin_v1
++#define qemu_plugin_crucible_native_group_use_end_v1 \
++    native_stop_component_qemu_plugin_crucible_native_group_use_end_v1
++#define qemu_plugin_crucible_native_idle_resume_descriptor_observe_v1 \
++    native_stop_component_qemu_plugin_crucible_native_idle_resume_descriptor_observe_v1
++#define qemu_plugin_crucible_native_mask_v1 \
++    native_stop_component_qemu_plugin_crucible_native_mask_v1
++#define qemu_plugin_crucible_native_net_tx_descriptor_observe_v1 \
++    native_stop_component_qemu_plugin_crucible_native_net_tx_descriptor_observe_v1
++#define qemu_plugin_crucible_native_time_advance_descriptor_observe_v1 \
++    native_stop_component_qemu_plugin_crucible_native_time_advance_descriptor_observe_v1
++#define qemu_plugin_crucible_rr_control_boundary_acknowledge \
++    native_stop_component_qemu_plugin_crucible_rr_control_boundary_acknowledge
++#define qemu_plugin_crucible_rr_control_boundary_cancel \
++    native_stop_component_qemu_plugin_crucible_rr_control_boundary_cancel
++#define qemu_plugin_crucible_rr_control_boundary_defer \
++    native_stop_component_qemu_plugin_crucible_rr_control_boundary_defer
++#define qemu_plugin_crucible_rr_control_boundary_pending \
++    native_stop_component_qemu_plugin_crucible_rr_control_boundary_pending
++#define qemu_plugin_crucible_single_threaded_rr \
++    native_stop_component_qemu_plugin_crucible_single_threaded_rr
++#define qemu_plugin_crucible_source_control_stop_intent_admitted_v1 \
++    native_stop_component_qemu_plugin_crucible_source_control_stop_intent_admitted_v1
++#define qemu_plugin_crucible_source_control_stop_intent_borrow_v1 \
++    native_stop_component_qemu_plugin_crucible_source_control_stop_intent_borrow_v1
++#define qemu_plugin_crucible_source_control_stop_intent_current_v1 \
++    native_stop_component_qemu_plugin_crucible_source_control_stop_intent_current_v1
++#define qemu_plugin_crucible_source_control_stop_intent_stopped_v1 \
++    native_stop_component_qemu_plugin_crucible_source_control_stop_intent_stopped_v1
++#define qemu_plugin_crucible_startup_source_retained \
++    native_stop_component_qemu_plugin_crucible_startup_source_retained
++#define qemu_plugin_crucible_vmstop_admission_pending \
++    native_stop_component_qemu_plugin_crucible_vmstop_admission_pending
++#define qemu_plugin_crucible_vmstop_admit_internal \
++    native_stop_component_qemu_plugin_crucible_vmstop_admit_internal
++#define qemu_plugin_crucible_vmstop_cold_begin \
++    native_stop_component_qemu_plugin_crucible_vmstop_cold_begin
++#define qemu_plugin_crucible_vmstop_cold_origin \
++    native_stop_component_qemu_plugin_crucible_vmstop_cold_origin
++#define qemu_plugin_crucible_vmstop_flush_status \
++    native_stop_component_qemu_plugin_crucible_vmstop_flush_status
++#define qemu_plugin_crucible_vmstop_generation \
++    native_stop_component_qemu_plugin_crucible_vmstop_generation
++#define qemu_plugin_crucible_vmstop_pending \
++    native_stop_component_qemu_plugin_crucible_vmstop_pending
++#define qemu_plugin_crucible_vmstop_quiesced \
++    native_stop_component_qemu_plugin_crucible_vmstop_quiesced
++#define qemu_plugin_crucible_vmstop_request_complete \
++    native_stop_component_qemu_plugin_crucible_vmstop_request_complete
++#define qemu_plugin_crucible_vmstop_request_stopped \
++    native_stop_component_qemu_plugin_crucible_vmstop_request_stopped
++#define qemu_plugin_crucible_vmstop_resume_consume \
++    native_stop_component_qemu_plugin_crucible_vmstop_resume_consume
++#define qemu_plugin_crucible_wake_watcher_current_v1 \
++    native_stop_component_qemu_plugin_crucible_wake_watcher_current_v1
++#define qemu_plugin_fire_control_boundary_cb \
++    native_stop_component_qemu_plugin_fire_control_boundary_cb
++#define qemu_plugin_fire_vcpu_resume_cb \
++    native_stop_component_qemu_plugin_fire_vcpu_resume_cb
++#define qemu_plugin_icount_raw \
++    native_stop_component_qemu_plugin_icount_raw
++#define qemu_plugin_request_vmstop \
++    native_stop_component_qemu_plugin_request_vmstop
++#define qemu_plugin_time_advance_is_pending \
++    native_stop_component_qemu_plugin_time_advance_is_pending
++#define qemu_plugin_time_advance_settle_at_rr_idle \
++    native_stop_component_qemu_plugin_time_advance_settle_at_rr_idle
++#define qemu_plugin_time_advance_settle_is_pending \
++    native_stop_component_qemu_plugin_time_advance_settle_is_pending
++#define qemu_plugin_vcpu_idle_resume_idle_cb \
++    native_stop_component_qemu_plugin_vcpu_idle_resume_idle_cb
++#define qemu_plugin_vcpu_idle_resume_resume_cb \
++    native_stop_component_qemu_plugin_vcpu_idle_resume_resume_cb
++#define qemu_plugin_vcpu_idle_resume_userdata \
++    native_stop_component_qemu_plugin_vcpu_idle_resume_userdata
++
++#define qemu_rec_mutex_lock_func \
++    native_stop_component_qemu_rec_mutex_lock_func
++#define qemu_rec_mutex_lock_impl \
++    native_stop_component_qemu_rec_mutex_lock_impl
++#define qemu_rec_mutex_unlock_impl \
++    native_stop_component_qemu_rec_mutex_unlock_impl
++#define qemu_sendv_packet_async \
++    native_stop_component_qemu_sendv_packet_async
++#define qemu_system_shutdown_request \
++    native_stop_component_qemu_system_shutdown_request
++#define qemu_system_vmstop_request \
++    native_stop_component_qemu_system_vmstop_request
++#define qemu_system_vmstop_request_prepare \
++    native_stop_component_qemu_system_vmstop_request_prepare
++#define qemu_thread_get_self \
++    native_stop_component_qemu_thread_get_self
++#define qemu_thread_is_self \
++    native_stop_component_qemu_thread_is_self
++#define run_on_cpu \
++    native_stop_component_run_on_cpu
++#define runstate_check \
++    native_stop_component_runstate_check
++#define runstate_get \
++    native_stop_component_runstate_get
++#define runstate_is_running \
++    native_stop_component_runstate_is_running
++#define runstate_set \
++    native_stop_component_runstate_set
++#define vm_state_notify \
++    native_stop_component_vm_state_notify
++#define vm_stop \
++    native_stop_component_vm_stop
++#define warn_report \
++    native_stop_component_warn_report
++"""
 +
 +HEADERS = r"""
 +#include "qemu/osdep.h"
@@ -235310,6 +235597,16 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    return "\n\n".join(prototypes + bodies)
 +
 +
++def native_link_arguments():
++    """Retain the configured QOM provider closure for actual Object pin return."""
++    provider = runpy.run_path(str(Path(__file__).with_name(
++        "test-crucible-ram-worker-inventory.py")))
++    build_dir = (ROOT / "build").resolve(strict=True)
++    build = provider["provider_build"](build_dir, shlex.split(os.environ["CC"]))
++    return [*(str(path) for path in build["support_objects"]),
++            *build["parameters"]]
++
++
 +def utility_sources():
 +    """Use matched generic Error cleanup and the real ordinary notifier list."""
 +    return [str(ROOT / path) for path in (
@@ -235317,10 +235614,10 @@ index 0000000000000000000000000000000000000000..c4faa376c01509f12f8ce6aaa72bbc69
 +    )]
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f21d3179b1145af875eaef47586317d4c861f4e
+index 0000000000000000000000000000000000000000..17f2832e49f0aa4ba96428cb947bcdbeec5c9b1c
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,820 @@
+@@ -0,0 +1,829 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -235346,6 +235643,7 @@ index 0000000000000000000000000000000000000000..1f21d3179b1145af875eaef47586317d
 +
 +/* These are fixture gates, not a launch issuer, a VM BQL or child admission. */
 +static bool fixture_bql = true;
++static uint64_t fixture_extra_native_allowance;
 +static bool effect_reached;
 +static bool modeled_abort_reached;
 +static QemuSemaphore uninstall_entry_passed;
@@ -235774,6 +236072,9 @@ index 0000000000000000000000000000000000000000..1f21d3179b1145af875eaef47586317d
 +    uint64_t extent = qemu_crucible_startup_source_fixed_control_extent();
 +    uint64_t modeled_extent = 4096 + 4096; /* Guest and residual allowance. */
 +
++    g_assert_cmpuint(fixture_extra_native_allowance, <=, UINT64_MAX - modeled_extent);
++    modeled_extent += fixture_extra_native_allowance;
++
 +    for (size_t index = 0; index < 7; index++) {
 +        modeled_extent += 64 + index * 16;
 +    }
@@ -235951,7 +236252,12 @@ index 0000000000000000000000000000000000000000..1f21d3179b1145af875eaef47586317d
 +        g_assert_cmpint(fstat(fixture.descriptors[QEMU_CRUCIBLE_PREEXEC_SETUP_WORKSPACE_INDEX], &workspace_identity), ==, 0);
 +    }
 +    fixture.original_end_ns = end;
-+    fixture.total = time_mode == 3 ? sizeof(startup_source) - 1 : UINT64_C(1048576);
++    /* Keep the original 1 MiB baseline. Runtime fixtures add the genuine
++     * planner cost to each declared family row, before decoding/admission. */
++    g_assert_cmpuint(fixture_extra_native_allowance, <=,
++                     (UINT64_MAX - UINT64_C(1048576)) / 2);
++    fixture.total = time_mode == 3 ? sizeof(startup_source) - 1 :
++        UINT64_C(1048576) + 2 * fixture_extra_native_allowance;
 +
 +    memcpy(wire, QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_MAGIC, 8);
 +    stl_be_p(wire + 8, QEMU_CRUCIBLE_PROCESS_PURPOSE_PLAN_SCHEMA);
@@ -236795,7 +237101,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae7d9b84236f38ec420c2b8eb288d4678b9f8ee2
+index 0000000000000000000000000000000000000000..e8e6eed39c4a46ae6eb9b35c23903099484f30f6
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -236813,7 +237119,7 @@ index 0000000000000000000000000000000000000000..ae7d9b84236f38ec420c2b8eb288d467
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
++        '58e5a9c7af08eb4e79cfe75130a83cacbf8e29804d0f67dcef915630bd166dc4',
 +}
 +
 +FUNCTIONS = (
@@ -236901,7 +237207,7 @@ index 0000000000000000000000000000000000000000..ae7d9b84236f38ec420c2b8eb288d467
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a431a51d34aec1cd159a9eb2fd654ecfc989ae32
+index 0000000000000000000000000000000000000000..14f232f5ba93738b2fb11a8a99822671513b13da
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -236932,7 +237238,7 @@ index 0000000000000000000000000000000000000000..a431a51d34aec1cd159a9eb2fd654ecf
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
++        '58e5a9c7af08eb4e79cfe75130a83cacbf8e29804d0f67dcef915630bd166dc4',
 +}
 +
 +FUNCTIONS = (
@@ -237148,7 +237454,7 @@ index 0000000000000000000000000000000000000000..a431a51d34aec1cd159a9eb2fd654ecf
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..966844439e870d30e99614cdfb79681140d8322c
+index 0000000000000000000000000000000000000000..049c583b0017c1cd957ebc3831e967e617f6bc78
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -237172,7 +237478,7 @@ index 0000000000000000000000000000000000000000..966844439e870d30e99614cdfb796811
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
++        '58e5a9c7af08eb4e79cfe75130a83cacbf8e29804d0f67dcef915630bd166dc4',
 +}
 +
 +FUNCTIONS = (
@@ -237266,7 +237572,7 @@ index 0000000000000000000000000000000000000000..966844439e870d30e99614cdfb796811
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ccb483ba4057a5aa73ee7e47c997f9f175141135
+index 0000000000000000000000000000000000000000..290234e8c7e3d4507148ab65558074d834a22b44
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -237307,15 +237613,15 @@ index 0000000000000000000000000000000000000000..ccb483ba4057a5aa73ee7e47c997f9f1
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
++        '58e5a9c7af08eb4e79cfe75130a83cacbf8e29804d0f67dcef915630bd166dc4',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'dab07f2f188d6a206b0e7311d3357be73484f1a0a0fbcc145f0246e70edb7531',
++        'db1edb7d4f316c7e1023b9cc650b4aed0453f88cc76fa7ede797fe320d1a438e',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '422b5e32bd8f2845bc8591a6efc05676a88045468e1cf967c199e4e8d0c51d14',
++        'cbc9b297130163797e330145d5a2e7bf59dd7f140b1d6945834d33b3d640b07c',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -237445,10 +237751,10 @@ index 0000000000000000000000000000000000000000..ccb483ba4057a5aa73ee7e47c997f9f1
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f1ef6e1f4
+index 0000000000000000000000000000000000000000..bd3edbdeeb982d89d9f2a3aa72d87f34aac72433
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1047 @@
+@@ -0,0 +1,1082 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -237489,7 +237795,7 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +    'plugins/crucible-ram-owner-diagnostic.h':
 +        '437aa8ed61c184163b7a6b0fb5e36c799d6d748410b32166a02e43eb44e2bf1e',
 +    'tests/unit/test-crucible-ram-worker-inventory.py':
-+        '51725d2fa591b02af6ea7822239ab3c332e6be435997601654a083338d9fd998',
++        'e262bfe91590221dacf103a762c60fca9353f73e53e317f94db9b41ca826ff53',
 +    'tests/unit/test-crucible-checkpoint-receiving.c':
 +        'c566ba5524cccb7e5fded88101e457c2ee18d998119c450b8d3121b7fd0561f2',
 +    'plugins/crucible-parent-park.inc.h':
@@ -237521,9 +237827,9 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        '501ed344d5400d931042884342d04e4099ae6660894501b0b329b8e17d47ad9a',
++        'b415b88ba69653bc7dc3fac942b721ed1ea26ae0d46d3b632628cd27e23bdb85',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        'f39b4430c21ed4a7b8272eec9914f285ed349ffe3cd222f8e40a1e37d56dd035',
++        'f1187d05871b5a8111f1f5506ac2e8a804596d69506b8897fa1877a0cdd1cb7a',
 +    'system/physmem.c':
 +        '5e94841fd7bc9f7c70e7023e97ce87dd2c2144f8d63039c4c2f42aac640ad522',
 +    'include/system/ramlist.h':
@@ -237567,7 +237873,7 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +    'plugins/crucible-callback-publication.inc.h':
 +        '5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a',
 +    'plugins/crucible-plugin-worker.inc.h':
-+        '65fd11bcadaad0c3fedf4d35560170456ccfc4d2317d71410bd14dcbcb6647f8',
++        '232085de73249313eebe3f6b0611ad38fb19c67435e3d95faad280fd0d97de59',
 +    'plugins/crucible-required-workers.inc.h':
 +        '7416b21879fe77c2eeaaf91f935fdaf77187b35a4d3c844fb871db764e46b3b2',
 +    'plugins/crucible-fingerprint-worker.inc.h':
@@ -237730,6 +238036,38 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +# Keep this inventory explicit: newly added test calls cannot silently broaden
 +# the fixture into an unpriced runtime, CPU or Root provider.
 +SOURCE_ROOTS = {
++    "startup_process_purpose_live",
++    "startup_live_slice",
++    # Actual component placement and bounded worker lifecycle, against the
++    # disclosed prepared-family/completion inputs; no standing qualification.
++    "qemu_plugin_crucible_callback_child_storage_create_v1",
++    "qemu_plugin_crucible_callback_child_storage_destroyed_v1",
++    "qemu_plugin_crucible_callback_child_storage_initialize_v1",
++    "qemu_plugin_crucible_callback_child_storage_initialized_v1",
++    "qemu_plugin_crucible_callback_child_storage_placement_begin_v1",
++    "qemu_plugin_crucible_callback_child_storage_transfer_v1",
++    "qemu_plugin_crucible_callback_registration_owner_create_v1",
++    "qemu_plugin_crucible_callback_registration_owner_transfer_v1",
++    "qemu_plugin_crucible_command_consumer_storage_create_v1",
++    "qemu_plugin_crucible_command_consumer_storage_initialize_v1",
++    "qemu_plugin_crucible_command_consumer_storage_placement_begin_v1",
++    "qemu_plugin_crucible_command_consumer_storage_return_v1",
++    "qemu_plugin_crucible_command_consumer_storage_transfer_v1",
++    "qemu_plugin_crucible_required_worker_allocation_begin_v1",
++    "qemu_plugin_crucible_required_worker_allocation_result_v1",
++    "qemu_plugin_crucible_required_worker_close_v1",
++    "qemu_plugin_crucible_required_worker_destroy_begin_v1",
++    "qemu_plugin_crucible_required_worker_destroyed_v1",
++    "qemu_plugin_crucible_required_worker_identity_return_v1",
++    "qemu_plugin_crucible_required_worker_initialized_v1",
++    "qemu_plugin_crucible_required_worker_transfer_v1",
++    "qemu_plugin_crucible_required_worker_tryjoin_v1",
++    "qemu_plugin_crucible_required_workers_current_v1",
++    "qemu_plugin_crucible_run_worker_create_v1",
++    "qemu_plugin_crucible_run_worker_handoff_committed_v1",
++    "qemu_plugin_crucible_run_worker_handoff_v1",
++    "qemu_plugin_crucible_teardown_worker_create_v1",
++
 +    "plugin_ctx_callback_retain__locked",
 +    "plugin_vcpu_init_descriptor_terminal__locked",
 +    # Cleanup controls execute the real owner/child join and Native terminal.
@@ -237819,8 +238157,8 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +    "qemu_plugin_crucible_startup_runtime_interrupt_observe_v2",
 +    "qemu_plugin_crucible_startup_runtime_interrupt_v2",
 +    "qemu_plugin_crucible_startup_runtime_reserve_v7",
-+    # Readiness controls exercise refusal only; valid closing needs a real
-+    # admitted worker entry and remains a separate integration obligation.
++    # Positive readiness also comes from real C component worker entry;
++    # the modeled family/completion inputs issue no activation authority.
 +    "qemu_plugin_crucible_required_worker_ready_v1",
 +    "qemu_plugin_crucible_startup_setup_borrow_v3",
 +    "qemu_plugin_crucible_startup_setup_mapping_current_v1",
@@ -237832,6 +238170,9 @@ index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f
 +    "setup_mapping_header_current",
 +    "standing_action_snapshot_validate",
 +    "startup_runtime_admission",
++    # Planning-only fixture allowance uses the actual loaded-TLS/kernel-policy
++    # calculation. It admits no credits, task birth, entry or physical return.
++    "plugin_worker_backing",
 +}
 +
 +FUNCTION_DEFINITION = re.compile(
@@ -238595,7 +238936,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3790c336bf3152bc98e2eb7c322500a048640454 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..74cbbdd7c8632ffc8d52cb9c97a62c15a9c333fb 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -238670,7 +239011,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3790c336bf3152bc98e2eb7c322500a0
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1166 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1167 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -239532,6 +239873,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3790c336bf3152bc98e2eb7c322500a0
 +    startup_source_control_slices,
 +    genh,
 +    dependencies: [qemuutil],
++    export_dynamic: true,
 +    c_args: ['-DCOMPILING_SYSTEM_VS_USER'],
 +  )
 +  test(
@@ -253039,10 +253381,10 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c02621389553d5a21441e915ef8a49ccb4ddd5ff
+index 0000000000000000000000000000000000000000..a51c071fa04a4467522f0233d8f00550b7c77803
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,767 @@
+@@ -0,0 +1,745 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -253723,30 +254065,8 @@ index 0000000000000000000000000000000000000000..c02621389553d5a21441e915ef8a49cc
 +        for signature in signatures
 +    )
 +
-+    native = sources["plugins/crucible-native-invocation.c"]
-+    publication = sources["plugins/crucible-callback-publication.inc.h"]
-+    dispatch_hint = definition(
-+        native,
-+        "static QemuCrucibleNativeInvocationRegistry *native_dispatch_hint(void)",
-+    )
-+    cpu_pin_return = definition(native, "static void frame_cpu_pin_return(")
-+    prototypes = "\n\n".join(
-+        body.split("{", 1)[0].rstrip() + ";"
-+        for body in (dispatch_hint, cpu_pin_return)
-+    )
-+    # Existing Native calls need prototypes first; their literal definitions
-+    # follow the support's declaration block without inspecting that block.
 +    return "\n\n".join([
-+        prototypes,
 +        SUPPORT["SUPPORT"]["dependencies"](production),
-+        definition(
-+            publication,
-+            "QemuCrucibleNativeInvocationRegistry *\n"
-+            "qemu_crucible_startup_source_native_dispatch_hint_v1(void)",
-+        ),
-+        dispatch_hint,
-+        definition(native, "static int frame_identity_locked("),
-+        cpu_pin_return,
 +        production,
 +    ])
 +
@@ -253812,7 +254132,7 @@ index 0000000000000000000000000000000000000000..c02621389553d5a21441e915ef8a49cc
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..23ac44a8ba76bbf67c0a0fec607b659f2ddb1c41
+index 0000000000000000000000000000000000000000..dab0202da5347b0e4aea9b39155ccce1bf486991
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
 @@ -0,0 +1,352 @@
@@ -254152,13 +254472,13 @@ index 0000000000000000000000000000000000000000..23ac44a8ba76bbf67c0a0fec607b659f
 +        bodies = bodies.replace(statement, "            (void)length;")
 +
 +    generated = arguments.output_dir / "control-delivery.c"
-+    generated.write_text(SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
++    generated.write_text(SUPPORT["NATIVE_COMPONENT_NAMESPACE"] + SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
 +                         SUPPORT["LOCK_PRIMITIVES"] + PRELUDE + bodies + CHECKS)
 +    binary = arguments.output_dir / "control-delivery"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
-+               "-Wno-unused-but-set-variable", str(generated), "-o", str(binary),
++               "-Wno-unused-but-set-variable", str(generated), *SUPPORT["native_link_arguments"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
@@ -272422,10 +272742,10 @@ index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..12350fcba3babc916dcbcfc6bbe60c5b688d5d5c
+index 0000000000000000000000000000000000000000..5256b396f29620fe411930e682b93e9f0a3ba9b0
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,732 @@
+@@ -0,0 +1,733 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -273144,11 +273464,12 @@ index 0000000000000000000000000000000000000000..12350fcba3babc916dcbcfc6bbe60c5b
 +        assert production.count(guard) == 1
 +        production = production.replace(guard, "")
 +    generated = arguments.output_dir / "net-output-stop.c"
-+    generated.write_text(fixture_prelude() + production + TESTS)
++    generated.write_text(SUPPORT["NATIVE_COMPONENT_NAMESPACE"] +
++                         fixture_prelude() + production + TESTS)
 +    binary = arguments.output_dir / "net-output-stop"
 +    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
-+               str(generated), *SUPPORT["utility_sources"](), "-o", str(binary),
++               str(generated), *SUPPORT["native_link_arguments"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
@@ -273160,7 +273481,7 @@ index 0000000000000000000000000000000000000000..12350fcba3babc916dcbcfc6bbe60c5b
 +    main()
 diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e329d08b3a185eba0bc2eaacaa8b05fd47a5343
+index 0000000000000000000000000000000000000000..29345366b688f9297ed96f7f8bd2d64bb186343a
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-stop-chain.py
 @@ -0,0 +1,447 @@
@@ -273595,12 +273916,12 @@ index 0000000000000000000000000000000000000000..5e329d08b3a185eba0bc2eaacaa8b05f
 +    assert "dc->jmp_opt = !((cflags & CF_NO_GOTO_TB) ||" in x86
 +
 +    generated = arguments.output_dir / "net-stop-chain.c"
-+    generated.write_text(SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
++    generated.write_text(SUPPORT["NATIVE_COMPONENT_NAMESPACE"] + SUPPORT["HEADERS"] + SUPPORT["declarations"](GROUPS) +
 +                         SUPPORT["LOCK_PRIMITIVES"] + PRELUDE + production + CHECKS)
 +    binary = arguments.output_dir / "net-stop-chain"
 +    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
 +               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
-+               str(generated), "-o", str(binary),
++               str(generated), *SUPPORT["native_link_arguments"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
@@ -280738,10 +281059,10 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b743217f35
+index 0000000000000000000000000000000000000000..e1fc7a97f85b9541b453e9e46c05a7cda7e7cab5
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,1032 @@
+@@ -0,0 +1,1061 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -280749,7 +281070,9 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +thread/descriptor census and initial inventory cleanup. Actors really register
 +kernel TIDs and park. The complete native thread provider owns its real registry;
 +test-only accessors inject explicit corruption for its negative controls. Plugin
-+barrier callbacks remain fixture endpoints. This does not qualify Source
++barrier callbacks and the component BQL predicate remain fixture endpoints.
++Linked QOM support retains its actual callback-drained RCU registration.
++This does not qualify Source
 +activation, a translated guest, or a VMStop fence.
 +"""
 +
@@ -280952,7 +281275,8 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +    if len(link_groups) != 1:
 +        raise ValueError("missing or ambiguous configured QOM link group")
 +    linker = link_groups[0]["linker"]
-+    if linker != component_compiler:
++    if (linker[:len(component_compiler)] != component_compiler or
++            provider_command[:len(linker)] != linker):
 +        raise ValueError("configured QOM linker/compiler identity mismatch")
 +    parameters = link_groups[0]["parameters"]
 +    if any("whole-archive" in item for item in parameters):
@@ -281039,12 +281363,14 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +
 +
 +NATIVE_TEST_ACCESSORS = r"""
++#include "qemu/rcu.h"
 +/* Standalone corruption controls, appended only to the complete test provider.
 + * These are not production APIs, Source grants, or another registry. The two
 + * injection pointers retain only the exact test-owned node in the real list. */
 +static pid_t fixture_native_process;
 +static int64_t fixture_native_thread;
 +static QemuHotForkThreadRecord *fixture_native_coordinator;
++static QemuHotForkThreadRecord *fixture_native_rcu;
 +static QemuHotForkThreadRecord *fixture_native_injected_record;
 +static GList *fixture_native_injected_node;
 +
@@ -281083,17 +281409,23 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +        assert(!fixture_native_injected_record->bounded);
 +        assert(fixture_native_injected_record->disposition ==
 +               QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
-+        assert(qemu_hot_fork_thread_count == 2);
++        assert(qemu_hot_fork_thread_count == 3);
 +        coordinator_node = coordinator_node->next;
 +        assert(coordinator_node &&
 +               coordinator_node->prev == fixture_native_injected_node);
 +    } else {
 +        assert(!fixture_native_injected_record);
 +        assert(coordinator_node && !coordinator_node->prev);
-+        assert(qemu_hot_fork_thread_count == 1);
++        assert(qemu_hot_fork_thread_count == 2);
 +    }
 +    assert(coordinator_node->data == fixture_native_coordinator);
-+    assert(!coordinator_node->next);
++    assert(coordinator_node->next && coordinator_node->next->prev == coordinator_node);
++    assert(coordinator_node->next->data == fixture_native_rcu);
++    assert(!coordinator_node->next->next);
++    assert(fixture_native_rcu->tracked && !fixture_native_rcu->bounded);
++    assert(fixture_native_rcu->thread_id > 0 &&
++           fixture_native_rcu->thread_id != fixture_native_thread);
++    assert(fixture_native_rcu->disposition == QEMU_THREAD_HOT_FORK_RCU_RESTART);
 +}
 +
 +void crucible_fixture_native_prepare(void)
@@ -281102,11 +281434,20 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +    GList *retired_node = NULL;
 +
 +    if (!fixture_native_process) {
-+        /* Do not adopt or erase any pre-existing registration. Only the real
-+         * constructor may create this standalone main-thread coordinator. */
++        /* Complete linked QOM support owns a real RCU worker. Drain through
++         * that worker before inspecting its completed native registration.
++         * Keep the record and role; never erase or relabel a live dependency. */
++        drain_call_rcu();
 +        assert(!qemu_hot_fork_current_thread);
 +        assert(pthread_mutex_lock(&qemu_hot_fork_thread_lock) == 0);
-+        assert(!qemu_hot_fork_threads && !qemu_hot_fork_thread_count);
++        assert(qemu_hot_fork_threads && !qemu_hot_fork_threads->prev &&
++               !qemu_hot_fork_threads->next && qemu_hot_fork_thread_count == 1);
++        fixture_native_rcu = qemu_hot_fork_threads->data;
++        assert(fixture_native_rcu && fixture_native_rcu->tracked &&
++               !fixture_native_rcu->bounded &&
++               fixture_native_rcu->thread_id > 0 &&
++               fixture_native_rcu->thread_id != qemu_get_thread_id());
++        assert(fixture_native_rcu->disposition == QEMU_THREAD_HOT_FORK_RCU_RESTART);
 +        assert(!qemu_hot_fork_bounded_threads);
 +        assert(!qemu_hot_fork_thread_overflow);
 +        assert(!qemu_hot_fork_thread_starts_in_flight);
@@ -281235,8 +281576,12 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +#include "@RECEIVING_HEADER@"
 +#pragma GCC diagnostic pop
 +
-+/* These two modeled endpoints belong only to copied component bodies. They
-+ * must not interpose on the genuine provider or its utility/QOM dependencies. */
++/* Modeled predicates belong only to copied component bodies. They must not
++ * interpose on the genuine provider or its utility/QOM dependencies. The real
++ * linked support is a standalone utility process with no VM BQL to acquire. */
++static bool fixture_bql = true;
++static bool fixture_bql_locked(void) { return fixture_bql; }
++#define bql_locked fixture_bql_locked
 +static bool fixture_in_coroutine(void) { return false; }
 +static void fixture_error_free(Error *error) { free(error); }
 +#define qemu_in_coroutine fixture_in_coroutine
@@ -281477,6 +281822,10 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +    }
 +    reset_inventory(actors);
 +    test_native_end_disposition();
++    fixture_bql = false;
++    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EBUSY);
++    assert(!pool_retirement_calls && !barrier_calls);
++    fixture_bql = true;
 +    pool_retirement_allowed = false;
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -EBUSY);
 +    assert(pool_retirement_calls == 1 && barrier_calls == 0);
@@ -281488,7 +281837,8 @@ index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b7
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == 0);
 +    assert(finish_diagnostic(saved, read_fd, diagnostic) == 0);
 +    assert(diagnostic_writes == 0);
-+    assert(tasks == 4 && services == 1 && descriptors >= 3);
++    /* Three actual fixture pthreads plus the retained main/RCU registry. */
++    assert(tasks == ARRAY_SIZE(actors) + 2 && services == 1 && descriptors >= 3);
 +    assert(release_calls == 1 && !actor_status.flags && !service_frozen);
 +
 +    reset_inventory(actors);
@@ -287362,10 +287712,10 @@ index 0000000000000000000000000000000000000000..a69007a0ef43f0ff572cf4e9ef780a10
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7beee418304
+index 0000000000000000000000000000000000000000..4b5e6417eb05932ec3b3e76eaa192c99bcb8f41c
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,5672 @@
+@@ -0,0 +1,6382 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -291267,12 +291617,17 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    assert_retained();
 +}
 +
-+/* These compiled layouts model only the unit's initial accounting payloads.
-+ * The tests construct no production typed child or callback publication. */
++/* Compiled C component payloads, independent of the production Rust module.
++ * Prepared-family and completion-binding inputs remain explicitly modeled. */
 +typedef struct FixtureRuntimeParent {
 +    QemuCrucibleCommandConsumerStorage *bridge;
 +    QemuCrucibleCallbackChildStorage *child;
 +    QemuCrucibleStartupRuntimePurpose *purpose;
++    QemuCrucibleCallbackChildOwner *owner;
++    QemuCrucibleRequiredWorker *run;
++    QemuCrucibleRequiredWorker *teardown;
++    qemu_plugin_crucible_fingerprint_operation_v1 *module_view;
++    struct QemuCrucibleLogicalPublication *publication;
 +} FixtureRuntimeParent;
 +
 +typedef struct FixtureRuntimeBridge {
@@ -291285,6 +291640,310 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    void *transport_owner;
 +} FixtureRuntimeChild;
 +
++/* Concrete component payload geometry for this accounting fixture only.
++ * Reserving these rows issues claims; it neither constructs a worker nor
++ * authorizes native entry, CPU use or Source activation. */
++typedef struct FixtureRuntimeRunControl {
++    FixtureRuntimeParent *runtime;
++    QemuSemaphore wake;
++    int stream;
++} FixtureRuntimeRunControl;
++
++typedef struct FixtureRuntimeTeardownControl {
++    FixtureRuntimeParent *runtime;
++    QemuSemaphore returned;
++    bool complete;
++} FixtureRuntimeTeardownControl;
++
++/* The executable is the fixture's real GModule. Its exported layout rows
++ * describe the compiled payloads above, and dladdr corroborates the same module
++ * as fixture_install. Positive completion scenarios enter these actual C
++ * providers through the required-worker APIs; other scenarios only plan. */
++G_MODULE_EXPORT const struct qemu_plugin_crucible_fingerprint_worker_layout_v1
++qemu_plugin_crucible_run_worker_layout_v1 = {
++    .schema_version = 1,
++    .struct_size = sizeof(struct qemu_plugin_crucible_fingerprint_worker_layout_v1),
++    .control_bytes = sizeof(FixtureRuntimeRunControl),
++    .control_alignment = _Alignof(FixtureRuntimeRunControl),
++    .stack_bytes = 131072,
++};
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_construct_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *input);
++
++int qemu_plugin_crucible_run_worker_construct_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *input)
++{
++    FixtureRuntimeRunControl *control;
++
++    g_assert_cmpuint(id, ==, fixture.ctx.id);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_allocation_begin_v1(frame), ==, 0);
++    control = g_new0(FixtureRuntimeRunControl, 1);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_allocation_result_v1(
++        frame, control, control), ==, 0);
++    control->runtime = input;
++    control->stream = -1;
++    qemu_sem_init(&control->wake, 0);
++    return qemu_plugin_crucible_required_worker_initialized_v1(frame);
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_entry_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner);
++
++int qemu_plugin_crucible_run_worker_entry_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner)
++{
++    FixtureRuntimeRunControl *control = owner;
++    uint8_t byte;
++
++    g_assert_cmpint(control->stream, >=, 0);
++    qemu_sem_post(&control->wake);
++    g_assert_cmpint(read(control->stream, &byte, 1), ==, 0);
++    return 0;
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_module_close_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner);
++
++int qemu_plugin_crucible_run_worker_module_close_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner)
++{
++    FixtureRuntimeRunControl *control = owner;
++
++    g_assert_cmpint(shutdown(control->stream, SHUT_RDWR), ==, 0);
++    return 0;
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_module_control_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner, void *input);
++
++int qemu_plugin_crucible_run_worker_module_control_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner, void *input)
++{
++    g_assert_not_reached();
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_destroy_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void **owner);
++
++int qemu_plugin_crucible_run_worker_destroy_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void **owner)
++{
++    FixtureRuntimeRunControl *control = *owner;
++
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_destroy_begin_v1(frame), ==, 0);
++    qemu_sem_destroy(&control->wake);
++    g_assert_cmpint(close(control->stream), ==, 0);
++    g_free(control);
++    *owner = NULL;
++    return qemu_plugin_crucible_required_worker_destroyed_v1(frame);
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_run_worker_module_handoff_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *owner, void *input);
++
++int qemu_plugin_crucible_run_worker_module_handoff_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *owner, void *input)
++{
++    FixtureRuntimeRunControl *control = owner;
++    int *stream = input;
++
++    g_assert_cmpint(control->stream, ==, -1);
++    g_assert_cmpint(*stream, >=, 0);
++    control->stream = *stream;
++    *stream = -1;
++    return qemu_plugin_crucible_run_worker_handoff_committed_v1(frame);
++}
++
++G_MODULE_EXPORT const struct qemu_plugin_crucible_fingerprint_worker_layout_v1
++qemu_plugin_crucible_teardown_worker_layout_v1 = {
++    .schema_version = 1,
++    .struct_size = sizeof(struct qemu_plugin_crucible_fingerprint_worker_layout_v1),
++    .control_bytes = sizeof(FixtureRuntimeTeardownControl),
++    .control_alignment = _Alignof(FixtureRuntimeTeardownControl),
++    .stack_bytes = 131072,
++};
++
++G_MODULE_EXPORT int qemu_plugin_crucible_teardown_worker_construct_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *input);
++
++int qemu_plugin_crucible_teardown_worker_construct_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void *input)
++{
++    FixtureRuntimeTeardownControl *control;
++
++    g_assert_cmpuint(id, ==, fixture.ctx.id);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_allocation_begin_v1(frame), ==, 0);
++    control = g_new0(FixtureRuntimeTeardownControl, 1);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_allocation_result_v1(
++        frame, control, control), ==, 0);
++    control->runtime = input;
++    qemu_sem_init(&control->returned, 0);
++    return qemu_plugin_crucible_required_worker_initialized_v1(frame);
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_teardown_worker_entry_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner);
++
++int qemu_plugin_crucible_teardown_worker_entry_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner)
++{
++    FixtureRuntimeTeardownControl *control = owner;
++
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_ready_v1(worker), ==, 0);
++    qemu_sem_wait(&control->returned);
++    return 0;
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_teardown_worker_module_close_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner);
++
++int qemu_plugin_crucible_teardown_worker_module_close_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner)
++{
++    FixtureRuntimeTeardownControl *control = owner;
++
++    qemu_sem_post(&control->returned);
++    return 0;
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_teardown_worker_module_control_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner, void *input);
++
++int qemu_plugin_crucible_teardown_worker_module_control_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker, void *owner, void *input)
++{
++    g_assert_not_reached();
++}
++
++G_MODULE_EXPORT int qemu_plugin_crucible_teardown_worker_destroy_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void **owner);
++
++int qemu_plugin_crucible_teardown_worker_destroy_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorkerFrame *frame, void **owner)
++{
++    FixtureRuntimeTeardownControl *control = *owner;
++
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_destroy_begin_v1(frame), ==, 0);
++    qemu_sem_destroy(&control->returned);
++    g_free(control);
++    *owner = NULL;
++    return qemu_plugin_crucible_required_worker_destroyed_v1(frame);
++}
++
++static uint64_t fixture_required_worker_charge_bytes(void)
++{
++    QemuCruciblePluginWorker workers[] = {
++        { .thread_name = "crucible-run", .policy_descriptor = -1,
++          .layout = qemu_plugin_crucible_run_worker_layout_v1 },
++        { .thread_name = "crucible-drop", .policy_descriptor = -1,
++          .layout = qemu_plugin_crucible_teardown_worker_layout_v1 },
++    };
++    uint64_t bytes = 0;
++
++    /* Run the genuine preeffect backing calculation, including this binary's
++     * loaded TLS cohort and kernel allocator policy. No charge or task is
++     * issued by this calculation, and no worker is constructed or returned. */
++    for (size_t index = 0; index < G_N_ELEMENTS(workers); index++) {
++        QemuCruciblePluginWorker *worker = &workers[index];
++
++        g_assert_cmpint(plugin_worker_backing(worker), ==, 0);
++        g_assert_cmpuint(worker->residual_bytes, <=,
++                         UINT64_MAX - worker->layout.stack_bytes - bytes);
++        bytes += worker->residual_bytes + worker->layout.stack_bytes;
++        g_assert_cmpint(worker->policy_descriptor, ==, -1);
++        g_assert_false(worker->birth.born);
++        g_assert_false(worker->residual_charge.held);
++        g_assert_false(worker->stack_charge.held);
++    }
++    return bytes;
++}
++
++static void scenario_worker_policy_environment_refusals(void)
++{
++    static const char *const names[] = {
++        "MALLOC_ARENA_MAX", "MALLOC_PERTURB_", "GLIBC_TUNABLES",
++        "LD_PRELOAD", "LD_AUDIT",
++    };
++
++    for (size_t index = 0; index < G_N_ELEMENTS(names); index++) {
++        QemuCruciblePluginWorker worker = {
++            .thread_name = "crucible-run", .policy_descriptor = -1,
++            .layout = qemu_plugin_crucible_run_worker_layout_v1,
++        };
++        char *saved = g_strdup(getenv(names[index]));
++
++        /* Change the actual policy input after loader startup. No alternate
++         * allocator or fake libc version is installed by these controls. */
++        g_assert_cmpint(setenv(names[index], "", 1), ==, 0);
++        g_assert_cmpint(plugin_worker_backing(&worker), ==, -ENOTSUP);
++        g_assert_cmpuint(worker.residual_bytes, ==, 0);
++        g_assert_cmpint(worker.policy_descriptor, ==, -1);
++        g_assert_false(worker.policy_close_uncertain);
++        g_assert_false(worker.residual_charge.held);
++        g_assert_false(worker.stack_charge.held);
++        g_assert_false(worker.task_reserved);
++        g_assert_false(worker.birth.born);
++
++        if (saved) {
++            g_assert_cmpint(setenv(names[index], saved, 1), ==, 0);
++        } else {
++            g_assert_cmpint(unsetenv(names[index]), ==, 0);
++        }
++        g_free(saved);
++    }
++
++    /* The same real binary and unchanged cohort still plan after the exact
++     * forbidden input is removed. This is no construction or return proof. */
++    g_assert_cmpuint(fixture_required_worker_charge_bytes(), >, 0);
++}
++
++static void scenario_worker_planner_stack_refusal(void)
++{
++    QemuCruciblePluginWorker worker = {
++        .thread_name = "crucible-run", .policy_descriptor = -1,
++        .layout = qemu_plugin_crucible_run_worker_layout_v1,
++    };
++
++    worker.layout.stack_bytes = 0;
++    g_assert_cmpint(plugin_worker_backing(&worker), ==, -EINVAL);
++    g_assert_cmpuint(worker.residual_bytes, ==, 0);
++    g_assert_cmpint(worker.policy_descriptor, ==, -1);
++    g_assert_false(worker.policy_close_uncertain);
++    g_assert_false(worker.residual_charge.held);
++    g_assert_false(worker.stack_charge.held);
++    g_assert_false(worker.task_reserved);
++    g_assert_false(worker.birth.born);
++}
++
++static uint64_t fixture_runtime_native_live(uint64_t roster_bytes)
++{
++    QemuCruciblePluginWorker *workers[] = {
++        &startup_source.run_worker.native, &startup_source.teardown_worker.native,
++    };
++    uint64_t bytes = roster_bytes;
++
++    for (size_t index = 0; index < G_N_ELEMENTS(workers); index++) {
++        QemuCruciblePluginWorker *worker = workers[index];
++
++        g_assert_true(worker->planned);
++        g_assert_true(worker->funding_attempted);
++        g_assert_cmpint(worker->funding_status, ==, 0);
++        g_assert_true(worker->residual_charge.held);
++        g_assert_cmpuint(worker->residual_charge.bytes, ==, worker->residual_bytes);
++        g_assert_true(worker->stack_charge.held);
++        g_assert_cmpuint(worker->stack_charge.bytes, ==, worker->layout.stack_bytes);
++        g_assert_true(worker->task_reserved);
++        g_assert_false(worker->attempted);
++        g_assert_false(worker->birth.born);
++        g_assert_false(worker->physical_returned);
++        bytes += worker->residual_charge.bytes + worker->stack_charge.bytes;
++    }
++    g_assert_cmpuint(startup_source.task_ledger.live_reserved, ==, 2);
++    g_assert_cmpuint(bytes - roster_bytes, ==, fixture_required_worker_charge_bytes());
++    return bytes;
++}
++
 +static const struct qemu_plugin_crucible_runtime_request_v4 runtime_requests[] = {
 +    { .extent_bytes = sizeof(FixtureRuntimeParent),
 +      .alignment_bytes = _Alignof(FixtureRuntimeParent), .birth_count = 1 },
@@ -291294,6 +291953,12 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    { .extent_bytes = sizeof(FixtureRuntimeChild),
 +      .alignment_bytes = _Alignof(FixtureRuntimeChild), .birth_count = 1,
 +      .role = QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD },
++    { .extent_bytes = sizeof(FixtureRuntimeRunControl),
++      .alignment_bytes = _Alignof(FixtureRuntimeRunControl), .birth_count = 1,
++      .role = QEMU_CRUCIBLE_RUNTIME_ROLE_RUN_WORKER_CONTROL },
++    { .extent_bytes = sizeof(FixtureRuntimeTeardownControl),
++      .alignment_bytes = _Alignof(FixtureRuntimeTeardownControl), .birth_count = 1,
++      .role = QEMU_CRUCIBLE_RUNTIME_ROLE_TEARDOWN_WORKER_CONTROL },
 +};
 +
 +static uint64_t fixture_runtime_charge_bytes(void)
@@ -291307,18 +291972,24 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    return bytes;
 +}
 +
-+static void fixture_runtime5_prepare(void)
++static void fixture_runtime5_prepare_with_allowance(uint64_t allowance)
 +{
 +    QemuCrucibleStartupControlPurpose *control = NULL;
 +
++    fixture_extra_native_allowance = allowance;
 +    fixture_prepare(0, false);
 +    g_assert_cmpint(fixture_acquire(), ==, 0);
 +    fixture_seven_purpose();
 +    g_assert_cmpint(fixture_reserve_seven(&control), ==, 0);
 +}
 +
++static void fixture_runtime5_prepare(void)
++{
++    fixture_runtime5_prepare_with_allowance(fixture_required_worker_charge_bytes());
++}
++
 +/* Cleanup-only retained storage inputs. The existing fixture's real reserve
-+ * charges the three rows; completed placement/holder state is modeled here.
++ * charges all five rows; completed placement/holder state is modeled here.
 + * No callback is installed, no Native selection is activated, and no VM,
 + * Source/Main/Root permission or production constructor is qualified. */
 +typedef struct FixtureCleanupRuntime {
@@ -291343,6 +292014,12 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        { .extent_bytes = sizeof(cleanup_child_payload),
 +          .alignment_bytes = _Alignof(void *), .birth_count = 1,
 +          .role = QEMU_CRUCIBLE_RUNTIME_ROLE_CALLBACK_CHILD },
++        { .extent_bytes = sizeof(FixtureRuntimeRunControl),
++          .alignment_bytes = _Alignof(FixtureRuntimeRunControl), .birth_count = 1,
++          .role = QEMU_CRUCIBLE_RUNTIME_ROLE_RUN_WORKER_CONTROL },
++        { .extent_bytes = sizeof(FixtureRuntimeTeardownControl),
++          .alignment_bytes = _Alignof(FixtureRuntimeTeardownControl), .birth_count = 1,
++          .role = QEMU_CRUCIBLE_RUNTIME_ROLE_TEARDOWN_WORKER_CONTROL },
 +    };
 +    QemuCrucibleStartupRuntimePurpose *runtime = NULL;
 +    QemuCrucibleCommandConsumerRequest *claim = NULL;
@@ -291369,6 +292046,14 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        &runtime, &claim, &child_claim, &worker_claim,
 +        &run_claim, &teardown_claim), ==, 0);
 +    g_assert_null(worker_claim);
++    g_assert_true(run_claim == &startup_source.run_worker_claim);
++    g_assert_true(teardown_claim == &startup_source.teardown_worker_claim);
++    g_assert_true(run_claim->issued);
++    g_assert_true(teardown_claim->issued);
++    g_assert_true(run_claim->runtime == runtime);
++    g_assert_true(teardown_claim->runtime == runtime);
++    g_assert_cmpuint(run_claim->request_index, ==, 3);
++    g_assert_cmpuint(teardown_claim->request_index, ==, 4);
 +    cleanup_runtime = (FixtureCleanupRuntime) {
 +        .bridge = bridge, .child = child, .owner = owner, .runtime = runtime,
 +    };
@@ -291906,6 +292591,273 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    assert_retained();
 +}
 +
++static void scenario_runtime5_original_budget_insufficient(void)
++{
++    QemuCrucibleStartupRuntimePurpose *runtime = NULL;
++    QemuCrucibleCommandConsumerRequest *bridge = NULL;
++    QemuCrucibleCallbackChildRequest *child = NULL;
++    QemuCrucibleFingerprintWorkerClaim *fingerprint = NULL;
++    QemuCrucibleRunWorkerClaim *run = NULL;
++    QemuCrucibleTeardownWorkerClaim *teardown = NULL;
++    QemuCruciblePluginWorker *worker = &startup_source.run_worker.native;
++
++    fixture_runtime5_prepare_with_allowance(0);
++    g_assert_cmpuint(fixture.total, ==, UINT64_C(1048576));
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v7(
++        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
++        &runtime, &bridge, &child, &fingerprint, &run, &teardown), ==, -ENOSPC);
++
++    /* The actual roster debit remains owned. Rejected worker backing issues
++     * no residual/stack/task credit, birth, fabricated return or activation. */
++    g_assert_true(runtime == &startup_source.runtime_purpose);
++    g_assert_true(bridge == &startup_source.commands.claim);
++    g_assert_true(child == &startup_source.commands.child_claim);
++    g_assert_null(fingerprint);
++    g_assert_true(run == &startup_source.run_worker_claim);
++    g_assert_true(teardown == &startup_source.teardown_worker_claim);
++    g_assert_true(runtime->charge.held);
++    g_assert_cmpuint(runtime->charge.bytes, ==, fixture_runtime_charge_bytes());
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==,
++                     runtime->charge.bytes);
++    g_assert_false(runtime->configured_published);
++    g_assert_true(worker->planned);
++    g_assert_true(worker->funding_attempted);
++    g_assert_cmpint(worker->funding_status, ==, -ENOSPC);
++    g_assert_false(worker->residual_charge.held);
++    g_assert_false(worker->stack_charge.held);
++    g_assert_false(worker->task_reserved);
++    g_assert_false(worker->birth.born);
++    g_assert_false(worker->physical_returned);
++    g_assert_false(startup_source.teardown_worker.native.planned);
++    g_assert_cmpuint(startup_source.task_ledger.live_reserved, ==, 0);
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++    assert_retained();
++}
++
++/* The actual publication constructor supplies fixed holder bookkeeping from
++ * this unit's existing modeled prepared-family inputs. Live standing peers
++ * remain unreachable; this helper publishes no native selection. */
++static void fixture_runtime5_component_prepare(void)
++{
++    QemuCrucibleStartupControlPurpose *control = NULL;
++
++    fixture_extra_native_allowance = fixture_required_worker_charge_bytes();
++    fixture_prepare(0, false);
++    fixture_clear_source();
++    g_assert_cmpint(qemu_crucible_startup_source_preexec_publish_v3(
++        &modeled_preexec_owner), ==, 0);
++    g_assert_cmpint(fixture_acquire(), ==, 0);
++    fixture_seven_purpose();
++    g_assert_cmpint(fixture_reserve_seven(&control), ==, 0);
++}
++
++static int fixture_component_view_return(
++    qemu_plugin_id_t id, qemu_plugin_crucible_fingerprint_operation_v1 *operation,
++    void *userdata)
++{
++    /* No operation is issued by this component fixture. */
++    g_assert_not_reached();
++}
++
++static int fixture_component_bridge_initialize(
++    void *address, size_t extent, size_t alignment, void *input, uint32_t *complete)
++{
++    g_assert_cmpuint(extent, ==, sizeof(FixtureRuntimeBridge));
++    g_assert_cmpint(qemu_plugin_crucible_command_consumer_storage_placement_begin_v1(
++        fixture.ctx.id, input), ==, 0);
++    *(FixtureRuntimeBridge *)address = (FixtureRuntimeBridge) { 0 };
++    *complete = 1;
++    return 0;
++}
++
++static int fixture_component_bridge_destroy(
++    void *address, size_t extent, size_t alignment, uint32_t *complete)
++{
++    *(FixtureRuntimeBridge *)address = (FixtureRuntimeBridge) { 0 };
++    *complete = 1;
++    return 0;
++}
++
++static int fixture_component_child_initialize(
++    qemu_plugin_id_t id, QemuCrucibleCallbackChildStorage *child, void *address,
++    size_t extent, size_t alignment, QemuCrucibleCommandConsumerStorage *bridge,
++    void *input)
++{
++    g_assert_cmpuint(extent, ==, sizeof(FixtureRuntimeChild));
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_placement_begin_v1(
++        id, child), ==, 0);
++    *(FixtureRuntimeChild *)address = (FixtureRuntimeChild) {
++        .borrowed_bridge = bridge->address,
++    };
++    return qemu_plugin_crucible_callback_child_storage_initialized_v1(id, child);
++}
++
++static int fixture_component_child_destroy(
++    qemu_plugin_id_t id, QemuCrucibleCallbackChildStorage *child,
++    void *address, size_t extent, size_t alignment)
++{
++    *(FixtureRuntimeChild *)address = (FixtureRuntimeChild) { 0 };
++    return qemu_plugin_crucible_callback_child_storage_destroyed_v1(id, child);
++}
++
++static FixtureRuntimeParent *fixture_component_workers_start(
++    QemuCrucibleStartupRuntimePurpose *purpose,
++    QemuCrucibleCommandConsumerRequest *bridge_claim,
++    QemuCrucibleCallbackChildRequest *child_claim,
++    QemuCrucibleRunWorkerClaim *run_claim,
++    QemuCrucibleTeardownWorkerClaim *teardown_claim, int *peer)
++{
++    FixtureRuntimeParent *runtime = g_new0(FixtureRuntimeParent, 1);
++    QemuCrucibleCommandConsumerStorage *bridge = NULL;
++    QemuCrucibleCallbackChildStorage *child = NULL;
++    QemuCrucibleCallbackChildOwner *owner = NULL;
++    QemuCrucibleRequiredWorker *run = NULL, *teardown = NULL;
++    int stream[2];
++    uint64_t slice;
++
++    runtime->purpose = purpose;
++    /* Isolated fixture input, like cleanup-only completion custody above.
++     * This models installer enrollment, not a standing observer or operation.
++     * Every allocation/placement/holder/worker transition below is real. */
++    startup_source.fingerprint_completion = (QemuCrucibleFingerprintCompletionBinding) {
++        .installer = startup_source.saved,
++        .runtime = purpose, .view_return = fixture_component_view_return,
++        .userdata = runtime, .module_view_holder = &runtime->module_view,
++        .publication_holder = &runtime->publication,
++        .process = getpid(), .attempted = true, .enrolled = true,
++    };
++    g_assert_cmpint(qemu_plugin_crucible_command_consumer_storage_create_v1(
++        fixture.ctx.id, purpose, bridge_claim, &bridge), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_command_consumer_storage_initialize_v1(
++        fixture.ctx.id, bridge, fixture_component_bridge_initialize,
++        fixture_component_bridge_destroy, bridge), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_command_consumer_storage_transfer_v1(
++        fixture.ctx.id, purpose, &bridge, &runtime->bridge), ==, 0);
++    g_assert_null(bridge);
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_create_v1(
++        fixture.ctx.id, purpose, child_claim, runtime->bridge, &child), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_initialize_v1(
++        fixture.ctx.id, child, fixture_component_child_initialize,
++        fixture_component_child_destroy, NULL), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_transfer_v1(
++        fixture.ctx.id, purpose, &child, &runtime->child), ==, 0);
++    g_assert_null(child);
++    g_assert_cmpint(qemu_plugin_crucible_callback_registration_owner_create_v1(
++        fixture.ctx.id, runtime->child, &owner), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_callback_registration_owner_transfer_v1(
++        fixture.ctx.id, &owner, &runtime->owner), ==, 0);
++    g_assert_null(owner);
++
++    g_assert_cmpint(qemu_plugin_crucible_run_worker_create_v1(
++        fixture.ctx.id, purpose, run_claim, runtime->owner, runtime, &run), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_transfer_v1(
++        fixture.ctx.id, &run, &runtime->run), ==, 0);
++    g_assert_null(run);
++    g_assert_cmpint(qemu_plugin_crucible_teardown_worker_create_v1(
++        fixture.ctx.id, purpose, teardown_claim, runtime->owner, runtime, &teardown), ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_required_worker_transfer_v1(
++        fixture.ctx.id, &teardown, &runtime->teardown), ==, 0);
++    g_assert_null(teardown);
++
++    /* Wait within the unchanged installing Original, using actual condition
++     * publications. Neither the fixture nor a copied row sets readiness. */
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    while (!startup_source.run_worker.native.ready ||
++           !startup_source.teardown_worker.native.ready) {
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++        g_assert_cmpint(qemu_plugin_crucible_startup_source_query_slice_v1(
++            fixture.ctx.id, &slice), ==, 0);
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        qemu_cond_timedwait(&startup_source.run_worker.native.wake,
++            &startup_source.commands.mutex, 1);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    g_assert_cmpint(qemu_plugin_crucible_required_workers_current_v1(
++        fixture.ctx.id, purpose), ==, 0);
++
++    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, stream), ==, 0);
++    stream[0] = fixture_high_fd(stream[0]);
++    *peer = fixture_high_fd(stream[1]);
++    g_assert_cmpint(qemu_plugin_crucible_run_worker_handoff_v1(
++        fixture.ctx.id, runtime->run, &stream[0]), ==, 0);
++    g_assert_cmpint(stream[0], ==, -1);
++    qemu_sem_wait(&((FixtureRuntimeRunControl *)
++        startup_source.run_worker.native.owning_alias)->wake);
++    g_assert_true(startup_source.run_worker.native.entry_entered);
++    g_assert_true(startup_source.teardown_worker.native.entry_entered);
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++    return runtime;
++}
++
++static void fixture_component_workers_return(FixtureRuntimeParent *runtime, int peer)
++{
++    QemuCrucibleRequiredWorker **holders[] = { &runtime->run, &runtime->teardown };
++    uint64_t before = startup_source.metadata_partition.native_live;
++    uint64_t stacks = 0;
++
++    g_assert_cmpuint(runtime->owner->component_users, ==, 2);
++    g_assert_cmpuint(runtime->child->physical_users, ==, 2);
++    for (size_t index = 0; index < G_N_ELEMENTS(holders); index++) {
++        QemuCrucibleRequiredWorker *worker = *holders[index];
++        QemuCruciblePluginWorker *native = &worker->native;
++        int status;
++
++        stacks += native->layout.stack_bytes;
++        g_assert_cmpint(qemu_plugin_crucible_required_worker_close_v1(
++            fixture.ctx.id, worker), ==, 0);
++        do {
++            uint64_t slice;
++
++            /* Observe within the same retained installing and containing
++             * deadlines after registration closes admission. This is no new
++             * cleanup Original or renewal of allocation permission. */
++            g_assert_cmpint(startup_process_purpose_live(), ==, 0);
++            status = qemu_plugin_crucible_required_worker_tryjoin_v1(fixture.ctx.id, worker);
++            if (status == -EBUSY) {
++                g_assert_cmpint(startup_live_slice(&slice), ==, 0);
++                g_usleep(MIN(slice / 1000, UINT64_C(1000)));
++                g_assert_cmpint(startup_process_purpose_live(), ==, 0);
++            }
++        } while (status == -EBUSY);
++        g_assert_cmpint(status, ==, 0);
++        g_assert_true(native->birth.born);
++        g_assert_true(native->joined);
++        g_assert_true(native->entry_returned);
++        g_assert_cmpint(native->entry_status, ==, 0);
++        g_assert_true(native->destroyed);
++        g_assert_true(native->physical_returned);
++        g_assert_false(native->pins_held);
++        g_assert_false(native->task_reserved);
++        g_assert_false(native->stack_charge.held);
++        g_assert_null(native->stack);
++        g_assert_null(native->owning_alias);
++        g_assert_true(native->residual_charge.held);
++        g_assert_cmpint(qemu_plugin_crucible_required_worker_identity_return_v1(
++            fixture.ctx.id, holders[index]), ==, 0);
++        g_assert_null(*holders[index]);
++    }
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, before - stacks);
++    g_assert_cmpuint(startup_source.task_ledger.live_reserved, ==, 0);
++    g_assert_cmpuint(runtime->owner->component_users, ==, 0);
++    g_assert_cmpuint(runtime->child->physical_users, ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_callback_registration_owner_return_v1(
++        fixture.ctx.id, &runtime->owner), ==, 0);
++    g_assert_null(runtime->owner);
++    g_assert_cmpint(qemu_plugin_crucible_callback_child_storage_return_v1(
++        fixture.ctx.id, &runtime->child), ==, 0);
++    g_assert_null(runtime->child);
++    g_assert_true(startup_source.commands.child.physical_returned);
++    g_assert_cmpint(qemu_plugin_crucible_command_consumer_storage_return_v1(
++        fixture.ctx.id, &runtime->bridge), ==, 0);
++    g_assert_null(runtime->bridge);
++    g_assert_true(startup_source.commands.storage.physical_returned);
++    g_assert_cmpint(close(peer), ==, 0);
++    /* The completion binding still retains its paid Runtime. Its lifetime is
++     * process-held; no local free is mislabeled completion/physical return. */
++    g_assert_true(runtime->purpose->charge.held);
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++}
++
 +static void scenario_runtime5_healthy(void)
 +{
 +    qemu_plugin_crucible_runtime_purpose_v3 *purpose = NULL;
@@ -291922,12 +292874,23 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    QemuCrucibleTeardownWorkerClaim *repeated_teardown_claim = NULL;
 +    uint64_t charge_bytes = fixture_runtime_charge_bytes();
 +
-+    fixture_runtime5_prepare();
++    FixtureRuntimeParent *component;
++    int component_peer;
++
++    fixture_runtime5_component_prepare();
 +    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v7(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
 +        &purpose, &claim, &child_claim, &worker_claim,
 +        &run_claim, &teardown_claim), ==, 0);
 +    g_assert_null(worker_claim);
++    g_assert_true(run_claim == &startup_source.run_worker_claim);
++    g_assert_true(teardown_claim == &startup_source.teardown_worker_claim);
++    g_assert_true(run_claim->issued);
++    g_assert_true(teardown_claim->issued);
++    g_assert_true(run_claim->runtime == purpose);
++    g_assert_true(teardown_claim->runtime == purpose);
++    g_assert_cmpuint(run_claim->request_index, ==, 3);
++    g_assert_cmpuint(teardown_claim->request_index, ==, 4);
 +    g_assert_true(purpose == &startup_source.runtime_purpose);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
@@ -291935,7 +292898,8 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    g_assert_true(child_claim->held);
 +    g_assert_cmpuint(purpose->charge.bytes, ==, charge_bytes);
 +    g_assert_true(purpose->charge.held);
-+    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, charge_bytes);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==,
++                     fixture_runtime_native_live(charge_bytes));
 +    g_assert_cmpuint(purpose->configured_count, ==, G_N_ELEMENTS(runtime_requests));
 +    g_assert_cmpuint(purpose->configured_storage_bytes, ==,
 +        G_N_ELEMENTS(runtime_requests) * sizeof(QemuCrucibleProcessPurposeRequest));
@@ -291950,10 +292914,14 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        &repeated_worker_claim, &repeated_run_claim,
 +        &repeated_teardown_claim), ==, -EALREADY);
 +    g_assert_null(repeated_worker_claim);
++    g_assert_null(repeated_run_claim);
++    g_assert_null(repeated_teardown_claim);
 +    g_assert_null(repeated);
 +    g_assert_null(repeated_claim);
 +    g_assert_null(repeated_child_claim);
 +
++    component = fixture_component_workers_start(purpose, claim, child_claim,
++        run_claim, teardown_claim, &component_peer);
 +    g_assert_cmpint(qemu_plugin_crucible_startup_source_registration_complete_v1(
 +        fixture.ctx.id, 0), ==, 0);
 +    /* Retained accounting survives completion; temporal admission does not. */
@@ -291964,6 +292932,7 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    g_assert_true(purpose->charge.held);
 +    g_assert_cmpuint(purpose->charge.bytes, ==, charge_bytes);
 +    assert_retained();
++    fixture_component_workers_return(component, component_peer);
 +}
 +
 +static void scenario_runtime5_geometry(void)
@@ -291985,6 +292954,10 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        &purpose, &claim, &child_claim, &worker_claim,
 +        &run_claim, &teardown_claim), ==, -EINVAL);
 +    g_assert_null(worker_claim);
++    g_assert_null(run_claim);
++    g_assert_null(teardown_claim);
++    g_assert_false(startup_source.run_worker_claim.issued);
++    g_assert_false(startup_source.teardown_worker_claim.issued);
 +    g_assert_null(purpose);
 +    g_assert_null(claim);
 +    g_assert_null(child_claim);
@@ -291992,6 +292965,52 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
 +    g_assert_true(startup_source.control_purpose.held);
 +    assert_retained();
++}
++
++static void fixture_runtime5_missing_role(uint32_t missing_role)
++{
++    struct qemu_plugin_crucible_runtime_request_v4 requests[G_N_ELEMENTS(runtime_requests)];
++    QemuCrucibleStartupRuntimePurpose *purpose = NULL;
++    QemuCrucibleCommandConsumerRequest *claim = NULL;
++    QemuCrucibleCallbackChildRequest *child_claim = NULL;
++    QemuCrucibleFingerprintWorkerClaim *worker_claim = NULL;
++    QemuCrucibleRunWorkerClaim *run_claim = NULL;
++    QemuCrucibleTeardownWorkerClaim *teardown_claim = NULL;
++
++    fixture_runtime5_prepare();
++    memcpy(requests, runtime_requests, sizeof(requests));
++    for (size_t index = 0; index < G_N_ELEMENTS(requests); index++) {
++        if (requests[index].role == missing_role) {
++            requests[index].role = QEMU_CRUCIBLE_RUNTIME_ROLE_ORDINARY;
++        }
++    }
++
++    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v7(
++        fixture.ctx.id, requests, G_N_ELEMENTS(requests),
++        &purpose, &claim, &child_claim, &worker_claim,
++        &run_claim, &teardown_claim), ==, -EINVAL);
++    g_assert_null(purpose);
++    g_assert_null(claim);
++    g_assert_null(child_claim);
++    g_assert_null(worker_claim);
++    g_assert_null(run_claim);
++    g_assert_null(teardown_claim);
++    g_assert_false(startup_source.run_worker_claim.issued);
++    g_assert_false(startup_source.teardown_worker_claim.issued);
++    g_assert_false(startup_source.runtime_purpose.attempted);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, 0);
++    g_assert_true(startup_source.control_purpose.held);
++    assert_retained();
++}
++
++static void scenario_runtime5_missing_run(void)
++{
++    fixture_runtime5_missing_role(QEMU_CRUCIBLE_RUNTIME_ROLE_RUN_WORKER_CONTROL);
++}
++
++static void scenario_runtime5_missing_teardown(void)
++{
++    fixture_runtime5_missing_role(QEMU_CRUCIBLE_RUNTIME_ROLE_TEARDOWN_WORKER_CONTROL);
 +}
 +
 +static void scenario_runtime5_post_cancel(void)
@@ -292018,6 +293037,14 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        &purpose, &claim, &child_claim, &worker_claim,
 +        &run_claim, &teardown_claim), ==, -ECANCELED);
 +    g_assert_null(worker_claim);
++    g_assert_true(run_claim == &startup_source.run_worker_claim);
++    g_assert_true(teardown_claim == &startup_source.teardown_worker_claim);
++    g_assert_true(run_claim->issued);
++    g_assert_true(teardown_claim->issued);
++    g_assert_true(run_claim->runtime == purpose);
++    g_assert_true(teardown_claim->runtime == purpose);
++    g_assert_cmpuint(run_claim->request_index, ==, 3);
++    g_assert_cmpuint(teardown_claim->request_index, ==, 4);
 +    g_assert_true(purpose == &startup_source.runtime_purpose);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
@@ -292026,7 +293053,8 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    g_assert_true(purpose->attempted);
 +    g_assert_true(purpose->charge.held);
 +    g_assert_cmpuint(purpose->charge.bytes, ==, charge_bytes);
-+    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==, charge_bytes);
++    g_assert_cmpuint(startup_source.metadata_partition.native_live, ==,
++                     fixture_runtime_native_live(charge_bytes));
 +    g_assert_nonnull(purpose->configured_requests);
 +    g_assert_false(purpose->configured_published);
 +    g_assert_cmpint(startup_source.metadata_partition.post_status, ==, -ECANCELED);
@@ -292036,6 +293064,8 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        &repeated_worker_claim, &repeated_run_claim,
 +        &repeated_teardown_claim), ==, -EALREADY);
 +    g_assert_null(repeated_worker_claim);
++    g_assert_null(repeated_run_claim);
++    g_assert_null(repeated_teardown_claim);
 +    g_assert_null(repeated);
 +    g_assert_null(repeated_claim);
 +    g_assert_null(repeated_child_claim);
@@ -292081,20 +293111,34 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    uint8_t byte;
 +    int peer;
 +
-+    fixture_runtime5_prepare();
++    FixtureRuntimeParent *component;
++    int component_peer;
++
++    fixture_runtime5_component_prepare();
 +    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_reserve_v7(
 +        fixture.ctx.id, runtime_requests, G_N_ELEMENTS(runtime_requests),
 +        &purpose, &claim, &child_claim, &worker_claim,
 +        &run_claim, &teardown_claim), ==, 0);
 +    g_assert_null(worker_claim);
++    g_assert_true(run_claim == &startup_source.run_worker_claim);
++    g_assert_true(teardown_claim == &startup_source.teardown_worker_claim);
++    g_assert_true(run_claim->issued);
++    g_assert_true(teardown_claim->issued);
++    g_assert_true(run_claim->runtime == purpose);
++    g_assert_true(teardown_claim->runtime == purpose);
++    g_assert_cmpuint(run_claim->request_index, ==, 3);
++    g_assert_cmpuint(teardown_claim->request_index, ==, 4);
 +    g_assert_true(claim == &startup_source.commands.claim);
 +    g_assert_true(claim->held);
 +    g_assert_true(child_claim == &startup_source.commands.child_claim);
 +    g_assert_true(child_claim->held);
 +    peer = fixture_runtime_endpoint();
++    component = fixture_component_workers_start(purpose, claim, child_claim,
++        run_claim, teardown_claim, &component_peer);
 +    g_assert_cmpint(qemu_plugin_crucible_startup_source_registration_complete_v1(
 +        fixture.ctx.id, 0), ==, 0);
 +    g_assert_cmpint(plugin_startup_source_install_leave(&fixture.ctx, 0), ==, 0);
++    fixture_component_workers_return(component, component_peer);
 +    fixture_signal();
 +
 +    g_assert_cmpint(qemu_plugin_crucible_startup_runtime_interrupt_v2(
@@ -292515,8 +293559,14 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +        return;
 +    }
 +    if (g_test_subprocess()) {
++        QemuCrucibleStartupControlPurpose *control = NULL;
++
 +        fixture_prepare(0, false);
 +        g_assert_cmpint(fixture_acquire(), ==, 0);
++        /* Reach the runtime branch through its real controller reserve;
++         * an unpublished accounting partition correctly returns earlier. */
++        fixture_seven_purpose();
++        g_assert_cmpint(fixture_reserve_seven(&control), ==, 0);
 +        startup_source.standing.operation.held = true;
 +        startup_source.standing.operation.plugin_id = fixture.ctx.id;
 +        startup_source.standing.operation.process = getpid();
@@ -292813,8 +293863,13 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +SOURCE_SCENARIO(registration_cleanup_concurrent)
 +SOURCE_SCENARIO(required_ready_identity)
 +SOURCE_SCENARIO(required_ready_unissued_close)
++SOURCE_SCENARIO(worker_policy_environment_refusals)
++SOURCE_SCENARIO(worker_planner_stack_refusal)
++SOURCE_SCENARIO(runtime5_original_budget_insufficient)
 +SOURCE_SCENARIO(runtime5_healthy)
 +SOURCE_SCENARIO(runtime5_geometry)
++SOURCE_SCENARIO(runtime5_missing_run)
++SOURCE_SCENARIO(runtime5_missing_teardown)
 +SOURCE_SCENARIO(runtime5_post_cancel)
 +SOURCE_SCENARIO(runtime5_interrupt_first_post)
 +SOURCE_SCENARIO(missing_family_acquire)
@@ -293006,8 +294061,13 @@ index 0000000000000000000000000000000000000000..35e354e3d7f56eb3b2bc6b9efa7bf7be
 +    REGISTER_SCENARIO(registration_cleanup_concurrent);
 +    REGISTER_SCENARIO(required_ready_identity);
 +    REGISTER_SCENARIO(required_ready_unissued_close);
++    REGISTER_SCENARIO(worker_policy_environment_refusals);
++    REGISTER_SCENARIO(worker_planner_stack_refusal);
++    REGISTER_SCENARIO(runtime5_original_budget_insufficient);
 +    REGISTER_SCENARIO(runtime5_healthy);
 +    REGISTER_SCENARIO(runtime5_geometry);
++    REGISTER_SCENARIO(runtime5_missing_run);
++    REGISTER_SCENARIO(runtime5_missing_teardown);
 +    REGISTER_SCENARIO(runtime5_post_cancel);
 +    REGISTER_SCENARIO(runtime5_interrupt_first_post);
 +    REGISTER_SCENARIO(missing_family_acquire);
@@ -293525,10 +294585,10 @@ index 0000000000000000000000000000000000000000..6e04017762b6144d758422da84b78c7a
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..13edaf335c8184e8a5ff5337cec4acf0555aae39
+index 0000000000000000000000000000000000000000..6a142ac8365d33f211b09483485eecc1c68c10c1
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,271 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -293557,6 +294617,16 @@ index 0000000000000000000000000000000000000000..13edaf335c8184e8a5ff5337cec4acf0
 +QOM_OBJECT_HEADER_SHA256 = (
 +    "ea0d72424e90257e7560bba241ae6beba1dc3fa3608ba05af9a21e67c9ee37f3"
 +)
++
++# These additional stopped-RR endpoints are bounded component providers;
++# genuine QOM/thread support retains its own independently linked symbols.
++COMPONENT_NAMESPACE = r"""
++#define qemu_cond_wait_impl stopped_control_component_qemu_cond_wait_impl
++#define qemu_cond_wait_func stopped_control_component_qemu_cond_wait_func
++#define qemu_clock_enable stopped_control_component_qemu_clock_enable
++#define process_queued_cpu_work stopped_control_component_process_queued_cpu_work
++#define cpu_work_list_empty stopped_control_component_cpu_work_list_empty
++"""
 +
 +EXTRA = r"""
 +#include <sys/eventfd.h>
@@ -293763,7 +294833,8 @@ index 0000000000000000000000000000000000000000..13edaf335c8184e8a5ff5337cec4acf0
 +    wait_dispatch = NETWORK["SUPPORT"]["EXTRACT"]["unique_line"](
 +        (ROOT / "util/qsp.c").read_text(),
 +        "QemuCondWaitFunc qemu_cond_wait_func = qemu_cond_wait_impl;")
-+    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + wait_dispatch +
++    generated.write_text(SUPPORT["COMPONENT_NAMESPACE"] + COMPONENT_NAMESPACE +
++                         prelude + SUPPORT["EXTRA"] + EXTRA + wait_dispatch +
 +                         qom_declaration + "\n\n" + bodies + support + CHECKS)
 +    # Retain the component object for the owning runner's symbol audit.
 +    component = arguments.output_dir / "stopped-control-rearm.o"
@@ -293774,7 +294845,7 @@ index 0000000000000000000000000000000000000000..13edaf335c8184e8a5ff5337cec4acf0
 +                      "-Wno-unused-variable"]
 +    component_command = [*compile_prefix, "-c", str(generated), "-o", str(component)]
 +    command = [*compile_prefix,
-+               str(component), *NETWORK["SUPPORT"]["utility_sources"](), "-o", str(binary),
++               str(component), *NETWORK["SUPPORT"]["native_link_arguments"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
 +    (arguments.output_dir / "component-compile-command.json").write_text(
 +        json.dumps(component_command, indent=2) + "\n")
