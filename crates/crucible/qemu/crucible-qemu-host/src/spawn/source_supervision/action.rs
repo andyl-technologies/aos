@@ -36,7 +36,7 @@ impl RequestIdentity {
     ) -> Result<(), HostSupervisionError> {
         let acknowledged = node.control_boundary_token();
         let token_matches = match self {
-            Self::Control { token, .. } => acknowledged.wrapping_add(1) == *token,
+            Self::Control { token, .. } => acknowledged.checked_add(1) == Some(*token),
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             Self::Park { .. } => true,
         };

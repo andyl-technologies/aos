@@ -59,16 +59,95 @@ mod control_boundary_tests {
     }
 
     #[test]
-    fn request_and_acknowledgement_wrap_through_zero() {
+    fn final_control_request_acknowledges_once_then_refuses_generation_reuse() {
         let slot = NodeSlot::new(KIND_VM);
-        slot.control_boundary_ack.store(u32::MAX, Ordering::Release);
+        slot.control_boundary_ack
+            .store(u32::MAX - 2, Ordering::Release);
 
         let request = slot
-            .request_control_boundary(0, None)
-            .unwrap_or_else(|error| panic!("wrapped request should publish: {error}"));
+            .request_control_boundary(7, Some(3))
+            .expect("the final even request still has an odd acknowledgement");
 
-        assert_eq!(request, 0);
-        assert_eq!(slot.acknowledge_control_boundary(), 1);
+        assert_eq!(request, u32::MAX - 1);
+        assert_eq!(slot.preview_action_token(7, Some(3)), Ok(request));
+        assert_eq!(slot.request_control_boundary(7, Some(3)), Ok(request));
+        assert_eq!(slot.acknowledge_control_boundary(), u32::MAX);
+        assert_eq!(slot.acknowledge_control_boundary(), u32::MAX);
+
+        let before = slot.snapshot();
+        let mut entered = false;
+        let error = slot.request_control_boundary_with_publication(9, Some(5), |_| {
+            entered = true;
+            Ok::<(), ()>(())
+        });
+
+        assert!(matches!(
+            error,
+            Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::ControlBoundaryGenerationExhausted {
+                    acknowledged: u32::MAX,
+                }
+            ))
+        ));
+        assert!(!entered);
+        assert!(slot.preview_action_token(9, Some(5)).is_err());
+        assert_eq!(slot.snapshot(), before);
+        assert!(!slot.control_boundary_is_requested());
+    }
+
+    #[test]
+    fn exhausted_control_generation_cannot_enter_a_producer_or_change_another_slot() {
+        let exhausted = NodeSlot::new(KIND_VM);
+        exhausted
+            .control_boundary_ack
+            .store(u32::MAX, Ordering::Release);
+        let unrelated = NodeSlot::new(KIND_VM);
+        let before = unrelated.snapshot();
+        let mut entered = false;
+
+        let result = exhausted.request_control_boundary_with_publication(7, Some(3), |_| {
+            entered = true;
+            unrelated.request_control_boundary(7, Some(3)).map(|_| ())
+        });
+
+        assert!(matches!(
+            result,
+            Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::ControlBoundaryGenerationExhausted { .. }
+            ))
+        ));
+        assert!(!entered);
+        assert_eq!(exhausted.control_boundary_token(), u32::MAX);
+        assert_eq!(unrelated.snapshot(), before);
+    }
+
+    #[test]
+    fn publication_collision_cannot_retarget_the_once_entered_producer() {
+        let slot = NodeSlot::new(KIND_VM);
+        let mut cuts = 0;
+
+        let result = slot.request_control_boundary_with_publication(7, Some(3), |token| {
+            cuts += 1;
+            assert_eq!(token, 2);
+            assert_eq!(slot.request_control_boundary(7, Some(3))?, token);
+            assert_eq!(slot.acknowledge_control_boundary(), 3);
+            Ok::<(), NodeSlotError>(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(ControlBoundaryPublicationError::Slot(
+                NodeSlotError::ControlBoundaryGenerationChanged {
+                    expected: 1,
+                    observed: 3,
+                }
+            ))
+        ));
+        assert_eq!(cuts, 1);
+        assert_eq!(slot.control_boundary_token(), 3);
+        assert_eq!(slot.control_boundary_fault_command_frontier(), 7);
+        assert_eq!(slot.control_boundary_capture_request(), Some(3));
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), 1);
     }
 
     #[test]

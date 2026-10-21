@@ -542,8 +542,9 @@ impl NodeSlot {
     ///
     /// # Errors
     ///
-    /// Returns [`NodeSlotError::FutexWake`] when the non-private futex wake
-    /// syscall fails.
+    /// Returns [`NodeSlotError::ControlBoundaryGenerationExhausted`] before
+    /// publication when the acknowledged generation has no fresh successor,
+    /// or [`NodeSlotError::FutexWake`] when the non-private futex wake fails.
     pub fn request_control_boundary(
         &self,
         fault_command_frontier: u64,
@@ -570,7 +571,9 @@ impl NodeSlot {
     ///
     /// # Errors
     /// Returns the untouched producer error before effects, or the original
-    /// slot validation/wake error. A slot wake error can follow token publication.
+    /// slot validation, collision or wake error. A collision can follow tuple
+    /// stores; a wake error can follow token publication. The producer retains
+    /// either attempted publication rather than retargeting another token.
     pub fn request_control_boundary_with_publication<E>(
         &self,
         fault_command_frontier: u64,
@@ -585,50 +588,52 @@ impl NodeSlot {
                 },
             ));
         }
-        let mut before_mutation = Some(before_mutation);
-        let request = loop {
-            let observed = self.control_boundary_ack.load(Ordering::Acquire);
-            if observed & 1 == 0 {
-                let observed_frontier = self
-                    .control_boundary_fault_command_frontier
-                    .load(Ordering::Acquire);
-                let observed_capture = self
-                    .control_boundary_capture_request
-                    .load(Ordering::Acquire);
-                if observed_frontier != fault_command_frontier
-                    || observed_capture != capture_request
-                {
-                    return Err(ControlBoundaryPublicationError::Slot(
-                        NodeSlotError::ControlBoundaryRequestChanged {
-                            expected_frontier: observed_frontier,
-                            observed_frontier: fault_command_frontier,
-                            expected_capture_request: observed_capture,
-                            observed_capture_request: capture_request,
-                        },
-                    ));
-                }
-                if let Some(before_mutation) = before_mutation.take() {
-                    before_mutation(observed).map_err(ControlBoundaryPublicationError::Producer)?;
-                }
-                break observed;
+        let observed = self.control_boundary_ack.load(Ordering::Acquire);
+        let request = if observed & 1 == 0 {
+            let observed_frontier = self
+                .control_boundary_fault_command_frontier
+                .load(Ordering::Acquire);
+            let observed_capture = self
+                .control_boundary_capture_request
+                .load(Ordering::Acquire);
+            if observed_frontier != fault_command_frontier || observed_capture != capture_request {
+                return Err(ControlBoundaryPublicationError::Slot(
+                    NodeSlotError::ControlBoundaryRequestChanged {
+                        expected_frontier: observed_frontier,
+                        observed_frontier: fault_command_frontier,
+                        expected_capture_request: observed_capture,
+                        observed_capture_request: capture_request,
+                    },
+                ));
             }
-            let request = observed.wrapping_add(1);
-            if let Some(before_mutation) = before_mutation.take() {
-                before_mutation(request).map_err(ControlBoundaryPublicationError::Producer)?;
-            }
+            before_mutation(observed).map_err(ControlBoundaryPublicationError::Producer)?;
+            observed
+        } else {
+            let request = observed
+                .checked_add(1)
+                .ok_or(ControlBoundaryPublicationError::Slot(
+                    NodeSlotError::ControlBoundaryGenerationExhausted {
+                        acknowledged: observed,
+                    },
+                ))?;
+            before_mutation(request).map_err(ControlBoundaryPublicationError::Producer)?;
             self.control_boundary_fault_command_frontier
                 .store(fault_command_frontier, Ordering::Relaxed);
             self.control_boundary_capture_request
                 .store(capture_request, Ordering::Relaxed);
-            match self.control_boundary_ack.compare_exchange(
-                observed,
-                request,
-                Ordering::Release,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break request,
-                Err(_) => continue,
-            }
+            // A once-entered producer owns this exact token. A collision cannot
+            // retry with another generation under the already sealed loan.
+            self.control_boundary_ack
+                .compare_exchange(observed, request, Ordering::Release, Ordering::Acquire)
+                .map_err(|actual| {
+                    ControlBoundaryPublicationError::Slot(
+                        NodeSlotError::ControlBoundaryGenerationChanged {
+                            expected: observed,
+                            observed: actual,
+                        },
+                    )
+                })?;
+            request
         };
         self.wake_after_signal_increment().map_err(|source| {
             ControlBoundaryPublicationError::Slot(NodeSlotError::FutexWake { source })
@@ -677,7 +682,9 @@ impl NodeSlot {
         if request & 1 != 0 {
             return request;
         }
-        let acknowledgement = request.wrapping_add(1);
+        // Pending requests are even, so their odd acknowledgement always fits.
+        // The host refuses a new request after the final odd generation.
+        let acknowledgement = request + 1;
         self.control_boundary_ack
             .store(acknowledgement, Ordering::Release);
         acknowledgement

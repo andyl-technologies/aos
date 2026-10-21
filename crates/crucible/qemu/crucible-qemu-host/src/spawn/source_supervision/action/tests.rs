@@ -1,6 +1,6 @@
 //! Checks the actual publisher-state decision after a collected cohort.
 //!
-//! These factual state controls create no Source, map, subscriber or Native
+//! These factual state controls create no Source, subscriber or Native
 //! grant. The full authenticated publisher driver remains a separate gate.
 
 use super::*;
@@ -466,4 +466,44 @@ fn action_birth_requires_next_unpublished_token_and_unoccupied_real_frontier() {
     assert!(slot.release_action_frontier(14).is_err());
     slot.release_action_frontier(12).unwrap();
     assert!(next.require_unpublished_request(&slot).is_ok());
+}
+
+#[test]
+fn exhausted_actual_control_token_cannot_authorize_a_wrapped_action_birth()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+
+    for (acknowledged, token, accepted) in
+        [(u32::MAX - 2, u32::MAX - 1, true), (u32::MAX, 0, false)]
+    {
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
+        let layout = allocation.layout();
+        let mut initial = allocation.setup_region_bytes()?;
+        let offset = usize::try_from(layout.node_slots_off)?
+            + crucible_qemu_shmem::NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET;
+        initial[offset..offset + 4].copy_from_slice(&acknowledged.to_ne_bytes());
+        let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+        shmem.write_all(&initial)?;
+        let mapping = crucible_qemu_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+        let slot = mapping.node_slot(0)?;
+        let before = slot.snapshot();
+        let request = RequestIdentity::Control {
+            token,
+            capture: None,
+        };
+
+        let result = request.require_unpublished_request(slot);
+
+        if accepted {
+            result?;
+        } else {
+            assert_eq!(result, Err(HostSupervisionError::BorrowedOperation));
+        }
+        assert_eq!(slot.snapshot(), before);
+        assert!(!slot.action_frontier_is_retained());
+    }
+    Ok(())
 }

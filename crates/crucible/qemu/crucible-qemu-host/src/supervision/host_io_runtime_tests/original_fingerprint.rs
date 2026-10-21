@@ -154,6 +154,51 @@ fn exhausted_capture_refuses_before_source_admission_or_any_mapped_effect()
 }
 
 #[test]
+fn exhausted_control_refuses_capture_before_source_admission_or_sample_mutation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
+    let layout = allocation.layout();
+    let mut initial = allocation.setup_region_bytes()?;
+    let offset = usize::try_from(layout.node_slots_off)?
+        + crucible_qemu_shmem::NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET;
+    initial[offset..offset + 4].copy_from_slice(&u32::MAX.to_ne_bytes());
+    let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
+    shmem.write_all(&initial)?;
+    let (mut notifications, wake) = UnixStream::pair()?;
+    notifications.set_nonblocking(true)?;
+    let plugin = crucible_qemu_shmem::mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let mut runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?;
+    let owner = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )?;
+    let original = owner.begin(HostOperationClass::Preparation)?;
+    let before = plugin.node_slot(0)?.snapshot();
+
+    let error = runtime
+        .publish_current_execution_fingerprint_under_original(&original)
+        .expect_err("exhaustion precedes unavailable Source admission");
+
+    assert!(error.operational_supervision_source().is_none());
+    assert!(error.message.contains("boundary action"));
+    assert_eq!(
+        plugin.fingerprint_sample(0)?.capture_request_generation(),
+        0,
+    );
+    assert_eq!(plugin.fingerprint_sample(0)?.published_generation(), 0);
+    assert_eq!(plugin.node_slot(0)?.snapshot(), before);
+    assert_eq!(
+        notifications.read(&mut [0_u8; 8]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+    );
+    assert!(original.wait_slice().is_ok());
+    Ok(())
+}
+
+#[test]
 fn absent_source_refuses_before_capture_generation_or_control_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     for borrowed in [false, true] {

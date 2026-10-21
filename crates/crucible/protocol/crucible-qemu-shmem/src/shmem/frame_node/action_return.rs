@@ -14,7 +14,8 @@ impl NodeSlot {
     /// Observes the next existing token without publishing or ringing a wake.
     ///
     /// # Errors
-    /// Refuses a pending request with another immutable frontier/sample tuple.
+    /// Refuses an exhausted generation or a pending request with another
+    /// immutable frontier/sample tuple.
     pub fn preview_action_token(
         &self,
         frontier: u64,
@@ -38,7 +39,7 @@ impl NodeSlot {
             }
             Ok(token)
         } else {
-            Ok(token.wrapping_add(1))
+            token.checked_add(1).ok_or(ActionDecodeError)
         }
     }
 

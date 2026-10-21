@@ -228,19 +228,18 @@ pub(super) fn checkpoint_pause_requires_control_doorbell(
 ///
 /// Other runtime operations may complete their own handshakes while an advance
 /// is polling. Consequently, the observed odd token may be a later
-/// acknowledgement rather than the request's immediate successor. Tokens use
-/// wrapping serial-number order: an odd value less than half the `u32` space
-/// ahead of `request` acknowledges it, while the odd predecessor is stale.
+/// acknowledgement rather than the request's immediate successor. Issuance
+/// stops at exhaustion, so ordinary increasing order distinguishes completion
+/// from a stale token. Zero is never an issued request in this incarnation.
 pub(super) fn control_boundary_request_is_acknowledged(
     request: PendingControlBoundary,
     snapshot: &crucible_qemu_shmem::NodeSlotSnapshot,
 ) -> bool {
     let observed = snapshot.control_boundary_ack;
-    let forward_distance = observed.wrapping_sub(request.generation);
-    request.generation & 1 == 0
+    request.generation != 0
+        && request.generation & 1 == 0
         && observed & 1 == 1
-        && forward_distance != 0
-        && forward_distance < (1_u32 << 31)
+        && observed > request.generation
         && snapshot.control_boundary_fault_command_frontier == request.fault_command_frontier
         && snapshot.control_boundary_capture_request
             == request.fingerprint_capture_request.unwrap_or(0)

@@ -635,20 +635,34 @@ fn advance_accepts_its_control_acknowledgement_and_later_serials() {
 }
 
 #[test]
-fn control_acknowledgement_order_wraps_without_accepting_stale_serials() {
+fn control_acknowledgement_never_interprets_counter_wrap_as_progress() {
     let mut snapshot = crucible_qemu_shmem::NodeSlot::new(crucible_qemu_shmem::KIND_VM).snapshot();
-    let request = PendingControlBoundary {
-        generation: 0,
-        fault_command_frontier: 0,
-        fingerprint_capture_request: None,
-    };
-    snapshot.control_boundary_ack = 1;
-    assert!(control_boundary_request_is_acknowledged(request, &snapshot));
+    for (generation, acknowledged, expected) in [
+        (0, 1, false),
+        (0, u32::MAX, false),
+        (u32::MAX - 1, u32::MAX, true),
+        (u32::MAX - 1, 1, false),
+        (u32::MAX - 1, u32::MAX - 2, false),
+        (2, 3, true),
+        (2, 5, true),
+        (2, u32::MAX, true),
+        (2, 1, false),
+        (2, 2, false),
+        (3, 5, false),
+    ] {
+        let request = PendingControlBoundary {
+            generation,
+            fault_command_frontier: 0,
+            fingerprint_capture_request: None,
+        };
+        snapshot.control_boundary_ack = acknowledged;
 
-    snapshot.control_boundary_ack = u32::MAX;
-    assert!(!control_boundary_request_is_acknowledged(
-        request, &snapshot
-    ));
+        assert_eq!(
+            control_boundary_request_is_acknowledged(request, &snapshot),
+            expected,
+            "request {generation}, observed acknowledgement {acknowledged}",
+        );
+    }
 }
 
 #[test]

@@ -451,6 +451,20 @@ pub(super) fn live_count(
 /// An error produced by the per-node advance-ceiling slot.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NodeSlotError {
+    /// The final acknowledged control generation has no fresh successor.
+    #[error("control-boundary generation {acknowledged} is exhausted")]
+    ControlBoundaryGenerationExhausted {
+        /// Last acknowledged generation, retained without reuse.
+        acknowledged: u32,
+    },
+    /// Another publication changed the token after the producer's single cut.
+    #[error("control-boundary generation changed from {expected} to {observed} during publication")]
+    ControlBoundaryGenerationChanged {
+        /// Acknowledged generation selected before the producer cut.
+        expected: u32,
+        /// Actual generation that rejected this attempted publication.
+        observed: u32,
+    },
     /// A peer published an unknown current-ABI advance-stop condition.
     #[error("invalid scheduler advance-stop condition encoding {encoded}")]
     InvalidAdvanceStopCondition {

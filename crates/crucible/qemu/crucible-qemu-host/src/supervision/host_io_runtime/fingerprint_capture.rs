@@ -53,6 +53,18 @@ impl QemuLiveHostIoRuntime {
                 observed,
             )
             .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+        // Check the independent control generation before the sampler or the
+        // actual Source acquires any publication debt. The real publication
+        // still validates the same tuple at its own mutation cut.
+        let mapping = self.region.as_ref().ok_or_else(region_missing)?;
+        let frontier = mapping
+            .fault_command_write_index(self.vm_slot)
+            .map_err(map_slot_error)?;
+        mapping
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .preview_action_token(frontier, Some(fingerprint_request))
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
         let loan = actions.lend(self, deadline, Some(fingerprint_request))?;
         deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")
