@@ -139,6 +139,11 @@ in {
       src = null;
       buildDeps = [pkgs.coreutils pkgs.gawk] ++ builds;
       runtimeDeps = lib.unique (lib.concatMap (build: build.passthru.nativeRuntimeDeps) builds);
+      # The families already removed build-only references; the generic
+      # scrub would also rewrite the store-path fixtures tests compare.
+      dontNukeRefs = true;
+      dontStrip = true;
+      dontPatchELF = true;
       SELECTIONS = lib.concatStringsSep "\n" selections;
       TARGETS = lib.concatStringsSep "\n" targets;
       phases = [

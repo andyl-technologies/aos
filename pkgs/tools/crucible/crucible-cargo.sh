@@ -198,6 +198,23 @@ select_targets() {
   done | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k6,6 -u | cut -f 2-
 }
 
+# Cargo's target executables are writable files owned by the caller, and
+# tests rely on that: some copy `std::env::current_exe()` and then change the
+# copy's contents. Run a private writable copy of each published executable,
+# made once per gate in its temporary directory.
+writable_copy() {
+  local published=$1
+  local copies="${TMPDIR:-/tmp}/crucible-cargo-executables"
+  local copy="$copies/${published##*/}"
+  if [ ! -x "$copy" ]; then
+    mkdir -p "$copies"
+    cp "$published" "$copy.partial"
+    chmod u+w "$copy.partial"
+    mv "$copy.partial" "$copy"
+  fi
+  printf '%s\n' "$copy"
+}
+
 # Runs one executable with Cargo's run-time package environment.
 run_executable() {
   local build=$1 package=$2 path=$3 working_directory=$4
@@ -240,7 +257,7 @@ run_executable() {
     [ -n "$bin_row" ] || continue
     bin_name=$(printf '%s\n' "$bin_row" | cut -f 5)
     bin_path=$(printf '%s\n' "$bin_row" | cut -f 7)
-    environment+=("CARGO_BIN_EXE_$bin_name=$bin_path")
+    environment+=("CARGO_BIN_EXE_$bin_name=$(writable_copy "$bin_path")")
   done < <(rows_for "$selection" artifact | awk -F '\t' -v package="$package" \
     -v build="$build" '$1 == build && $4 == "bin" && $6 == package' \
     | awk -F '\t' 'BEGIN { OFS = "\t" } { $7 = $1 "/" $7; print }')
@@ -248,6 +265,7 @@ run_executable() {
   if [ "$working_directory" = package ]; then
     working_directory=$source_root/$CRUCIBLE_CARGO_PACKAGE_DIR
   fi
+  path=$(writable_copy "$path")
   (cd "$working_directory" && exec env "${environment[@]}" "$path" "$@")
 }
 

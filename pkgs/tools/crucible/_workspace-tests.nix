@@ -30,7 +30,7 @@
 ##! manifest.tsv          id, role (harness|artifact), kind, name, package, path
 ##! packages/<name>.env   Cargo's run-time package environment
 ##! libexec/<sha>-<name>  content-addressed executables (and cdylibs); the
-##!                       output scrub removes build-only store paths there
+##!                       build-only store references are removed there
 ##! doctests/<id>.*       doctest outcomes, replayed with libtest filters
 ##! ```
 ##!
@@ -259,6 +259,27 @@
       printf 'profile=%s\n' ${shellQuote profile}
       printf 'source_root=%s\n' "$(cd .. && pwd)"
     } > "$out/build-info"
+
+    # Test executables carry literal store paths as fixtures, such as
+    # /nix/store/9999...-crucible-qemu-plugin, which the generic reference
+    # scrub would rewrite and so change test behavior. Rewrite only paths
+    # that exist in this sandbox (real build inputs) and are not runtime
+    # dependencies, matching the scrub's keep list.
+    keep=" $out ''${buildInputs[*]:-} ''${propagatedBuildInputs[*]:-} ''${nukeRefsKeep[*]:-} "
+    scrub_roots=("$out/libexec")
+    [ ! -d "$out/doctests" ] || scrub_roots+=("$out/doctests")
+    find "''${scrub_roots[@]}" -type f | while read -r file; do
+      { grep -aoE '/nix/store/[0-9a-z]{32}-' "$file" || true; } | LC_ALL=C sort -u \
+        | while read -r prefix; do
+            hash=''${prefix#/nix/store/}
+            hash=''${hash%-}
+            set -- /nix/store/"$hash"-*
+            [ -e "$1" ] || continue
+            case $keep in *" $1 "*) continue ;; esac
+            chmod u+w "$file"
+            LC_ALL=C sed -i "s|/nix/store/$hash-|/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-|g" "$file"
+          done
+    done
   '';
 
   # A family compiles its invocations once against its own dependency
@@ -311,6 +332,8 @@
       # run paths for gates and flights that copy an executable.
       dontStrip = true;
       dontPatchELF = true;
+      # installCollected removes build-only references itself; see there.
+      dontNukeRefs = true;
       postBuild = collectExecutables invocations doctestInvocations;
       postInstall = installCollected name profile;
       passthru = {
