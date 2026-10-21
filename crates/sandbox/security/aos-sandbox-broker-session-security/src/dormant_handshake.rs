@@ -8553,3 +8553,7 @@ pub(crate) fn delete_mount_reap_coordinates_v4(
 ) -> Result<DormantBrokerRequestCoordinatesV1, BrokerSessionSecurityError> {
     session.delete_mount_reap_coordinates_v4(header)
 }
+
+#[cfg(all(test, feature = "kernel-tests"))]
+#[path = "handshake/storage_rpc_qualification.rs"]
+mod storage_rpc_qualification;

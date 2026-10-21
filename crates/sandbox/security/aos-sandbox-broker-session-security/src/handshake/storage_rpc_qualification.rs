@@ -159,6 +159,8 @@ fn exchange(
         }
     };
 
+    let exact_request = request.0.canonical_packet().to_vec();
+
     let mut outstanding = loop {
         wait_for_handshake_readiness(session.as_fd().unwrap(), true, deadline).unwrap();
         match session.send_authenticated_request(request).unwrap() {
@@ -177,8 +179,49 @@ fn exchange(
                 };
                 let (outcome, currentness) = committed.into_outcome_and_currentness();
                 drop(currentness);
+                if matches!(
+                    method,
+                    BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+                        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                ) {
+                    assert_exact_terminal_replay(&mut session, &exact_request, &outcome, deadline);
+                }
                 return Ok(outcome);
             }
+        }
+    }
+}
+
+/// Replays the actual signed packet on its retained live transport.
+///
+/// The first terminal has already passed production verification and durable
+/// commit. Its byte-identical replay needs no second reservation or commit.
+fn assert_exact_terminal_replay(
+    session: &mut DormantAuthenticatedBrokerSessionV1,
+    request: &[u8],
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    deadline: u64,
+) {
+    use crate::handshake::DormantBrokerSessionHandshakeErrorV1::Transport;
+
+    loop {
+        wait_for_handshake_readiness(session.as_fd().unwrap(), true, deadline).unwrap();
+        match session.0.send_request_packet(request) {
+            Ok(()) => break,
+            Err(Transport) => continue,
+            Err(cause) => panic!("exact Storage request replay failed: {cause}"),
+        }
+    }
+
+    loop {
+        wait_for_handshake_readiness(session.as_fd().unwrap(), false, deadline).unwrap();
+        match session.0.receive_response_packet(RESPONSE_BYTES as usize) {
+            Ok(packet) => {
+                assert_eq!(packet, outcome.canonical_packet());
+                break;
+            }
+            Err(Transport) => continue,
+            Err(cause) => panic!("exact Storage terminal replay failed: {cause}"),
         }
     }
 }

@@ -30,7 +30,7 @@ fn invoke(action: &str, method: BrokerMethod, packet: &[u8]) -> Vec<u8> {
         .args([
             "--ignored",
             "--exact",
-            "handshake::storage_rpc_qualification::installed_storage_rpc_client",
+            "dormant_handshake::storage_rpc_qualification::installed_storage_rpc_client",
             "--test-threads=1",
             "--nocapture",
         ])
