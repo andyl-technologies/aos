@@ -1,8 +1,8 @@
-From ccb208cf4cf4e5c6195959e8a2083366f664ba39 Mon Sep 17 00:00:00 2001
+From 86918f82ecf10b631171e1383185c63d95c018be Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain Main control physical custody across
- independent posts
+Subject: [PATCH] crucible: retain local module payload borrows under actual
+ Main custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -122,6 +122,32 @@ earlier scenarios and causal controls. This physical custody cut grants no CPU
 operation, entered action Original, publisher membership, activation, ACK,
 ActionReturn, peer return or launched lifecycle/VM qualification.
 
+First-bind v4 member callbacks for one prepaid nominal module-payload lifetime
+borrow under the exact Main owner. Authenticate the canonical payload field and
+local serial through the retained child journal. Keep older member editions
+explicitly borrow-unavailable, and refuse half-pairs before member birth.
+
+Journal invocation before the masked callback, keeping exact stable holder and
+serial output fields. Accept known absence only from a genuine empty NULL/0
+negative refusal; retain unknown or contradictory outputs. Preserve born-negative
+records and independent acquire/status/post facts. Release authenticates the
+actual born token and original serial, clears both original output fields, and
+records real consumption before independent callback status and Source post.
+Neither a scalar output nor a copied field can close the physical dependency.
+
+The actual Core Main exit attempts module return before QOM, Native descriptor
+and Source borrower return. Unknown or unconsumed module debt retains those exact
+owners and the Ready handoff, blocks parent teardown and subsequent dispatch,
+and ends the real entered marker. No stale Main phase authorizes later retry;
+a genuine cleanup entry producer remains required for that terminal containment.
+
+Exercise literal Native/Source/Core consumers with a modeled module journal,
+explicitly modeled installed publication/allocation/Main entry inputs, genuine
+mutex/process/thread identity, exact field custody and independent post errors.
+Preserve existing scenarios and limits. Local opaque lifetime borrowing exports
+no payload reference, action/class, entered Original, publisher membership, CPU
+operation permission, activation, ACK, ActionReturn or physical peer return.
+It does not qualify the actual module/QEMU pairing or launched lifecycle.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64649,7 +64675,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..685150b0663bdca8b1803102293ad949eef1c6d9 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..fb31ed3e8fbce634bdf9c9e98b0b5d54bd6dbb54 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67416,7 +67442,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..685150b0663bdca8b1803102293ad949
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3892 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3925 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -70949,6 +70975,17 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..685150b0663bdca8b1803102293ad949
 +    QemuCrucibleModuleRequestPayload **canonical_field, uint64_t local_serial,
 +    void *child_userdata);
 +
++/* Opaque local lifetime record, never a payload reference or protocol object. */
++typedef struct QemuCrucibleModuleRequestPayloadBorrow QemuCrucibleModuleRequestPayloadBorrow;
++typedef int (*QemuCrucibleModuleRequestPayloadBorrowAcquire)(
++    QemuCrucibleModuleRequestPayload **payload_holder, uint64_t payload_serial,
++    QemuCrucibleModuleRequestPayloadBorrow **borrow_holder,
++    uint64_t *borrow_serial, uint32_t *known_absent, void *userdata);
++typedef int (*QemuCrucibleModuleRequestPayloadBorrowRelease)(
++    QemuCrucibleModuleRequestPayload **payload_holder, uint64_t payload_serial,
++    QemuCrucibleModuleRequestPayloadBorrow **borrow_holder,
++    uint64_t borrow_serial, uint32_t *locally_returned, void *userdata);
++
 +typedef struct QemuCrucibleCommandReceiveProgress {
 +    int32_t first_status;
 +    int32_t post_status;
@@ -71025,6 +71062,28 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..685150b0663bdca8b1803102293ad949
 +    QemuCrucibleCommandRequestReader reader, QemuCrucibleParkReturnWriter writer,
 +    QemuCrucibleModuleRequestPayloadClaim payload_claim,
 +    QemuCrucibleModuleRequestPayloadRelease payload_release,
++    QemuCrucibleCommandConsumerMember **out);
++
++/* First-binds a mandatory pair of local payload lifetime callbacks to the
++ * actual complete child. Acquire authenticates the existing canonical payload
++ * field/serial and a stable empty borrow field. After geometry validation,
++ * known_absent=1 certifies a genuine no-mutation refusal with NULL/0 outputs;
++ * known_absent=0 accompanies the real born token/nonwrapping local serial.
++ * Release consumes only the exact born field/serial, nulls that holder and
++ * zeroes the original serial output before locally_returned=1 and independent
++ * post. Signed status is independent of
++ * actual birth/consumption. Unknown or contradictory outputs retain custody.
++ * These callbacks export no payload reference, action/class, Original, publisher
++ * membership, ACK or activation. Earlier member editions cannot supply them.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_command_member_create_v4(
++    qemu_plugin_id_t id, QemuCrucibleSourceControlBinding *component,
++    QemuCrucibleCommandRequestReader reader, QemuCrucibleParkReturnWriter writer,
++    QemuCrucibleModuleRequestPayloadClaim payload_claim,
++    QemuCrucibleModuleRequestPayloadRelease payload_release,
++    QemuCrucibleModuleRequestPayloadBorrowAcquire payload_borrow_acquire,
++    QemuCrucibleModuleRequestPayloadBorrowRelease payload_borrow_release,
 +    QemuCrucibleCommandConsumerMember **out);
 +
 +/* Moves the nominal member into an empty distinct field of its authentic paid
@@ -108823,10 +108882,10 @@ index 0000000000000000000000000000000000000000..e127890106b42778422ee1a28f97090d
 +}
 diff --git a/plugins/crucible-command-membership.inc.h b/plugins/crucible-command-membership.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e783bf03f96
+index 0000000000000000000000000000000000000000..a37bf68987997da8a0d31580e2a153293f1072aa
 --- /dev/null
 +++ b/plugins/crucible-command-membership.inc.h
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,410 @@
 +/*
 + * Nominal membership of the actual contained command consumer.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -108847,6 +108906,8 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +    if (member->canonical_owner != member || !member->attempted ||
 +        !member->held || member->returned || !member->reader ||
 +        (!!member->payload_claim != !!member->payload_release) ||
++        (!!member->payload_borrow_acquire != !!member->payload_borrow_release) ||
++        (member->payload_borrow_acquire && !member->payload_claim) ||
 +        !member->park_writer.born || !member->park_writer.callback ||
 +        member->park_writer.member != member || member->component != component ||
 +        member->child_owner != owner || member->child != owner->child ||
@@ -108918,6 +108979,8 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +    QemuCrucibleCommandRequestReader reader, QemuCrucibleParkReturnWriter writer,
 +    QemuCrucibleModuleRequestPayloadClaim payload_claim,
 +    QemuCrucibleModuleRequestPayloadRelease payload_release,
++    QemuCrucibleModuleRequestPayloadBorrowAcquire payload_borrow_acquire,
++    QemuCrucibleModuleRequestPayloadBorrowRelease payload_borrow_release,
 +    QemuCrucibleCommandConsumerMember **out)
 +{
 +#ifdef CONFIG_LINUX
@@ -108986,6 +109049,8 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +        .reader = reader,
 +        .payload_claim = payload_claim,
 +        .payload_release = payload_release,
++        .payload_borrow_acquire = payload_borrow_acquire,
++        .payload_borrow_release = payload_borrow_release,
 +        .park_writer = {
 +            .member = member,
 +            .callback = writer,
@@ -109028,7 +109093,7 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +    QemuCrucibleCommandRequestReader reader, QemuCrucibleParkReturnWriter writer,
 +    QemuCrucibleCommandConsumerMember **out)
 +{
-+    return command_member_create(id, component, reader, writer, NULL, NULL, out);
++    return command_member_create(id, component, reader, writer, NULL, NULL, NULL, NULL, out);
 +}
 +
 +int qemu_plugin_crucible_startup_source_command_member_create_v3(
@@ -109042,7 +109107,25 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +        return -EINVAL;
 +    }
 +    return command_member_create(id, component, reader, writer,
-+                                 payload_claim, payload_release, out);
++                                 payload_claim, payload_release, NULL, NULL, out);
++}
++
++int qemu_plugin_crucible_startup_source_command_member_create_v4(
++    qemu_plugin_id_t id, QemuCrucibleSourceControlBinding *component,
++    QemuCrucibleCommandRequestReader reader, QemuCrucibleParkReturnWriter writer,
++    QemuCrucibleModuleRequestPayloadClaim payload_claim,
++    QemuCrucibleModuleRequestPayloadRelease payload_release,
++    QemuCrucibleModuleRequestPayloadBorrowAcquire payload_borrow_acquire,
++    QemuCrucibleModuleRequestPayloadBorrowRelease payload_borrow_release,
++    QemuCrucibleCommandConsumerMember **out)
++{
++    if (!payload_claim || !payload_release || !payload_borrow_acquire ||
++        !payload_borrow_release) {
++        return -EINVAL;
++    }
++    return command_member_create(id, component, reader, writer,
++                                 payload_claim, payload_release,
++                                 payload_borrow_acquire, payload_borrow_release, out);
 +}
 +
 +int qemu_plugin_crucible_startup_source_command_member_transfer_v1(
@@ -109215,10 +109298,10 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +}
 diff --git a/plugins/crucible-command-receive.inc.h b/plugins/crucible-command-receive.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0777e9fe4d990fe0d3241a06b62be12362637b1c
+index 0000000000000000000000000000000000000000..45eb701dd612175d3074dc946b5525d01c49bdad
 --- /dev/null
 +++ b/plugins/crucible-command-receive.inc.h
-@@ -0,0 +1,1259 @@
+@@ -0,0 +1,1495 @@
 +/*
 + * Retained physical receive through the first-bound module reader.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -110204,6 +110287,238 @@ index 0000000000000000000000000000000000000000..0777e9fe4d990fe0d3241a06b62be123
 +#endif
 +}
 +
++#ifdef CONFIG_LINUX
++static int main_payload_identity_locked(QemuCrucibleMainControlBorrow *borrow)
++{
++    QemuCrucibleReadyDeliveryHandoff *handoff = &startup_source.ready_delivery;
++    QemuCrucibleMainPayloadBorrow *payload;
++    int status;
++
++    if (borrow != &startup_source.main_control_borrow ||
++        borrow->canonical_owner != borrow || !borrow->held || borrow->returned ||
++        borrow->uncertain || borrow->transition_active || borrow->handoff != handoff ||
++        !borrow->holder || *borrow->holder != borrow || !borrow->invocation ||
++        borrow->invocation_serial != borrow->invocation->serial ||
++        !borrow->invocation->frame || borrow->invocation->frame->main_borrow != borrow ||
++        borrow->process != getpid() || !qemu_thread_is_self(&borrow->thread) ||
++        !handoff->held || handoff->main_users != 1 || handoff->uncertain ||
++        handoff->transition_active || handoff->delivery_serial != borrow->delivery_serial) {
++        return -ESTALE;
++    }
++    status = received_delivery_identity_locked(handoff->delivery, handoff->delivery_serial);
++    payload = &borrow->payload_borrow;
++    if (!status && payload->attempted &&
++        (payload->payload != handoff->delivery->payload ||
++         payload->payload_serial != handoff->delivery->payload_serial ||
++         payload->acquire != handoff->member->payload_borrow_acquire ||
++         payload->release != handoff->member->payload_borrow_release ||
++         payload->userdata != handoff->child->address)) {
++        status = -ESTALE;
++    }
++    return status;
++}
++
++static int main_payload_record_failure(QemuCrucibleMainPayloadBorrow *payload,
++                                       int callback, int validation, int post)
++{
++    int status = callback < 0 ? callback : validation ? validation : post;
++
++    if (status && !payload->first_status) {
++        payload->first_status = status;
++    }
++    return payload->first_status;
++}
++#endif
++
++int qemu_crucible_source_main_payload_borrow_v1(QemuCrucibleMainControlBorrow *borrow)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleMainPayloadBorrow *payload;
++    QemuCrucibleReadyDeliveryHandoff *handoff;
++    int status;
++    int callback_status;
++    int validation = 0;
++
++    if (borrow != &startup_source.main_control_borrow || !borrow->invocation) {
++        return -EPERM;
++    }
++    status = qemu_plugin_crucible_native_main_control_current_v1(borrow->invocation, false);
++    if (!status) {
++        QemuCrucibleNativeInvocation *frame = borrow->invocation->frame;
++
++        status = qemu_plugin_crucible_source_main_dispatch_current_v1(
++            frame->registration, frame->cpu, borrow->invocation, false, borrow->holder);
++    }
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = main_payload_identity_locked(borrow);
++    payload = &borrow->payload_borrow;
++    handoff = borrow->handoff;
++    if (!status && payload->attempted) {
++        status = -EALREADY;
++    }
++    if (!status && (!handoff->member->payload_borrow_acquire ||
++                    !handoff->member->payload_borrow_release)) {
++        status = -ENOTSUP;
++    }
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    /* The exact Main owner pins child/member/payload/lender before module
++     * entry. Its stable interior fields are paid by the actual Source sizeof. */
++    *payload = (QemuCrucibleMainPayloadBorrow) {
++        .payload = handoff->delivery->payload,
++        .payload_serial = handoff->delivery->payload_serial,
++        .acquire = handoff->member->payload_borrow_acquire,
++        .release = handoff->member->payload_borrow_release,
++        .userdata = handoff->child->address,
++        .known_absent = UINT32_MAX,
++        .attempted = true,
++        .transition_active = true,
++    };
++    qemu_mutex_unlock(&commands->mutex);
++
++    SOURCE_CALLBACK_MASKED_INVOKE(
++        callback_status, &payload->acquire, payload->acquire, payload->userdata,
++        &handoff->delivery->payload, payload->payload_serial,
++        &payload->module_borrow, &payload->serial, &payload->known_absent,
++        payload->userdata);
++
++    qemu_mutex_lock(&commands->mutex);
++    payload->acquire_status = callback_status;
++    payload->held = payload->module_borrow && payload->serial;
++    if (callback_status > 0 ||
++        !((payload->known_absent == 0 && payload->held) ||
++          (payload->known_absent == 1 && !payload->module_borrow &&
++           !payload->serial && callback_status < 0))) {
++        validation = -EPROTO;
++        payload->uncertain = true;
++    }
++    payload->issued_borrow = payload->module_borrow;
++    payload->issued_serial = payload->serial;
++    if (!validation && payload->known_absent == 1) {
++        payload->closed = true;
++    }
++    /* Save real birth/absence independently before the post. A negative post
++     * neither releases a born record nor invents one after known absence. */
++    payload->acquire_post = main_payload_identity_locked(borrow);
++    payload->transition_active = false;
++    status = main_payload_record_failure(payload, callback_status, validation,
++                                         payload->acquire_post);
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_main_payload_closed_v1(QemuCrucibleMainControlBorrow *borrow)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleMainPayloadBorrow *payload;
++    int status;
++
++    qemu_mutex_lock(&commands->mutex);
++    status = main_payload_identity_locked(borrow);
++    if (!status) {
++        payload = &borrow->payload_borrow;
++        if (payload->attempted && (payload->transition_active || payload->uncertain ||
++            !payload->closed || payload->held || payload->module_borrow || payload->serial)) {
++            status = -EBUSY;
++        }
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_main_payload_return_v1(QemuCrucibleMainControlBorrow *borrow)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleMainPayloadBorrow *payload;
++    QemuCrucibleReadyDeliveryHandoff *handoff;
++    int status;
++    int callback_status;
++    int validation = 0;
++
++    if (borrow != &startup_source.main_control_borrow || !borrow->invocation) {
++        return -EPERM;
++    }
++    status = qemu_plugin_crucible_native_main_control_current_v1(borrow->invocation, false);
++    if (!status) {
++        QemuCrucibleNativeInvocation *frame = borrow->invocation->frame;
++
++        status = qemu_plugin_crucible_source_main_dispatch_current_v1(
++            frame->registration, frame->cpu, borrow->invocation, true, borrow->holder);
++    }
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = main_payload_identity_locked(borrow);
++    payload = &borrow->payload_borrow;
++    handoff = borrow->handoff;
++    if (!status && (!payload->attempted || payload->closed)) {
++        status = payload->first_status;
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    if (!status && (payload->transition_active || payload->uncertain ||
++                    !payload->held || !payload->module_borrow || !payload->serial ||
++                    payload->module_borrow != payload->issued_borrow ||
++                    payload->serial != payload->issued_serial)) {
++        status = -EBUSY;
++    }
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    payload->transition_active = true;
++    payload->locally_returned = UINT32_MAX;
++    qemu_mutex_unlock(&commands->mutex);
++
++    SOURCE_CALLBACK_MASKED_INVOKE(
++        callback_status, &payload->release, payload->release, payload->userdata,
++        &handoff->delivery->payload, payload->payload_serial,
++        &payload->module_borrow, payload->issued_serial, &payload->locally_returned,
++        payload->userdata);
++
++    qemu_mutex_lock(&commands->mutex);
++    payload->return_status = callback_status;
++    if (payload->locally_returned == 1 && !payload->module_borrow && !payload->serial) {
++        /* The real module producer consumed its record before its post. Save
++         * consumption before interpreting that independent signed result. */
++        payload->held = false;
++        payload->closed = true;
++    } else if (payload->locally_returned != 0 ||
++               payload->module_borrow != payload->issued_borrow ||
++               payload->serial != payload->issued_serial || callback_status >= 0) {
++        validation = -EPROTO;
++        payload->uncertain = true;
++    }
++    if (callback_status > 0) {
++        validation = -EPROTO;
++        payload->uncertain = true;
++    }
++    payload->return_post = main_payload_identity_locked(borrow);
++    payload->transition_active = false;
++    status = main_payload_record_failure(payload, callback_status, validation,
++                                         payload->return_post);
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
 +int qemu_crucible_source_main_control_return_v1(
 +    QemuCrucibleMainControlBorrow **holder)
 +{
@@ -110220,6 +110535,10 @@ index 0000000000000000000000000000000000000000..0777e9fe4d990fe0d3241a06b62be123
 +    }
 +    qemu_mutex_lock(&commands->mutex);
 +    if (borrow->transition_active || borrow->uncertain ||
++        (borrow->payload_borrow.attempted && (!borrow->payload_borrow.closed ||
++         borrow->payload_borrow.held || borrow->payload_borrow.module_borrow ||
++         borrow->payload_borrow.serial ||
++         borrow->payload_borrow.transition_active || borrow->payload_borrow.uncertain)) ||
 +        handoff->main_users != 1 || !handoff->held ||
 +        handoff->delivery_serial != borrow->delivery_serial ||
 +        !borrow->invocation || borrow->invocation->serial != borrow->invocation_serial) {
@@ -110759,10 +111078,10 @@ index 0000000000000000000000000000000000000000..c59aa6c7a3c1078aa88a3019b2104cca
 +#endif
 diff --git a/plugins/crucible-control-stop.inc.h b/plugins/crucible-control-stop.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c402bc0cd5a0572574eefff7bfb1017429aaf029
+index 0000000000000000000000000000000000000000..69b70385cd62c12fbe7065881846a8453d02ece6
 --- /dev/null
 +++ b/plugins/crucible-control-stop.inc.h
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,444 @@
 +/*
 + * Actual control invocation and Stop effect journals
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -110817,6 +111136,8 @@ index 0000000000000000000000000000000000000000..c402bc0cd5a0572574eefff7bfb10174
 +        CPUState *cpu;
 +        int begin_status;
 +        int borrow_status;
++        int payload_status;
++        int payload_return_status;
 +        int return_status;
 +        bool held;
 +        bool returned;
@@ -111136,6 +111457,11 @@ index 0000000000000000000000000000000000000000..c402bc0cd5a0572574eefff7bfb10174
 +                &control_stop_storage.main.ticket, &control_stop_storage.main.borrow);
 +    }
 +
++    if (control_stop_storage.main.borrow) {
++        control_stop_storage.main.payload_status =
++            qemu_crucible_source_main_payload_borrow_v1(control_stop_storage.main.borrow);
++    }
++
 +    status = qemu_crucible_source_control_callback_begin_v1(
 +        callback, control_stop_storage.dispatch.userdata,
 +        &control_stop_storage.dispatch.invocation);
@@ -111165,6 +111491,10 @@ index 0000000000000000000000000000000000000000..c402bc0cd5a0572574eefff7bfb10174
 +            qemu_crucible_source_control_callback_end_v1(
 +                control_stop_storage.dispatch.invocation);
 +    }
++    if (control_stop_storage.main.borrow) {
++        control_stop_storage.main.payload_return_status =
++            qemu_crucible_source_main_payload_return_v1(control_stop_storage.main.borrow);
++    }
 +    if (control_stop_storage.main.ticket.frame) {
 +        control_stop_storage.main.return_status =
 +            qemu_plugin_crucible_native_main_control_cpu_return_v1(
@@ -111184,8 +111514,14 @@ index 0000000000000000000000000000000000000000..c402bc0cd5a0572574eefff7bfb10174
 +    if (!control_stop_storage.main_first_status) {
 +        control_stop_storage.main_first_status = control_stop_storage.main.begin_status ?
 +            control_stop_storage.main.begin_status : control_stop_storage.main.borrow_status ?
-+            control_stop_storage.main.borrow_status : control_stop_storage.main.return_status;
++            control_stop_storage.main.borrow_status : control_stop_storage.main.payload_status ?
++            control_stop_storage.main.payload_status : control_stop_storage.main.payload_return_status ?
++            control_stop_storage.main.payload_return_status : control_stop_storage.main.return_status;
 +    }
++    /* The actual entered interval ends here even if a module borrower could
++     * not return. Its exact factual Main/Source/QOM holders remain terminally
++     * retained and block replacement. A future cleanup entry needs a genuine
++     * producer; a stale installed marker cannot authenticate that retry. */
 +    control_stop_storage.dispatch.installed = false;
 +    control_stop_storage.dispatch.phase = CONTROL_DISPATCH_NONE;
 +    control_stop_storage.dispatch.invocation = NULL;
@@ -151369,10 +151705,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5d33b62fde58d6befddd5b16d51a5e70435538c6
+index 0000000000000000000000000000000000000000..760dc84c5aab5fb5acab64bca321298f4805a24d
 --- /dev/null
 +++ b/plugins/crucible-native-invocation.c
-@@ -0,0 +1,2571 @@
+@@ -0,0 +1,2577 @@
 +/*
 + * Native entered-callback lifetime and factual physical-use association.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -153573,6 +153909,12 @@ index 0000000000000000000000000000000000000000..5d33b62fde58d6befddd5b16d51a5e70
 +        frame->registration, frame->cpu, holder, true, NULL);
 +    if (status) {
 +        return status;
++    }
++    if (frame->main_borrow) {
++        status = qemu_crucible_source_main_payload_closed_v1(frame->main_borrow);
++        if (status) {
++            return status;
++        }
 +    }
 +    qemu_mutex_lock(&registry->mutex);
 +    frame->live = false;
@@ -181230,10 +181572,10 @@ index 0000000000000000000000000000000000000000..f6273687b5f5f3bc2e4ceb67c140038d
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b66949cab870457ff6ffe8079edf07a72110fed
+index 0000000000000000000000000000000000000000..ee021ab2a28e7ddc330eade5c607c42ec8923bde
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2490 @@
+@@ -0,0 +1,2524 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -182185,6 +182527,8 @@ index 0000000000000000000000000000000000000000..0b66949cab870457ff6ffe8079edf07a
 +    QemuCrucibleCommandRequestReader reader;
 +    QemuCrucibleModuleRequestPayloadClaim payload_claim;
 +    QemuCrucibleModuleRequestPayloadRelease payload_release;
++    QemuCrucibleModuleRequestPayloadBorrowAcquire payload_borrow_acquire;
++    QemuCrucibleModuleRequestPayloadBorrowRelease payload_borrow_release;
 +    QemuCrucibleParkReturnWriterRole park_writer;
 +    uintptr_t runtime_base;
 +    uint64_t runtime_extent;
@@ -182343,6 +182687,33 @@ index 0000000000000000000000000000000000000000..0b66949cab870457ff6ffe8079edf07a
 +    bool returned;
 +} QemuCrucibleReadyDeliveryHandoff;
 +
++/* One paid local module borrower. Callback fields are permanent Source
++ * interiors; the module independently authenticates its actual pending journal.
++ * Neither the opaque token nor factual consumption grants payload access. */
++typedef struct QemuCrucibleMainPayloadBorrow {
++    QemuCrucibleModuleRequestPayloadBorrow *module_borrow;
++    QemuCrucibleModuleRequestPayloadBorrow *issued_borrow;
++    uint64_t issued_serial;
++    QemuCrucibleModuleRequestPayload *payload;
++    QemuCrucibleModuleRequestPayloadBorrowAcquire acquire;
++    QemuCrucibleModuleRequestPayloadBorrowRelease release;
++    void *userdata;
++    uint64_t serial;
++    uint64_t payload_serial;
++    uint32_t known_absent;
++    uint32_t locally_returned;
++    int first_status;
++    int acquire_status;
++    int acquire_post;
++    int return_status;
++    int return_post;
++    bool attempted;
++    bool transition_active;
++    bool held;
++    bool closed;
++    bool uncertain;
++} QemuCrucibleMainPayloadBorrow;
++
 +/* One actual Main physical borrower, paid inline with Source. The exact
 + * callsite holder and Native frame retain descriptor/QOM/child lifetimes;
 + * this loan supplies no CPU operation, action Original or peer return. */
@@ -182350,6 +182721,7 @@ index 0000000000000000000000000000000000000000..0b66949cab870457ff6ffe8079edf07a
 +    struct QemuCrucibleMainControlBorrow *canonical_owner;
 +    struct QemuCrucibleMainControlBorrow **holder;
 +    QemuCrucibleReadyDeliveryHandoff *handoff;
++    QemuCrucibleMainPayloadBorrow payload_borrow;
 +    QemuCrucibleNativeInvocationTicket *invocation;
 +    uint64_t invocation_serial;
 +    uint64_t delivery_serial;
@@ -183419,6 +183791,10 @@ index 0000000000000000000000000000000000000000..0b66949cab870457ff6ffe8079edf07a
 + * An active or uncertain dependency retains the holder and blocks teardown. */
 +int qemu_crucible_source_main_control_return_v1(
 +    QemuCrucibleMainControlBorrow **holder);
++int qemu_crucible_source_main_payload_borrow_v1(QemuCrucibleMainControlBorrow *borrow);
++int qemu_crucible_source_main_payload_return_v1(QemuCrucibleMainControlBorrow *borrow);
++/* Identity-only physical exclusion, never an operational current query. */
++int qemu_crucible_source_main_payload_closed_v1(QemuCrucibleMainControlBorrow *borrow);
 +int qemu_crucible_source_main_control_issuing_v1(
 +    QemuCrucibleMainControlBorrow *borrow,
 +    QemuCrucibleNativeInvocationTicket *invocation);
@@ -194615,7 +194991,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f70c3c79c6923201235dd90c1acf4c835d5a5b07
+index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052101f1ecd
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -194641,9 +195017,9 @@ index 0000000000000000000000000000000000000000..f70c3c79c6923201235dd90c1acf4c83
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
++        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1760fe472a1cf58c412000e44423fbfe9c16656388343d96491142af454e9d20',
++        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -238784,7 +239160,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce36c06b516bbcb3eb209658127298395c28d271
+index 0000000000000000000000000000000000000000..6077b7c31d02bdccfe4676dd00a824019805a368
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -238802,7 +239178,7 @@ index 0000000000000000000000000000000000000000..ce36c06b516bbcb3eb20965812729839
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1760fe472a1cf58c412000e44423fbfe9c16656388343d96491142af454e9d20',
++        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
 +}
 +
 +FUNCTIONS = (
@@ -238890,7 +239266,7 @@ index 0000000000000000000000000000000000000000..ce36c06b516bbcb3eb20965812729839
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..684c7c0ab8bae61fe1cf5c652b9ef09af958d9ad
+index 0000000000000000000000000000000000000000..9e3a48451a45e0b74603c66d920b5d6391573f58
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -238913,15 +239289,15 @@ index 0000000000000000000000000000000000000000..684c7c0ab8bae61fe1cf5c652b9ef09a
 +    'plugins/crucible-startup-source.c':
 +        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
 +    'plugins/crucible-startup-source.h':
-+        'd9195dd41e62de29d8d8b93ae5350e0de2de3e1bd206e620a636dbdd7f9e6cc5',
++        'bb7336812d733aad6065cfac57c929d02abe3c4ad01360c646cf347bdfb91327',
 +    'include/plugins/qemu-plugin.h':
-+        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
++        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1760fe472a1cf58c412000e44423fbfe9c16656388343d96491142af454e9d20',
++        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
 +}
 +
 +FUNCTIONS = (
@@ -239137,7 +239513,7 @@ index 0000000000000000000000000000000000000000..684c7c0ab8bae61fe1cf5c652b9ef09a
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5270e84b1c96e4c6686b38882dd460f7720f027
+index 0000000000000000000000000000000000000000..6b4b448b87c9d485f053a926d08693a81ec9b9c2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -239161,7 +239537,7 @@ index 0000000000000000000000000000000000000000..d5270e84b1c96e4c6686b38882dd460f
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1760fe472a1cf58c412000e44423fbfe9c16656388343d96491142af454e9d20',
++        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
 +}
 +
 +FUNCTIONS = (
@@ -239255,7 +239631,7 @@ index 0000000000000000000000000000000000000000..d5270e84b1c96e4c6686b38882dd460f
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..18b353748f04dc8aa68008e92c9e0a0ccedbafdb
+index 0000000000000000000000000000000000000000..60d2bc77ed527efcda8627b3b3c163bfe836d571
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -239290,15 +239666,15 @@ index 0000000000000000000000000000000000000000..18b353748f04dc8aa68008e92c9e0a0c
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
++        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'plugins/crucible-process-purpose.c':
 +        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1760fe472a1cf58c412000e44423fbfe9c16656388343d96491142af454e9d20',
++        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '3ac78727260960f5163a66dc6dfb1d27aad71d95f9a95460b1b88450b6de48fe',
++        'c0de1571cb90f726480d08eb41ccb30e5cb29ebfb3a9061e49e5970a71c5c7b4',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -239434,7 +239810,7 @@ index 0000000000000000000000000000000000000000..18b353748f04dc8aa68008e92c9e0a0c
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..04a226786fd946282bcedeebedfbec7b763a9593
+index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d67854faa2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1082 @@
@@ -239540,13 +239916,13 @@ index 0000000000000000000000000000000000000000..04a226786fd946282bcedeebedfbec7b
 +    'plugins/crucible-startup-source.c':
 +        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
 +    'plugins/crucible-startup-source.h':
-+        'd9195dd41e62de29d8d8b93ae5350e0de2de3e1bd206e620a636dbdd7f9e6cc5',
++        'bb7336812d733aad6065cfac57c929d02abe3c4ad01360c646cf347bdfb91327',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
++        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -239570,7 +239946,7 @@ index 0000000000000000000000000000000000000000..04a226786fd946282bcedeebedfbec7b
 +    'include/qemu/crucible-native-invocation.h':
 +        '4dcb85a1c8f5a9d75ec24b1fd7dc12de71f872db220e8e447b535aa8ad060226',
 +    'plugins/crucible-native-invocation.c':
-+        '3ff4ce234f8b24359b89ee395cd9f00b3db6e4ebd90e38fec3d4effa0944f7a5',
++        'be6bd63555719b36fa6775e2bc16dbbd87f5380d2e7754eb641bb3ccdde362f7',
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
@@ -239582,7 +239958,7 @@ index 0000000000000000000000000000000000000000..04a226786fd946282bcedeebedfbec7b
 +    'system/cpus.c':
 +        '879b690f3c11615c7096688b75e8a94e2430aeeb2ba845747f42c44868105fb1',
 +    'plugins/crucible-control-stop.inc.h':
-+        'd06191baac5ff30009fdf6aab4f429c96df98e9068e291d5fc66f5956ad9a0c3',
++        'beeff2c9e7b54dc96ad7b807904aa694a387507923c0e9e0175aeb529e4a0548',
 +    'plugins/crucible-socket-ingress.inc.h':
 +        '405891558960960b7f4379405e2c7628ce21a679b4b62e1e7ec223df1c9811ad',
 +    'plugins/crucible-qmp-allocation.inc.h':
@@ -239656,9 +240032,9 @@ index 0000000000000000000000000000000000000000..04a226786fd946282bcedeebedfbec7b
 +    'hw/virtio/virtio-crucible-accelerator.c':
 +        'fe8e88375876d4783b36639ea98ca4465764be8182ecd7978b17bdeba444c6cc',
 +    'plugins/crucible-command-membership.inc.h':
-+        '844256b1c4995f8542288bee93b170ec2a7d86daabbf424c26d7e86c5015888a',
++        '938ab5f4bf9f922f2c1328b153fbbf4c0c434497afec52026866efd2878d77c0',
 +    'plugins/crucible-command-receive.inc.h':
-+        '747ee9bd3d7213217a4f7da17d7cd7f5f516d05834ba20cc7d68eb3293b7e3e6',
++        '0f9cfd62b9a2513b8a9304966b37d156850121bcf311133d293b2b1419eb6f68',
 +}
 +
 +
@@ -255064,7 +255440,7 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..94761714f68dd793e40e5dca001faf3bf80ba5b7
+index 0000000000000000000000000000000000000000..a1925d2fc2983a97c8ab27668ffecdcb98017eb2
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -255112,7 +255488,7 @@ index 0000000000000000000000000000000000000000..94761714f68dd793e40e5dca001faf3b
 +    "plugins/api-system.c":
 +        "348c168b9ac0fe693c44ac5336dc48d31de8ce2b41b58c541aa9ba0c669ba7a3",
 +    "plugins/crucible-native-invocation.c":
-+        "3ff4ce234f8b24359b89ee395cd9f00b3db6e4ebd90e38fec3d4effa0944f7a5",
++        "be6bd63555719b36fa6775e2bc16dbbd87f5380d2e7754eb641bb3ccdde362f7",
 +    "plugins/crucible-callback-publication.inc.h":
 +        "5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a",
 +}
@@ -255815,10 +256191,10 @@ index 0000000000000000000000000000000000000000..94761714f68dd793e40e5dca001faf3b
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65f4e194f1
+index 0000000000000000000000000000000000000000..1f4777b064f45e410c1fa9b27b3f038fdef9e360
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,1822 @@
+@@ -0,0 +1,2140 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -256482,6 +256858,53 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        g_assert_cmpuint(handoff->main_users, ==, 0);
 +        return -ENOKEY;
 +    }
++    QemuCrucibleMainPayloadBorrow *payload = &startup_source.main_control_borrow.payload_borrow;
++    g_assert_cmpuint(borrow_acquires, ==, fixture_member_v4 ? 1 : 0);
++    if (fixture_member_v4) {
++        g_assert_true(payload->attempted);
++        g_assert_cmpint(qemu_crucible_source_main_payload_borrow_v1(borrow_copy), ==, -EALREADY);
++        if (borrow_mode != 1 && borrow_mode != 3 &&
++            strcmp(main_scenario, "main-payload-serial-overflow")) {
++            g_assert_true(actual_child.borrow_held);
++            g_assert_true(payload->module_borrow == &actual_child.borrow_record);
++            g_assert_true(actual_child.borrow_holder == &payload->module_borrow);
++            g_assert_true(actual_child.borrow_serial_holder == &payload->serial);
++            g_assert_cmpuint(payload->serial, ==, actual_child.borrow_counter);
++            QemuCrucibleModuleRequestPayloadBorrow *copied = payload->module_borrow;
++            uint32_t consumed = 8;
++
++            g_assert_cmpint(module_borrow_release(&creation->payload, creation->payload_serial,
++                &copied, payload->serial, &consumed, &actual_child), ==, -ESTALE);
++            g_assert_cmpuint(consumed, ==, 0);
++            g_assert_nonnull(copied);
++            g_assert_true(actual_child.borrow_held);
++            consumed = 8;
++            g_assert_cmpint(module_borrow_release(&creation->payload, creation->payload_serial,
++                &payload->module_borrow, payload->serial + 1, &consumed, &actual_child), ==, -ESTALE);
++            g_assert_cmpuint(consumed, ==, 0);
++            g_assert_true(actual_child.borrow_held);
++            QemuCrucibleModuleRequestPayloadBorrow *second = NULL;
++            uint64_t second_serial = 0;
++            uint32_t absent = 9;
++            unsigned int acquired = borrow_acquires;
++
++            g_assert_cmpint(module_borrow_acquire(&creation->payload, creation->payload_serial,
++                &second, &second_serial, &absent, &actual_child), ==, -ESTALE);
++            g_assert_cmpuint(borrow_acquires, ==, acquired + 1);
++            g_assert_cmpuint(absent, ==, 1);
++            g_assert_null(second);
++            g_assert_cmpuint(second_serial, ==, 0);
++            g_assert_true(actual_child.borrow_holder == &payload->module_borrow);
++            g_assert_true(actual_child.borrow_serial_holder == &payload->serial);
++            g_assert_cmpint(module_release(&creation->payload, creation->payload_serial,
++                &actual_child), ==, -EBUSY);
++            g_assert_true(actual_child.owned);
++            g_assert_cmpuint(destruction_calls, ==, 0);
++        }
++    } else {
++        g_assert_false(payload->attempted);
++        g_assert_cmpint(control_stop_storage.main.payload_status, ==, -ENOTSUP);
++    }
 +    g_assert_nonnull(copy.frame);
 +    g_assert_true(copy.frame->main_holder == &control_stop_storage.main.ticket);
 +    g_assert_true(copy.frame->cpu_owner == (void *)&main_cpu_owner);
@@ -256557,10 +256980,23 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +    int first_status;
 +
 +    main_scenario = scenario;
++    borrow_mode = !strcmp(scenario, "main-payload-absent") ? 1 :
++        !strcmp(scenario, "main-payload-acquire-negative") ? 2 :
++        !strcmp(scenario, "main-payload-unknown") ? 3 :
++        !strcmp(scenario, "main-payload-contradiction") ? 4 :
++        !strcmp(scenario, "main-payload-live") ? 5 :
++        !strcmp(scenario, "main-payload-release-negative") ? 6 :
++        !strcmp(scenario, "main-payload-release-contradiction") ? 7 :
++        !strcmp(scenario, "main-payload-partial-consumption") ? 8 : 0;
++    if (!strcmp(scenario, "main-payload-serial-overflow")) {
++        actual_child.borrow_counter = UINT64_MAX;
++    }
 +    main_cpu_post_failure = !strcmp(scenario, "main-cpu-post");
 +    main_descriptor_change = !strcmp(scenario, "main-descriptor");
 +    main_borrow_post_failure = !strcmp(scenario, "main-borrow-post");
 +    main_return_post_failure = !strcmp(scenario, "main-return-post");
++    main_payload_acquire_post_failure = !strcmp(scenario, "main-payload-acquire-post");
++    main_payload_return_post_failure = !strcmp(scenario, "main-payload-return-post");
 +    main_finalizer_case = !strcmp(scenario, "main-finalizer");
 +    module_call_init(MODULE_INIT_QOM);
 +    type_register_static(&cpu_type);
@@ -256617,7 +257053,74 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +    g_assert_cmpuint(main_stop_attempts, ==, 1);
 +    g_assert_cmpint(control_stop_storage.dispatch.begin_status, ==, -ENOKEY);
 +    g_assert_false(control_stop_storage.dispatch.installed);
++    if (borrow_mode == 3 || borrow_mode == 4 || borrow_mode == 5 || borrow_mode == 7 || borrow_mode == 8) {
++        g_assert_true(control_stop_storage.main.held);
++        g_assert_nonnull(control_stop_storage.main.ticket.frame);
++        g_assert_nonnull(control_stop_storage.main.borrow);
++        g_assert_true(startup_source.main_control_borrow.held);
++        g_assert_cmpuint(startup_source.ready_delivery.main_users, ==, 1);
++        g_assert_cmpuint(main_record.references, ==, 1);
++        g_assert_cmpuint(OBJECT(main_cpu)->ref, ==, 2);
++        g_assert_true(actual_child.owned);
++        g_assert_cmpuint(destruction_calls, ==, 0);
++        g_assert_cmpint(qemu_crucible_source_main_payload_closed_v1(
++            &startup_source.main_control_borrow), ==, -EBUSY);
++        QemuCrucibleMainPayloadBorrow *payload = &startup_source.main_control_borrow.payload_borrow;
++        QemuCrucibleNativeInvocation *saved_frame = control_stop_storage.main.ticket.frame;
++        QemuCrucibleMainControlBorrow *saved_borrow = control_stop_storage.main.borrow;
++        unsigned int saved_attempts = main_stop_attempts;
++        uint32_t returned = 9;
++
++        g_assert_cmpint(control_stop_storage.dispatch.phase, ==, CONTROL_DISPATCH_NONE);
++        g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 0);
++        g_assert_cmpuint(qemu_plugin_crucible_control_boundary_depth, ==, 0);
++        main_bql = true;
++        g_assert_cmpint(qemu_crucible_source_main_payload_return_v1(saved_borrow), ==, -EPERM);
++        qemu_plugin_fire_control_boundary_cb(main_cpu);
++        main_bql = false;
++        g_assert_cmpuint(main_stop_attempts, ==, saved_attempts);
++        g_assert_true(control_stop_storage.main.ticket.frame == saved_frame);
++        g_assert_true(control_stop_storage.main.borrow == saved_borrow);
++        g_assert_cmpuint(OBJECT(main_cpu)->ref, ==, 2);
++        g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, -EBUSY);
++        g_assert_cmpuint(returned, ==, 0);
++        g_assert_cmpint(DELIVERY(payload_return)(1, creation, delivery_serial), ==, -EBUSY);
++        g_assert_cmpint(DELIVERY(identity_return)(1, &creation, delivery_serial), ==, -EBUSY);
++        g_assert_cmpint(RECEIVE(identity_return)(1, &receive, receive_serial), ==, -EBUSY);
++        g_assert_cmpuint(payload->locally_returned, ==, borrow_mode == 7 || borrow_mode == 8 ? 1 : 0);
++        g_assert_cmpint(payload->acquire_status, ==, borrow_mode == 3 ? -EIO : 0);
++        g_assert_cmpint(payload->acquire_post, ==, 0);
++        g_assert_cmpint(payload->return_status, ==,
++                        borrow_mode == 5 ? -EBUSY : borrow_mode == 7 ? -EIO : 0);
++        g_assert_cmpint(payload->return_post, ==, 0);
++        g_assert_cmpint(payload->uncertain, ==, borrow_mode != 5);
++        g_assert_cmpint(payload->first_status, ==,
++                        borrow_mode == 3 || borrow_mode == 7 ? -EIO :
++                        borrow_mode == 5 ? -EBUSY : -EPROTO);
++        return;
++    }
 +    g_assert_false(control_stop_storage.main.held);
++    QemuCrucibleMainPayloadBorrow *payload = &startup_source.main_control_borrow.payload_borrow;
++    bool native_refused = !strcmp(scenario, "main-roster") ||
++        !strcmp(scenario, "main-descriptor") || !strcmp(scenario, "main-overflow");
++    if (!native_refused && fixture_member_v4) {
++        g_assert_true(payload->closed);
++        g_assert_false(payload->held);
++        g_assert_false(payload->uncertain);
++        g_assert_cmpint(payload->acquire_status, ==,
++            borrow_mode == 1 ? -EAGAIN : borrow_mode == 2 ? -EIO :
++            !strcmp(scenario, "main-payload-serial-overflow") ? -EOVERFLOW : 0);
++        g_assert_cmpint(payload->return_status, ==, borrow_mode == 6 ? -EIO : 0);
++        g_assert_cmpint(payload->acquire_post, ==,
++                        !strcmp(scenario, "main-payload-acquire-post") ? -EIO : 0);
++        g_assert_cmpint(payload->return_post, ==,
++                        !strcmp(scenario, "main-payload-return-post") ? -EIO : 0);
++        g_assert_cmpuint(payload->locally_returned, ==,
++            borrow_mode == 1 || !strcmp(scenario, "main-payload-serial-overflow") ? 0 : 1);
++    }
++    g_assert_false(actual_child.borrow_held);
++    g_assert_null(startup_source.main_control_borrow.payload_borrow.module_borrow);
++    g_assert_cmpuint(startup_source.main_control_borrow.payload_borrow.serial, ==, 0);
 +    g_assert_null(control_stop_storage.main.ticket.frame);
 +    g_assert_null(control_stop_storage.main.borrow);
 +    g_assert_false(startup_source.main_control_borrow.held);
@@ -256645,6 +257148,8 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +    }
 +    first_status = control_stop_storage.main.begin_status ? control_stop_storage.main.begin_status :
 +        control_stop_storage.main.borrow_status ? control_stop_storage.main.borrow_status :
++        control_stop_storage.main.payload_status ? control_stop_storage.main.payload_status :
++        control_stop_storage.main.payload_return_status ? control_stop_storage.main.payload_return_status :
 +        control_stop_storage.main.return_status;
 +    g_assert_cmpint(control_stop_storage.main_first_status, ==, first_status);
 +    if (main_finalizer_case) {
@@ -256689,9 +257194,16 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +/* The actual reader deposits this non-copy fixture payload in its retained
 + * child. The journal owns it; its copied value confers no publisher authority. */
 +struct QemuCrucibleModuleRequestPayload { uint64_t value; };
++struct QemuCrucibleModuleRequestPayloadBorrow { unsigned int reserved; };
 +static struct {
 +    QemuMutex journal;
 +    QemuCrucibleModuleRequestPayload pending;
++    QemuCrucibleModuleRequestPayloadBorrow borrow_record;
++    QemuCrucibleModuleRequestPayloadBorrow **borrow_holder;
++    uint64_t *borrow_serial_holder;
++    uint64_t borrow_counter;
++    QemuThread borrow_thread;
++    bool borrow_held;
 +    QemuCrucibleModuleRequestPayload **holder;
 +    uint64_t serial;
 +    pid_t process;
@@ -257108,6 +257620,10 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        qemu_mutex_unlock(&actual_child.journal);
 +        return -ESTALE;
 +    }
++    if (actual_child.borrow_held) {
++        qemu_mutex_unlock(&actual_child.journal);
++        return -EBUSY;
++    }
 +    if (release_failure || contradict_release) {
 +        qemu_mutex_unlock(&actual_child.journal);
 +        return release_failure;
@@ -257128,6 +257644,98 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +                       QemuCrucibleParkReturnWriteProgress *progress, void *userdata)
 +{
 +    return -ENOTSUP;
++}
++
++/* This C journal models the module's v4 producer. Literal Source/Core/Native
++ * consumers run around it; this is not the production Rust/QEMU pairing. */
++static bool fixture_member_v4;
++static int borrow_mode;
++static unsigned int borrow_acquires, borrow_returns;
++
++static int module_borrow_acquire(
++    QemuCrucibleModuleRequestPayload **payload_holder, uint64_t payload_serial,
++    QemuCrucibleModuleRequestPayloadBorrow **holder, uint64_t *serial,
++    uint32_t *known_absent, void *userdata)
++{
++    g_assert_true(userdata == &actual_child);
++    borrow_acquires++;
++    g_assert_nonnull(holder);
++    g_assert_nonnull(serial);
++    g_assert_nonnull(known_absent);
++    g_assert_null(*holder);
++    g_assert_cmpuint(*serial, ==, 0);
++    if (borrow_mode == 3) {
++        return -EIO; /* Unknown: no absence or birth evidence. */
++    }
++    if (qemu_mutex_trylock(&actual_child.journal)) {
++        *known_absent = 1;
++        return -EBUSY;
++    }
++    *known_absent = 1;
++    if (!actual_child.owned || actual_child.process != getpid() ||
++        actual_child.holder != payload_holder || *payload_holder != &actual_child.pending ||
++        payload_serial != actual_child.serial || actual_child.borrow_held) {
++        qemu_mutex_unlock(&actual_child.journal);
++        return -ESTALE;
++    }
++    if (borrow_mode == 1 || actual_child.borrow_counter == UINT64_MAX) {
++        qemu_mutex_unlock(&actual_child.journal);
++        return borrow_mode == 1 ? -EAGAIN : -EOVERFLOW;
++    }
++    actual_child.borrow_holder = holder;
++    actual_child.borrow_serial_holder = serial;
++    actual_child.borrow_held = true;
++    qemu_thread_get_self(&actual_child.borrow_thread);
++    *holder = &actual_child.borrow_record;
++    *serial = ++actual_child.borrow_counter;
++    *known_absent = 0;
++    if (borrow_mode == 4) {
++        *known_absent = 1; /* Deliberately contradictory producer result. */
++    }
++    qemu_mutex_unlock(&actual_child.journal);
++    return borrow_mode == 2 ? -EIO : 0;
++}
++
++static int module_borrow_release(
++    QemuCrucibleModuleRequestPayload **payload_holder, uint64_t payload_serial,
++    QemuCrucibleModuleRequestPayloadBorrow **holder, uint64_t serial,
++    uint32_t *locally_returned, void *userdata)
++{
++    g_assert_true(userdata == &actual_child);
++    borrow_returns++;
++    *locally_returned = 0;
++    if (qemu_mutex_trylock(&actual_child.journal)) {
++        return -EBUSY;
++    }
++    if (!actual_child.owned || actual_child.process != getpid() ||
++        actual_child.holder != payload_holder || *payload_holder != &actual_child.pending ||
++        payload_serial != actual_child.serial || !actual_child.borrow_held ||
++        !qemu_thread_is_self(&actual_child.borrow_thread) ||
++        actual_child.borrow_holder != holder || *holder != &actual_child.borrow_record ||
++        !actual_child.borrow_serial_holder ||
++        *actual_child.borrow_serial_holder != serial || serial != actual_child.borrow_counter) {
++        qemu_mutex_unlock(&actual_child.journal);
++        return -ESTALE;
++    }
++    if (borrow_mode == 5) {
++        qemu_mutex_unlock(&actual_child.journal);
++        return -EBUSY;
++    }
++    if (borrow_mode == 7) {
++        *locally_returned = 1; /* A scalar cannot conceal retained real fields. */
++        qemu_mutex_unlock(&actual_child.journal);
++        return -EIO;
++    }
++    actual_child.borrow_held = false;
++    *holder = NULL;
++    if (borrow_mode != 8) {
++        *actual_child.borrow_serial_holder = 0;
++    }
++    actual_child.borrow_holder = NULL;
++    actual_child.borrow_serial_holder = NULL;
++    *locally_returned = 1;
++    qemu_mutex_unlock(&actual_child.journal);
++    return borrow_mode == 6 ? -EIO : 0;
 +}
 +
 +static void prepare_payload(bool legacy)
@@ -257163,7 +257771,21 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        1, component, reader, park_writer, module_claim, NULL, &member), ==, -EINVAL);
 +    g_assert_null(member);
 +    g_assert_false(startup_source.command_member.attempted);
-+    if (legacy) {
++    g_assert_cmpint(qemu_plugin_crucible_startup_source_command_member_create_v4(
++        1, component, reader, park_writer, module_claim, module_release,
++        module_borrow_acquire, NULL, &member), ==, -EINVAL);
++    g_assert_null(member);
++    g_assert_false(startup_source.command_member.attempted);
++    g_assert_cmpint(qemu_plugin_crucible_startup_source_command_member_create_v4(
++        1, component, reader, park_writer, module_claim, module_release,
++        NULL, module_borrow_release, &member), ==, -EINVAL);
++    g_assert_null(member);
++    g_assert_false(startup_source.command_member.attempted);
++    if (fixture_member_v4) {
++        status = qemu_plugin_crucible_startup_source_command_member_create_v4(
++            1, component, reader, park_writer, module_claim, module_release,
++            module_borrow_acquire, module_borrow_release, &member);
++    } else if (legacy) {
 +        status = qemu_plugin_crucible_startup_source_command_member_create_v2(
 +            1, component, reader, park_writer, &member);
 +    } else {
@@ -257181,6 +257803,14 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +    g_assert_null(member);
 +    g_assert_true(paid_runtime.member->payload_claim == (legacy ? NULL : module_claim));
 +    g_assert_true(paid_runtime.member->payload_release == (legacy ? NULL : module_release));
++    g_assert_true(paid_runtime.member->payload_borrow_acquire ==
++                  (fixture_member_v4 ? module_borrow_acquire : NULL));
++    g_assert_true(paid_runtime.member->payload_borrow_release ==
++                  (fixture_member_v4 ? module_borrow_release : NULL));
++    g_assert_cmpint(qemu_plugin_crucible_startup_source_command_member_create_v4(
++        1, component, reader, park_writer, module_claim, module_release,
++        module_borrow_acquire, module_borrow_release, &member), ==, -EBUSY);
++    g_assert_null(member);
 +}
 +
 +int main(int argc, char **argv)
@@ -257367,6 +257997,7 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        "static int command_member_create(",
 +        "int qemu_plugin_crucible_startup_source_command_member_create_v2(",
 +        "int qemu_plugin_crucible_startup_source_command_member_create_v3(",
++        "int qemu_plugin_crucible_startup_source_command_member_create_v4(",
 +        "int qemu_plugin_crucible_startup_source_command_member_transfer_v1(",
 +    ))
 +    generated = output_dir / "received-delivery-payload.c"
@@ -257436,6 +258067,7 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        "static int command_member_create(",
 +        "int qemu_plugin_crucible_startup_source_command_member_create_v2(",
 +        "int qemu_plugin_crucible_startup_source_command_member_create_v3(",
++        "int qemu_plugin_crucible_startup_source_command_member_create_v4(",
 +        "int qemu_plugin_crucible_startup_source_command_member_transfer_v1(",
 +    ))
 +    execution_bodies = "\n\n".join(extract["function"](text, signature) for text, signature in (
@@ -257481,15 +258113,55 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +                        if found == name)
 +            assert body.count(before) == 1
 +            native = native.replace(body, body.replace(before, after))
++        payload_defects = {
++            "main-payload-acquire": ("stop",
++                "qemu_crucible_source_main_payload_borrow_v1(control_stop_storage.main.borrow)",
++                "0 /* omitted actual module borrow */"),
++            "main-payload-pins": ("native",
++                "status = qemu_crucible_source_main_payload_closed_v1(frame->main_borrow);",
++                "status = 0; /* omitted actual module dependency */"),
++            "main-payload-absence": ("receive",
++                "payload->known_absent == 0 && payload->held", "payload->held"),
++            "main-payload-negative-birth": ("receive",
++                "!payload->attempted || payload->closed)",
++                "!payload->attempted || payload->closed || payload->first_status)"),
++            "main-payload-post": ("receive",
++                "payload->return_status = callback_status;",
++                "payload->return_status = callback_status; if (callback_status < 0 && payload->locally_returned == 1) { payload->uncertain = true; }"),
++        }
++        if negative_control in payload_defects:
++            which, before, after = payload_defects[negative_control]
++            text = {"stop": stop, "native": native, "receive": receive}[which]
++            assert text.count(before) == 1
++            text = text.replace(before, after)
++            if which == "stop":
++                stop = text
++            elif which == "native":
++                native = text
++            else:
++                receive = text
 +        if negative_control == "main-exact-output":
 +            before = "(borrow_holder && borrow_holder != &control_stop_storage.main.borrow)"
 +            assert stop.count(before) == 1
 +            stop = stop.replace(before, "false /* defective copied output acceptance */")
 +        prelude = prelude.replace("static bool ready_return_post_failure;",
 +            "static bool ready_return_post_failure;\n"
-+            "static bool main_borrow_post_failure, main_return_post_failure;")
++            "static bool main_borrow_post_failure, main_return_post_failure;\n"
++            "static bool main_payload_acquire_post_failure, main_payload_return_post_failure;")
 +        marker = "    if (ready_return_post_failure && startup_source.ready_delivery.returned) {"
-+        post_controls = """    if (main_borrow_post_failure && startup_source.main_control_borrow.held &&
++        post_controls = """    if (main_payload_acquire_post_failure &&
++        startup_source.main_control_borrow.payload_borrow.held &&
++        startup_source.main_control_borrow.payload_borrow.transition_active) {
++        main_payload_acquire_post_failure = false;
++        return -EIO;
++    }
++    if (main_payload_return_post_failure &&
++        startup_source.main_control_borrow.payload_borrow.closed &&
++        startup_source.main_control_borrow.payload_borrow.transition_active) {
++        main_payload_return_post_failure = false;
++        return -EIO;
++    }
++    if (main_borrow_post_failure && startup_source.main_control_borrow.held &&
 +        !startup_source.main_control_borrow.transition_active) {
 +        main_borrow_post_failure = false;
 +        return -EIO;
@@ -257543,15 +258215,29 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +            "    startup_source.saved.ctx = &main_ctx;\n"
 +            "    startup_source.saved.module = (void *)&main_module;\n"
 +            "    startup_source.callbacks.owner.installer = startup_source.saved;\n"
++            "    fixture_member_v4 = strcmp(scenario, \"main-payload-legacy\") != 0;\n"
 +            "    prepare_payload(false);")
 +        marker = "    g_assert_cmpuint(creation->ready_users, ==, 1);"
 +        assert checks.count(marker) == 1
-+        checks = checks.replace(marker, marker + "\n    exercise_main_control(scenario);")
++        checks = checks.replace(marker, marker + "\n    exercise_main_control(scenario);\n    if (control_stop_storage.main.held) { return 0; }")
++    payload_checks = PAYLOAD_CHECKS
++    if main_control and negative_control == "main-payload-real-consumption":
++        before = "    actual_child.borrow_held = false;"
++        assert payload_checks.count(before) == 1
++        payload_checks = payload_checks.replace(before, "    /* omitted real journal consumption */")
++    if main_control and negative_control == "main-payload-exact-output":
++        before = "actual_child.borrow_holder != holder ||"
++        assert payload_checks.count(before) == 1
++        payload_checks = payload_checks.replace(before, "false ||")
++    if main_control and negative_control == "main-payload-first-bound":
++        before = "        .payload_borrow_acquire = payload_borrow_acquire,"
++        assert constructors.count(before) == 1
++        constructors = constructors.replace(before, "        .payload_borrow_acquire = NULL,")
 +    generated = output_dir / "ready-delivery-handoff.c"
 +    generated.write_text(prelude + main_providers + PAYLOAD_PROVIDERS + READY_PROVIDERS + carrier +
 +        helpers + constructors + execution_bodies + source_bodies + receive +
 +        LIFETIME_CHECKS.replace("int main(", "static int lifetime_main(") +
-+        PAYLOAD_CHECKS.replace("int main(", "static int payload_main(") + dispatch +
++        payload_checks.replace("int main(", "static int payload_main(") + dispatch +
 +        main_bodies + main_checks + checks)
 +    binary = output_dir / "ready-delivery-handoff"
 +    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
@@ -257562,7 +258248,12 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +    subprocess.run(command, check=True)
 +    scenarios = ("main-healthy", "main-cpu-post", "main-borrow-post", "main-return-post",
 +                 "main-roster", "main-descriptor", "main-overflow", "main-finalizer",
-+                 "main-live-use") if main_control else (
++                 "main-live-use", "main-payload-absent", "main-payload-acquire-negative",
++                 "main-payload-unknown", "main-payload-contradiction", "main-payload-live",
++                 "main-payload-release-negative", "main-payload-release-contradiction",
++                 "main-payload-serial-overflow", "main-payload-legacy",
++                 "main-payload-partial-consumption", "main-payload-acquire-post",
++                 "main-payload-return-post") if main_control else (
 +        "ready-healthy", "ready-reader-negative", "ready-claim-negative",
 +        "ready-capture-post", "ready-return-post", "ready-return-refused", "ready-absence", "ready-unentered")
 +    for scenario in scenarios:
@@ -257579,7 +258270,10 @@ index 0000000000000000000000000000000000000000..127f1a47a473d41824e1fbfb03bd4c65
 +        "ready-nomination", "ready-execution-consumption", "ready-delivery-dependency",
 +        "ready-absence-reissue", "ready-post-consumption",
 +        "main-qom-retain", "main-qom-return", "main-handoff-retain", "main-exact-output",
-+        "main-return-post", "main-nested-use", "main-descriptor-return"])
++        "main-return-post", "main-nested-use", "main-descriptor-return",
++        "main-payload-acquire", "main-payload-pins", "main-payload-absence",
++        "main-payload-negative-birth", "main-payload-post", "main-payload-real-consumption",
++        "main-payload-exact-output", "main-payload-first-bound"])
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
