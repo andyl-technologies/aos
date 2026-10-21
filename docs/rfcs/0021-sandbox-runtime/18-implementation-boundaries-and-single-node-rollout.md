@@ -41,6 +41,16 @@ in the order in [the implementation plan](14-implementation-plan.md). Optional
 FUSE and remote-source profiles do not block the first local lifecycle. Each
 advertised profile must pass its own admission and conformance requirements.
 
+The view-service, immutable cache, publisher, and FUSE-worker implementation
+belongs to Terrane, as specified by RFC-0024's
+[sandbox integration](https://github.com/andyl-technologies/aos/pull/420).
+Integration waits for the Terrane implementation and its interfaces to settle;
+this workline must not build a second view service or storage engine. The
+sandbox Controller, broker session protocol, privileged Mount broker, and
+Storage broker's ZFS workspace transactions remain sandbox responsibilities.
+Terrane integration is a subsequent delivery slice and is not part of the first
+local lifecycle completion claim.
+
 The first implementation phase does **not** implement or enable:
 
 - fleet discovery, cross-node placement, draining, or reassignment;
