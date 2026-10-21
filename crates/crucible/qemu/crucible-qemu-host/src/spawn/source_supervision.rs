@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use crucible_host_resources::host_services::process_birth::SourceHostControlLease;
 use crucible_host_resources::host_supervision::{
-    HostOperationState, HostSupervisionError, SourceSupervisionPublisher, SourceSupervisionSnapshot,
+    FundedSourcePublisher, HostOperationState, HostSupervisionError, SourceSupervisionPublisher,
+    SourceSupervisionSnapshot,
 };
 use rustix::fs::{MemfdFlags, OFlags, SealFlags};
 
@@ -35,7 +36,7 @@ const BACKING_PAGE_BYTES: u64 = 4096;
 /// Retains the same physical Source publication through startup and runtime.
 #[derive(Clone, Debug)]
 pub(crate) struct OriginalSourceSupervision {
-    publisher: Arc<SourcePublisher>,
+    publisher: FundedSourcePublisher<SourcePublisher>,
 }
 
 struct SourcePublisher {
@@ -90,18 +91,18 @@ unsafe impl Sync for AtomicPublication {}
 
 impl OriginalSourceSupervision {
     pub(crate) fn host_allocation_extent() -> Option<u64> {
-        Self::publication_allocation_extent()?.checked_add(
-            4 * crucible_host_resources::host_supervision::HostActionLoan::metadata_bytes(),
-        )
+        Self::publication_allocation_extent()?
+            .checked_add(
+                u64::try_from(FundedSourcePublisher::<SourcePublisher>::allocation_bytes().ok()?)
+                    .ok()?,
+            )?
+            .checked_add(
+                4 * crucible_host_resources::host_supervision::HostActionLoan::metadata_bytes(),
+            )
     }
 
     fn publication_allocation_extent() -> Option<u64> {
-        let (layout, _) = std::alloc::Layout::new::<(AtomicU64, AtomicU64)>()
-            .extend(std::alloc::Layout::new::<SourcePublisher>())
-            .ok()?;
-        u64::try_from(layout.pad_to_align().size())
-            .ok()?
-            .checked_add(std::mem::size_of::<SourcePublisher>() as u64)?
+        (std::mem::size_of::<SourcePublisher>() as u64)
             .checked_add(std::mem::size_of::<SourceSupervisionError>() as u64)?
             .checked_add(BACKING_PAGE_BYTES)?
             .checked_add(
@@ -126,12 +127,20 @@ impl OriginalSourceSupervision {
             .map_err(SourceSupervisionError::Admission)?;
         let extent =
             Self::publication_allocation_extent().ok_or(SourceSupervisionError::Geometry)?;
-        // The constructor enters only after this disjoint real peak is held.
+        let allocation_extent = FundedSourcePublisher::<SourcePublisher>::allocation_bytes()
+            .ok()
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(SourceSupervisionError::Geometry)?;
+        let allocation = admission
+            .host_purpose()
+            .reserve_controls(0, allocation_extent)
+            .map_err(SourceSupervisionError::Host)?;
+        // The constructor enters only after both disjoint real peaks are held.
         let control = admission
             .host_purpose()
             .reserve_controls(4, extent)
             .map_err(SourceSupervisionError::Host)?;
-        construct_source_publication(admission, control)
+        construct_source_publication(admission, control, allocation)
     }
 
     /// Corroborates the actual admission object, never its copied wire subject.
@@ -182,6 +191,7 @@ impl OriginalSourceSupervision {
 fn construct_source_publication(
     admission: &InstalledSourceAdmission,
     control: SourceHostControlLease,
+    allocation: SourceHostControlLease,
 ) -> Result<OriginalSourceSupervision, SourceSupervisionError> {
     let writer = rustix::fs::memfd_create(
         c"crucible-source-supervision",
@@ -220,32 +230,36 @@ fn construct_source_publication(
     if event_id > i32::MAX as u64 + 1 {
         return Err(SourceSupervisionError::Geometry);
     }
-    let publisher = Arc::new(SourcePublisher {
-        mapping,
-        reader,
-        cancellation,
-        state: Mutex::new(PublicationState {
-            sequence: 0,
-            origin: None,
-            outer_revision: 0,
-            roster_revision: 0,
-            initial: None,
-            cancellation_identity: [stat.st_dev, stat.st_ino, event_id],
-            latest: None,
-            action: None,
-            last_action_return: None,
-            last_parent_park_return: None,
-        }),
-        subject: admission.subject(),
-        artifact: admission.artifact_digest(),
-        action_loans: std::array::from_fn(|_| Mutex::new(None)),
-        retained_mapping: Mutex::new(None),
-        action_mapping: Mutex::new(None),
-        action_wake: Mutex::new(None),
-        _admission: admission.clone(),
-    });
+    let publisher = FundedSourcePublisher::new(
+        SourcePublisher {
+            mapping,
+            reader,
+            cancellation,
+            state: Mutex::new(PublicationState {
+                sequence: 0,
+                origin: None,
+                outer_revision: 0,
+                roster_revision: 0,
+                initial: None,
+                cancellation_identity: [stat.st_dev, stat.st_ino, event_id],
+                latest: None,
+                action: None,
+                last_action_return: None,
+                last_parent_park_return: None,
+            }),
+            subject: admission.subject(),
+            artifact: admission.artifact_digest(),
+            action_loans: std::array::from_fn(|_| Mutex::new(None)),
+            retained_mapping: Mutex::new(None),
+            action_mapping: Mutex::new(None),
+            action_wake: Mutex::new(None),
+            _admission: admission.clone(),
+        },
+        allocation,
+    )
+    .map_err(SourceSupervisionError::Original)?;
     let owner = OriginalSourceSupervision { publisher };
-    let callback: Arc<dyn SourceSupervisionPublisher> = owner.publisher.clone();
+    let callback = owner.publisher.standing();
     admission
         .supervisor()
         .retain_source_publication(admission.host_purpose(), &callback)

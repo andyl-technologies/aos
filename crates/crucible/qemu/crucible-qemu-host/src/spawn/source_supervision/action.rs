@@ -521,7 +521,7 @@ impl ActionSourceProducer {
             }
             return Err(HostSupervisionError::Unavailable);
         }
-        let callback: Arc<dyn HostActionPublisher> = self.publisher.clone();
+        let callback = self.publisher.action();
         for index in 0..count {
             let mut output = self.publisher.action_loans[index]
                 .lock()
@@ -530,7 +530,7 @@ impl ActionSourceProducer {
                 .ok_or(HostSupervisionError::Unavailable)?
                 .lend_action(
                     self.publisher._admission.host_purpose(),
-                    Arc::clone(&callback),
+                    callback.clone(),
                     binding,
                     index as u32,
                     links[index],
@@ -921,7 +921,8 @@ impl HostActionPublisher for SourcePublisher {
         &self,
         binding: ActionBinding,
         row: u32,
-    ) -> Result<crucible_qemu_protocol::parent_park_return::ParentParkReturn, HostSupervisionError> {
+    ) -> Result<crucible_qemu_protocol::parent_park_return::ParentParkReturn, HostSupervisionError>
+    {
         self.verified_parent_park_member_return(binding, row)
     }
 

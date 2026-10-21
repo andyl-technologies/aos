@@ -65,6 +65,19 @@ fn actual_producing_class_and_entered_clock_survive_live_policy_and_progress() {
 #[derive(Debug)]
 struct UnissuedPublisher;
 
+fn unissued_publisher() -> FundedSourcePublisher<dyn HostActionPublisher> {
+    use crate::host_services::{HostServiceAllocator, HostServiceLeasePair};
+
+    let bytes = FundedSourcePublisher::<UnissuedPublisher>::allocation_bytes().unwrap() as u64;
+    let accounts: [HostServiceAllocator; 2] =
+        std::array::from_fn(|_| HostServiceAllocator::new(1, 1, bytes).unwrap());
+    let pair = HostServiceLeasePair::new(
+        accounts[0].reserve_resources(0, 0, bytes).unwrap(),
+        accounts[1].reserve_resources(0, 0, bytes).unwrap(),
+    );
+    FundedSourcePublisher::component(UnissuedPublisher, pair).action()
+}
+
 impl HostActionPublisher for UnissuedPublisher {
     fn retain_parent(&self, _: ActionBinding, _: u32) -> Result<(), HostSupervisionError> {
         Err(HostSupervisionError::Unavailable)
@@ -113,7 +126,7 @@ fn unissued_receipt(owner: &HostOperationGuard) -> HostActionReturnReceipt {
         shared: Arc::clone(&owner.supervisor.shared),
         operation: owner.id,
         row: 0,
-        publisher: Arc::new(UnissuedPublisher),
+        publisher: unissued_publisher(),
         journal: ActionReturn {
             binding: binding(),
             first: -5,
@@ -186,7 +199,7 @@ fn unpublished_receipt_cannot_replace_missing_or_foreign_membership() {
     let second = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
     let first_guard = first.begin(HostOperationClass::Quiescence).unwrap();
     let second_guard = second.begin(HostOperationClass::Quiescence).unwrap();
-    let publisher: Arc<dyn HostActionPublisher> = Arc::new(UnissuedPublisher);
+    let publisher = unissued_publisher();
     let mut selector = HostActionLoan {
         supervisor: first.clone(),
         operation: first_guard.id,
@@ -243,7 +256,8 @@ fn no_capture_preserves_preparation_class_and_original_clock() {
     };
 
     let bytes = observation.encode().unwrap();
-    let decoded = crucible_qemu_protocol::boundary_action::ActionObservation::decode(&bytes).unwrap();
+    let decoded =
+        crucible_qemu_protocol::boundary_action::ActionObservation::decode(&bytes).unwrap();
     assert_eq!(decoded.binding.capture, None);
     assert_eq!(decoded.parents[0].class, 12);
     assert_eq!(decoded.parents[0].started_ns, initial.started_ns);
@@ -259,7 +273,7 @@ fn unissued_park_receipt(owner: &HostOperationGuard) -> HostParentParkReturnRece
         shared: Arc::clone(&owner.supervisor.shared),
         operation: owner.id,
         row: 0,
-        publisher: Arc::new(UnissuedPublisher),
+        publisher: unissued_publisher(),
         journal: ParentParkReturn {
             binding: parked,
             first: -5,

@@ -27,6 +27,8 @@ mod worker_admission;
 mod quiescence;
 pub use prepared_start::PreparedHostOperationSupervisor;
 mod source_publication;
+mod source_publisher_storage;
+pub use source_publisher_storage::{FundedSourcePublisher, WeakSourcePublisher};
 mod startup;
 pub use quiescence::OriginalQuiescenceStartError;
 pub use source_publication::{SourceSupervisionPublisher, SourceSupervisionSnapshot};
@@ -388,7 +390,7 @@ struct SupervisionState {
 
 #[derive(Debug)]
 struct Shared {
-    source_publisher: Mutex<Option<Weak<dyn SourceSupervisionPublisher>>>,
+    source_publisher: Mutex<Option<WeakSourcePublisher<dyn SourceSupervisionPublisher>>>,
     started: Instant,
     #[cfg(feature = "private-measurement-domain")]
     measurement_clock: Option<crate::measurement_origin::MeasurementClock>,

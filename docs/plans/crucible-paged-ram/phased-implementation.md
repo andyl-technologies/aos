@@ -458,11 +458,58 @@ All fifteen focused helper controls, 53 roster controls and 71 focused
 custody source-policy controls pass. The new event control cancels the actual
 checkpoint Original after a real child is born, observes refusal in the actual
 helper wait, and proves the operation identity and entry count remain unchanged.
-It supplies no native Source or Main authority. Required application compilation
-and the 62-case hermetic supervision gate are running for this increment.
+It supplies no native Source or Main authority. Required hermetic application
+compilation and all 62 exact hermetic supervision cases pass for this increment.
 Coverage names 160 component cases and nineteen native cases; 149 requirements
 remain uncovered and none qualified. Genuine native ingress, activation and
 successful detached-overlay lifecycle qualification remain unfinished.
+
+
+The actual Main control boundary now retains a distinct factual Native frame,
+its genuine CONTROL descriptor/group, real QOM CPU reference and Source
+allocation receipt/generation. Native records custody before its allocation
+identity post; Source separately borrows the exact Ready handoff and canonical
+module payload before its own delivery identity post. Core attempts Source
+borrowing even after a born-negative Native result. Return closes actual QOM
+and frame/descriptor dependencies before Source consumption and its independent
+post, without resurrecting consumed debt. Stop admission remains separate.
+
+The signed `ccb208cf` native candidate passes 187 owning scenarios, all 46
+literal C lifetime/payload/Ready/Main component scenarios and eighteen
+independently rebuilt causal defects at their intended assertions. Raw ABI,
+signed sole-parent reconstruction and the unchanged 257-row license ledger pass.
+All 3,863 native targets compile and 25 of 26 fixtures pass; the sole remaining
+failure is the unchanged mandatory launched Source/Root lifecycle refusal.
+The first Main candidate's fixture-directory failures remain failed attempts;
+the earlier `68dd` causal run's unexplained 60-second timeout remains unresolved.
+Installed publication, allocator observation, Main/BQL entry and the minimal
+CPU class are modeled inputs. Main physical custody grants no CPU operation,
+entered action Original, publisher membership, activation, ACK or peer return.
+
+Standing Source publisher storage now has closed typed, action and weak
+observers, each retaining the same actual Source allocation charge after its
+pointer field. The publisher body and weak-retained value storage can close at
+different times; neither refunds that charge before actual allocation free.
+Its independent funding control also frees before releasing its original loan.
+The actual constructor prices and reserves both shared allocations before birth,
+rejects an undersized actual loan, and retains the physical mapping's separate
+original controls. Publisher replacement drops displaced value/funding owners
+outside the publication mutex. No raw strong or weak alias escapes this owner.
+
+Seven allocation-only component controls pass, including exact allocator
+observations, dead-value weak retention, erased standing observers, cloning,
+concurrent close, measured recipe coverage and unwind. All 268 active resource
+unit controls and their integration targets pass, with one existing ignored
+case. Strict resource Clippy, the 71 focused source-policy controls, reviewed
+boundary-export confinement and engineering hygiene pass. Four independently
+rebuilt defects fail the intended assertions: strong credit before storage,
+weak credit before storage, funding credit before its header, and pricing only
+the publisher header. Required hermetic application compilation is running for
+this increment. The broader harness lint still reports its existing protocol
+allow annotation and payload-test unsafe-comment findings. Coverage names 167
+component cases and nineteen native cases; 149 requirements remain uncovered
+and none qualified. Allocation ownership supplies no Source/action membership,
+entered operation, activation or physical peer-return evidence.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

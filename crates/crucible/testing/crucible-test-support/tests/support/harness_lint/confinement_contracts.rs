@@ -54,6 +54,10 @@ const CONTRACTS: &[ExportContract] = &[
     },
     ExportContract {
         path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
+        source: r#"pub use source_publisher_storage::{FundedSourcePublisher, WeakSourcePublisher};"#,
+    },
+    ExportContract {
+        path: "crucible/host/crucible-host-resources/src/host_supervision.rs",
         source: r#"pub(crate) fn from_service_interval(
         budgets: HostOperationBudgets,
         start_us: u64,

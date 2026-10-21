@@ -437,6 +437,11 @@ impl Drop for SourceHostState {
 }
 
 impl SourceHostControlLease {
+    /// Compares the already debited metadata extent without issuing authority.
+    pub(crate) fn covers_metadata(&self, bytes: usize) -> bool {
+        u64::try_from(bytes).is_ok_and(|bytes| self.bytes >= bytes)
+    }
+
     /// Checks that this actual borrower covers an original's required peak.
     ///
     /// # Errors

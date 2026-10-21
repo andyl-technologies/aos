@@ -95,7 +95,7 @@ pub(super) struct OperationSubscriber {
     row: u32,
     preparation: u32,
     role: u32,
-    publisher: Arc<dyn HostActionPublisher>,
+    publisher: FundedSourcePublisher<dyn HostActionPublisher>,
     next: Option<Box<OperationSubscriber>>,
     // The physical node and strong publisher precede their actual credit.
     _credit: Option<SourceHostControlLease>,
@@ -105,7 +105,7 @@ pub(super) struct OperationSubscriber {
 pub(super) struct OuterSubscriber {
     binding: ActionBinding,
     row: u32,
-    publisher: Arc<dyn HostActionPublisher>,
+    publisher: FundedSourcePublisher<dyn HostActionPublisher>,
     next: Option<Box<OuterSubscriber>>,
 }
 
@@ -132,7 +132,7 @@ pub struct HostActionReturnReceipt {
     journal: ActionReturn,
     operation: u64,
     row: u32,
-    publisher: Arc<dyn HostActionPublisher>,
+    publisher: FundedSourcePublisher<dyn HostActionPublisher>,
 }
 
 /// Binds actual membership to its producer's sealed unpublished return.
@@ -145,7 +145,7 @@ pub struct HostActionUnpublishedReturnReceipt {
     binding: ActionBinding,
     operation: u64,
     row: u32,
-    publisher: Arc<dyn HostActionPublisher>,
+    publisher: FundedSourcePublisher<dyn HostActionPublisher>,
 }
 
 /// Authenticates one Host membership after the same request physically closed.
@@ -158,7 +158,7 @@ pub struct HostParentParkReturnReceipt {
     journal: ParentParkReturn,
     operation: u64,
     row: u32,
-    publisher: Arc<dyn HostActionPublisher>,
+    publisher: FundedSourcePublisher<dyn HostActionPublisher>,
 }
 
 impl HostActionLoan {
@@ -199,7 +199,7 @@ impl HostActionLoan {
             loop {
                 let subscriber = cursor.ok_or(HostSupervisionError::Unavailable)?;
                 if subscriber.binding == self.binding && subscriber.row == self.row {
-                    break Arc::clone(&subscriber.publisher);
+                    break subscriber.publisher.clone();
                 }
                 cursor = subscriber.next.as_deref();
             }
@@ -245,7 +245,7 @@ impl HostActionLoan {
             loop {
                 let subscriber = cursor.ok_or(HostSupervisionError::Unavailable)?;
                 if subscriber.binding == self.binding && subscriber.row == self.row {
-                    break Arc::clone(&subscriber.publisher);
+                    break subscriber.publisher.clone();
                 }
                 cursor = subscriber.next.as_deref();
             }
@@ -280,7 +280,7 @@ impl HostActionLoan {
             loop {
                 let subscriber = cursor.ok_or(HostSupervisionError::Unavailable)?;
                 if subscriber.binding == self.binding && subscriber.row == self.row {
-                    break Arc::clone(&subscriber.publisher);
+                    break subscriber.publisher.clone();
                 }
                 cursor = subscriber.next.as_deref();
             }
@@ -475,7 +475,7 @@ impl HostActionLoan {
                 }
                 cursor = subscriber.next.as_deref();
             };
-            if !Arc::ptr_eq(actual, publisher) {
+            if !actual.same_owner(publisher) {
                 return Err(HostSupervisionError::Unavailable);
             }
         }
@@ -565,7 +565,7 @@ impl HostActionLoan {
         shared: &Arc<Shared>,
         operation_id: u64,
         row: u32,
-        publisher: &Arc<dyn HostActionPublisher>,
+        publisher: &FundedSourcePublisher<dyn HostActionPublisher>,
     ) -> Result<(), HostSupervisionError> {
         if !Arc::ptr_eq(shared, &self.supervisor.shared)
             || operation_id != self.operation
@@ -594,7 +594,7 @@ impl HostActionLoan {
             }
             cursor = subscriber.next.as_deref();
         };
-        if !Arc::ptr_eq(actual_publisher, publisher) {
+        if !actual_publisher.same_owner(publisher) {
             return Err(HostSupervisionError::Unavailable);
         }
 
@@ -643,7 +643,7 @@ impl HostOperationGuard {
     pub fn lend_action(
         &self,
         purpose: &AuthenticatedSourceHostPurpose,
-        publisher: Arc<dyn HostActionPublisher>,
+        publisher: FundedSourcePublisher<dyn HostActionPublisher>,
         binding: ActionBinding,
         row: u32,
         preparation: u32,
@@ -662,14 +662,14 @@ impl HostOperationGuard {
             row,
             preparation,
             role,
-            publisher: Arc::clone(&publisher),
+            publisher: publisher.clone(),
             next: None,
             _credit: Some(credit),
         });
         let mut outer_node = Box::new(OuterSubscriber {
             binding,
             row,
-            publisher: Arc::clone(&publisher),
+            publisher: publisher.clone(),
             next: None,
         });
         let mut state = self.supervisor.lock()?;

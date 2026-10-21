@@ -47,8 +47,9 @@ impl HostOperationSupervisor {
     /// Enrolls a prepaid Source publication in its actual node supervisor.
     ///
     /// The same authenticated Main Source purpose is checked before publication.
-    /// The supervisor keeps only a weak borrow, so this does not create a cycle
-    /// or prolong Source after its real physical control owners have closed.
+    /// The supervisor keeps a weak value borrow and its original allocation
+    /// funding. The value may close independently; its complete shared storage
+    /// remains charged until the last weak borrow actually frees it.
     ///
     /// # Errors
     /// Refuses another Main, a root rather than node roster, a second live
@@ -56,7 +57,7 @@ impl HostOperationSupervisor {
     pub fn retain_source_publication(
         &self,
         purpose: &AuthenticatedSourceHostPurpose,
-        publisher: &Arc<dyn SourceSupervisionPublisher>,
+        publisher: &FundedSourcePublisher<dyn SourceSupervisionPublisher>,
     ) -> Result<(), HostSupervisionError> {
         purpose
             .verify_supervisor(self)
@@ -69,13 +70,19 @@ impl HostOperationSupervisor {
             invalidate_sources(&self.shared);
             HostSupervisionError::Unavailable
         })?;
-        if held.as_ref().and_then(Weak::upgrade).is_some() {
+        let existing = held.as_ref().and_then(WeakSourcePublisher::upgrade);
+        if existing.is_some() {
+            drop(held);
+            drop(existing);
             return Err(HostSupervisionError::CapacityExhausted);
         }
         // Publication is retained before its initial observation. An uncertain
         // failure keeps the same nominal publisher in its caller's paid keeper.
-        *held = Some(Arc::downgrade(publisher));
+        let previous = held.replace(publisher.downgrade());
         drop(held);
+        // Final value/funding destruction may close original owners. Neither
+        // runs while holding the publication mutex it could need to observe.
+        drop(previous);
         publish_owner(&self.shared)
     }
 }
@@ -87,7 +94,7 @@ pub(super) fn publish_owner(shared: &Arc<Shared>) -> Result<(), HostSupervisionE
         .lock()
         .map_err(|poisoned| {
             let held = poisoned.into_inner();
-            let publisher = held.as_ref().and_then(Weak::upgrade);
+            let publisher = held.as_ref().and_then(WeakSourcePublisher::upgrade);
             drop(held);
             if let Some(publisher) = publisher {
                 publisher.invalidate();
@@ -95,7 +102,7 @@ pub(super) fn publish_owner(shared: &Arc<Shared>) -> Result<(), HostSupervisionE
             HostSupervisionError::Unavailable
         })?
         .as_ref()
-        .and_then(Weak::upgrade);
+        .and_then(WeakSourcePublisher::upgrade);
     let Some(publisher) = publisher else {
         return Ok(());
     };
@@ -175,7 +182,7 @@ pub(super) fn invalidate_sources(shared: &Arc<Shared>) {
                 .source_publisher
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let publisher = held.as_ref().and_then(Weak::upgrade);
+            let publisher = held.as_ref().and_then(WeakSourcePublisher::upgrade);
             drop(held);
             if let Some(publisher) = publisher {
                 publisher.invalidate();
