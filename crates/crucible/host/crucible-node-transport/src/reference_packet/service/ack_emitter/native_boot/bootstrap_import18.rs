@@ -26,6 +26,9 @@ use crate::reference_packet::service::complete_restore::import18::{
 };
 use std::{mem::size_of, os::unix::net::UnixStream, thread::ThreadId, time::Duration};
 
+#[path = "bootstrap_import18/channel_custody.rs"]
+mod channel_custody;
+
 #[path = "bootstrap_import18/receiving_banks.rs"]
 mod receiving_banks;
 
@@ -416,23 +419,23 @@ impl OriginalImport18RawBootstrap {
     }
 
     fn authenticate_origin(&self) -> Result<(), ProviderError> {
-        if self.process != std::process::id() || self.thread != std::thread::current().id() {
-            return Err(refused());
-        }
-        Ok(())
+        channel_custody::BorrowedCustody::new_data(
+            &self.process,
+            &self.thread,
+            &self.cut,
+            &self.stream,
+        )
+        .authenticate_origin_data()
     }
 
     fn authenticate_channel(&self) -> Result<(), ProviderError> {
-        self.authenticate_origin()?;
-        if self.cut.is_expired() {
-            return Err(refused());
-        }
-        let peer =
-            rustix::net::sockopt::socket_peercred(&self.stream).map_err(std::io::Error::from)?;
-        if Some(peer.pid) != rustix::process::getppid() || peer.uid != rustix::process::geteuid() {
-            return Err(refused());
-        }
-        Ok(())
+        channel_custody::BorrowedCustody::new_data(
+            &self.process,
+            &self.thread,
+            &self.cut,
+            &self.stream,
+        )
+        .authenticate_channel_data()
     }
 
     fn authenticate_bodies(&self) -> Result<(), ProviderError> {
@@ -478,6 +481,7 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<hello_response::Attempt>()
         + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
+        + channel_custody::counter_scratch_data()
         + OriginalImport18ReceivingBanks::counter_scratch_data()
         + private_body_decode_counter_scratch_data()
         + private_body_owner_counter_scratch_data()

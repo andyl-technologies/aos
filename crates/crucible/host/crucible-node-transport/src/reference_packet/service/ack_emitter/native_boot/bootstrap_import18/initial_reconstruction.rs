@@ -76,25 +76,19 @@ impl OriginalImport18RawBootstrap {
 
     fn authenticate_controller_kernel_data(&self) -> Result<(), ProviderError> {
         let bodies = self.typed_bodies_data()?;
-        let launch = bodies.launch.launch_data();
-        let peer =
-            rustix::net::sockopt::socket_peercred(&self.stream).map_err(std::io::Error::from)?;
-        // The private launch must name the same real parent whose inherited
-        // socket and original nonrenewing cut guard this entire transition.
-        // An otherwise internally consistent announcement cannot replace it.
-        if launch.controller_pid.get() != u64::from(peer.pid.as_raw_nonzero().get() as u32)
-            || launch.controller_uid.get() != u64::from(peer.uid.as_raw())
-        {
-            return Err(ProviderError::Correlation(
-                "original import18 controller kernel DATA",
-            ));
-        }
-        Ok(())
+        channel_custody::BorrowedCustody::new_data(
+            &self.process,
+            &self.thread,
+            &self.cut,
+            &self.stream,
+        )
+        .authenticate_controller_data(bodies.launch.launch_data())
     }
 }
 
 pub(super) fn counter_scratch_data() -> usize {
     size_of::<InitialConstructionData>()
+        + channel_custody::counter_scratch_data()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
         + size_of::<&InitialConstructionData>()
         + size_of::<Option<&InitialConstructionData>>()

@@ -1798,6 +1798,24 @@ with zero failures, no filtering and sixteen existing ignores. Raw-value and
 application qualification remain pending. This census grants no currentness or
 native authority and does not yet perform original Native18 SDK admission.
 
+## Borrowed original physical custody
+
+The raw receiver and initial kernel/launch join now use a shared borrow of the
+original process, thread, immutable deadline and inherited socket fields. The
+view allocates nothing and duplicates no descriptor. Its separate field borrows
+allow later SDK verifier callbacks to check physical custody while the original
+registrar is mutably borrowed. Constructing the view authenticates nothing;
+each channel use checks origin, expiry and actual parent/UID credentials.
+The controller join uses the same kernel snapshot for its launch PID/UID check.
+
+Actual borrow and guard controls are included in raw and initial construction
+scratch. Both independent Initial calculations remain under the unchanged
+limits. Cross-thread and same-process socket substitution controls pass, as do
+all 92 original bootstrap controls, with zero failures and the existing private
+child ignored. Complete library, application and funded-Source VM qualification
+remain pending for this subsequent source. Live Native18 SDK admission and its
+model-absent policy/ACK route remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
