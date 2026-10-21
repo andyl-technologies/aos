@@ -1,8 +1,8 @@
-From 7db67fefae5063ec0b738404da06e86f1213ad34 Mon Sep 17 00:00:00 2001
+From d9062af859073b531c3733bc05b118d29a8d7a5a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain initial CPU construction children and SDK
- refusal
+Subject: [PATCH] crucible: retain bounded hardware storage and inactive
+ constructor debt
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -255,6 +255,34 @@ The assertion-only actual initial callback hooks remain unexecuted pending the
 genuine installed-module launch harness; compilation and pure predicate tests
 cannot qualify that route. Preserve original ceilings, all previous failed
 attempts and mandatory launched Source/Root lifecycle refusal.
+
+Replace the hardware manifest and binding GArrays with the actual bounded
+six-row/six-binding typed declaration. Preserve ordinary architecture branches,
+ordering and binding behavior; refuse sticky overflow before publication.
+Charge the entire declaration once through its genuine installation floor,
+including its inactive lease and terminal journals, for the image lifetime.
+
+Retain the private paired hardware constructor lease under the actual initial
+CPU child, QOM allocation receipts, fixed account and construction Original.
+Keep actual Native issuing/holder predicates and post-ATEXIT process/thread
+scope distinct from installation or callback facts. Terminal return requires
+real registry retirement and worker, material, action, Main, Ready, Park and
+initial-CPU closure, plus no registered handlers, staged VMState or pending events.
+Consume logical lease dependencies only after unpublication; static image
+backing remains charged. Selected public SDK and internal lazy builders remain
+prebirth-refused. These inactive seams do not qualify an accepted constructor,
+executed callback, operation, activation or physical peer return.
+
+Refuse selected register and interrupt lazy factories before CPU lookup or
+cached-row reuse, retaining unselected preconditions and behavior. Extract the
+actual typed catalogue declaration/getter and enlarged Core dispatch journal
+for component sizing; retain exact source/dependency fingerprints. Run literal
+storage/branch, selected refusal and physical-debt controls with independent
+omission mutations, and document actual installed-runner/factory prerequisites.
+Add two explicitly GPL-2.0-or-later focused tests and preserve every existing
+file license, assertion and resource limit. Initial callback and lease assertion
+hooks remain unexecuted; retain all prior failed attempts and the mandatory
+launched Source/Root lifecycle refusal.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -72090,10 +72118,10 @@ index 0000000000000000000000000000000000000000..ae015acf95d98a9b3b88541600b9b4fe
 +#endif /* QEMU_CRUCIBLE_DEVICE_WORKSPACE_H */
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..31d312090c633aa86b1c80c273b564133956e544
+index 0000000000000000000000000000000000000000..4a08497e59fc3a4bd6ab112e840945ab5b8d016f
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,812 @@
+@@ -0,0 +1,826 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -72109,6 +72137,20 @@ index 0000000000000000000000000000000000000000..31d312090c633aa86b1c80c273b56413
 +#include "exec/memattrs.h"
 +#include "plugins/qemu-plugin.h"
 +#include "qemu/typedefs.h"
++
++/* Exact typed catalogue backing, retained for the native image lifetime. */
++uint64_t qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(void);
++
++typedef struct QemuCrucibleInitialHardwareCatalogueLease
++    QemuCrucibleInitialHardwareCatalogueLease;
++
++/* Process-private constructor/terminal seams; none is a module SDK issuer. */
++int qemu_crucible_fault_hardware_catalogue_issuing_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease **holder);
++int qemu_crucible_fault_hardware_catalogue_holder_v1(
++    QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder, bool returning);
++int qemu_crucible_fault_hardware_catalogue_terminal_v1(void);
 +
 +typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
 +typedef struct QemuCrucibleFaultRule QemuCrucibleFaultRule;
@@ -76643,7 +76685,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066aa5f142d 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..db8df753c74e7ef7d1800329012062ca2e9caa0e 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,15 @@
@@ -76755,7 +76797,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066
      union qemu_plugin_cb_sig f;
      TCGHelperInfo *info;
      void *userp;
-@@ -156,6 +215,17 @@ struct CPUPluginState {
+@@ -156,6 +215,18 @@ struct CPUPluginState {
  CPUPluginState *qemu_plugin_create_vcpu_state(void);
  
  void qemu_plugin_vcpu_init_hook(CPUState *cpu);
@@ -76770,10 +76812,11 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066
 +    CPUState *cpu, QemuCrucibleNativeInvocationTicket *ticket);
 +int qemu_plugin_crucible_initial_cpu_sdk_begin_v1(void);
 +int qemu_plugin_crucible_initial_cpu_sdk_post_v1(int first_status);
++int qemu_plugin_crucible_initial_hardware_terminal_current_v1(void);
  void qemu_plugin_vcpu_exit_hook(CPUState *cpu);
  void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb);
  void qemu_plugin_vcpu_idle_cb(CPUState *cpu);
-@@ -183,6 +253,103 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +254,103 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -76877,7 +76920,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -233,10 +400,86 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -233,10 +401,86 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  }
  
  #else /* !CONFIG_PLUGIN */
@@ -76964,7 +77007,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -252,6 +495,45 @@ static inline int qemu_plugin_load_list(QemuPluginList *head, Error **errp)
+@@ -252,6 +496,50 @@ static inline int qemu_plugin_load_list(QemuPluginList *head, Error **errp)
  static inline void qemu_plugin_vcpu_init_hook(CPUState *cpu)
  { }
  
@@ -77007,10 +77050,15 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066
 +    return first_status;
 +}
 +
++static inline int qemu_plugin_crucible_initial_hardware_terminal_current_v1(void)
++{
++    return -ENOTSUP;
++}
++
  static inline void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
  { }
  
-@@ -306,6 +588,204 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +594,204 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -99433,16 +99481,19 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..76d0d136afdb458e8b28fec3c2784572
  }
 -
 diff --git a/plugins/core.c b/plugins/core.c
-index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90f9809fe9 100644
+index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..fa5b22e369c596f35b62ed5282eacd6b88ffeed8 100644
 --- a/plugins/core.c
 +++ b/plugins/core.c
-@@ -13,22 +13,19 @@
+@@ -13,22 +13,22 @@
   */
  #include "qemu/osdep.h"
  #include "qemu/lockable.h"
 +#include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/plugin.h"
++#if !defined(CONFIG_USER_ONLY)
++#include "qemu/crucible-fault.h"
++#endif
 +#include "qemu/crucible-hot-fork-plugin.h"
  #include "plugins/qemu-plugin.h"
  #include "qemu/queue.h"
@@ -99463,7 +99514,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  
  struct qemu_plugin_state plugin;
  
-@@ -61,6 +58,38 @@ static void plugin_cpu_update__locked(gpointer k, gpointer v, gpointer udata)
+@@ -61,6 +61,38 @@ static void plugin_cpu_update__locked(gpointer k, gpointer v, gpointer udata)
      async_run_on_cpu(cpu, plugin_cpu_update__async, mask);
  }
  
@@ -99502,7 +99553,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
                                    enum qemu_plugin_event ev)
  {
-@@ -70,14 +99,47 @@ void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
+@@ -70,14 +102,47 @@ void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
          return;
      }
      QLIST_REMOVE_RCU(cb, entry);
@@ -99551,7 +99602,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  /*
   * Disable CFI checks.
   * The callback function has been loaded from an external library so we do not
-@@ -94,8 +156,32 @@ static void plugin_vcpu_cb__udata(CPUState *cpu, enum qemu_plugin_event ev)
+@@ -94,8 +159,32 @@ static void plugin_vcpu_cb__udata(CPUState *cpu, enum qemu_plugin_event ev)
      case QEMU_PLUGIN_EV_VCPU_RESUME:
      case QEMU_PLUGIN_EV_VCPU_EXIT:
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
@@ -99585,7 +99636,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          }
          break;
      default:
-@@ -122,7 +208,13 @@ static void plugin_vcpu_cb__discon(CPUState *cpu,
+@@ -122,7 +211,13 @@ static void plugin_vcpu_cb__discon(CPUState *cpu,
          /* iterate safely; plugins might uninstall themselves at any time */
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
              qemu_plugin_vcpu_discon_cb_t func = cb->f.vcpu_discon;
@@ -99600,7 +99651,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          }
      }
      qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
-@@ -144,7 +236,13 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
+@@ -144,7 +239,13 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
              qemu_plugin_udata_cb_t func = cb->f.udata;
  
@@ -99615,7 +99666,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          }
          break;
      default:
-@@ -152,40 +250,122 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
+@@ -152,40 +253,122 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
      }
  }
  
@@ -99762,7 +99813,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  void plugin_register_cb(qemu_plugin_id_t id, enum qemu_plugin_event ev,
-@@ -254,10 +434,181 @@ static void plugin_grow_scoreboards__locked(CPUState *cpu)
+@@ -254,10 +437,197 @@ static void plugin_grow_scoreboards__locked(CPUState *cpu)
      end_exclusive();
  }
  
@@ -99780,8 +99831,24 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
 +    bool returned;
 +    bool returning;
 +    bool callback_returning;
++    bool hardware_terminal;
++    pid_t terminal_process;
++    QemuThread terminal_thread;
 +    int first_status;
 +} initial_cpu_dispatch;
++
++int qemu_plugin_crucible_initial_hardware_terminal_current_v1(void)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    return initial_cpu_dispatch.hardware_terminal &&
++        initial_cpu_dispatch.terminal_process == getpid() &&
++        qemu_thread_is_self(&initial_cpu_dispatch.terminal_thread) &&
++        bql_locked() && !current_cpu &&
++        !qemu_in_coroutine() && !initial_cpu_dispatch.cpu ? 0 : -EPERM;
++#else
++    return -ENOTSUP;
++#endif
++}
 +
 +size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(void)
 +{
@@ -99944,7 +100011,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
      assert(cpu->cpu_index != UNASSIGNED_CPU_INDEX);
      qemu_rec_mutex_lock(&plugin.lock);
      plugin.num_vcpus = MAX(plugin.num_vcpus, cpu->cpu_index + 1);
-@@ -271,14 +622,104 @@ static void qemu_plugin_vcpu_init__async(CPUState *cpu, run_on_cpu_data unused)
+@@ -271,14 +641,104 @@ static void qemu_plugin_vcpu_init__async(CPUState *cpu, run_on_cpu_data unused)
      qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS);
      plugin_vcpu_cb__udata(cpu, QEMU_PLUGIN_EV_VCPU_INIT);
      qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
@@ -100049,7 +100116,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
  {
      bool success;
-@@ -294,34 +735,69 @@ void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
+@@ -294,34 +754,69 @@ void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
      qemu_rec_mutex_unlock(&plugin.lock);
  }
  
@@ -100133,7 +100200,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  /* Allocate and return a callback record */
-@@ -393,6 +869,10 @@ void plugin_register_dyn_cb__udata(GArray **arr,
+@@ -393,6 +888,10 @@ void plugin_register_dyn_cb__udata(GArray **arr,
                                                   .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_REGULAR;
      dyn_cb->regular = regular_cb;
@@ -100144,7 +100211,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  void plugin_register_dyn_cond_cb__udata(GArray **arr,
-@@ -427,6 +907,10 @@ void plugin_register_dyn_cond_cb__udata(GArray **arr,
+@@ -427,6 +926,10 @@ void plugin_register_dyn_cond_cb__udata(GArray **arr,
                                                    .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_COND;
      dyn_cb->cond = cond_cb;
@@ -100155,7 +100222,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  void plugin_register_vcpu_mem_cb(GArray **arr,
-@@ -469,6 +953,10 @@ void plugin_register_vcpu_mem_cb(GArray **arr,
+@@ -469,6 +972,10 @@ void plugin_register_vcpu_mem_cb(GArray **arr,
                                                   .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_MEM_REGULAR;
      dyn_cb->regular = regular_cb;
@@ -100166,7 +100233,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  /*
-@@ -488,7 +976,13 @@ void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb)
+@@ -488,7 +995,13 @@ void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb)
          qemu_plugin_vcpu_tb_trans_cb_t func = cb->f.vcpu_tb_trans;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS);
@@ -100181,7 +100248,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -534,7 +1028,13 @@ qemu_plugin_vcpu_syscall(CPUState *cpu, int64_t num, uint64_t a1, uint64_t a2,
+@@ -534,7 +1047,13 @@ qemu_plugin_vcpu_syscall(CPUState *cpu, int64_t num, uint64_t a1, uint64_t a2,
          qemu_plugin_vcpu_syscall_cb_t func = cb->f.vcpu_syscall;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS_PC);
@@ -100196,7 +100263,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -558,7 +1058,13 @@ void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret)
+@@ -558,7 +1077,13 @@ void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret)
          qemu_plugin_vcpu_syscall_ret_cb_t func = cb->f.vcpu_syscall_ret;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS_PC);
@@ -100211,7 +100278,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -590,8 +1096,15 @@ qemu_plugin_vcpu_syscall_filter(CPUState *cpu, int64_t num, uint64_t a1,
+@@ -590,8 +1115,15 @@ qemu_plugin_vcpu_syscall_filter(CPUState *cpu, int64_t num, uint64_t a1,
      QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
          qemu_plugin_vcpu_syscall_filter_cb_t func = cb->f.vcpu_syscall_filter;
  
@@ -100229,7 +100296,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
              filtered = true;
              break;
          }
-@@ -674,6 +1187,10 @@ void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
+@@ -674,6 +1206,10 @@ void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
                                     void *userdata)
  {
      plugin_register_cb_udata(id, QEMU_PLUGIN_EV_FLUSH, cb, userdata);
@@ -100240,7 +100307,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  }
  
  static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
-@@ -684,6 +1201,7 @@ static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
+@@ -684,6 +1220,7 @@ static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
  
  void qemu_plugin_flush_cb(void)
  {
@@ -100248,7 +100315,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
      qht_iter_remove(&plugin.dyn_cb_arr_ht, free_dyn_cb_arr, NULL);
      qht_reset(&plugin.dyn_cb_arr_ht);
  
-@@ -738,9 +1256,18 @@ void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
+@@ -738,9 +1275,18 @@ void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
                  qemu_plugin_set_cb_flags(cpu,
                      tcg_call_to_qemu_plugin_cb_flags(cb->regular.info->flags));
  
@@ -100267,7 +100334,32 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
                  qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
              }
              break;
-@@ -836,6 +1363,43 @@ static bool plugin_dyn_cb_arr_cmp(const void *ap, const void *bp)
+@@ -759,6 +1305,24 @@ void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
+ void qemu_plugin_atexit_cb(void)
+ {
+     plugin_cb__udata(QEMU_PLUGIN_EV_ATEXIT);
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (!qemu_crucible_source_initial_hardware_catalogue_terminal_owner_v1() &&
++        !initial_cpu_dispatch.hardware_terminal && !initial_cpu_dispatch.cpu) {
++        bool acquired_bql = !bql_locked();
++
++        if (acquired_bql) {
++            bql_lock();
++        }
++        initial_cpu_dispatch.terminal_process = getpid();
++        qemu_thread_get_self(&initial_cpu_dispatch.terminal_thread);
++        initial_cpu_dispatch.hardware_terminal = true;
++        qemu_crucible_fault_hardware_catalogue_terminal_v1();
++        initial_cpu_dispatch.hardware_terminal = false;
++        if (acquired_bql) {
++            bql_unlock();
++        }
++    }
++#endif
+ }
+ 
+ void qemu_plugin_register_atexit_cb(qemu_plugin_id_t id,
+@@ -836,6 +1400,43 @@ static bool plugin_dyn_cb_arr_cmp(const void *ap, const void *bp)
      return ap == bp;
  }
  
@@ -100311,7 +100403,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90
  static void __attribute__((__constructor__)) plugin_init(void)
  {
      int i;
-@@ -844,6 +1408,9 @@ static void __attribute__((__constructor__)) plugin_init(void)
+@@ -844,6 +1445,9 @@ static void __attribute__((__constructor__)) plugin_init(void)
          QLIST_INIT(&plugin.cb_lists[i]);
      }
      qemu_rec_mutex_init(&plugin.lock);
@@ -120379,10 +120471,10 @@ index 0000000000000000000000000000000000000000..a1fca035b4f5ec815220675362d89db5
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76c6fae195
+index 0000000000000000000000000000000000000000..92f1e5e75a6ef73ae676a2880977f50866d8452c
 --- /dev/null
 +++ b/plugins/crucible-fault-hardware-error.c
-@@ -0,0 +1,1917 @@
+@@ -0,0 +1,2075 @@
 +/*
 + * Crucible architecture and platform hardware-error injection
 + *
@@ -120404,6 +120496,9 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +#include "qobject/qdict.h"
 +#include "qobject/qobject.h"
 +#include "system/runstate.h"
++#ifdef CONFIG_LINUX
++#include "crucible-startup-source.h"
++#endif
 +
 +#define CRUCIBLE_HWERR_RECORD_X86_MCE 1
 +#define CRUCIBLE_HWERR_RECORD_AARCH64_RAS 2
@@ -120496,16 +120591,171 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +typedef struct CrucibleHardwareVmstate {
 +    GPtrArray *pending;
 +    bool terminal;
++    bool catalogue_user;
 +} CrucibleHardwareVmstate;
 +
-+static GArray *crucible_hardware_manifest;
-+static GArray *crucible_hardware_bindings;
++/* Four AArch64 RAS rows plus two GHES rows form the largest implemented
++ * catalogue. Row strings belong to the immutable native image. Its typed
++ * backing remains charged for the image lifetime, including after unpublication.
++ * Pending events retain their separate CPU, rule and reservation owners.
++ */
++#define CRUCIBLE_HARDWARE_MANIFEST_CAPACITY 6
++
++typedef struct CrucibleHardwareCatalogue {
++    struct qemu_plugin_crucible_fault_hardware_error_capability
++        rows[CRUCIBLE_HARDWARE_MANIFEST_CAPACITY];
++    CrucibleHardwareBinding bindings[CRUCIBLE_HARDWARE_MANIFEST_CAPACITY];
++    size_t count;
++    bool initialized;
++    bool overflow;
++    QemuCrucibleInitialHardwareCatalogueLease *lease;
++    CPUState *issuing_cpu;
++    int first_status;
++    int terminal_first_status;
++    int terminal_status;
++    bool constructor_attempted;
++    bool issuing;
++    bool returning;
++    bool unpublished;
++    size_t staged_users;
++} CrucibleHardwareCatalogue;
++
++static CrucibleHardwareCatalogue crucible_hardware_catalogue;
 +static GPtrArray *crucible_hardware_pending;
 +static uint16_t crucible_hardware_architecture;
 +static bool crucible_hardware_bindings_sealed;
 +static bool crucible_hardware_registered;
 +static bool crucible_hardware_terminal;
 +static uint8_t crucible_hardware_manifest_sha256[32];
++
++uint64_t qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(void)
++{
++    return sizeof(crucible_hardware_catalogue);
++}
++
++int qemu_crucible_fault_hardware_catalogue_issuing_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease **holder)
++{
++    return cpu && cpu == current_cpu &&
++        crucible_hardware_catalogue.constructor_attempted &&
++        crucible_hardware_catalogue.issuing &&
++        crucible_hardware_catalogue.issuing_cpu == cpu &&
++        holder == &crucible_hardware_catalogue.lease && !*holder &&
++        !crucible_hardware_catalogue.unpublished ? 0 : -EPERM;
++}
++
++int qemu_crucible_fault_hardware_catalogue_holder_v1(
++    QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder, bool returning)
++{
++    if (!lease || holder != &crucible_hardware_catalogue.lease || *holder != lease ||
++        !crucible_hardware_catalogue.constructor_attempted ||
++        crucible_hardware_catalogue.returning != returning) {
++        return -EPERM;
++    }
++    if (returning && (!crucible_hardware_catalogue.unpublished ||
++        crucible_hardware_catalogue.initialized || crucible_hardware_catalogue.count ||
++        crucible_hardware_registered || crucible_hardware_catalogue.staged_users ||
++        (crucible_hardware_pending && crucible_hardware_pending->len))) {
++        return -EBUSY;
++    }
++    return !returning && crucible_hardware_catalogue.unpublished ? -EPERM : 0;
++}
++
++static int crucible_hardware_constructor_begin(void)
++{
++    /* Public selected callers still stop at the SDK's prebirth ENOKEY guard.
++     * This paired private seam is not activated by reserving typed storage. */
++    if (!qemu_plugin_crucible_startup_source_retained()) {
++        return 0;
++    }
++#ifdef CONFIG_LINUX
++    int status;
++
++    if (crucible_hardware_catalogue.lease) {
++        return qemu_crucible_source_initial_hardware_catalogue_current_v1(
++            current_cpu, crucible_hardware_catalogue.lease,
++            &crucible_hardware_catalogue.lease);
++    }
++    if (crucible_hardware_catalogue.constructor_attempted || !current_cpu) {
++        return -EPERM;
++    }
++    crucible_hardware_catalogue.constructor_attempted = true;
++    crucible_hardware_catalogue.issuing_cpu = current_cpu;
++    crucible_hardware_catalogue.issuing = true;
++    status = qemu_crucible_source_initial_hardware_catalogue_acquire_v1(
++        current_cpu, &crucible_hardware_catalogue.lease);
++
++    crucible_hardware_catalogue.issuing = false;
++    crucible_hardware_catalogue.issuing_cpu = NULL;
++    crucible_hardware_catalogue.first_status = status;
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_fault_hardware_catalogue_terminal_v1(void)
++{
++#ifdef CONFIG_LINUX
++    int status;
++
++    if (!crucible_hardware_catalogue.lease) {
++        return 0;
++    }
++    if (!crucible_hardware_catalogue.unpublished) {
++        status = qemu_crucible_source_initial_hardware_catalogue_terminal_ready_v1(
++            crucible_hardware_catalogue.lease, &crucible_hardware_catalogue.lease);
++        if (!status && (crucible_hardware_registered ||
++            crucible_hardware_catalogue.staged_users ||
++            (crucible_hardware_pending && crucible_hardware_pending->len))) {
++            status = -EBUSY;
++        }
++        if (status) {
++            if (!crucible_hardware_catalogue.terminal_first_status) {
++                crucible_hardware_catalogue.terminal_first_status = status;
++            }
++            crucible_hardware_catalogue.terminal_status = status;
++            return status;
++        }
++        /* Permanent callback retirement and actual dependency closure precede
++         * unpublication. A still-installed fault handler retains this debt.
++         * Save this physical fact even if Source consumption later refuses.
++         */
++        crucible_hardware_catalogue.unpublished = true;
++        crucible_hardware_catalogue.initialized = false;
++        crucible_hardware_catalogue.count = 0;
++        memset(crucible_hardware_catalogue.rows, 0,
++               sizeof(crucible_hardware_catalogue.rows));
++        memset(crucible_hardware_catalogue.bindings, 0,
++               sizeof(crucible_hardware_catalogue.bindings));
++        crucible_hardware_bindings_sealed = false;
++    }
++    crucible_hardware_catalogue.returning = true;
++    status = qemu_crucible_source_initial_hardware_catalogue_return_v1(
++        &crucible_hardware_catalogue.lease);
++    crucible_hardware_catalogue.returning = false;
++    if (!crucible_hardware_catalogue.terminal_first_status) {
++        crucible_hardware_catalogue.terminal_first_status = status;
++    }
++    crucible_hardware_catalogue.terminal_status = status;
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++static void crucible_hardware_catalogue_append(
++    const struct qemu_plugin_crucible_fault_hardware_error_capability *row)
++{
++    if (crucible_hardware_catalogue.overflow ||
++        crucible_hardware_catalogue.count >=
++            G_N_ELEMENTS(crucible_hardware_catalogue.rows)) {
++        crucible_hardware_catalogue.overflow = true;
++        return;
++    }
++    crucible_hardware_catalogue.rows[crucible_hardware_catalogue.count++] = *row;
++}
 +
 +static const uint64_t x86_status_allowed =
 +    CRUCIBLE_X86_MCI_STATUS_VAL | CRUCIBLE_X86_MCI_STATUS_UC |
@@ -120552,7 +120802,7 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        .state = state,
 +    };
 +
-+    g_array_append_val(crucible_hardware_manifest, row);
++    crucible_hardware_catalogue_append(&row);
 +}
 +
 +static gint crucible_hardware_row_compare(gconstpointer left,
@@ -120571,17 +120821,21 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    CPUState *cpu = qemu_get_cpu(0);
 +    CPUFaultHardwareErrorCapability capability = { 0 };
 +
-+    if (crucible_hardware_manifest) {
-+        return true;
++    /* Internal lazy callers also need the genuine constructor lease. The
++     * temporal child alone does not issue that lease; selected entry stays
++     * unavailable until its retained dependency and return path are paired.
++     */
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return false;
++    }
++    if (crucible_hardware_catalogue.initialized) {
++        return !crucible_hardware_catalogue.overflow;
 +    }
 +    if (!cpu) {
 +        return false;
 +    }
 +    crucible_hardware_architecture =
 +        CPU_GET_CLASS(cpu)->crucible_register_scope;
-+    crucible_hardware_manifest = g_array_new(
-+        false, true,
-+        sizeof(struct qemu_plugin_crucible_fault_hardware_error_capability));
 +    if (!cpu_get_fault_hardware_error_capability(cpu, &capability)) {
 +        goto complete;
 +    }
@@ -120714,13 +120968,13 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        }
 +    }
 +complete:
-+    g_array_sort(crucible_hardware_manifest,
-+                 crucible_hardware_row_compare);
-+    crucible_hardware_bindings = g_array_sized_new(
-+        false, true, sizeof(CrucibleHardwareBinding),
-+        crucible_hardware_manifest->len);
-+    g_array_set_size(crucible_hardware_bindings,
-+                     crucible_hardware_manifest->len);
++    if (crucible_hardware_catalogue.overflow) {
++        return false;
++    }
++    qsort(crucible_hardware_catalogue.rows, crucible_hardware_catalogue.count,
++          sizeof(crucible_hardware_catalogue.rows[0]),
++          crucible_hardware_row_compare);
++    crucible_hardware_catalogue.initialized = true;
 +    return true;
 +}
 +
@@ -120732,11 +120986,11 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        return 0;
 +    }
 +    *architecture = crucible_hardware_architecture;
-+    if (out && capacity >= crucible_hardware_manifest->len) {
-+        memcpy(out, crucible_hardware_manifest->data,
-+               crucible_hardware_manifest->len * sizeof(*out));
++    if (out && capacity >= crucible_hardware_catalogue.count) {
++        memcpy(out, crucible_hardware_catalogue.rows,
++               crucible_hardware_catalogue.count * sizeof(*out));
 +    }
-+    return crucible_hardware_manifest->len;
++    return crucible_hardware_catalogue.count;
 +}
 +
 +size_t qemu_plugin_crucible_fault_hardware_error_manifest(
@@ -120745,6 +120999,10 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +{
 +    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
 +
++    if (status) {
++        return 0;
++    }
++    status = crucible_hardware_constructor_begin();
 +    if (status) {
 +        return 0;
 +    }
@@ -120765,11 +121023,10 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    if (!id || !bank || !channel || !rank || !firmware || !state ||
 +        !crucible_hardware_manifest_init() ||
 +        crucible_hardware_bindings_sealed ||
-+        row_index >= crucible_hardware_bindings->len) {
++        row_index >= crucible_hardware_catalogue.count) {
 +        return -EINVAL;
 +    }
-+    binding = &g_array_index(crucible_hardware_bindings,
-+                             CrucibleHardwareBinding, row_index);
++    binding = &crucible_hardware_catalogue.bindings[row_index];
 +    if (binding->present) {
 +        return -EEXIST;
 +    }
@@ -120793,6 +121050,10 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    if (status) {
 +        return status;
 +    }
++    status = crucible_hardware_constructor_begin();
++    if (status) {
++        return status;
++    }
 +    int result = crucible_fault_hardware_error_bind_body(
 +        row_index, id, bank, channel, rank, firmware, state);
 +
@@ -120807,9 +121068,8 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        crucible_hardware_bindings_sealed) {
 +        return -EINVAL;
 +    }
-+    for (guint i = 0; i < crucible_hardware_bindings->len; i++) {
-+        if (!g_array_index(crucible_hardware_bindings,
-+                           CrucibleHardwareBinding, i).present) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
++        if (!crucible_hardware_catalogue.bindings[i].present) {
 +            return -ENOENT;
 +        }
 +    }
@@ -120823,6 +121083,10 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +{
 +    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
 +
++    if (status) {
++        return status;
++    }
++    status = crucible_hardware_constructor_begin();
 +    if (status) {
 +        return status;
 +    }
@@ -120976,14 +121240,11 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        (kind == 2 && visibility != CRUCIBLE_HWERR_VISIBILITY_EXCEPTION)) {
 +        return -ENOTSUP;
 +    }
-+    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
 +        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
-+            &g_array_index(
-+                crucible_hardware_manifest,
-+                struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                i);
-+        const CrucibleHardwareBinding *binding = &g_array_index(
-+            crucible_hardware_bindings, CrucibleHardwareBinding, i);
++            &crucible_hardware_catalogue.rows[i];
++        const CrucibleHardwareBinding *binding =
++            &crucible_hardware_catalogue.bindings[i];
 +
 +        if (row->record_kind != CRUCIBLE_HWERR_RECORD_MEMORY_ECC ||
 +            !crucible_hardware_privilege_matches(row, cpu) ||
@@ -121092,10 +121353,7 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        !crucible_hardware_target_cpu(rule)) {
 +        return -EINVAL;
 +    }
-+    row = &g_array_index(
-+        crucible_hardware_manifest,
-+        struct qemu_plugin_crucible_fault_hardware_error_capability,
-+        row_index);
++    row = &crucible_hardware_catalogue.rows[row_index];
 +    model_phase = qemu_crucible_fault_rule_model_phase(rule);
 +
 +    if (model_phase == 0 || model_phase > 64 ||
@@ -121133,12 +121391,9 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    if (!cpu_validate_fault_exception(cpu, exception)) {
 +        return -EINVAL;
 +    }
-+    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
 +        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
-+            &g_array_index(
-+                crucible_hardware_manifest,
-+                struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                i);
++            &crucible_hardware_catalogue.rows[i];
 +
 +        if (row->model_phase_mask & (UINT64_C(1) << (model_phase - 1)) &&
 +            crucible_hardware_privilege_matches(row, cpu) &&
@@ -121160,14 +121415,11 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        !crucible_hardware_bindings_sealed) {
 +        return false;
 +    }
-+    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
 +        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
-+            &g_array_index(
-+                crucible_hardware_manifest,
-+                struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                i);
-+        const CrucibleHardwareBinding *binding = &g_array_index(
-+            crucible_hardware_bindings, CrucibleHardwareBinding, i);
++            &crucible_hardware_catalogue.rows[i];
++        const CrucibleHardwareBinding *binding =
++            &crucible_hardware_catalogue.bindings[i];
 +
 +        if (!crucible_hardware_exception_matches_row(row, exception)) {
 +            continue;
@@ -121392,12 +121644,8 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +            observed_icount, before_hash) != 0) {
 +        return -EINVAL;
 +    }
-+    row = &g_array_index(
-+        crucible_hardware_manifest,
-+        struct qemu_plugin_crucible_fault_hardware_error_capability,
-+        row_index);
-+    binding = &g_array_index(crucible_hardware_bindings,
-+                             CrucibleHardwareBinding, row_index);
++    row = &crucible_hardware_catalogue.rows[row_index];
++    binding = &crucible_hardware_catalogue.bindings[row_index];
 +    ghes_source_id = row->corrected ? ACPI_HEST_SRC_ID_CORRECTED_POLL :
 +                                      ACPI_HEST_SRC_ID_SYNC;
 +    snapshot_bank = exception.record == CPU_FAULT_EXCEPTION_X86_MACHINE_CHECK ?
@@ -121863,9 +122111,9 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    g_autoptr(GByteArray) encoded = g_byte_array_new();
 +
 +    if (!(initialize ? crucible_hardware_manifest_init() :
-+          crucible_hardware_manifest != NULL) ||
-+        !crucible_hardware_bindings_sealed ||
-+        crucible_hardware_manifest->len != crucible_hardware_bindings->len) {
++          crucible_hardware_catalogue.initialized &&
++          !crucible_hardware_catalogue.overflow) ||
++        !crucible_hardware_bindings_sealed) {
 +        return false;
 +    }
 +    qemu_crucible_fault_vmstate_put_bytes(encoded, "CRUCHMI1", 8);
@@ -121873,17 +122121,14 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        encoded, crucible_hardware_architecture);
 +    qemu_crucible_fault_vmstate_put_u16(encoded, 0);
 +    qemu_crucible_fault_vmstate_put_u32(
-+        encoded, crucible_hardware_manifest->len);
++        encoded, crucible_hardware_catalogue.count);
 +    qemu_crucible_fault_vmstate_put_bytes(
 +        encoded, crucible_hardware_manifest_sha256, 32);
-+    for (guint i = 0; i < crucible_hardware_bindings->len; i++) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
 +        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
-+            &g_array_index(
-+                crucible_hardware_manifest,
-+                struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                i);
-+        const CrucibleHardwareBinding *binding = &g_array_index(
-+            crucible_hardware_bindings, CrucibleHardwareBinding, i);
++            &crucible_hardware_catalogue.rows[i];
++        const CrucibleHardwareBinding *binding =
++            &crucible_hardware_catalogue.bindings[i];
 +        const char *strings[] = {
 +            row->id, row->bank, row->channel, row->rank,
 +            row->firmware, row->state,
@@ -122056,12 +122301,18 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +static void crucible_hardware_vmstate_free(void *opaque)
 +{
 +    CrucibleHardwareVmstate *state = opaque;
++    bool catalogue_user;
 +
 +    if (!state) {
 +        return;
 +    }
++    catalogue_user = state->catalogue_user;
++
 +    g_clear_pointer(&state->pending, g_ptr_array_unref);
 +    g_free(state);
++    if (catalogue_user) {
++        crucible_hardware_catalogue.staged_users--;
++    }
 +}
 +
 +static int crucible_hardware_vmstate_prepare(
@@ -122071,13 +122322,20 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +        .data = payload,
 +        .length = payload_len,
 +    };
-+    CrucibleHardwareVmstate *state = g_new0(CrucibleHardwareVmstate, 1);
-+    GPtrArray *pending = g_ptr_array_new_with_free_func(
-+        crucible_hardware_pending_free);
++    CrucibleHardwareVmstate *state;
++    GPtrArray *pending;
 +    uint8_t magic[8], saved_identity[32], current_identity[32];
 +    uint8_t terminal, reserved8;
 +    uint16_t reserved16;
 +    uint32_t count;
++
++    if (crucible_hardware_catalogue.staged_users == SIZE_MAX) {
++        return -EOVERFLOW;
++    }
++    state = g_new0(CrucibleHardwareVmstate, 1);
++    pending = g_ptr_array_new_with_free_func(crucible_hardware_pending_free);
++    state->catalogue_user = true;
++    crucible_hardware_catalogue.staged_users++;
 +
 +    if (!qemu_crucible_fault_vmstate_get_bytes(&reader, magic, 8) ||
 +        memcmp(magic, "CRUCHVS1", 8) != 0 ||
@@ -122131,7 +122389,7 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +                &reader, item->firmware, 32) ||
 +            !qemu_crucible_fault_vmstate_get_bytes(&reader, item->state, 32) ||
 +            reserved16 != 0 || reserved32 != 0 ||
-+            item->row_index >= crucible_hardware_manifest->len ||
++            item->row_index >= crucible_hardware_catalogue.count ||
 +            item->vmstate_reservation_remaining == 0 ||
 +            (i != 0 && ((CrucibleHardwarePending *)g_ptr_array_index(
 +                pending, i - 1))->cpu->cpu_index >= cpu_index)) {
@@ -122178,17 +122436,12 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +            goto fail;
 +        }
 +        if (item->ghes_source_id !=
-+            (g_array_index(
-+                 crucible_hardware_manifest,
-+                 struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                 item->row_index).corrected ?
++            (crucible_hardware_catalogue.rows[item->row_index].corrected ?
 +                 ACPI_HEST_SRC_ID_CORRECTED_POLL : ACPI_HEST_SRC_ID_SYNC)) {
 +            crucible_hardware_pending_free(item);
 +            goto fail;
 +        }
-+        binding = &g_array_index(
-+            crucible_hardware_bindings, CrucibleHardwareBinding,
-+            item->row_index);
++        binding = &crucible_hardware_catalogue.bindings[item->row_index];
 +        if (memcmp(item->id, binding->id, 32) != 0 ||
 +            memcmp(item->bank, binding->bank, 32) != 0 ||
 +            memcmp(item->channel, binding->channel, 32) != 0 ||
@@ -122235,7 +122488,7 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +
 +fail:
 +    g_ptr_array_unref(pending);
-+    g_free(state);
++    crucible_hardware_vmstate_free(state);
 +    return -EINVAL;
 +}
 +
@@ -122282,12 +122535,9 @@ index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76
 +    if (!cpu || !crucible_hardware_manifest_init()) {
 +        return false;
 +    }
-+    for (guint i = 0; i < crucible_hardware_manifest->len; i++) {
++    for (guint i = 0; i < crucible_hardware_catalogue.count; i++) {
 +        const struct qemu_plugin_crucible_fault_hardware_error_capability *row =
-+            &g_array_index(
-+                crucible_hardware_manifest,
-+                struct qemu_plugin_crucible_fault_hardware_error_capability,
-+                i);
++            &crucible_hardware_catalogue.rows[i];
 +
 +        if (row->record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC) {
 +            qemu_crucible_fault_node_register(
@@ -125635,10 +125885,10 @@ index 0000000000000000000000000000000000000000..0bd2e3a64c7e84c748b1ad6ab42ef934
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..360e43e6375acb30fc96be86864e5a5fdefe1ad4
+index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6247fb48c
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -0,0 +1,2894 @@
+@@ -0,0 +1,2899 @@
 +/*
 + * Crucible architecture interrupt fault targets
 + *
@@ -126215,6 +126465,11 @@ index 0000000000000000000000000000000000000000..360e43e6375acb30fc96be86864e5a5f
 +    CPUClass *cc;
 +    size_t count = 0;
 +
++    /* Realized controller evidence does not fund a selected lazy catalogue or
++     * authorize a later caller to reuse its internal storage. */
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return false;
++    }
 +    if (crucible_interrupt_manifest) {
 +        return true;
 +    }
@@ -146428,10 +146683,10 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..97725a83fb110c3cdd4ee1e5a23964218b651c91
+index 0000000000000000000000000000000000000000..9abf65ebf344d725a04a0eecdf25a9c227c5f93d
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,1392 @@
+@@ -0,0 +1,1398 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -146572,11 +146827,17 @@ index 0000000000000000000000000000000000000000..97725a83fb110c3cdd4ee1e5a2396421
 +
 +static bool crucible_register_manifest_init(void)
 +{
-+    CPUState *cpu = qemu_get_cpu(0);
++    CPUState *cpu;
 +    CPUClass *cc;
 +    g_autoptr(GHashTable) names = NULL;
 +    size_t target_count;
 +
++    /* Internal lazy callers cannot borrow the selected constructor merely by
++     * finding cached rows. Its architecture payload still needs a real payer. */
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return false;
++    }
++    cpu = qemu_get_cpu(0);
 +    if (crucible_register_manifest) {
 +        return true;
 +    }
@@ -153422,10 +153683,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-initial-cpu.inc.h b/plugins/crucible-initial-cpu.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..afb2e59e491c0769b7fa31a3a48ab4203380d11b
+index 0000000000000000000000000000000000000000..89acf7ec811ff1b93b4ff9ae4627c79f758c1435
 --- /dev/null
 +++ b/plugins/crucible-initial-cpu.inc.h
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,623 @@
 +/*
 + * Initial CPU children of the actual machine-construction Original
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -153804,6 +154065,250 @@ index 0000000000000000000000000000000000000000..afb2e59e491c0769b7fa31a3a48ab420
 +    }
 +    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
 +    return status;
++}
++
++static int initial_hardware_catalogue_identity(
++    QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder, bool returning)
++{
++    QemuCrucibleCpuSourceAllocationOwner *owner = NULL;
++    QemuCrucibleCpuAllocationReceipt *receipt = NULL;
++    uint64_t generation = 0;
++    int status;
++
++    if (lease != &startup_source.initial_hardware_catalogue ||
++        !lease->attempted || !lease->held || lease->dependency_returned ||
++        lease->return_in_flight || lease->process != getpid() ||
++        lease->holder != holder || !holder || *holder != lease ||
++        lease->account != &startup_source.cpu_metadata_account) {
++        return -EPERM;
++    }
++    status = qemu_crucible_fault_hardware_catalogue_holder_v1(lease, holder, returning);
++    if (!status) {
++        status = cpu_metadata_account_identity(lease->account);
++    }
++    if (!status && lease->fixed_extent != lease->account->fixed_native_extent) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++            OBJECT(lease->cpu), &owner, &receipt, &generation);
++    }
++    if (!status && (owner != lease->cpu_owner || receipt != lease->cpu_receipt ||
++        generation != lease->cpu_generation || !owner->constructor_children)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++            OBJECT(lease->constructor_cpu), &owner, &receipt, &generation);
++    }
++    if (!status && (owner != lease->constructor_owner ||
++        receipt != lease->constructor_receipt ||
++        generation != lease->constructor_generation || !owner->constructor_children)) {
++        status = -ESTALE;
++    }
++    return status;
++}
++
++int qemu_crucible_source_initial_hardware_catalogue_acquire_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease **holder)
++{
++    QemuCrucibleInitialHardwareCatalogueLease *lease = &startup_source.initial_hardware_catalogue;
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    QemuCrucibleCpuSourceAllocationOwner *owner = NULL;
++    QemuCrucibleCpuAllocationReceipt *receipt = NULL;
++    CPUState *described_cpu = qemu_get_cpu(0);
++    uint64_t generation = 0;
++    int status = qemu_crucible_fault_hardware_catalogue_issuing_v1(cpu, holder);
++
++    if (!status && (!holder || *holder || lease->attempted || !described_cpu)) {
++        status = -EINVAL;
++    }
++    if (!status) {
++        status = qemu_crucible_source_initial_cpu_current_v1(
++            cpu, &cpu->crucible_initial_participant);
++    }
++    if (!status) {
++        status = initial_cpu_identity(cpu, &cpu->crucible_initial_participant, &participant);
++    }
++    if (!status) {
++        status = cpu_metadata_account_identity(&startup_source.cpu_metadata_account);
++    }
++    if (!status) {
++        status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++            OBJECT(described_cpu), &owner, &receipt, &generation);
++    }
++    if (!status && (owner->binding != participant->binding ||
++        !described_cpu->created || !described_cpu->stopped ||
++        qatomic_read(&described_cpu->running) ||
++        owner->constructor_children == UINT_MAX ||
++        participant->owner->constructor_children == UINT_MAX)) {
++        status = -EBUSY;
++    }
++    if (status) {
++        return status;
++    }
++
++    /* The account's authenticated fixed floor reserved this actual Native
++     * declaration before installation. No malloc, new dynamic debit or byte
++     * estimate is involved here. The two QOM dependencies precede output birth.
++     */
++    object_ref(OBJECT(described_cpu));
++    owner->constructor_children++;
++    if (cpu != described_cpu) {
++        object_ref(OBJECT(cpu));
++        participant->owner->constructor_children++;
++    }
++    *lease = (QemuCrucibleInitialHardwareCatalogueLease) {
++        .holder = holder, .account = &startup_source.cpu_metadata_account,
++        .cpu_owner = owner, .constructor_owner = participant->owner,
++        .cpu_receipt = receipt, .constructor_receipt = participant->receipt,
++        .cpu = described_cpu, .constructor_cpu = cpu,
++        .cpu_generation = generation,
++        .constructor_generation = participant->allocation_generation,
++        .operation_serial = participant->operation_serial,
++        .group_serial = participant->group_serial,
++        .fixed_extent = startup_source.cpu_metadata_account.fixed_native_extent,
++        .process = getpid(), .attempted = true, .held = true,
++    };
++    *holder = lease;
++    lease->post_status = initial_cpu_original_current(participant);
++    lease->first_status = lease->post_status;
++    return lease->first_status;
++}
++
++int qemu_crucible_source_initial_hardware_catalogue_current_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = initial_hardware_catalogue_identity(lease, holder, false);
++
++    if (status || !cpu) {
++        return status ? status : -EPERM;
++    }
++    status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, &cpu->crucible_initial_participant, true, false);
++    if (!status) {
++        status = initial_cpu_identity(cpu, &cpu->crucible_initial_participant, &participant);
++    }
++    if (!status && (participant->operation_serial != lease->operation_serial ||
++        participant->group_serial != lease->group_serial ||
++        participant->binding != lease->account->binding)) {
++        status = -ESTALE;
++    }
++    if (status) {
++        return status;
++    }
++    status = qemu_crucible_source_initial_cpu_current_v1(
++        cpu, &cpu->crucible_initial_participant);
++    if (!status) {
++        status = initial_cpu_original_current(participant);
++    }
++    if (!lease->first_status) {
++        lease->first_status = status;
++    }
++    return status ? status : lease->first_status;
++}
++
++static int initial_hardware_catalogue_terminal_dependencies(void)
++{
++    CPUState *cpu;
++    QemuCruciblePluginWorker *workers[] = {
++        &startup_source.fingerprint_worker.native,
++        &startup_source.run_worker.native,
++        &startup_source.teardown_worker.native,
++    };
++
++    CPU_FOREACH(cpu) {
++        if (!cpu->stopped || qatomic_read(&cpu->running) || !cpu_work_list_empty(cpu)) {
++            return -EBUSY;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(workers); index++) {
++        if (workers[index]->attempted && !workers[index]->physical_returned) {
++            return -EBUSY;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(startup_source.fingerprint_material); index++) {
++        QemuCrucibleFingerprintMaterial *material = &startup_source.fingerprint_material[index];
++
++        if (material->held || material->work ||
++            (material->capture_entered && !material->physical_returned)) {
++            return -EBUSY;
++        }
++    }
++    if (startup_source.action_original.held ||
++        startup_source.action_original.module_action ||
++        startup_source.action_original.publisher ||
++        startup_source.action_original.uncertain ||
++        startup_source.main_control_borrow.held ||
++        startup_source.main_control_borrow.transition_active ||
++        startup_source.ready_delivery.held || startup_source.ready_delivery.transition_active ||
++        startup_source.parent_park_loan.held || startup_source.parent_park_loan.transition_busy) {
++        return -EBUSY;
++    }
++    return qemu_crucible_source_initial_cpus_closed_v1();
++}
++
++int qemu_crucible_source_initial_hardware_catalogue_terminal_owner_v1(void)
++{
++    return qemu_plugin_crucible_startup_source_retained() && startup_owner() ? 0 : -EPERM;
++}
++
++int qemu_crucible_source_initial_hardware_catalogue_terminal_ready_v1(
++    QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder)
++{
++    int status = qemu_plugin_crucible_initial_hardware_terminal_current_v1();
++
++    if (!status && !startup_owner()) {
++        status = -EPERM;
++    }
++    if (!status) {
++        status = initial_hardware_catalogue_identity(lease, holder, false);
++    }
++    if (!status) {
++        status = initial_hardware_catalogue_terminal_dependencies();
++    }
++    if (!status) {
++        /* This real retirement permanently closes callback entrants and keeps
++         * refusing while descriptors, frames, registrars or group debt remain.
++         * An empty hint or successful atexit callback is not this receipt. */
++        status = qemu_plugin_crucible_native_registry_retired_current_v1(
++            &startup_source.callbacks.native);
++    }
++    return status;
++}
++
++int qemu_crucible_source_initial_hardware_catalogue_return_v1(
++    QemuCrucibleInitialHardwareCatalogueLease **holder)
++{
++    QemuCrucibleInitialHardwareCatalogueLease *lease = &startup_source.initial_hardware_catalogue;
++    int status = qemu_plugin_crucible_initial_hardware_terminal_current_v1();
++
++    if (!status && !startup_owner()) {
++        status = -EPERM;
++    }
++    if (!status) {
++        status = initial_hardware_catalogue_identity(lease, holder, true);
++    }
++    if (status) {
++        return status;
++    }
++    lease->return_in_flight = true;
++    object_unref(OBJECT(lease->cpu));
++    if (lease->constructor_cpu != lease->cpu) {
++        object_unref(OBJECT(lease->constructor_cpu));
++        lease->constructor_owner->constructor_children--;
++    }
++    lease->cpu_owner->constructor_children--;
++    *holder = NULL;
++    lease->held = false;
++    lease->return_in_flight = false;
++    lease->dependency_returned = true;
++    /* Still-mapped static Native backing stays in the original fixed floor. */
++    return 0;
 +}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
@@ -176341,10 +176846,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77b14e6a7a
+index 0000000000000000000000000000000000000000..991393427bbcdfc5ce62fe6d514884e6098ad90b
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8106 @@
+@@ -0,0 +1,8112 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -176356,6 +176861,7 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +#include "qemu/atomic.h"
 +#include "qemu/bswap.h"
 +#include "qemu/plugin.h"
++#include "qemu/crucible-fault.h"
 +#include "qemu/main-loop.h"
 +#include "hw/core/cpu.h"
 +#include "qom/object.h"
@@ -176368,6 +176874,7 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +#include "system/crucible-observation-realization.h"
 +#include "system/crucible-ram-quiescence.h"
 +#include "system/replay.h"
++#include "system/cpus.h"
 +
 +#ifdef CONFIG_LINUX
 +#include <poll.h>
@@ -176539,6 +177046,7 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +    uint64_t park_requests = qemu_crucible_native_park_request_static_extent();
 +    uint64_t ram_metadata = qemu_crucible_ram_metadata_fixed_storage_bytes();
 +    const uint64_t descriptor_storage[] = {
++        qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(),
 +        qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(),
 +        qemu_thread_bounded_registry_fixed_storage_bytes(),
 +        qemu_plugin_crucible_native_shmem_dispatch_descriptor_storage_bytes_v1(),
@@ -182051,6 +182559,7 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +    size_t payload_alignment;
 +    size_t storage_bytes;
 +    size_t receipt_offset;
++    unsigned int constructor_children;
 +    struct QemuCrucibleInitialCpuParticipant initial;
 +};
 +
@@ -182348,7 +182857,7 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +        return status;
 +    }
 +    owner = *out;
-+    if (!owner->receipt || owner->tlb_children || owner->initial.held ||
++    if (!owner->receipt || owner->tlb_children || owner->constructor_children || owner->initial.held ||
 +        owner->initial.return_in_flight) {
 +        return -EBUSY;
 +    }
@@ -182444,6 +182953,8 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +    }
 +    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
 +}
++
++static int cpu_metadata_account_identity(QemuCrucibleCpuMetadataAccount *account);
 +
 +#include "crucible-initial-cpu.inc.h"
 +#endif
@@ -184453,10 +184964,10 @@ index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8daebf23b4532f06322a4262fe368f082d8f445d
+index 0000000000000000000000000000000000000000..acec2ec2542a81bd8563a220080d0d3575689cce
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2735 @@
+@@ -0,0 +1,2776 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -186314,6 +186825,32 @@ index 0000000000000000000000000000000000000000..8daebf23b4532f06322a4262fe368f08
 +typedef struct QemuCrucibleCpuAllocationReceipt QemuCrucibleCpuAllocationReceipt;
 +typedef struct QemuCrucibleCpuSourceAllocationOwner QemuCrucibleCpuSourceAllocationOwner;
 +
++/* This Source interior retains constructor dependencies under the original
++ * installation account. Returning it never retires static Native backing or
++ * the independent Source/module installation lifetime. */
++typedef struct QemuCrucibleInitialHardwareCatalogueLease {
++    struct QemuCrucibleInitialHardwareCatalogueLease **holder;
++    QemuCrucibleCpuMetadataAccount *account;
++    QemuCrucibleCpuSourceAllocationOwner *cpu_owner;
++    QemuCrucibleCpuSourceAllocationOwner *constructor_owner;
++    QemuCrucibleCpuAllocationReceipt *cpu_receipt;
++    QemuCrucibleCpuAllocationReceipt *constructor_receipt;
++    CPUState *cpu;
++    CPUState *constructor_cpu;
++    uint64_t cpu_generation;
++    uint64_t constructor_generation;
++    uint64_t operation_serial;
++    uint64_t group_serial;
++    uint64_t fixed_extent;
++    pid_t process;
++    int first_status;
++    int post_status;
++    bool attempted;
++    bool held;
++    bool return_in_flight;
++    bool dependency_returned;
++} QemuCrucibleInitialHardwareCatalogueLease;
++
 +typedef struct QemuCrucibleCpuTlbSourceOwner QemuCrucibleCpuTlbSourceOwner;
 +
 +typedef struct QemuCrucibleCpuSourceAllocationRegistry {
@@ -186692,6 +187229,7 @@ index 0000000000000000000000000000000000000000..8daebf23b4532f06322a4262fe368f08
 +#ifdef CONFIG_LINUX
 +    QemuCrucibleCpuSourceAllocationRegistry cpu_allocations;
 +    QemuCrucibleCpuMetadataAccount cpu_metadata_account;
++    QemuCrucibleInitialHardwareCatalogueLease initial_hardware_catalogue;
 +#endif
 +    QemuCrucibleFingerprintCompletionBinding fingerprint_completion;
 +    QemuCrucibleResidentFingerprintPurpose resident_fingerprint;
@@ -187066,6 +187604,20 @@ index 0000000000000000000000000000000000000000..8daebf23b4532f06322a4262fe368f08
 +int qemu_crucible_source_initial_cpu_return_v1(
 +    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder);
 +int qemu_crucible_source_initial_cpus_closed_v1(void);
++
++/* Static backing is already retained by the real fixed installation floor.
++ * These APIs retain and return construction dependencies, never that backing. */
++int qemu_crucible_source_initial_hardware_catalogue_acquire_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease **holder);
++int qemu_crucible_source_initial_hardware_catalogue_terminal_owner_v1(void);
++int qemu_crucible_source_initial_hardware_catalogue_current_v1(
++    CPUState *cpu, QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder);
++int qemu_crucible_source_initial_hardware_catalogue_terminal_ready_v1(
++    QemuCrucibleInitialHardwareCatalogueLease *lease,
++    QemuCrucibleInitialHardwareCatalogueLease **holder);
++int qemu_crucible_source_initial_hardware_catalogue_return_v1(
++    QemuCrucibleInitialHardwareCatalogueLease **holder);
 +#endif
 +
 +#ifdef CONFIG_LINUX
@@ -198083,7 +198635,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d8025a220e4cd10462cb0282ae334fadbe86b79f
+index 0000000000000000000000000000000000000000..6c00e868557c63a6c7ddcea29aa37b2759775e0d
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -198111,7 +198663,7 @@ index 0000000000000000000000000000000000000000..d8025a220e4cd10462cb0282ae334fad
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
++        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -240213,10 +240765,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4feb7bf485f89ac366d54f648cdcdaaf47abe25
+index 0000000000000000000000000000000000000000..9ba797469403a8bcd590b21199303772219737de
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,218 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -240365,12 +240917,82 @@ index 0000000000000000000000000000000000000000..b4feb7bf485f89ac366d54f648cdcdaa
 +rebuilt omission controls prove those component cuts only. Genuine semantic
 +entry requires the installed complete child's first-bound v5 callback quartet;
 +no standalone C journal or decoded action tuple substitutes for that module.
++
++Initial constructor coverage prerequisites
++------------------------------------------
++
++The initial CPU checks in ``crucible-initial-cpu-fixture.inc.h`` are assertions
++for an actual entered callback, not a driver that constructs its authority.
++They have not run in a launched selected-Source lifecycle. The public mandatory
++driver still reports missing integration. It must not be treated as a successful
++installation recipe or a source of activation permission.
++
++A qualifying runner needs the production module and its actual installation
++inputs. The loader must enter that module's real ``qemu_plugin_install`` with
++its retained context and loaded image. The preexec owner must already retain
++the admitted metadata partition, process purpose, exact fixed Native floor and
++live construction Original. That entered construction must issue the actual
++CPU metadata account before CPU allocation, retain the canonical QOM allocation
++receipts and register the module's real callbacks. A synthetic standing file,
++copied account, callback table or scalar activation flag cannot supply these
++owners.
++
++The real stopped CPU threads must process the Core initial callback tasks while
++that original construction remains live. ``machine_creation_done`` joins those
++tasks before construction Post. The callback assertion requires its exact
++Source participant, Core dispatch interval, Native ticket and canonical CPU
++holder; copying any of them must refuse. A FIFO barrier alone does not prove
++that a module callback returned. Failed callback or post outcomes remain
++independent from actual task and participant consumption.
++
++The typed hardware catalogue has a private paired constructor lease, but its
++selected SDK entry and internal lazy factory still refuse before birth. Its
++fixed declaration is included in the installation floor; that charge does not
++fund another factory or any opaque GLib allocation. Qualifying this lease needs
++an actual Native issuing transition, Source acquisition under the entered
++callback, retained CPU/QOM dependencies and terminal consumption after real
++module/callback retirement. The terminal path must retain registered hardware
++handlers, staged VMState users, rules, events, workers and material borrowers.
++Returning a logical construction lease does not unmap or refund its static
++image backing.
++
++Eager capability discovery must account for every factory it actually invokes:
++
++* Register construction obtains real architecture descriptions, allocated names
++  and four allocated masks per row, plus model identity, duplicate-name storage
++  and row/target arrays. The existing 4,096-row and 65,536-bit validation limits
++  are rejection bounds, not an admitted allocation account. Replacing the outer
++  arrays would not fund the architecture producer's allocations.
++* Interrupt construction uses at most thirteen current architecture templates
++  and 4,096 realized CPU targets. Actual device registration supplies controller
++  version strings and realized family/vector/phase evidence before this CPU
++  callback. Templates or feature advertisements cannot replace that evidence
++  or its real producing-device lifetime.
++* Clock manifests refer to actual device-registered sources, retained identifier
++  and implementation strings, rule arrays and runtime state. Manifest
++  finalization sorts and checks those real registrations. The source-count and
++  string bounds do not pay the registry's GLib and device allocations.
++* Accelerator discovery copies one stack row, but its availability still
++  depends on actual device registration and its retained lifecycle callback,
++  opaque device owner, native backing and fault handler. A previously set
++  capability flag alone cannot establish that dependency's current lifetime.
++* Instruction discovery hashes its immutable native manifest using an allocated
++  ``GChecksum`` context. An immutable input string does not make that allocator
++  or its control extent free.
++
++Register and interrupt internal lazy factories now refuse selected Source
++before CPU lookup or cached-row reuse. Their focused literal tests establish
++those refusals and preserve unselected cache/precondition behavior. They do not
++issue a constructor, execute an initial callback or qualify a launched capture.
++Until all invoked factories have real paired payers and that installed path is
++exercised, selected SDK calls remain ``-ENOKEY`` and activation remains
++unavailable.
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..42fa8854feabdfea6b14c8baee09686bc2ad5bbd
+index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
 --- /dev/null
 +++ b/tests/unit/crucible-initial-cpu-fixture.inc.h
-@@ -0,0 +1,66 @@
+@@ -0,0 +1,72 @@
 +/*
 + * Checks inside an actual initial CPU callback; no issuer or provider model.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -240426,12 +241048,18 @@ index 0000000000000000000000000000000000000000..42fa8854feabdfea6b14c8baee09686b
 +static void initial_cpu_fixture_missing_payer(CPUState *cpu)
 +{
 +    struct QemuCrucibleInitialCpuParticipant *participant = cpu->crucible_initial_participant;
++    uint16_t architecture = UINT16_MAX;
 +
 +    g_assert_cmpint(qemu_plugin_crucible_initial_cpu_sdk_begin_v1(), ==, -ENOKEY);
 +    g_assert_cmpint(participant->sdk_first_status, ==, -ENOKEY);
 +    g_assert_cmpint(participant->sdk_post_status, ==, 0);
 +    g_assert_cmpint(participant->first_status, ==, -ENOKEY);
 +    g_assert_null(qemu_plugin_get_registers());
++    g_assert_cmpuint(qemu_plugin_crucible_fault_hardware_error_manifest(
++        NULL, 0, &architecture), ==, 0);
++    g_assert_cmpuint(architecture, ==, UINT16_MAX);
++    g_assert_false(startup_source.initial_hardware_catalogue.attempted);
++    g_assert_false(startup_source.initial_hardware_catalogue.held);
 +    g_assert_true(participant->held);
 +    g_assert_true(participant->module_callback_active);
 +    g_assert_false(participant->module_callback_returned);
@@ -242923,7 +243551,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..937b4535758482fe18b252c74a61550163667a92
+index 0000000000000000000000000000000000000000..c7a5a133ce6c1c587b8e260e050379ea3ff23b1b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -242941,7 +243569,7 @@ index 0000000000000000000000000000000000000000..937b4535758482fe18b252c74a615501
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
++        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
 +}
 +
 +FUNCTIONS = (
@@ -243029,7 +243657,7 @@ index 0000000000000000000000000000000000000000..937b4535758482fe18b252c74a615501
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2af45b4d979d788d5fb3fbe3243200337269acd8
+index 0000000000000000000000000000000000000000..1098d64036b20333aae597141a40b17c567b4880
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -243050,9 +243678,9 @@ index 0000000000000000000000000000000000000000..2af45b4d979d788d5fb3fbe324320033
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '774bbc52b168b9cfc8d1d9043bbb9586c44804eff6381e8cc16eece2105bd892',
++        'a221c6f63f3687f2d370280aed158cfa03ad91fb80712a7c7ee21ccb1ed9a0f0',
 +    'plugins/crucible-startup-source.h':
-+        'ba6d7016297cfa25482a084d3de96054a70e3b01ddfa074c57bb037e0719e13e',
++        'af3840cdcc1b88bd9f6e70d0f6a7ac911b77dee0845a2c426e6e709f6752d94b',
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'system/crucible-hot-fork-coordinator.c':
@@ -243060,7 +243688,7 @@ index 0000000000000000000000000000000000000000..2af45b4d979d788d5fb3fbe324320033
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
++        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
 +}
 +
 +FUNCTIONS = (
@@ -243276,7 +243904,7 @@ index 0000000000000000000000000000000000000000..2af45b4d979d788d5fb3fbe324320033
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e57ed96df8e9086d6b442bc2fa2348b8ccb09056
+index 0000000000000000000000000000000000000000..bdff6609fea5a25a97fb96b43b0050f81af1ef4a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -243300,7 +243928,7 @@ index 0000000000000000000000000000000000000000..e57ed96df8e9086d6b442bc2fa2348b8
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
++        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
 +}
 +
 +FUNCTIONS = (
@@ -243394,7 +244022,7 @@ index 0000000000000000000000000000000000000000..e57ed96df8e9086d6b442bc2fa2348b8
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d83eb4c77e0227085103a3dbe2978d2e496c9fe5
+index 0000000000000000000000000000000000000000..00fdd7f855056a9f2bbf8a6089995a3eab13cc72
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -243435,15 +244063,15 @@ index 0000000000000000000000000000000000000000..d83eb4c77e0227085103a3dbe2978d2e
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
++        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '89ca44ba1a0c4e15e0c0b72e2b2a3f694e512b89db6f4c560e64a454dbd6d674',
++        '7f92a25e3426ed9d78a79cb25d48283ff0af82f7b87277f3f270b30ccf465fbc',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '95072463bbd0b5a45ca04814bda3fac28fb5c3ca61630f222545cb3edbb4fac5',
++        '8296c666f959736cab8abc9466fc46c9bed9d690a3d741b6ded80f87d3e04411',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -243573,10 +244201,10 @@ index 0000000000000000000000000000000000000000..d83eb4c77e0227085103a3dbe2978d2e
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c2869577cf3
+index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b950ba9913
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1131 @@
+@@ -0,0 +1,1151 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -243586,10 +244214,22 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-fault-hardware-error.c':
++        '9f96087f298a38e4be82a40a4f350c061ce5a9e5f5fd76048f9f668aa5304a2e',
++    'plugins/crucible-fault-register.c':
++        'b0da57af6c4e4b7285cac70de0d7c64126a19b40cc6b2266e7897d566a43fa1a',
++    'plugins/crucible-fault-interrupt.c':
++        'afd462788c8362f42cdd5064567fd0650410b6735cfa1decfed2db48a845483c',
++    'include/qemu/crucible-fault.h':
++        'dcabd43e6b7df83913e4dd91a27dc9d57882f7e439a38583a4e011c7d4280963',
++    'tests/unit/test-crucible-hardware-catalogue.py':
++        '120ad28c8e65d2fa616c3d4c7d65806c45ab04d2e10adc80f51ee15d6702e1a6',
++    'tests/unit/test-crucible-initial-manifest-refusal.py':
++        '586e02a98be63bb264f60bc4999c287ea7ddb09ca8bb1fc4348d0cea9dea4f99',
 +    'tests/unit/crucible-initial-cpu-fixture.inc.h':
-+        'eeac90f26cbe12147448fe3954203ae51442801fa5d377065b9827f4cb68e857',
++        'ea606e8912dcc16a05804b01626f9436b6dddc51f3f2b1dbddf96b588aa30f7f',
 +    'plugins/crucible-initial-cpu.inc.h':
-+        '9d1775cb96635aa3ecb05eda6247469750f6c1f09ec0c5927c50f9b2c89c73e8',
++        'aeb42418fd9981d622b6ea512f4a5a72377c6c6674058ea637546c9b8cf23623',
 +    'include/qemu/module.h':
 +        '762238aeeb571946a39a3f4bfd13ce8f4cb03207d072a7935a89bb7d25b49b06',
 +    'include/system/ramblock.h':
@@ -243671,7 +244311,7 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +    'plugins/crucible-fault-lifecycle.c':
 +        '8119526bf428c17645bbf9137e62aab3abe3b05aeed527f72a24a526e92d2af8',
 +    'plugins/core.c':
-+        '1a60ab8ae2d192e51844e72534cdbba662c72c6d25b9a22798166c683541f4be',
++        'b11e2fffebdc22c11a0ead856816cf20dbe8fa2948f4fe8898cff45222ad091a',
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
@@ -243681,9 +244321,9 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '774bbc52b168b9cfc8d1d9043bbb9586c44804eff6381e8cc16eece2105bd892',
++        'a221c6f63f3687f2d370280aed158cfa03ad91fb80712a7c7ee21ccb1ed9a0f0',
 +    'plugins/crucible-startup-source.h':
-+        'ba6d7016297cfa25482a084d3de96054a70e3b01ddfa074c57bb037e0719e13e',
++        'af3840cdcc1b88bd9f6e70d0f6a7ac911b77dee0845a2c426e6e709f6752d94b',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -243719,7 +244359,7 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +    'include/hw/core/cpu.h':
 +        '8f9ad9044f5723b24cf10c49847524242f552225cbf47f79ff9f59ef85046aeb',
 +    'include/qemu/plugin.h':
-+        '52946896f359e052a3dca7d4e6efc8783aefe4b12038d1b5f14874359f364705',
++        '9ac1df437c3d56b857016aa465782364de9bcc81dd28e242603a827779779546',
 +    'plugins/plugin.h':
 +        'dec437b7d16e795c5e1e45ad37a8b16d44c933a6614006449cdf03b869257036',
 +    'system/cpus.c':
@@ -244343,7 +244983,7 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +              '#include "system/memory.h"',
 +              '#include "system/ramblock.h"',
 +              '#include "system/ramlist.h"',
-+              '#include "qemu/rcu.h"',
++              '#include "qemu/rcu.h"', '#include "qemu/crucible-fault.h"',
 +              ram[:ram.index("*/") + 2],
 +              body_cut(ram, "typedef struct CrucibleRamRegion {",
 +                       "static int arena_placement_authority("),
@@ -244425,9 +245065,15 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
++        ("plugins/crucible-fault-hardware-error.c",
++         "typedef struct CrucibleHardwareBinding {",
++         "typedef struct CrucibleHardwarePending {"),
++        ("plugins/crucible-fault-hardware-error.c",
++         "#define CRUCIBLE_HARDWARE_MANIFEST_CAPACITY",
++         "static GPtrArray *crucible_hardware_pending;"),
 +        ("plugins/core.c",
 +         "static struct {\n    CPUState *cpu;\n    struct qemu_plugin_cb *callback;\n    QemuCrucibleNativeInvocationTicket callback_ticket;",
-+         "size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1("),
++         "int qemu_plugin_crucible_initial_hardware_terminal_current_v1("),
 +        ("plugins/crucible-paged-ram.c",
 +         "typedef struct CrucibleRamRegion {",
 +         "static int arena_placement_authority("),
@@ -244499,6 +245145,8 @@ index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c28
 +        output.extend((notice, declaration[0], body))
 +
 +    getters = {
++        "plugins/crucible-fault-hardware-error.c": (
++            "qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1",),
 +        "plugins/core.c": ("qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1",),
 +        "system/crucible-native-park-request.c": ("qemu_crucible_native_park_request_static_extent",),
 +        "plugins/crucible-checkpoint-receiving.c": ("qemu_crucible_checkpoint_owner_bytes",),
@@ -244807,7 +245455,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..879c4d3a4e31231a2ea1ad1f80b47c37ccdf822c 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d1deb54271bfecbff167fa589914ddb49be0f65f 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -244882,7 +245530,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..879c4d3a4e31231a2ea1ad1f80b47c37
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1175 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1181 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -245694,6 +246342,12 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..879c4d3a4e31231a2ea1ad1f80b47c37
 +                        'crucible-publisher-subscription-fixture.inc.h',
 +                        'crucible-action-original-fixture.inc.h',
 +                        'test-crucible-action-original.py',
++                        '../../plugins/crucible-fault-hardware-error.c',
++                        '../../plugins/crucible-fault-register.c',
++                        '../../plugins/crucible-fault-interrupt.c',
++                        '../../include/qemu/crucible-fault.h',
++                        'test-crucible-hardware-catalogue.py',
++                        'test-crucible-initial-manifest-refusal.py',
 +                        '../../plugins/crucible-publisher-subscription.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops-sim-shmem.c',
 +                        '../../net/net.c',
@@ -260228,10 +260882,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..61f8a37d9a1239f99bb9a4f4aa7cb587898a718f
+index 0000000000000000000000000000000000000000..132eb10a2a9c08fee8c6f9e5fcf8a02c5c751f51
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2338 @@
+@@ -0,0 +1,2345 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -262565,6 +263219,13 @@ index 0000000000000000000000000000000000000000..61f8a37d9a1239f99bb9a4f4aa7cb587
 +    subprocess.run([sys.executable, str(ROOT / "tests/unit/test-crucible-action-original.py"),
 +                    "--source-root", str(ROOT), "--output-dir",
 +                    str(arguments.output_dir / "action-evidence")], check=True)
++    for script, directory in (
++        ("test-crucible-hardware-catalogue.py", "hardware-catalogue"),
++        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
++    ):
++        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
++                        "--source-root", str(ROOT), "--output-dir",
++                        str(arguments.output_dir / directory)], check=True)
 +
 +
 +
@@ -266377,6 +267038,310 @@ index 0000000000000000000000000000000000000000..8c972db14596c1fc9b9a80e2542bb058
 +                    test_fdc_rejects_unrestorable_state);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-hardware-catalogue.py b/tests/unit/test-crucible-hardware-catalogue.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..44f2c2bec3b1f7e3160359e7f5ba1d6fb6b02807
+--- /dev/null
++++ b/tests/unit/test-crucible-hardware-catalogue.py
+@@ -0,0 +1,298 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise the literal hardware catalogue builder and typed storage.
++
++CPU capabilities are test inputs to the catalogue builder. They issue no Source
++construction lease, callback authority, runtime operation or physical receipt.
++The selected Source path must still refuse before catalogue mutation.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++INPUTS = r"""
++static CPUState test_cpu;
++static CPUClass test_class;
++static CPUFaultHardwareErrorCapability test_capability;
++static bool test_selected, test_present = true, test_described = true, test_ghes;
++static unsigned test_describe_calls;
++
++static CPUState *test_lookup(int index)
++{
++    assert(index == 0);
++    return test_present ? &test_cpu : NULL;
++}
++
++static bool test_describe(CPUState *cpu, CPUFaultHardwareErrorCapability *out)
++{
++    assert(cpu == &test_cpu);
++    test_describe_calls++;
++    *out = test_capability;
++    return test_described;
++}
++
++#undef CPU_GET_CLASS
++#define CPU_GET_CLASS(cpu) (&test_class)
++#define qemu_get_cpu test_lookup
++#define cpu_get_fault_hardware_error_capability test_describe
++#define qemu_plugin_crucible_startup_source_retained() test_selected
++#define acpi_ghes_present() test_ghes
++"""
++
++
++CHECKS = r"""
++static void reset_catalogue(uint16_t architecture)
++{
++    memset(&crucible_hardware_catalogue, 0, sizeof(crucible_hardware_catalogue));
++    memset(&test_capability, 0, sizeof(test_capability));
++    memset(crucible_hardware_manifest_sha256, 0, 32);
++    crucible_hardware_bindings_sealed = false;
++    test_class.crucible_register_scope = architecture;
++    test_selected = test_ghes = false;
++    test_present = test_described = true;
++    test_describe_calls = 0;
++}
++
++static void check_branch(uint16_t architecture, bool feature, bool extra,
++                         size_t expected)
++{
++    struct qemu_plugin_crucible_fault_hardware_error_capability out[6] = { 0 };
++    uint16_t observed = 0;
++    uint8_t digest[32] = { 7 };
++
++    reset_catalogue(architecture);
++    test_capability.machine_check = test_capability.ras = feature;
++    test_capability.bank_count = extra ? 10 : 9;
++    test_ghes = extra;
++
++    assert(crucible_fault_hardware_error_manifest_body(out, 6, &observed) == expected);
++    assert(observed == architecture);
++    assert(crucible_hardware_catalogue.initialized);
++    assert(!crucible_hardware_catalogue.overflow);
++    assert(test_describe_calls == 1);
++    assert(crucible_fault_hardware_error_manifest_body(NULL, 0, &observed) == expected);
++    assert(test_describe_calls == 1);
++    assert(crucible_fault_hardware_error_bindings_seal_body(digest) ==
++           (expected ? -ENOENT : 0));
++    for (size_t index = 0; index < expected; index++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row = &out[index];
++        uint8_t id[32] = { index + 1 };
++
++        assert(row->id && row->bank && row->channel && row->rank && row->firmware && row->state);
++        assert(!index || strcmp(out[index - 1].id, row->id) < 0);
++        assert(!crucible_hardware_catalogue.bindings[index].present);
++        assert(crucible_fault_hardware_error_bind_body(index, id, id, id, id, id, id) == 0);
++        assert(crucible_fault_hardware_error_bind_body(index, id, id, id, id, id, id) == -EEXIST);
++        assert(memcmp(crucible_hardware_catalogue.bindings[index].id, id, 32) == 0);
++    }
++    assert(crucible_fault_hardware_error_bind_body(expected, digest, digest, digest,
++                                                 digest, digest, digest) == -EINVAL);
++    if (expected) {
++        assert(crucible_fault_hardware_error_bindings_seal_body(digest) == 0);
++    }
++    assert(crucible_fault_hardware_error_bindings_seal_body(digest) == -EINVAL);
++    assert(memcmp(crucible_hardware_manifest_sha256, digest, 32) == 0);
++}
++
++static void check_terminal_debts(void)
++{
++    QemuCruciblePluginWorker *workers[] = {
++        &startup_source.fingerprint_worker.native,
++        &startup_source.run_worker.native,
++        &startup_source.teardown_worker.native,
++    };
++
++    startup_source.owner_process = getpid();
++    assert(initial_hardware_catalogue_terminal_dependencies() == 0);
++    for (size_t index = 0; index < G_N_ELEMENTS(workers); index++) {
++        workers[index]->attempted = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++        workers[index]->physical_returned = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == 0);
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(startup_source.fingerprint_material); index++) {
++        QemuCrucibleFingerprintMaterial *material = &startup_source.fingerprint_material[index];
++
++        material->held = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++        material->held = false;
++        material->capture_entered = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++        material->physical_returned = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == 0);
++    }
++    bool *debts[] = {
++        &startup_source.action_original.held,
++        &startup_source.action_original.uncertain,
++        &startup_source.main_control_borrow.held,
++        &startup_source.main_control_borrow.transition_active,
++        &startup_source.ready_delivery.held,
++        &startup_source.ready_delivery.transition_active,
++        &startup_source.parent_park_loan.held,
++        &startup_source.parent_park_loan.transition_busy,
++    };
++
++    for (size_t index = 0; index < G_N_ELEMENTS(debts); index++) {
++        *debts[index] = true;
++        assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++        *debts[index] = false;
++    }
++    QSIMPLEQ_INIT(&test_cpu.work_list);
++    QTAILQ_INSERT_TAIL(&cpus_queue, &test_cpu, node);
++    test_cpu.stopped = false;
++    assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++    test_cpu.stopped = true;
++    test_cpu.running = true;
++    assert(initial_hardware_catalogue_terminal_dependencies() == -EBUSY);
++    test_cpu.running = false;
++    assert(initial_hardware_catalogue_terminal_dependencies() == 0);
++    QTAILQ_REMOVE(&cpus_queue, &test_cpu, node);
++    /* These are literal dependency predicates over test records. A zero here
++     * never calls the constructor, issues a lease or consumes a Source owner. */
++}
++
++int main(void)
++{
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64, true, false, 3);
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64, true, true, 5);
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64, false, true, 0);
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64, true, false, 4);
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64, true, true, 6);
++    check_branch(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64, false, true, 0);
++    check_branch(0, true, true, 0);
++
++    reset_catalogue(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64);
++    test_present = false;
++    assert(!crucible_hardware_manifest_init());
++    assert(!crucible_hardware_catalogue.initialized && !test_describe_calls);
++    test_present = true;
++    test_described = false;
++    assert(crucible_hardware_manifest_init());
++    assert(crucible_hardware_catalogue.count == 0);
++
++    reset_catalogue(QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64);
++    test_selected = true;
++    CrucibleHardwareCatalogue before = crucible_hardware_catalogue;
++    assert(!crucible_hardware_manifest_init());
++    assert(!test_describe_calls);
++    assert(memcmp(&before, &crucible_hardware_catalogue, sizeof(before)) == 0);
++    test_selected = false;
++    test_capability.ras = true;
++    test_ghes = true;
++    assert(crucible_hardware_manifest_init());
++    assert(crucible_hardware_catalogue.count == 6);
++    before = crucible_hardware_catalogue;
++    test_selected = true;
++    assert(!crucible_hardware_manifest_init());
++    assert(memcmp(&before, &crucible_hardware_catalogue, sizeof(before)) == 0);
++
++    struct qemu_plugin_crucible_fault_hardware_error_capability extra = { .id = "overflow" };
++    crucible_hardware_catalogue_append(&extra);
++    assert(crucible_hardware_catalogue.count == 6);
++    assert(crucible_hardware_catalogue.overflow);
++    assert(memcmp(before.rows, crucible_hardware_catalogue.rows, sizeof(before.rows)) == 0);
++    test_selected = false;
++    assert(!crucible_hardware_manifest_init());
++    assert(qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1() ==
++           sizeof(crucible_hardware_catalogue));
++    check_terminal_debts();
++    puts("PASS literal typed catalogue branches, bindings, overflow and selected refusal; no lifecycle authority");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    body = (source / "plugins/crucible-fault-hardware-error.c").read_text()
++    literal = body[body.index("#define CRUCIBLE_HWERR_RECORD_X86_MCE"):
++                   body.index("typedef struct CrucibleHardwarePending")]
++    literal += body[body.index("#define CRUCIBLE_HARDWARE_MANIFEST_CAPACITY"):
++                    body.index("static GPtrArray *crucible_hardware_pending;")]
++    literal += "\nstatic uint16_t crucible_hardware_architecture;\n"
++    literal += "static bool crucible_hardware_bindings_sealed;\n"
++    literal += "static uint8_t crucible_hardware_manifest_sha256[32];\n"
++    literal += body[body.index("static const uint64_t x86_status_allowed"):
++                    body.index("static void crucible_hardware_add_row")]
++    for signature in (
++        "uint64_t qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(",
++        "static void crucible_hardware_catalogue_append(",
++        "static void crucible_hardware_add_row(",
++        "static gint crucible_hardware_row_compare(",
++        "static bool crucible_hardware_manifest_init(",
++        "static size_t crucible_fault_hardware_error_manifest_body(",
++        "static int crucible_fault_hardware_error_bind_body(",
++        "static int crucible_fault_hardware_error_bindings_seal_body(",
++    ):
++        literal += "\n\n" + extract["function"](body, signature)
++
++    startup = (source / "plugins/crucible-startup-source.c").read_text()
++    initial = (source / "plugins/crucible-initial-cpu.inc.h").read_text()
++    for signature in (
++        "struct QemuCrucibleInitialCpuParticipant {",
++        "struct QemuCrucibleCpuSourceAllocationOwner {",
++    ):
++        literal += "\n\n" + extract["function"](startup, signature).rstrip() + ";\n"
++    literal += "\nCPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);\n"
++    literal += "static QemuCrucibleStartupSourceControl startup_source = {\n"
++    literal += "    .cpu_allocations.lock = PTHREAD_MUTEX_INITIALIZER,\n};\n"
++    literal += extract["function"]((source / "system/cpus.c").read_text(),
++                                   "bool cpu_work_list_empty(")
++    literal += "\n\n" + extract["function"](initial, "int qemu_crucible_source_initial_cpus_closed_v1(")
++    literal += "\n\n" + extract["function"](initial, "static int initial_hardware_catalogue_terminal_dependencies(")
++
++    controls = {
++        "positive": literal,
++        "permit-selected-lazy-birth": literal.replace(
++            "if (qemu_plugin_crucible_startup_source_retained())", "if (false)"),
++        "permit-overflow-publication": literal.replace(
++            "return !crucible_hardware_catalogue.overflow", "return true"),
++        "omit-worker-physical-return": literal.replace(
++            "workers[index]->attempted && !workers[index]->physical_returned", "false"),
++        "omit-material-physical-return": literal.replace(
++            "material->capture_entered && !material->physical_returned", "false"),
++    }
++    proof = {}
++    for name, definitions in controls.items():
++        if name != "positive" and definitions == literal:
++            raise ValueError(f"negative control did not change literal provider: {name}")
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n#include <assert.h>\n'
++                             '#include "hw/core/cpu.h"\n#include "qemu/crucible-fault.h"\n'
++                             '#include "system/cpus.h"\n#include "plugins/crucible-startup-source.h"\n' +
++                             INPUTS + definitions + CHECKS)
++        binary = output / name
++        command = [os.environ.get("CC", "cc"),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name} outcome: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS selected-birth, overflow and physical-debt omission controls reached their assertions")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-hot-fork-child.c b/tests/unit/test-crucible-hot-fork-child.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..57b2f5de179724dbb072619030cc86eca030ac8d
@@ -274654,6 +275619,158 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +                    test_rr_timer_notify_queues_work_only_while_parked);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-initial-manifest-refusal.py b/tests/unit/test-crucible-initial-manifest-refusal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f9cfa8a0bc0bf3202a5a58b998d61e473dd916ba
+--- /dev/null
++++ b/tests/unit/test-crucible-initial-manifest-refusal.py
+@@ -0,0 +1,146 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check literal internal register/interrupt factories before selected birth.
++
++These are refusal controls, not constructor issuers or launched callback tests.
++CPU lookup is an observable input; no Source owner or physical receipt is modeled.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++INPUTS = r"""
++static bool selected, cpu_present;
++static unsigned lookups;
++static CPUState input_cpu;
++static CPUClass input_class;
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++
++static CPUState *input_lookup(int index)
++{
++    assert(index == 0);
++    lookups++;
++    return cpu_present ? &input_cpu : NULL;
++}
++
++#undef CPU_GET_CLASS
++#define CPU_GET_CLASS(cpu) (&input_class)
++#define qemu_get_cpu input_lookup
++#define object_get_typename(object) "fixture-model"
++#define qemu_plugin_crucible_startup_source_retained() selected
++"""
++
++CHECKS = r"""
++static void check_factory(bool (*factory)(void), GArray **cache,
++                          unsigned cached_lookups)
++{
++    GArray retained = { 0 };
++
++    selected = true;
++    cpu_present = true;
++    lookups = 0;
++    assert(!*cache);
++    assert(!factory());
++    assert(!*cache);
++    assert(lookups == 0);
++
++    /* An address containing rows is not an authenticated later borrower. */
++    *cache = &retained;
++    assert(!factory());
++    assert(*cache == &retained);
++    assert(lookups == 0);
++
++    selected = false;
++    assert(factory());
++    assert(*cache == &retained);
++    assert(lookups == cached_lookups);
++
++    *cache = NULL;
++    lookups = 0;
++    cpu_present = false;
++    assert(!factory());
++    assert(!*cache);
++    assert(lookups == 1);
++}
++
++int main(void)
++{
++    check_factory(crucible_register_manifest_init, &crucible_register_manifest, 1);
++    check_factory(crucible_interrupt_manifest_init, &crucible_interrupt_manifest, 0);
++    puts("PASS literal register/interrupt selected prebirth and cache refusal; unselected preconditions preserved");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    register = (source / "plugins/crucible-fault-register.c").read_text()
++    interrupt = (source / "plugins/crucible-fault-interrupt.c").read_text()
++    register_literal = register[register.index("#define CRUCIBLE_REGISTER_CAP_IMPULSE"):
++                                register.index("static bool crucible_register_mask_test")]
++    for signature in (
++        "static bool crucible_register_mask_test(",
++        "static bool crucible_register_capability_valid(",
++        "static void crucible_register_manifest_clear(",
++        "static bool crucible_register_manifest_init(",
++    ):
++        register_literal += "\n\n" + extract["function"](register, signature)
++
++    interrupt_literal = interrupt[interrupt.index("#define CRUCIBLE_INTERRUPT_SCOPE_X86_64"):
++                                  interrupt.index("bool qemu_crucible_fault_interrupt_register_family(")]
++    for signature in (
++        "static int crucible_interrupt_target_compare(",
++        "static bool crucible_interrupt_manifest_init(",
++    ):
++        interrupt_literal += "\n\n" + extract["function"](interrupt, signature)
++
++    guard = "if (qemu_plugin_crucible_startup_source_retained())"
++    if register_literal.count(guard) != 1 or interrupt_literal.count(guard) != 1:
++        raise ValueError("reviewed internal selected guards changed")
++    variants = {
++        "positive": register_literal + interrupt_literal,
++        "omit-register-refusal": register_literal.replace(guard, "if (false)") + interrupt_literal,
++        "omit-interrupt-refusal": register_literal + interrupt_literal.replace(guard, "if (false)"),
++    }
++    proof = {}
++    for name, literal in variants.items():
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n#include <assert.h>\n'
++                             '#include "hw/core/cpu.h"\n#include "qemu/crucible-fault.h"\n'
++                             '#include "plugins/qemu-plugin.h"\n' + INPUTS + literal + CHECKS)
++        binary = output / name
++        command = [*shlex.split(os.environ.get("CC", "cc")),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name} outcome: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS both internal-refusal omission controls reached assertions")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-kernel-swap-observation.c b/tests/unit/test-crucible-kernel-swap-observation.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..4ddc6b3a43e0d26d4833b3140f610d96a06e2dcf
