@@ -429,7 +429,8 @@ fn collect_tree(
 ///
 /// - `info/refs`: a `<oid>\t<refname>` line per ref, plus a peeled
 ///   `<commit-oid>\t<refname>^{}` line for each annotated tag.
-/// - `objects/info/packs`: a `P <pack-name>.pack` line per pack.
+/// - `objects/info/packs`: a `P <pack-name>.pack` line per pack, followed by a
+///   terminating blank line even when the repository has no packs.
 ///
 /// # Errors
 ///
@@ -494,6 +495,9 @@ pub fn refresh_server_info(repo: &Path) -> Result<()> {
         packs_body.push_str(&pack);
         packs_body.push('\n');
     }
+    // Git terminates the advertisement even when every object is loose.
+    packs_body.push('\n');
+
     let objects_info = git_dir.join("objects").join("info");
     fs::create_dir_all(&objects_info)
         .with_context(|| format!("creating {}", objects_info.display()))?;
@@ -817,6 +821,46 @@ mod tests {
                     .iter()
                     .any(|(entry_oid, _)| entry_oid.to_hex() == oid),
                 "{oid} should be present in its index bundle",
+            );
+        }
+    }
+
+    #[test]
+    fn pack_advertisement_matches_git_with_and_without_packs() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo.git");
+        init_bare_sha256(&repo, "stable").unwrap();
+
+        let repository = open_git_dir(&repo).unwrap();
+        let tree_id = repository.treebuilder(None).unwrap().write().unwrap();
+        let tree = repository.find_tree(tree_id).unwrap();
+        let author = git2::Signature::now("Registry Test", "registry@example.test").unwrap();
+        repository
+            .commit(Some("HEAD"), &author, &author, "initial", &tree, &[])
+            .unwrap();
+
+        let advertisement = repo.join("objects/info/packs");
+        for packed in [false, true] {
+            if packed {
+                run_git_dir(&repo, &["repack", "-ad"]).unwrap();
+            }
+
+            refresh_server_info(&repo).unwrap();
+            let actual = fs::read(&advertisement).unwrap();
+            run_git_dir(&repo, &["update-server-info", "--force"]).unwrap();
+            let expected = fs::read(&advertisement).unwrap();
+
+            assert_eq!(
+                actual, expected,
+                "pack advertisement differs with packed={packed}"
+            );
+            assert!(!actual.is_empty());
+            assert_eq!(
+                actual
+                    .split(|byte| *byte == b'\n')
+                    .filter(|line| line.starts_with(b"P "))
+                    .count(),
+                usize::from(packed),
             );
         }
     }
