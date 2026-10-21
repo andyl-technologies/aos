@@ -41,7 +41,7 @@ use terrane_sdk::{
         cache::CacheState,
         publication::{FsPublicationState, PublicationClaim, PublicationRecipe, VerityBinding},
     },
-    pack::{EntryKind, PackClass, PackId, PackWriter},
+    pack::{EntryKind, PackClass, PackId, PackReader, PackWriter, RawBodyDecoder},
     store::TokioLocalFs,
 };
 
@@ -843,16 +843,47 @@ fn metadata_pack_hash(inputs: &Inputs) -> io::Result<String> {
             }
         }
     }
-    let [path] = paths.as_slice() else {
+    let expected_count = if inputs.domain == metadata::DOMAIN {
+        2
+    } else {
+        1
+    };
+    if paths.len() != expected_count {
         return Err(invalid(
-            "manifest fixture requires exactly one actual metadata pack",
+            "manifest fixture has an unexpected actual metadata pack count",
+        ));
+    }
+    let fixture = Fixture::new()?;
+    let manifest = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &fixture.manifest)
+        .map_err(io::Error::other)?;
+    let digest = manifest.terrane_v1_digest().map_err(io::Error::other)?;
+    let mut matching = Vec::new();
+    for path in paths {
+        let bytes = fs::read(path)?;
+        let reader = PackReader::open(&bytes).map_err(io::Error::other)?;
+        if reader.entries().iter().any(|entry| entry.hash() == &digest) {
+            if reader
+                .read(EntryKind::Manifest, &digest, &RawBodyDecoder)
+                .map_err(io::Error::other)?
+                != fixture.manifest
+            {
+                return Err(invalid(
+                    "retained metadata differs from the fixture manifest",
+                ));
+            }
+            let identity = TERRANE_V1
+                .calculate(IdentityKind::Pack, &bytes)
+                .map_err(io::Error::other)?;
+            matching.push(hex(identity.digest()));
+        }
+    }
+    let [hash] = matching.as_slice() else {
+        return Err(invalid(
+            "manifest fixture requires one exact containing metadata pack",
         ));
     };
-    let bytes = fs::read(path)?;
-    let identity = TERRANE_V1
-        .calculate(IdentityKind::Pack, &bytes)
-        .map_err(io::Error::other)?;
-    Ok(hex(identity.digest()))
+    Ok(hash.clone())
 }
 
 fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
