@@ -8785,10 +8785,21 @@ restores the relocated upstream executor module and copied test-template paths,
 then passes the complete Rust/Nix formatter pair. Its required application
 compilation passes with all 181 test artifacts from 59 application packages
 independently matched to Cargo metadata; this is compilation, not execution.
-Its full implemented-trunk aggregate remains running. The migrated module
-source `f3390be8fb` passes all 88 declarative assertions and the formatter pair;
-its own full aggregate also remains running. Neither aggregate is credited
-before completion.
+Its full implemented-trunk aggregate finishes with 1,929 passes, two failures
+and two process timeouts across all 1,933 cases, with no skips. The migrated
+module source `f3390be8fb` passes all 88 declarative assertions and the formatter
+pair; its aggregate finishes with 1,929 passes, one failure and three process
+timeouts across the same 1,933 cases, with no skips. Neither aggregate passes.
+All four failed `d8a32a97df` cases subsequently pass individually through its
+retained original release test binary in a protected AOS-only Nix sandbox:
+existing-binding backfill in 12.047 seconds, late-authority index recovery in
+67.284 seconds, independent disclosure authority in 64.812 seconds, and genuine
+candidate-slot publication in 3.059 seconds. All original 120-second outer
+process limits, case bodies and operating deadlines remain unchanged. The
+executable is independently bound to its Cargo test fingerprint, all 4,887
+tracked crate inputs in both the retained build and immutable source, and its
+1,154-case inventory. These are focused libtest diagnostics; the failed
+aggregates remain failed and their causes are not established.
 
 The encoded consumer component at `2c86ea4e3a` passes the complete native VM
 witness: 55 selected restricted-identity unit cases and 48 actual fixture
@@ -8927,12 +8938,30 @@ Combined source `65d5916d94` supplies the genuine surface caller alongside
 those maintenance fixes and the reviewed quota fixture. Full source review
 covers the 47-file surface diff against the maintenance parent. All six strict
 Clippy profiles, both private documentation builds, formatting, crate graph,
-unsafe audit, core no-std and all four authentication gates pass. Surface
-interface and read-only commit-path gates also pass. Remaining surface, native
-configuration, feature-matrix, application and aggregate qualification continues;
-no task checkbox or milestone freeze advances. Before merging, preserve the
-trunk's renamed format-coverage labels and correct the CLI's stale crate-name
-comment after source-guarded execution finishes.
+unsafe audit, core no-std and all four authentication gates pass. All four
+surface checks subsequently pass 25 exact nonignored executions, including
+the metadata-only observer and genuine ext4 presentation. The singleton-lease
+gate passes 21 exact cases, including the separate non-Send binding. Independent
+review verifies their 4,907 immutable inputs and actual Cargo artifacts. The
+configured SDK image passes all eleven unit cases and the ext4 example and
+actual CLI success/late-token-refusal controls. Required application compilation
+passes with the exact 181 artifacts from 59 packages. No task checkbox advances.
+
+Source `57d01528ea` preserves current trunk history and the canonical
+`terrane-format` coverage labels, and corrects the CLI crate-name comment.
+Combined source `d4af629791` then merges the preserved module branch into that
+reviewed surface configuration. All six module files are independently reviewed;
+all 88 declarative assertions, formatting, crate graph, unsafe audit, six strict
+Clippy profiles and both private documentation builds pass. Native quota
+confinement and the configured SDK image, eleven actual unit cases, and ext4
+example/CLI success and late-denial controls pass. Independent review verifies
+all 23 image payload files, 4,907 source inputs and three Cargo artifacts.
+Required application compilation passes with exactly 181 artifacts from 59
+packages. Unstarted duplicate long checks on predecessor sources are explicitly
+deferred without execution or pass credit. The final combined
+source must run the full implemented aggregate, including the feature matrix
+and long GC gate. That aggregate is serialized after older native suites and
+the recovery component checks finish; workloads and operating clocks are unchanged.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
@@ -9006,10 +9035,365 @@ inode links while independently retained descriptors preserve the original
 partial bytes. The parallel and original check clients consume the same single
 native derivation result. This is a chunk scratch recovery component; complete
 recovery, readiness and host-task acceptance remain open.
+
+Detached-index follow-up `cfeb020125` extends that original cleanup to the
+existing generated names beneath `objects/pack/<shard>/`. Every candidate is
+preflighted before the first unlink, including aliases across chunk and index
+directories. Its guest witness preserves the original controls and adds malformed
+index names, symlinks, FIFO refusal, a preexisting index alias during refusal,
+and seven generated links across four retained original inodes. The helper is
+extracted separately with normalized AST equivalence for the original witness;
+its installed bytes join the source identity and checksum inventory. Formatting,
+crate graph, unsafe audit, all three strict Linux profiles, private docs, the
+Cargo example build and native quota confinement pass. The narrow Cargo shell
+lacks nextest; its failed invocation executes no tests, and a retry using the
+existing AOS-built executable passes the local directory-incarnation case.
+The native ext4 VM passes in 427.294 seconds, including that raw-filename case
+and all 67 selected native unit cases. Independent review verifies 5,098 source
+inputs, four original Cargo executables, four installed helpers, all 48 fixture
+selectors, and both the original chunk and new detached-index cleanup controls.
+Required application compilation passes with all 183 artifacts from 59 packages
+independently matched to Cargo metadata. The complete ext4 filesystem suite
+passes all 126 nonignored cases; the six original privileged ignores remain
+unchanged. All component qualification clients are terminal and independently
+reviewed. Complete recovery and readiness remain open. No frozen format, store
+trait, dependency, kernel confinement or stopped wipe policy changes.
+
+Startup-index source `26c33579ad` adds bounded repair before sealed adoption.
+It uses the original synchronized bootstrap and publisher Drain context,
+durably pins and funds the verified pack, invokes the existing no-replace
+writer, and removes only its own repair funding after native verification,
+fresh project accounting and a closing synchronized bootstrap. A fresh exhaustive
+inventory and shared-namespace observation supply subsequent adoption evidence.
+An existing mismatching index is never overwritten. Four actual ext4 cases cover
+a missing-index rebuild and refusals for disabled repair, an exceeded index-size
+limit and an existing mismatch; all original 48 selectors and 67 native unit
+cases remain, with eight new selectors. Cargo all-target checks and the formatter
+pair pass. Required application compilation at that source passes with exactly
+183 artifacts from 59 packages, independently matched to Cargo metadata.
+The first native VM stops before tests at a stale exact helper inventory;
+`048b63f71c` includes the fifth source-bound helper without weakening checks.
+Its VM reaches the new missing-index case and fails because publisher inventory
+needs that index to describe a sealed manifest, while repair still waits for
+complete inventory. Neither failed run is credited as native qualification.
+
+Source `4dc294b0a4` breaks that dependency with bounded readonly shared-pack
+verification before publisher inventory. Every write still requires actual
+publisher-reported pending absence, the original Drain context and synchronized
+source funding. The complete candidate classifier and manifest closure are
+restored byte for byte to their original strict implementations; a fresh complete
+inventory remains mandatory before adoption or Resume. The publisher ownership
+verifier additionally binds both added recovery helpers. Local all-target strict
+Clippy and formatting pass, as do all three isolated Linux Clippy profiles,
+private documentation, native quota confinement and the rebuilt cache image.
+The actual ext4 component passes in 436.123 seconds. Independent review verifies
+all 5,102 source inputs, four original Cargo executables, five installed helpers,
+67 selected native unit cases and all 56 actual selectors. The missing-index
+case rebuilds exact bytes from the original verified pack, restores only its
+own repair funding, completes fresh inventory and reads after actual Resume;
+disabled, bounded and mismatching-index controls preserve original bytes and
+funded faulted custody without adoption. The complete ext4 filesystem suite
+also passes all 126 nonignored cases, with the original six privileged ignores
+unchanged and all 5,093 crate inputs verified. Both owning publisher gates,
+`publisher-sole-writer` and `host-publish-sequence`, pass at this source. The
+former independently binds 5,097 transport and 5,102 cache inputs, five actual
+transport executables and 19 portable cases to the same immutable source;
+native backing custody passes separately. Required application test-target
+compilation also passes: exactly 183 artifacts from 59 packages, independently
+matched to Cargo metadata, in 1,212.369 seconds. These are component results;
+the complete task and current-trunk aggregate remain unaccepted.
+
+Pending-inode recovery continuation `678a360ac0` connects the existing actual
+publisher retirement deadline checks to a funded physical recovery turn.
+Supported removals require an otherwise empty shared namespace, no cold pins,
+leases or residences, the exact synchronized bootstrap and original Drain.
+Every old allocation hold survives. The publisher still authenticates the
+original pending inode and durably reconstructs an unknown deadline before
+checking expiry. A failed or uncertain exchange retains faulted cache custody;
+fresh exhaustive inventory and native accounting remain necessary before any
+completed recovery or Resume. Encoded and manifest pending cases remain
+unresolved. Two additional native domains retain original inodes across owner
+restarts: one tests actual expiry, and the other loses only its deadline after
+the original interval and must refuse immediate deletion. All 56 prior
+selectors and 67 selected native unit cases are retained; three selectors and
+one source-bound helper are added. Local and all three isolated strict Clippy
+profiles, private documentation, formatting, native quota confinement and the
+source-bound image pass. The actual ext4 component passes in 449.879 seconds:
+independent review verifies 5,105 source inputs, four original Cargo executables,
+67 selected native unit cases, all 59 selectors and six installed helpers.
+Three actual unexpired or unknown-deadline attempts refuse removal; one expired
+original inode is removed. Independent observation checks original bytes and
+policy holds through deadline loss and physical owner restarts. The complete
+filesystem suite passes all 126 nonignored cases with the original six
+privileged ignores and 5,095 verified crate inputs. Both owning publisher gates
+also pass. Mandatory application test-target compilation passes with exactly
+183 artifacts from 59 packages, independently matched to Cargo metadata, in
+2,190.109 seconds. All owned component controllers actually terminate with
+success; complete task and aggregate acceptance remain pending.
+
+Encoded pending-chunk continuation `ec17f3299b` additionally recognizes actual
+pending chunk custody only after an authenticated canonical `NotFound`, no
+canonical or verified content handle, and the exact unresolved inspection
+categories. It preserves the synchronized physical turn and original deadline
+checks. Native controls add raw, zstd and dictionary-coded expiry and
+lost-deadline cases; dictionary data is deliberately absent because removal
+grants no decoding or serving authority. Independent kernel measurement
+distinguishes sealed and encoded inodes. All 59 prior selectors are retained;
+five are added across six new domains. Their combined finite project budget is
+432 MiB within the existing disk-backed 512 MiB image. Local strict Clippy and
+formatting pass. All three isolated strict profiles and private documentation
+pass in 97.366 seconds. The source-bound image and complete test archive build
+successfully, and required application compilation passes with exactly 183
+artifacts from 59 packages in 1,018.717 seconds. No native execution occurred at
+this source. Its unstarted native phase is superseded by the stronger pack
+continuation below, which retains every encoded control and operating interval.
+
+Pack/index recovery continuation `0160e3fa2f` retains genuine pending units
+without issuing the canonical inspection that previously invalidated Drain.
+Synchronized bootstrap funding now precedes inspection that can move a split
+pair's remaining canonical member; these units are excluded from index repair,
+and changed shared names are rescanned. Pre-bootstrap backing discovery avoids
+pending lifecycle effects. Both surviving-member directions retain explicit
+peer-absence checks and cannot establish a missing pack or index. Encoded
+native custody rejects foreign project ownership before namespace effects.
+No identity, encoding, bucket key, wire field or Store-trait change is made.
+
+Source `3e2b5a5e1c` adds actual native controls for both-pending expiry and
+deadline loss, both split directions, either surviving member, and foreign
+project refusal before rename or lease creation. Root administration seeds
+candidate files without manufacturing policy or retirement leases. Independent
+observation retains original descriptors and checks bytes, actual project
+ownership, both member deadlines and exact remaining names. Original chunk
+controls execute during real pack intervals; no clock or predicate is relaxed.
+All 64 previous selectors remain, with four added; the image binds seven
+helpers and 61 domains with a finite 488 MiB project budget within the unchanged
+512 MiB disk image. Local all-target compilation, strict Clippy and formatting
+pass. All three isolated strict profiles and private documentation also pass
+in 107.337 seconds. Source-bound image and archive preparation pass in 254.944
+and 144.174 seconds; independent image verification matches all 5,107 inputs.
+Mandatory application compilation passes with exactly 183 test artifacts from
+59 packages in 2,220.190 seconds, independently matched to Cargo metadata.
+Both preparation controllers actually terminate successfully. Native execution
+remains unstarted until the combined Surface/module aggregate terminates;
+this preparation does not extend its serialization barrier. No new native
+or task pass is claimed.
+
+Fixture-only follow-up `66d87caadd` supersedes the unstarted pack native phase.
+Review of the pinned Linux 7.2.3 source identifies ext4's `EXDEV` refusal for
+a foreign-project rename into an inheriting directory. Explicit root
+administration temporarily clears only the empty destination directory's
+inheritance flag during pre-startup fault injection, then synchronizes and
+verifies restored attributes and original directory custody before either
+role starts. Neither inode's project assignment changes. All original native
+cases and production code remain unchanged. Formatting, crate-graph and unsafe
+checks pass; all three isolated strict profiles and private documentation pass
+in 100.255 seconds. Image and archive preparation pass in 254.678 and 145.801
+seconds, with all 5,107 image inputs independently matched. Application-target
+qualification passes with exactly 183 artifacts from 59 packages in
+1,450.807 seconds. Both preparation controllers actually terminate with
+success. The unstarted native phase is superseded below;
+native execution and complete task acceptance remain pending.
+
+Binding-conflict continuation `62bfede7fd` allows names-only inventory to retain
+a well-formed conflicting verity record until actual funded adoption can
+reject and quarantine its original inode under HOST-7. Parsing, actual seal
+and plaintext checks, physical record custody and bounded source verification
+remain required; malformed and orphan state remains refused. Inventory grants
+no binding, descriptor or serving authority. The native worker control checks
+unchanged inventory, typed rejection, original bytes/inode/seal quarantine and
+fresh genuine publication. A new cold manifest control changes exactly one
+independently measured verity bit and requires retained recovery funding,
+original-inode quarantine and no Resume. All 68 earlier selectors remain;
+the compiled fixture reports 70, across 62 domains with a finite 496 MiB
+project budget inside the unchanged 512 MiB image. Local all-target check,
+strict Clippy, formatter pair and both focused inventory tests pass. All three
+isolated strict profiles and private documentation pass in 96.473 seconds.
+Image and archive preparation pass in 243.216 and 129.842 seconds. Independent
+image review matches all 5,107 inputs and 70 selectors. Mandatory application
+compilation passes with exactly 183 artifacts from 59 packages in
+1,001.199 seconds. Both preparation controllers actually terminate with
+success; its native phase remains next after actual completion of the combined
+aggregate and is not superseded by the following development.
+No new native pass, completed host task or format change is claimed.
+
+Bound-candidate continuation `c4076a1f56` retains actual seal presence or kernel
+`ENODATA`, unchanged inode/project custody, parsed records and verified claim
+metadata through names-only inventory. Full plaintext, mode and seal validity
+remain enforced by funded native adoption, so inventory cannot prevent
+quarantine of a known bound unsealed candidate. Other getter errors, changed
+sources and malformed or orphan state remain refused. A separate native worker
+control uses real prior publication, a writable canonical replacement, actual
+seal refusal and original-inode quarantine before independently adopting the
+genuine restored sealed inode. Its cold manifest control uses a real sealed
+administrative donor for the untrusted prior binding; independent observation
+checks and removes that donor before either role starts, then requires actual
+quarantine with the stale record and metadata funding retained and no Resume.
+All 70 prior selectors remain; the compiled fixture lists 72 across 63 domains,
+with a finite 504 MiB project budget inside the unchanged 512 MiB image. Local
+all-target compilation, strict Clippy, both focused inventory tests and the
+formatter pair pass. All three isolated strict profiles and private
+documentation pass in 97.289 seconds. Image and archive preparation pass in
+239.298 and 132.287 seconds, with all 5,108 image inputs and 72 selectors
+independently verified. Mandatory application compilation also passes with
+exactly 183 artifacts from 59 packages in 2,068.172 seconds, independently
+matched to Cargo metadata. Both preparation controllers actually terminate
+successfully. Its native phase additionally waits for actual collection of the
+`62bfede7fd` native controller; no runtime or complete task pass is claimed.
+
+Encoded-eviction continuation `a78ab58c2f`, with reviewed audit-only successor
+`fb102141a1`, adds original chunk and pack/index allocation units to the native
+FIFO. Actual physical admission order spans encoded and sealed jobs; producer,
+consumer and dictionary protection remain enforced. Original publisher replies
+and descriptors survive restoration, acknowledged removal, synchronized promise
+release and fresh project-quota queries. Verified restored duplicates are
+refused before another future hold is created. The new guest control independently
+observes mixed FIFO order, same-inode restoration, duplicate refusal, complete
+pair removal, dictionary lifetime and charge release after the final observer
+closes. All 72 previous selectors and 63 project assignments remain; the actual
+fixture lists 73 selectors, with one appended domain bringing the finite project
+budget to 512 MiB inside the unchanged 512 MiB image. Native-profile all-target
+compilation, strict Clippy, fixture compilation and the formatter pair pass.
+Source-bound formatting, crate graph and the renewed exact unsafe-source audit
+also pass on `fb102141a1`. All three isolated strict profiles and private
+documentation pass in 95.650 seconds. Image and archive preparation pass in
+239.212 and 131.204 seconds. Independent review verifies all 5,115 image
+inputs, four original Cargo executables, 73 selectors and eight supervisor
+helpers, plus all 5,103 archive inputs and the unchanged inventory of 126
+nonignored cases and six original privileged ignores. The preparation
+controller actually terminates successfully. Required application-target
+compilation passes in 1,068.840 seconds, with all 183 artifacts from 59
+packages independently matched to Cargo metadata. Native qualification remains
+pending.
+Native execution preserves the order `62bfede7fd`, then
+`c4076a1f56`, then the audited encoded-eviction source, the transfer-census
+follow-up and the read-promotion continuation below. Each successor waits for
+actual collection and review of its predecessor. No task checkbox,
+NativeReady claim or frozen format advances; the zero-wipe conflict stays stopped.
+
+Transfer-census follow-up `1ae081eed6` observes canonical producer admissions
+without authorizing their retirement. Original acknowledged inline and manifest
+source transfers remain outside a second retirement; complete native inventory
+reconciles obsolete scheduling entries while retaining pending cache receipts.
+Formatting, graph and unsafe checks pass. Three Linux profiles, SDK all-target
+lint and both private documentation builds pass in 155.530 seconds. Image and
+archive preparation pass in 239.261 and 132.774 seconds; independent review
+verifies all 5,115 image inputs, four Cargo executables, 73 selectors, eight
+helpers and the unchanged 126-case archive with six privileged ignores.
+Required application-target compilation passes in 986.212 seconds with all
+183 artifacts from 59 packages. These controllers actually terminate
+successfully; native qualification has not started.
+
+Read-promotion continuation `58f4515208` records actual verified dictionary and
+owned metadata reads. Original admission sequences and existing authenticated
+publisher incarnation tokens distinguish physical registrations in the
+reconstructible FIFO, so a reused inode cannot inherit earlier read history.
+Metadata's active phase persists through the new fallible completion checks.
+Five activity regressions and the checked-memory regression pass locally, as
+do strict all-target Linux lint and fixture compilation. The native source
+contract preserves all 67 previous cases and adds three; all 73 fixture
+selectors and 64 project assignments remain. The extended real guest control
+observes a newer unread Zstd allocation retiring before a genuinely consumed
+older dictionary, with two additional native grace windows and original
+descriptor/quota observations. Only the overall guest allowance grows from
+690 to 780 seconds. Hermetic preparation passes: three Linux lint profiles,
+SDK all-target lint and both private documentation builds in 172.028 seconds;
+image and archive preparation in 265.496 and 148.819 seconds. Independent
+review verifies all 5,115 image inputs, four Cargo executables, 73 selectors,
+eight helpers and all 5,103 archive inputs. The archive preserves all 126
+previous nonignored cases and adds the three activity cases, retaining the
+six original privileged ignores. Required application-target compilation
+passes in 1,130.342 seconds with all 183 artifacts from 59 packages. Both
+controllers actually terminate successfully. Native qualification remains
+pending; no complete HOST requirement or task is accepted.
+
+Automatic admission-pressure continuation `8c33b55956` verifies a chunk or
+complete metadata pair before requesting one bounded physical eviction attempt
+and reserving its unchanged payload and snapshot-overlap hold. The original
+registered dictionary remains protected throughout the attempt. Pending
+retirement stays charged; an incoming capacity refusal creates no reservation
+or files. The existing worker's due-cut and queued-command ordering remain
+unchanged. A new phase on the same Running encoded-cache owner retains nineteen
+actual raw allocations and three independent consumer grants, refuses corrupt
+input without effects, requests eviction through valid admission alone and
+retries only after original last-descriptor closure. All previous controls,
+73 selectors, eight helpers, 64 project assignments and their hard limits
+remain; only the overall guest allowance grows from 780 to 870 seconds for
+the two additional real grace windows. Formatting, graph and unsafe checks
+pass on the committed source. Three Linux lint profiles, SDK all-target lint
+and both private documentation builds pass in 168.428 seconds. Image and archive
+preparation pass in 255.624 and 152.050 seconds; independent review verifies all
+5,117 image inputs, four Cargo executables, 73 selectors, eight helpers and all
+5,105 archive inputs. All 129 predecessor cases and six privileged ignores
+remain unchanged. The preparation controller actually terminates successfully;
+local all-target native-fixture Clippy also passes after the shared target lock
+clears. Required application-target compilation passes in 2,427.915 seconds;
+all 183 unit and integration artifacts from 59 packages match the declared
+inventory, and its controller actually terminates successfully. These results
+compile the targets without executing their tests. Native execution follows
+actual collection and review of the read-promotion predecessor. This
+component does not qualify lower-tier fallback, full HOST-19, NativeReady or a
+complete task.
+
+Gate-compilation continuation `17793dcad2` shares the original default-Tokio
+SDK test executable across the eighteen file-bucket gates. The separate
+no-default-feature SDK surface image retains its original feature selection.
+Both variants bind actual Cargo artifacts, test profiles, source inputs,
+runtime libraries and package working directories. Each gate still executes
+in its own protected namespace; selected SDK cases must each pass exactly
+once. Nix evaluation confirms all 286 original invocations, including 283 SDK
+cases and three Format cases, keep their names, order and umasks. All Rust,
+manifest, lock and dependency bytes remain unchanged. Formatting, registry,
+graph and unsafe checks pass. Both source-bound images build successfully;
+independent review verifies all 5,105 crate inputs, exact Cargo features and
+test profiles, installed executable hashes and actual ELF dependencies.
+All eighteen owning gates pass their 286 original invocations in 517.441
+seconds after the shared image build. The separate original-mode executable
+also passes all thirteen exact cold-fork regression cases. Both qualification
+controllers actually terminate successfully, and independent review matches
+each case's passing log to its unchanged source and ordered invocation list.
+Image discovery inventories are not counted as runtime passes. The full
+current-trunk aggregate remains required before merging this component.
+Existing guarded sources and native qualification order remain preserved,
+and no task checkbox advances.
+
+Lower-serving continuation `ab3ea96d59` connects the existing verified lower
+fetch to the native owner's actual bounded admission queue. It returns the
+verified encoded body immediately alongside a ticket for the real physical
+command; callers need not wait for reservation, eviction or completion to use
+lower bytes. The immutable configured chunk profile and independent repository
+descriptor bind verification. Existing direct admission awaits the same
+completion channel, and dropping a ticket does not cancel accepted work.
+The native pressure control now also refuses corrupt lower bytes, holds actual
+policy custody while returning valid bytes, independently observes unchanged
+original backing and policy, retains the served body through genuine capacity
+refusal, and retries after measured last-descriptor quota release. All earlier
+controls, selected cases, project bounds and deadlines remain unchanged.
+Source-bound strict checks, image/archive preparation and required application
+target compilation are under qualification. Native execution remains queued
+after actual collection and review of `8c33b55956`; no runtime pass, complete
+HOST-19, NativeReady or task acceptance is claimed.
+
+The older shared-directory aggregate at `86fb63e127` actually terminates with
+failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
+seven failed, one timed out and ten skipped. Five failed Linux cases use the
+filesystem-dependent operations whose unchanged bodies now pass in native
+ext4; the failed xattr case is similarly routed to the mandatory native
+surface-status proof on the combined candidate. The noncanonical staging cycle
+process timeout and off-batch staging arrival failure remain failed observations;
+their cause is not established. None of these component results is credited as
+a passing aggregate. After actual completion of both that failed controller
+and the current passing native publisher controller is collected, the combined
+Surface/module candidate `d4af629791` starts the full implemented gate set.
+Its SDK Nextest portion passes all 1,975 cases across 20 binaries, with one
+skipped and 79 slow, in 15,533.150 seconds. Independent review confirms the
+checkout still matches every byte of the original 8,867-file source guard.
+The remaining aggregate gates continue; this is not a completed aggregate
+result. No task checkbox advances.
+
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
-re-extraction, complete recovery/readiness and the stopped
-HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
-worklines remain unopened.
+re-extraction and complete recovery/readiness remain outstanding. D-128 resolves
+the zero-wipe conflict through mandatory sealed-tier configuration refusal; its
+implementation is under qualification. T3 and branch worklines remain unopened.
 
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
