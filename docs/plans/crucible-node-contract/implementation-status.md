@@ -1888,6 +1888,37 @@ installed envelope-name projection. Complete qualification remains pending.
 This change grants no native authority and does not supply the remaining SDK
 constructor funding row or Native18 verifier.
 
+## Prospective initial SDK retained backing
+
+Both independent Initial calculations now reserve the additional retained owners
+of successful initial empty-registry SDK admission: two connection strings, lease
+session/incarnation strings, two selected-feature vectors, complete selected
+envelope names, the request-ID journal and the new shared empty selection.
+The existing concrete configuration seeds the combined tree geometry; smaller
+standalone set layouts cannot discount the existing census's larger JSON entry
+layout. Shared-header arithmetic also retains the existing registrar/registry
+population when the new selection changes maximum alignment. No lease is
+constructed or cloned by this calculation.
+
+The new census control passes for both program families, maximum-length request
+IDs and spare request/feature capacities. It compares independently projected
+backing with real SDK admission's before/after census and verifies containment
+retains that same ownership. Four independent Initial controls pass.
+
+The first complete bootstrap run passed 97 controls and failed two: the reactive
+Initial retained projection exceeded the unchanged 80-MiB Prepare partition by
+9,654 bytes. The Offer decoder's former eight-times-per-root vector allowance
+was tightened to the pinned serde cautious-size-hint and Rust Vec growth bound,
+four times each bounded length plus four slots. Its actual 256-definition
+control remains passing. The corrected run passes all 99 bootstrap controls,
+with zero failures and the existing private child ignored. No resource ceiling
+was raised. Complete qualification remains pending.
+
+Only retained successful ownership is reserved by this addition. Complete SDK
+constructor transient/validation/callback funding, the genuine Native18 verifier
+and original-root invocation remain unfinished. No response publication, ACK,
+Native18 policy, model adoption, opaque Initial or Recipe is granted.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

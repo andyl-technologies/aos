@@ -114,11 +114,18 @@ pub(super) fn construction_data(
     if frame_bytes == 0 {
         return Err(refused());
     }
-    // Reserve each root vector independently, including cumulative geometric
-    // requests. Their aggregate length is checked before either is decoded.
+    // serde 1.0.228's de/impls.rs and private/size_hint.rs cap the initial
+    // allocation at the original borrowed array's length.
+    // Rust 1.98.1 Vec growth doubles capacity, with at most four initial slots
+    // for this nonzero element type. Across all old/new allocation requests,
+    // four times the bounded length plus four slots covers either root vector.
+    // Keep their independent allowances despite the earlier aggregate check.
+    let vector_slots = MAXIMUM_NEGOTIATED_EXTENSIONS
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(4))
+        .ok_or_else(refused)?;
     let vector_bytes = 2usize
-        .checked_mul(8)
-        .and_then(|n| n.checked_mul(MAXIMUM_NEGOTIATED_EXTENSIONS))
+        .checked_mul(vector_slots)
         .and_then(|n| n.checked_mul(size_of::<ExtensionSelection>()))
         .ok_or_else(refused)?;
     let string_count = MAXIMUM_NEGOTIATED_EXTENSIONS
@@ -212,7 +219,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<[usize; 3]>() * 2
         + size_of::<std::array::IntoIter<usize, 3>>()
         + size_of::<std::slice::Iter<'static, &'static str>>()
-        + size_of::<usize>() * 14
+        + size_of::<usize>() * 15
         + size_of::<Result<usize, ProviderError>>() * 3
         + size_of::<Result<(), ProviderError>>() * 2
 }

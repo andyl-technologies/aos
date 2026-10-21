@@ -69,6 +69,8 @@ mod hello_registrar;
 pub(in crate::reference_packet::service) use hello_registrar::{
     construction_data as hello_registrar_construction_data,
     counter_scratch_data as hello_registrar_counter_scratch_data,
+    initial_admission_backing_counter_scratch_data as hello_initial_admission_backing_counter_scratch_data,
+    initial_admission_retained_backing_data as hello_initial_admission_retained_backing_data,
 };
 
 #[path = "bootstrap_import18/hello_sdk_request.rs"]

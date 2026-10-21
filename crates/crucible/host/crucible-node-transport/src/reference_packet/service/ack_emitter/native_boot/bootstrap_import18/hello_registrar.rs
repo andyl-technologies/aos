@@ -23,6 +23,13 @@ pub(super) use hello_result_clone::{
 #[path = "hello_registrar/validation_storage.rs"]
 mod validation_storage;
 
+#[path = "hello_registrar/initial_admission_backing.rs"]
+mod initial_admission_backing;
+pub(in crate::reference_packet::service) use initial_admission_backing::{
+    counter_scratch_data as initial_admission_backing_counter_scratch_data,
+    retained_backing_data as initial_admission_retained_backing_data,
+};
+
 #[path = "hello_registrar/attempt.rs"]
 mod attempt;
 

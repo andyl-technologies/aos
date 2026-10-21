@@ -349,3 +349,53 @@ fn changed_original_envelope_bodies_refuse_before_trusted_sdk_callbacks() {
         assert!(fixture.admit(&mut verifier).is_err());
     }
 }
+
+#[test]
+fn independent_source_retained_projection_covers_real_initial_sdk_census_growth() {
+    for reactive in [false, true] {
+        for spare_capacity in [false, true] {
+            let (launch, _, _) = super::super::super::tests::configuration_data(reactive);
+            let projected = super::super::super::initial_admission_backing::retained_backing_data(
+                &launch,
+                268_435_456,
+            )
+            .unwrap();
+            let mut fixture = Fixture::new(reactive);
+            let spelling = "r".repeat(crucible_node_format::MAX_ID_BYTES);
+            let mut original =
+                String::with_capacity(if spare_capacity { 8192 } else { spelling.len() });
+            original.push_str(&spelling);
+            fixture.request.request_id = Nullable(Some(Id::new(original).unwrap()));
+            fixture.response.request_id = Nullable(Some(Id::new(spelling).unwrap()));
+            if spare_capacity {
+                fixture.result.selected_features.reserve(8192);
+            }
+            let before = fixture.attempt.retained_backing_data().unwrap();
+            let mut verifier = ModelVerifier::new(Fault::None);
+
+            fixture.admit(&mut verifier).unwrap();
+
+            let after = fixture.attempt.retained_backing_data().unwrap();
+            let additional = after.checked_sub(before).unwrap();
+            assert!(additional > 0);
+            assert!(
+                additional <= projected,
+                "actual={additional}, projected={projected}"
+            );
+            assert!(
+                super::super::super::initial_admission_backing::retained_backing_data(
+                    &launch,
+                    projected - 1
+                )
+                .is_err()
+            );
+            assert!(
+                super::super::super::initial_admission_backing::retained_backing_data(&launch, 0)
+                    .is_err()
+            );
+
+            fixture.attempt.contain_admission_data().unwrap();
+            assert_eq!(fixture.attempt.retained_backing_data().unwrap(), after);
+        }
+    }
+}

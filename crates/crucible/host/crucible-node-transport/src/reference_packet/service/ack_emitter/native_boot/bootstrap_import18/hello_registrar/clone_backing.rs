@@ -81,6 +81,11 @@ impl Walk {
         value.count_data(self)
     }
 
+    /// Reads the current backing before adding a distinct retained population.
+    pub(super) fn current_backing_data(&self) -> usize {
+        self.backing
+    }
+
     /// Returns the quoted clone backing as ordinary unauthenticated DATA.
     pub(super) fn finish_data(self) -> usize {
         self.backing

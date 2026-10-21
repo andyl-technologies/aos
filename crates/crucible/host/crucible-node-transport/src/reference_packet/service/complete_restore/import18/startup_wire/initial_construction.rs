@@ -15,6 +15,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_exchange_counter_scratch_data,
     original_import18_hello_frames_construction_data,
     original_import18_hello_frames_counter_scratch_data,
+    original_import18_hello_initial_admission_backing_counter_scratch_data,
+    original_import18_hello_initial_admission_retained_backing_data,
     original_import18_hello_literal_construction_data,
     original_import18_hello_literal_counter_scratch_data,
     original_import18_hello_registrar_construction_data,
@@ -120,6 +122,9 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
             response: original_import18_hello_response_construction_data(launch, maximum)?,
+            admission_backing: original_import18_hello_initial_admission_retained_backing_data(
+                launch, maximum,
+            )?,
         },
         maximum,
     )
@@ -173,6 +178,9 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
             response: original_import18_hello_response_construction_data(launch, maximum)?,
+            admission_backing: original_import18_hello_initial_admission_retained_backing_data(
+                launch, maximum,
+            )?,
         },
         maximum,
     )
@@ -190,6 +198,7 @@ struct HelloConstructionData {
     result: [usize; 3],
     envelope: [usize; 3],
     response: [usize; 3],
+    admission_backing: usize,
 }
 
 fn combine(
@@ -211,6 +220,7 @@ fn combine(
         result: hello_result,
         envelope: hello_envelope,
         response: hello_response,
+        admission_backing,
     } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
@@ -300,6 +310,10 @@ fn combine(
     row[0] = add(row[0], hello_response[0])?;
     row[1] = row[1].max(hello_response[1]);
     row[2] = row[2].max(add(raw[2], hello_response[2])?);
+    // Reserve successful SDK registration's additional retained backing. Its
+    // complete transient/callback constructor row remains a separate prerequisite
+    // before native admission may invoke the real SDK.
+    row[0] = add(row[0], admission_backing)?;
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -347,6 +361,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
             .max(original_import18_hello_result_counter_scratch_data())
             .max(original_import18_hello_envelope_counter_scratch_data())
             .max(original_import18_hello_response_counter_scratch_data())
+            .max(original_import18_hello_initial_admission_backing_counter_scratch_data())
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
@@ -372,6 +387,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + size_of::<InitialConstructionData>()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
         + size_of::<HelloConstructionData>()
+        + size_of::<usize>() // Additional initial SDK retained-backing result.
         + size_of::<[usize; 3]>() * 6
         + size_of::<std::array::IntoIter<[usize; 3], 3>>()
         + size_of::<Result<[usize; 3], ProviderError>>()
