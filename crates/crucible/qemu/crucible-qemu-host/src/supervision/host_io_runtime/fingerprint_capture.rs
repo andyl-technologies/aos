@@ -46,15 +46,13 @@ impl QemuLiveHostIoRuntime {
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .capture_request_generation();
-        if observed & 1 == 1 {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                operation,
-                crucible_qemu_shmem::FingerprintSampleError::CaptureAlreadyPending { request: observed }
-                    .to_string(),
-            ));
-        }
-
-        let fingerprint_request = observed.wrapping_add(1);
+        // Exhaustion must refuse before the real Source retains any loan or
+        // seals a publication attempt whose acknowledgement would wrap.
+        let fingerprint_request =
+            crucible_qemu_shmem::FingerprintSampleSlot::checked_fresh_capture_successor_v1(
+                observed,
+            )
+            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
         let loan = actions.lend(self, deadline, Some(fingerprint_request))?;
         deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")
@@ -85,7 +83,7 @@ impl QemuLiveHostIoRuntime {
             .map_err(map_slot_error)?
             .request_fresh_capture_from_v1(observed)
             .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
-        let fingerprint_acknowledgement = fingerprint_request.wrapping_add(1);
+        let fingerprint_acknowledgement = fingerprint_request + 1;
         let request = self.signal_fingerprint_capture(deadline, fingerprint_request)?;
         actions.validate(request)?;
         let mut last_observed = None;

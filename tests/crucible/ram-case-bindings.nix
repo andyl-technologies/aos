@@ -151,6 +151,12 @@
         (case "source_supervision::tests::missing_or_unknown_producer_retention_promise_refuses_before_observation" "adversarial" ["TIME-9"] "Missing and unknown producer-retention editions refuse before observation decoding; no runtime assignment or physical return is established.")
         (case "source_supervision::tests::live_or_initial_unknown_retention_cannot_be_validated_by_equal_identity" "adversarial" ["TIME-9"] "Equal identity cannot validate an unknown retention promise in either initial or live observations; no Native membership or activation is established.")
       ])
+      (group "protocol/crucible-qemu-shmem" "lib" [] [
+        (case "fingerprint_sample::tests::final_fresh_capture_acknowledges_once_then_refuses_reuse" "adversarial" ["TRACK-11"] "The actual final fresh request acknowledges once, then the same slot refuses before generation reuse; no Source or operation authority is issued.")
+        (case "fingerprint_sample::tests::exhausted_fresh_selector_cannot_mutate_an_unrelated_slot" "adversarial" ["TRACK-11"] "An exhausted supplied selector cannot mutate a different actual slot, even before compare-and-exchange admission.")
+        (case "fingerprint_sample::tests::final_sample_publication_keeps_its_payload_after_exhaustion" "adversarial" ["TRACK-11"] "The actual final sample remains readable after publication exhaustion refuses a changed payload before mutation.")
+        (case "fingerprint_sample::tests::occupied_sample_writer_refuses_without_touching_any_payload_word" "adversarial" ["TRACK-11"] "An actual odd publication generation rejects a competing writer while preserving every atomic payload word.")
+      ])
       (group "qemu/crucible-qemu-plugin" "lib" [] [
         (case "runtime::live_callbacks::control_facts::protected_read::payload::borrow::tests::actual_borrow_blocks_payload_return_until_record_and_both_fields_close" "positive" ["TIME-9"] "The actual pinned module journal blocks payload destruction until the real local borrow record and both canonical outputs close; the mapped request remains pending. No Native Main, action Original, publisher membership or ACK is issued.")
         (case "runtime::live_callbacks::control_facts::protected_read::payload::borrow::tests::copied_borrow_holder_cannot_consume_the_actual_journal_record" "adversarial" ["TIME-9"] "A copied holder cannot consume the actual inline borrow record despite a matching opaque token and local serial. No Native Main, action Original, publisher membership or ACK is issued.")
@@ -245,6 +251,7 @@
         (case "mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund" "adversarial" ["TIME-9"] "Concurrent typed and lifecycle observers preserve the same downcastable error and one allocation, then observe one physical control close before either paired loan refunds; no Native Source is issued.")
       ])
       (group "qemu/crucible-qemu-host" "lib" [] [
+        (case "supervision::host_io_runtime::tests::original_fingerprint::exhausted_capture_refuses_before_source_admission_or_any_mapped_effect" "adversarial" ["TRACK-11" "TIME-9"] "The actual host capture path refuses an exhausted mapped generation before unavailable Source admission, token changes or wake; this component issues no genuine Source authority.")
         (case "spawn::source_supervision::sequence_tests::identical_full_payload_preserves_the_actual_published_epoch" "positive" ["TIME-9"] "Repeated identical complete standing bytes retain the real atomic publication epoch; this primitive component issues no Source or Native authority.")
         (case "spawn::source_supervision::sequence_tests::each_actual_payload_word_change_publishes_a_new_epoch" "adversarial" ["TIME-9"] "Every actual payload word change advances the epoch, while repeating its exact bytes preserves it; no operation clocks or policy fields are omitted.")
         (case "spawn::source_supervision::sequence_tests::unchanged_payload_cannot_hide_foreign_odd_or_terminal_sequence" "adversarial" ["TIME-9"] "Even identical bytes cannot conceal a changed, odd or terminal actual sequence; rejection preserves the original atomic word.")

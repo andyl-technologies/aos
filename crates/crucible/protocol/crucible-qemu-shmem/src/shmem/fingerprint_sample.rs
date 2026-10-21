@@ -161,6 +161,21 @@ pub enum FingerprintSampleError {
         /// Actual generation observed by the failed compare-and-exchange.
         observed: u32,
     },
+    /// A fresh request and its acknowledgement cannot both fit without reuse.
+    #[error("fingerprint capture generation {acknowledged_generation} is exhausted")]
+    CaptureGenerationExhausted {
+        /// Terminal acknowledged generation, left unchanged by refusal.
+        acknowledged_generation: u32,
+    },
+    /// Another complete sample cannot fit in the publication generation.
+    #[error("fingerprint sample publication generation is exhausted")]
+    PublicationGenerationExhausted,
+    /// Another writer owns or changed the observed publication generation.
+    #[error("fingerprint sample publication generation {observed} is unavailable")]
+    PublicationUnavailable {
+        /// Actual odd or changed generation, left unchanged by refusal.
+        observed: u32,
+    },
     /// The requested vCPU count exceeds [`FINGERPRINT_SAMPLE_MAX_VCPUS`].
     #[error("fingerprint sample vcpu count {requested} exceeds slot capacity {capacity}")]
     TooManyVcpus {
@@ -269,6 +284,34 @@ impl FingerprintSampleSlot {
         }
     }
 
+    /// Checks the next fresh capture and its nonwrapping acknowledgement.
+    ///
+    /// This arithmetic check does not read or mutate a slot and lends no operation
+    /// authority. A producer can reject exhaustion before retaining its real
+    /// Source loan, then use [`Self::request_fresh_capture_from_v1`] to claim the
+    /// unchanged generation.
+    ///
+    /// # Errors
+    /// Returns [`FingerprintSampleError::CaptureAlreadyPending`] for an odd
+    /// input, or [`FingerprintSampleError::CaptureGenerationExhausted`] when the
+    /// request's acknowledgement would reuse generation zero.
+    pub fn checked_fresh_capture_successor_v1(
+        acknowledged_generation: u32,
+    ) -> Result<u32, FingerprintSampleError> {
+        if acknowledged_generation & 1 == 1 {
+            return Err(FingerprintSampleError::CaptureAlreadyPending {
+                request: acknowledged_generation,
+            });
+        }
+        acknowledged_generation.checked_add(2).ok_or(
+            FingerprintSampleError::CaptureGenerationExhausted {
+                acknowledged_generation,
+            },
+        )?;
+
+        Ok(acknowledged_generation + 1)
+    }
+
     /// Claims a fresh capture without coalescing an already pending request.
     ///
     /// One compare-and-exchange advances an observed even acknowledgement to its
@@ -279,7 +322,9 @@ impl FingerprintSampleSlot {
     /// # Errors
     /// Returns [`FingerprintSampleError::CaptureAlreadyPending`] for an odd
     /// generation, or [`FingerprintSampleError::CaptureRequestChanged`] when a
-    /// concurrent publication wins. Refusal does not change the slot.
+    /// concurrent publication wins. Exhaustion returns
+    /// [`FingerprintSampleError::CaptureGenerationExhausted`] before reuse.
+    /// Refusal does not change the slot.
     pub fn request_fresh_capture_v1(&self) -> Result<u32, FingerprintSampleError> {
         self.request_fresh_capture_from_v1(self.capture_request.load(Ordering::Acquire))
     }
@@ -294,18 +339,14 @@ impl FingerprintSampleSlot {
     /// # Errors
     /// Returns [`FingerprintSampleError::CaptureAlreadyPending`] when the
     /// supplied generation is odd, or [`FingerprintSampleError::CaptureRequestChanged`]
-    /// when the slot no longer contains the supplied even generation. Refusal
-    /// leaves the slot unchanged.
+    /// when the slot no longer contains the supplied even generation. Returns
+    /// [`FingerprintSampleError::CaptureGenerationExhausted`] before a request
+    /// whose acknowledgement would wrap. Refusal leaves the slot unchanged.
     pub fn request_fresh_capture_from_v1(
         &self,
         acknowledged_generation: u32,
     ) -> Result<u32, FingerprintSampleError> {
-        if acknowledged_generation & 1 == 1 {
-            return Err(FingerprintSampleError::CaptureAlreadyPending {
-                request: acknowledged_generation,
-            });
-        }
-        let request = acknowledged_generation.wrapping_add(1);
+        let request = Self::checked_fresh_capture_successor_v1(acknowledged_generation)?;
         self.capture_request
             .compare_exchange(
                 acknowledged_generation,
@@ -359,16 +400,28 @@ impl FingerprintSampleSlot {
     /// # Errors
     ///
     /// Returns [`FingerprintSampleError`] when the sample fails
-    /// [`FingerprintSample::validate`].
+    /// [`FingerprintSample::validate`], the publication generation is exhausted,
+    /// or another writer owns or changes the observed generation. Refusal
+    /// preserves the previous payload and generation.
     pub fn publish(&self, sample: &FingerprintSample) -> Result<(), FingerprintSampleError> {
         let sample = sample.validate()?;
-        self.sample_gen.fetch_add(1, Ordering::AcqRel);
+        let observed = self.sample_gen.load(Ordering::Acquire);
+        if observed & 1 == 1 {
+            return Err(FingerprintSampleError::PublicationUnavailable { observed });
+        }
+        let published = observed
+            .checked_add(2)
+            .ok_or(FingerprintSampleError::PublicationGenerationExhausted)?;
+        self.sample_gen
+            .compare_exchange(observed, observed + 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|observed| FingerprintSampleError::PublicationUnavailable { observed })?;
+
         let mut words = [0_u64; FINGERPRINT_SAMPLE_WORDS];
         pack_sample(&sample, &mut words);
         for (slot, value) in self.words.iter().zip(words) {
             slot.store(value, Ordering::Release);
         }
-        self.sample_gen.fetch_add(1, Ordering::AcqRel);
+        self.sample_gen.store(published, Ordering::Release);
         Ok(())
     }
 
@@ -569,6 +622,84 @@ mod tests {
             Err(FingerprintSampleError::CaptureAlreadyPending { request: 1 })
         );
         assert_eq!(slot.capture_request_generation(), 1);
+    }
+
+    #[test]
+    fn final_fresh_capture_acknowledges_once_then_refuses_reuse() {
+        let slot = FingerprintSampleSlot::new();
+        slot.capture_request.store(u32::MAX - 3, Ordering::Release);
+
+        let request = slot.request_fresh_capture_v1().unwrap();
+        assert_eq!(request, u32::MAX - 2);
+        assert!(slot.acknowledge_capture_v1(request));
+        assert_eq!(slot.capture_request_generation(), u32::MAX - 1);
+        assert_eq!(
+            slot.request_fresh_capture_v1(),
+            Err(FingerprintSampleError::CaptureGenerationExhausted {
+                acknowledged_generation: u32::MAX - 1,
+            }),
+        );
+        assert_eq!(slot.capture_request_generation(), u32::MAX - 1);
+        assert!(!slot.acknowledge_capture_v1(request));
+        assert!(slot.pending_capture_request_v1().is_none());
+    }
+
+    #[test]
+    fn exhausted_fresh_selector_cannot_mutate_an_unrelated_slot() {
+        let slot = FingerprintSampleSlot::new();
+
+        assert_eq!(
+            slot.request_fresh_capture_from_v1(u32::MAX - 1),
+            Err(FingerprintSampleError::CaptureGenerationExhausted {
+                acknowledged_generation: u32::MAX - 1,
+            }),
+        );
+        assert_eq!(slot.capture_request_generation(), 0);
+    }
+
+    #[test]
+    fn final_sample_publication_keeps_its_payload_after_exhaustion() {
+        let slot = FingerprintSampleSlot::new();
+        slot.sample_gen.store(u32::MAX - 3, Ordering::Release);
+        let original = sample();
+
+        slot.publish(&original).unwrap();
+        assert_eq!(slot.published_generation(), u32::MAX - 1);
+        assert_eq!(slot.snapshot(), Some(original));
+        let mut changed = original;
+        changed.ram_digest = digest(0x70);
+        assert_eq!(
+            slot.publish(&changed),
+            Err(FingerprintSampleError::PublicationGenerationExhausted),
+        );
+        assert_eq!(slot.published_generation(), u32::MAX - 1);
+        assert_eq!(slot.snapshot(), Some(original));
+    }
+
+    #[test]
+    fn occupied_sample_writer_refuses_without_touching_any_payload_word() {
+        let slot = FingerprintSampleSlot::new();
+        let original = sample();
+        slot.publish(&original).unwrap();
+        slot.sample_gen.store(3, Ordering::Release);
+        let before = slot
+            .words
+            .each_ref()
+            .map(|word| word.load(Ordering::Acquire));
+        let mut changed = original;
+        changed.ram_digest = digest(0x70);
+
+        assert_eq!(
+            slot.publish(&changed),
+            Err(FingerprintSampleError::PublicationUnavailable { observed: 3 }),
+        );
+        assert_eq!(slot.published_generation(), 3);
+        assert_eq!(
+            slot.words
+                .each_ref()
+                .map(|word| word.load(Ordering::Acquire)),
+            before
+        );
     }
 
     #[test]
