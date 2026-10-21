@@ -154,6 +154,12 @@ let
     && signerTestsRetained "source-signer" "aos-sandbox-source-signer" roleArtifactTests
     && lib.length coreArtifactTests == 1
     && independentRoles package.cargoTestFlagSets
+    && lib.all (flags: let
+      roles = selectedRoles flags;
+      emptyEntryPoint = roles == ["git"] || roles == ["entitlement"];
+    in
+      lib.hasInfix "--no-tests=pass" flags == emptyEntryPoint)
+    package.cargoTestFlagSets
     && signerTestsRetained "policy-key-pin" "aos-sandbox-policy" package.cargoTestFlagSets
     && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" package.cargoTestFlagSets
     && signerTestsRetained "source-signer" "aos-sandbox-source-signer" package.cargoTestFlagSets

@@ -78,6 +78,12 @@
     + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
     + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
 
+  roleRuntimeTestFlags = role:
+    "${roleTestFlags role} ${roleTestPackages role}"
+    # These entry points currently have no unit cases. Keep compiling their
+    # isolated targets; every role with a suite still requires nonempty tests.
+    + lib.optionalString (builtins.elem role ["git" "entitlement"]) " --no-tests=pass";
+
   # Separate Cargo invocations prevent role features from unifying merely
   # because these independently confined executables share an output package.
   roleBuildCommands = map (role:
@@ -158,7 +164,7 @@ in
         [
           "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
         ]
-        ++ map (role: "${roleTestFlags role} ${roleTestPackages role}")
+        ++ map roleRuntimeTestFlags
         (lib.filter (role: role != "controller") serviceRoles);
       cargoNextest = true;
       # Protected native ancestry cases run outside the Nix build sandbox.
