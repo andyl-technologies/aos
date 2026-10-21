@@ -11614,3 +11614,16 @@ native all-target Clippy, no-default-features and std/wasm compilation pass;
 the portable build retains existing std-only evidence dead-code warnings.
 Frozen qualification remains pending; the original failed checks remain retained
 without acceptance credit.
+
+
+#### Publisher ownership protocol inventory
+
+The frozen sole-writer gate reached all native prerequisites, then correctly
+refused a stale protocol-case inventory. The producer image already discovers
+and executes both quarantine descriptor controls; the ownership reviewer now
+requires those same two cases and their actual one-pass execution records, plus
+all three encoded recovery/eviction and re-extraction helper hashes already bound
+by the cache image. The corrected reviewer passes against the unchanged frozen
+images: 21 actual portable cases, five transport ELFs, and all 5195 transport
+and 5205 cache inputs. No selector is dropped or generalized. Full current-source
+requalification remains pending.

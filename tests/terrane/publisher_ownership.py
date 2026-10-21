@@ -23,6 +23,8 @@ NATIVE_SOCKET_CASES = {
     "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
 }
 PROTOCOL_CASES = {
+    "quarantine_inspection_returns_only_one_unverified_descriptor",
+    "quarantine_requires_an_exact_body_incarnation_and_returns_no_authority",
     "registered_probe_roundtrips_without_descriptors",
     "unknown_fields_fail_at_every_message_depth",
     "duplicate_singular_wrong_wire_and_boolean_fields_fail",
@@ -157,7 +159,9 @@ def main():
     cache_identity = check_inputs(cache, source, [
         "host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py",
         "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py",
-        "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "native_sdk_test_image.py",
+        "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py",
+        "encoded_eviction_vm.py", "host_cache_encoded_recovery_vm.py",
+        "shared_reextract_vm.py", "native_sdk_test_image.py",
     ])
     print(json.dumps({
         "requirement": "ARCH-8", "source": str(source),
