@@ -6642,11 +6642,10 @@ mod tests {
     }
 
     fn vm_create_request(
-        assignment_digest: ObjectDigest,
+        specification: &SandboxSpec,
         effect_deadline_boottime_nanoseconds: u64,
     ) -> Vec<u8> {
-        let specification = sandbox_spec(72);
-        let manifest = assignment_manifest(&specification);
+        let manifest = assignment_manifest(specification);
         let mut value = ApplyStorageRequest::default();
         let header = value.header.get_or_insert_default();
         header.protocol_major = 1;
@@ -6660,12 +6659,12 @@ mod tests {
         fence.incarnation_id = vec![3; 16];
         fence.assignment_epoch = 4;
         fence.desired_generation = 5;
-        fence.assignment_digest = assignment_digest.as_bytes().to_vec();
+        fence.assignment_digest = manifest.digest().as_bytes().to_vec();
         value.action = StorageAction::STORAGE_ACTION_CREATE_WORKSPACE.into();
         value.operation_id = vec![7; 16];
         value.quota_bytes = 67_108_864;
         value.assignment_manifest = manifest.canonical_bytes().to_vec();
-        value.sandbox_spec = encode_sandbox_spec(&specification);
+        value.sandbox_spec = encode_sandbox_spec(specification);
         value.encode_to_vec()
     }
 
@@ -7691,14 +7690,15 @@ mod tests {
         let fixture = Fixture::new();
         let state = TempDir::new().unwrap();
         let catalog = vm_create_catalog(41, 42, "aosproof/aos/project/pinned-workspace");
-        let spec = sandbox_spec(72);
+        // Exercise a selected root distinct from the default workspace fixture.
+        let spec = sandbox_spec(74);
         let manifest = assignment_manifest(&spec);
         let admission_clock = vm_clock();
         let effect_deadline = admission_clock
             .boottime_nanoseconds()
             .checked_add(120_000_000_000)
             .unwrap();
-        let request = vm_create_request(manifest.digest(), effect_deadline);
+        let request = vm_create_request(&spec, effect_deadline);
         let artifacts =
             fixture.artifacts_for_kernel_clock(&request, &catalog, admission_clock.wall_seconds());
         let mut coordinator = initialized_coordinator(&state, &fixture, &catalog);
@@ -7724,7 +7724,7 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(600_000_000_000)
             .unwrap();
-        let excessive_request = vm_create_request(manifest.digest(), excessive_deadline);
+        let excessive_request = vm_create_request(&spec, excessive_deadline);
         let excessive_artifacts = fixture.artifacts_for_kernel_clock(
             &excessive_request,
             &catalog,
@@ -7783,7 +7783,7 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(240_000_000_000)
             .unwrap();
-        let bounded_request = vm_create_request(manifest.digest(), bounded_deadline);
+        let bounded_request = vm_create_request(&spec, bounded_deadline);
         let bounded_artifacts = fixture.artifacts_for_kernel_clock(
             &bounded_request,
             &catalog,
@@ -7834,7 +7834,7 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(120_000_000_000)
             .unwrap();
-        let request = vm_create_request(manifest.digest(), effect_deadline);
+        let request = vm_create_request(&spec, effect_deadline);
         let artifacts =
             fixture.artifacts_for_kernel_clock(&request, &catalog, admission_clock.wall_seconds());
         let mut coordinator = initialized_coordinator(&state, &fixture, &catalog);
@@ -8078,8 +8078,7 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(120_000_000_000)
             .unwrap();
-        let observation_request =
-            vm_create_request(observation_manifest.digest(), observation_deadline);
+        let observation_request = vm_create_request(&observation_spec, observation_deadline);
         let observation_artifacts = fixture.artifacts_for_kernel_clock(
             &observation_request,
             &observation_catalog,
@@ -9090,7 +9089,7 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(240_000_000_000)
             .unwrap();
-        let create_request = vm_create_request(manifest.digest(), create_deadline);
+        let create_request = vm_create_request(&specification, create_deadline);
         let create_artifacts = fixture.artifacts_for_kernel_clock(
             &create_request,
             &catalog,
