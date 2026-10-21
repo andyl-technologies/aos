@@ -1964,11 +1964,38 @@ without allocating. All 219 Node tests pass (one existing ignored), along with
 compilation passes at
 `/nix/store/94d1nfxxcb88fx8mganvim0kmvp9p80s-aos-test-targets-0.1.0`.
 All 5,260 tracked crate Rust/TOML files match `7bf34a303f` and immutable
-`icw1s2xwmz910iqic7ra6bckd067rgzs-aos-workspace-src`. The expanded 160-case
-exact supervision run is pending. Coverage now binds 258 component and 19
+`icw1s2xwmz910iqic7ra6bckd067rgzs-aos-workspace-src`. All 160 expanded
+exact supervision cases pass at
+`/nix/store/5jbz6964vj7rvphf90l9hn5qdr4i8n4l-crucible-gate-ram-supervision-0`. Coverage now binds 258 component and 19
 native cases; 149 of 243 requirements remain uncovered and none fully qualified.
 Dynamic diagnostics, independent failure histories at other channel boundaries,
 complete payload funding and selected native admission remain unfinished.
+
+### 2026-10-21 typed QMP supervision
+
+Commit `43d18f6986` moves actual supervision causes through QMP admission,
+shared and borrowed deadline checks, channel conversion and Node conversion.
+Runtime adapter causes retain their actual independent post separately. QMP
+display text, transport ordering and timeout behavior remain; typed channel
+conversion retains the actual operation and scheduler classification.
+
+The pre-change canceled command and four deadline checks measured two and
+twelve allocations. Both corrected controls allocate nothing, and canceled
+command admission writes no additional bytes. All 117 QMP unit tests,
+37 integration tests, the saturated Unix backlog cancellation control and
+both optional feature paths pass, together with 73 focused policy checks and
+five hygiene checks. The first policy run's three stale-contract failures remain
+recorded. Refreshing its exact typed-cause expression preserves every parent
+Park operation, custody and physical-return predicate.
+
+Final mandatory application test-target compilation passes at
+`/nix/store/323s201w2mk9h29lhczicjx5xvhbf804-aos-test-targets-0.1.0`.
+All 5,261 tracked crate Rust/TOML files match `43d18f6986` and immutable
+`c8wy0i4dp4b8qmvik74z06ng2cqrn33m-aos-workspace-src`. The expanded 162-case
+exact supervision run is pending. Coverage binds 260 component and 19 native
+cases across 243 requirements, with 149 uncovered and none fully qualified.
+General QMP diagnostics, runtime-to-channel formatting, checkpoint error boxes,
+complete payload funding and selected Source execution remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
@@ -2005,6 +2032,44 @@ ARM, copied-rule consumer, aggregate restore and registration retirement remain
 unexecuted at this artifact. No selected payer, activation, ACK or physical peer
 return is qualified. The full license gate still fails at controller lint
 prerequisites; the exact ledger does not replace it.
+
+### 2026-10-21 ordinary initialized-system Node custody
+
+Commit `e11db814fb` integrates atomic
+`857b67d8204fb170e4faa5a0b232afe541e6857b`, tree
+`c200db0a4c1cb28c82c069c310695a27f7292a90`. The ordinary fixture enters
+through real `qemu_init` with the unchanged resident-RAM observer. It exercises
+registration, duplicate impulse retention, Submit PREPARE_ONLY, upsert and remove,
+observing actual child construction, callback histories, JSON reference return,
+payload destruction and storage retirement. The three independently rebuilt
+validation, pending and storage journal omissions fail their intended assertions.
+Retained runtime inputs are byte-identical across the helper-only correction;
+this equivalence is separate from a fresh runtime execution.
+
+All 187 owning scenarios, signed reconstruction and the exact 283-file license
+ledger pass. The complete causal sweep passes all 34 independently compiled
+controls at
+`/nix/store/5vcpljcqnipk8r95a2cc5kq1z5r05asp-crucible-qemu-received-delivery-causal-11.1.1`.
+Its positive takes 47.338 seconds of the unchanged 60-second bound, and its
+slowest defect takes 19.138 seconds. The preceding candidate timed out before
+any defect, after registration completed and storage controls began; the exact
+child and cause remain unresolved. Reusing a canonical output only when its
+compile-record output and command operand are byte-identical preserves all
+seven exact-value comparison cases and every genuine refusal. No assertion or
+resource limit changes, and the measured helper savings do not explain the
+whole-run timing difference.
+
+Scoped raw ABI passes at
+`/nix/store/wph1prfnasml2pn4653iamk1zgj1w38v-crucible-phase2-abi-conformance-0`.
+All 5,260 tracked crate Rust/TOML files match immutable
+`ysmhrfp57c3da6zzbp3flwpyfz2mdhbf-crucible-workspace-src`, including the typed
+Preparation checkpoint and excluding later QMP edits. Full native compilation
+completes all 3,863 targets and passes 25/26 fixtures. The mandatory launched
+Source/Root lifecycle remains the sole failure. Selected construction and
+activation remain unavailable; full registration return still refuses. Aggregate
+restore, deferred consumers, CPU borrowers and selected physical return remain
+unqualified. The full license gate remains blocked at controller lint
+prerequisites.
 
 ### Canonical native observation gate cutover (required)
 
