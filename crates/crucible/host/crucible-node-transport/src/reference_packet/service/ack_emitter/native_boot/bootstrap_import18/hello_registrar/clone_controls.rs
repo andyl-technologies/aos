@@ -56,7 +56,7 @@ pub(super) fn quote_counter_scratch_data() -> usize {
 ///
 /// # Errors
 /// Refuses an unsupported pinned layout or checked accumulation overflow.
-pub(super) fn string_data() -> Result<[usize; 2], ProviderError> {
+pub(in super::super) fn string_data() -> Result<[usize; 2], ProviderError> {
     supported()?;
     let transient_fields: StringDataTransientFields = [
         size_of::<Vec<u8>>(), // to_vec_in fresh Vec local

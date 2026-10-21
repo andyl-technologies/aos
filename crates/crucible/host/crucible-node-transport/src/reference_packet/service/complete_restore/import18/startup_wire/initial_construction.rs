@@ -21,6 +21,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_registrar_counter_scratch_data,
     original_import18_hello_request_construction_bound_data,
     original_import18_hello_request_counter_scratch_data,
+    original_import18_hello_response_construction_data,
+    original_import18_hello_response_counter_scratch_data,
     original_import18_hello_result_construction_data,
     original_import18_hello_result_counter_scratch_data,
     original_import18_hello_selection_construction_data,
@@ -117,6 +119,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
             )?,
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
+            response: original_import18_hello_response_construction_data(launch, maximum)?,
         },
         maximum,
     )
@@ -169,6 +172,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
             )?,
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
+            response: original_import18_hello_response_construction_data(launch, maximum)?,
         },
         maximum,
     )
@@ -185,6 +189,7 @@ struct HelloConstructionData {
     sdk_request: [usize; 3],
     result: [usize; 3],
     envelope: [usize; 3],
+    response: [usize; 3],
 }
 
 fn combine(
@@ -205,6 +210,7 @@ fn combine(
         sdk_request: sdk_hello_request,
         result: hello_result,
         envelope: hello_envelope,
+        response: hello_response,
     } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
@@ -290,6 +296,10 @@ fn combine(
     row[0] = add(row[0], hello_envelope[0])?;
     row[1] = row[1].max(hello_envelope[1]);
     row[2] = row[2].max(add(raw[2], hello_envelope[2])?);
+    // Actual Completed and response owners coexist with every original input.
+    row[0] = add(row[0], hello_response[0])?;
+    row[1] = row[1].max(hello_response[1]);
+    row[2] = row[2].max(add(raw[2], hello_response[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -329,13 +339,15 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
         + original_import18_hello_request_counter_scratch_data()
-        // Registrar, SDK request, result and envelope quotes return rows in turn.
+        // Registrar, request, result and envelope quotes return rows in turn.
         // Their recursive quote controls never coexist; the enclosing result
         // and row headers below remain separately represented.
         + original_import18_hello_registrar_counter_scratch_data()
             .max(original_import18_sdk_hello_request_counter_scratch_data())
             .max(original_import18_hello_result_counter_scratch_data())
             .max(original_import18_hello_envelope_counter_scratch_data())
+            .max(original_import18_hello_response_counter_scratch_data())
+        + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()

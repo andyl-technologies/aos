@@ -1733,6 +1733,38 @@ remains at `f2150ce5c7`.
 This transition grants no live SDK connection, response publication, bootstrap
 ACK, Native18 policy, model or opaque Initial/Recipe authority.
 
+## Actual Completed Hello response and response Envelope
+
+The original bootstrap now serializes the real SDK HelloResult into an actual
+Value, moves its object into the real Completed response, and serializes that
+response into a second independently owned body. The real response Envelope
+retains its own original request identity, actual selected incarnation and
+explicit empty installed-selection extension. Each serializer output enters a
+physical slot before the next fallible step. Header ownership precedes fallible
+body moves; a nonobject move restores its exact original Value. Refusal retains
+all initialized output and scalar serializer coordinates, and retries stay spent.
+
+Separate original quote, constructor and terminal admissions remain under the
+same cut and complete immutable request/result guards. Both independent Initial
+projections price the two simultaneous DOM populations, real header clones,
+selection map, typed empty roots and intermediate empty envelope root. Actual
+serde JSON associated compound types and exhaustive manifest field rosters
+bound the serializer controls. Sibling field paths reuse their maximum window;
+JSON retains the checked 64-container plus terminal-scalar population. Future
+32-byte challenges contribute their defining 43-byte unpadded representation
+without constructing fake result/challenge DTOs in Source quoting. Actual
+formatting occurs only in the admitted native serializer. Census never formats
+secrets. No resource ceilings change.
+
+Six lower controls and seventeen inherited-socket flights cover both program
+families, independent body backing, complete profile/facet/extension content,
+literal RawValue marker keys, original spare capacities, serializer refusal,
+partial moves, original admissions, expiry and spent retries. All 90 bootstrap
+controls pass with zero failures and one existing ignored private child. Full
+qualification of this source remains pending. Live SDK admission, response
+publication, bootstrap ACK, Native18 policy, model adoption and opaque
+Initial/Recipe construction remain separate unfinished transitions.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

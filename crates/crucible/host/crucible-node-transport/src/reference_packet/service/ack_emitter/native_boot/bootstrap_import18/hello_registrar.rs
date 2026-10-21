@@ -11,6 +11,7 @@ mod clone_backing;
 
 #[path = "hello_registrar/clone_controls.rs"]
 mod clone_controls;
+pub(super) use clone_controls::string_data as header_clone_controls_data;
 
 #[path = "hello_registrar/hello_result_clone.rs"]
 mod hello_result_clone;

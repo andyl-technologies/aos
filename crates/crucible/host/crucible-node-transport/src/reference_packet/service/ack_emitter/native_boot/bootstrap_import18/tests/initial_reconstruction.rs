@@ -39,6 +39,8 @@ mod hello_sdk_request;
 
 #[path = "initial_reconstruction/hello_envelope.rs"]
 mod hello_envelope;
+#[path = "initial_reconstruction/hello_response.rs"]
+mod hello_response;
 #[path = "initial_reconstruction/hello_result.rs"]
 mod hello_result;
 
@@ -126,6 +128,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_sdk_request_reactive"
             | "initial_hello_result_reactive"
             | "initial_hello_envelope_reactive"
+            | "initial_hello_response_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -134,6 +137,7 @@ fn operands(case: &str) -> [Value; 3] {
         || case.starts_with("initial_hello_sdk_request_")
         || case.starts_with("initial_hello_result_")
         || case.starts_with("initial_hello_envelope_")
+        || case.starts_with("initial_hello_response_")
     {
         hello_registrar::prepare_selected(case, &mut selected);
     }
@@ -392,6 +396,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_response_") {
+        hello_response::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_envelope_") {

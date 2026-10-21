@@ -307,3 +307,16 @@ fn original_hello_envelope_retains_actual_body_and_every_terminal_owner() {
         flight(case);
     }
 }
+
+/// Constructs the actual original request envelope before response tests.
+pub(super) fn construct_for_response(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_result::construct_for_envelope(owner);
+    let admission = Admission {
+        case: "initial_hello_envelope_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_hello_envelope_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}
