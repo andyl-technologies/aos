@@ -80,6 +80,13 @@ pub(super) fn custody(
     }
     let relative = path.strip_prefix(layout).map_err(parse_error)?;
     if kind == Kind::File {
+        if relative.starts_with("objects/pack") || relative.starts_with("chunks") {
+            return Ok(Custody {
+                uid: role.content_uid,
+                gid: role.content_gid,
+                mode: 0o640,
+            });
+        }
         return Ok(Custody {
             uid: 0,
             gid: 0,

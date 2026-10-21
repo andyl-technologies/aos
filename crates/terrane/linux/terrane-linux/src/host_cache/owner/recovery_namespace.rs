@@ -38,6 +38,7 @@ use terrane_sdk::host::cache::HostDomainLocation;
 
 struct DirectoryObservation {
     file: Arc<File>,
+    relative: PathBuf,
     metadata: Metadata,
     names: Vec<OsString>,
 }
@@ -64,6 +65,7 @@ pub(super) struct SharedNamespaceObservation {
     max_entries: usize,
     directories: Vec<DirectoryObservation>,
     entries: Vec<EntryObservation>,
+    portable: Option<Arc<super::recovery_portable::PortableCatalog>>,
 }
 
 impl SharedNamespaceObservation {
@@ -96,6 +98,7 @@ impl SharedNamespaceObservation {
             max_entries: preparation.config.inventory_entries,
             directories: Vec::new(),
             entries: Vec::new(),
+            portable: preparation.portable.clone(),
         };
         let mut pending = Vec::new();
         for label in ["chunks", "objects", "quarantine"] {
@@ -134,7 +137,7 @@ impl SharedNamespaceObservation {
                 let relative = relative.join(name);
                 if metadata.is_dir() {
                     let readable = reopen_directory(&inode, &metadata)?;
-                    observed.check_root(&readable)?;
+                    observed.check_directory(&relative, &readable)?;
                     pending.push((Arc::new(readable), relative.clone()));
                 }
                 observed.entries.push(EntryObservation {
@@ -150,9 +153,19 @@ impl SharedNamespaceObservation {
             }
             observed.directories.push(DirectoryObservation {
                 file: directory,
+                relative,
                 metadata: before,
                 names,
             });
+        }
+        if let Some(portable) = &observed.portable {
+            for path in portable.files() {
+                if !observed.entries.iter().any(|entry| &entry.relative == path) {
+                    return Err(invalid(
+                        "validated portable catalog file absent from shared scan",
+                    ));
+                }
+            }
         }
         observed.check_current()?;
         Ok(observed)
@@ -180,7 +193,7 @@ impl SharedNamespaceObservation {
             )?))?;
         }
         for directory in &self.directories {
-            self.check_root(&directory.file)?;
+            self.check_directory(&directory.relative, &directory.file)?;
             if !same_inode(&directory.metadata, &directory.file.metadata()?)
                 || read_names(&directory.file, self.max_entries)? != directory.names
             {
@@ -198,6 +211,22 @@ impl SharedNamespaceObservation {
                 || !same_inode(&entry.metadata, &current.metadata()?)
             {
                 return Err(invalid("shared namespace entry changed after observation"));
+            }
+            if let Some(portable) = &self.portable
+                && portable.is_file(&entry.relative)
+            {
+                let name = entry
+                    .name
+                    .to_str()
+                    .ok_or_else(|| invalid("portable catalog name is not UTF-8"))?;
+                let file = super::open_regular_at(&entry.parent, name)?;
+                portable.check_file(
+                    &entry.relative,
+                    &file,
+                    &entry.metadata,
+                    self.project_id,
+                    self.layout.directory_binding("layout-root")?.0,
+                )?;
             }
         }
         Ok(())
@@ -305,11 +334,13 @@ impl SharedNamespaceObservation {
         Ok(())
     }
 
-    /// Reports whether all observed entries are recognized empty shard scaffolds.
+    /// Reports whether entries contain only scaffolds and checked portable metadata.
     ///
     /// This is shared-name absence only, never complete recovery evidence.
     pub(super) fn only_empty_scaffolds(&self) -> bool {
-        self.entries.iter().all(empty_scaffold)
+        self.entries
+            .iter()
+            .all(|entry| self.is_nonresident_metadata(entry))
     }
 
     /// Requires every ordinary shared file to be in an actual verified source closure.
@@ -437,7 +468,7 @@ impl SharedNamespaceObservation {
             }
         }
         for entry in &self.entries {
-            if empty_scaffold(entry) {
+            if self.is_nonresident_metadata(entry) {
                 continue;
             }
             let Some(source) = expected.remove(&entry.relative) else {
@@ -460,6 +491,31 @@ impl SharedNamespaceObservation {
             ));
         }
         Ok(())
+    }
+
+    fn is_nonresident_metadata(&self, entry: &EntryObservation) -> bool {
+        empty_scaffold(entry)
+            || self.portable.as_ref().is_some_and(|portable| {
+                if entry.metadata.is_dir() {
+                    portable.is_directory(&entry.relative)
+                } else {
+                    entry.metadata.is_file() && portable.is_file(&entry.relative)
+                }
+            })
+    }
+
+    fn check_directory(&self, relative: &std::path::Path, file: &File) -> io::Result<()> {
+        if let Some(portable) = &self.portable
+            && portable.is_directory(relative)
+        {
+            return portable.check_directory(
+                relative,
+                file,
+                self.project_id,
+                self.layout.directory_binding("layout-root")?.0,
+            );
+        }
+        self.check_root(file)
     }
 
     fn check_root(&self, file: &File) -> io::Result<()> {

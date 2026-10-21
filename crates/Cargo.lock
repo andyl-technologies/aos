@@ -1334,6 +1334,7 @@ dependencies = [
 name = "aos-terrane-integration"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "serde",
  "terrane-format",
  "terrane-linux",

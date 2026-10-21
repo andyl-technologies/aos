@@ -6,6 +6,8 @@
 
 use rustix::fs::{Mode, OFlags, fstat, fstatfs, open, openat};
 #[cfg(feature = "tokio")]
+mod content;
+#[cfg(feature = "tokio")]
 mod manifest_source;
 #[cfg(feature = "tokio")]
 mod metadata;
@@ -23,6 +25,8 @@ mod seal;
 mod shared_residences;
 mod source;
 
+#[cfg(feature = "tokio")]
+pub use content::NativeContentStore;
 #[cfg(feature = "tokio")]
 pub use manifest_source::NativeManifestSource;
 #[cfg(feature = "tokio")]

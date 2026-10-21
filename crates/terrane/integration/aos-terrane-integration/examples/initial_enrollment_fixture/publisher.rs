@@ -1,5 +1,8 @@
 //! Exercises configured publication on actual separately enrolled domain owners.
 
+#[path = "publisher/content.rs"]
+mod content;
+
 use super::config::{Case, DOMAINS, LIMIT, OWNERS, SEED};
 use std::{io, path::PathBuf, sync::Arc};
 use terrane_sdk::config::host::{
@@ -58,7 +61,7 @@ pub(super) fn prepare() -> io::Result<()> {
     use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
     use terrane_linux::{
-        host_cache::{NativeCacheOwnerConfig, NativeReady},
+        host_cache::{NativeCacheOwnerConfig, NativeContentStore, NativeReady},
         host_quota::{filesystem_uuid, open_host_path},
         publisher_local::{client::ClientConfig, socket::RoleIdentities},
     };
@@ -133,6 +136,14 @@ pub(super) fn prepare() -> io::Result<()> {
         });
         println!(
             "PASS actual portable validation, native recovery and publisher Resume for {} with private distinct administrative custody",
+            DOMAINS[owner]
+        );
+        let store =
+            NativeContentStore::new(ready, Duration::from_secs(30)).map_err(super::source_error)?;
+        runtime.block_on(content::exercise(&store, &ChunkProfile::cdc_1m(SEED)))?;
+        runtime.block_on(store.ready().validate_portable())?;
+        println!(
+            "PASS actual native ContentStore chunk and metadata admission, verified reads, ranges, membership and invalid deduplication context for {}",
             DOMAINS[owner]
         );
     }

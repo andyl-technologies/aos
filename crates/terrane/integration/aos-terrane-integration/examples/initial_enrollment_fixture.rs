@@ -1,8 +1,9 @@
 //! Exercises genuine first enrollment on a supervised disk-backed Linux guest.
 //!
 //! The administrator creates and consumes opaque receipts in one process. Later
-//! selectors observe actual unprivileged quota queries and metadata validation;
-//! none grants ContentStore, Original, recovery-completion or live-R authority.
+//! selectors observe actual unprivileged quota queries and metadata validation.
+//! The content role separately opens genuine recovery, acknowledges Resume and
+//! exercises native ContentStore operations; no selector grants live-R authority.
 //! The guest supervisor supplies an otherwise fresh protected fixture directory
 //! through `TERRANE_INITIAL_FIXTURE_ROOT` and bounds every child process.
 

@@ -138,6 +138,25 @@ fn fixed_custody_keeps_coordination_and_control_private() {
         }
     );
     assert_eq!(
+        custody(&layout.join("objects/pack/01/original.pack"), Kind::File),
+        Custody {
+            uid: 840,
+            gid: 845,
+            mode: 0o640
+        }
+    );
+    assert_eq!(
+        custody(
+            &layout.join("objects/index/generation/MANIFEST"),
+            Kind::File
+        ),
+        Custody {
+            uid: 0,
+            gid: 0,
+            mode: 0o644
+        }
+    );
+    assert_eq!(
         custody(&layout.join("state/cache"), Kind::Directory),
         Custody {
             uid: 840,

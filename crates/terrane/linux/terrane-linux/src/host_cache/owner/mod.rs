@@ -26,6 +26,7 @@ mod recovery_manifests;
 mod recovery_metadata;
 mod recovery_namespace;
 mod recovery_pending;
+mod recovery_portable;
 mod recovery_residences;
 mod recovery_restore;
 mod recovery_state;

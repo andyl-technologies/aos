@@ -106,6 +106,16 @@ impl ValidatedPortableBucket {
             .map(|value| value.as_deref())
     }
 
+    /// Iterates checked selected metadata, including explicitly absent values.
+    ///
+    /// These bytes describe the validated portable projection. They grant no
+    /// authority over later native files or mutable cache contents.
+    pub fn selected_entries(&self) -> impl Iterator<Item = (&str, Option<&[u8]>)> {
+        self.selected
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_deref()))
+    }
+
     /// Borrows complete checked retained branch-history data.
     ///
     /// Origin and selection fields do not establish destination authority.

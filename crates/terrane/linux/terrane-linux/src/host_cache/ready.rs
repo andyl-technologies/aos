@@ -38,6 +38,8 @@ pub struct NativeReady {
     portable: ValidatedPortableBucket,
     portable_config: FileBucketConfig,
     limits: PortableReadLimits,
+    max_allocation_bytes: usize,
+    max_requests: usize,
 }
 
 impl NativeReady {
@@ -78,7 +80,9 @@ impl NativeReady {
         confinement.check_current()?;
         let before = validate(&portable_config, limits).await?;
         let reads = config.reads;
-        let preparation = NativeCachePreparation::inspect(config, confinement)?;
+        let max_requests = config.inventory_entries;
+        let mut preparation = NativeCachePreparation::inspect(config, confinement)?;
+        preparation.bind_portable_catalog(&before)?;
         let layout = Arc::clone(preparation.layout());
         layout.recheck()?;
         let metadata = NativeHostMetadataReader::open(Arc::clone(&layout), reads)
@@ -106,7 +110,17 @@ impl NativeReady {
             portable,
             portable_config,
             limits,
+            max_allocation_bytes: reads.max_allocation_bytes,
+            max_requests,
         })
+    }
+
+    pub(super) fn request_bounds(&self) -> (usize, usize) {
+        (self.max_allocation_bytes, self.max_requests)
+    }
+
+    pub(super) fn locality(&self) -> &terrane_format::refs::Locality {
+        &self.portable_config.locality
     }
 
     /// Borrows the original running physical owner for content and maintenance work.

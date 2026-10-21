@@ -24,6 +24,7 @@ pub struct NativeCachePreparation {
     observation: VerifiedQuotaObservation,
     publisher: Arc<Client<HostDomainLocation>>,
     seal: NativeSealCapability<HostDomainLocation>,
+    pub(super) portable: Option<Arc<super::recovery_portable::PortableCatalog>>,
 }
 
 impl NativeCachePreparation {
@@ -112,7 +113,24 @@ impl NativeCachePreparation {
             observation,
             publisher: Arc::new(publisher),
             seal,
+            portable: None,
         })
+    }
+
+    /// Records checked catalog bytes for independent native namespace comparison.
+    pub(in crate::host_cache) fn bind_portable_catalog(
+        &mut self,
+        snapshot: &terrane_sdk::bucket::portable_reader::ValidatedPortableBucket,
+    ) -> io::Result<()> {
+        if snapshot.root() != self.config.location.root() || self.portable.is_some() {
+            return Err(invalid(
+                "portable catalog belongs to another root or was already bound",
+            ));
+        }
+        self.portable = Some(Arc::new(super::recovery_portable::PortableCatalog::new(
+            snapshot,
+        )?));
+        Ok(())
     }
 
     /// Borrows the actual retained physical domain and provisioning guard.
