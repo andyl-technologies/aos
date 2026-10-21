@@ -8,16 +8,16 @@
 use super::*;
 use crate::reference_packet::service::PacketNative5SourceLaunch;
 use crate::retained_metadata::{
-    observe_retained_native_launch, retained_native_launch_counter_scratch_data,
+    MetadataObserver, OrdinaryBytesFormatterDemandData,
+    ordinary_bytes_formatter_counter_scratch_data, retained_native_launch_counter_scratch_data,
     serialization_storage::{
         OriginalSerializationStorageProjection as Projection,
         original_serialization_counter_scratch_data,
-        original_serialization_formatter_temporary_storage_data,
     },
 };
 use std::mem::size_of;
 
-/// Retains identities only after exact typed/base5 correspondence succeeds.
+/// Retains canonical typed-launch and private-launch identities as DATA.
 #[derive(Clone, Copy)]
 pub struct PacketNativeImport18LaunchIdentityData {
     selected: [u8; 32],
@@ -43,9 +43,8 @@ impl PacketNativeImport18LaunchIdentityData {
 pub fn native_import18_launch_identity_projection_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<(usize, usize), ProviderError> {
-    let facts = observe_retained_native_launch(launch)?;
     Ok((
-        original_serialization_formatter_temporary_storage_data(&facts)?,
+        launch_formatter_data(launch)?,
         native_import18_launch_identity_counter_scratch_data(),
     ))
 }
@@ -61,11 +60,10 @@ pub fn native_import18_launch_identity_construction_data(
     launch: &PacketNative5SourceLaunch,
     maximum: usize,
 ) -> Result<(usize, usize), ProviderError> {
-    let facts = observe_retained_native_launch(launch)?;
+    let formatter = launch_formatter_data(launch)?;
     let mut projection = Projection::new(maximum)?;
     projection.add_value(launch)?;
     let shape = projection.finish(maximum)?;
-    let formatter = original_serialization_formatter_temporary_storage_data(&facts)?;
     let temporary = shape
         .dom_and_canonical_scratch_bytes
         .checked_add(shape.canonical_output_requested_bytes)
@@ -116,6 +114,36 @@ pub fn native_import18_launch_identity_data(
     if bytes.as_slice() != canonical_base5 || bytes.len() > maximum_encoded_bytes {
         return Err(invalid());
     }
+    identity_from_canonical_base5(canonical_base5, private_launch)
+}
+
+/// Derives identities from the canonical encoding of the actual borrowed launch.
+///
+/// Callers admit the formatter prewalk and complete construction row first.
+/// The original Source/Birth lender checks provenance and currentness around
+/// this DATA construction. No parsed recipe, numeric digest or supplied row
+/// enters the derivation, and its output grants no native phase permission.
+///
+/// # Errors
+/// Refuses canonical construction, checked length conversion or an encoded
+/// launch above the independently admitted restriction.
+pub fn derive_native_import18_launch_identity_data(
+    launch: &PacketNative5SourceLaunch,
+    private_launch: &Id,
+    maximum_encoded_bytes: usize,
+) -> Result<PacketNativeImport18LaunchIdentityData, ProviderError> {
+    let value = serde_json::to_value(launch).map_err(ContractError::from)?;
+    let bytes = canonical::canonical_json(&value)?;
+    if bytes.is_empty() || bytes.len() > maximum_encoded_bytes {
+        return Err(invalid());
+    }
+    identity_from_canonical_base5(&bytes, private_launch)
+}
+
+fn identity_from_canonical_base5(
+    canonical_base5: &[u8],
+    private_launch: &Id,
+) -> Result<PacketNativeImport18LaunchIdentityData, ProviderError> {
     let mut selected = blake3::Hasher::new_derive_key(
         "source-owned.packet-native-import-selected-launch-identity/18",
     );
@@ -135,9 +163,22 @@ pub fn native_import18_launch_identity_data(
     })
 }
 
+fn launch_formatter_data(launch: &PacketNative5SourceLaunch) -> Result<usize, ProviderError> {
+    let mut observer = MetadataObserver::new();
+    observer.observe_bootstrap_launch_data(launch)?;
+    // Only initialized Bytes are serialized. Parent spare capacity stays in
+    // the independently retained owner and cannot change the native quote.
+    observer
+        .ordinary_bytes_formatter_data()
+        .maximum_temporary_requested_bytes_data()
+}
+
 /// Names actual metadata, projection, canonical and fixed identity controls.
 pub fn native_import18_launch_identity_counter_scratch_data() -> usize {
     retained_native_launch_counter_scratch_data()
+        + ordinary_bytes_formatter_counter_scratch_data()
+        + size_of::<MetadataObserver<'static>>()
+        + size_of::<OrdinaryBytesFormatterDemandData>()
         + original_serialization_counter_scratch_data()
         + canonical::canonical_json_counter_scratch_bytes_data()
         + size_of::<&PacketNative5SourceLaunch>()
@@ -149,3 +190,7 @@ pub fn native_import18_launch_identity_counter_scratch_data() -> usize {
         + size_of::<Projection>()
         + size_of::<Result<(usize, usize), ProviderError>>()
 }
+
+#[cfg(test)]
+#[path = "launch_identity/tests.rs"]
+mod tests;

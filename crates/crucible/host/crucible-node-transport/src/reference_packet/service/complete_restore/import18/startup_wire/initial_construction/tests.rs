@@ -132,9 +132,11 @@ fn complete_initial_population_and_policy_refuse_overflow() {
         maximum_encoded_bytes: [1; 3],
         parser_rows: [[1; 3]; 3],
     };
-    assert!(combine(bodies(), [usize::MAX, 1, 1], [0; 3], usize::MAX).is_err());
-    assert!(combine(bodies(), [1, 1, usize::MAX], [0; 3], usize::MAX).is_err());
-    assert!(combine(bodies(), [1; 3], [0; 3], 1).is_err());
+    assert!(combine(bodies(), [usize::MAX, 1, 1], [0; 3], (0, 0), usize::MAX).is_err());
+    assert!(combine(bodies(), [1, 1, usize::MAX], [0; 3], (0, 0), usize::MAX).is_err());
+    assert!(combine(bodies(), [1; 3], [0; 3], (0, 0), 1).is_err());
+    assert!(combine(bodies(), [1; 3], [0; 3], (usize::MAX, 1), usize::MAX).is_err());
+    assert!(combine(bodies(), [1; 3], [0; 3], (1, usize::MAX), usize::MAX).is_err());
 }
 
 #[test]

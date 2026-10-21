@@ -15,7 +15,8 @@ use crucible_engine::node_adapters::cnp::{
 };
 use crucible_engine::node_contract::RuntimeError;
 use crucible_node_transport::reference_packet::service::complete_restore::import18::{
-    PacketNativeImport18InitialConstructionData, PacketNativeImport18Selection,
+    PacketNativeImport18InitialConstructionData, PacketNativeImport18LaunchIdentityData,
+    PacketNativeImport18Selection,
 };
 use std::mem::{size_of, size_of_val};
 
@@ -60,6 +61,7 @@ struct Member {
     declaration_encoding_row: Option<[usize; 3]>,
     declaration_encoding: Option<Vec<u8>>,
     initial_projection: Option<PacketNativeImport18InitialConstructionData>,
+    launch_identity: Option<PacketNativeImport18LaunchIdentityData>,
 }
 
 impl Member {
@@ -78,6 +80,7 @@ impl Member {
             declaration_encoding_row: None,
             declaration_encoding: None,
             initial_projection: None,
+            launch_identity: None,
         }
     }
 }
@@ -107,6 +110,7 @@ struct MemberObservation<'a> {
     declaration_encoding_row: &'a Option<[usize; 3]>,
     declaration_encoding: &'a Option<Vec<u8>>,
     initial_projection: &'a Option<PacketNativeImport18InitialConstructionData>,
+    launch_identity: &'a Option<PacketNativeImport18LaunchIdentityData>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -125,6 +129,7 @@ impl<'a> MemberObservation<'a> {
             declaration_encoding_row,
             declaration_encoding,
             initial_projection,
+            launch_identity,
         } = member;
         Self {
             stage,
@@ -140,6 +145,7 @@ impl<'a> MemberObservation<'a> {
             declaration_encoding_row,
             declaration_encoding,
             initial_projection,
+            launch_identity,
         }
     }
 }
@@ -177,6 +183,7 @@ impl MemberObservation<'_> {
             declaration_encoding_row: _,
             declaration_encoding,
             initial_projection: _,
+            launch_identity: _,
         } = *self;
         if let Some(bank) = declaration_encoding {
             counter
@@ -845,6 +852,7 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
             view.initial_projection,
             &member.initial_projection
         ));
+        assert!(std::ptr::eq(view.launch_identity, &member.launch_identity));
     }
 
     let mut expected = Counter::new(usize::MAX);

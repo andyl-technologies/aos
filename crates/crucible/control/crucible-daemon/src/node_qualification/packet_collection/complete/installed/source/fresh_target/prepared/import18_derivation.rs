@@ -18,6 +18,7 @@ impl PreparedCompleteRestoration {
             && self.import18_templates.members.iter().all(|member| {
                 member.stage == Stage::PrivateBirth
                     && member.initial_projection.is_some()
+                    && member.launch_identity.is_some()
                     && member
                         .declaration_encoding
                         .as_ref()
@@ -212,8 +213,37 @@ impl PreparedCompleteRestoration {
         });
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
+        self.prepare_funded_launch_identity(selected)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
+    }
+
+    fn prepare_funded_launch_identity(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.note_funded_operation_stage("deriving original launch commitments");
+        self.observe_import18_templates_data(
+            PacketCompleteSemanticSource::native_import18_original_launch_identity_counter_data(),
+        )?;
+        let prewalk = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_original_launch_identity_prewalk_data()?;
+        self.observe_import18_templates_data(prewalk)?;
+        let row = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_original_launch_identity_construction_data(usize::MAX)?;
+        self.observe_import18_templates_data(row)?;
+        let derived = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .derive_native_import18_original_launch_identity_data(usize::MAX);
+        let result = derived.map(|identity| {
+            self.import18_templates.members[selected].launch_identity = Some(identity);
+        });
+        // The whole Prepared census follows release of every original loan,
+        // including failed canonical construction or terminal authentication.
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)
     }
 
     fn start_funded_derivation_member(&mut self, selected: usize) -> Result<(), RuntimeError> {

@@ -155,7 +155,8 @@ pub use private_prefix::{
 };
 
 pub use launch_identity::{
-    PacketNativeImport18LaunchIdentityData, native_import18_launch_identity_construction_data,
+    PacketNativeImport18LaunchIdentityData, derive_native_import18_launch_identity_data,
+    native_import18_launch_identity_construction_data,
     native_import18_launch_identity_counter_scratch_data, native_import18_launch_identity_data,
     native_import18_launch_identity_projection_data,
 };

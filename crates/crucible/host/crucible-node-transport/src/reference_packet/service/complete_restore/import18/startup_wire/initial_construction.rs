@@ -80,6 +80,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         bodies,
         source,
         initial_quote_formatter_data(launch)?,
+        native_import18_launch_identity_construction_data(launch, maximum)?,
         maximum,
     )
 }
@@ -118,6 +119,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         bodies,
         source,
         initial_quote_formatter_data(launch)?,
+        native_import18_launch_identity_construction_data(launch, maximum)?,
         maximum,
     )
 }
@@ -126,6 +128,7 @@ fn combine(
     bodies: ProspectiveBodyConstructionData,
     source: [usize; 3],
     formatter: [usize; 3],
+    launch_identity: (usize, usize),
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
@@ -140,6 +143,8 @@ fn combine(
     row[0] = add(row[0], source[0])?;
     row[1] = row[1].max(source[1]).max(formatter[1]);
     row[2] = add(row[2], source[2])?.max(add(raw[2], formatter[2])?);
+    row[1] = row[1].max(launch_identity.0);
+    row[2] = row[2].max(add(raw[2], launch_identity.1)?);
     // Executable measurement follows all parser/Source/header work. Its actual
     // temporary reference and fixed read bank overlap the same retained owners.
     let measurement = original_import18_controller_measurement_construction_data();
@@ -178,6 +183,12 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + super::private_identity::counter_scratch_data()
         + source_authentication_counter_scratch_data()
         + native_import18_startup_wire_counter_scratch_data()
+        + native_import18_launch_identity_counter_scratch_data()
+        + size_of::<PacketNativeImport18LaunchIdentityData>()
+        + size_of::<Result<PacketNativeImport18LaunchIdentityData, ProviderError>>()
+        + size_of::<(usize, usize)>() * 2
+        + size_of::<Result<(usize, usize), ProviderError>>()
+        + size_of::<[u8; 32]>() * 4
         + size_of::<InitialConstructionData>()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
         + size_of::<[usize; 3]>() * 6
@@ -209,7 +220,7 @@ pub(in crate::reference_packet) use native_import18_initial_construction_counter
 ///
 /// # Errors
 /// Refuses malformed recipe structure, private Birth/key/executable correspondence
-/// or any prefix/body announcement join.
+/// launch/private-launch commitments or any prefix/body announcement join.
 pub(in crate::reference_packet) fn authenticate_initial_headers_data(
     recipe: &PacketNativeImport18PrebirthRecipeWireData,
     selected: &PacketNativeImport18SelectedLaunchWireData,
@@ -241,6 +252,21 @@ pub(in crate::reference_packet) fn authenticate_initial_headers_data(
         || boot.birth_id.as_slice().len() != 32
     {
         return Err(invalid());
+    }
+    let actual = derive_native_import18_launch_identity_data(
+        selected.launch_data(),
+        &boot.private_launch,
+        derived.maximum_encoded_bytes[1],
+    )?;
+    if recipe.launch_identities_data()
+        != (
+            actual.selected_launch_identity_data(),
+            actual.private_launch_identity_data(),
+        )
+    {
+        return Err(ProviderError::Correlation(
+            "original import18 recipe launch DATA",
+        ));
     }
     Ok(())
 }

@@ -820,9 +820,48 @@ continue to verify that all seven headers remain empty throughout bootstrap.
 Both full Transport configurations pass 1,794 tests, zero failures, no filtering
 and sixteen existing ignores. All-feature/all-target checking for Transport,
 Engine and Daemon and all six architecture checks pass for the final exhaustive
-counter roster. Required application compilation is running. This is component DATA
+counter roster. Required application compilation also passes at
+`/nix/store/kk9s1mjip0v7hsnmz5y238ghxjrin4ll-aos-test-targets-0.1.0`.
+Its registered source matches all 136 Rust paths changed through `d6304b309b`
+byte for byte; the artifact inventory contains 180 test executables across 58
+package identities, including 71 integration targets. This is component DATA
 validation; genuine native Prepare custody, completed full Recipe/Initial,
 model adoption and the full RFC remain unfinished.
+
+## Original launch commitments in parent and bootstrap
+
+The actual original Source/Birth loan now derives the selected-launch commitment
+from its complete typed launch's canonical encoding and the private-launch
+commitment from its actual private-launch ID. The lender authenticates original
+Source, accepted completion, immutable launch and private Birth before and after
+every outcome. The original worker response and SourceBirth bank remain opaque.
+Formatter prewalk, complete canonical construction and terminal whole-Prepared
+census are admitted separately; Prepared retains the resulting fixed DATA inline.
+The funded-Source probe requires this actual result for all three members.
+
+The independent initial formula includes the sequential launch canonicalization
+and fixed commitment controls. Formatter demand uses initialized Bytes lengths;
+spare capacity stays in the parent's retained census. A regression grows both
+private-token and program-event capacity, verifies unchanged canonical bytes and
+construction rows, and verifies increased retained backing independently.
+
+Native initial header checks derive both commitments from actual decoded launch
+and private-launch operands before comparing the announced recipe fields. Three
+additional inherited-socket controls change the selected commitment, private
+commitment and actual private-launch ID while preserving the other body/prefix
+joins. These controls remain DATA-only; no parsed wire announcement becomes an
+opaque Recipe/Initial, native Prepare token or model. Complete five-phase recipe
+production, native dispatch and the full RFC remain unfinished.
+
+Both full Transport configurations pass 1,797 tests, zero failures, no filtering
+and sixteen existing ignores. All six architecture checks pass. The first
+standard run had one existing gem5 secondary-process containment refusal
+(`ESRCH` while polling the original group); its isolated rerun and the subsequent
+complete standard and raw-value suites pass without source changes. Affected
+all-feature/all-target checking, Engine/Daemon suites, required application
+compilation and the funded-Source VM are running. The registered application
+source at `/nix/store/kijm5h7hkmbakz1sbb6q6zdbp1hj0bm4-aos-workspace-src`
+matches all 139 currently changed Rust paths byte for byte.
 
 ## Original launch custody and shared startup geometry
 

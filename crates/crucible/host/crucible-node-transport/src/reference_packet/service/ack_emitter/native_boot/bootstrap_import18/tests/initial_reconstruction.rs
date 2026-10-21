@@ -4,10 +4,12 @@
 //! Initial/Recipe, Source purpose, native model, phase claim or readiness grant.
 
 use super::*;
+use crate::reference_packet::service::ack_emitter::native_boot::measure_original_restore_current_executable;
 use crate::reference_packet::service::complete_restore::import18::{
+    PacketNativeImport18SelectedLaunchWireData, derive_native_import18_launch_identity_data,
     inert_bootstrap_fixtures, initial_construction_from_wire_data,
 };
-use crucible_node_format::{Bytes, canonical};
+use crucible_node_format::{Bytes, Id, canonical};
 use serde_json::{Value, json};
 
 fn operands(case: &str) -> [Value; 3] {
@@ -20,7 +22,7 @@ fn operands(case: &str) -> [Value; 3] {
         recipe["escrow"] = json!(["5", "1", "1"]);
     }
     let mut selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
-    let executable = crate::reference_packet::service::ack_emitter::native_boot::measure_original_restore_current_executable().unwrap();
+    let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
     if case == "initial_unmeasured_controller_executable" {
         // Both announced references agree; the actual running image differs.
@@ -32,9 +34,29 @@ fn operands(case: &str) -> [Value; 3] {
         json!((actual_pid + u64::from(case == "initial_bad_controller_pid")).to_string());
     selected["launch"]["controller_uid"] =
         json!((actual_uid + u64::from(case == "initial_bad_controller_uid")).to_string());
-    let launch: crate::reference_packet::service::complete_restore::import18::PacketNativeImport18SelectedLaunchWireData = serde_json::from_value(selected.clone()).unwrap();
+    let launch: PacketNativeImport18SelectedLaunchWireData =
+        serde_json::from_value(selected.clone()).unwrap();
     let source = inert_bootstrap_fixtures::source_birth(launch.launch_data());
     let mut boot = inert_bootstrap_fixtures::boot(1, json!({"actual": "host DATA"}));
+    let private_launch: Id = serde_json::from_value(boot["private_launch"].clone()).unwrap();
+    let actual_identity = derive_native_import18_launch_identity_data(
+        launch.launch_data(),
+        &private_launch,
+        typed::bounds().requested_peak,
+    )
+    .unwrap();
+    recipe["selected_launch_identity"] = json!(actual_identity.selected_launch_identity_data());
+    recipe["private_launch_identity"] = json!(actual_identity.private_launch_identity_data());
+    if case == "initial_bad_selected_launch_identity" {
+        recipe["selected_launch_identity"] = json!(([11; 32]));
+    }
+    if case == "initial_bad_private_launch_identity" {
+        recipe["private_launch_identity"] = json!(([13; 32]));
+    }
+    if case == "initial_changed_private_launch" {
+        let length = boot["private_launch"].as_str().unwrap().len();
+        boot["private_launch"] = json!("x".repeat(length));
+    }
     boot["source_birth"]["declaration"]["source_birth"] =
         json!(Bytes::new(canonical::canonical_json(&source).unwrap()));
     boot["source_birth"]["declaration"]["fresh_restore_allocation_selection"] = json!(null);
@@ -178,6 +200,19 @@ pub(super) fn assert_child(
                 ))
             ));
         }
+        if matches!(
+            case,
+            "initial_bad_selected_launch_identity"
+                | "initial_bad_private_launch_identity"
+                | "initial_changed_private_launch"
+        ) {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 recipe launch DATA"
+                ))
+            ));
+        }
         if matches!(case, "initial_producer" | "initial_reactive") {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -213,6 +248,9 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_controller_pid",
         "initial_bad_controller_uid",
         "initial_unmeasured_controller_executable",
+        "initial_bad_selected_launch_identity",
+        "initial_bad_private_launch_identity",
+        "initial_changed_private_launch",
         "initial_short_key",
         "initial_short_birth",
         "initial_bad_prefix_recipe",
