@@ -298,7 +298,7 @@
 
   systemFor = mode:
     systems.server-secureboot-lockdown.extendModules {
-      modules = [(fixtureModule mode)];
+      modules = [../../systems/_server-test-packages.nix (fixtureModule mode)];
     };
   cleanSystem = systemFor "clean";
   shadowSystem = systemFor "runtime-shadows";
