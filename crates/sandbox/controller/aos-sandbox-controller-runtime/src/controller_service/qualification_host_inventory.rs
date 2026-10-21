@@ -17,6 +17,28 @@ use crate::{DormantHostRuntimeInventoryOwnerV1, ProtectedBrokerSessionFixedEndpo
 const CLIENT_DONE: &str = "/run/aos/controller-qualification/host-inventory-complete";
 
 #[test]
+#[ignore = "Controller VM connects to a Host fixture without startup Control"]
+fn fixed_controller_host_missing_startup_is_rejected() {
+    assert_eq!(rustix::process::geteuid().as_raw(), 811);
+    let node = read_node_id().unwrap();
+
+    assert!(
+        connect_controller_session(
+            ProtectedBrokerSessionFixedEndpointV1::ControllerHostClient,
+            node,
+        )
+        .is_err()
+    );
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(CLIENT_DONE)
+        .unwrap();
+    println!("FIXED_CONTROLLER_HOST_MISSING_STARTUP_REJECTED");
+}
+
+#[test]
 #[ignore = "Controller VM client requires the fixed UID and Host broker custody"]
 fn fixed_controller_host_inventory_client() {
     assert_eq!(rustix::process::geteuid().as_raw(), 811);

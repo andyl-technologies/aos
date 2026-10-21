@@ -311,9 +311,9 @@ in
       }
       ${pkgs.grep}/bin/grep -q FIXED_MOUNT_BROKER_INVENTORY_PASS /tmp/fixed-mount-inventory-broker.log
 
-      # Host retains its three fixed audience listeners, but this qualification
-      # sends only the Controller's read-only runtime Inventory method. No
-      # runtime effect, Host attach method, or guest-readiness path is entered.
+      # This headless fixture cannot capture PID 1's Host startup Control.
+      # Correct peer credentials must not bypass that missing owner, even for
+      # inventory. Positive Host behavior requires the funded service VM.
       mkdir -p /sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-hostd.service
       ${pkgs.coreutils}/bin/install -d -o 811 -g 811 -m 0700 \
         /var/lib/aos/sandboxd/broker-session/host \
@@ -338,12 +338,12 @@ in
       ${pkgs.coreutils}/bin/install -d -o 0 -g 811 -m 0710 /run/aos/sandbox-host
 
       ${hostFixtures}/bin/aos_sandbox_services_host \
-        --ignored --list host::qualification::fixed_host_inventory_broker \
+        --ignored --list host::qualification::fixed_host_inventory_without_startup_control_is_rejected \
         > /tmp/selected-host-tests
       ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
       ${fixtures}/bin/aos_sandbox_controller_runtime \
         --ignored --list \
-        controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
+        controller_service::qualification_host_inventory::fixed_controller_host_missing_startup_is_rejected \
         > /tmp/selected-host-tests
       ${pkgs.grep}/bin/grep -q ': test$' /tmp/selected-host-tests
 
@@ -351,7 +351,7 @@ in
       export CREDENTIALS_DIRECTORY=/run/aos/broker-qualification/host-authority
       ${hostFixtures}/bin/aos_sandbox_services_host \
         --ignored --exact \
-        host::qualification::fixed_host_inventory_broker \
+        host::qualification::fixed_host_inventory_without_startup_control_is_rejected \
         --test-threads=1 --nocapture > /tmp/fixed-host-inventory-broker.log 2>&1 &
       host_broker_pid=$!
       for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -373,7 +373,7 @@ in
       if ! ${pkgs.coreutils}/bin/chroot --userspec=+811:+811 --groups= / \
         ${fixtures}/bin/aos_sandbox_controller_runtime \
           --ignored --exact \
-          controller_service::qualification_host_inventory::fixed_controller_host_inventory_client \
+          controller_service::qualification_host_inventory::fixed_controller_host_missing_startup_is_rejected \
           --test-threads=1 --nocapture; then
         ${pkgs.coreutils}/bin/cat /tmp/fixed-host-inventory-broker.log
         exit 1
@@ -382,6 +382,6 @@ in
         ${pkgs.coreutils}/bin/cat /tmp/fixed-host-inventory-broker.log
         exit 1
       }
-      ${pkgs.grep}/bin/grep -q FIXED_HOST_BROKER_INVENTORY_PASS /tmp/fixed-host-inventory-broker.log
+      ${pkgs.grep}/bin/grep -q FIXED_HOST_MISSING_STARTUP_REJECTED /tmp/fixed-host-inventory-broker.log
     '';
   }

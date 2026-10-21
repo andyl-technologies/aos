@@ -1,8 +1,8 @@
-//! VM-only qualification of the installed fixed Host inventory scheduler.
+//! VM-only refusal checks for a Host scheduler without installed startup Control.
 //!
-//! The root broker retains all three production listeners and its authenticated
-//! session until the Controller completes both terminal currentness checks.
-//! Empty inventory qualifies this read-only channel, not Host effects or readiness.
+//! The headless fixture has genuine peer credentials but no PID 1 startup
+//! originals. Even read-only inventory must refuse that missing financial owner.
+//! Positive Host qualification belongs to the funded installed-service VM.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -10,16 +10,17 @@ use std::time::{Duration, Instant};
 use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationV1, production_deadline_after,
 };
-use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::HostAuthorityV1;
 use aos_sandbox_host::broker::HostBroker;
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::SystemdOneShotWorker;
+use aos_sandbox_host::{DormantHostBrokerCallErrorV1, DormantHostBrokerCompositionV1, HostError};
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 
-use super::ProductionHostBrokerServiceV1;
+use super::{ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1};
+use aos_sandbox_broker_session_security::ProductionBrokerSessionActivationErrorV1;
 
 const CONTROLLER_SOCKET: &str = "/run/aos/sandbox-host/control.sock";
 const ROOT_MOUNT_SOCKET: &str = "/run/aos/sandbox-host/root-mount.sock";
@@ -48,8 +49,8 @@ fn missing_host_client_completion_expires_closed() {
 }
 
 #[test]
-#[ignore = "root VM runs the fixed Host broker with protected deployed credentials"]
-fn fixed_host_inventory_broker() {
+#[ignore = "root VM supplies protected credentials but no PID 1 startup Control"]
+fn fixed_host_inventory_without_startup_control_is_rejected() {
     assert!(rustix::process::geteuid().is_root());
     let controller = RecordSubjectListener::bind(Path::new(CONTROLLER_SOCKET), 8).unwrap();
     let root_mount = RecordSubjectListener::bind(Path::new(ROOT_MOUNT_SOCKET), 8).unwrap();
@@ -83,20 +84,26 @@ fn fixed_host_inventory_broker() {
         .enable_all()
         .build()
         .unwrap();
-    runtime.block_on(async {
-        for _ in 0..2 {
-            let deadline = production_deadline_after(Duration::from_secs(15)).unwrap();
-            service
-                .serve_next(&mut host, &publisher, deadline)
-                .await
-                .unwrap();
-        }
-    });
+    let deadline = production_deadline_after(Duration::from_secs(15)).unwrap();
+    let error = runtime
+        .block_on(service.serve_next(&mut host, &publisher, deadline))
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ProductionHostBrokerServiceErrorV1::Activation(
+            ProductionBrokerSessionActivationErrorV1::HostColdCallsite(
+                DormantHostBrokerCallErrorV1::Broker(HostError::Fence(
+                    "Host cold cleanup has no captured startup Control"
+                ))
+            )
+        )
+    ));
+    drop(service);
 
-    // Retain the peer pidfd until the client completes both terminal rechecks.
+    // Close the refused endpoint before waiting for the client's observation.
     assert!(
         wait_for_client_completion(Path::new(CLIENT_DONE), Duration::from_secs(5)),
-        "Controller did not finish both Host currentness checks"
+        "Controller did not observe the missing-startup rejection"
     );
-    println!("FIXED_HOST_BROKER_INVENTORY_PASS");
+    println!("FIXED_HOST_MISSING_STARTUP_REJECTED");
 }
