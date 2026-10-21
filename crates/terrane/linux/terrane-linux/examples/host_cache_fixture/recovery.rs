@@ -574,27 +574,16 @@ pub(super) fn run(
     if case.mixed() {
         inline::refuse(owner, runtime, inputs)?;
     }
-    let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     if cold {
         println!(
             "PASS actual cold consumer pins, leases and holds reconciled with verified native backing; original records retained"
         );
     }
-    let metadata = if inputs.domain == metadata::DOMAIN {
-        Some(metadata::Observation::capture(runtime, inputs)?)
-    } else {
-        None
-    };
+    let metadata = metadata::Observation::capture(runtime, inputs)?;
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
-    if let Some(metadata) = metadata {
-        metadata.check(owner, runtime, inputs)?;
-    } else if fs::read(inputs.root.join("state/cache/records.toml"))? != before {
-        return Err(invalid(
-            "manifest Resume changed its durable recovery policy",
-        ));
-    }
+    metadata.check(owner, runtime, inputs)?;
     read_recovered_sources(owner, runtime, inputs)?;
     admit_after_recovery(owner, runtime, inputs)?;
     read_recovered_sources(owner, runtime, inputs)?;

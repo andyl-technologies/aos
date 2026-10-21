@@ -37,6 +37,7 @@ pub(crate) fn seed() -> io::Result<()> {
         let mode = match inputs.domain.as_str() {
             "tenant:quarantine-encoded-private" => 0o600,
             "tenant:quarantine-encoded-readonly" => 0o400,
+            "tenant:quarantine-encoded-shared-metadata" => 0o660,
             _ => 0o640,
         };
         (uid, 845, mode)
@@ -200,7 +201,7 @@ fn candidate_names(inputs: &Inputs) -> io::Result<Vec<String>> {
         | "tenant:quarantine-encoded-readonly" => {
             vec![format!("encoded.{digest}.0.{tag}")]
         }
-        "tenant:quarantine-encoded-pack" => vec![
+        "tenant:quarantine-encoded-pack" | "tenant:quarantine-encoded-shared-metadata" => vec![
             format!("encoded.{digest}.pack.{tag}"),
             format!("encoded.{digest}.idx.{tag}"),
         ],

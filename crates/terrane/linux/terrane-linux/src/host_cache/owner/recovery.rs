@@ -134,7 +134,21 @@ impl CompletedRecovery {
     /// The owner already retains all adopted inline and manifest resources.
     /// Dropping exhaustive cold observations releases their duplicate handles;
     /// they cannot keep later retired sources charged outside the registry.
-    pub(crate) fn into_running(self) -> RunningRecovery {
+    pub(crate) fn into_running(mut self) -> RunningRecovery {
+        // Completed recovery checked these exact referenced pairs against both
+        // the full inventory and reconstruction handles. Their Arc capacity was
+        // reserved before completion. Transfer them before dropping cold handles;
+        // only the running owner can fund and import them into read custody.
+        for candidate in self.inventory.candidates() {
+            if let Some(crate::host_cache::VerifiedEncodedBody::Pack(source)) = candidate.verified()
+                && self
+                    .metadata_sources
+                    .iter()
+                    .any(|retained| retained.pack_id() == source.pack_id())
+            {
+                self.metadata_pairs.push(Arc::clone(source));
+            }
+        }
         RunningRecovery {
             _custody: self.custody,
             bootstrap_id: self.recovery_id,

@@ -174,9 +174,7 @@ impl ContentStore for NativeContentStore {
                         .map_err(|error| native_failure(error, identity));
                     self.finish(result, vec![lease]).await?
                 }
-                // Only an exhausted actual registry permits the retained-source
-                // reader. Native ENOENT, corruption or stale custody never does.
-                None => self.ready.metadata().get(identity).await?,
+                None => return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone()))),
             }
         };
         match range {

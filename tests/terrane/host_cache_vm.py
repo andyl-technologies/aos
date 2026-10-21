@@ -96,6 +96,7 @@ ENCODED_QUARANTINE_CASES = [
     "quarantine-encoded-chunk", "quarantine-encoded-pack", "quarantine-encoded-partial",
     "quarantine-encoded-foreign", "quarantine-encoded-malformed",
     "quarantine-encoded-private", "quarantine-encoded-readonly",
+    "quarantine-encoded-shared-metadata",
 ]
 QUARANTINE_CASES = [
     "quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged",
@@ -103,6 +104,7 @@ QUARANTINE_CASES = [
 RECOVERABLE_ENCODED_QUARANTINE = {
     "quarantine-encoded-chunk", "quarantine-encoded-pack", "quarantine-encoded-partial",
     "quarantine-encoded-private", "quarantine-encoded-readonly",
+    "quarantine-encoded-shared-metadata",
 }
 CASES += QUARANTINE_CASES
 CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure"]
@@ -1535,7 +1537,7 @@ def main():
                         "unknown state directory changed or disappeared")
         for case in QUARANTINE_CASES:
             entries = list((root(case) / "quarantine").iterdir())
-            require(len(entries) == (2 if case in {"quarantine-tagged", "quarantine-encoded-pack"} else 1), "quarantine seed inventory changed")
+            require(len(entries) == (2 if case in {"quarantine-tagged", "quarantine-encoded-pack", "quarantine-encoded-shared-metadata"} else 1), "quarantine seed inventory changed")
             originals = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid)
                          for path in entries}
             recoverable = case in {"quarantine-only", "quarantine-tagged"} | RECOVERABLE_ENCODED_QUARANTINE

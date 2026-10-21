@@ -755,6 +755,19 @@ impl NativeOwnerExecutor {
                         super::super::admission::recovery::import_metadata(self, &source).await?;
                         self.recovered_metadata.pop();
                     }
+                    // Recovered reconstruction sources share the imported pair's
+                    // healthy publisher observation before Resume can return.
+                    // Its original metadata holds and pins remain independent.
+                    {
+                        let custody = self.custody.lock().map_err(|_| {
+                            io::Error::other("recovered metadata binding custody poisoned")
+                        })?;
+                        for source in &self.manifest_sources {
+                            super::super::admission::reads::metadata_activity_order(
+                                self, &custody, source,
+                            )?;
+                        }
+                    }
                     while let Some(source) = self.recovered_chunks.last().cloned() {
                         super::super::admission::recovery::import(self, &source).await?;
                         self.recovered_chunks.pop();

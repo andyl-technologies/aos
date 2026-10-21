@@ -98,9 +98,49 @@ pub(super) struct PendingFile {
     published: bool,
     closed: Option<FileStamp>,
     canonical_stamp: Option<FileStamp>,
+    closed_mode: u32,
 }
 
 impl PendingFile {
+    /// Verifies closed bytes under this member's original admitted custody mode.
+    ///
+    /// # Errors
+    /// Refuses changed native ownership, mode, project, links or payload bytes.
+    pub(super) fn verify_custodied(
+        &self,
+        owner: &Custody,
+        file: &File,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        verify_phase_bytes(owner, file, bytes, self.closed_phase())
+    }
+
+    /// Verifies original bytes after acknowledged unlink under the retained mode.
+    ///
+    /// # Errors
+    /// Refuses remaining links, changed original mode, ownership, project or bytes.
+    pub(super) fn verify_unlinked(
+        &self,
+        owner: &Custody,
+        file: &File,
+        bytes: &[u8],
+    ) -> io::Result<()> {
+        let phase = if self.closed_mode == 0o660 {
+            InodePhase::MetadataRetired
+        } else {
+            InodePhase::Retired
+        };
+        verify_phase_bytes(owner, file, bytes, phase)
+    }
+
+    fn closed_phase(&self) -> InodePhase {
+        if self.closed_mode == 0o660 {
+            InodePhase::MetadataClosed
+        } else {
+            InodePhase::Closed
+        }
+    }
+
     /// Refreshes only rename-induced ctime after acknowledged original restoration.
     ///
     /// # Errors
@@ -133,7 +173,7 @@ impl PendingFile {
         }
         let named = open_regular_at(&self.parent.file, &self.canonical)?;
         same_inode(reader, &named)?;
-        verify_custodied_bytes(owner, reader, bytes)?;
+        self.verify_custodied(owner, reader, bytes)?;
         let current = FileStamp::capture(reader)?;
         let original = self
             .canonical_stamp
@@ -169,7 +209,7 @@ impl PendingFile {
             .ok_or_else(|| io::Error::other("admission reader absent"))?;
         let named = open_regular_at(&self.parent.file, &self.canonical)?;
         same_inode(reader, &named)?;
-        check(owner, reader, InodePhase::Closed)?;
+        check(owner, reader, self.closed_phase())?;
         let stamp = self
             .canonical_stamp
             .as_ref()
@@ -238,7 +278,7 @@ impl PendingFile {
                     "source closure differs from original descriptors",
                 ));
             }
-            verify_unlinked_bytes(owner, file, bytes)?;
+            self.verify_unlinked(owner, file, bytes)?;
         }
         // Every fallible check precedes either close. The original correlated
         // acknowledgement stays with the job, including after cancellation.
@@ -339,6 +379,7 @@ pub(super) fn pending(parent: Parent, canonical: String) -> io::Result<PendingFi
         published: false,
         closed: None,
         canonical_stamp: None,
+        closed_mode: 0o640,
     })
 }
 
@@ -358,19 +399,52 @@ pub(super) fn recover(
     source: &File,
     bytes: &[u8],
 ) -> io::Result<PendingFile> {
-    parent.recheck(owner)?;
+    recover_with_mode(owner, parent, canonical, source, bytes, 0o640)
+}
+
+/// Imports an actual verified metadata pair member with its original shared mode.
+///
+/// # Errors
+/// Refuses modes outside canonical and existing group-writable metadata custody,
+/// changed original bytes/inodes, ownership, project or synchronization failures.
+pub(super) fn recover_metadata(
+    owner: &Custody,
+    parent: Parent,
+    canonical: String,
+    source: &File,
+    bytes: &[u8],
+) -> io::Result<PendingFile> {
+    let mode = source.metadata()?.mode() & 0o7777;
+    if !matches!(mode, 0o640 | 0o660) {
+        return Err(io::Error::other(
+            "recovered metadata has unsupported original custody mode",
+        ));
+    }
+    recover_with_mode(owner, parent, canonical, source, bytes, mode)
+}
+
+fn recover_with_mode(
+    owner: &Custody,
+    parent: Parent,
+    canonical: String,
+    source: &File,
+    bytes: &[u8],
+    closed_mode: u32,
+) -> io::Result<PendingFile> {
+    let mut recovered = pending(parent, canonical)?;
+    recovered.closed_mode = closed_mode;
+    recovered.parent.recheck(owner)?;
     if fs::fcntl_getfl(source)?.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH) {
         return Err(io::Error::other("recovery source is not readonly"));
     }
-    let named = open_regular_at(&parent.file, &canonical)?;
+    let named = open_regular_at(&recovered.parent.file, &recovered.canonical)?;
     same_inode(source, &named)?;
-    verify_custodied_bytes(owner, source, bytes)?;
+    recovered.verify_custodied(owner, source, bytes)?;
     let stamp = FileStamp::capture(source)?;
     source.sync_all()?;
-    parent.file.sync_all()?;
+    recovered.parent.file.sync_all()?;
     stamp.check(source)?;
     stamp.check(&named)?;
-    let mut recovered = pending(parent, canonical)?;
     recovered.readonly = Some(source.try_clone()?);
     recovered.published = true;
     recovered.closed = Some(stamp.clone());
@@ -508,7 +582,7 @@ pub(super) fn check_current(
         .as_ref()
         .ok_or_else(|| io::Error::other("canonical admission stamp absent"))?;
     stamp.check(reader)?;
-    verify_custodied_bytes(owner, reader, bytes)?;
+    pending.verify_custodied(owner, reader, bytes)?;
     let closing_name = open_regular_at(&pending.parent.file, &pending.canonical)?;
     same_inode(reader, &closing_name)?;
     stamp.check(&closing_name)?;
@@ -555,12 +629,14 @@ enum InodePhase {
     Writer,
     Closed,
     Retired,
+    MetadataClosed,
+    MetadataRetired,
 }
 
 impl InodePhase {
     fn file_links(self) -> u64 {
         match self {
-            Self::Retired => 0,
+            Self::Retired | Self::MetadataRetired => 0,
             _ => 1,
         }
     }
@@ -570,6 +646,7 @@ impl InodePhase {
             Self::Directory => 0o2770,
             Self::Writer => 0o600,
             Self::Closed | Self::Retired => 0o640,
+            Self::MetadataClosed | Self::MetadataRetired => 0o660,
         }
     }
 }
@@ -652,14 +729,6 @@ impl FileStamp {
 /// Refuses changed bytes or inconsistent inode and project custody.
 pub(super) fn verify_custodied_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
     verify_phase_bytes(owner, file, bytes, InodePhase::Closed)
-}
-
-/// Checks original encoded bytes after acknowledged final unlinking.
-///
-/// # Errors
-/// Refuses remaining links, changed bytes, ownership, project or metadata.
-pub(super) fn verify_unlinked_bytes(owner: &Custody, file: &File, bytes: &[u8]) -> io::Result<()> {
-    verify_phase_bytes(owner, file, bytes, InodePhase::Retired)
 }
 
 fn verify_phase_bytes(

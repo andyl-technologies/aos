@@ -25,16 +25,11 @@ pub(super) async fn retain_running(
     identity: Identity,
 ) -> io::Result<RetainedManifest> {
     let context = executor.admission_context()?;
-    match super::super::admission::metadata_reads::AdmittedMetadataRead::prepare_retention(
+    super::super::admission::metadata_reads::AdmittedMetadataRead::prepare_retention(
         executor,
         identity.clone(),
-    ) {
-        Ok(source) => {
-            source.read_verified()?;
-        }
-        Err(error) if super::super::admission::metadata_reads::cache_absent(&error) => {}
-        Err(error) => return Err(error),
-    }
+    )?
+    .read_verified()?;
     retain_with_authority(identity, Authority::Running { executor, context }).await
 }
 

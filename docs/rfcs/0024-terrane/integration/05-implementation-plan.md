@@ -8694,6 +8694,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Cold reconstruction read preparation (2026-10-21): after actual acknowledged
+Resume, every referenced verified metadata pair transfers from the completed
+inventory into the physical admission registry, using Arc capacity reserved
+before completion. Its actual original pack/index files undergo funded native
+import and cache handoff; existing reconstruction holds and pins remain intact.
+Recovered reconstruction sources bind to the imported pair's healthy publisher
+observation before Resume returns. Running retention requires this original
+admission custody, and ContentStore metadata reads use actual consumer grants;
+absence of registered metadata no longer falls back to an unregistered pathname
+reader. Runtime/application qualification and exact post-Resume policy controls
+remain pending; no T2 task is accepted.
+
 Metadata adapter preparation (2026-10-21): ContentStore metadata reads select
 an actual cached pair consumer grant before using the retained-source reader.
 Only a typed exhausted physical registry lookup permits that fallback; native

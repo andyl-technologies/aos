@@ -208,7 +208,14 @@ pub(super) async fn run(
         )?)?;
     }
     let final_inventory = inspector.inspect()?;
-    let metadata_pairs = recovery_metadata::select(&final_inventory, executor.manifest_sources())?;
+    let mut metadata_pairs =
+        recovery_metadata::select(&final_inventory, executor.manifest_sources())?;
+    // Resume also transfers the verified pairs referenced by reconstruction.
+    // Reserve their bounded Arc slots before issuing completion; moving those
+    // original sources after acknowledgment must not allocate or fail.
+    metadata_pairs
+        .try_reserve_exact(final_inventory.candidates().len())
+        .map_err(io::Error::other)?;
     let mut verified_hashes = recovery_encoded::hashes(&encoded_chunks);
     verified_hashes.extend(recovery_metadata::hashes(&metadata_pairs)?);
     shared.require_sources(

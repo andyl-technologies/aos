@@ -50,13 +50,21 @@ pub(super) fn seed(inputs: &Inputs, manifest: &[u8]) -> io::Result<()> {
 struct Original {
     path: PathBuf,
     inode: (u64, u64),
+    mode: u32,
     bytes: Vec<u8>,
 }
 
-/// Captures comparison data without retaining hidden native source descriptors.
+struct OriginalPair {
+    pack: SealedPack,
+    hashes: BTreeSet<String>,
+    originals: Vec<Original>,
+    descriptions: usize,
+}
+
+/// Captures exact seeded pairs and policy without retaining extra native handles.
 pub(super) struct Observation {
     policy: CacheState,
-    originals: Vec<Original>,
+    pairs: Vec<OriginalPair>,
     started: u64,
 }
 
@@ -86,35 +94,82 @@ fn policy(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<Cach
 }
 
 impl Observation {
-    /// Captures actual original files and funded policy before acknowledged Resume.
+    /// Captures every exact seeded metadata pair before acknowledged Resume.
     ///
     /// # Errors
-    /// Refuses unreadable original files or missing actual synchronized policy.
+    /// Refuses unexpected fixture bytes, missing originals or synchronized policy.
     pub(super) fn capture(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<Self> {
-        let originals = paths(inputs)
-            .into_iter()
-            .map(|path| {
-                let value = fs::metadata(&path)?;
+        let mut pairs = Vec::new();
+        for shard in fs::read_dir(inputs.root.join("objects/pack"))? {
+            for entry in fs::read_dir(shard?.path())? {
+                let path = entry?.path();
+                if path.extension().is_none_or(|extension| extension != "pack") {
+                    continue;
+                }
                 let bytes = fs::read(&path)?;
-                Ok(Original {
-                    path,
-                    inode: (value.dev(), value.ino()),
-                    bytes,
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
+                let reader = PackReader::open(&bytes).map_err(io::Error::other)?;
+                let id = reader.header().id();
+                let orphan = id == PackId::from_random_bytes([113; 16]);
+                let pack = if orphan {
+                    pair(&Fixture::new()?.manifest)?
+                } else {
+                    let mut writer = PackWriter::new(id, PackClass::Meta, false);
+                    writer
+                        .append_raw(EntryKind::Manifest, &Fixture::new()?.manifest)
+                        .map_err(io::Error::other)?;
+                    writer.seal().map_err(io::Error::other)?
+                };
+                let mut hashes = BTreeSet::from([hex(TERRANE_V1
+                    .calculate(IdentityKind::Pack, pack.bytes())
+                    .map_err(io::Error::other)?
+                    .digest())]);
+                hashes.extend(reader.entries().iter().map(|entry| hex(entry.hash())));
+                let mut originals = Vec::new();
+                for (path, expected) in [
+                    (inputs.root.join(id.index_key()), pack.index_object()),
+                    (inputs.root.join(id.pack_key()), pack.bytes()),
+                ] {
+                    let metadata = fs::metadata(&path)?;
+                    let bytes = fs::read(&path)?;
+                    if bytes != expected {
+                        return Err(invalid(
+                            "cold metadata fixture differs from its seeded original pair",
+                        ));
+                    }
+                    originals.push(Original {
+                        path,
+                        inode: (metadata.dev(), metadata.ino()),
+                        mode: metadata.mode() & 0o7777,
+                        bytes,
+                    });
+                }
+                // Referenced pairs have one reconstruction source and one
+                // retained native verification result, plus the running import.
+                // An unreferenced pair has only its actual running admission.
+                pairs.push(OriginalPair {
+                    pack,
+                    hashes,
+                    originals,
+                    descriptions: if orphan { 1 } else { 3 },
+                });
+            }
+        }
+        let expected = if inputs.domain == DOMAIN { 2 } else { 1 };
+        if pairs.len() != expected {
+            return Err(invalid("cold metadata fixture pair inventory differs"));
+        }
         Ok(Self {
             policy: policy(runtime, inputs)?,
-            originals,
+            pairs,
             started: now()?,
         })
     }
 
-    /// Checks actual original pair custody and only the newly funded cache grace.
+    /// Checks every new exact cache grace while preserving all original promises.
     ///
     /// # Errors
-    /// Refuses replaced or changed sources, hidden descriptors, changed original
-    /// promises, missing grace, leaked future holds or failed duplicate protection.
+    /// Refuses changed original inodes, modes, bytes or policy, hidden descriptors,
+    /// missing/extra grace closures, leaked holds or failed duplicate protection.
     pub(super) fn check(
         self,
         owner: &NativeMetadataOwner,
@@ -122,31 +177,32 @@ impl Observation {
         inputs: &Inputs,
     ) -> io::Result<()> {
         let after = policy(runtime, inputs)?;
-        let graces = after
+        let mut graces = after
             .leases
             .iter()
-            .filter(|lease| lease.owner.starts_with("admission-grace:"))
+            .filter(|lease| {
+                lease.owner.starts_with("admission-grace:")
+                    && !self
+                        .policy
+                        .leases
+                        .iter()
+                        .any(|old| old.owner == lease.owner && old.expires == lease.expires)
+            })
             .collect::<Vec<_>>();
-        let [grace] = graces.as_slice() else {
-            return Err(invalid("mixed metadata omitted its unique actual grace"));
-        };
-        let pack = pair(&Fixture::new()?.manifest)?;
-        let mut hashes = BTreeSet::from([hex(TERRANE_V1
-            .calculate(IdentityKind::Pack, pack.bytes())
-            .map_err(io::Error::other)?
-            .digest())]);
-        hashes.extend(
-            terrane_sdk::pack::PackReader::open(pack.bytes())
-                .map_err(io::Error::other)?
-                .entries()
-                .iter()
-                .map(|entry| hex(entry.hash())),
-        );
-        let pins = after
-            .pins
+        let added_pins = self
+            .pairs
             .iter()
-            .filter(|pin| pin.owner == grace.owner)
-            .collect::<Vec<_>>();
+            .map(|pair| pair.hashes.len())
+            .sum::<usize>();
+        if graces.len() != self.pairs.len()
+            || after.pins.len() != self.policy.pins.len() + added_pins
+            || after.leases.len() != self.policy.leases.len() + self.pairs.len()
+            || !same_original(&self.policy, &after)
+        {
+            return Err(invalid(
+                "cold metadata import changed original policy or its exact new cache closure",
+            ));
+        }
         let earliest = self
             .started
             .checked_add(30)
@@ -154,60 +210,113 @@ impl Observation {
         let latest = now()?
             .checked_add(30)
             .ok_or_else(|| invalid("metadata grace deadline overflows"))?;
-        if grace.expires < earliest
-            || grace.expires > latest
-            || pins.len() != hashes.len()
-            || pins
+        for pair in self.pairs {
+            let position = graces
                 .iter()
-                .any(|pin| pin.expires != grace.expires || !hashes.contains(&pin.hash))
-            || after.pins.len() != self.policy.pins.len() + hashes.len()
-            || after.leases.len() != self.policy.leases.len() + 1
-            || !same_original(&self.policy, &after)
-        {
-            eprintln!(
-                "mixed metadata policy mismatch: before={:?} after={after:?} expected_hashes={hashes:?} earliest={earliest} latest={latest}",
-                self.policy
-            );
-            return Err(invalid(
-                "mixed metadata changed original policy or lost actual funded grace",
-            ));
-        }
-        for original in self.originals {
-            let value = fs::metadata(&original.path)?;
-            let mut descriptions = 0;
-            for entry in fs::read_dir("/proc/self/fd")? {
-                let value = match fs::metadata(entry?.path()) {
-                    Ok(value) => value,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error),
-                };
-                descriptions += usize::from((value.dev(), value.ino()) == original.inode);
-            }
-            if (value.dev(), value.ino()) != original.inode
-                || fs::read(original.path)? != original.bytes
-                || descriptions != 1
-            {
+                .position(|grace| {
+                    let pins = after
+                        .pins
+                        .iter()
+                        .filter(|pin| pin.owner == grace.owner)
+                        .collect::<Vec<_>>();
+                    pins.len() == pair.hashes.len()
+                        && pins.iter().all(|pin| {
+                            pin.expires == grace.expires && pair.hashes.contains(&pin.hash)
+                        })
+                })
+                .ok_or_else(|| {
+                    invalid("cold metadata pair lacks its exact original-container grace")
+                })?;
+            let grace = graces.remove(position);
+            if grace.expires < earliest || grace.expires > latest {
                 return Err(invalid(
-                    "mixed metadata lost original pair or retained hidden cold descriptors",
+                    "cold metadata cache grace escaped its original deadline bounds",
                 ));
             }
+            for original in pair.originals {
+                let value = fs::metadata(&original.path)?;
+                let mut descriptions = 0;
+                for entry in fs::read_dir("/proc/self/fd")? {
+                    let value = match fs::metadata(entry?.path()) {
+                        Ok(value) => value,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    };
+                    descriptions += usize::from((value.dev(), value.ino()) == original.inode);
+                }
+                if (value.dev(), value.ino()) != original.inode
+                    || value.mode() & 0o7777 != original.mode
+                    || fs::read(original.path)? != original.bytes
+                    || descriptions != pair.descriptions
+                {
+                    eprintln!(
+                        "cold metadata retained descriptions={descriptions} expected={}",
+                        pair.descriptions
+                    );
+                    return Err(invalid(
+                        "cold metadata import changed original pair or retained hidden cold descriptors",
+                    ));
+                }
+            }
+            let snapshot = inputs.root.join("state/cache/records.toml");
+            let before = fs::read(&snapshot)?;
+            let duplicate = runtime.block_on(
+                owner.admit_metadata_pack(
+                    PackReader::open(pair.pack.bytes())
+                        .map_err(io::Error::other)?
+                        .header()
+                        .id(),
+                    pair.pack.bytes().to_vec(),
+                    pair.pack.index_object().to_vec(),
+                ),
+            );
+            if !matches!(duplicate, Err(terrane_linux::host_cache::NativeMetadataAdmissionError::Accepted(error)) if error.kind() == io::ErrorKind::AlreadyExists)
+                || fs::read(snapshot)? != before
+            {
+                return Err(invalid(
+                    "cold metadata duplicate changed original cache funding",
+                ));
+            }
+            if inputs.domain == DOMAIN {
+                let reader = PackReader::open(pair.pack.bytes()).map_err(io::Error::other)?;
+                let entry = reader
+                    .entries()
+                    .first()
+                    .ok_or_else(|| invalid("cold metadata fixture has no manifest"))?;
+                let identity = TERRANE_V1
+                    .from_digest(IdentityKind::Manifest, entry.hash())
+                    .map_err(io::Error::other)?;
+                let start = usize::try_from(entry.offset()).map_err(io::Error::other)?;
+                let end = start
+                    .checked_add(usize::try_from(entry.body_len()).map_err(io::Error::other)?)
+                    .ok_or_else(|| invalid("cold metadata fixture range overflows"))?;
+                let expected = pair
+                    .pack
+                    .bytes()
+                    .get(start..end)
+                    .ok_or_else(|| invalid("cold metadata original manifest range absent"))?;
+                let expires = now()?
+                    .checked_add(90)
+                    .ok_or_else(|| invalid("cold metadata read deadline overflows"))?;
+                let lease = runtime.block_on(owner.pin_resident_metadata(identity, expires))?;
+                if lease.read_verified()? != expected || lease.read_encoded()? != expected {
+                    return Err(invalid(
+                        "cold metadata consumer changed original canonical bytes",
+                    ));
+                }
+                runtime.block_on(owner.release_consumer_lease(&lease))?;
+                println!(
+                    "PASS actual cold metadata consumer reads original imported pair and releases its durable lease"
+                );
+            }
         }
-        let snapshot = inputs.root.join("state/cache/records.toml");
-        let before = fs::read(&snapshot)?;
-        let duplicate = runtime.block_on(owner.admit_metadata_pack(
-            PackId::from_random_bytes([113; 16]),
-            pack.bytes().to_vec(),
-            pack.index_object().to_vec(),
-        ));
-        if !matches!(duplicate, Err(terrane_linux::host_cache::NativeMetadataAdmissionError::Accepted(error)) if error.kind() == io::ErrorKind::AlreadyExists)
-            || fs::read(snapshot)? != before
-        {
-            return Err(invalid(
-                "mixed metadata duplicate changed original cache funding",
-            ));
+        if inputs.domain == DOMAIN {
+            println!(
+                "PASS additional metadata pair retained original inodes and actual cache grace beside recovered sealed content; no hidden cold descriptors or duplicate funding"
+            );
         }
         println!(
-            "PASS additional metadata pair retained original inodes and actual cache grace beside recovered sealed content; no hidden cold descriptors or duplicate funding"
+            "PASS actual referenced cold metadata imported original pair with exact cache grace, unchanged reconstruction funding and original modes before serving grants"
         );
         Ok(())
     }

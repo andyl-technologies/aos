@@ -13,7 +13,7 @@ pub(in crate::host_cache::owner) use lifecycle::{
     restore_pack, retire,
 };
 
-use super::{AdmissionJob, Input, backing, io as native, reconcile, state};
+use super::{AdmissionJob, Input, backing, reconcile, state};
 use crate::{
     host_cache::owner::{
         consumer::state as policy,
@@ -192,10 +192,14 @@ impl EncodedAllocation {
                     return Err(invalid("encoded eviction changed retained inode"));
                 }
                 let bytes = input_bytes(&job, index)?;
+                let original = job
+                    .files
+                    .get(index)
+                    .ok_or_else(|| invalid("encoded eviction lost original member custody"))?;
                 if removed {
-                    native::verify_unlinked_bytes(&owner, file, bytes)?;
+                    original.verify_unlinked(&owner, file, bytes)?;
                 } else {
-                    native::verify_custodied_bytes(&owner, file, bytes)?;
+                    original.verify_custodied(&owner, file, bytes)?;
                 }
             }
         }
@@ -232,7 +236,10 @@ impl EncodedAllocation {
             .first()
             .ok_or_else(|| invalid("encoded inspection lost original job"))?;
         let job = backing::lock(resource)?;
-        native::verify_custodied_bytes(&owner, file, input_bytes(&job, index)?)?;
+        job.files
+            .get(index)
+            .ok_or_else(|| invalid("encoded inspection lost original member custody"))?
+            .verify_custodied(&owner, file, input_bytes(&job, index)?)?;
         Ok(())
     }
 

@@ -48,6 +48,7 @@ struct Member {
     stamp: native::FileStamp,
     inode: (u64, u64, u64),
     expected: Arc<Vec<u8>>,
+    mode: u32,
 }
 
 impl AdmittedMetadataRead {
@@ -144,6 +145,7 @@ impl AdmittedMetadataRead {
                     stamp,
                     inode: (metadata.dev(), metadata.ino(), metadata.len()),
                     expected: Arc::clone(expected),
+                    mode: metadata.mode() & 0o7777,
                 })
             };
             let start = usize::try_from(entry.offset()).map_err(io::Error::other)?;
@@ -342,7 +344,8 @@ impl AdmittedMetadataRead {
                     || metadata.gid() != self.gid
                     || !metadata.is_file()
                     || metadata.nlink() != 1
-                    || metadata.mode() & 0o7777 != 0o640
+                    || !matches!(member.mode, 0o640 | 0o660)
+                    || metadata.mode() & 0o7777 != member.mode
                     || fs::fcntl_getfl(&member.file)?
                         .intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
                     || NativeProject::inspect(&member.file)?.project_id != self.project

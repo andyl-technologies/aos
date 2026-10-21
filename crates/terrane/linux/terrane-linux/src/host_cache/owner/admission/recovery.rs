@@ -178,14 +178,14 @@ pub(in crate::host_cache::owner) async fn import_metadata(
             let original_index = source
                 .present_index_file()
                 .ok_or_else(|| io::Error::other("verified metadata index absent"))?;
-            job.files.push(native::recover(
+            job.files.push(native::recover_metadata(
                 &owner,
                 parent.try_clone()?,
                 format!("{id}.idx"),
                 original_index,
                 &index,
             )?);
-            job.files.push(native::recover(
+            job.files.push(native::recover_metadata(
                 &owner,
                 parent,
                 format!("{id}.pack"),

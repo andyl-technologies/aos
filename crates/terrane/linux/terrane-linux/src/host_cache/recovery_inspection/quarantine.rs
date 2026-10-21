@@ -109,7 +109,9 @@ impl NativeRecoveryInspector {
         self.custody.check(&observed, false)?;
         // Rejected custody may have lost group access or write access. These
         // readable owner-only classes still supply no serving grant.
-        let readable_mode = matches!(observed.mode() & 0o7777, 0o400 | 0o600 | 0o640);
+        let metadata_member = matches!(name.split('.').nth(2), Some("pack" | "idx"));
+        let readable_mode = matches!(observed.mode() & 0o7777, 0o400 | 0o600 | 0o640)
+            || (metadata_member && observed.mode() & 0o7777 == 0o660);
         if observed.nlink() != 1
             || !readable_mode
             || observed.dev() != self.layout.directory_binding("layout-root")?.0
