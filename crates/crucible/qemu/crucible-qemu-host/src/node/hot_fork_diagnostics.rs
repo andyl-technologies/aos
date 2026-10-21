@@ -1,5 +1,6 @@
 //! Branch-private diagnostics endpoint staging for a retained QEMU template.
 
+use std::borrow::Cow;
 use std::io::{self, Read};
 use std::net::Shutdown;
 use std::os::fd::{AsFd, AsRawFd};
@@ -517,7 +518,9 @@ pub enum QemuHotForkChildDiagnosticStageError {
 #[path = "hot_fork_diagnostics/staging.rs"]
 mod staging;
 
-fn diagnostic_rejected(message: impl Into<String>) -> QemuHotForkChildDiagnosticStageError {
+fn diagnostic_rejected(
+    message: impl Into<Cow<'static, str>>,
+) -> QemuHotForkChildDiagnosticStageError {
     diagnostic_rejected_source(QemuNodeChannelError::new(
         "stage hot-fork child diagnostics",
         message,

@@ -6,6 +6,124 @@ use crucible_engine::SchedulerError;
 use std::error::Error;
 
 #[test]
+fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let timeout = Duration::from_millis(17);
+    let (errors, counts) = TestAllocationObserver::count(|| {
+        let first = QemuNodeChannelError::new("channel", "fixed refusal");
+        let alias = first.clone();
+        [
+            first,
+            alias,
+            QemuNodeChannelError::retryable("channel", "fixed pending"),
+            QemuNodeChannelError::bounded_await_timeout("channel", "fixed timeout", timeout),
+        ]
+    });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(
+        errors
+            .iter()
+            .all(|error| matches!(error.message, Cow::Borrowed(_)))
+    );
+    assert_eq!(errors[0], errors[1]);
+    assert!(!errors[0].is_retryable());
+    assert!(errors[2].is_retryable());
+    assert_eq!(errors[3].bounded_timeout(), Some(timeout));
+
+    let constructors: [fn(String) -> QemuNodeChannelError; 3] = [
+        |message| QemuNodeChannelError::new("owned channel", message),
+        |message| QemuNodeChannelError::retryable("owned channel", message),
+        |message| {
+            QemuNodeChannelError::bounded_await_timeout(
+                "owned channel",
+                message,
+                Duration::from_millis(17),
+            )
+        },
+    ];
+    for construct in constructors {
+        let message = String::from("original owned channel diagnostic");
+        let allocation = message.as_ptr();
+        let (error, counts) = TestAllocationObserver::count(|| construct(message));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(matches!(error.message, Cow::Owned(_)));
+        assert_eq!(error.message.as_ptr(), allocation);
+        assert_eq!(error.message, "original owned channel diagnostic");
+
+        let (node, counts) = TestAllocationObserver::count(|| {
+            QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, error)
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        let QemuNodeError::Channel { message, .. } = node else {
+            panic!("channel conversion preserves its original diagnostic");
+        };
+        assert!(matches!(message, Cow::Owned(_)));
+        assert_eq!(message.as_ptr(), allocation);
+    }
+}
+
+#[test]
+fn unsupported_supervised_quit_refuses_without_allocation_or_effect() -> Result<(), Box<dyn Error>>
+{
+    use crate::QemuPluginIpcControlChannel;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    struct UnsupervisedChannel {
+        sent: bool,
+    }
+
+    impl QemuPluginIpcControlChannel for UnsupervisedChannel {
+        fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
+            self.sent = true;
+            Ok(())
+        }
+    }
+
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    let mut channel = UnsupervisedChannel { sent: false };
+
+    let (result, counts) = TestAllocationObserver::count(|| {
+        channel.send_quit_supervised(&original).map_err(|error| {
+            QemuNodeError::from_channel(QemuNodeChannelPlane::PluginIpcControl, error)
+        })
+    });
+
+    let error = result.expect_err("the actual default requires a bounded cleanup writer");
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(!channel.sent);
+    let QemuNodeError::Channel {
+        plane,
+        operation,
+        message,
+    } = error
+    else {
+        panic!("the actual default retains the channel role and diagnostic");
+    };
+    assert_eq!(plane, QemuNodeChannelPlane::PluginIpcControl);
+    assert_eq!(operation, "send supervised plugin Quit");
+    assert_eq!(message, "transport has no bounded cleanup writer");
+    assert!(matches!(message, Cow::Borrowed(_)));
+    original.wait_slice()?;
+    Ok(())
+}
+
+#[test]
 fn operational_failure_kind_survives_node_and_scheduler_conversion() {
     for (source, kind) in [
         (

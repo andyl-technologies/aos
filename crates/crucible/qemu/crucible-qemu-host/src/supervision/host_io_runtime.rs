@@ -22,6 +22,8 @@
 //! signal-coordinator capabilities are never shared across worlds; the child
 //! retains only the requirement for a fresh branch-local coordinator.
 
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+use std::borrow::Cow;
 use std::fs::File;
 use std::os::fd::BorrowedFd;
 use std::sync::Arc;
@@ -705,7 +707,7 @@ impl Drop for QemuLiveHostIoRuntime {
 }
 
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
-fn reader_probe_error(message: impl Into<String>) -> crate::QemuNodeChannelError {
+fn reader_probe_error(message: impl Into<Cow<'static, str>>) -> crate::QemuNodeChannelError {
     crate::QemuNodeChannelError::new("probe retained host reader ownership", message)
 }
 

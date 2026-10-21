@@ -1,5 +1,6 @@
 //! Branch-private plugin control and wake endpoint staging.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, Read};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -718,7 +719,7 @@ impl QemuNode {
     }
 }
 
-fn endpoint_rejected(message: impl Into<String>) -> QemuHotForkPluginEndpointStageError {
+fn endpoint_rejected(message: impl Into<Cow<'static, str>>) -> QemuHotForkPluginEndpointStageError {
     endpoint_rejected_source(QemuNodeChannelError::new(
         "stage hot-fork plugin endpoints",
         message,

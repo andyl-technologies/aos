@@ -7,6 +7,7 @@
 //! the branch-private child QMP endpoint and sole diagnostics reader into the
 //! returned launch token.
 
+use std::borrow::Cow;
 use std::os::fd::OwnedFd;
 use thiserror::Error;
 
@@ -308,7 +309,7 @@ struct QemuHotForkRetainedState {
     child_files: crate::QmpHotForkChildFilesState,
 }
 
-fn hot_fork_request_basis_mismatch(message: impl Into<String>) -> QemuNodeChannelError {
+fn hot_fork_request_basis_mismatch(message: impl Into<Cow<'static, str>>) -> QemuNodeChannelError {
     QemuNodeChannelError::new("derive retained hot-fork request", message)
 }
 

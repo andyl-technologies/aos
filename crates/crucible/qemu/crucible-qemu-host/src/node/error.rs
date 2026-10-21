@@ -1,5 +1,6 @@
 //! Scheduler-facing QEMU node channel roles and errors.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
@@ -50,8 +51,8 @@ impl fmt::Display for QemuNodeChannelPlane {
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Deterministic failure detail.
-    pub message: String,
+    /// Failure detail, borrowed for static text or moved from an owned message.
+    pub message: Cow<'static, str>,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
@@ -59,9 +60,12 @@ pub struct QemuNodeChannelError {
 }
 
 impl QemuNodeChannelError {
-    /// Creates a channel operation error.
+    /// Creates a channel operation error without copying its diagnostic.
+    ///
+    /// Static text is borrowed. An owned message retains its allocation and
+    /// still requires separate admission before the caller constructs it.
     #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
             message: message.into(),
@@ -72,7 +76,7 @@ impl QemuNodeChannelError {
 
     /// Creates a transient channel error for a request that remains in flight.
     #[must_use]
-    pub fn retryable(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn retryable(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
             message: message.into(),
@@ -85,7 +89,7 @@ impl QemuNodeChannelError {
     #[must_use]
     pub fn bounded_await_timeout(
         operation: &'static str,
-        message: impl Into<String>,
+        message: impl Into<Cow<'static, str>>,
         timeout: Duration,
     ) -> Self {
         Self {
@@ -145,8 +149,8 @@ pub enum QemuNodeError {
         plane: QemuNodeChannelPlane,
         /// Channel-local operation name.
         operation: &'static str,
-        /// Deterministic failure detail.
-        message: String,
+        /// Failure detail retaining the channel's borrowed or owned storage.
+        message: Cow<'static, str>,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]

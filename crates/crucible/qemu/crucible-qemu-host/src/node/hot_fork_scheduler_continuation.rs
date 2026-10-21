@@ -7,6 +7,7 @@
 //! adapter can install that continuation only while it retains the source
 //! QEMU's child-status authority and the target attempt's pidfd/cgroup owner.
 
+use std::borrow::Cow;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 
@@ -551,6 +552,6 @@ impl QemuHotForkSchedulerNodeInstallError {
     }
 }
 
-fn invalid_node_continuation(message: impl Into<String>) -> QemuNodeChannelError {
+fn invalid_node_continuation(message: impl Into<Cow<'static, str>>) -> QemuNodeChannelError {
     QemuNodeChannelError::new("capture hot-fork scheduler-node continuation", message)
 }
