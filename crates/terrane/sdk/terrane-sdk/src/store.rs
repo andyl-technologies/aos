@@ -21,6 +21,9 @@ pub(crate) mod protected_read;
 #[cfg(feature = "std")]
 pub mod shared_dir;
 
+/// Composes a read-only cache with the original reference authority.
+pub mod read_only;
+
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
 

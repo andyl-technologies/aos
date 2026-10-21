@@ -296,6 +296,32 @@ impl<S, C> Guard<S, C> {
         guard
     }
 
+    /// Retains original verification bindings while replacing only read content routing.
+    #[cfg(feature = "std")]
+    pub(crate) fn with_read_cache<L>(
+        self,
+        local: L,
+    ) -> Guard<crate::store::read_only::ReadOnlyStore<L, S>, C>
+    where
+        S: crate::store::Store,
+        L: crate::store::ContentStore,
+    {
+        Guard {
+            store: crate::store::read_only::ReadOnlyStore::new(local, self.store),
+            clock: self.clock,
+            keys: self.keys,
+            config: self.config,
+            candidate_preparation_scope: std::sync::Arc::new(()),
+            interpretation: self.interpretation,
+            configured_current: self.configured_current,
+            view_selections: view_selection::ViewSelections::default(),
+            authoring_selection: self.authoring_selection,
+            original_verifier: self.original_verifier,
+            original_baselines: self.original_baselines,
+            original_commits: self.original_commits,
+        }
+    }
+
     /// Returns the actual constructor-selected semantic input without granting authority.
     pub(crate) fn semantic_selection(&self) -> terrane_format::properties::selected::Selection {
         #[cfg(feature = "std")]

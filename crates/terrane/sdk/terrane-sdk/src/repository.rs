@@ -97,6 +97,34 @@ where
     C: Clock + Sync,
     F: LocalFs + Sync,
 {
+    /// Routes read content through a trusted cache while retaining the original authority.
+    ///
+    /// The supplied cache must belong to this repository's disclosure domain.
+    /// Current reference reads and Original verification retain the actual opened
+    /// backend and protected records; cache hits still undergo the same guard and
+    /// signed-history checks. Missing or rejected cache content can use the original
+    /// backend. No cache record becomes reference or authoring authority.
+    ///
+    /// The resulting repository refuses content writes, reference CAS and log
+    /// appends before child effects. Native authoring, audit and deletion bindings
+    /// are removed. This operation performs no IO or native initialization.
+    #[cfg(feature = "std")]
+    pub fn with_read_cache<L>(
+        self,
+        local: L,
+    ) -> Repository<crate::store::read_only::ReadOnlyStore<L, S>, C, F>
+    where
+        L: crate::store::ContentStore + Sync + crate::bucket::BucketBinding,
+        S: crate::bucket::BucketBinding,
+    {
+        Repository {
+            coordinator: self.coordinator.with_read_cache(local),
+            local_backend_root: None,
+            #[cfg(unix)]
+            local_retention: None,
+        }
+    }
+
     /// Borrows the composed coordinator for internal authority and state inspection.
     pub(crate) fn coordinator(&self) -> &Coordinator<S, C, F> {
         &self.coordinator

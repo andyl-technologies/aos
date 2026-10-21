@@ -11334,3 +11334,20 @@ pins, with unchanged reservation counts. It also requires the actor's exact
 original-pair import checks. All original inode, bytes, producer dependency,
 retirement and residence checks remain. Full VM requalification is pending;
 this correction does not close T2.
+
+#### Read-only repository cache composition
+
+`Repository::with_read_cache` now retains the genuinely opened original
+backend, current-reference authority and protected Original verifier while
+routing content through a trusted same-domain cache. Eligible resident failures
+fall back to the original backend; terminal failures remain terminal. Content
+publication, ref CAS and log append are refused before child effects, and
+native authoring/deletion bindings are not transferred. This adapter neither
+admits fetched content nor creates native readiness.
+
+The configured-local-repository integration test publishes a real signed
+repository, reopens its protected authority, reads through actual cache misses,
+rejects a mutation, materializes the authorized pinned SDK snapshot and checks
+that the original publication pointer is unchanged. That test passes. Native
+configured SDK wiring and full application-target compilation remain pending;
+this bridge alone does not close the common-store or T2 gate.

@@ -309,3 +309,126 @@ async fn configured_local_reopen_preserves_signed_current_acl_denial() -> TestRe
     assert!(!fixture.parent.join("configured").exists());
     Ok(())
 }
+
+struct MissingCache {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    capabilities: terrane_sdk::store::Capabilities,
+}
+
+impl MissingCache {
+    fn new(calls: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        use terrane_sdk::store::{Capabilities, Durability, RangeCapability, RefCapability};
+        Self {
+            calls,
+            capabilities: Capabilities {
+                refs: RefCapability::None,
+                ranges: RangeCapability::Ranges,
+                presign: false,
+                locality: Default::default(),
+                durability: Durability::Local,
+                sealed: false,
+            },
+        }
+    }
+}
+
+impl terrane_sdk::store::CapabilityReport for MissingCache {
+    fn capabilities(&self) -> &terrane_sdk::store::Capabilities {
+        &self.capabilities
+    }
+}
+
+#[async_trait::async_trait]
+impl terrane_sdk::store::ContentStore for MissingCache {
+    async fn put(
+        &self,
+        _: terrane_sdk::store::ContentUpload<'_>,
+    ) -> Result<terrane_format::identity::Identity, terrane_sdk::store::StoreFailure> {
+        panic!("read-only composition dispatched a cache write")
+    }
+
+    async fn get(
+        &self,
+        identity: &terrane_format::identity::Identity,
+        _: Option<terrane_sdk::store::ByteRange>,
+    ) -> Result<Vec<u8>, terrane_sdk::store::StoreFailure> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err(terrane_sdk::store::StoreFailure::new(
+            terrane_sdk::store::StoreErrorKind::Absent(identity.clone()),
+        ))
+    }
+
+    async fn has(
+        &self,
+        _: &[terrane_format::identity::Identity],
+    ) -> Result<Vec<bool>, terrane_sdk::store::StoreFailure> {
+        panic!("composition bypassed verified content reads")
+    }
+
+    async fn list(
+        &self,
+        _: &terrane_sdk::store::IdentityPrefix,
+    ) -> Result<Vec<terrane_format::identity::Identity>, terrane_sdk::store::StoreFailure> {
+        panic!("composition used cache listing as original reachability")
+    }
+}
+
+#[tokio::test]
+async fn configured_read_cache_preserves_original_authority_and_refuses_writes() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use terrane_sdk::surface::View;
+
+    let fixture = Fixture::new().await?;
+    let commit = fixture.commit_bytes(OLD).await?;
+    write_read_capability(&fixture).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let repository = config
+        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .await?
+        .with_read_cache(MissingCache::new(Arc::clone(&calls)));
+    let before = std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?;
+
+    let contents = repository
+        .read_file(
+            &View::parse(MAIN)?,
+            b"file",
+            fixture.authority.token(),
+            "sdk",
+        )
+        .await?;
+    assert_eq!(contents, (commit, OLD.to_vec()));
+    assert!(calls.load(Ordering::Relaxed) > 0);
+
+    let mut session = repository
+        .begin(MAIN, fixture.authority.token(), "sdk")
+        .await?;
+    assert!(
+        repository
+            .commit_directory(
+                &mut session,
+                &fixture.parent.join("source"),
+                &fixture.authority,
+                fixture::metadata("Refused cached repository write")
+            )
+            .await
+            .is_err()
+    );
+
+    let prepared =
+        PreparedExposures::prepare(&repository, config.exposures(), &ExplicitFileToken).await?;
+    let handles = prepared.start(&repository).await?;
+    assert_eq!(handles[0].status().commit, commit);
+    assert_eq!(std::fs::read(fixture.parent.join("configured/file"))?, OLD);
+    handles[0].stop()?;
+
+    assert_eq!(
+        std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?,
+        before
+    );
+    Ok(())
+}

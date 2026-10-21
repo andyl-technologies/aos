@@ -200,6 +200,23 @@ impl<S, C, F> Coordinator<S, C, F> {
         Self { guard, timing, fs }
     }
 
+    /// Moves the exact authority, clock and filesystem into read-only cache routing.
+    #[cfg(feature = "std")]
+    pub(crate) fn with_read_cache<L>(
+        self,
+        local: L,
+    ) -> Coordinator<crate::store::read_only::ReadOnlyStore<L, S>, C, F>
+    where
+        S: crate::store::Store,
+        L: crate::store::ContentStore,
+    {
+        Coordinator {
+            fs: self.fs,
+            guard: self.guard.with_read_cache(local),
+            timing: self.timing,
+        }
+    }
+
     /// Returns the repository's authorization enforcement point.
     pub fn guard(&self) -> &Guard<S, C> {
         &self.guard
