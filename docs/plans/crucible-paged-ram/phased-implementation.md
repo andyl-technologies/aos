@@ -2052,6 +2052,29 @@ supervision gate is running. Coverage binds 266 component and 19 native cases;
 Environment and stderr initialization, output funding and backpressure,
 validation-error formatting and complete selected admission remain unqualified.
 
+### 2026-10-21 typed fingerprint validation failures
+
+Commit `b7a51163ba` retains the actual protocol failure or complete component
+failure bitset inline through channel cloning and Node conversion. It preserves
+validation precedence, original error-source links, exact diagnostics and the
+existing scheduler classification. Static missing/incomplete evidence remains
+borrowed. No error path constructs replacement diagnostic storage before the
+caller elects to format the cause.
+
+The pre-change oversized-sample path measured two allocations and two
+reallocations. Nine actual invalid-sample cases now allocate nothing through
+channel cloning and Node conversion, including competing failures, numeric
+limits and each missing component. All 48 fingerprint controls, 219 Node tests
+with one existing ignored test, 73 focused policy checks and five hygiene checks
+pass. Mandatory application compilation passes at
+`/nix/store/9b988hrvj00x4x8izw8sn1l3l91c67gw-aos-test-targets-0.1.0`.
+All 5,261 tracked crate Rust/TOML files match `b7a51163ba` and immutable
+`bxgb8489vi7fb4l7s5zpfr3pk7dmpsn5-aos-workspace-src`. The expanded 169-case
+supervision gate is running. Coverage binds 267 component and 19 native cases;
+243 requirements, 149 uncovered and none fully qualified remain unchanged.
+Final scheduler diagnostic storage, mapped-channel errors, enabled diagnostic
+initialization and output funding, and selected admission remain unqualified.
+
 ### 2026-10-21 native rule and reservation storage custody
 
 Commit `765ecc56c0` integrates atomic
