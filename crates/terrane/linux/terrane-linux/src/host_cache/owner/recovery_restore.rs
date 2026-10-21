@@ -67,7 +67,9 @@ impl PublisherRecoveryRestoreTurn<'_> {
 /// Restores supported original pending bodies alongside existing cache content.
 ///
 /// An otherwise empty, unpinned cache retains the separate expired-retirement
-/// path. Populated recovery restores before reconstructing policy: deleting an
+/// path for inline and encoded bodies. A pending sealed manifest instead restores
+/// together with its reconstruction metadata, even when all of them are pending.
+/// Populated recovery also restores before reconstructing policy: deleting an
 /// expired body first could destroy backing required by a surviving cold pin.
 ///
 /// # Errors
@@ -81,12 +83,14 @@ pub(super) fn run(
     bootstrap_id: &[u8; 16],
     context: &PublisherRecoveryContext<HostDomainLocation>,
 ) -> io::Result<bool> {
+    let pending_manifest = has_pending_manifest(inventory)?;
     let session = {
         let owner = executor
             .custody()
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         if shared.only_empty_scaffolds()
+            && !pending_manifest
             && owner.state.pins.is_empty()
             && owner.state.leases.is_empty()
             && owner.state.residences.is_empty()
@@ -135,6 +139,30 @@ pub(super) fn run(
             .map_err(io::Error::other)?;
     }
     Ok(true)
+}
+
+/// Selects restoration without treating a descriptor as verified backing.
+///
+/// Full candidate validation still precedes every namespace effect. In
+/// particular, a manifest whose complete metadata pair is pending cannot be
+/// classified as an empty cache merely because no canonical names remain.
+fn has_pending_manifest(inventory: &NativeRecoveryInspection) -> io::Result<bool> {
+    for candidate in inventory.candidates() {
+        let key = candidate.key();
+        if key.kind != BodyKind::Sealed as i32 || candidate.pending_observation().is_none() {
+            continue;
+        }
+        let descriptor =
+            Descriptor::decode(&TERRANE_V1, &key.descriptor).map_err(io::Error::other)?;
+        if TERRANE_V1
+            .kind(descriptor.domain())
+            .map_err(io::Error::other)?
+            == IdentityKind::Manifest
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn check_candidate(candidate: &NativeRecoveryCandidate) -> io::Result<()> {
