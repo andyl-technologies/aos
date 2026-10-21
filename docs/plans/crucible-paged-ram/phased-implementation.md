@@ -1775,10 +1775,77 @@ five hygiene controls pass. Mandatory application compilation passes at
 `/nix/store/wf9sq6b731z373pkf29di195ilbkwdgz-aos-test-targets-0.1.0`;
 all 5,258 tracked crate Rust/TOML files byte-match immutable source
 `/nix/store/j0vq3mlpmddzhwjwkdvqpisby8alm4yx-aos-workspace-src`.
-The expanded 146-case hermetic supervision run is pending. Dynamic payloads,
+All 146 exact hermetic supervision cases pass at
+`/nix/store/682jkwszv61n251gjx3rmk3k20zsgbsx-crucible-gate-ram-supervision-0`.
+Dynamic payloads,
 thread-builder allocations and genuine selected Source execution remain
 unqualified. The inventory has 263 bindings: 244 component and 19 native;
 243 requirements, 149 uncovered requirements and zero qualified requirements.
+
+### 2026-10-21 preborn helper and static channel diagnostics
+
+Commit `e83b434377` creates its unpublished helper failure control when the
+actual Main loan is reserved, before helper effects. Recording consumes that
+journal without allocating; unused and final shared controls physically close
+before their original paired credit returns. Three allocation/lifetime tests,
+ten original-controller tests, 73 policy checks, five hygiene checks and final
+mandatory application compilation pass. All 5,258 tracked crate Rust/TOML files
+match immutable `vg53vvfxrqdgm796hiw708bgi3blxirv-aos-workspace-src`.
+All 147 exact hermetic supervision cases pass at
+`/nix/store/84cvvpk8hkb680cm61rj12b7n7vi6hka-crucible-gate-ram-supervision-0`.
+Initial generic-bound and source-contract failures remain recorded. Genuine
+Source/helper admission and dynamic error-payload funding remain unfinished.
+
+Commit `6df9b6f2b0` borrows static channel diagnostics through actual constructors,
+wrappers and Node conversion. Owned diagnostics keep their existing allocation,
+with unchanged timeout, retry and channel coordinates. The actual unsupported
+supervised Quit default refuses without allocating or calling its unsupervised
+writer; the same entered Cleanup stays live. Seven focused cases, 213 Node cases
+(one existing ignored), 26 driver tests, 62 host-I/O controls, 73 policy checks
+and five hygiene checks pass. Final mandatory application compilation passes at
+`/nix/store/iyk3b5g2csi8il2k588niw6pgylam81r-aos-test-targets-0.1.0`;
+all 5,258 tracked crate Rust/TOML files match immutable
+`j46f3yw6ycfiryiyj26slh3an53nj64q-aos-workspace-src`.
+The 149-case exact supervision run is pending. The initial conversion/wrapper
+compile failure and stale reviewed hygiene digest failure remain recorded.
+Dynamic payload funding and broader independent channel/target/health failure
+history remain unfinished. The inventory has 266 bindings: 247 component and
+19 native; 243 requirements, 149 uncovered and zero qualified requirements.
+
+### 2026-10-21 native pending-command custody
+
+Commit `bba6cdc50a` integrates atomic
+`465d47fe92e09345bb2e9e33ad83d3657292bf2f`, tree
+`40790d5277a47d92d034d627d8d261c69c2ffee7`. Actual Node pending controls join
+canonical registration before row/payload birth, retain callback output and
+physical return before independent post, and survive queue unlink and physical
+row/payload/control destruction. Actual command VMState owns staging and
+nonwrapping issuance through construction, publication, commit, queue handoff
+and cleanup. Selected preallocation ENOKEY and full registration-return ENOTSUP
+remain; ordinary non-Node behavior stays intact.
+
+All 187 owning scenarios, signed sole-parent reconstruction and the exact
+278-file license ledger pass. The revised complete causal sweep passes all
+34 independently rebuilt defects with exact intended assertions and no timeouts
+at `/nix/store/00kkz4cdhzdchymi6rb8ibm1vc063cf4-crucible-qemu-received-delivery-causal-11.1.1`.
+The positive takes 46.532 seconds of the unchanged 60-second limit; the slowest
+defect takes 22.439 seconds. Per-call authenticated compile metadata is shared
+between actual event-loop and QOM support selection, retaining every source,
+compiler, output and complete-cohort check. Canonical output equivalence and
+five provenance refusals pass. No cross-call cache or mutant-object sharing is
+introduced. Preserve the preceding causal positive timeout and both diagnostic
+timeouts; core suppression alone did not solve them.
+
+Fresh raw ABI passes for immutable
+`zmdc8ay16gqfswibs0v5canj40b0p9i3-crucible-workspace-src`: 5,257 of its 5,258
+tracked crate Rust/TOML files match the helper checkpoint at comparison time;
+the later helper declaration-clause test correction and subsequent channel
+changes are outside that verdict. Full native compilation completes all 3,863
+targets; 25/26 fixtures pass, with the mandatory launched Source/Root lifecycle
+still failing. Genuine owned Node callbacks, restore/handoff and physical
+retirement remain unexecuted at this artifact. No selected payer, activation,
+ACK or physical peer return is qualified. The full license gate still fails
+at controller lint prerequisites; the ledger does not replace it.
 
 ### Canonical native observation gate cutover (required)
 
