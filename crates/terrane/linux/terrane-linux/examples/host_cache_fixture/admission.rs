@@ -507,8 +507,13 @@ fn chunks(
                 Err(NativeChunkAdmissionError::Accepted(error))
                     if error.kind() == io::ErrorKind::StorageFull
                         && error.to_string()
-                            == "actual charge and future admission holds exceed capacity" => {}
-                _ => return Err(invalid("known preflight capacity deficit did not refuse")),
+                            == "verified admission cannot fit after bounded cache eviction" => {}
+                Err(error) => {
+                    return Err(io::Error::other(format!(
+                        "known preflight capacity deficit returned another refusal: {error}"
+                    )));
+                }
+                Ok(_) => return Err(invalid("known preflight capacity deficit did not refuse")),
             }
             unchanged(inputs, &snapshot, &names)?;
             check_state(runtime, inputs, &holds)?;
