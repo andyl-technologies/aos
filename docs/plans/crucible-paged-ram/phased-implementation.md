@@ -2216,6 +2216,32 @@ Later codec and architecture checkpoints are outside this verdict. Genuine
 provider-backed closure, selected construction, Quantum/Advance issuance,
 activation and full license-boundary qualification remain unfinished.
 
+### 2026-10-21 canonical publisher subscription byte codecs
+
+Commit `35606a0cbe` adds independently implemented permissive Rust codecs for
+canonical publisher headers, immutable commands, publications, receiver returns,
+terminal records and six ticket phases. Exact geometry, zero padding, bounded
+nonwrapping coordinates, typed outcomes and existing Action cohorts are checked.
+Dirty partial projections retain all born debt; negative posts preserve actual
+consumption facts. These copied byte records issue no Source or operation.
+
+All 152 protocol unit tests and 95 protocol integration tests pass, including
+fifteen new codec controls and independent literal public vectors. Strict protocol
+Clippy, all 73 focused policy checks and all five hygiene checks pass. Every
+application unit and integration target compiles at
+`/nix/store/sna0cpwrxkmjw3ijkw09a3ngsyy9i7yh-aos-test-targets-0.1.0`.
+All 5,265 tracked crate Rust/TOML files in immutable
+`7j2gx6jlv6mp57c8jrg58vgw2nxkhsfb-aos-workspace-src` match committed Git blobs;
+source manifest SHA256 is
+`a1a26459f5b9e5fb7da519b827f71bd6769bf343f188f6813b401a88480779a3`.
+The expanded 190-case hermetic supervision gate is still running.
+
+The inventory contains 307 bindings (288 component and 19 native), with 148
+requirements uncovered and none qualified. Actual paid session construction,
+mapping/doorbell custody, bounded atomic snapshots, ticket transitions, physical
+returns and class-1 scheduler ownership remain unfinished. Current transport 8,
+Setup 5 and the unavailable activation declaration are unchanged.
+
 ### 2026-10-21 native rule and reservation storage custody
 
 Commit `765ecc56c0` integrates atomic
