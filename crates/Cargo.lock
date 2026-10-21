@@ -2238,8 +2238,6 @@ dependencies = [
  "aos-linux-descriptors",
  "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-broker-session-protocol",
- "aos-sandbox-broker-session-security",
  "aos-sandbox-controller-domain",
  "aos-sandbox-filesystem-format",
  "aos-sandbox-guest-protocol",

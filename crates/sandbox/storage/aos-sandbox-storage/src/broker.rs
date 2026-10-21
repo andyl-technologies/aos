@@ -5071,7 +5071,6 @@ mod tests {
         RawClockProvenance, ResourceVector, RevocationScopeId, SandboxId, TrustScopeId,
         descriptor_for_bytes, encode_sandbox_spec, sign_statement,
     };
-    use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1;
     use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
     use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
     use aos_sandbox_protocol::{
@@ -9560,12 +9559,12 @@ mod tests {
             method,
             BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
         );
-        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
-            panic!(
-                "Storage Prepare returned an authenticated error: {:?}",
-                outcome.result()
-            );
-        };
+        assert!(
+            outcome.error.is_unset(),
+            "Storage Prepare failed: {:?}",
+            outcome.error
+        );
+        let exact_body = &outcome.body;
         let prepared = PrepareStorageCatalogResponse::decode_from_slice(exact_body).unwrap();
         let expected_generation: u64 = fs::read_to_string(
             Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-generation"),
@@ -9587,16 +9586,7 @@ mod tests {
         if minor == 2 {
             // The signed Storage context is exactly 1.0. The legacy 1.2
             // negotiation cannot be relabeled as an authenticated session.
-            let error = storage_rpc_session::connect(method, Some(minor))
-                .err()
-                .unwrap();
-            assert!(matches!(
-                error.downcast_ref::<aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1>(),
-                Some(aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
-                    | Some(aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1::Protected(
-                        aos_sandbox_broker_session_security::BrokerSessionSecurityError::Manifest { .. }
-                    ))
-            ), "unexpected downgrade rejection: {error}");
+            storage_rpc_session::reject_downgrade(method);
             return;
         }
 
@@ -9628,11 +9618,15 @@ mod tests {
             method,
             BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
         );
-        let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() else {
-            panic!("unavailable Storage method returned success");
-        };
-        assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST);
-        assert!(!error.retryable());
+        let error = outcome
+            .error
+            .as_option()
+            .expect("unavailable Storage method returned success");
+        assert_eq!(
+            error.code,
+            BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
+        );
+        assert!(!error.retryable);
     }
 
     fn storage_rpc_decoy() {
@@ -9700,20 +9694,19 @@ mod tests {
         );
 
         if expect_conflict {
-            let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() else {
-                panic!("Storage repair retry returned success");
-            };
-            assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
-            assert!(!error.retryable());
+            let error = outcome
+                .error
+                .as_option()
+                .expect("Storage repair retry returned success");
+            assert_eq!(error.code, BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
+            assert!(!error.retryable);
         } else {
-            let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result()
-            else {
-                panic!(
-                    "Storage repair returned an authenticated error: {:?}",
-                    outcome.result()
-                );
-            };
-            let result = StorageResult::decode_from_slice(exact_body).unwrap();
+            assert!(
+                outcome.error.is_unset(),
+                "Storage repair failed: {:?}",
+                outcome.error
+            );
+            let result = StorageResult::decode_from_slice(&outcome.body).unwrap();
             let expected =
                 fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("workspace-handle"))
                     .unwrap();
@@ -9730,15 +9723,13 @@ mod tests {
                 ..Default::default()
             },
         );
-        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
-            panic!(
-                "Storage Inventory returned an authenticated error: {:?}",
-                outcome.result()
-            );
-        };
-        exact_body.clone()
+        assert!(
+            outcome.error.is_unset(),
+            "Storage Inventory failed: {:?}",
+            outcome.error
+        );
+        outcome.body
     }
-
     fn storage_rpc_inventory_count(response: &[u8]) -> usize {
         decode_storage_resource_inventory_response(response, STORAGE_RPC_RESPONSE_BYTES)
             .unwrap()

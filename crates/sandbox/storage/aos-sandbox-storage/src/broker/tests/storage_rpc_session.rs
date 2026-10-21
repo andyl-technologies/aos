@@ -1,180 +1,79 @@
-//! Protected client transport for the installed Storage RPC VM fixture.
+//! Invokes the independently built signed client inside the Controller unit.
 //!
-//! The VM provisions role-local credentials after boot. Positive requests use
-//! the production handshake, request reservation and terminal journal commit;
-//! only the explicit malformed-request case writes outside that transport.
+//! Security owns handshake, traffic reservation, verification and terminal
+//! commits. This effect-owner fixture consumes only its child's bounded test
+//! output; it never constructs a session or depends on application assembly.
 
-use std::os::fd::BorrowedFd;
-use std::path::Path;
-use std::time::Duration;
+use std::fs;
+use std::io::Read as _;
+use std::process::Command;
 
 use aos_sandbox_api::aos::sandbox::local::v1::{
-    ApplyStorageRequest, Audience, BrokerMethod, BrokerRequestEnvelope, InventoryStorageRequest,
-    PrepareStorageCatalogRequest, RepairStorageWorkspacePinRequest,
+    BrokerMethod, BrokerRequestEnvelope, BrokerResponseEnvelope,
 };
-use aos_sandbox_broker_session_protocol::{
-    BrokerSessionProtocolV1, authenticated_broker_method_profile_v1,
-    profile::production_broker_client_hello_v1,
-};
-use aos_sandbox_broker_session_security::{
-    DormantAuthenticatedBrokerSessionV1, DormantBrokerRequestPreparationV1,
-    DormantBrokerRequestSendProgressV1, DormantBrokerResponseProgressV1,
-    DormantControllerClientHandshakeProgressV1, ProtectedBrokerOutcomeCommitResultV1,
-    ProtectedBrokerSessionFixedCustodyV1, ProtectedBrokerSessionFixedEndpointV1,
-    production_deadline_after,
-};
-use aos_sandbox_linux::seqpacket::SeqpacketSocket;
-use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use buffa::Message as _;
 
-const RESPONSE_BYTES: u32 = super::STORAGE_RPC_RESPONSE_BYTES;
+fn invoke(action: &str, method: BrokerMethod, packet: &[u8]) -> Vec<u8> {
+    assert!(packet.len() <= super::STORAGE_RPC_RESPONSE_BYTES as usize);
+    let executable = std::env::var_os("AOS_STORAGE_RPC_CLIENT").unwrap();
+    let directory = tempfile::Builder::new()
+        .prefix("aos-storage-rpc-client-")
+        .tempdir()
+        .unwrap();
+    let input = directory.path().join("request.pb");
+    let output = directory.path().join("result.pb");
+    fs::write(&input, packet).unwrap();
 
-fn wait_for_handshake_readiness(
-    descriptor: BorrowedFd<'_>,
-    write: bool,
-    deadline: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    // Inheriting this genuine unit's uid, cgroup and confinement preserves the
+    // endpoint identity. No credential, journal or socket descriptor is passed.
+    let status = Command::new(executable)
+        .args([
+            "--ignored",
+            "--exact",
+            "handshake::storage_rpc_qualification::installed_storage_rpc_client",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env("AOS_STORAGE_RPC_CLIENT_ACTION", action)
+        .env("AOS_STORAGE_RPC_CLIENT_METHOD", format!("{method:?}"))
+        .env("AOS_STORAGE_RPC_CLIENT_INPUT", input)
+        .env("AOS_STORAGE_RPC_CLIENT_OUTPUT", &output)
+        .status()
+        .unwrap();
+    assert!(status.success(), "installed signed client failed: {status}");
 
-    let remaining = deadline
-        .checked_sub(crate::transport::boottime()?)
-        .filter(|remaining| *remaining != 0)
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::TimedOut))?;
-    let timeout = Timespec {
-        tv_sec: i64::try_from(remaining / 1_000_000_000)?,
-        tv_nsec: i64::try_from(remaining % 1_000_000_000)?,
-    };
-    let mut descriptors = [PollFd::from_borrowed_fd(
-        descriptor,
-        if write { PollFlags::OUT } else { PollFlags::IN },
-    )];
-    match poll(&mut descriptors, Some(&timeout)) {
-        Ok(0) => Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into()),
-        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-pub(super) fn connect(
-    method: BrokerMethod,
-    minor: Option<u32>,
-) -> Result<(DormantAuthenticatedBrokerSessionV1, u64), Box<dyn std::error::Error>> {
-    let deadline = production_deadline_after(Duration::from_secs(15))?;
-    let custody = ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
-        ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
-    )?;
-    let socket = SeqpacketSocket::connect(Path::new(super::STORAGE_RPC_SOCKET))?;
-    let mut hello = production_broker_client_hello_v1(
-        BrokerSessionProtocolV1::Storage,
-        Audience::AUDIENCE_NODE_CONTROLLER,
-        RESPONSE_BYTES,
-    )?;
-    hello.required_methods = vec![method.into()];
-    let profile = authenticated_broker_method_profile_v1(method).unwrap();
-    hello.required_features.retain(|feature| {
-        feature.namespace == aos_sandbox_model::BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE
-            || profile
-                .required_features()
-                .iter()
-                .any(|required| required.namespace() == feature.namespace)
-    });
-    if let Some(minor) = minor {
-        hello.protocol_minor = minor;
-    }
-    let mut handshake = custody.begin_client_handshake(socket, hello)?;
-
-    loop {
-        wait_for_handshake_readiness(handshake.as_fd()?, handshake.wants_write(), deadline)?;
-        match handshake.advance()? {
-            DormantControllerClientHandshakeProgressV1::Pending(pending) => handshake = pending,
-            DormantControllerClientHandshakeProgressV1::Complete(session) => {
-                return Ok((session, deadline));
-            }
-        }
-    }
+    let mut result = Vec::new();
+    fs::File::open(output)
+        .unwrap()
+        .take(u64::from(super::STORAGE_RPC_RESPONSE_BYTES) + 1)
+        .read_to_end(&mut result)
+        .unwrap();
+    assert!(result.len() <= super::STORAGE_RPC_RESPONSE_BYTES as usize);
+    result
 }
 
 pub(super) fn exchange(
     method: BrokerMethod,
-    mut envelope: BrokerRequestEnvelope,
-) -> AuthenticatedBrokerMethodOutcomeV1 {
-    let (mut session, deadline) = connect(method, None).unwrap();
-    let prepared = session
-        .prepare_authenticated_request(method, |coordinates| {
-            // The signed plan commits to portable arguments. Its finite byte
-            // bound also covers the protected, session-selected header.
-            let header = coordinates.request_header();
-            envelope.body = match method {
-                BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {
-                    let mut request =
-                        ApplyStorageRequest::decode_from_slice(&envelope.body).unwrap();
-                    request.header = Some(header).into();
-                    request.encode_to_vec()
-                }
-                BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
-                    let mut request =
-                        RepairStorageWorkspacePinRequest::decode_from_slice(&envelope.body)
-                            .unwrap();
-                    request.header = Some(header).into();
-                    request.encode_to_vec()
-                }
-                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
-                    let mut request =
-                        PrepareStorageCatalogRequest::decode_from_slice(&envelope.body).unwrap();
-                    request.header = Some(header).into();
-                    request.encode_to_vec()
-                }
-                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES => {
-                    let request = InventoryStorageRequest {
-                        header: Some(header).into(),
-                        ..Default::default()
-                    };
-                    request.encode_to_vec()
-                }
-                other => panic!("unsupported Storage qualification method {other:?}"),
-            };
-            envelope
-        })
-        .unwrap();
-    let DormantBrokerRequestPreparationV1::Prepared(mut request) = prepared else {
-        panic!("Storage qualification request requires protected recovery");
-    };
+    envelope: BrokerRequestEnvelope,
+) -> BrokerResponseEnvelope {
+    let result = invoke("exchange", method, &envelope.encode_to_vec());
+    let outcome = BrokerResponseEnvelope::decode_from_slice(&result).unwrap();
+    assert_eq!(outcome.method, method);
+    assert!(!outcome.signed_session_outcome.is_empty());
+    outcome
+}
 
-    let mut outstanding = loop {
-        wait_for_handshake_readiness(session.as_fd().unwrap(), true, deadline).unwrap();
-        match session.send_authenticated_request(request).unwrap() {
-            DormantBrokerRequestSendProgressV1::Pending(pending) => request = pending,
-            DormantBrokerRequestSendProgressV1::Sent(sent) => break sent,
-        }
-    };
-
-    loop {
-        wait_for_handshake_readiness(session.as_fd().unwrap(), false, deadline).unwrap();
-        match session.receive_authenticated_response(outstanding).unwrap() {
-            DormantBrokerResponseProgressV1::Pending(pending) => outstanding = pending,
-            DormantBrokerResponseProgressV1::Committed(committed) => {
-                let ProtectedBrokerOutcomeCommitResultV1::Committed(committed) = committed else {
-                    panic!("Storage qualification terminal requires protected recovery");
-                };
-                let (outcome, currentness) = committed.into_outcome_and_currentness();
-                drop(currentness);
-                return outcome;
-            }
-        }
-    }
+pub(super) fn reject_downgrade(method: BrokerMethod) {
+    assert_eq!(
+        invoke("reject-downgrade", method, &[]),
+        b"downgrade-rejected-v1"
+    );
 }
 
 pub(super) fn reject_missing_authority(packet: &[u8]) {
-    let (session, deadline) = connect(
-        BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
-        None,
-    )
-    .unwrap();
-    // Deliberately act as a hostile client after a genuine signed handshake.
-    // The duplicate stays in this process; it is used solely to prove that a
-    // malformed unsigned request cannot acquire an authenticated outcome.
-    let duplicate = rustix::io::dup(session.as_fd().unwrap()).unwrap();
-    let mut socket = SeqpacketSocket::from_owned(duplicate).unwrap();
-    crate::transport::send(&mut socket, packet, deadline).unwrap();
-    assert!(crate::transport::receive(&mut socket, RESPONSE_BYTES as usize, deadline).is_err());
+    let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
+    assert_eq!(
+        invoke("reject-missing-authority", method, packet),
+        b"missing-authority-rejected-v1",
+    );
 }

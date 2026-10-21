@@ -87,6 +87,7 @@
       fixtureCommand = role: ''
         ${pkgs.coreutils}/bin/env \
           AOS_STORAGE_RPC_ROLE=${role} \
+          AOS_STORAGE_RPC_CLIENT=${credentialFixture}/bin/broker-session-credential-fixture \
           ${fixture}/bin/aos-sandbox-storage-rpc-tests \
           --ignored --exact '${selectedFixture}' --test-threads=1 --nocapture
       '';

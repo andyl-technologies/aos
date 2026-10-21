@@ -68,8 +68,6 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-aos-sandbox-broker-session-protocol.workspace = true
-aos-sandbox-broker-session-security.workspace = true
 aos-sandbox-controller-domain = { path = "../../controller/aos-sandbox-controller-domain", features = ["test-fixtures"] }
 tempfile.workspace = true
 

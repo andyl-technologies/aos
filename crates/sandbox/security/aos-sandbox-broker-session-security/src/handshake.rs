@@ -6465,6 +6465,9 @@ mod tests;
 #[cfg(all(test, feature = "kernel-tests"))]
 mod qualification_credentials;
 
+#[cfg(all(test, feature = "kernel-tests"))]
+mod storage_rpc_qualification;
+
 #[cfg(test)]
 mod storage_terminal_tests;
 
