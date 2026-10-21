@@ -43,12 +43,13 @@ the actual built packet executable. Daemon uses the measured device and the
 source-built gem5 closed-profile manifest, including its two fresh restorations
 on each of x86_64 and AArch64. This fixed profile does not establish device parity.
 
-The required application test-target gate passes for the final construction Rust
-inputs: 180 test executables across 58 package IDs, including 71 integration
-targets. All eleven changed Rust files match the captured source. This gate
-compiles without running tests and emits no Crucible runtime unit-test ELF.
-Native funded-worker/Birth VM execution remains pending after the first actual
-VM run refused its process reservation before worker execution. These component
+The required application test-target gate passes for the construction, transport
+lint repairs and actor failure observer in `e50b1042c1`: 180 test executables
+across 58 package IDs, including 71 integration targets. All 25 owned changed
+Rust paths match the captured source. This gate compiles without running tests
+and emits no Crucible runtime unit-test ELF. Native funded-worker/Birth VM
+execution remains unqualified: the initial process-reservation refusal and the
+subsequent installed-mechanism refusal are recorded below. These component
 results do not qualify common Ready or full RFC-0025 completion.
 
 ## Process-child census and transport lint repairs
@@ -60,15 +61,28 @@ original census before actors or children exist; it correctly refuses an
 unavailable file rather than assuming an empty process tree. The required kernel
 fragment now enables it. The resolved kernel configuration gate passes, and the
 funded-Source VM also checks the configuration and actual readable interface
-before attempting its consumers. Its corrected end-to-end run remains pending.
+before attempting its consumers. The corrected VM passes those preflights and
+process reservation, then refuses installed worker-mechanism verification before
+Source preparation. No worker or private-Birth execution success follows.
 
 Commit `450087ad6c` removes four redundant field initializers and expresses nine
 eight-word counter terms using equivalent fixed array layouts. All 1,746
 Transport library tests pass, with zero failures, no filtering and 15 existing
 ignores; formatting passes. Library Clippy errors fall from 176 to 163 without
 new allowances or accounting changes. All-target checking also finds test-only
-diagnostics; neither Clippy scope is qualified by this repair. The required
-application compilation gate is being refreshed for these final lint inputs.
+diagnostics; neither Clippy scope is qualified by this repair. The refreshed
+application compilation gate above includes all thirteen lint-repaired paths.
+The six registered architecture gates also pass for those inputs.
+
+Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
+first failure. Its actual VM run identifies the installed-mechanism refusal;
+the public command continues to return its existing refusal. Subsequent verifier
+stage diagnostics return the runtime cause beside a fixed stage label; only the
+label reaches that observer. Their all-feature/all-target Engine/Daemon check,
+formatting and all six architecture gates pass. The required application gate
+again compiles 180 test executables across 58 package IDs, including 71 integration
+targets, and all 27 owned changed Rust paths match its captured source. Its
+compilation-only scope is unchanged. The fresh VM run remains in progress.
 
 ## Original launch custody and shared startup geometry
 

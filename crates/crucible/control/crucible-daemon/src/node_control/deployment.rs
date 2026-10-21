@@ -280,10 +280,8 @@ impl InstalledDeployment {
             self.owner.worker_limits(),
             self.owner.workspace_slots(),
         )
-        .map_err(|_| {
-            crate::node_qualification::QualificationError::Refused(
-                "installed operational deployment refused",
-            )
+        .map_err(|failure| {
+            crate::node_qualification::QualificationError::Refused(failure.stage_data())
         })?;
         self.mechanism.set(Rc::new(mechanism)).map_err(|_| {
             crate::node_qualification::QualificationError::Refused(

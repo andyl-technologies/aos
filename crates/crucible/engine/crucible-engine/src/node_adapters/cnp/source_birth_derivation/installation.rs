@@ -214,6 +214,31 @@ impl ProcessEnforcement {
     }
 }
 
+/// Preserves a verifier failure with a fixed installation-stage diagnostic.
+///
+/// The stage is selected by the verifier, never by installation contents. Its
+/// label can be copied into a test observation without exposing artifact paths,
+/// decoded metadata or dynamic error text. It grants no installation authority.
+#[derive(Debug, thiserror::Error)]
+#[error("{stage}: {cause}")]
+pub struct SourceBirthInstallationFailure {
+    stage: &'static str,
+    #[source]
+    cause: RuntimeError,
+}
+
+impl SourceBirthInstallationFailure {
+    /// Reads the fixed stage at which the original verification refused.
+    pub fn stage_data(&self) -> &'static str {
+        self.stage
+    }
+
+    /// Borrows the original runtime refusal without rendering its contents.
+    pub fn cause_data(&self) -> &RuntimeError {
+        &self.cause
+    }
+}
+
 /// Retains the independently selected installed derivation mechanism.
 ///
 /// Only the exact source-built package compiled into the parent can construct
@@ -257,6 +282,7 @@ impl VerifiedSourceBirthMechanism {
             limits,
             slots,
         )
+        .map_err(|failure| failure.cause)
     }
 
     /// Opens the compiled mechanism under the same funded process reservation.
@@ -266,17 +292,21 @@ impl VerifiedSourceBirthMechanism {
     /// actor constructs its local Rc and opens/measures the original files.
     ///
     /// # Errors
-    /// Preserves installation/currentness refusals and refuses incomplete,
-    /// revoked or foreign deployment ownership. It issues no Source stage row.
+    /// Preserves installation/currentness refusals with a fixed stage diagnostic
+    /// and refuses incomplete, revoked or foreign deployment ownership. It
+    /// issues no Source stage row.
     pub fn open_with_deployment(
         reservation: &crucible_host_resources::OriginalDeploymentResourceReservation,
         configuration: LinuxPureWorkerConfiguration,
         limits: LinuxPureWorkerLimits,
         slots: usize,
-    ) -> Result<Self, RuntimeError> {
+    ) -> Result<Self, SourceBirthInstallationFailure> {
         let lease = reservation
             .lease()
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+            .map_err(|_| SourceBirthInstallationFailure {
+                stage: "installed worker deployment lease refused",
+                cause: RuntimeError::ResourceLimit,
+            })?;
         open(
             ProcessEnforcement::Deployment(lease),
             configuration,
@@ -364,122 +394,158 @@ fn open(
     configuration: LinuxPureWorkerConfiguration,
     limits: LinuxPureWorkerLimits,
     slots: usize,
-) -> Result<VerifiedSourceBirthMechanism, Failure> {
-    // Build-time selection pins the source-built package. Runtime environment
-    // variables cannot replace it, and absence never selects a fallback.
-    supervisor
-        .authenticate_current()
-        .map_err(|_| RuntimeError::ResourceLimit)?;
-    let path = option_env!("CRUCIBLE_SOURCE_BIRTH_WORKER_MANIFEST")
-        .ok_or(RuntimeError::UnsupportedFacet)?;
-    let path = Path::new(path);
-    let bytes = read_metadata(path)?;
-    let installed: Installation = decode(&bytes)?;
-    if installed.schema != "crucible.pure-worker.installation/1"
-        || installed.profile != "pure-worker-v1"
-        || installed.read_only_roots.is_empty()
-        || installed.read_only_roots.len() > MAXIMUM_ROOTS
-        || installed
-            .read_only_roots
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1])
-        || installed
-            .read_only_roots
-            .iter()
-            .any(|path| !matches!(store_root(path), Ok(root) if &root == path))
-    {
-        return Err(RuntimeError::UnsupportedFacet);
-    }
-    let mut measured = 0;
-    let runtime_bytes = artifact_metadata(&installed.runtime_closure, &mut measured)?;
-    let closure: RuntimeClosure = decode(&runtime_bytes)?;
-    if closure.schema != "crucible.pure-worker.runtime-closure/1"
-        || closure.store_paths != installed.read_only_roots
-    {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    check_graph(&closure, &installed, &mut measured)?;
-    let algorithm_bytes = artifact_metadata(&installed.algorithm, &mut measured)?;
-    let algorithm: Algorithm = decode(&algorithm_bytes)?;
-    if algorithm.schema != "crucible.pure-worker.algorithm/1"
-        || algorithm.id != "crucible.source-birth.derivation/1"
-        || algorithm.source != installed.source.content
-        || algorithm.vendor != installed.vendor.content
-        || algorithm.recipe != installed.recipe.content
-    {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    check_codec(
-        &installed.request_codec,
-        "crucible.source-birth.request/1",
-        "CSBIN001",
-        160,
-        &installed.source.content,
-        &mut measured,
-    )?;
-    check_codec(
-        &installed.result_codec,
-        "crucible.source-birth.result/1",
-        "CSBR0001",
-        240,
-        &installed.source.content,
-        &mut measured,
-    )?;
-    for artifact in [&installed.source, &installed.vendor, &installed.recipe] {
-        let file = open_regular(&artifact.path)?;
-        measure(&file, &artifact.content, &mut measured)?;
-    }
-    let worker = digest(&installed.worker.content.hash)?;
-    let algorithm = digest(&installed.algorithm.content.hash)?;
-    let program = LinuxPureWorkerProgram::open(
-        &installed.launcher.path,
-        &installed.worker.path,
-        &installed.read_only_roots,
-        worker,
-        algorithm,
-    )
-    .map_err(|_| RuntimeError::UnsupportedFacet)?;
-    // Do not reopen either executable by pathname for these measurements.
-    measure(
-        program.launcher_file(),
-        &installed.launcher.content,
-        &mut measured,
-    )?;
-    measure(
-        program.worker_file(),
-        &installed.worker.content,
-        &mut measured,
-    )?;
-    check_tree(&closure, &installed, &program, &mut measured)?;
-    program
-        .verify_current()
-        .map_err(|_| RuntimeError::ForeignAuthority)?;
-    let bindings = SourceBirthInstallationBindings {
-        installation: *blob_hash(&bytes).as_bytes(),
-        launcher: digest(&installed.launcher.content.hash)?,
-        worker,
-        runtime: digest(&installed.runtime_closure.content.hash)?,
-        algorithm,
-        request_codec: digest(&installed.request_codec.content.hash)?,
-        result_codec: digest(&installed.result_codec.content.hash)?,
-    };
-    let identity = program.identity();
-    let factory = LinuxPureWorkerFactory::open(configuration, program.clone())
+) -> Result<VerifiedSourceBirthMechanism, SourceBirthInstallationFailure> {
+    let mut stage = "installed worker process enforcement refused";
+    let result = (|| -> Result<VerifiedSourceBirthMechanism, Failure> {
+        // Build-time selection pins the source-built package. Runtime environment
+        // variables cannot replace it, and absence never selects a fallback.
+        supervisor
+            .authenticate_current()
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+
+        stage = "installed worker compiled manifest unavailable";
+        let path = option_env!("CRUCIBLE_SOURCE_BIRTH_WORKER_MANIFEST")
+            .ok_or(RuntimeError::UnsupportedFacet)?;
+        let path = Path::new(path);
+
+        stage = "installed worker manifest read refused";
+        let bytes = read_metadata(path)?;
+
+        stage = "installed worker manifest validation refused";
+        let installed: Installation = decode(&bytes)?;
+        if installed.schema != "crucible.pure-worker.installation/1"
+            || installed.profile != "pure-worker-v1"
+            || installed.read_only_roots.is_empty()
+            || installed.read_only_roots.len() > MAXIMUM_ROOTS
+            || installed
+                .read_only_roots
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || installed
+                .read_only_roots
+                .iter()
+                .any(|path| !matches!(store_root(path), Ok(root) if &root == path))
+        {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+
+        stage = "installed worker runtime closure metadata refused";
+        let mut measured = 0;
+        let runtime_bytes = artifact_metadata(&installed.runtime_closure, &mut measured)?;
+        let closure: RuntimeClosure = decode(&runtime_bytes)?;
+        if closure.schema != "crucible.pure-worker.runtime-closure/1"
+            || closure.store_paths != installed.read_only_roots
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        stage = "installed worker runtime reference graph refused";
+        check_graph(&closure, &installed, &mut measured)?;
+
+        stage = "installed worker algorithm metadata refused";
+        let algorithm_bytes = artifact_metadata(&installed.algorithm, &mut measured)?;
+        let algorithm: Algorithm = decode(&algorithm_bytes)?;
+        if algorithm.schema != "crucible.pure-worker.algorithm/1"
+            || algorithm.id != "crucible.source-birth.derivation/1"
+            || algorithm.source != installed.source.content
+            || algorithm.vendor != installed.vendor.content
+            || algorithm.recipe != installed.recipe.content
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+
+        stage = "installed worker request codec refused";
+        check_codec(
+            &installed.request_codec,
+            "crucible.source-birth.request/1",
+            "CSBIN001",
+            160,
+            &installed.source.content,
+            &mut measured,
+        )?;
+
+        stage = "installed worker result codec refused";
+        check_codec(
+            &installed.result_codec,
+            "crucible.source-birth.result/1",
+            "CSBR0001",
+            240,
+            &installed.source.content,
+            &mut measured,
+        )?;
+
+        stage = "installed worker source, vendor or recipe measurement refused";
+        for artifact in [&installed.source, &installed.vendor, &installed.recipe] {
+            let file = open_regular(&artifact.path)?;
+            measure(&file, &artifact.content, &mut measured)?;
+        }
+
+        stage = "installed worker artifact identity refused";
+        let worker = digest(&installed.worker.content.hash)?;
+        let algorithm = digest(&installed.algorithm.content.hash)?;
+
+        stage = "installed worker executable or readonly runtime guards refused";
+        let program = LinuxPureWorkerProgram::open(
+            &installed.launcher.path,
+            &installed.worker.path,
+            &installed.read_only_roots,
+            worker,
+            algorithm,
+        )
         .map_err(|_| RuntimeError::UnsupportedFacet)?;
-    if factory.profile_id() != "pure-worker-v1" || factory.program_identity() != identity {
-        return Err(RuntimeError::ForeignAuthority);
-    }
-    // The operational workspace is admitted by the parent before allocation,
-    // and allocated only immediately before the synchronous Source export.
-    ExportWorkspace::requested_bytes(slots).map_err(|_| RuntimeError::ResourceLimit)?;
-    Ok(VerifiedSourceBirthMechanism {
-        supervisor,
-        factory,
-        program,
-        bindings,
-        limits,
-        slots,
-    })
+
+        stage = "installed worker original executable measurement refused";
+        // Do not reopen either executable by pathname for these measurements.
+        measure(
+            program.launcher_file(),
+            &installed.launcher.content,
+            &mut measured,
+        )?;
+        measure(
+            program.worker_file(),
+            &installed.worker.content,
+            &mut measured,
+        )?;
+
+        stage = "installed worker runtime inventory or loader edges refused";
+        check_tree(&closure, &installed, &program, &mut measured)?;
+
+        stage = "installed worker executable currentness refused";
+        program
+            .verify_current()
+            .map_err(|_| RuntimeError::ForeignAuthority)?;
+        let bindings = SourceBirthInstallationBindings {
+            installation: *blob_hash(&bytes).as_bytes(),
+            launcher: digest(&installed.launcher.content.hash)?,
+            worker,
+            runtime: digest(&installed.runtime_closure.content.hash)?,
+            algorithm,
+            request_codec: digest(&installed.request_codec.content.hash)?,
+            result_codec: digest(&installed.result_codec.content.hash)?,
+        };
+
+        stage = "installed worker cgroup or quota factory refused";
+        let identity = program.identity();
+        let factory = LinuxPureWorkerFactory::open(configuration, program.clone())
+            .map_err(|_| RuntimeError::UnsupportedFacet)?;
+        if factory.profile_id() != "pure-worker-v1" || factory.program_identity() != identity {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        // The operational workspace is admitted by the parent before allocation,
+        // and allocated only immediately before the synchronous Source export.
+
+        stage = "installed worker export workspace refused";
+        ExportWorkspace::requested_bytes(slots).map_err(|_| RuntimeError::ResourceLimit)?;
+        Ok(VerifiedSourceBirthMechanism {
+            supervisor,
+            factory,
+            program,
+            bindings,
+            limits,
+            slots,
+        })
+    })();
+    result.map_err(|cause| SourceBirthInstallationFailure { stage, cause })
 }
 
 fn check_codec(

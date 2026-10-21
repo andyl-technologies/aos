@@ -710,3 +710,4 @@ shape-review|crates/crucible/testing/crucible-test-support/tests/crate_artifact_
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/whole_control/staged/source_ready.rs|Qemu
 qemu-token|crucible-qemu-protocol|crates/crucible/protocol/crucible-qemu-protocol/src/whole_control/staged/source_ready_tests.rs|Qemu
 qemu-token|crucible-campaign|crates/crucible/engine/crucible-campaign/src/execution/tests/backend_identity.rs|qemu
+shape-review|crates/crucible/engine/crucible-engine/src/node_adapters/cnp/source_birth_derivation/installation.rs|sha256:338d0e41e8b60ed2f5ac6075d2bf8cda03a0024ac80ba8ab35ff39f8d1302ddc|implementation|1005|Source-built pure-worker installation verification, bounded original-file measurement, complete runtime and loader closure authentication, and fixed failure-stage reporting.|threshold-not-reached
