@@ -618,6 +618,7 @@ dependencies = [
  "aos-hub-api",
  "aos-transfer",
  "async-trait",
+ "futures-util",
  "hex",
  "http 1.4.1",
  "rand 0.9.4",

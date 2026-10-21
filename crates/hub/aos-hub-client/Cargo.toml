@@ -9,6 +9,7 @@ description = "Typed Hub Connect-JSON client and OAuth login flows"
 tokio-stream.workspace = true
 aos-transfer = { workspace = true, features = ["direct-upload"] }
 async-trait.workspace = true
+futures-util.workspace = true
 sha2.workspace = true
 hex.workspace = true
 rand.workspace = true

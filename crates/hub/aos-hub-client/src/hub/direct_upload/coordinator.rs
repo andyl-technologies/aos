@@ -5,6 +5,8 @@
 //! final promotion. Only actual Committed replies permit a caller's release
 //! visibility step; Freezing, CompletingStaging and StagedVerified remain pending.
 
+mod staging;
+
 use std::fmt;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -167,6 +169,8 @@ impl DirectUploadCoordinator {
     /// A pending freeze, verification or verified stage allows independent waves
     /// to proceed. Call [`Self::finish`] after all files have been staged before
     /// any public root/channel/tag commit. No request uses a proxy body fallback.
+    /// Metadata batches share the same provider pool while progressing in
+    /// bounded parallel waves; the admitted descriptor budget stays unchanged.
     ///
     /// # Errors
     /// Refuses changed source/owner/geometry, stale discovery, persistence,
@@ -244,9 +248,12 @@ impl DirectUploadCoordinator {
                 remaining.push_back(object);
             }
         }
+        let metadata_only = remaining
+            .iter()
+            .all(|object| object.intent.dependency_phase != DirectDependencyPhase::Content);
         let mut objects = remaining;
+        let mut batches = Vec::new();
         while !objects.is_empty() {
-            let discovery = self.control.snapshot().await?;
             let mut wave = Vec::new();
             while wave.len() < self.capabilities.maximum_batch_items as usize {
                 let Some(next) = objects.front() else {
@@ -271,6 +278,16 @@ impl DirectUploadCoordinator {
             if wave.is_empty() {
                 return Err(DirectClientError::Invalid);
             }
+            batches.push(wave);
+        }
+
+        let parallel = if metadata_only {
+            staging::MAX_PARALLEL_BATCHES
+        } else {
+            1
+        };
+        staging::run(batches, parallel, |mut wave| async move {
+            let discovery = self.control.snapshot().await?;
             for object in &mut wave {
                 object.discovery = discovery.clone();
             }
@@ -287,8 +304,9 @@ impl DirectUploadCoordinator {
             }) {
                 return Err(DirectClientError::Blocked);
             }
-        }
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     /// Replays all original completions until actual server-owned final commit.
