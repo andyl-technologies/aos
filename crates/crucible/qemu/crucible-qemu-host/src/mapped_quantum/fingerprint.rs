@@ -85,59 +85,72 @@ struct FingerprintMaterial<'a> {
 
 impl std::fmt::Display for FingerprintMaterial<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let sample = self.sample;
-        write!(
-            formatter,
-            concat!(
-                "node={}\nsample_icount={}\nvcpu_count={}",
-                "\nrr_current_vcpu={}\nrr_position_in_quantum={}",
-                "\nrr_switch_quantum={}",
-            ),
-            self.node.name,
-            sample.sample_icount,
-            sample.vcpu_count,
-            sample.rr_current_vcpu,
-            sample.rr_position_in_quantum,
-            sample.rr_switch_quantum,
-        )?;
-
-        for (index, vcpu) in sample
-            .vcpus
-            .iter()
-            .take(sample.vcpu_count as usize)
-            .enumerate()
-        {
-            write!(
-                formatter,
-                concat!(
-                    "\nvcpu[{}].register_digest={}",
-                    "\nvcpu[{}].register_file_bytes={}",
-                    "\nvcpu[{}].retired_instruction_count={}",
-                ),
-                index,
-                LowercaseHex(&vcpu.register_digest),
-                index,
-                vcpu.register_file_bytes,
-                index,
-                vcpu.retired_instruction_count,
-            )?;
-        }
-
-        write!(
-            formatter,
-            concat!(
-                "\nram_bytes={}\nram_digest={}",
-                "\ndevice_state_bytes={}\ndevice_state_sections={}",
-                "\ndevice_state_digest={}\ndevice_state_schema_digest={}",
-            ),
-            sample.ram_bytes,
-            LowercaseHex(&sample.ram_digest),
-            sample.device_state_bytes,
-            sample.device_state_sections,
-            LowercaseHex(&sample.device_state_digest),
-            LowercaseHex(&sample.device_state_schema_digest),
-        )
+        write!(formatter, "node={}", self.node.name)?;
+        visit_fingerprint_components(self.sample, |component| write!(formatter, "\n{component}"))
     }
+}
+
+/// Visits only fixed ASCII labels, decimal integers and lowercase digests.
+///
+/// The hash recipe and diagnostic list share this ordering. The node name is
+/// separate because it is the only authored string requiring debug escaping.
+fn visit_fingerprint_components(
+    sample: &FingerprintSample,
+    mut component: impl FnMut(std::fmt::Arguments<'_>) -> std::fmt::Result,
+) -> std::fmt::Result {
+    component(format_args!("sample_icount={}", sample.sample_icount))?;
+    component(format_args!("vcpu_count={}", sample.vcpu_count))?;
+    component(format_args!("rr_current_vcpu={}", sample.rr_current_vcpu))?;
+    component(format_args!(
+        "rr_position_in_quantum={}",
+        sample.rr_position_in_quantum
+    ))?;
+    component(format_args!(
+        "rr_switch_quantum={}",
+        sample.rr_switch_quantum
+    ))?;
+
+    for (index, vcpu) in sample
+        .vcpus
+        .iter()
+        .take(sample.vcpu_count as usize)
+        .enumerate()
+    {
+        component(format_args!(
+            "vcpu[{index}].register_digest={}",
+            LowercaseHex(&vcpu.register_digest),
+        ))?;
+        component(format_args!(
+            "vcpu[{index}].register_file_bytes={}",
+            vcpu.register_file_bytes,
+        ))?;
+        component(format_args!(
+            "vcpu[{index}].retired_instruction_count={}",
+            vcpu.retired_instruction_count,
+        ))?;
+    }
+
+    component(format_args!("ram_bytes={}", sample.ram_bytes))?;
+    component(format_args!(
+        "ram_digest={}",
+        LowercaseHex(&sample.ram_digest)
+    ))?;
+    component(format_args!(
+        "device_state_bytes={}",
+        sample.device_state_bytes
+    ))?;
+    component(format_args!(
+        "device_state_sections={}",
+        sample.device_state_sections
+    ))?;
+    component(format_args!(
+        "device_state_digest={}",
+        LowercaseHex(&sample.device_state_digest),
+    ))?;
+    component(format_args!(
+        "device_state_schema_digest={}",
+        LowercaseHex(&sample.device_state_schema_digest),
+    ))
 }
 
 struct LowercaseHex<'a>(&'a [u8]);
@@ -151,6 +164,7 @@ impl std::fmt::Display for LowercaseHex<'_> {
     }
 }
 
+#[cfg(test)]
 fn owned_component_material(
     node: &crucible_engine::NodeId,
     sample: &FingerprintSample,
@@ -223,15 +237,71 @@ fn report_fingerprint_components(
     {
         return;
     }
-    let material = owned_component_material(node, sample);
     let _ = writeln!(
         std::io::stderr().lock(),
         "{}",
-        fingerprint_component_diagnostic(node, fingerprint, &material)
+        FingerprintComponentDiagnostic {
+            node,
+            sample,
+            fingerprint
+        },
     );
 }
 
-fn fingerprint_component_diagnostic(
+/// Streams the existing one-line record without constructing owned fields.
+struct FingerprintComponentDiagnostic<'a> {
+    node: &'a crucible_engine::NodeId,
+    sample: &'a FingerprintSample,
+    fingerprint: &'a ExecutionFingerprint,
+}
+
+impl std::fmt::Display for FingerprintComponentDiagnostic<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = &self.node.name;
+        let prefix_end = name
+            .char_indices()
+            .nth(160)
+            .map_or(name.len(), |(offset, _)| offset);
+        let node_prefix = &name[..prefix_end];
+        write!(
+            formatter,
+            concat!(
+                "CRUCIBLE-QEMU-FINGERPRINT-V1 host_process_id={} node={:?}",
+                " fingerprint={} components={:?}",
+            ),
+            std::process::id(),
+            node_prefix,
+            LowercaseHex(&self.fingerprint.hash.bytes),
+            FingerprintComponents(self.sample),
+        )
+    }
+}
+
+struct FingerprintComponents<'a>(&'a FingerprintSample);
+
+impl std::fmt::Debug for FingerprintComponents<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut list = formatter.debug_list();
+        visit_fingerprint_components(self.0, |component| {
+            list.entry(&QuotedComponent(component));
+            Ok(())
+        })?;
+        list.finish()
+    }
+}
+
+/// Adds string-debug quotes to the visitor's exclusively safe ASCII fields.
+/// Authored node text never reaches this wrapper.
+struct QuotedComponent<'a>(std::fmt::Arguments<'a>);
+
+impl std::fmt::Debug for QuotedComponent<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "\"{}\"", self.0)
+    }
+}
+
+#[cfg(test)]
+fn owned_fingerprint_component_diagnostic(
     node: &crucible_engine::NodeId,
     fingerprint: &ExecutionFingerprint,
     material: &[String],
@@ -247,6 +317,7 @@ fn fingerprint_component_diagnostic(
     )
 }
 
+#[cfg(test)]
 fn lowercase_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -398,6 +469,71 @@ mod diagnostic_tests {
     }
 
     #[test]
+    fn component_diagnostic_streams_the_exact_record_without_material_allocations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_host_resources::test_support::TestAllocationObserver;
+        use std::fmt::Write as _;
+
+        for name in [
+            String::new(),
+            String::from("é水\nquoted\"node\\\t\0"),
+            "é水\n\"\\".repeat(80),
+        ] {
+            let node = crucible_engine::NodeId { name };
+            for count in 1..=crucible_qemu_shmem::FINGERPRINT_SAMPLE_MAX_VCPUS {
+                let mut sample = FingerprintSample {
+                    sample_icount: u64::MAX,
+                    vcpu_count: count as u32,
+                    rr_current_vcpu: (count - 1) as u32,
+                    rr_position_in_quantum: u64::MAX - 1,
+                    rr_switch_quantum: u64::MAX,
+                    ram_bytes: u64::MAX,
+                    ram_digest: [0; 32],
+                    device_state_bytes: u64::MAX,
+                    device_state_sections: u64::MAX,
+                    device_state_digest: [0xff; 32],
+                    device_state_schema_digest: [0x9a; 32],
+                    ..FingerprintSample::default()
+                };
+                for (index, vcpu) in sample.vcpus.iter_mut().enumerate() {
+                    vcpu.register_digest = [index as u8; 32];
+                    vcpu.register_file_bytes = u64::MAX - index as u64;
+                }
+                validate_black_box_fingerprint_sample(&sample)?;
+                let fingerprint = ExecutionFingerprint {
+                    hash: hash_black_box_material(&node, &sample)?,
+                };
+                let expected = owned_fingerprint_component_diagnostic(
+                    &node,
+                    &fingerprint,
+                    &owned_component_material(&node, &sample),
+                );
+                let mut rendered = String::with_capacity(expected.len());
+
+                let (result, counts) = TestAllocationObserver::count(|| {
+                    write!(
+                        rendered,
+                        "{}",
+                        FingerprintComponentDiagnostic {
+                            node: &node,
+                            sample: &sample,
+                            fingerprint: &fingerprint,
+                        }
+                    )
+                });
+
+                result?;
+                assert_eq!(rendered, expected);
+                assert_eq!(counts.allocations, 0, "{counts:?}");
+                assert_eq!(counts.reallocations, 0, "{counts:?}");
+                assert!(!counts.overflow);
+                assert_eq!(rendered.lines().count(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn component_diagnostic_bounds_and_escapes_node_names() {
         let node = crucible_engine::NodeId {
             name: format!("quoted\"\n{}suffix", "x".repeat(160)),
@@ -405,19 +541,22 @@ mod diagnostic_tests {
         let fingerprint = ExecutionFingerprint {
             hash: crucible_engine::ContentHash::from_bytes(b"diagnostic"),
         };
-        let material = vec![
-            format!("node={}", node.name),
-            String::from("sample_icount=0"),
-            String::from("ram_digest=0123456789abcdef"),
-        ];
-
-        let diagnostic = fingerprint_component_diagnostic(&node, &fingerprint, &material);
+        let sample = FingerprintSample {
+            ram_digest: [0xab; 32],
+            ..FingerprintSample::default()
+        };
+        let diagnostic = FingerprintComponentDiagnostic {
+            node: &node,
+            sample: &sample,
+            fingerprint: &fingerprint,
+        }
+        .to_string();
 
         assert_eq!(diagnostic.lines().count(), 1);
         assert!(diagnostic.contains("quoted\\\"\\n"));
         assert!(!diagnostic.contains("suffix"));
         assert!(diagnostic.contains(&fingerprint.hash.to_hex()));
         assert!(diagnostic.contains("sample_icount=0"));
-        assert!(diagnostic.contains("ram_digest=0123456789abcdef"));
+        assert!(diagnostic.contains("ram_digest=abababab"));
     }
 }
