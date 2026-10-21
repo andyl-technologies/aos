@@ -43,7 +43,7 @@
     if controller
     then "controller.json"
     else "owner.json";
-  reader = aos-sandboxd.nixOnlineStoreReader;
+  reader = aos-sandboxd.passthru.nixOnlineStoreReader;
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
   effectivePolicyChecker =
@@ -53,7 +53,7 @@
 in
   assert validRole;
   assert builtins.length identities == 4 && builtins.all (identity: identity > 0) identities;
-  assert identities != [] && builtins.elem "nixOnlineStoreReader" (builtins.attrNames aos-sandboxd);
+  assert identities != [] && builtins.elem "nixOnlineStoreReader" (builtins.attrNames (aos-sandboxd.passthru or {}));
     mkDerivation {
       pname = "aos-nix-startup-profile";
       version = "2";

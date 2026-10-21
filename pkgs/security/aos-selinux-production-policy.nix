@@ -220,7 +220,7 @@
     if !onlineNix
     then ""
     else let
-      domain = aos-nix-online-store-reader.domainIdHex;
+      domain = aos-nix-online-store-reader.passthru.domainIdHex;
       helperBasename = onlinePackageBasename "aos-nix-runtime-tpm-helpers" aos-nix-runtime-tpm-helpers;
       readerBasename = onlinePackageBasename "aos-nix-online-store-reader-${domain}" aos-nix-online-store-reader;
       sandboxBasename = exactPackageBasename "aos-sandboxd" aos-sandboxd;

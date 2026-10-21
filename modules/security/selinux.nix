@@ -58,7 +58,7 @@
       onlineNix = true;
       aos-sandboxd = config.aos.sandbox.nixBroker._package;
       aos-nix-runtime-tpm-helpers = pkgs.aos-nix-runtime-tpm-helpers;
-      aos-nix-online-store-reader = config.aos.sandbox.nixBroker._package.nixOnlineStoreReader;
+      aos-nix-online-store-reader = config.aos.sandbox.nixBroker._package.passthru.nixOnlineStoreReader;
     });
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
   # selinuxfs serializes the loaded policydb; its bytes are not the input file.
