@@ -62,8 +62,16 @@ impl LiveVcpuTimeCallbackState {
     /// (where the sim loop stops querying this callback altogether) is closed
     /// separately by the device-wait callback of the SCHED-8 delivery patch.
     pub(super) fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
-        self.max_advance_budget((self.icount_raw)(), None)
-            .map(|(raw, _logical)| raw)
+        let raw_icount = (self.icount_raw)();
+        let (raw_ceiling, _logical) = self.max_advance_budget(raw_icount, None)?;
+        self.device_wait_witness.observe_publication(
+            "max-advance",
+            "raw-ceiling",
+            raw_icount,
+            self.last_icount.load(Ordering::Acquire),
+            Some(raw_ceiling),
+        );
+        Ok(raw_ceiling)
     }
 
     // The ordinary path retains its original scheduler read and ordering.

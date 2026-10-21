@@ -1834,9 +1834,11 @@ impl LiveVcpuTimeCallbackState {
         settled_ceiling: Option<u64>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
+            self.observe_unpublished_boundary(boundary, "paused", raw_icount);
             return Ok(());
         }
         if self.preserve_network_output_stop(raw_icount, boundary)? {
+            self.observe_unpublished_boundary(boundary, "output-stop", raw_icount);
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1847,9 +1849,11 @@ impl LiveVcpuTimeCallbackState {
             // A QEMU mutation may synchronously re-enter the sim loop and
             // publish a newer exact boundary before the outer callback resumes.
             // The older callback has no remaining state to commit.
+            self.observe_unpublished_boundary(boundary, "superseded", raw_icount);
             return Ok(());
         }
         if self.pending_idle_advance_clamp(raw_icount)?.is_some() {
+            self.observe_unpublished_boundary(boundary, "idle-pending", raw_icount);
             return Ok(());
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
@@ -1874,7 +1878,32 @@ impl LiveVcpuTimeCallbackState {
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
+        self.device_wait_witness.observe_publication(
+            boundary,
+            if settled_ceiling.is_some() {
+                "settled"
+            } else {
+                "reached"
+            },
+            raw_icount,
+            current_icount,
+            settled_ceiling,
+        );
         Ok(())
+    }
+
+    /// Copies a boundary callback that returned without publishing.
+    ///
+    /// The coordinate is the last committed one, since this callback
+    /// committed nothing.
+    fn observe_unpublished_boundary(&self, boundary: &'static str, kind: &'static str, raw: u64) {
+        self.device_wait_witness.observe_publication(
+            boundary,
+            kind,
+            raw,
+            self.last_icount.load(Ordering::Acquire),
+            None,
+        );
     }
 
     /// Publishes and admits a doorbell-deferred stop from this exact callback.
@@ -2197,6 +2226,13 @@ impl LiveVcpuTimeCallbackState {
             } else {
                 PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
                     .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+                self.device_wait_witness.observe_publication(
+                    "idle-advance-completion",
+                    "reached",
+                    self.last_raw_icount.load(Ordering::Acquire),
+                    target_icount,
+                    None,
+                );
             }
             Ok(target_icount)
         })();
@@ -2531,6 +2567,13 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
+        self.device_wait_witness.observe_publication(
+            phase,
+            "reached",
+            raw_icount,
+            current_icount,
+            None,
+        );
         Ok(current_icount)
     }
 

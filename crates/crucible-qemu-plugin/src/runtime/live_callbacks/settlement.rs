@@ -41,6 +41,13 @@ impl LiveVcpuTimeCallbackState {
                 earliest = earliest.min(deadline);
             }
         }
+        self.device_wait_witness.observe_publication(
+            "exact-event",
+            "tick",
+            self.last_raw_icount.load(Ordering::Acquire),
+            self.last_icount.load(Ordering::Acquire),
+            Some(earliest),
+        );
         Ok(earliest)
     }
 }

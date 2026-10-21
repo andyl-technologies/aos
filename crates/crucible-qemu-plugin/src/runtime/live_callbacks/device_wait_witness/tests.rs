@@ -199,3 +199,92 @@ fn noncanonical_coordinate_floor_disables_the_witness() {
     let unfloored = DeviceWaitWitness::from_settings(Some(OsStr::new("256")), None);
     assert!(unfloored.request(7, None, 0).is_some());
 }
+
+fn captured_publications(witness: &mut DeviceWaitWitness) -> std::fs::File {
+    let capture = tempfile_capture();
+    witness.destination = Some(Mutex::new(
+        capture
+            .try_clone()
+            .unwrap_or_else(|e| panic!("duplicate: {e}")),
+    ));
+    capture
+}
+
+fn tempfile_capture() -> std::fs::File {
+    let path = std::env::temp_dir().join(format!(
+        "crucible-device-wait-publications-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("capture: {e}"));
+    std::fs::remove_file(&path).unwrap_or_else(|e| panic!("unlink: {e}"));
+    file
+}
+
+fn rows(capture: &mut std::fs::File) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    capture
+        .seek(SeekFrom::Start(0))
+        .unwrap_or_else(|e| panic!("seek: {e}"));
+    let mut text = String::new();
+    capture
+        .read_to_string(&mut text)
+        .unwrap_or_else(|e| panic!("read: {e}"));
+    text.lines().map(str::to_owned).collect()
+}
+
+#[test]
+fn publication_rows_need_an_explicit_floor() {
+    let mut unfloored = DeviceWaitWitness::from_setting(Some(OsStr::new("256")));
+    let mut capture = captured_publications(&mut unfloored);
+
+    unfloored.observe_publication("sim-publication", "reached", 2, 100, None);
+
+    assert!(rows(&mut capture).is_empty());
+}
+
+#[test]
+fn a_repeated_publication_names_its_publisher_once() {
+    let mut witness =
+        DeviceWaitWitness::from_settings(Some(OsStr::new("1")), Some(OsStr::new("100")));
+    let mut capture = captured_publications(&mut witness);
+
+    witness.observe_publication("sim-publication", "reached", 1, 99, None);
+    for _ in 0..1000 {
+        witness.observe_publication("sim-publication", "reached", 2, 100, None);
+    }
+    witness.observe_publication("max-advance", "raw-ceiling", 2, 100, Some(2));
+
+    assert_eq!(
+        rows(&mut capture),
+        [
+            "CRUCIBLE-DEVICE-WAIT-V1 phase=publication pid={pid} boundary=sim-publication kind=reached raw=2 current=100 value=unavailable",
+            "CRUCIBLE-DEVICE-WAIT-V1 phase=publication pid={pid} boundary=max-advance kind=raw-ceiling raw=2 current=100 value=2",
+        ]
+        .map(|row| row.replace("{pid}", &std::process::id().to_string()))
+    );
+}
+
+#[test]
+fn publication_allowance_is_bounded_and_renewed_by_rebind() {
+    let mut witness =
+        DeviceWaitWitness::from_settings(Some(OsStr::new("1")), Some(OsStr::new("1")));
+    let mut capture = captured_publications(&mut witness);
+
+    for raw in 0..100 {
+        witness.observe_publication("sim-publication", "reached", raw, 1, None);
+    }
+    assert_eq!(rows(&mut capture).len(), MAX_PUBLICATION_ROWS);
+
+    witness.rebind();
+    witness.observe_publication("sim-publication", "reached", 0, 1, None);
+
+    assert_eq!(rows(&mut capture).len(), MAX_PUBLICATION_ROWS + 1);
+}
