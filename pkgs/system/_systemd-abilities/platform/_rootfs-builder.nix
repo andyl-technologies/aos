@@ -421,6 +421,7 @@ in
                 # The warm switch-root guard must be a direct EROFS inode. A
                 # symlink here would make the handoff depend on overlay path
                 # resolution before the guard has pinned the runtime closure.
+                mkdir -p rootfs/usr/lib/systemd
                 install -m 0555 \
                   "rootfs/usr/lib/aos/nix''${AOS_SELINUX_STAGE0#/nix}/bin/aos-selinux-stage0" \
                   rootfs/usr/lib/systemd/aos-selinux-root-handoff
