@@ -204,10 +204,24 @@ impl EncodedAllocation {
 
     fn check_received(&self, executor: &NativeOwnerExecutor, received: &[File]) -> io::Result<()> {
         self.check_canonical(executor)?;
-        if received.len() != self.inodes.len() {
-            return Err(invalid(
-                "encoded inspection returned an incomplete allocation",
-            ));
+        // InspectBody returns the primary body only, including for a pack.
+        // The owner independently checks both original pair members above; the
+        // publisher retains that complete unit behind the incarnation token.
+        let [file] = received else {
+            return Err(invalid("encoded inspection must return one primary body"));
+        };
+        let index = self
+            .inodes
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| invalid("encoded allocation has no primary body"))?;
+        if inode(file)? != self.inodes[index] {
+            return Err(invalid("encoded inspection returned another primary inode"));
+        }
+        if rustix::fs::fcntl_getfl(file)?.intersects(
+            rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::PATH,
+        ) {
+            return Err(invalid("encoded inspection returned writable custody"));
         }
         let owner = executor
             .custody()
@@ -218,27 +232,7 @@ impl EncodedAllocation {
             .first()
             .ok_or_else(|| invalid("encoded inspection lost original job"))?;
         let job = backing::lock(resource)?;
-        let mut seen = BTreeSet::new();
-        for file in received {
-            let identity = inode(file)?;
-            let index = self
-                .inodes
-                .iter()
-                .position(|expected| *expected == identity)
-                .ok_or_else(|| invalid("encoded inspection returned another inode"))?;
-            if !seen.insert(identity)
-                || rustix::fs::fcntl_getfl(file)?.intersects(
-                    rustix::fs::OFlags::WRONLY
-                        | rustix::fs::OFlags::RDWR
-                        | rustix::fs::OFlags::PATH,
-                )
-            {
-                return Err(invalid(
-                    "encoded inspection duplicated or returned writable custody",
-                ));
-            }
-            native::verify_custodied_bytes(&owner, file, input_bytes(&job, index)?)?;
-        }
+        native::verify_custodied_bytes(&owner, file, input_bytes(&job, index)?)?;
         Ok(())
     }
 
