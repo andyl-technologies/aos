@@ -1337,6 +1337,14 @@
               (builtins.attrNames (builtins.getContext current)))
           else if builtins.isList current
           then builtins.concatLists (builtins.map collect current)
+          # Dependency provenance observes the same conditional content as
+          # the merge. An inactive property can legitimately refer to an
+          # absent optional resource and must never force that value here.
+          else if isMkIf current
+          then
+            if current._condition
+            then collect current._value
+            else []
           else if builtins.isAttrs current && !(isPackageValue current)
           then
             builtins.concatLists (builtins.map

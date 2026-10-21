@@ -915,6 +915,43 @@
     .observedOwners
     == ["@base"];
 
+  inactiveConditionalDependenciesRemainLazy = let
+    evaluated = lib.evalModules {
+      modules = [
+        ({
+          lib,
+          provenance,
+          ...
+        }: {
+          options = {
+            artifacts = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule {
+                options.serviceConfig = lib.mkOption {
+                  type = lib.types.anything;
+                  default = {};
+                };
+              });
+              default = {};
+              extensible = true;
+            };
+            observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
+          };
+          config = {
+            artifacts.guarded.serviceConfig = {
+              command = "active";
+              inactive = lib.mkIf false (lib.mkForce (throw "inactive dependency content was forced"));
+            };
+            observedOwners = provenance.dependencyOwnersOfAttr ["artifacts"] "guarded";
+          };
+        })
+      ];
+      inherit lib;
+    };
+  in
+    evaluated.config.observedOwners
+    == ["@base"]
+    && evaluated.config.artifacts.guarded.serviceConfig.command == "active";
+
   packageDefaultDependencyOwner =
     (lib.evalModules {
       modules = [
@@ -1498,6 +1535,10 @@
       {
         ok = packageValuesAreAtomicForDependencyOwnership;
         message = "package values are atomic for dependency ownership";
+      }
+      {
+        ok = inactiveConditionalDependenciesRemainLazy;
+        message = "inactive conditional dependency content remains lazy";
       }
       {
         ok = packageDefaultDependencyOwner;
