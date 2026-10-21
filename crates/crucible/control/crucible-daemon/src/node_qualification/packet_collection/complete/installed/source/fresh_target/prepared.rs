@@ -927,3 +927,7 @@ fn note_funded_setup_stage(
         deployment.note_operation_stage(stage);
     }
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "prepared/packaged_configuration_tests.rs"]
+mod packaged_configuration_tests;

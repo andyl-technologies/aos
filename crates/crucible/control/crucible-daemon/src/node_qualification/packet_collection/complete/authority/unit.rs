@@ -4,6 +4,8 @@ use super::*;
 use crate::node_qualification::{QualificationUnit, normative_specification};
 use serde::Serialize;
 
+mod fixtures;
+
 /// Retains the independently reconstructed unit and its complete original bodies.
 pub(super) struct InterpretedUnit {
     /// Binds all measured native and host roles to the complete world.
@@ -140,16 +142,7 @@ pub(super) fn interpret(
             .map(|one| (&one.host, &one.sources))
             .collect::<Vec<_>>(),
     )?;
-    let fixtures = retain(
-        &mut bodies,
-        &(
-            request.coordinator,
-            &request.launches,
-            request.world,
-            request.requirements,
-            "original complete native-three/Host2 preparation collection; all effects and capture remain independently refused",
-        ),
-    )?;
+    let fixtures = fixtures::retain(&mut bodies, request)?;
     let (specification, bytes) = normative_specification()?;
     if retain_bytes(&mut bodies, bytes)? != specification {
         return Err(refused());

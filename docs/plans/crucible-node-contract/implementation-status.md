@@ -120,8 +120,33 @@ exact comparison. The actual packaged configuration constructs all three
 neverborn code Sources in an explicitly run artifact control. Missing, duplicate
 and changed declarations refuse in a separate control. These constructors confer
 no deployment, native startup or readiness. Formatting and the six architecture
-gates pass; the refreshed application gate, full Daemon run and confined VM are
-pending for this correction.
+gates pass. The required application gate compiles 180 test executables across
+58 package IDs, including 71 integration targets; all 34 changed Rust paths at
+that checkpoint match its source capture. The full configured Daemon suite passes
+1,824 tests with zero failures, no filtering and 165 ignores. The confined VM
+passes Source construction and next refuses the collecting fixture serialization
+ceiling before any worker or private Birth success.
+
+The complete settled17 fixture tuple exceeded its independent one-MiB object
+bound because each full launch embeds its original coordinator. A versioned
+qualification metadata document now references separately retained complete
+canonical coordinator and launch records. Older declarations keep their original
+inline tuple and identity. The one-MiB object and two-MiB aggregate limits remain
+unchanged; no native schema, query allowance or admission permission changes.
+An explicitly run packaged regression creates a fresh configuration with the
+actual test ELF, installs the genuine code authority, plan and graph, then reads
+and verifies every reference against the original full bytes. Its explicit code
+fetch limits cover that large test ELF and the fixture's declared content budget;
+this does not qualify the production capsule's default cold-archive limits.
+The focused regression passes. The complete configured Daemon suite again passes
+1,824 tests with zero failures and 165 ignores, and all six architecture gates
+pass. The application gate compiles the same 180/58/71 targets and captures all
+37 changed Rust paths, before the final test-only explicit-budget adjustment.
+Its compilation-only scope is unchanged. The fresh confined VM gets beyond the
+previous serialization failure but its public control exchange times out before
+the actor publishes a terminal result. No worker or private-Birth success is
+claimed; synchronous preparation responsiveness and production code fetch limits
+remain unqualified.
 
 ## Original launch custody and shared startup geometry
 

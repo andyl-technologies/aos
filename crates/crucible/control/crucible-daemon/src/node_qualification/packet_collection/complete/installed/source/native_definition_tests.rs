@@ -468,4 +468,22 @@ fn packaged_funded_configuration_constructs_all_neverborn_code_sources() {
             Some(256)
         );
     }
+
+    let roster =
+        PacketCompleteRoster::new(sources.map(std::rc::Rc::new), &selected.coordinator).unwrap();
+    let measurements = selected.measurements.map(|one| PacketFixtureMeasurements {
+        peer: artifact(one.peer),
+        host: one.host,
+        sources: one.sources.into_iter().map(artifact).collect(),
+    });
+    let request = PacketCompleteGraphRequest {
+        roster,
+        host: host.source(),
+        measurements: measurements.each_ref(),
+        world: &selected.world,
+        requirements: &selected.requirements,
+        content: &content,
+        coordinator: &selected.coordinator,
+    };
+    crate::node_qualification::packet_collection::complete::records::validate(&request).unwrap();
 }
