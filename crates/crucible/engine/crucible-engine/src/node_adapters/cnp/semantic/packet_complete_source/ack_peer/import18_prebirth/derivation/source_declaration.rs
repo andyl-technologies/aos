@@ -18,6 +18,9 @@ use std::{cell::Ref, mem::size_of};
 #[path = "source_declaration/encoding.rs"]
 mod encoding;
 
+#[path = "source_declaration/initial_projection.rs"]
+mod initial_projection;
+
 const UNAVAILABLE: &str = "original import18 declaration unavailable";
 const CHANGED: &str = "original import18 declaration changed";
 

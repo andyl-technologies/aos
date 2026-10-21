@@ -10,11 +10,53 @@ use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::original_import18_raw_bootstrap_storage_data;
 
 /// Retains a numeric construction observation without creating opaque funding.
-pub(in crate::reference_packet) struct InitialConstructionData {
+pub struct PacketNativeImport18InitialConstructionData {
     /// Prices simultaneous retained owners and sequential transient/counter work.
     pub(in crate::reference_packet) row: [usize; 3],
     /// Bounds all three future bodies independently of unknown Initial decimals.
     pub(in crate::reference_packet) maximum_encoded_bytes: [usize; 3],
+}
+
+pub(in crate::reference_packet) type InitialConstructionData =
+    PacketNativeImport18InitialConstructionData;
+
+impl PacketNativeImport18InitialConstructionData {
+    /// Returns the independently projected retained, transient and scratch axes.
+    pub fn requested_storage_data(&self) -> [usize; 3] {
+        self.row
+    }
+
+    /// Returns the independently projected Recipe, Selected and Boot body maxima.
+    pub fn maximum_encoded_bytes_data(&self) -> [usize; 3] {
+        self.maximum_encoded_bytes
+    }
+}
+
+/// Projects initial DATA from borrowed original operands before a recipe exists.
+///
+/// The Source bank stays opaque and the Host serializer borrows its actual typed
+/// plan. Callers admit the fixed counter and actual launch formatter before this
+/// walk, and keep original Source/Birth/launch guards around every outcome. This
+/// result grants no funding, phase permission, native model or readiness.
+///
+/// # Errors
+/// Refuses invalid launch/declaration geometry, unsupported serialization,
+/// checked overflow or demand above the independent restriction.
+pub fn native_import18_initial_construction_data<H: Serialize>(
+    launch: &PacketNative5SourceLaunch,
+    declaration: PacketNativeImport18SourceDeclarationView<'_>,
+    expected_host_registration: &H,
+    private_launch: &Id,
+    host_executable: &ContentRef,
+    maximum: usize,
+) -> Result<PacketNativeImport18InitialConstructionData, ProviderError> {
+    let private = PrivateOperands {
+        declaration,
+        expected_host_registration,
+        private_launch,
+        host_executable,
+    };
+    initial_construction_projection_data(launch, &private, maximum)
 }
 
 /// Derives complete initial constructor DATA from the real producer operands.
@@ -24,9 +66,9 @@ pub(in crate::reference_packet) struct InitialConstructionData {
 ///
 /// # Errors
 /// Refuses actual operand geometry, checked overflow or independent restriction.
-pub(in crate::reference_packet) fn initial_construction_projection_data(
+pub(in crate::reference_packet) fn initial_construction_projection_data<H: Serialize>(
     launch: &PacketNative5SourceLaunch,
-    private: &PrivateOperands<'_>,
+    private: &PrivateOperands<'_, H>,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
     let bodies = prospective::construction_data(launch, private, maximum)?;
@@ -51,6 +93,11 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
     boot: &PacketNativeImport18PrivateBootWireData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
+    if boot.private_key.as_slice().len() != size_of::<[u8; 32]>()
+        || boot.birth_id.as_slice().len() != size_of::<[u8; 32]>()
+    {
+        return Err(invalid());
+    }
     let launch = selected.launch_data();
     let declaration = native_import18_source_declaration_bank_view_data(
         boot.source_birth.declaration.source_birth_data().as_slice(),
@@ -58,8 +105,6 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
     )?;
     let private = PrivateOperands {
         declaration,
-        private_key: &boot.private_key,
-        birth_id: &boot.birth_id,
         expected_host_registration: &boot.expected_host_registration,
         private_launch: &boot.private_launch,
         host_executable: &boot.host_executable,
@@ -101,25 +146,26 @@ fn combine(
     })
 }
 
-/// Prices actual hidden launch and fixed private Bytes formatter temporaries.
+/// Prices actual hidden launch formatters and fixed construction controls.
 ///
-/// The Source declaration is projected without invoking its Bytes formatter.
-/// Host registration is an ordinary Value; it introduces no custom Bytes codec.
+/// The Source declaration and defining fixed private key/Birth extents are
+/// projected without invoking their Bytes formatters. The caller separately
+/// admits any custom Host formatter before lending its serializer.
 ///
 /// # Errors
 /// Refuses actual launch metadata or checked base64-length overflow.
-pub(in crate::reference_packet) fn initial_quote_formatter_data(
+pub fn native_import18_initial_quote_formatter_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<[usize; 3], ProviderError> {
     let mut row = source_authentication_quote_construction_data(launch)?;
-    let private_bytes = base64::encoded_len(32, false).ok_or_else(exhausted)?;
-    row[1] = add(row[1], add(private_bytes, private_bytes)?)?;
     row[2] = add(row[2], initial_construction_counter_scratch_data())?;
     Ok(row)
 }
 
+pub(in crate::reference_packet) use native_import18_initial_quote_formatter_data as initial_quote_formatter_data;
+
 /// Names the real projection, Source checker, combining and returned controls.
-pub(in crate::reference_packet) fn initial_construction_counter_scratch_data() -> usize {
+pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
     prospective::counter_scratch_data()
         + source_authentication_counter_scratch_data()
         + native_import18_startup_wire_counter_scratch_data()
@@ -138,7 +184,14 @@ pub(in crate::reference_packet) fn initial_construction_counter_scratch_data() -
         + size_of::<Result<&[u8; 32], std::array::TryFromSliceError>>()
         + size_of::<std::iter::Zip<std::array::IntoIter<U64, 3>, std::array::IntoIter<U64, 3>>>()
         + size_of::<Result<(), ProviderError>>() * 5
+        + size_of::<PacketNativeImport18SourceDeclarationView<'static>>()
+        + size_of::<PrivateOperands<'static>>()
+        + size_of::<&PacketNative5SourceLaunch>()
+        + size_of::<&Id>()
+        + size_of::<&ContentRef>()
 }
+
+pub(in crate::reference_packet) use native_import18_initial_construction_counter_scratch_data as initial_construction_counter_scratch_data;
 
 /// Joins exact decoded headers to a separately reconstructed initial row.
 ///

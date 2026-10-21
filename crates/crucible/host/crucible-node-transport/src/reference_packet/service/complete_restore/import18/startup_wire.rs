@@ -47,6 +47,12 @@ mod prospective;
 #[path = "startup_wire/initial_construction.rs"]
 mod initial_construction;
 
+pub use initial_construction::{
+    PacketNativeImport18InitialConstructionData,
+    native_import18_initial_construction_counter_scratch_data,
+    native_import18_initial_construction_data, native_import18_initial_quote_formatter_data,
+};
+
 pub(in crate::reference_packet) use initial_construction::{
     InitialConstructionData, authenticate_initial_headers_data,
     initial_construction_counter_scratch_data, initial_construction_from_wire_data,

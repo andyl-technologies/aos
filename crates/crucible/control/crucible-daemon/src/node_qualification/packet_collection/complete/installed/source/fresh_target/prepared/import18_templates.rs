@@ -14,7 +14,9 @@ use crucible_engine::node_adapters::cnp::{
     OriginalNativeSourceTemplate18Attempt, OriginalNativeSourceTemplate18ConstructionData,
 };
 use crucible_engine::node_contract::RuntimeError;
-use crucible_node_transport::reference_packet::service::complete_restore::import18::PacketNativeImport18Selection;
+use crucible_node_transport::reference_packet::service::complete_restore::import18::{
+    PacketNativeImport18InitialConstructionData, PacketNativeImport18Selection,
+};
 use std::mem::{size_of, size_of_val};
 
 #[path = "import18_templates/registration_plan.rs"]
@@ -57,6 +59,7 @@ struct Member {
     job: Option<SourceBirthDerivationJob>,
     declaration_encoding_row: Option<[usize; 3]>,
     declaration_encoding: Option<Vec<u8>>,
+    initial_projection: Option<PacketNativeImport18InitialConstructionData>,
 }
 
 impl Member {
@@ -74,6 +77,7 @@ impl Member {
             job: None,
             declaration_encoding_row: None,
             declaration_encoding: None,
+            initial_projection: None,
         }
     }
 }
@@ -102,6 +106,7 @@ struct MemberObservation<'a> {
     job: &'a Option<SourceBirthDerivationJob>,
     declaration_encoding_row: &'a Option<[usize; 3]>,
     declaration_encoding: &'a Option<Vec<u8>>,
+    initial_projection: &'a Option<PacketNativeImport18InitialConstructionData>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -119,6 +124,7 @@ impl<'a> MemberObservation<'a> {
             job,
             declaration_encoding_row,
             declaration_encoding,
+            initial_projection,
         } = member;
         Self {
             stage,
@@ -133,6 +139,7 @@ impl<'a> MemberObservation<'a> {
             job,
             declaration_encoding_row,
             declaration_encoding,
+            initial_projection,
         }
     }
 }
@@ -169,6 +176,7 @@ impl MemberObservation<'_> {
             job,
             declaration_encoding_row: _,
             declaration_encoding,
+            initial_projection: _,
         } = *self;
         if let Some(bank) = declaration_encoding {
             counter
@@ -832,6 +840,10 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
         assert!(std::ptr::eq(
             view.declaration_encoding,
             &member.declaration_encoding
+        ));
+        assert!(std::ptr::eq(
+            view.initial_projection,
+            &member.initial_projection
         ));
     }
 

@@ -67,8 +67,6 @@ fn reconstructed_initial_uses_no_announced_row_and_covers_actual_overlapping_own
                     typed.launch.launch_data(),
                 )
                 .unwrap(),
-                private_key: &typed.boot.private_key,
-                birth_id: &typed.boot.birth_id,
                 expected_host_registration: &typed.boot.expected_host_registration,
                 private_launch: &typed.boot.private_launch,
                 host_executable: &typed.boot.host_executable,
@@ -137,4 +135,72 @@ fn complete_initial_population_and_policy_refuse_overflow() {
     assert!(combine(bodies(), [usize::MAX, 1, 1], [0; 3], usize::MAX).is_err());
     assert!(combine(bodies(), [1, 1, usize::MAX], [0; 3], usize::MAX).is_err());
     assert!(combine(bodies(), [1; 3], [0; 3], 1).is_err());
+}
+
+#[test]
+fn original_typed_host_projection_matches_native_value_without_secret_operands() {
+    use crucible_source_birth_data::source_birth::views::RegistrationView;
+
+    let mut raw = bodies(false, 1);
+    let originals = decoded(&raw);
+    let original = originals.bodies_data().unwrap();
+    let launch = original.launch.launch_data();
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
+        panic!("the original fixture must have its sole launch binding");
+    };
+    let features = crucible_node_format::IdSet::default();
+    let envelope_extensions = ["$serde_json::private::RawValue".to_owned()];
+    let host = RegistrationView {
+        schema: "source-owned.packet-canonical-ack-registration/5",
+        role: "controller",
+        connection_id: &original.boot.private_launch,
+        session_id: &binding.authority.session_id,
+        incarnation_id: &binding.authority.incarnation_id,
+        limits: &launch.limits,
+        features: &features,
+        extensions: &[],
+        envelope_extensions: &envelope_extensions,
+    };
+    let mut boot: Value = canonical::parse_json(&raw[2], raw[2].len()).unwrap();
+    boot["expected_host_registration"] = serde_json::to_value(&host).unwrap();
+    raw[2] = canonical::canonical_json(&boot).unwrap();
+    let slots = decoded(&raw);
+    let typed = slots.bodies_data().unwrap();
+    let launch = typed.launch.launch_data();
+    let declaration = native_import18_source_declaration_bank_view_data(
+        typed
+            .boot
+            .source_birth
+            .declaration
+            .source_birth_data()
+            .as_slice(),
+        launch,
+    )
+    .unwrap();
+    let parent = native_import18_initial_construction_data(
+        launch,
+        declaration,
+        &host,
+        &typed.boot.private_launch,
+        &typed.boot.host_executable,
+        usize::MAX / 4,
+    )
+    .unwrap();
+    let native =
+        initial_construction_from_wire_data(typed.launch, typed.boot, usize::MAX / 4).unwrap();
+    assert_eq!(parent.requested_storage_data(), native.row);
+    assert_eq!(
+        parent.maximum_encoded_bytes_data(),
+        native.maximum_encoded_bytes
+    );
+
+    // Received Bytes remain untrusted even though the defining parent Birth
+    // fields have fixed widths. No announcement can widen that original type.
+    for field in ["private_key", "birth_id"] {
+        let mut changed = boot.clone();
+        changed[field] = json!(Bytes::new(vec![0; 31]));
+        let short: PacketNativeImport18PrivateBootWireData =
+            serde_json::from_value(changed).unwrap();
+        assert!(initial_construction_from_wire_data(typed.launch, &short, usize::MAX / 4).is_err());
+    }
 }

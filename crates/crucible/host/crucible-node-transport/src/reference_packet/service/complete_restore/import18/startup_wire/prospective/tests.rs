@@ -36,8 +36,6 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
                 selected["prebirth_recipe_identity"] = recipe["identity"].clone();
                 let parsed_selected: PacketNativeImport18SelectedLaunchWireData =
                     serde_json::from_value(selected.clone()).unwrap();
-                let key = Bytes::new(vec![23; 32]);
-                let birth = Bytes::new(vec![17; 32]);
                 let source = vec![255; length];
                 let selected_launch = &parsed_selected.launch;
                 let declaration =
@@ -48,8 +46,6 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
                     canonical::content_ref(b"inert", "application/octet-stream").unwrap();
                 let operands = PrivateOperands {
                     declaration,
-                    private_key: &key,
-                    birth_id: &birth,
                     expected_host_registration: &registration,
                     private_launch: &private_launch,
                     host_executable: &executable,
@@ -85,26 +81,19 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
 }
 
 #[test]
-fn invalid_actual_private_widths_and_small_complete_restrictions_refuse() {
+fn small_complete_restrictions_refuse() {
     let selected: PacketNativeImport18SelectedLaunchWireData =
         serde_json::from_value(inert_bootstrap_fixtures::selected_launch(false)).unwrap();
     let source = [255; 32];
-    let short_key = Bytes::new(vec![23; 31]);
-    let key = Bytes::new(vec![23; 32]);
-    let birth = Bytes::new(vec![17; 32]);
     let registration = json!({});
     let private_launch = Id::new("private.data").unwrap();
     let executable = canonical::content_ref(b"inert", "application/octet-stream").unwrap();
-    let mut operands = PrivateOperands {
+    let operands = PrivateOperands {
         declaration: native_import18_source_declaration_bank_view_data(&source, &selected.launch)
             .unwrap(),
-        private_key: &short_key,
-        birth_id: &birth,
         expected_host_registration: &registration,
         private_launch: &private_launch,
         host_executable: &executable,
     };
-    assert!(construction_data(&selected.launch, &operands, usize::MAX / 4).is_err());
-    operands.private_key = &key;
     assert!(construction_data(&selected.launch, &operands, 1).is_err());
 }

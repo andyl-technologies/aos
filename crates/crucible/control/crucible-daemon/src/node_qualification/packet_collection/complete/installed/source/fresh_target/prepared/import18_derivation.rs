@@ -17,6 +17,7 @@ impl PreparedCompleteRestoration {
             && self.import18_templates.funded_complete
             && self.import18_templates.members.iter().all(|member| {
                 member.stage == Stage::PrivateBirth
+                    && member.initial_projection.is_some()
                     && member
                         .declaration_encoding
                         .as_ref()
@@ -191,6 +192,26 @@ impl PreparedCompleteRestoration {
         // census, including after a partial canonical write or guard refusal.
         let observed = self.observe_import18_templates_data([0; 3]);
         encoded.and(observed)?;
+        self.note_funded_operation_stage("projecting original initial demand");
+        self.observe_import18_templates_data(
+            PacketCompleteSemanticSource::native_import18_initial_projection_counter_data(),
+        )?;
+        let prewalk = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_initial_projection_prewalk_data()?;
+        self.observe_import18_templates_data(prewalk)?;
+        let projected = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_initial_projection_data(usize::MAX);
+        // Release every original Source/Birth/launch loan before the complete
+        // Prepared census, including a failed formatter or projection outcome.
+        let result = projected.map(|projection| {
+            self.import18_templates.members[selected].initial_projection = Some(projection);
+        });
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
     }

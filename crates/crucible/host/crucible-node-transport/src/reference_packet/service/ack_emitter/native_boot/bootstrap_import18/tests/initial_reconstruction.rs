@@ -80,6 +80,8 @@ fn flight(case: &str) {
             values[2]["source_birth"]["prebirth_recipe"]["nonce"] = json!(([1; 32]))
         }
         "initial_bad_key" => values[2]["private_key"] = json!(Bytes::new(vec![24; 32])),
+        "initial_short_key" => values[2]["private_key"] = json!(Bytes::new(vec![23; 31])),
+        "initial_short_birth" => values[2]["birth_id"] = json!(Bytes::new(vec![17; 31])),
         "initial_overstated_prefix" => row[0] += 1,
         _ => {}
     }
@@ -157,6 +159,8 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_selected_recipe",
         "initial_bad_recipe_copy",
         "initial_bad_key",
+        "initial_short_key",
+        "initial_short_birth",
         "initial_bad_prefix_recipe",
         "initial_overstated_prefix",
         "initial_small_escrow",

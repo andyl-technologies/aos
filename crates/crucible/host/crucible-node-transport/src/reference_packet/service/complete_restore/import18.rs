@@ -197,10 +197,13 @@ pub(in crate::reference_packet) use startup_wire::{
 };
 
 pub use startup_wire::{
-    NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA, PacketNativeImport18PrivateBootProjectionView,
-    PacketNativeImport18PrivateBootWireData, PacketNativeImport18SelectedLaunchWireData,
-    PacketNativeImport18SourceBindingView, PacketNativeImport18SourceBindingWireData,
-    PacketNativeImport18SourceDeclarationView, PacketNativeImport18SourceDeclarationWireData,
+    NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA, PacketNativeImport18InitialConstructionData,
+    PacketNativeImport18PrivateBootProjectionView, PacketNativeImport18PrivateBootWireData,
+    PacketNativeImport18SelectedLaunchWireData, PacketNativeImport18SourceBindingView,
+    PacketNativeImport18SourceBindingWireData, PacketNativeImport18SourceDeclarationView,
+    PacketNativeImport18SourceDeclarationWireData,
+    native_import18_initial_construction_counter_scratch_data,
+    native_import18_initial_construction_data, native_import18_initial_quote_formatter_data,
     native_import18_private_boot_projection_wire_data, native_import18_private_boot_wire_data,
     native_import18_selected_launch_wire_data, native_import18_source_binding_wire_data,
     native_import18_source_declaration_bank_view_data,

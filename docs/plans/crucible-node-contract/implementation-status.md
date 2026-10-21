@@ -640,7 +640,11 @@ unknown decimal widths, exact/one-byte-short demand and checked overflow.
 
 Both full Transport configurations pass 1,788 tests, zero failures, no
 filtering and sixteen existing ignores. All-feature/all-target checking and
-the six architecture checks pass. Required application compilation is running.
+the six architecture checks pass. Required application compilation passes for
+`530d5845bc`: all 126 owned changed Rust files match the captured source. The
+output is `39qdrm75zxpk20lgvqsr0vbh37w3v0kc-aos-test-targets-0.1.0`, with 180
+test executables across 58 package IDs and 71 integration targets. This capture
+precedes the subsequent recipe-independent projection.
 Genuine full five-phase Recipe/Initial production and native startup remain
 unfinished. These fixtures contain inert Wire DATA throughout.
 
@@ -660,8 +664,44 @@ and body maxima agree without passing a recipe to either calculation. These
 are inert parser DATA controls, with no opaque Recipe/Initial construction or
 native startup selection. Both full Transport configurations pass 1,788 tests,
 zero failures, no filtering and sixteen existing ignores. All-feature/all-target
-checking and the six architecture checks pass. The captured required application
-compilation gate is running independently of the preceding checkpoint's capture.
+checking and the six architecture checks pass. Required application compilation
+passes for `5a9b81dfe2`: all 127 owned changed Rust files match its captured source.
+The output is `1jk8f48jzx0q6wfrihczlq948zcxxan7-aos-test-targets-0.1.0`, with
+180 test executables across 58 package IDs and 71 integration targets. These
+compilation captures do not execute the native restore or select import18.
+
+## Original parent initial projection
+
+The genuine accepted worker/Source/private-Birth loan now lends its actual
+original launch, private-launch ID and shared typed registration plan to the
+recipe-independent initial projection. It does not parse either worker bank,
+copy a secret, construct a registration DOM or manufacture recipe values. The
+private key and Birth ID use their genuine constructor's defining `[u8; 32]`
+Bytes extents; native separately refuses received widths that differ. Actual
+launch formatter work and fixed original-loan/projection controls are admitted
+before serialization, with original guards on successful and refused outcomes.
+
+The real Prepared member retains the resulting numeric observation in an
+explicit inline slot. Every Source/Birth loan ends before whole-Prepared census;
+partial/failure custody remains intact. Its future-native axes are not charged
+as new parent backing and issue no opaque Initial, Recipe, phase permission or
+native readiness. The funded private-Birth completion probe now also requires
+this real retained projection in each of the three members.
+
+A new equivalence control uses the actual shared nine-field registration view
+and verifies identical parent/native rows and body maxima without secret
+operands. It also refuses short received key/Birth fields; real inherited-socket
+controls exercise both short fields under original custody. The first synthetic
+Host fixture used a RawValue-looking object, whose native reparse changes that
+object under raw JSON; its equality assertion failed. Replacing it with the
+actual closed registration type fixes the control's premise. Existing hostile
+RawValue population controls remain in place.
+
+Both full Transport configurations pass 1,789 tests, zero failures, no filtering
+and sixteen existing ignores. The six architecture checks pass. Final
+all-feature/all-target checking, the required application compilation capture,
+full Engine/Daemon runs and the funded Source VM are running. Genuine full
+five-phase Recipe/Initial production and native startup remain unfinished.
 
 ## Original launch custody and shared startup geometry
 

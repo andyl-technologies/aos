@@ -21,11 +21,9 @@ use crate::retained_metadata::{
 };
 
 /// Borrows the actual private operands without a future Source wrapper or row.
-pub(in crate::reference_packet) struct PrivateOperands<'a> {
+pub(in crate::reference_packet) struct PrivateOperands<'a, H: Serialize = Value> {
     pub(super) declaration: PacketNativeImport18SourceDeclarationView<'a>,
-    pub(super) private_key: &'a Bytes,
-    pub(super) birth_id: &'a Bytes,
-    pub(super) expected_host_registration: &'a Value,
+    pub(super) expected_host_registration: &'a H,
     pub(super) private_launch: &'a Id,
     pub(super) host_executable: &'a ContentRef,
 }
@@ -43,16 +41,13 @@ pub(super) struct ProspectiveBodyConstructionData {
 /// headers and simultaneous owners. These parser rows alone grant no admission.
 ///
 /// # Errors
-/// Refuses invalid key/birth lengths, unsupported actual serializer populations,
+/// Refuses unsupported actual serializer populations,
 /// arithmetic overflow or complete parser demand above the restriction.
-pub(super) fn construction_data(
+pub(super) fn construction_data<H: Serialize>(
     launch: &PacketNative5SourceLaunch,
-    private: &PrivateOperands<'_>,
+    private: &PrivateOperands<'_, H>,
     maximum: usize,
 ) -> Result<ProspectiveBodyConstructionData, ProviderError> {
-    if private.private_key.as_slice().len() != 32 || private.birth_id.as_slice().len() != 32 {
-        return Err(invalid());
-    }
     let mut recipe_shape = Projection::new(maximum)?;
     native_import18_prebirth_recipe_projection_data(&mut recipe_shape)?;
     let recipe_shape = recipe_shape.finish(maximum)?;
@@ -89,8 +84,13 @@ pub(super) fn construction_data(
         boot.add_field(name)?;
     }
     boot.add_string(NATIVE_IMPORT18_PRIVATE_BOOT_SCHEMA)?;
-    boot.add_value(private.private_key)?;
-    boot.add_value(private.birth_id)?;
+    // The genuine Birth constructor owns two [u8; 32] fields. Project their
+    // defining Bytes codec without copying secrets or invoking its formatter.
+    // Native checks the actual decoded widths before entering this formula.
+    let private_encoded =
+        base64::encoded_len(size_of::<[u8; 32]>(), false).ok_or_else(exhausted)?;
+    boot.add_unescaped_ascii_extent(private_encoded)?;
+    boot.add_unescaped_ascii_extent(private_encoded)?;
     source_binding(&mut boot, &private.declaration)?;
     boot.add_value(private.expected_host_registration)?;
     boot.add_value(private.private_launch)?;
@@ -98,7 +98,7 @@ pub(super) fn construction_data(
     let boot = boot.finish(maximum)?;
 
     // The exhaustive fixed recipe grammar contains no Value/RawValue leaves.
-    // Only the actual Launch and Host Value can introduce reserved keys. The
+    // Only the actual Launch and Host serializer can introduce reserved keys. The
     // original Source remains an opaque Bytes leaf throughout this projection.
     let launch_resets = raw_value_reparse::quote_serialized_raw_bound_data(launch, 1, maximum)?;
     let boot_resets = raw_value_reparse::quote_serialized_raw_bound_data(
@@ -200,6 +200,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Projection>() * 3
         + size_of::<[Shape; 3]>()
         + size_of::<[Resets; 3]>()
+        // H is Sized: every borrowed Host operand has the same thin layout.
         + size_of::<PrivateOperands<'static>>()
         + size_of::<ProspectiveBodyConstructionData>()
         + size_of::<Result<ProspectiveBodyConstructionData, ProviderError>>()
