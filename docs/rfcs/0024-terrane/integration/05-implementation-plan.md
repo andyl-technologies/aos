@@ -11865,3 +11865,32 @@ TLS fixture after the other transport encodings passed. The fixture now
 resolves `localhost` directly to its actual loopback listener while retaining
 normal TLS identity verification. All six local cases pass again; the failed
 frozen run remains recorded and requires a successful replacement.
+
+
+#### Private PutPack receive verification
+
+The portable SDK now checks bounded header/body/trailer ordering and waits for
+actual EOF before returning private verified pack and index artifacts. It
+checks the declared size, four-MiB body-frame bound, detached-index digest and
+embedded-index agreement, pack identity/class, every member identity and the
+configured metadata schema. Declared per-member and aggregate decode work are
+bounded before any decoder runs. A frame failure releases retained bytes and
+permanently rejects reuse of that receiver.
+
+Eight public integration cases pass without default features, including corrupt
+members, reordered/repeated/missing frames, contradictory declarations, index
+mismatch, decode budgets and configured schema rejection. The new
+`integration.pack-receive` check binds the exact inventory to the actual Cargo
+artifact and immutable source; frozen qualification remains pending. The
+receiver grants no backend admission, acknowledgement or publication. The
+service must authorize the request, establish manifest-dependent chunk
+boundaries and durably publish both artifacts before acknowledging PutPack.
+T-PROTO-1 remains open. A separate actual `wasm32-unknown-unknown` cross-target
+check fails in existing `std` dependencies (`errno` and `xattr`); the native
+`std,wasm` feature check does not establish WebAssembly target support.
+
+The replacement transport check at `aa150620b5` passes independent review of
+7,888 immutable files, 5,209 crate inputs and all six real-socket cases. The
+structured-status change at `2d4cd51b98` also passes required application-target
+compilation: 184 test executables across 59 packages, bound to 7,881 source
+files. This is compilation evidence only.

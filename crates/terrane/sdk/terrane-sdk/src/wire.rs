@@ -9,6 +9,9 @@
 /// Checks complete canonical ref records against their redundant wire summaries.
 pub mod refs;
 
+/// Receives ordered pack frames without admitting or acknowledging their bytes.
+pub mod upload;
+
 /// Maps classified service outcomes to structured protocol errors.
 pub mod status;
 
