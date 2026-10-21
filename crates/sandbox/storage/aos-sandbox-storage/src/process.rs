@@ -146,6 +146,9 @@ pub enum ZfsWorkerError {
     /// Protected durable authority did not authorize the requested worker effect.
     #[error("fixed ZFS worker protected authority was rejected")]
     Authority,
+    /// A protected observation failed an independently reconstructed binding.
+    #[error("fixed ZFS worker protected binding was rejected: {0}")]
+    AuthorityBinding(&'static str),
     /// The fixed worker could not load its protected Storage configuration.
     #[error("fixed ZFS worker protected configuration was rejected: {0}")]
     AuthorityConfiguration(#[source] crate::StorageAuthorityConfigError),

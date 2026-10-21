@@ -1654,11 +1654,13 @@ fn execute_catalog_observation_request(
     let request = decode_catalog_observation_request(&received.bytes)?;
     let (identity_pool_start, identity_pool_size) = request.bindings().identity_pool();
     let identity_pool = StorageIdentityPoolV1::new(identity_pool_start, identity_pool_size)
-        .map_err(|_| ZfsWorkerError::Authority)?;
+        .map_err(|_| ZfsWorkerError::AuthorityBinding("catalog identity pool"))?;
     if runtime_configuration_binding(protected.public_binding(), identity_pool)
         != request.bindings().runtime_binding()
     {
-        return Err(ZfsWorkerError::Authority);
+        return Err(ZfsWorkerError::AuthorityBinding(
+            "catalog runtime configuration",
+        ));
     }
     ensure_before_deadline(request.deadline_boottime_nanoseconds())?;
 
@@ -1739,7 +1741,7 @@ fn validate_catalog_custody(
     if current_catalog_custody_binding(mount_namespace, pin_root).map_err(map_observer_error)?
         != request.custody()
     {
-        return Err(ZfsWorkerError::Authority);
+        return Err(ZfsWorkerError::AuthorityBinding("catalog custody"));
     }
     Ok(())
 }
@@ -2809,6 +2811,9 @@ pub(crate) fn map_observer_error(error: WorkspacePinObserverError) -> ZfsWorkerE
     match error {
         WorkspacePinObserverError::Linux(error) => error.into(),
         WorkspacePinObserverError::Kernel(error) => error.into(),
+        WorkspacePinObserverError::HostScopeObservation(reason) => {
+            ZfsWorkerError::AuthorityBinding(reason)
+        }
         WorkspacePinObserverError::HostScopeMismatch | WorkspacePinObserverError::State(_) => {
             ZfsWorkerError::Authority
         }
@@ -2822,6 +2827,20 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn observer_scope_rejection_preserves_the_failed_binding() {
+        let error = map_observer_error(WorkspacePinObserverError::HostScopeObservation(
+            "reopened fixed pin root differs from retained inode or mount",
+        ));
+
+        assert!(matches!(
+            error,
+            ZfsWorkerError::AuthorityBinding(
+                "reopened fixed pin root differs from retained inode or mount"
+            )
+        ));
+    }
 
     fn packet_socket_pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
         let (first, second) = rustix::net::socketpair(

@@ -83,6 +83,9 @@ pub(crate) enum WorkspacePinObserverError {
     /// The retained namespace or root descriptor no longer names the fixed host scope.
     #[error("workspace pin host scope does not match the retained fixed scope")]
     HostScopeMismatch,
+    /// An independently reopened namespace or pin root differs from retained custody.
+    #[error("workspace pin fixed scope was rejected: {0}")]
+    HostScopeObservation(&'static str),
     /// A structurally valid observation could not form a durable proof.
     #[error("workspace pin proof construction failed: {0}")]
     State(#[from] StorageStateError),
@@ -585,7 +588,9 @@ fn validate_expected_host_scope(
         || namespace.inode != expected.mount_namespace_inode()
         || open_current_mount_namespace()?.identity() != namespace
     {
-        return Err(WorkspacePinObserverError::HostScopeMismatch);
+        return Err(WorkspacePinObserverError::HostScopeObservation(
+            "current boot or mount namespace differs from retained namespace",
+        ));
     }
 
     let current_pin_root = open_fixed_pin_root()?;
@@ -593,7 +598,9 @@ fn validate_expected_host_scope(
         || MountId::from_fd(current_pin_root.as_fd())?
             != MountId::from_fd(retained_pin_root.as_fd())?
     {
-        return Err(WorkspacePinObserverError::HostScopeMismatch);
+        return Err(WorkspacePinObserverError::HostScopeObservation(
+            "reopened fixed pin root differs from retained inode or mount",
+        ));
     }
     Ok(())
 }
