@@ -34,6 +34,7 @@ impl ExtensionHandshake {
         registry: &Rc<R>,
     ) -> Result<Self, ProviderError> {
         if handshake.is_none()
+            || std::mem::size_of::<R>() != 0
             || !registry.supported().is_empty()
             || !registry.required().is_empty()
         {
@@ -51,6 +52,46 @@ impl ExtensionHandshake {
             selected: None,
             original_registry: None,
         })
+    }
+
+    /// Counts an unselected wrapper under the same concrete empty registry Rc.
+    ///
+    /// The caller retains and authenticates the enclosing process owner. Exact
+    /// allocation identity and the internal zero-field marker establish the
+    /// callback's complete layout; an erased empty advertisement cannot do so.
+    /// Counting the retained issuer grants no registration or native authority.
+    ///
+    /// # Errors
+    /// Refuses a different allocation, owning registry, selected wrapper, known
+    /// registry-owner variant, nonempty advertisement or metadata overflow.
+    pub(crate) fn original_empty_retained_metadata_facts_data<
+        R: OriginalEmptyExtensionRegistry + 'static,
+    >(
+        &self,
+        registry: &Rc<R>,
+    ) -> Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError> {
+        let Self {
+            handshake,
+            installed,
+            selected,
+            original_registry,
+        } = self;
+        if std::mem::size_of::<R>() != 0
+            || !std::ptr::addr_eq(Rc::as_ptr(installed), Rc::as_ptr(registry))
+            || selected.is_some()
+            || original_registry.is_some()
+            || !registry.supported().is_empty()
+            || !registry.required().is_empty()
+        {
+            return Err(registry_refused());
+        }
+
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        handshake.observe_retained_metadata_data(&mut observer)?;
+        // Count the allocation once, after proving that the erased and concrete
+        // Rc edges refer to this same audited zero-field callback payload.
+        observer.shared_value(registry.as_ref())?;
+        Ok(observer.finish())
     }
 
     /// Retains independently installed peer contracts before any exchange.

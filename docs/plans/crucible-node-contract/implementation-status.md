@@ -1516,6 +1516,40 @@ and Daemon libraries remain qualified at `f2150ce5c7`. Full live Hello
 authentication, model-absent policy, bootstrap ACK and the remaining RFC
 acceptance exits are still required.
 
+## Fresh Hello configuration and exact empty-registry census
+
+An allocation-free clone-backing supplier walks the original installation
+fields and defining native feature/key declaration. Fresh String and Vec lengths
+replace original spare capacities; concrete field witnesses cover the complete
+installation and negotiation policy. Tree populations share the same maximum
+entry layout as the retained owner's metadata census. JSON is ordinary Value
+data, including RawValue-named keys, with the existing 64-container depth bound.
+An unavailable pinned map layout or owning Number representation refuses.
+
+A retained Handshake constructor validates the actual installation and policy
+before moving either owner. Validation errors preserve both original slots;
+success moves their allocations once into a fresh unadmitted issuer. The normal
+constructor uses the same validation and fresh initialization. Its validation
+order, epoch/gate allocations and admission behavior are unchanged.
+
+The boot extension wrapper now has a census requiring its exact concrete
+registry Rc, the internal zero-field marker and an unselected wrapper. Equal
+empty advertisements from another allocation cannot substitute for this owner.
+The corresponding wrapper constructor refuses an owning marker before consuming
+the plain handshake. Historical known-registry owners keep their separate census.
+
+Ten new controls pass. Both complete standard and raw-value Transport libraries
+pass 1,855 tests, with zero failures, no filtering and sixteen existing ignores.
+Scoped formatting, affected all-feature/all-target checking and all six
+architecture checks pass. Required application compilation and the funded-Source
+VM are still being qualified for this checkpoint. All 199 owned changed Rust paths
+match its application and three VM component source captures.
+
+The clone supplier prices backing only. Complete constructor validation and
+control rows, original initial funding, bootstrap-retained registrar slots and
+guarded invocation remain required before native use. These helpers supply no
+opaque Initial/Recipe, connection lease, Hello reply, ACK, model or Ready result.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

@@ -561,3 +561,6 @@ fn registrar_refuses_superseded_epoch_while_preserving_exact_resumed_selection()
 
 #[path = "registry_archive_tests.rs"]
 mod registry_archive_tests;
+
+#[path = "empty_registry_census_tests.rs"]
+mod empty_registry_census_tests;

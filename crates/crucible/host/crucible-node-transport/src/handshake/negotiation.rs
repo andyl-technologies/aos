@@ -14,6 +14,9 @@ struct OriginalCompletedHello<'a> {
 mod negotiation_snapshot;
 pub use negotiation_snapshot::OriginalNegotiationView;
 
+#[path = "retained_configuration.rs"]
+mod retained_configuration;
+
 /// Binds non-wire host installation facts to one admitted launch.
 ///
 /// This configuration comes from the trusted broker, never from provider JSON.
@@ -603,21 +606,11 @@ impl Handshake {
         installation: TrustedInstallation,
         policy: NegotiationPolicy,
     ) -> Result<Self, ProviderError> {
-        installation.measured_implementation.validate()?;
-        installation.launch_receipt.validate()?;
-        policy.validate()?;
-        Ok(Self {
+        Self::validate_configuration_data(&installation, &policy)?;
+        Ok(Self::from_validated_configuration_data(
             installation,
             policy,
-            shared_epoch: Arc::new(AtomicU64::new(0)),
-            registration_gate: Arc::new(Mutex::new(())),
-            epoch: 0,
-            current_connection: None,
-            selected_features: None,
-            resume_token: None,
-            contained: false,
-            hello_request_ids: BTreeSet::new(),
-        })
+        ))
     }
 
     /// Authenticates an initial exchange or a same-incarnation fenced resumption.

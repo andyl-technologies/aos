@@ -8,6 +8,9 @@ mod selection_tests;
 #[path = "extension_tests.rs"]
 mod extension_tests;
 
+#[path = "retained_configuration_tests.rs"]
+mod retained_configuration_tests;
+
 fn id(value: &str) -> Id {
     Id::new(value).unwrap()
 }

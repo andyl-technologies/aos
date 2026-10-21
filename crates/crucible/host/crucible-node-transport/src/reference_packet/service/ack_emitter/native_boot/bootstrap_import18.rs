@@ -61,6 +61,9 @@ pub(in crate::reference_packet::service) use hello_request::{
     counter_scratch_data as hello_request_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_registrar.rs"]
+mod hello_registrar;
+
 #[path = "bootstrap_import18/hello_value.rs"]
 mod hello_value;
 pub(in crate::reference_packet::service) use hello_value::{
