@@ -32,20 +32,14 @@ pub(super) enum RequestCache17Child {
     BlobFinish(<BlobFinishRequest as Native17Build>::Attempt),
     Release(<ReleaseRequest as Native17Build>::Attempt),
 }
+
+#[derive(Default)]
 pub(super) struct RequestCache17ReadAttempt {
     pub(super) child: Option<RequestCache17Child>,
     pub(super) failed: bool,
     completed: Option<HistoricalRequestCache17>,
 }
-impl Default for RequestCache17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            child: None,
-            failed: false,
-            completed: None,
-        }
-    }
-}
+
 impl Native17Build for HistoricalRequestCache17 {
     type Attempt = RequestCache17ReadAttempt;
     fn preflight_data(input: &[u8], l: &mut Ledger<'_, '_, '_>) -> Result<(), ProviderError> {

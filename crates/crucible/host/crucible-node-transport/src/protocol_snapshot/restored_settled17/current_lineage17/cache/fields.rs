@@ -11,6 +11,7 @@ use crate::reference_packet::service::{
 };
 use serde_json::Map;
 
+#[derive(Default)]
 pub(crate) struct BootLineage17Fields {
     pub(crate) host_registration: LineageSlot17<Value>,
     pub(crate) ack_original: LineageSlot17<Option<Envelope>>,
@@ -20,21 +21,6 @@ pub(crate) struct BootLineage17Fields {
     pub(crate) normalized_1: LineageSlot17<Option<Value>>,
     pub(crate) normalized_2: LineageSlot17<Option<Value>>,
     pub(crate) normalized_3: LineageSlot17<Option<Value>>,
-}
-
-impl Default for BootLineage17Fields {
-    fn default() -> Self {
-        Self {
-            host_registration: Default::default(),
-            ack_original: Default::default(),
-            ack_context: Default::default(),
-            ack_proof: Default::default(),
-            normalized_0: Default::default(),
-            normalized_1: Default::default(),
-            normalized_2: Default::default(),
-            normalized_3: Default::default(),
-        }
-    }
 }
 
 impl BootLineage17Fields {
@@ -85,22 +71,12 @@ impl BootLineage17Fields {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct PrepareLineage17Fields {
     pub(crate) original: LineageSlot17<Option<Envelope>>,
     pub(crate) request: LineageSlot17<Option<CurrentDto17<PacketCompleteRestorePrepareRequest>>>,
     pub(crate) context: LineageSlot17<Option<CurrentDto17<PacketCompleteRestorePrepareContext>>>,
     pub(crate) proof: LineageSlot17<Option<CurrentDto17<PacketCompleteRestoreTransferProof>>>,
-}
-
-impl Default for PrepareLineage17Fields {
-    fn default() -> Self {
-        Self {
-            original: Default::default(),
-            request: Default::default(),
-            context: Default::default(),
-            proof: Default::default(),
-        }
-    }
 }
 
 impl PrepareLineage17Fields {
@@ -136,6 +112,7 @@ impl PrepareLineage17Fields {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct CommitLineage17Fields {
     pub(crate) controller_pid: LineageSlot17<U64>,
     pub(crate) controller_uid: LineageSlot17<U64>,
@@ -146,22 +123,6 @@ pub(crate) struct CommitLineage17Fields {
     pub(crate) context: LineageSlot17<Option<CurrentDto17<PacketCompleteRestoreCommitContext>>>,
     pub(crate) proof: LineageSlot17<Option<CurrentDto17<PacketCompleteRestoreTransferProof>>>,
     pub(crate) hold: LineageSlot17<Option<CurrentDto17<PacketNativeRestoredCommitHold>>>,
-}
-
-impl Default for CommitLineage17Fields {
-    fn default() -> Self {
-        Self {
-            controller_pid: Default::default(),
-            controller_uid: Default::default(),
-            controller_executable: Default::default(),
-
-            original: Default::default(),
-            request: Default::default(),
-            context: Default::default(),
-            proof: Default::default(),
-            hold: Default::default(),
-        }
-    }
 }
 
 impl CommitLineage17Fields {
@@ -214,6 +175,7 @@ impl CommitLineage17Fields {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct CaptureLineage17Fields {
     pub(crate) original: LineageSlot17<Option<Envelope>>,
     pub(crate) arguments: LineageSlot17<Option<CurrentDto17<CaptureArguments>>>,
@@ -231,24 +193,6 @@ pub(crate) struct CaptureLineage17Fields {
     pub(crate) terminal: LineageSlot17<Option<Envelope>>,
     pub(crate) prepared_reply: LineageSlot17<Option<Map<String, Value>>>,
     pub(crate) confirmation_receipt: LineageSlot17<Option<Value>>,
-}
-
-impl Default for CaptureLineage17Fields {
-    fn default() -> Self {
-        Self {
-            original: Default::default(),
-            arguments: Default::default(),
-            capture: Default::default(),
-            capture_context: Default::default(),
-            upload: Default::default(),
-            upload_context: Default::default(),
-            continuation: Default::default(),
-            confirmation: Default::default(),
-            terminal: Default::default(),
-            prepared_reply: Default::default(),
-            confirmation_receipt: Default::default(),
-        }
-    }
 }
 
 impl CaptureLineage17Fields {
@@ -306,20 +250,11 @@ impl CaptureLineage17Fields {
     }
 }
 
+#[derive(Default)]
 pub(crate) struct RegistrationLineage17Fields {
     pub(crate) request: LineageSlot17<Envelope>,
     pub(crate) arguments: LineageSlot17<CurrentDto17<CaptureArguments>>,
     pub(crate) begin: LineageSlot17<CurrentDto17<BeginRequest>>,
-}
-
-impl Default for RegistrationLineage17Fields {
-    fn default() -> Self {
-        Self {
-            request: Default::default(),
-            arguments: Default::default(),
-            begin: Default::default(),
-        }
-    }
 }
 
 impl RegistrationLineage17Fields {

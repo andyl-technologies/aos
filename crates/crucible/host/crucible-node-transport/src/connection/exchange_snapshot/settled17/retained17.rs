@@ -270,6 +270,7 @@ impl HistoricalType for HistoricalReceivedBody17 {
 }
 
 /// Retains raw response shape and its independently decoded result cache.
+#[derive(Default)]
 pub(crate) struct ReceivedBody17ReadAttempt {
     request: RequestCache17ReadAttempt,
     shape: <ResponseShape as Native17Build>::Attempt,
@@ -280,20 +281,7 @@ pub(crate) struct ReceivedBody17ReadAttempt {
     pub(crate) failed: bool,
     completed: Option<HistoricalReceivedBody17>,
 }
-impl Default for ReceivedBody17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            request: Default::default(),
-            shape: Default::default(),
-            result: Default::default(),
-            notification: Default::default(),
-            kind: None,
-            phase: 0,
-            failed: false,
-            completed: None,
-        }
-    }
-}
+
 fn body_fields17(input: &[u8]) -> Result<(&str, &[u8], Option<&[u8]>), ProviderError> {
     let mut f = Fields::array(input)?;
     let kind = plain_string(next(&mut f)?)?;
@@ -453,6 +441,7 @@ impl Native17Build for HistoricalReceivedBody17 {
 }
 
 /// Retains each completed raw frame field and the current typed cache attempt.
+#[derive(Default)]
 pub(crate) struct ReceivedFrame17ReadAttempt {
     pub(crate) envelope: <crate::envelope::Envelope as Native17Build>::Attempt,
     pub(crate) body: ReceivedBody17ReadAttempt,
@@ -460,17 +449,7 @@ pub(crate) struct ReceivedFrame17ReadAttempt {
     pub(crate) failed: bool,
     completed: Option<HistoricalReceivedFrame17>,
 }
-impl Default for ReceivedFrame17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            envelope: Default::default(),
-            body: Default::default(),
-            phase: 0,
-            failed: false,
-            completed: None,
-        }
-    }
-}
+
 impl Native17Build for HistoricalReceivedFrame17 {
     type Attempt = ReceivedFrame17ReadAttempt;
     fn preflight_data(input: &[u8], l: &mut Ledger<'_, '_, '_>) -> Result<(), ProviderError> {

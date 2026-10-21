@@ -9,6 +9,7 @@ use crate::reference_packet::{
 };
 use crucible_node_format::{ContentRef, Id};
 
+#[derive(Default)]
 pub(crate) struct InputCommand17ReadAttempt {
     pub(crate) cut: <CurrentDto17<PacketInputCut> as BuildCurrentField17>::Attempt,
     pub(crate) input_request_id: <Plain17<Id> as BuildCurrentField17>::Attempt,
@@ -16,19 +17,6 @@ pub(crate) struct InputCommand17ReadAttempt {
     pub(crate) phase: usize,
     pub(crate) failed: bool,
     completed: Option<PacketRestoredInputReactive17Command>,
-}
-
-impl Default for InputCommand17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            cut: Default::default(),
-            input_request_id: Default::default(),
-            staging_receipt: Default::default(),
-            phase: 0,
-            failed: false,
-            completed: None,
-        }
-    }
 }
 
 fn fields17(

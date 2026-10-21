@@ -74,6 +74,13 @@ diagnostics; neither Clippy scope is qualified by this repair. The refreshed
 application compilation gate above includes all thirteen lint-repaired paths.
 The six registered architecture gates also pass for those inputs.
 
+A further transport cleanup derives eleven equivalent empty/default states in
+six existing read-attempt and lineage modules. All 1,746 Transport library tests
+pass with zero failures, no filtering and 15 existing ignores, and scoped
+formatting passes. The production-library Clippy diagnostic count falls from
+163 to 152 errors; it still emits 1,426 warnings. No lint setting, constructor,
+field layout or accounting term changes. Strict Clippy remains unqualified.
+
 Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
 first failure. Its actual VM run identifies the installed-mechanism refusal;
 the public command continues to return its existing refusal. Subsequent verifier
@@ -187,12 +194,15 @@ a subsequent process kill cannot erase the last entered operation.
 
 The full configured Daemon library again passes 1,824 tests with zero failures,
 no filtering and 165 ignores. Daemon all-feature/all-target checking and scoped
-Rust/Nix formatting pass. The six architecture gates pass before the final trace
-addition. The required application gate again compiles the same 180/58/71 targets
-and captures the failure-retention code before the final trace/deadline changes;
-those final architecture and application snapshots are running. A repository-wide
-formatting check additionally encounters unrelated existing formatting and scratch
-diff parse errors; scoped formatting passes without editing those files.
+Rust/Nix formatting pass. The six architecture gates pass for the final trace
+addition. The required application gate compiles 180 test executables across
+58 package IDs, including 71 integration targets; all 38 owned changed Rust paths
+match its captured source, including the final trace and deadline changes. This
+compilation-only gate does not run the native consumers. A second VM run with the
+earlier 60-second parent policy again kills its first consumer before any terminal
+preparation observation. A repository-wide formatting check additionally encounters
+unrelated existing formatting and scratch diff parse errors; scoped formatting
+passes without editing those files.
 The qualification fixture now selects a finite 180-second parent CPU policy and
 240-second consumer wall limit, leaving worker limits and source checks intact.
 The fresh VM must still establish actual fit, retained failure/retry, worker

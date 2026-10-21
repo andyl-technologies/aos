@@ -81,6 +81,7 @@ fn fields17(input: &[u8]) -> Result<[&[u8]; 20], ProviderError> {
     ])
 }
 
+#[derive(Default)]
 pub(crate) struct PacketNative5RecordRaw17ReadAttempt {
     pub(crate) schema: <Plain17<String> as BuildCurrentField17>::Attempt,
     pub(crate) native_pid: <Plain17<U64> as BuildCurrentField17>::Attempt,
@@ -116,36 +117,6 @@ pub(crate) struct PacketNative5RecordRaw17ReadAttempt {
     pub(crate) phase: usize,
     pub(crate) failed: bool,
     completed: Option<PacketNative5Record>,
-}
-
-impl Default for PacketNative5RecordRaw17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            schema: Default::default(),
-            native_pid: Default::default(),
-            original: Default::default(),
-            binding_hash: Default::default(),
-            session: Default::default(),
-            incarnation: Default::default(),
-            node: Default::default(),
-            owner: Default::default(),
-            owner_generation: Default::default(),
-            input_epoch: Default::default(),
-            world: Default::default(),
-            native_record: Default::default(),
-            storage_selection: Default::default(),
-            capture_profile: Default::default(),
-            confirmation_selection: Default::default(),
-            ack_emitter_selection: Default::default(),
-            complete_restore_selection: Default::default(),
-            protocol_metadata_limits: Default::default(),
-            protocol_metadata_birth_facts: Default::default(),
-            restore_input_emitter_selection: Default::default(),
-            phase: 0,
-            failed: false,
-            completed: None,
-        }
-    }
 }
 
 impl BuildCurrentContract17 for PacketNative5Record {

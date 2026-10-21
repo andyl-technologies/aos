@@ -39,20 +39,14 @@ pub(super) enum ResultCache17Child {
     PrepareRestore(<PrepareRestoreResult as Native17Build>::Attempt),
     Shutdown(<ShutdownResult as Native17Build>::Attempt),
 }
+
+#[derive(Default)]
 pub(super) struct ResultCache17ReadAttempt {
     pub(super) child: Option<ResultCache17Child>,
     pub(super) failed: bool,
     completed: Option<HistoricalResultCache17>,
 }
-impl Default for ResultCache17ReadAttempt {
-    fn default() -> Self {
-        Self {
-            child: None,
-            failed: false,
-            completed: None,
-        }
-    }
-}
+
 impl Native17Build for HistoricalResultCache17 {
     type Attempt = ResultCache17ReadAttempt;
     fn preflight_data(input: &[u8], l: &mut Ledger<'_, '_, '_>) -> Result<(), ProviderError> {
