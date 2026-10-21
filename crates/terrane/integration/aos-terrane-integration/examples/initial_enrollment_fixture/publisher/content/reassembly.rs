@@ -139,17 +139,7 @@ async fn admit_manifest(
 
 /// Waits for observed durable deadlines, then asks the real owner to reconcile.
 async fn wait_consumer_grace(store: &NativeContentStore) -> io::Result<()> {
-    let state = terrane_sdk::host::cache::CacheState::load(
-        &terrane_sdk::store::TokioLocalFs,
-        &store.ready().layout().layout().root().join("state/cache"),
-        terrane_sdk::host::cache::StateLimits {
-            bytes: 65536,
-            records: 64,
-        },
-    )
-    .await
-    .map_err(io::Error::other)?
-    .ok_or_else(|| io::Error::other("reassembly lost its actual durable policy"))?;
+    let state = load_policy(store).await?;
     let deadline = state
         .leases
         .iter()
@@ -164,12 +154,43 @@ async fn wait_consumer_grace(store: &NativeContentStore) -> io::Result<()> {
             tokio::time::sleep(remaining).await;
         }
     }
-    let removed = store.ready().owner().sweep_consumer_leases().await?;
+    store.ready().owner().sweep_consumer_leases().await?;
+    let reconciled = load_policy(store).await?;
+    for lease in state
+        .leases
+        .iter()
+        .filter(|lease| lease.owner.starts_with("consumer-grace:"))
+    {
+        assert!(!reconciled.leases.iter().any(|row| row.owner == lease.owner));
+        assert!(!reconciled.pins.iter().any(|row| row.owner == lease.owner));
+        let token = lease
+            .owner
+            .strip_prefix("consumer-grace:")
+            .ok_or_else(|| io::Error::other("consumer grace owner changed"))?;
+        assert!(!reconciled.reservations.iter().any(|row| row.id == token));
+    }
     if deadline.is_some() {
-        assert!(removed > 0);
+        // The physical worker also sweeps in the background. Its real durable
+        // result is required even when this explicit command finds no work.
         println!(
             "PASS actual consumer release deadlines elapsed and native owner reconciled source protection before retirement"
         );
     }
     Ok(())
+}
+
+async fn load_policy(
+    store: &NativeContentStore,
+) -> io::Result<terrane_sdk::host::cache::CacheState> {
+    terrane_sdk::host::cache::CacheState::load(
+        &terrane_sdk::store::TokioLocalFs,
+        &store.ready().layout().layout().root().join("state/cache"),
+        terrane_sdk::host::cache::StateLimits {
+            bytes: 65536,
+            records: 64,
+        },
+    )
+    .await
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("reassembly lost its actual durable policy"))
 }
