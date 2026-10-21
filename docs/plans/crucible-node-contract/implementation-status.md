@@ -1930,6 +1930,25 @@ constructor transient/validation/callback funding, the genuine Native18 verifier
 and original-root invocation remain unfinished. No response publication, ACK,
 Native18 policy, model adoption, opaque Initial or Recipe is granted.
 
+## SDK I/O failure custody
+
+The registrar census now recognizes the pinned Rust I/O error representations
+that contain no custom owner. Its public `get_ref()` query returns `None` for
+OS codes, simple kinds and static messages; their complete storage stays inside
+the already retained error header. A custom error still returns `Some` and makes
+census refuse while its actual diagnostic remains owned. The query formats
+nothing and invokes no erased diagnostic callback. Its additional borrowed
+query controls are included in the same Source/native calculations.
+
+A model-callback control passes raw OS, simple-kind and owning custom refusals
+through the actual SDK. It checks the original wrapper, contained/nonloanable
+state, actual retained error, unchanged census for nonowning cases, preserved
+custom diagnostic pointer/capacity on census refusal, and spent retries.
+The existing exact encoded-credit control also passes after replacing discarded
+preflight error text with a nonowning simple kind; its public resource refusal
+is unchanged. Complete qualification remains pending. This establishes no
+Native18 process, SDK constructor funding, verifier, policy, ACK or model grant.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

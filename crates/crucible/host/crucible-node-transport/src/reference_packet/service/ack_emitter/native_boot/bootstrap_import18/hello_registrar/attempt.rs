@@ -364,6 +364,13 @@ impl Attempt {
                 | ProviderError::Correlation(_)
                 | ProviderError::ResourceExhausted(_)
                 | ProviderError::Conflict(_) => {}
+                ProviderError::Io(error) if error.get_ref().is_none() => {
+                    // Rust 1.98.1 core/src/io/error.rs returns None exactly for
+                    // Os, Simple and static SimpleMessage. Their storage stays
+                    // inside the already retained Error header; Custom always
+                    // exposes its owned error through Some. This observation
+                    // invokes no diagnostic formatting or erased callback.
+                }
                 ProviderError::Io(_) | ProviderError::Contract(ContractError::Json(_)) => {
                     return Err(refused());
                 }
@@ -398,6 +405,14 @@ impl Attempt {
             + size_of::<Option<&Rc<EmptyBootExtensions>>>()
             + size_of::<Option<&ExtensionHandshake>>()
             + size_of::<Option<&ProviderError>>()
+            + size_of::<&std::io::Error>() * 3
+            + size_of::<Option<&(dyn std::error::Error + Send + Sync)>>() * 3
+            // get_ref's pinned representation query has one borrowed payload
+            // or scalar plus a discriminant; this bounds that temporary record.
+            + size_of::<usize>() * 2
+            + size_of::<std::io::ErrorKind>()
+            + size_of::<i32>()
+            + size_of::<bool>() * 2
             + size_of::<Option<&ConnectionAuthority>>()
             + size_of::<[&Option<ProviderError>; 2]>()
             + size_of::<std::array::IntoIter<&Option<ProviderError>, 2>>()

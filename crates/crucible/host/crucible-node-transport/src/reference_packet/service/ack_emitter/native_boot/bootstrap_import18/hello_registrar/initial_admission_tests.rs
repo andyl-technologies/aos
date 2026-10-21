@@ -19,9 +19,25 @@ use std::time::Duration;
 enum Fault {
     None,
     Authentication,
+    IoRaw,
+    IoKind,
+    IoOwned,
     Contract,
     Expire,
 }
+
+#[derive(Debug)]
+struct OwnedDiagnostic {
+    reason: String,
+}
+
+impl std::fmt::Display for OwnedDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for OwnedDiagnostic {}
 
 struct ModelVerifier {
     fault: Fault,
@@ -48,8 +64,20 @@ impl TrustedHandshakeVerifier for ModelVerifier {
         _: &HelloResult,
     ) -> Result<(), ProviderError> {
         self.authenticated += 1;
-        if self.fault == Fault::Authentication {
-            return Err(ProviderError::Correlation("model authentication refused"));
+        match self.fault {
+            Fault::Authentication => {
+                return Err(ProviderError::Correlation("model authentication refused"));
+            }
+            Fault::IoRaw => return Err(std::io::Error::from_raw_os_error(13).into()),
+            Fault::IoKind => {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+            }
+            Fault::IoOwned => {
+                let mut reason = String::with_capacity(8192);
+                reason.push_str("retained model I/O diagnostic");
+                return Err(std::io::Error::other(OwnedDiagnostic { reason }).into());
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -397,5 +425,61 @@ fn independent_source_retained_projection_covers_real_initial_sdk_census_growth(
             fixture.attempt.contain_admission_data().unwrap();
             assert_eq!(fixture.attempt.retained_backing_data().unwrap(), after);
         }
+    }
+}
+
+#[test]
+fn sdk_io_refusal_keeps_actual_diagnostics_and_counts_only_proven_nonowning_representations() {
+    for fault in [Fault::IoRaw, Fault::IoKind, Fault::IoOwned] {
+        let mut fixture = Fixture::new(false);
+        let before = fixture.attempt.retained_backing_data().unwrap();
+        let wrapper = std::ptr::from_ref(fixture.attempt.wrapper.as_ref().unwrap());
+        let mut verifier = ModelVerifier::new(fault);
+
+        assert!(fixture.admit(&mut verifier).is_err());
+
+        assert_eq!(verifier.authenticated, 1);
+        assert_eq!(verifier.contracts, 0);
+        assert!(fixture.attempt.authority.is_none());
+        assert!(fixture.attempt.authority_data(fixture.cut).is_err());
+        assert!(fixture.attempt.state_data(fixture.cut).is_err());
+        assert_eq!(
+            std::ptr::from_ref(fixture.attempt.wrapper.as_ref().unwrap()),
+            wrapper
+        );
+        let ProviderError::Io(error) = fixture.attempt.admission_failure.as_ref().unwrap() else {
+            panic!("actual SDK I/O failure must stay in its original slot");
+        };
+        if fault == Fault::IoOwned {
+            let diagnostic = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<OwnedDiagnostic>()
+                .unwrap();
+            let original = diagnostic.reason.as_ptr();
+            assert_eq!(diagnostic.reason.capacity(), 8192);
+            assert!(fixture.attempt.retained_backing_data().is_err());
+            let ProviderError::Io(error) = fixture.attempt.admission_failure.as_ref().unwrap()
+            else {
+                unreachable!();
+            };
+            let retained = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<OwnedDiagnostic>()
+                .unwrap();
+            assert_eq!(retained.reason.as_ptr(), original);
+            assert_eq!(retained.reason.capacity(), 8192);
+        } else {
+            assert!(error.get_ref().is_none());
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert_eq!(error.raw_os_error(), (fault == Fault::IoRaw).then_some(13));
+            assert_eq!(fixture.attempt.retained_backing_data().unwrap(), before);
+        }
+
+        assert!(fixture.admit(&mut verifier).is_err());
+        assert_eq!(verifier.authenticated, 1);
+        assert_eq!(verifier.contracts, 0);
+        assert!(fixture.attempt.admission_failure.is_some());
     }
 }

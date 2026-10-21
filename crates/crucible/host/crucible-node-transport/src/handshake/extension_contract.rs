@@ -209,7 +209,9 @@ pub(super) fn preflight_encoded(value: &impl Serialize) -> Result<(), ProviderEr
                 .0
                 .checked_add(bytes.len())
                 .filter(|total| *total <= MAXIMUM_EXTENSION_NEGOTIATION_BYTES)
-                .ok_or_else(|| std::io::Error::other("extension negotiation byte ceiling"))?;
+                // The enclosing preflight returns its fixed resource refusal.
+                // A simple kind avoids allocating discarded diagnostic text.
+                .ok_or(std::io::ErrorKind::Other)?;
             Ok(bytes.len())
         }
 
