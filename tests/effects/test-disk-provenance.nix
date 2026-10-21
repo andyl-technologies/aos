@@ -80,15 +80,16 @@ let
       };
     };
   };
-  manifestFor = metadata: varProvisioning: let
+  manifestWith = machine: let
     test = fleet.mkFleetTest {
       name = "provenance-input";
       timeout = 1;
       testScript = "";
-      machines.machine = {inherit system metadata varProvisioning;};
+      machines.machine = {inherit system;} // machine;
     };
   in
     builtins.head (builtins.fromJSON (builtins.unsafeDiscardStringContext test.manifest.text)).machines;
+  manifestFor = metadata: varProvisioning: manifestWith {inherit metadata varProvisioning;};
 in {
   nativeAssemblyTools =
     (disk {}).buildDeps
@@ -139,4 +140,10 @@ in {
     == "${payload}/fallback-baked/disk.img";
   fleetEmptyFallback = (manifestFor {} "baked").disk == "${payload}/fallback-baked/disk.img";
   fleetUninitializedDisk = (manifestFor {"host.nix" = "{}";} "repart").disk == "${payload}/operator-repart/disk.img";
+  fleetDefaultVcpuCount = (manifestWith {}).vcpu_count == 2;
+  fleetConfiguredVcpuCount = (manifestWith {vcpuCount = 16;}).vcpu_count == 16;
+  fleetInvalidVcpuCountsRejected =
+    builtins.all
+    (vcpuCount: !(builtins.tryEval (manifestWith {inherit vcpuCount;}).vcpu_count).success)
+    [0 (-1) 1.5 "16"];
 }

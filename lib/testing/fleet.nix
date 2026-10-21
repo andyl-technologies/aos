@@ -99,6 +99,7 @@
       varProvisioning = m.varProvisioning or "baked";
       packages = m.packages or [];
       expectAgent = m.expectAgent or true;
+      vcpuCount = m.vcpuCount or 2;
       # `baked` /var seeds the agent at build time; every other shape uses
       # the test-only unit added by `mkNewpathModule` below.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
@@ -131,6 +132,10 @@
       extraDisks = m.extraDisks or [];
       inherit expectAgent;
       memoryMiB = m.memoryMiB or 2048;
+      vcpuCount =
+        if builtins.isInt vcpuCount && vcpuCount > 0
+        then vcpuCount
+        else throw "fleet: machine '${mname}' requires a positive integer vcpuCount";
       tpm = m.tpm or false;
       firmwareVars = m.firmwareVars or null;
       exportFirmwareVars = m.exportFirmwareVars or false;
@@ -346,6 +351,7 @@
             varProvisioning
             varSizeMiB
             memoryMiB
+            vcpuCount
             expectAgent
             hostStoreMount
             ;
@@ -415,8 +421,8 @@
     # qemu. The driver consumes this JSON and starts each VM in order,
     # then exposes each machine to the testScript as a Python global
     # named after `mb.name` (e.g. controlplane, worker). Per-machine RAM
-    # comes from the spec's `memoryMiB` (default 2 GiB); vCPU count is a
-    # uniform 2 per machine.
+    # and CPU count come from `memoryMiB` (default 2 GiB) and `vcpuCount`
+    # (default 2). Funded-resource tests must select their physical capacity.
     manifest =
       {
         inherit name timeout;
@@ -439,7 +445,7 @@
                 cpu_model = qemuPlatform.cpuModel;
                 console = qemuPlatform.console;
                 memory_mib = mb.memoryMiB;
-                vcpu_count = 2;
+                vcpu_count = mb.vcpuCount;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
