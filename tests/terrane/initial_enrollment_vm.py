@@ -177,6 +177,19 @@ def wait_released_consumer_grace():
     print("PASS original consumer release grace elapsed before bounded native object reopening", flush=True)
 
 
+
+def sealed_snapshot():
+    """Observes actual publisher-only inodes without granting consumer access."""
+    rows = []
+    for domain in ["public", "private"]:
+        sealed = ROOT / "positive" / domain / "sealed"
+        for path in sorted(sealed.rglob("*")):
+            metadata = path.lstat()
+            rows.append((domain, str(path.relative_to(sealed)), metadata.st_dev,
+                         metadata.st_ino, metadata.st_mode, metadata.st_size))
+    return rows
+
+
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
     publisher = subprocess.Popen(role_command("publisher-positive", 841, [845]),
@@ -191,7 +204,13 @@ def configured_publication():
             time.sleep(0.02)
         run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
         wait_released_consumer_grace()
+        # The consumer cannot inspect this publisher-only namespace. Root observes
+        # the original sealed inodes around the complete unprivileged operation.
+        sealed_before = sealed_snapshot()
         run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
+        require(sealed_snapshot() == sealed_before,
+                "chunked object reads changed the original sealed namespace")
+        print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)

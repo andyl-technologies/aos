@@ -84,10 +84,6 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         ))
         .await
         .map_err(io::Error::other)?;
-    let sealed = store.ready().layout().layout().root().join("sealed");
-    let before = std::fs::read_dir(&sealed)?
-        .collect::<Result<Vec<_>, _>>()?
-        .len();
 
     println!("OBJECT_OPEN_STAGE open-manifest");
     let object = store
@@ -162,12 +158,6 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
     object.reader().read_exact(&mut prefix)?;
     assert_eq!(prefix, expected[..17]);
     object.close().await.map_err(io::Error::other)?;
-    assert_eq!(
-        std::fs::read_dir(&sealed)?
-            .collect::<Result<Vec<_>, _>>()?
-            .len(),
-        before
-    );
 
     // Individually valid chunks cannot excuse a false whole-file declaration.
     manifest
