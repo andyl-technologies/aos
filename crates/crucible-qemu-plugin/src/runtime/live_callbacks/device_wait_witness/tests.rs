@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 fn disabled_setting_and_duplicate_inventory_keep_independent_budget() {
     for setting in [None, Some("0"), Some("257"), Some("0256"), Some("invalid")] {
         let witness = DeviceWaitWitness::from_setting(setting.map(OsStr::new));
-        assert!(witness.request(7, None).is_none());
+        assert!(witness.request(7, None, 0).is_none());
         assert_eq!(
             witness
                 .inventory
@@ -20,7 +20,7 @@ fn disabled_setting_and_duplicate_inventory_keep_independent_budget() {
     }
 
     let witness = DeviceWaitWitness::from_setting(Some(OsStr::new("256")));
-    let request = witness.request(7, None);
+    let request = witness.request(7, None, 0);
     for _ in 0..300 {
         witness.emit(
             request,
@@ -61,7 +61,7 @@ fn disabled_setting_and_duplicate_inventory_keep_independent_budget() {
 fn widest_record_is_one_bounded_row_and_old_context_is_not_replaced() {
     let mut witness = DeviceWaitWitness::from_setting(Some(OsStr::new("256")));
     let mut request = witness
-        .request(u32::MAX, None)
+        .request(u32::MAX, None, 0)
         .unwrap_or_else(|| panic!("enabled request"));
     request.pid = u32::MAX;
     request.current = Some(u64::MAX);
@@ -113,12 +113,12 @@ fn widest_record_is_one_bounded_row_and_old_context_is_not_replaced() {
         0
     );
     let new = witness
-        .request(8, None)
+        .request(8, None, 0)
         .unwrap_or_else(|| panic!("new request"));
     assert_eq!(request.request, u32::MAX);
     assert_eq!(new.request, 8);
     witness.owner_pid = witness.owner_pid.wrapping_add(1);
-    assert!(witness.request(9, None).is_none());
+    assert!(witness.request(9, None, 0).is_none());
     witness.emit(
         Some(request),
         "completion",
@@ -139,7 +139,7 @@ fn widest_record_is_one_bounded_row_and_old_context_is_not_replaced() {
 #[test]
 fn inventory_contention_and_unsupported_destination_never_block_callback() {
     let witness = DeviceWaitWitness::from_setting(Some(OsStr::new("256")));
-    let request = witness.request(7, None);
+    let request = witness.request(7, None, 0);
     let guard = witness
         .inventory
         .lock()
@@ -167,4 +167,35 @@ fn inventory_contention_and_unsupported_destination_never_block_callback() {
             .kind(),
         io::ErrorKind::WouldBlock
     );
+}
+
+#[test]
+fn coordinate_floor_skips_earlier_waits_without_spending_allowance() {
+    let witness = DeviceWaitWitness::from_settings(Some(OsStr::new("1")), Some(OsStr::new("500")));
+
+    assert!(witness.request(7, None, 499).is_none());
+    let late = witness.request(7, None, 500);
+
+    assert!(late.is_some());
+    witness.emit(late, "entered", (None, None, None), (None, None), "pending");
+    assert_eq!(
+        witness
+            .inventory
+            .lock()
+            .unwrap_or_else(|e| panic!("inventory: {e}"))
+            .count,
+        1
+    );
+}
+
+#[test]
+fn noncanonical_coordinate_floor_disables_the_witness() {
+    for minimum in ["", "0500", "-1", "9223372036854775808", "invalid"] {
+        let witness =
+            DeviceWaitWitness::from_settings(Some(OsStr::new("256")), Some(OsStr::new(minimum)));
+        assert!(witness.request(7, None, u64::MAX).is_none(), "{minimum:?}");
+    }
+
+    let unfloored = DeviceWaitWitness::from_settings(Some(OsStr::new("256")), None);
+    assert!(unfloored.request(7, None, 0).is_some());
 }

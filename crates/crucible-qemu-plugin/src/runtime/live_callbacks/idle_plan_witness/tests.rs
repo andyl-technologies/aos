@@ -348,3 +348,28 @@ fn invalid_plan_floor_disables_only_observation_and_signed_maximum_is_admitted()
         );
     }
 }
+
+#[test]
+fn forked_child_rebind_restores_rows_with_a_fresh_allowance() {
+    let mut witness = IdlePlanWitness::from_setting(Some(OsStr::new("2")));
+    let begin = |witness: &IdlePlanWitness| {
+        witness.begin(
+            0,
+            0,
+            plan(0),
+            ExactDeadlineReport::NoArmedTimer,
+            AdvanceStopCondition::Ceiling,
+        )
+    };
+    let parent = begin(&witness);
+    witness.end(parent, Outcome::ReturnToQemu);
+
+    // A forked child still names the parent's PID and spent inventory.
+    witness.owner_pid = witness.owner_pid.wrapping_add(1);
+    assert!(begin(&witness).is_none());
+
+    witness.rebind();
+
+    assert_eq!(witness.owner_pid, std::process::id());
+    assert!(begin(&witness).is_some());
+}

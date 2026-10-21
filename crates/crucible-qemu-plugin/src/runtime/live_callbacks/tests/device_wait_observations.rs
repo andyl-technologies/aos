@@ -106,7 +106,7 @@ fn genuine_local_occupied_branch_has_no_sdk_call_or_diagnostic_owner_lookup() {
     state.device_wait_witness = witness;
     let observation = state
         .device_wait_witness
-        .request(9, state.control_stage_identity);
+        .request(9, state.control_stage_identity, 0);
     let held = state
         .pending_idle_advance
         .lock()

@@ -81,6 +81,18 @@ impl IdlePlanWitness {
         }
     }
 
+    /// Rebinds an enabled witness to a forked child with a fresh allowance.
+    ///
+    /// A hot-fork child inherits the parent's PID binding and spent inventory;
+    /// without this every child row would be dropped as a PID mismatch.
+    pub(super) fn rebind(&mut self) {
+        if self.budget == 0 {
+            return;
+        }
+        self.owner_pid = std::process::id();
+        self.inventory = Mutex::new(Inventory::default());
+    }
+
     /// Reserves both rows without altering the plan or the admitted wait.
     pub(super) fn begin(
         &self,

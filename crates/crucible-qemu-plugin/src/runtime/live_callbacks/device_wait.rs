@@ -4,9 +4,11 @@ use super::*;
 
 impl LiveVcpuTimeCallbackState {
     pub(super) fn on_block_wait(&self, request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
-        let mut observation = self
-            .device_wait_witness
-            .request(request_id, self.control_stage_identity);
+        let mut observation = self.device_wait_witness.request(
+            request_id,
+            self.control_stage_identity,
+            self.last_icount.load(Ordering::Acquire),
+        );
         self.device_wait_witness.emit(
             observation,
             "entered",

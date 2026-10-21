@@ -1231,6 +1231,11 @@ pub(crate) fn guarded_qemu_process_command(
     if let Some(budget) = &aggregate {
         command.env(AGGREGATE_DIAGNOSTICS, budget);
     }
+    forward_device_wait_floor(
+        &mut command,
+        aggregate.is_some(),
+        std::env::var_os(DEVICE_WAIT_FLOOR).as_deref(),
+    );
 
     // A bounded native final summary does not select routine trace producers.
     if std::env::var("CRUCIBLE_NATIVE_CONTROL_DELIVERY_SUMMARY").as_deref() == Ok("1") {
@@ -1276,6 +1281,31 @@ pub(crate) fn guarded_qemu_process_command(
         }
     }
     command
+}
+
+/// Names the device-wait witness's optional picosecond floor.
+const DEVICE_WAIT_FLOOR: &str = "CRUCIBLE_DEVICE_WAIT_DIAGNOSTIC_MIN_PS";
+
+/// Forwards the device-wait witness floor alongside an admitted allowance.
+///
+/// The floor only narrows an already enabled witness, so it travels with the
+/// aggregate allowance and never alone. A value that is not a canonical
+/// decimal at most `i64::MAX` is dropped here; the plugin would refuse it.
+fn forward_device_wait_floor(
+    command: &mut Command,
+    aggregate_admitted: bool,
+    minimum: Option<&std::ffi::OsStr>,
+) {
+    let Some(minimum) = minimum.filter(|_| aggregate_admitted) else {
+        return;
+    };
+    let canonical = minimum.to_str().is_some_and(|text| {
+        text.parse::<u64>()
+            .is_ok_and(|value| value <= i64::MAX as u64 && value.to_string() == text)
+    });
+    if canonical {
+        command.env(DEVICE_WAIT_FLOOR, minimum);
+    }
 }
 
 /// Forwards the plugin's opt-in fingerprint preimage dump settings.

@@ -2470,3 +2470,35 @@ fn source_fds_from_env() -> Result<Vec<RawFd>, Box<dyn Error>> {
         .map(|part| part.parse::<RawFd>().map_err(Into::into))
         .collect()
 }
+
+#[test]
+fn device_wait_floor_travels_only_with_an_admitted_allowance() {
+    let forwarded = |aggregate_admitted: bool, minimum: Option<&str>| {
+        let mut command = Command::new("qemu");
+        forward_device_wait_floor(
+            &mut command,
+            aggregate_admitted,
+            minimum.map(std::ffi::OsStr::new),
+        );
+        command
+            .get_envs()
+            .find(|(key, _)| *key == DEVICE_WAIT_FLOOR)
+            .and_then(|(_, value)| value)
+            .and_then(std::ffi::OsStr::to_str)
+            .map(str::to_owned)
+    };
+
+    assert_eq!(
+        forwarded(true, Some("663180000000")).as_deref(),
+        Some("663180000000")
+    );
+    assert_eq!(
+        forwarded(true, Some("9223372036854775807")).as_deref(),
+        Some("9223372036854775807")
+    );
+    for refused in ["0663180000000", "9223372036854775808", "-1", "1x", ""] {
+        assert_eq!(forwarded(true, Some(refused)), None, "{refused:?}");
+    }
+    assert_eq!(forwarded(false, Some("663180000000")), None);
+    assert_eq!(forwarded(true, None), None);
+}

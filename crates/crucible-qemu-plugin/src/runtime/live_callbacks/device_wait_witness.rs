@@ -3,7 +3,10 @@
 //! The existing aggregate setting admits an independent stream of at most 256
 //! rows, each at most 512 bytes. This is not the control witness's budget or a
 //! process-wide combined limit. Retry deduplication, contention, missing identity,
-//! PID mismatch and failed capture lose only observations. No native getter or
+//! PID mismatch and failed capture lose only observations. An optional
+//! picosecond floor, compared with the plugin's last published coordinate,
+//! skips earlier waits before they consume allowance, so a late wait is still
+//! observable after a long boot. No native getter or
 //! canonical mutex is acquired to fill a missing field. Each pending advance
 //! retains its original immutable request attribution through nested callbacks.
 //!
@@ -29,6 +32,7 @@ const MAX_ROWS: usize = 256;
 
 pub(super) struct DeviceWaitWitness {
     budget: usize,
+    minimum_ps: u64,
     owner_pid: u32,
     inventory: Mutex<Inventory>,
     #[cfg(test)]
@@ -37,9 +41,28 @@ pub(super) struct DeviceWaitWitness {
 
 impl DeviceWaitWitness {
     pub(super) fn from_env() -> Self {
-        Self::from_setting(
+        Self::from_settings(
             std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS").as_deref(),
+            std::env::var_os("CRUCIBLE_DEVICE_WAIT_DIAGNOSTIC_MIN_PS").as_deref(),
         )
+    }
+
+    /// Combines the aggregate allowance with an optional coordinate floor.
+    ///
+    /// A floor that is not a canonical decimal at most `i64::MAX` disables the
+    /// witness rather than widening it to every wait.
+    pub(super) fn from_settings(aggregate: Option<&OsStr>, minimum: Option<&OsStr>) -> Self {
+        let minimum_ps = match minimum {
+            None => Some(0),
+            Some(value) => value.to_str().and_then(|text| {
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|value| *value <= i64::MAX as u64 && value.to_string() == text)
+            }),
+        };
+        let mut witness = Self::from_setting(minimum_ps.and(aggregate));
+        witness.minimum_ps = minimum_ps.unwrap_or(0);
+        witness
     }
 
     pub(super) fn from_setting(setting: Option<&OsStr>) -> Self {
@@ -53,6 +76,7 @@ impl DeviceWaitWitness {
             .unwrap_or(0);
         Self {
             budget,
+            minimum_ps: 0,
             owner_pid: if budget == 0 { 0 } else { std::process::id() },
             inventory: Mutex::new(Inventory::default()),
             #[cfg(test)]
@@ -68,12 +92,18 @@ impl DeviceWaitWitness {
         self.inventory = Mutex::new(Inventory::default());
     }
 
+    /// Opens one wait's observation when the wait starts at or past the floor.
+    ///
+    /// `coordinate` is the plugin's last published logical icount, read before
+    /// the wait decides anything.
     pub(super) fn request(
         &self,
         request: u32,
         identity: Option<ControlStageIdentity>,
+        coordinate: u64,
     ) -> Option<RequestObservation> {
-        if self.budget == 0 || self.owner_pid != std::process::id() {
+        if coordinate < self.minimum_ps || self.budget == 0 || self.owner_pid != std::process::id()
+        {
             return None;
         }
         Some(RequestObservation {
