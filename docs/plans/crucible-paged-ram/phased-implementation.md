@@ -2097,7 +2097,8 @@ All 5,261 tracked crate Rust/TOML files match immutable
 `/nix/store/vq7digm3lxlmi6bb0qxvvsj9rd3dyafj-crucible-phase2-abi-conformance-0`;
 all 5,261 files match `6042516f7b` and immutable
 `x3wck103cim889vwqs642wnd3z0n0i65-crucible-workspace-src`. The expanded
-172-case supervision gate is running. Coverage now binds 270
+172-case supervision gate passes at
+`/nix/store/74zsbm9fcvn17w8vq8dpw63ff3jmakd7-crucible-gate-ram-supervision-0`. Coverage now binds 270
 component and 19 native cases; 243 requirements, 149 uncovered and none fully
 qualified remain. Reader supervision, broader diagnostic/payload funding,
 Source activation and selected execution remain unfinished.
@@ -2122,6 +2123,37 @@ supervision gate is running. Coverage now binds 271 component and 19 native
 cases; 243 requirements, 149 uncovered and none fully qualified remain.
 Complete carrier funding, final scheduler diagnostics, reader supervision and
 selected Source admission remain unfinished.
+
+### 2026-10-21 independent native action-current post
+
+Commit `36d012f83e` integrates atomic
+`d042f43ee8ab8b4f2aa58f1d8b7e01807e37a375`, tree
+`853238bffbeacbf65cf7767f059f911818f3c045`. Actual action-current callbacks
+retain their exact serial, Main/member and publisher identity, recheck actual
+rows after callback return, and always observe the retained lender's final
+sequence independently of an earlier failure. First and post causes remain
+separate; uncertain debt stays retained. Sequence equality grants no publisher
+ownership or scheduler Advance authority.
+
+The literal positive and all 14 independently rebuilt omission controls pass.
+All 187 owning scenarios pass without skips (219.687 seconds build, 4.577
+execution), and all 34 causal defects fail their intended assertions. The
+causal positive takes 58.041 of 60 seconds; the slowest defect takes 18.770.
+Assertions, deadlines and the 6-GiB address-space ceiling are unchanged.
+The full sweep builds all 3,863 targets and passes 25/26 fixtures, failing only
+the mandatory launched Source/Root lifecycle. Its complete matched cohort is
+retained; all 907 patched sources match the signed tree. Later private-layout
+changes require a newly matched build.
+
+Signed sole-parent reconstruction, exact regeneration and the unchanged
+289-file license ledger pass. Raw ABI passes against immutable
+`f7qjixxkbcmdn8hy26nryk7is4p0yi0g-crucible-workspace-src`: all 5,261 tracked
+crate Rust/TOML files match `6042516f7b` at capture. Retain manifest SHA256
+`e09bf7c2cef991cfffb414d2a0236f38df11f69ce2544821a13263f695b9f191`.
+Later host changes are outside this ABI verdict. Full license-boundary
+qualification remains blocked by controller lint prerequisites. Activation,
+genuine class-1 issuance and owned continuation/physical return remain
+unqualified.
 
 ### 2026-10-21 native rule and reservation storage custody
 
