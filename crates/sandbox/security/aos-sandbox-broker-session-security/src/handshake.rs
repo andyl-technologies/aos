@@ -2004,9 +2004,9 @@ impl ClientWitnessFailureV1 {
     }
 }
 
-/// Retains the same establishment and HELLO subjects for the closed Nix and
-/// Output Client routes. Their admission and original error projections remain
-/// distinct; neither route can nominate a replacement service writer.
+/// Retains the same establishment and HELLO subjects for authenticated Client
+/// routes. Their admission and original error projections remain distinct;
+/// no route can nominate a replacement service writer.
 struct AuthenticatedClientWitnessesV1 {
     // Derived from the actual selected carrier, never a caller grant.
     storage_preparation: bool,
@@ -3672,7 +3672,7 @@ impl DormantControllerClientHandshakeV1 {
             DormantClientHandshakeStateV1::AwaitBrokerHello(state) => match state.receive() {
                 Transition::Complete(session) => match completion {
                     HandshakeCompletionV1::Legacy => Ok(ColdClientHandshakeProgressV1::Complete(
-                        DormantAuthenticatedBrokerSessionV1::from_client(self.root, session)?,
+                        DormantAuthenticatedBrokerSessionV1::from_authenticated_client(self.root, session)?,
                     )),
                     HandshakeCompletionV1::RetainStorage => {
                         Ok(ColdClientHandshakeProgressV1::Verified(
@@ -3680,7 +3680,7 @@ impl DormantControllerClientHandshakeV1 {
                         ))
                     }
                     HandshakeCompletionV1::OutputClient => Ok(ColdClientHandshakeProgressV1::Complete(
-                        DormantAuthenticatedBrokerSessionV1::from_output_client(self.root, session)?,
+                        DormantAuthenticatedBrokerSessionV1::from_authenticated_client(self.root, session)?,
                     )),
                 },
                 Transition::Retry(state) => {
@@ -5605,9 +5605,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
         if original.as_ref().is_some_and(|owner| owner.entered()) {
             return Err(DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
         }
-        let retained_client = self.owner.is_output_client_endpoint()
-            && !matches!(&self.client_witnesses, Ok(None));
-        if retained_client && !self.revalidate_output_witnesses() {
+        let retained_client = !matches!(&self.client_witnesses, Ok(None));
+        if retained_client && !Self::revalidate_client_witnesses(
+            &mut self.client_witnesses, self.socket.peer(),
+        ) {
             return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
         }
         self.owner
@@ -5689,7 +5690,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
         drop(local);
         if retained_client {
             let result = self.owner.revalidate_transport(&self.transcript, self.socket.peer());
-            let witness_current = self.revalidate_output_witnesses();
+            let witness_current = Self::revalidate_client_witnesses(
+                &mut self.client_witnesses, self.socket.peer(),
+            );
             result?;
             if !witness_current {
                 return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
@@ -5706,6 +5709,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
         maximum_bytes: usize,
         expected_descriptors: usize,
     ) -> Result<(Vec<u8>, Vec<OwnedFd>), DormantBrokerSessionHandshakeErrorV1> {
+        let retained_client = !matches!(&self.client_witnesses, Ok(None));
+        if retained_client && !Self::revalidate_client_witnesses(
+            &mut self.client_witnesses, self.socket.peer(),
+        ) {
+            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+        }
         self.owner
             .revalidate_transport(&self.transcript, self.socket.peer())?;
         let record = self
@@ -5721,10 +5730,30 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .socket
             .bind_received_descriptors(record)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        require_connection_record_subject(bound.subject(), bound.peer())?;
+        if retained_client {
+            let subject = bound.subject();
+            if !subject.is_alive().map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)? {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+            let current = match &mut self.client_witnesses {
+                Ok(Some(witnesses)) => witnesses.require_subject(subject),
+                _ => false,
+            };
+            if !current {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+        } else {
+            require_connection_record_subject(bound.subject(), bound.peer())?;
+        }
         let (packet, _, descriptors, _) = bound.into_parts();
-        self.owner
-            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        let result = self.owner.revalidate_transport(&self.transcript, self.socket.peer());
+        let witness_current = !retained_client || Self::revalidate_client_witnesses(
+            &mut self.client_witnesses, self.socket.peer(),
+        );
+        result?;
+        if !witness_current {
+            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+        }
         Ok((packet, descriptors))
     }
 
@@ -5967,34 +5996,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         Ok((admission, descriptors))
     }
 
-    fn from_client(
-        root: &'static str,
-        session: InertProvisionalClientSession,
-    ) -> Result<Self, DormantBrokerSessionHandshakeErrorV1> {
-        let InertProvisionalClientSession {
-            _custody: custody,
-            _carrier: carrier,
-            _client_packet: client_packet,
-            _broker_packet: broker_packet,
-            _transcript: transcript,
-            ..
-        } = session;
-        let ClientHandshakeCustodyV1::Fresh(custody) = custody else {
-            std::process::abort();
-        };
-        let context = custody.context_for_handshake(transcript.broker_process())?;
-        Self::from_parts(
-            root,
-            FixedEndpointCustodyV1::Client(custody),
-            carrier,
-            transcript,
-            context,
-            client_packet,
-            broker_packet,
-        )
-    }
-
-    fn from_output_client(
+    fn from_authenticated_client(
         root: &'static str,
         session: InertProvisionalClientSession,
     ) -> Result<Self, DormantBrokerSessionHandshakeErrorV1> {
@@ -6008,6 +6010,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             _broker_subject: broker_subject,
             _transcript: transcript,
         } = session;
+        // SO_PEERCRED can identify PID 1's activated listener. Responses must
+        // remain bound to the actual signed publication and HELLO subjects.
         let witnesses = AuthenticatedClientWitnessesV1 {
             storage_preparation: false,
             establishment: carrier.peer,
