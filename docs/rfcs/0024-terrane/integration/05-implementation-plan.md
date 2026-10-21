@@ -11768,3 +11768,26 @@ Distribution schema blocks and the recorded AOS protobuf compiler. The
 packaged host broker builds successfully from that same frozen source. These
 results establish component compilation and wire encoding, without service
 policy or Distribution conformance acceptance.
+
+
+#### Complete canonical ref wire forwarding
+
+A runtime-independent ref codec now preserves whole canonical ref and reflog
+records rather than reconstructing CAS input from summary fields. It checks
+commit identity, sequence and epoch against the embedded record and requires
+the caller's independently verified commit identity and registered profile.
+Missing expectations and `absent=false` are rejected. Home, policy, candidate
+selectors and exact reflog predecessor records survive forwarding unchanged.
+The codec bounds record bytes and checks protobuf timestamp representability;
+it establishes no authorization, committed selection or backend acknowledgement.
+
+All 15 wire integration cases pass, including eight canonical-record cases
+covering contradictory summaries, identical summaries with distinct whole
+records, incomplete candidate evidence, byte bounds and timestamp boundaries.
+The source-bound wire check retains this expanded exact inventory. Frozen
+qualification and required application-target compilation remain pending.
+
+The three routed owning gates pass at `0d5a81b6e8`. Independent review matches
+7,876 immutable source files, 5,202 bound crate inputs and all 12 exact public
+API cases against the actual Cargo artifact. Expression loading and the other
+T-STORE-2 implementations remain open.

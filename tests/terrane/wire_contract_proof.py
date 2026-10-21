@@ -12,6 +12,14 @@ from native_sdk_test_image import source_hashes
 
 
 CASES = [
+    "refs::complete_reflogs_keep_exact_expectations_and_ref_values",
+    "refs::reflog_limits_timestamp_bounds_and_incomplete_candidates_are_rejected",
+    "refs::whole_records_preserve_policy_home_and_candidate_through_wire_roundtrip",
+    "refs::missing_or_inconsistent_summaries_never_replace_canonical_records",
+    "refs::incoming_profile_and_commit_claims_cannot_select_the_verified_context",
+    "refs::cas_requires_explicit_absence_or_a_complete_matching_expected_record",
+    "refs::identical_summaries_keep_distinct_whole_record_cas_expectations",
+    "refs::canonical_record_limits_and_malformed_cbor_fail_before_returning_a_record",
     "stable_field_numbers_preserve_complete_ref_records",
     "protojson_preserves_uint64_bytes_aliases_and_defaults",
     "unknown_wire_fields_and_open_enum_numbers_survive_roundtrip",

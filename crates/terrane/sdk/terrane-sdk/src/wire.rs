@@ -6,6 +6,9 @@
 //! a trait or decoding a message establishes no authorization, verified content
 //! identity, native custody or publication acknowledgement.
 
+/// Checks complete canonical ref records against their redundant wire summaries.
+pub mod refs;
+
 /// Contains generated `terrane.v1` protobuf and ProtoJSON data contracts.
 #[allow(
     clippy::derivable_impls,

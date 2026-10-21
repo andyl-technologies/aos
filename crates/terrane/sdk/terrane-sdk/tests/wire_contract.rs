@@ -4,6 +4,9 @@
 
 #![allow(clippy::unwrap_used, reason = "Fixture failures intentionally panic.")]
 
+#[path = "wire_contract/refs.rs"]
+mod refs;
+
 use buffa::Message;
 use serde_json::json;
 use terrane_sdk::wire::{DESCRIPTOR_SET, v1::*};
