@@ -218,6 +218,9 @@ pub enum StorageRuntimeError {
     /// An authenticated startup preparation or snapshot record was rejected.
     #[error("Storage startup authority was rejected: {0}")]
     StartupAuthority(#[source] StorageBrokerError),
+    /// The ordinary startup native issuance journal or its active holds were rejected.
+    #[error("Storage startup native issuance was rejected: {0}")]
+    StartupNativeIssuance(#[source] Box<dyn std::error::Error + Send + Sync>),
     /// Observation-only recovery or authorized execution failed closed.
     #[error("Storage observation or execution failed closed")]
     Recovery,
@@ -2441,9 +2444,9 @@ impl StorageBrokerRuntime {
             let mut native_issuance = match operator_credentials {
                 Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
                 None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
-            }.map_err(|_| StorageRuntimeError::Recovery)?;
+            }.map_err(|cause| StorageRuntimeError::StartupNativeIssuance(Box::new(cause)))?;
             native_issuance.validate_active_holds(coordinator)
-                .map_err(|_| StorageRuntimeError::Recovery)?;
+                .map_err(|cause| StorageRuntimeError::StartupNativeIssuance(Box::new(cause)))?;
             Some(native_issuance)
         };
 

@@ -71,6 +71,7 @@ fn encode_runtime_error(
         | StorageRuntimeError::Transaction(_)
         | StorageRuntimeError::StartupPinAuthority(_)
         | StorageRuntimeError::StartupAuthority(_)
+        | StorageRuntimeError::StartupNativeIssuance(_)
         | StorageRuntimeError::Recovery
         | StorageRuntimeError::Receiving
         | StorageRuntimeError::ReopenRequired
@@ -123,7 +124,17 @@ fn ambiguous_runtime_failures_are_never_labelled_retryable() {
         0,
     )
     .unwrap();
-    for error in [StorageRuntimeError::Recovery, StorageRuntimeError::Receiving] {
+    for error in [
+        StorageRuntimeError::Recovery,
+        StorageRuntimeError::Receiving,
+        StorageRuntimeError::StartupPinAuthority(crate::helper::ZfsHelperError::Authority),
+        StorageRuntimeError::StartupAuthority(crate::StorageBrokerError::State(
+            crate::StorageStateError::Rollback,
+        )),
+        StorageRuntimeError::StartupNativeIssuance(Box::new(
+            crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict,
+        )),
+    ] {
         let (encoded, outcome) =
             encode_runtime_error(&request_id, &request, &error, 4096).unwrap();
         let response =

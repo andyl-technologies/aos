@@ -8474,6 +8474,28 @@ mod tests {
         let claims_before_restart = workspace_pin_replay_claim_count();
         let restart_coordinator =
             runtime_coordinator(&observation_state, &fixture, &observation_catalog).unwrap();
+        let restart_entries = restart_coordinator.recovery_entries().unwrap();
+        assert_eq!(
+            restart_coordinator.transactions.journal_sequence_for_test(),
+            admitted_sequence
+        );
+        let superseded = restart_entries
+            .iter()
+            .copied()
+            .find(|entry| entry.operation_id() == [8; 16])
+            .unwrap();
+        assert_eq!(superseded.phase(), DurableStoragePhase::Prepared);
+        assert!(matches!(
+            restart_coordinator.authenticate_prepared_head(superseded),
+            Ok(PreparedStorageHeadV1::Superseded)
+        ));
+        assert!(
+            restart_coordinator
+                .transactions
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_some()
+        );
         let restart_custody = WorkspacePinHostCustody::retain_initial_root_owned().unwrap();
         let restart_contract = ZfsHelperContract::new(executable.clone()).unwrap();
         let restart_pin_executor = SystemdWorkspacePinExecutor::new(
@@ -8527,12 +8549,38 @@ mod tests {
                 if operations > 0
         ));
         assert!(!observation_pin_path.exists());
-        assert_eq!(
-            runtime
-                .coordinator_for_test()
+        // The repair's newer DesiredState retires the untouched Destroy
+        // preparation. Its Aborted row and reservation deletion occupy one
+        // four-frame journal transaction; pin observation publishes nothing.
+        let recovered = runtime.coordinator_for_test();
+        let recovered_entries = recovered.recovery_entries().unwrap();
+        assert_eq!(recovered_entries.len(), restart_entries.len());
+        for (before, after) in restart_entries.iter().zip(&recovered_entries) {
+            assert_eq!(before.operation_id(), after.operation_id());
+            assert_eq!(before.sandbox_id(), after.sandbox_id());
+            assert_eq!(before.request_id(), after.request_id());
+            assert_eq!(before.request_digest(), after.request_digest());
+            assert_eq!(before.mutation_digest(), after.mutation_digest());
+            assert_eq!(before.catalog(), after.catalog());
+            assert_eq!(
+                after.phase(),
+                if before.operation_id() == superseded.operation_id() {
+                    DurableStoragePhase::Aborted
+                } else {
+                    before.phase()
+                }
+            );
+        }
+        assert!(
+            recovered
                 .transactions
-                .journal_sequence_for_test(),
-            admitted_sequence
+                .authority_record(RecordNamespace::StorageCatalogReservation, &[8; 16])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            recovered.transactions.journal_sequence_for_test(),
+            admitted_sequence.checked_add(4).unwrap()
         );
         let observer_after_restart = systemd_socket_sample(observer_socket);
         let worker_after_restart = systemd_socket_sample(worker_socket);
