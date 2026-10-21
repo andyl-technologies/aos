@@ -176,16 +176,22 @@ pub(super) async fn exercise_objects(
 }
 
 /// Seals the canonical empty inline object without a fabricated source admission.
-pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()> {
+pub(super) async fn exercise_sealed(
+    cache: &terrane_linux::configured::NativeConfiguredCache,
+) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     use terrane_linux::host_cache::NativePreparedObject;
-    use terrane_sdk::host::cache::ReassemblyMode;
 
+    let store = cache.content();
+    assert_eq!(
+        cache.reassembly(),
+        terrane_sdk::host::cache::ReassemblyMode::Never
+    );
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &[])
         .map_err(io::Error::other)?;
-    let NativePreparedObject::Sealed(object) = store
-        .prepare_object(&identity, ReassemblyMode::Never)
+    let NativePreparedObject::Sealed(object) = cache
+        .prepare_object(&identity)
         .await
         .map_err(io::Error::other)?
     else {
@@ -212,10 +218,10 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
 
 /// Exercises actual direct and whole-object sealing on a fresh Running owner.
 pub(super) async fn exercise_reassembly(
-    store: &NativeContentStore,
+    cache: &terrane_linux::configured::NativeConfiguredCache,
     profile: &ChunkProfile,
 ) -> io::Result<()> {
-    reassembly::exercise(store, profile).await
+    reassembly::exercise(cache, profile).await
 }
 
 /// Observes the actual durable protection after a completed physical handoff.

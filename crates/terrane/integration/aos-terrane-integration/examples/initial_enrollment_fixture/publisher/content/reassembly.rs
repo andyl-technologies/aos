@@ -12,7 +12,12 @@ use terrane_sdk::{
     store::{ChunkPosition, ChunkUpload, ContentStore, ContentUpload, MetaUpload},
 };
 
-pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile) -> io::Result<()> {
+pub(super) async fn exercise(
+    cache: &terrane_linux::configured::NativeConfiguredCache,
+    profile: &ChunkProfile,
+) -> io::Result<()> {
+    let store = cache.content();
+    assert_eq!(cache.reassembly(), ReassemblyMode::Always);
     let first = super::repeated::natural_chunk(profile)?;
     let last = vec![71; 33];
     let mut chunks = Vec::new();
@@ -52,11 +57,12 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         (&multiple, ReassemblyMode::Always, expected.as_slice()),
         (&single, ReassemblyMode::Never, last.as_slice()),
     ] {
-        let NativePreparedObject::Sealed(object) = store
-            .prepare_object(identity, mode)
-            .await
-            .map_err(io::Error::other)?
-        else {
+        let prepared = if mode == ReassemblyMode::Always {
+            cache.prepare_object(identity).await
+        } else {
+            store.prepare_object(identity, mode).await
+        };
+        let NativePreparedObject::Sealed(object) = prepared.map_err(io::Error::other)? else {
             return Err(io::Error::other("required whole object was not sealed"));
         };
         assert_eq!(object.identity(), identity);

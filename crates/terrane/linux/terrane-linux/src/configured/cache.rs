@@ -6,7 +6,10 @@
 
 use super::{Preflight, ProcessRole, invalid, preflight_role};
 use crate::{
-    host_cache::{IndexRepairPolicy, NativeCacheOwnerConfig, NativeContentStore, NativeReady},
+    host_cache::{
+        IndexRepairPolicy, NativeCacheOwnerConfig, NativeContentStore, NativePreparedObject,
+        NativeReady,
+    },
     host_quota::HostQuotaClient,
     publisher_local::client::ClientConfig,
     quota_confinement::Installed,
@@ -19,8 +22,11 @@ use std::{
 };
 use terrane_sdk::{
     bucket::{FileBucketConfig, portable_reader::PortableReadLimits},
-    config::host::HostTier,
-    host::cache::{CachePolicy, HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits},
+    config::host::{HostTier, Reassembly},
+    host::cache::{
+        CachePolicy, HostDomainLocation, HostReadLimits, PolicyConfig, ReassemblyMode, StateLimits,
+    },
+    store::StoreFailure,
 };
 
 /// Supplies explicit portable bindings and finite resources for one native domain.
@@ -63,6 +69,7 @@ pub struct NativeCacheDomainSettings {
 pub struct NativeCachePlan {
     host: Preflight,
     domains: BTreeMap<String, NativeCacheDomainSettings>,
+    reassembly: ReassemblyMode,
 }
 
 impl NativeCachePlan {
@@ -79,6 +86,10 @@ impl NativeCachePlan {
         host: &HostTier,
         domains: BTreeMap<String, NativeCacheDomainSettings>,
     ) -> io::Result<Self> {
+        let reassembly = match host.reassembly {
+            Reassembly::Never => ReassemblyMode::Never,
+            Reassembly::Always => ReassemblyMode::Always,
+        };
         let host = preflight_role(host, ProcessRole::Serve)?;
         if domains.len() != host.domains.len() {
             return Err(invalid("native cache resource domain coverage differs"));
@@ -107,7 +118,11 @@ impl NativeCachePlan {
                 return Err(invalid("portable and configured native domain differ"));
             }
         }
-        Ok(Self { host, domains })
+        Ok(Self {
+            host,
+            domains,
+            reassembly,
+        })
     }
 
     /// Checks explicit TOML cache resources and binds host locality to each domain.
@@ -196,7 +211,7 @@ impl NativeCachePlan {
     pub async fn open(
         self,
         confinement: Arc<Installed>,
-    ) -> io::Result<BTreeMap<String, NativeContentStore>> {
+    ) -> io::Result<BTreeMap<String, NativeConfiguredCache>> {
         confinement.check_current()?;
         let mut helper = HostQuotaClient::connect(&self.host.quota_path, 0, self.host.quota_epoch)?;
         let mut prepared = Vec::with_capacity(self.host.domains.len());
@@ -289,9 +304,56 @@ impl NativeCachePlan {
             .await?;
             let store = NativeContentStore::new(ready, settings.consumer_lease_duration)
                 .map_err(io::Error::other)?;
-            stores.insert(domain, store);
+            stores.insert(
+                domain,
+                NativeConfiguredCache {
+                    content: store,
+                    reassembly: self.reassembly,
+                },
+            );
         }
         Ok(stores)
+    }
+}
+
+/// Retains a recovered domain and its operator-selected object preparation policy.
+///
+/// Only the configured opener constructs this value, after real native recovery
+/// and publisher Resume. The mode controls representation; it grants no guest
+/// authorization or filesystem authority.
+pub struct NativeConfiguredCache {
+    content: NativeContentStore,
+    reassembly: ReassemblyMode,
+}
+
+impl NativeConfiguredCache {
+    /// Borrows the genuine native content and maintenance adapter.
+    ///
+    /// Object-serving callers use [`Self::prepare_object`] to apply operator
+    /// policy. This lower-level adapter also exposes explicit native primitives.
+    pub fn content(&self) -> &NativeContentStore {
+        &self.content
+    }
+
+    /// Returns the reassembly mode retained from the checked host configuration.
+    pub fn reassembly(&self) -> ReassemblyMode {
+        self.reassembly
+    }
+
+    /// Prepares verified object plaintext using the retained operator policy.
+    ///
+    /// Multi-chunk objects stream under `never` and seal under `always`.
+    /// Inline and single-chunk objects use the direct sealed path in either mode.
+    /// The result borrows this domain's original recovered content owner.
+    ///
+    /// # Errors
+    /// Returns canonical metadata, content verification, native grant, capacity,
+    /// publication or accounting failures from the actual native preparation.
+    pub async fn prepare_object(
+        &self,
+        identity: &terrane_format::identity::Identity,
+    ) -> Result<NativePreparedObject<'_>, StoreFailure> {
+        self.content.prepare_object(identity, self.reassembly).await
     }
 }
 

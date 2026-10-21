@@ -11,7 +11,7 @@
 mod administrative;
 mod cache;
 
-pub use cache::{NativeCacheDomainSettings, NativeCachePlan};
+pub use cache::{NativeCacheDomainSettings, NativeCachePlan, NativeConfiguredCache};
 
 use administrative::AdministrativeRoot;
 use std::{

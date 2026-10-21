@@ -123,10 +123,11 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     } else {
         30_000
     };
-    let plan = NativeCachePlan::from_host(
-        &configuration(&case, retirement_grace_ms),
-        terrane_format::refs::Locality::default(),
-    )?;
+    let mut host = configuration(&case, retirement_grace_ms);
+    if matches!(preparation, Preparation::Reassembly) {
+        host.reassembly = Reassembly::Always;
+    }
+    let plan = NativeCachePlan::from_host(&host, terrane_format::refs::Locality::default())?;
     let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -134,9 +135,10 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     let mut stores = runtime.block_on(plan.open(Arc::clone(&confinement)))?;
     assert_eq!(stores.len(), DOMAINS.len());
     for (owner, domain) in DOMAINS.iter().enumerate() {
-        let store = stores
+        let configured = stores
             .remove(*domain)
             .ok_or_else(|| io::Error::other("configured native domain missing"))?;
+        let store = configured.content();
         runtime.block_on(store.ready().validate_portable())?;
         assert_eq!(
             store
@@ -155,18 +157,16 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
         );
         let profile = ChunkProfile::cdc_1m(SEED);
         match preparation {
-            Preparation::Objects => {
-                runtime.block_on(content::exercise_objects(&store, &profile))?
-            }
+            Preparation::Objects => runtime.block_on(content::exercise_objects(store, &profile))?,
             Preparation::Reassembly => {
-                runtime.block_on(content::exercise_reassembly(&store, &profile))?
+                runtime.block_on(content::exercise_reassembly(&configured, &profile))?
             }
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.
                 // Another cold reopen would add an unrelated recovery workload
                 // to this deliberately bounded 64-record content fixture.
-                runtime.block_on(content::exercise_sealed(&store))?;
-                runtime.block_on(content::exercise(&store, &profile))?;
+                runtime.block_on(content::exercise_sealed(&configured))?;
+                runtime.block_on(content::exercise(store, &profile))?;
             }
         }
         runtime.block_on(store.ready().validate_portable())?;
