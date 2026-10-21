@@ -16,6 +16,10 @@ def send(process, command):
 def wait_deadline(driver, process, deadline):
     """Waits for the real durable deadline without changing native clocks."""
     driver.require(time.time() <= deadline + 10, "shared extraction missed its native grace")
+    # This fixture configures 30 seconds. A permanent reconstruction pin must
+    # fail promptly instead of parking the guest until its whole-test timeout.
+    driver.require(deadline <= time.time() + 31,
+                   "shared extraction deadline exceeds its configured release grace")
     while time.time() <= deadline + 1:
         driver.require(process.poll() is None, "shared extraction actor exited during grace")
         time.sleep(min(0.1, max(0.001, deadline + 1 - time.time())))

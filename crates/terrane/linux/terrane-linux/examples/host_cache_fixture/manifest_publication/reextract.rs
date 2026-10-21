@@ -166,13 +166,35 @@ pub(crate) fn run(
     }
     let replacement = pin(owner, runtime, &first.first, expires)?;
     check_reads(owner, runtime, &replacement, &independent, &first, &second)?;
-    let deadline = after
-        .pins
-        .iter()
-        .filter(|pin| pin.hash == object)
-        .map(|pin| pin.expires)
-        .max()
+    // Reconstruction metadata intentionally retains a permanent object pin.
+    // The replacement's actual handoff instead pins both chunk and object
+    // under one finite admission grace and its matching durable lease.
+    let mut graces = after.pins.iter().filter(|pin| {
+        pin.hash == object
+            && pin.owner.starts_with("admission-grace:")
+            && after.pins.iter().any(|replacement| {
+                replacement.hash == chunk
+                    && replacement.owner == pin.owner
+                    && replacement.expires == pin.expires
+            })
+    });
+    let grace = graces
+        .next()
         .ok_or_else(|| invalid("extraction lost original object's release grace"))?;
+    let deadline = grace.expires;
+    if graces.next().is_some()
+        || deadline > expires
+        || after
+            .leases
+            .iter()
+            .filter(|lease| lease.owner == grace.owner && lease.expires == deadline)
+            .count()
+            != 1
+    {
+        return Err(invalid(
+            "extraction has no unique finite copy handoff grace",
+        ));
+    }
     emit(&format!(
         "SHARED_EXTRACTION_COPY chunk={chunk} object={object} expires={deadline}"
     ))?;
