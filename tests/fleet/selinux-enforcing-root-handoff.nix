@@ -186,8 +186,8 @@
     '';
   };
 
-  fixtureModule = mode:
-    lib.mkMerge [
+  fixtureModule = mode: {
+    config = lib.mkMerge [
       (stage0Fixture (
         if mode == "post-pin"
         then postPinQualificationStage0
@@ -295,11 +295,18 @@
         };
       }
     ];
+  };
 
-  systemFor = mode:
-    systems.server-secureboot-lockdown.extendModules {
+  systemFor = mode: let
+    selected = systems.server-secureboot-lockdown.extendModules {
       modules = [../../systems/_server-test-packages.nix (fixtureModule mode)];
     };
+  in
+    # Fail during evaluation if qualification wiring disappears before image
+    # assembly; an ordinary boot cannot qualify the authenticated handoff.
+    assert selected.config.aos.boot.initrd.stage0 != null;
+    assert builtins.all (parameter: builtins.elem parameter selected.config.aos.boot.kernelParams)
+    ["selinux=1" "security=selinux" "enforcing=1" "aos.selinux.root_handoff=1"]; selected;
   cleanSystem = systemFor "clean";
   shadowSystem = systemFor "runtime-shadows";
   guardSubstitutionSystem = systemFor "guard-substitution";
