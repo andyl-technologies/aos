@@ -11665,3 +11665,17 @@ the actual resulting directory mode before reading. The native case is ignored
 by ordinary package runners only because its owning gate must execute it in
 the real guest. No test body or Original isolation assertion is removed; frozen
 VM, package and application-target qualification remain pending.
+
+
+#### Real unprivileged cache preflight qualification
+
+The frozen trunk package run rejected the attempted nested user namespace.
+The ordinary configured-cache case retains the production root refusal. Its
+complete positive and negative preflight assertions now also execute as the
+existing capability-free UID/GID 842 actor in the owning ext4 host-cache VM.
+All eight configured preflight cases join the exact source-derived FS unit
+inventory, original per-case bounds and actual one-pass/no-ignore checks.
+Role selection requires this native proof and retains its path. No injected
+identity or nested namespace substitutes for the guest identity witness.
+All eight cases pass locally under the AOS toolchain. Fresh native and
+application-target qualification remain pending.

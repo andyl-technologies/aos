@@ -285,7 +285,10 @@
           name = "check";
           script = ''
             mkdir -p "$out"
+            test "$(cat ${hostCacheProof.native}/result)" = PASS
             python3 ${./check_roles.py} ${pkgs.terrane}/bin/terrane > "$out/result"
+            mkdir -p "$out/nix-support"
+            printf '%s\n' ${hostCacheProof.native} > "$out/nix-support/unprivileged-preflight-proof"
           '';
         }
       ];

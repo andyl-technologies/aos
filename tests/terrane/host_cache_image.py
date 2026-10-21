@@ -24,11 +24,19 @@ PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
            "overflow_checks": True, "test": False}
 
 UNIT_NAME = "terrane-fs-unit"
-UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
+UNIT_PREFIXES = ("configured::tests::", "host_cache::owner::", "host_cache::recovery_inspection::",
                  "publisher_local::client::recovery_manifest::", "publisher_local::socket::tests::")
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'configured::tests::configured_preflight_requires_real_quota_inputs_before_startup',
+    'configured::tests::configured_preflight_rejects_later_domain_policy_before_any_open',
+    'configured::tests::configured_preflight_refuses_overlapping_roots_and_aliasing_endpoints',
+    'configured::tests::configured_preflight_binds_distinct_explicit_administrative_roots',
+    'configured::tests::configured_preflight_rejects_unrepresentable_unix_socket',
+    'configured::tests::configured_cache_plan_checks_all_domains_without_opening_missing_helper',
+    'configured::tests::configured_cache_plan_requires_exact_resource_domain_coverage',
+    'configured::tests::configured_cache_plan_refuses_later_invalid_resources_before_native_startup',
     'host_cache::recovery_inspection::quarantine::tests::encoded_quarantine_names_are_closed_routing_fields_without_content_authority',
     'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
     'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
@@ -133,7 +141,8 @@ def unit_inventory(output):
 
 def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
-    source_roots = [workspace / "terrane/linux/terrane-linux/src/host_cache/owner",
+    source_roots = [workspace / "terrane/linux/terrane-linux/src/configured.rs",
+                    workspace / "terrane/linux/terrane-linux/src/host_cache/owner",
                     workspace / "terrane/linux/terrane-linux/src/host_cache/recovery_inspection",
                     workspace / "terrane/linux/terrane-linux/src/publisher_local/client/recovery_manifest.rs",
                     workspace / "terrane/linux/terrane-linux/src/publisher_local/socket_tests.rs"]

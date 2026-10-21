@@ -792,40 +792,13 @@ mod tests {
 
     #[test]
     fn configured_cache_plan_checks_all_domains_without_opening_missing_helper() {
-        let nested = "TERRANE_TEST_CONFIGURED_CACHE_NONROOT";
-        let uid = rustix::process::geteuid().as_raw();
-        if std::env::var_os(nested).is_some() {
-            assert_eq!(
-                uid, 1000,
-                "qualification child must actually be unprivileged"
-            );
-        }
-        if uid == 0 {
+        if rustix::process::geteuid().is_root() {
             let (host, domains) = cache_configuration();
             assert!(NativeCachePlan::new(&host, domains).is_err());
 
-            // The protected package harness maps its actor to root. Keep the
-            // production root refusal and run the positive pure preflight in a
-            // separate user namespace with a genuinely nonzero effective UID.
-            let name = "configured::tests::configured_cache_plan_checks_all_domains_without_opening_missing_helper";
-            let output = std::process::Command::new(
-                std::env::var_os("TERRANE_TEST_UNSHARE")
-                    .expect("root qualification requires the AOS-built unshare binding"),
-            )
-            .args(["--user", "--map-user=1000", "--map-group=1000"])
-            .arg(std::env::current_exe().unwrap())
-            .args([name, "--exact", "--test-threads=1"])
-            .env(nested, "1")
-            .output()
-            .unwrap();
-            let stdout = String::from_utf8(output.stdout).unwrap();
-            assert!(
-                output.status.success(),
-                "{stdout}\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(stdout.contains(&format!("test {name} ... ok")));
-            assert!(stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;"));
+            // Package checks run as namespace root. The owning native VM also
+            // executes this exact case as UID 842 with every capability dropped,
+            // preserving the positive preflight without nested user namespaces.
             return;
         }
 
