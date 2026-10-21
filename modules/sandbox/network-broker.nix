@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.networkBroker;
@@ -184,7 +185,7 @@ in {
       ]
       ++ brokerSessionConfiguration.assertions;
 
-    systemd.sockets.aos-netd =
+    systemd.sockets.aos-netd = identitySocketOrdering.apply (
       {
         description = "AOS sandbox Network broker socket";
         wantedBy = ["sockets.target"];
@@ -208,7 +209,8 @@ in {
       // lib.optionalAttrs protectedRoots {
         requires = [protectedRootsUnit];
         after = [protectedRootsUnit];
-      };
+      }
+    );
 
     systemd.services.aos-sandbox-network-roots = lib.mkIf protectedRoots {
       description = "Prepare protected AOS sandbox Network roots";

@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.hostBroker;
@@ -603,7 +604,7 @@ in {
         }
       ];
 
-    systemd.sockets.aos-sandbox-hostd = {
+    systemd.sockets.aos-sandbox-hostd = identitySocketOrdering.apply {
       description = "AOS controller-facing sandbox Host broker socket";
       wantedBy = ["sockets.target"];
       socketConfig = {

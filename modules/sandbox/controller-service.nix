@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.controllerService;
@@ -703,7 +704,7 @@ in {
       members = [];
     };
 
-    systemd.sockets.aos-sandboxd-publisher = lib.mkIf cfg.publisherIngress.enable {
+    systemd.sockets.aos-sandboxd-publisher = lib.mkIf cfg.publisherIngress.enable (identitySocketOrdering.apply {
       description = "AOS project publisher registration listener";
       wantedBy = ["sockets.target"];
       socketConfig = {
@@ -719,7 +720,7 @@ in {
         DirectoryMode = "0711";
         RemoveOnStop = true;
       };
-    };
+    });
 
     systemd.services.aos-sandboxd = {
       description = "AOS unprivileged sandbox node controller";

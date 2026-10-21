@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.sourceSignerService;
@@ -112,7 +113,7 @@ in {
       }
     ];
 
-    systemd.sockets.aos-sandbox-source-signerd = {
+    systemd.sockets.aos-sandbox-source-signerd = identitySocketOrdering.apply {
       description = "AOS Source-only signer Root ingress";
       wantedBy = ["sockets.target"];
       requires = ["aos-sandbox-source-signer-view.service"];

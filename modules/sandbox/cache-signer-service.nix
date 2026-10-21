@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.cacheSignerService;
@@ -116,7 +117,7 @@ in {
       }
     ];
 
-    systemd.sockets.aos-sandbox-cache-signerd = {
+    systemd.sockets.aos-sandbox-cache-signerd = identitySocketOrdering.apply {
       description = "AOS Cache-only signer root and Controller ingress";
       wantedBy = ["sockets.target"];
       requires = ["aos-sandbox-cache-signer-views.service"];

@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.mountBroker;
@@ -226,7 +227,7 @@ in {
       lib.mkIf cfg.sourceProviderSession.enable
       (pkgs.aosMountSourceExecutableCarrierForKernel config.system.build.kernel);
 
-    systemd.sockets.aos-sandbox-mountd = {
+    systemd.sockets.aos-sandbox-mountd = identitySocketOrdering.apply {
       description = "AOS sandbox mount broker socket";
       wantedBy = ["sockets.target"];
       socketConfig = {

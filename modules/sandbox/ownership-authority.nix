@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.ownershipAuthority;
@@ -73,7 +74,7 @@ in {
       }
     ];
 
-    systemd.sockets.aos-sandbox-ownershipd = {
+    systemd.sockets.aos-sandbox-ownershipd = identitySocketOrdering.apply {
       description = "AOS controller-facing ownership authority socket";
       wantedBy = ["sockets.target"];
       socketConfig = {

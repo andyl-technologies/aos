@@ -5,6 +5,7 @@
   pkgs,
   ...
 }: let
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
 
   cfg = config.aos.sandbox.nixBroker;
@@ -289,7 +290,7 @@ in {
     environment.etc."tmpfiles.d/aos-sandbox-nix.conf".text = ''
       d /run/aos/sandbox-nix 0710 root aos-sandboxd - -
     '';
-    systemd.sockets.aos-sandbox-nixd-control = {
+    systemd.sockets.aos-sandbox-nixd-control = identitySocketOrdering.apply {
       description = "Fixed original online Nix Resolve50 record listener";
       wantedBy = ["sockets.target"];
       requires = ["systemd-tmpfiles-setup.service"];

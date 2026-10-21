@@ -9,7 +9,7 @@
     else if config.aos.boot.substrateServices.handoffEnabled or false
     then "aos-ability-host-controller.service"
     else null;
-in {
+
   # Host activation may itself need basic.target and the early socket set.
   # Identity-owned sockets therefore join multi-user.target after activation,
   # with their normal shutdown ordering stated explicitly.
@@ -21,4 +21,8 @@ in {
     conflicts = ["shutdown.target"];
     unitConfig.DefaultDependencies = false;
   };
+in {
+  inherit module;
+
+  apply = socket: lib.mkMerge [socket module];
 }
