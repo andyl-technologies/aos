@@ -11928,3 +11928,39 @@ The full native cache component at `aa150620b5` also passes independent review:
 including five initial-creator cases. The remaining lifecycle controls pass in
 the same VM; the full feature matrix and aggregate trunk qualification remain
 open. These results do not close an unqualified trunk task.
+
+
+#### GCP instance-to-job exchange
+
+The native SDK now verifies full Google-signed GCE identity tokens with RS256,
+the configured exact audience and Google's fixed issuer. It fetches fresh keys
+only from Google's published HTTPS JWKS endpoint through the trusted streaming
+HTTP binding, within a 64-KiB body bound and a finite complete-exchange deadline.
+Unsupported JOSE headers, unknown/duplicate keys, wrong algorithms, invalid
+signatures and malformed responses refuse issuance. Time checks use the
+injected clock, including a fresh check after asynchronous work.
+
+An exact configured project, project number, zone, immutable instance id,
+creation timestamp, service-account subject and job assignment must match.
+Groups and grants come exclusively from that trusted assignment. The minted
+workload claim binds the instance incarnation and job; its inclusive expiry
+cannot outlive the Google token's exclusive expiry. No unverified request
+claim selects authority. The claim and signing-key contract follows Google's
+[VM identity documentation](https://cloud.google.com/compute/docs/instances/verifying-instance-identity)
+and [OpenID discovery](https://accounts.google.com/.well-known/openid-configuration).
+
+Seven recorded-fixture cases pass with actual RSA signatures, altered-signature
+refusal, claim/assignment/time mismatches, bounded key streams, duplicate keys
+and a pending stream dropped at its deadline. Seven static-key regression cases
+also pass. `integration.gcp-instance-issuer` binds its complete inventory to the
+actual Cargo artifact and immutable source; frozen qualification remains pending.
+The test RSA key is generated public fixture material. This is an SDK exchange,
+not a deployed serve-role endpoint, and does not close T-AUTH-2, workload-mint
+or the complete GCP integration claim. No live Google probe is claimed.
+
+Frozen static-key qualification at `00253f22a4` passed the earlier cases but
+failed before issuer invocation when the sandbox rejected setting setuid mode
+on a fixture file. The unsafe-special-bit fixture now sets and independently
+checks a sticky bit, retaining exact-mode rejection, all other permission and
+key-file assertions, and the unchanged production 0400/0600 allowlist. The
+original failed run remains retained; replacement qualification is required.

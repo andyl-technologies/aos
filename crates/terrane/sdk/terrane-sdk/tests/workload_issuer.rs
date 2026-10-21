@@ -308,8 +308,11 @@ fn key_file_rejects_links_inode_kinds_permissions_lengths_and_wrong_public_keys(
     .unwrap();
     assert!(open(&fifo, fixture.owner).is_err());
     assert!(open(&fixture.key, fixture.owner.wrapping_add(1)).is_err());
-    for mode in [0o644, 0o660, 0o700, 0o4600] {
+    // The sticky bit exercises special-bit refusal without Nix's setuid chmod
+    // restriction preventing the fixture from reaching the issuer at all.
+    for mode in [0o644, 0o660, 0o700, 0o1600] {
         fs::set_permissions(&fixture.key, fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(fs::metadata(&fixture.key).unwrap().mode() & 0o7777, mode);
         assert!(open(&fixture.key, fixture.owner).is_err());
     }
     fs::set_permissions(&fixture.key, fs::Permissions::from_mode(0o600)).unwrap();

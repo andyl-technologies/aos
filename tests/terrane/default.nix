@@ -500,6 +500,8 @@ in {
   integration.pack-receive = import ./pack-receive.nix {inherit sourceGate;};
 
   integration.workload-issuer = import ./workload-issuer.nix {inherit sourceGate;};
+
+  integration.gcp-instance-issuer = import ./gcp-instance-issuer.nix {inherit sourceGate;};
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
     coreutils = pkgs.coreutils;

@@ -22,6 +22,10 @@ use crate::store::{Clock, LocalFs};
 #[cfg(unix)]
 mod key_file;
 
+/// Authenticates GCE instance identities before issuing configured job capabilities.
+#[cfg(feature = "tokio")]
+pub mod gcp;
+
 /// Holds finite validity bounds and independently configured public authority.
 #[derive(Clone, Debug)]
 pub struct IssuerPolicy {

@@ -7140,6 +7140,7 @@ name = "terrane-sdk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "blake3",
  "buffa",
  "buffa-codegen",
@@ -7148,6 +7149,7 @@ dependencies = [
  "connectrpc",
  "connectrpc-codegen",
  "futures-util",
+ "jsonwebtoken",
  "libc",
  "prost",
  "prost-types",
