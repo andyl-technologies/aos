@@ -106,6 +106,10 @@ enum ChannelFailureDetail {
     DecodeAdmission(DecodeAdmissionError),
     FingerprintSample(QemuFingerprintSampleError),
     MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
+    QuantumNodeSlot {
+        operation: &'static str,
+        source: crucible_qemu_shmem::NodeSlotError,
+    },
 }
 
 impl QemuNodeChannelError {
@@ -255,6 +259,36 @@ impl QemuNodeChannelError {
         }
     }
 
+    /// Retains a quantum slot refusal without allocating replacement text.
+    ///
+    /// Only an occupied or changed publication permits polling the same
+    /// pending request again. This never republishes its ceiling or wake.
+    pub(crate) fn quantum_node_slot(
+        operation: &'static str,
+        source: crucible_qemu_shmem::NodeSlotError,
+    ) -> Self {
+        Self {
+            operation: "qemu_quantum_shmem_hot_path",
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: matches!(
+                source,
+                crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
+                    | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. }
+            ),
+            detail: ChannelFailureDetail::QuantumNodeSlot { operation, source },
+        }
+    }
+
+    /// Returns the actual quantum slot refusal without formatting its coordinates.
+    #[must_use]
+    pub const fn quantum_node_slot_source(&self) -> Option<&crucible_qemu_shmem::NodeSlotError> {
+        match &self.detail {
+            ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
     /// Returns the bounded await timeout that caused this channel failure.
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
@@ -288,6 +322,13 @@ impl fmt::Display for QemuNodeChannelError {
                         self.operation
                     );
                 }
+                ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
+                    return write!(
+                        formatter,
+                        "{} failed: QEMU quantum node-slot operation {operation} failed: {source}",
+                        self.operation
+                    );
+                }
                 ChannelFailureDetail::Message => {}
             }
         }
@@ -302,6 +343,7 @@ impl std::error::Error for QemuNodeChannelError {
             ChannelFailureDetail::DecodeAdmission(source) => Some(source),
             ChannelFailureDetail::FingerprintSample(source) => Some(source),
             ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
+            ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
             ChannelFailureDetail::Message => None,
         }
     }
@@ -391,6 +433,19 @@ pub enum QemuNodeError {
         /// Original geometry, topology or segment failure.
         #[source]
         source: crucible_qemu_shmem::MappedSetupRegionAccessError,
+    },
+    /// A quantum channel retained its actual bounded node-slot refusal.
+    #[error(
+        "{plane} channel operation qemu_quantum_shmem_hot_path failed: QEMU quantum node-slot operation {operation} failed: {source}"
+    )]
+    ChannelQuantumNodeSlot {
+        /// Channel role whose slot observation or transition refused.
+        plane: QemuNodeChannelPlane,
+        /// Actual operation performed on that node slot.
+        operation: &'static str,
+        /// Original slot failure, including its observed generation coordinates.
+        #[source]
+        source: crucible_qemu_shmem::NodeSlotError,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -687,6 +742,13 @@ impl QemuNodeError {
                 operation: source.operation,
                 source: access,
             },
+            ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
+                Self::ChannelQuantumNodeSlot {
+                    plane,
+                    operation,
+                    source,
+                }
+            }
             ChannelFailureDetail::Message => Self::Channel {
                 plane,
                 operation: source.operation,
@@ -885,6 +947,7 @@ impl From<QemuNodeError> for BackendError {
             }
             error @ (QemuNodeError::ChannelSupervision { .. }
             | QemuNodeError::ChannelDecodeAdmission { .. }
+            | QemuNodeError::ChannelQuantumNodeSlot { .. }
             | QemuNodeError::Shutdown { .. }
             | QemuNodeError::ShutdownAfterChannelFailure { .. }
             | QemuNodeError::RamCleanupLender { .. }

@@ -623,7 +623,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         pending: &QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
-        let final_snapshot = self.view.node_slot.snapshot();
+        let final_snapshot = self.observe_node_slot("observe quantum completion")?;
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
         let mut final_state = idle_state_from_snapshot(final_snapshot);
         if completed_clamp
@@ -709,6 +709,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
         let pending = self.start_quantum(horizon, QemuQuantumStopCondition::Ceiling)?;
         self.finish_quantum(pending)
+    }
+
+    fn observe_node_slot(
+        &self,
+        operation: &'static str,
+    ) -> Result<NodeSlotSnapshot, QemuQuantumError> {
+        self.view
+            .node_slot
+            .try_snapshot()
+            .map_err(|source| QemuQuantumError::NodeSlot { operation, source })
     }
 
     fn current_icount_from_slot(&self) -> Icount {

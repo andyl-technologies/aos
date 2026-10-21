@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod bounded_observations;
 mod channel_behavior;
 mod completion;
 mod network_delivery;
