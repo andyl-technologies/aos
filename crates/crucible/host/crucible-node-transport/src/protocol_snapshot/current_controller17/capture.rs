@@ -208,11 +208,10 @@ impl ValidatedHistoricalRestoredSettledCapture17 {
             || !poll.observations.is_empty()
             || poll.next_observation_sequence != U64::new(0)
             || poll.outcome.0.as_ref() != Some(&capture.terminal.body)
-            || field(confirmation_history, "roots")?
+            || !field(confirmation_history, "roots")?
                 .as_array()
                 .ok_or_else(invalid)?
-                .len()
-                != 0
+                .is_empty()
             || confirmation.frontier != current
         {
             return Err(invalid());

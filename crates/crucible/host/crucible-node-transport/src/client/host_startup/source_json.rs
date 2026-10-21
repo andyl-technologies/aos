@@ -64,9 +64,10 @@ pub fn original_host_source_json_extent_storage_data(
     ]
     .into_iter()
     .try_fold(0usize, |sum, value| {
-        sum.checked_add(value).ok_or_else(|| {
-            ProviderError::ResourceExhausted("original Source JSON storage extent overflow")
-        })
+        sum.checked_add(value)
+            .ok_or(ProviderError::ResourceExhausted(
+                "original Source JSON storage extent overflow",
+            ))
     })
 }
 

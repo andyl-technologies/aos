@@ -98,7 +98,15 @@ zero failures, no filtering and 15 ignores. Formatting and all six architecture
 gates pass. The content-bound decoder review is refreshed after a complete
 source read. Production-library Clippy reports 128 errors and 1,426 warnings;
 strict Clippy remains unqualified. The required application-target compilation
-refresh for this change is running.
+gate passes for `142f67c950`: all 67 owned changed Rust files match its registered
+source, and it compiles 180 test executables across 58 package IDs, including
+71 integration targets. This compilation-only gate excludes later changes.
+
+Two further expression repairs use an eager static error and an explicit empty
+array check. Complete standard and raw-JSON Transport library runs each pass
+1,747 tests with zero failures, no filtering and 15 ignores. Production-library
+Clippy reports 126 errors and 1,426 warnings; strict acceptance still fails.
+No wire, check-order, accounting or lint-policy change follows.
 
 Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
 first failure. Its actual VM run identifies the installed-mechanism refusal;
@@ -301,9 +309,16 @@ Every actual kernel probe checks that this census succeeds while a fourth
 descriptor or nonzero timeout refuses. The separate pure-worker owner VM passes
 all existing resource, cancellation, completion-custody and waited-cleanup
 controls with these added checks. This x86_64 startup correction does not qualify
-another architecture's libc syscall mapping. The rebuilt full funded-Source VM
-is still pending; genuine result acceptance, private Birth construction, native
-startup and common Ready remain unqualified.
+another architecture's libc syscall mapping.
+
+The rebuilt funded-Source VM passes both positive consumers. Each accepts all
+three actual confined-worker results, constructs the three genuine private
+Births, retains retry credit and reclaims its terminal namespace. The two
+small-policy consumers and foreign-pin control also pass. The enclosing VM then
+fails during its separate default-feature CLI control, so the full check remains
+failed. Added stage-specific failure diagnostics retain that control's assertions
+and deadlines. Native startup, common Ready and full preservation remain
+unqualified.
 
 ## Original launch custody and shared startup geometry
 
