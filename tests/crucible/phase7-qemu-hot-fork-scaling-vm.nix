@@ -39,68 +39,21 @@
     text = provenance.text;
   };
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   scenario = pkgs.writeTextFile {
     name = "crucible-e2e-determinism-scenario";
     destination = "/scenario.toml";
     text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
   };
-  flight = pkgs.mkDerivation {
+  flight = mkCrucibleBinaries {
     pname = "crucible-qemu-hot-fork-scaling-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
-      pkgs.sed
-
-      pkgs.sqlite
-    ];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo test --frozen --offline --release --no-run \
-            --message-format=json-render-diagnostics \
-            --manifest-path crates/Cargo.toml --target-dir "$TMPDIR/target" \
-            -p crucible-api -p crucible-qemu -p crucible-daemon --lib \
-            > "$TMPDIR/messages.jsonl"
-          daemon_test=$(jq -r \
-            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-            "$TMPDIR/messages.jsonl")
-          test -f "$daemon_test"
-          mkdir -p "$out/bin"
-          cp "$daemon_test" "$out/bin/crucible-daemon-scaling"
-          for package in crucible_api crucible_qemu; do
-            binary=$(jq -r --arg package "$package" \
-              'select(.reason == "compiler-artifact" and .target.name == $package and .profile.test == true and .executable != null) | .executable' \
-              "$TMPDIR/messages.jsonl")
-            test -f "$binary"
-            cp "$binary" "$out/bin/$package-clone-cost"
-          done
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-daemon-scaling = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-daemon";
+      crucible_api-clone-cost = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-api";
+      crucible_qemu-clone-cost = "test --release -p crucible-api -p crucible-qemu -p crucible-daemon --lib --select-package crucible-qemu";
+    };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};
 in

@@ -123,7 +123,10 @@ pub(super) fn integration_selector_nix_failures(
             "{gate}: integration Nix flight does not build {package} --test {test_target}"
         ));
     }
-    if !nix.contains(&format!("/bin/{runner}")) {
+    // Gates run prebuilt workspace tests through `crucible-cargo`, which
+    // accepts the same `cargo test` command line.
+    let runs_cargo = runner == "cargo" && nix.contains("crucible-cargo test");
+    if !runs_cargo && !nix.contains(&format!("/bin/{runner}")) {
         failures.push(format!(
             "{gate}: integration Nix flight does not run {runner}"
         ));

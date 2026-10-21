@@ -9,31 +9,17 @@ assert builtins.elem profile ["rom" "linux"];
 assert builtins.isBool runtimeDiagnostics;
 assert !runtimeDiagnostics || profile == "linux"; let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
+  # The static guest SDK build keeps its own target configuration.
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  flight = pkgs.mkCargoPackage {
+  flight = mkCrucibleBinaries {
     pname = "crucible-whitebox-out-resume-flight";
-    version = "0";
-    src = source;
-    inherit cargoDeps;
-    cargoRoot = "crates";
-    cargoBuildCommands = [
-      "build --frozen --offline --release -p crucible-qemu --example crucible-qemu-whitebox-out-resume"
-    ];
-    doCheck = false;
-    installBins = false;
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    builds = [workspaceTests.apacheRelease];
     dontStrip = true;
     dontPatchELF = true;
-    buildDeps = [pkgs.coreutils pkgs.pkg-config];
-    runtimeDeps = [pkgs.sqlite];
-    postInstall = ''
-      binary=$(jq -r \
-        'select(.reason == "compiler-artifact" and .target.name == "crucible-qemu-whitebox-out-resume" and .target.kind == ["example"] and .profile.test == false and .executable != null) | .executable' \
-        "$NIX_BUILD_TOP/cargo-build-messages.jsonl")
-      test -f "$binary"
-      mkdir -p "$out/bin"
-      cp "$binary" "$out/bin/crucible-qemu-whitebox-out-resume"
-    '';
+    executables = {
+      crucible-qemu-whitebox-out-resume = "build --release -p crucible-qemu --example crucible-qemu-whitebox-out-resume";
+    };
   };
   romGuest = pkgs.mkDerivation {
     pname = "crucible-whitebox-out-resume-rom";

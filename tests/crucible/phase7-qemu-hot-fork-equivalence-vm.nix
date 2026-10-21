@@ -43,8 +43,7 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
   # Preserve the full profile's shell text as well as its lane order.
   laneArguments = builtins.concatStringsSep " \\\n  " laneGroups;
 
-  source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
   guest = import ./_nginx-curl-http-200-guest.nix {
     inherit pkgs;
     hotForkEquivalence = true;
@@ -54,39 +53,15 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
     destination = "/scenario.toml";
     text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
   };
-  flight = pkgs.mkCargoPackage {
+  flight = mkCrucibleBinaries {
     pname = "crucible-qemu-hot-fork-equivalence-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    inherit cargoDeps;
-    cargoRoot = "crates";
-    cargoBuildCommands = [
-      "test --frozen --offline --release --no-run -p crucible-daemon --lib"
-    ];
-    doCheck = false;
-    installBins = false;
-    # Preserve the original fixture executable while reusing the guarded Cargo target.
+    builds = [workspaceTests.apacheRelease];
+    # Preserve the original fixture executable.
     dontStrip = true;
     dontPatchELF = true;
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.sed
-
-      pkgs.sqlite
-    ];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-    postInstall = ''
-      binary=$(jq -r \
-        'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-        "$NIX_BUILD_TOP/cargo-build-messages.jsonl")
-      test -f "$binary"
-      mkdir -p "$out/bin"
-      cp "$binary" "$out/bin/crucible-daemon-hot-fork-equivalence-flight"
-    '';
+    executables = {
+      crucible-daemon-hot-fork-equivalence-flight = "test --release -p crucible-daemon --lib";
+    };
   };
   # Device-wait and idle-plan witness rows start just before the hot-fork
   # child's deterministic block-wait stall. Earlier waits would otherwise spend

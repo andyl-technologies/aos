@@ -282,7 +282,7 @@ fn literal_cargo_recipe_authenticates_the_current_equivalence_flight() {
         panic!("equivalence gate must retain its library selector contract");
     };
     let nix = include_str!("../../../tests/crucible/phase7-qemu-hot-fork-equivalence-vm.nix");
-    let recipe = "test --frozen --offline --release --no-run -p crucible-daemon --lib";
+    let recipe = "test --release -p crucible-daemon --lib";
     assert_eq!(nix.matches(recipe).count(), 1);
 
     let failures =
@@ -305,7 +305,7 @@ fn literal_cargo_recipe_authenticates_the_current_equivalence_flight() {
         ),
         (
             "unbound recipe string",
-            nix.replace("cargoBuildCommands = [", "unrelated = ["),
+            nix.replace("executables = {", "unrelated = {"),
         ),
     ] {
         let failures = library_selector_nix_failures(
@@ -1087,28 +1087,36 @@ fn library_selector_nix_failures(
     failures
 }
 
-// mkCargoPackage accepts literal Cargo argument strings rather than shell commands.
-// Restrict quote removal to that list so unrelated Nix strings are not build evidence.
+// mkCargoPackage's `cargoBuildCommands` list and mkCrucibleBinaries'
+// `executables` set hold literal Cargo argument strings rather than shell
+// commands. Restrict quote removal to those bindings so unrelated Nix strings
+// are not build evidence.
 fn cargo_build_commands_test_library(nix: &str, package: &str) -> bool {
-    let Some((_, commands)) = nix.split_once("cargoBuildCommands = [") else {
-        return false;
-    };
-    let Some((commands, _)) = commands.split_once("];") else {
-        return false;
-    };
-
-    commands.lines().any(|line| {
-        let Some(command) = line
-            .trim()
-            .strip_prefix('"')
-            .and_then(|line| line.strip_suffix('"'))
-        else {
-            return false;
-        };
-
+    let tests_library = |command: &str| {
         command.split_whitespace().next() == Some("test")
             && contains_word_sequence(command, &["-p", package, "--lib"])
-    })
+    };
+
+    bound_recipe_lines(nix, "cargoBuildCommands = [", "];")
+        .filter_map(|line| line.strip_prefix('"')?.strip_suffix('"'))
+        .any(tests_library)
+        || bound_recipe_lines(nix, "executables = {", "};")
+            .filter_map(|line| line.split_once(" = \"")?.1.strip_suffix("\";"))
+            .any(tests_library)
+}
+
+/// Yields the trimmed lines of the first `opening` ... `closing` binding.
+fn bound_recipe_lines<'a>(
+    nix: &'a str,
+    opening: &str,
+    closing: &str,
+) -> impl Iterator<Item = &'a str> {
+    nix.split_once(opening)
+        .and_then(|(_, rest)| rest.split_once(closing))
+        .map(|(body, _)| body)
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
 }
 
 fn contains_word_sequence(text: &str, expected: &[&str]) -> bool {

@@ -5,109 +5,17 @@
   mode,
   system,
 }: let
-  repositoryRoot = ../..;
-  repositoryRootString = toString repositoryRoot;
-  campaignRfcDirectory = "${repositoryRootString}/docs/rfcs/0020-crucible-campaigns";
-  requiredCampaignRfcFiles = [
-    "${campaignRfcDirectory}/schema-registry.tsv"
-    "${campaignRfcDirectory}/11-implementation-plan.md"
-  ];
-  daemonScenarioFixture = "${repositoryRootString}/tests/crucible/fixtures/e2e-determinism.scenario.toml";
-  source = builtins.path {
-    path = repositoryRoot;
-    name = "crucible-campaign-model-mode-source";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != ".git"
-      && base != ".crucible"
-      && base != "target"
-      && (
-        pathString
-        == repositoryRootString
-        || pathString == "${repositoryRootString}/crates"
-        || lib.hasPrefix "${repositoryRootString}/crates/" pathString
-        || pathString == "${repositoryRootString}/docs"
-        || pathString == "${repositoryRootString}/docs/rfcs"
-        || pathString == campaignRfcDirectory
-        || builtins.elem pathString requiredCampaignRfcFiles
-        || pathString == "${repositoryRootString}/tests"
-        || pathString == "${repositoryRootString}/tests/crucible"
-        || pathString == "${repositoryRootString}/tests/crucible/fixtures"
-        || pathString == daemonScenarioFixture
-      );
-  };
-  controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
-  cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
-  cargoArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
-  cargoBuildCommands = [
-    "test --frozen --offline --release --no-run -p crucible-campaign --lib --test gate_campaign_model"
-    "test --frozen --offline --release --no-run -p crucible --features test-support --lib"
-    "test --frozen --offline --release --no-run -p crucible-daemon --lib"
-  ];
-  artifacts = pkgs.mkCargoArtifacts {
-    pname = "crucible-campaign-model-mode-artifacts";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = pkgs.mkCargoDummySource {
-      srcRoot = ../../crates;
-      name = "crucible-campaign-model-mode-dummy-source";
-      cargoRoot = "crates";
-    };
-    inherit cargoDeps cargoArtifactContract;
-    cargoArtifacts = controllerArtifacts;
-    cargoEnv = cargoArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    inherit cargoBuildCommands;
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-  };
-  executor = pkgs.mkCargoPackage {
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
+  # The guest runs the release harnesses compiled once by the release family.
+  executor = testGate.mkCrucibleBinaries {
     pname = "crucible-campaign-model-mode-executor";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    inherit cargoDeps cargoArtifactContract;
-    cargoArtifacts = artifacts;
-    cargoEnv = cargoArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    inherit cargoBuildCommands;
-    installBins = false;
-    doCheck = false;
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-    postInstall = ''
-      set -eu
-      messages="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
-      mkdir -p "$out/bin"
-
-      install_test() {
-        target_name="$1"
-        target_kind="$2"
-        destination="$3"
-        matches="$TMPDIR/$destination.matches"
-        jq -r --arg name "$target_name" --arg kind "$target_kind" '
-          select(
-            .reason == "compiler-artifact"
-            and .target.name == $name
-            and (.target.kind == [$kind])
-            and .profile.test == true
-            and .executable != null
-          ) | .executable
-        ' "$messages" | sort -u > "$matches"
-        test "$(wc -l < "$matches" | tr -d ' ')" -eq 1
-        executable=$(cat "$matches")
-        test -x "$executable"
-        cp "$executable" "$out/bin/$destination"
-      }
-
-      install_test crucible_campaign lib campaign-lib
-      install_test gate_campaign_model test gate-campaign-model
-      install_test crucible lib crucible-lib
-      install_test crucible_daemon lib daemon-lib
-    '';
+    builds = [testGate.workspaceTests.apacheRelease];
+    executables = {
+      campaign-lib = "test --release -p crucible-campaign --lib";
+      gate-campaign-model = "test --release -p crucible-campaign --test gate_campaign_model";
+      crucible-lib = "test --release -p crucible --features test-support --lib";
+      daemon-lib = "test --release -p crucible-daemon --lib";
+    };
   };
   toplevel = system.config.system.build.toplevel;
   fleet = testing.mkFleetTest {

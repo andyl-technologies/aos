@@ -5,8 +5,7 @@
   taskIds ? ["T-DET-31" "T-PLUG-14" "T-PLUG-27" "T-GHC-4" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-16"],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
 
   guest = pkgs.mkDerivation {
     pname = "crucible-live-whitebox-doorbell-guest";
@@ -180,46 +179,13 @@
     ];
   };
 
-  flight = pkgs.mkDerivation {
+  flight = mkCrucibleBinaries {
     pname = "crucible-live-whitebox-doorbell-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = crucibleSrc;
-
-    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
-    runtimeDeps = [pkgs.sqlite];
-
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --target-dir "$TMPDIR/live-whitebox-target" \
-            --manifest-path crates/Cargo.toml \
-            -p crucible-qemu \
-            --example crucible-qemu-live-plugin-install \
-            --example crucible-qemu-whitebox-map-validate
-          mkdir -p "$out/bin"
-          cp \
-            "$TMPDIR/live-whitebox-target/release/examples/crucible-qemu-live-plugin-install" \
-            "$TMPDIR/live-whitebox-target/release/examples/crucible-qemu-whitebox-map-validate" \
-            "$out/bin/"
-        '';
-      }
-    ];
+    builds = [workspaceTests.apacheRelease];
+    executables = {
+      crucible-qemu-live-plugin-install = "build --release -p crucible-qemu --example crucible-qemu-live-plugin-install";
+      crucible-qemu-whitebox-map-validate = "build --release -p crucible-qemu --example crucible-qemu-whitebox-map-validate";
+    };
   };
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {

@@ -176,80 +176,26 @@ assert !interruptedTransfer
     then "two-node-envoy-direct${lib.optionalString quietKernelBoot "-quiet-kernel"}"
     else "two-node-http";
   envoyProduct = envoyNetwork || envoyKnownFinding;
-  source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
-  controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
-  cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
-  controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
+  testGate = import ./_test-gate.nix {inherit pkgs lib;};
   campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) " --features packaged-midpoint-flight";
-  campaignFlightBuildCommands = [
-    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process ${campaignFlightFeatures}"
-    # A test-only build does not promise the normal CLI executable.
-    "build --frozen --offline --release -j$NIX_BUILD_CORES -p crucible-cli --bin crucible${campaignFlightFeatures}"
-  ];
-  campaignFlightArtifacts = pkgs.mkCargoArtifacts {
-    pname = "crucible-packaged-campaign-flight-artifacts";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = pkgs.mkCargoDummySource {
-      srcRoot = ../../crates;
-      name = "crucible-packaged-campaign-flight-dummy-source";
-      cargoRoot = "crates";
-    };
-
-    inherit cargoDeps;
-    cargoArtifacts = controllerArtifacts;
-    cargoArtifactContract = controllerArtifactContract;
-    cargoEnv = controllerArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    cargoBuildCommands = campaignFlightBuildCommands;
-
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-  };
   gateway = pkgs.crucible.passthru.debugGateway;
-  flight = pkgs.mkCargoPackage {
+  # The release family compiles both CLI process suites and the CLI once;
+  # the flight copies the selection that matches its feature set.
+  flight = testGate.mkCrucibleBinaries {
     pname = "crucible-packaged-campaign-flight";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-
-    inherit cargoDeps;
-    cargoArtifacts = campaignFlightArtifacts;
-    cargoArtifactContract = controllerArtifactContract;
-    cargoEnv = controllerArtifactContract.cargoEnv;
-    cargoRoot = "crates";
-    cargoBuildCommands = campaignFlightBuildCommands;
-    installBins = false;
-    doCheck = false;
+    builds = [testGate.workspaceTests.apacheRelease];
     # Stack samples need the service's symbol table to name host functions.
     dontStrip = lib.optionalString hostStackSamples "1";
-
-    buildDeps = [pkgs.rust.dev pkgs.pkg-config pkgs.openssl pkgs.protobuf pkgs.sqlite];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
-
+    executables = {
+      campaign-store-process-flight = "test -p crucible-cli --test campaign_store_process --release${campaignFlightFeatures}";
+      campaign-process-flight = "test -p crucible-cli --test campaign_process --release${campaignFlightFeatures}";
+      crucible = "build -p crucible-cli --bin crucible --release${campaignFlightFeatures}";
+    };
     postInstall = ''
-      artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
-      store_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
-      campaign_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_process" and .executable != null) | .executable' "$artifacts")
-      cli_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == false and .executable != null) | .executable' "$artifacts" | sort -u)
-      test -f "$store_test_binary"
-      test -f "$campaign_test_binary"
-      test -f "$cli_binary"
-
-      mkdir -p "$out/bin"
-      cp "$store_test_binary" "$out/bin/campaign-store-process-flight"
-      cp "$campaign_test_binary" "$out/bin/campaign-process-flight"
-      cp "$cli_binary" "$out/bin/crucible"
-
       # Genesis is captured before execution; the immutable blank disk still
       # follows the production store-path contract for guest assets.
       truncate -s 1M "$out/root.raw"
     '';
-
-    passthru = {
-      cargoArtifacts = campaignFlightArtifacts;
-      cargoArtifactContract = controllerArtifactContract;
-    };
   };
   deployment = builtins.toFile "campaign-executor.toml" ''
     schema = "crucible.campaign-packaged-executor"

@@ -3,45 +3,16 @@
   lib,
   ackPollExperiment ? false,
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleBinaries workspaceTests;
   # Reuse the exact gate ROM's busy arithmetic/PIO loop. Only the guest output
   # is needed; this does not run the mapped install gate in place of QemuNode.
   firmwareGuest = (import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;}).passthru.guest;
-  flight = pkgs.mkDerivation {
+  flight = mkCrucibleBinaries {
     pname = "crucible-rom-clamp-stress-flight";
-    version = "0";
-    src = crucibleSrc;
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed];
-    runtimeDeps = [pkgs.sqlite];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo build --frozen --offline --release \
-            --target-dir "$TMPDIR/rom-clamp-target" \
-            --manifest-path crates/Cargo.toml -p crucible-qemu \
-            ${lib.optionalString ackPollExperiment "--features test-support"} \
-            --example crucible-qemu-rom-clamp-stress
-          mkdir -p "$out/bin"
-          cp "$TMPDIR/rom-clamp-target/release/examples/crucible-qemu-rom-clamp-stress" "$out/bin/"
-        '';
-      }
-    ];
+    builds = [(if ackPollExperiment then workspaceTests.apacheReleaseTestSupport else workspaceTests.apacheRelease)];
+    executables = {
+      crucible-qemu-rom-clamp-stress = "build --release -p crucible-qemu ${lib.optionalString ackPollExperiment "--features test-support"} --example crucible-qemu-rom-clamp-stress";
+    };
   };
   comparison = import ./phase2-qemu-rom-clamp-ack-poll.nix {inherit pkgs flight firmwareGuest;};
   testing = import ../../lib/testing {inherit pkgs lib;};
