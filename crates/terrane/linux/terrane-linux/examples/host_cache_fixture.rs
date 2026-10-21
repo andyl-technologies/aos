@@ -18,6 +18,8 @@ mod consumer;
 mod dictionary_custody;
 #[path = "host_cache_fixture/encoded_eviction.rs"]
 mod encoded_eviction;
+#[path = "host_cache_fixture/encoded_read_failure.rs"]
+mod encoded_read_failure;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
@@ -48,6 +50,7 @@ fn main() -> std::process::ExitCode {
             "admit-cancel",
             "cache-admission-handoff",
             "dictionary-custody",
+            "encoded-read-failure",
             "seed-manifest",
             "seed-bad-manifest",
             "seed-unsealed-manifest",

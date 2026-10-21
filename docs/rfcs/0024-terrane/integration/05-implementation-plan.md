@@ -8694,6 +8694,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Encoded read rejection preparation (2026-10-21): cache handoff captures an
+original publisher incarnation before producer funding release. Body and
+one-hop dictionary readers share permanent atomic rejection signals; the read
+path takes no publisher, policy or admission-job mutex. The physical owner
+quarantines the retained original through that healthy observation and faults
+without releasing its allocations, reservations, pins or dependency promises.
+A dictionary may retain producer funding independently of its cached dependent;
+observation does not require or perform a dictionary handoff. Native controls
+cover byte restoration after a failed read and a rewritten source rejected at
+new-consumer preparation, preserving the original dictionary and funding.
+Runtime qualification, cold encoded-quarantine reconciliation and verified
+lower-copy repair remain pending. No T2 task is accepted.
+
 Pending restoration preparation (2026-10-20): populated recovery restores
 supported original pending incarnations under the synchronized bootstrap and
 original Drain context before rebuilding content custody. The acknowledgment

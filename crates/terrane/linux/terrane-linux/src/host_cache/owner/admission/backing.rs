@@ -38,6 +38,9 @@ pub(in crate::host_cache::owner) struct AdmissionJob {
     pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
     /// Records only fully reconciled physical completion.
     pub(super) complete: bool,
+    /// Healthy original publisher observation shared with dependent consumer reads.
+    pub(super) read_observation:
+        Option<Arc<crate::publisher_local::client::EncodedReadObservation>>,
     /// Original synchronized cache custody after producer funding retires.
     pub(super) cached: Option<super::handoff::CachedAdmission>,
     /// Records the first attempted durable reservation mutation.
@@ -121,6 +124,7 @@ impl AdmissionJob {
             dependencies,
             complete: false,
             cached: None,
+            read_observation: None,
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }

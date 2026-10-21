@@ -16,6 +16,7 @@ mod io;
 mod memory;
 pub(in crate::host_cache::owner) mod metadata;
 mod pressure;
+pub(in crate::host_cache::owner) mod read_custody;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
 pub(in crate::host_cache::owner) mod recovery;

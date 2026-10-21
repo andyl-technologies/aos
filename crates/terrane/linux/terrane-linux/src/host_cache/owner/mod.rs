@@ -46,6 +46,7 @@ pub(super) const RETAINED_LEASE_DEADLINE: u64 = i64::MAX as u64;
 pub(super) use index_io::open_regular_at;
 
 pub(crate) use admission::eviction::turn::PublisherEncodedCacheTurn;
+pub(crate) use admission::read_custody::PublisherEncodedReadTurn;
 pub use admission::{
     NativeAdmissionHandoffError, NativeAdmissionHandoffReport, NativeChunkAdmission,
     NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeMetadataAdmission,

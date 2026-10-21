@@ -15,7 +15,7 @@ use crate::{
         snapshot,
     },
     host_quota::synchronized_allocated_bytes,
-    publisher_local::client::PublisherRunningContext,
+    publisher_local::client::{EncodedReadObservation, PublisherRunningContext},
 };
 use std::{
     collections::BTreeMap,
@@ -46,6 +46,7 @@ pub struct NativeAdmissionHandoffReport {
 pub(super) struct CachedAdmission {
     custody: Arc<Mutex<Custody>>,
     running: Arc<PublisherRunningContext>,
+    original: Arc<EncodedReadObservation>,
     token: String,
     hashes: Vec<String>,
     dependencies: Vec<String>,
@@ -60,6 +61,7 @@ impl CachedAdmission {
         owner: &Custody,
         job: &AdmissionJob,
         running: Arc<PublisherRunningContext>,
+        original: Arc<EncodedReadObservation>,
     ) -> io::Result<Self> {
         if !job.complete || job.cached.is_some() || !Arc::ptr_eq(&job.custody, executor.custody()) {
             return Err(invalid(
@@ -67,6 +69,7 @@ impl CachedAdmission {
             ));
         }
         state::check_registration(owner, job)?;
+        original.check_original(&running, &super::eviction::key_for_input(&job.input)?)?;
         // A dictionary can have the same plaintext identity as its dependent
         // chunk while using another actual encoding/inode. Hash subtraction
         // would lose that dependency; the original retained jobs establish it.
@@ -91,6 +94,7 @@ impl CachedAdmission {
         Ok(Self {
             custody: Arc::clone(executor.custody()),
             running,
+            original,
             token: job.token.clone(),
             hashes: job.hashes.clone(),
             dependencies,
@@ -115,8 +119,14 @@ impl CachedAdmission {
     pub(super) fn check(&self, owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
         check_snapshot(owner)?;
         policy::check_bootstrap(owner, &self.running)?;
+        self.original
+            .check_original(&self.running, &super::eviction::key_for_input(&job.input)?)?;
         let producer = format!("admission:{}", self.token);
-        if !job.complete
+        if !job
+            .read_observation
+            .as_ref()
+            .is_some_and(|actual| Arc::ptr_eq(actual, &self.original))
+            || !job.complete
             || !Arc::ptr_eq(&job.custody, &self.custody)
             || job.token != self.token
             || job.hashes != self.hashes
@@ -185,6 +195,7 @@ impl CachedAdmission {
             .ok_or_else(|| invalid("cached source custody absent"))?;
         if !Arc::ptr_eq(&self.custody, &actual.custody)
             || !Arc::ptr_eq(&self.running, &actual.running)
+            || !Arc::ptr_eq(&self.original, &actual.original)
             || self.token != actual.token
             || self.generation != actual.generation
             || self.hashes != actual.hashes
@@ -301,6 +312,19 @@ pub(in crate::host_cache::owner) async fn execute(
     }
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
+    let dependencies = {
+        let job = super::backing::lock(resource)?;
+        let mut dependencies = Vec::new();
+        dependencies
+            .try_reserve_exact(job.dependencies.len())
+            .map_err(io::Error::other)?;
+        dependencies.extend(job.dependencies.iter().cloned());
+        dependencies
+    };
+    for dependency in dependencies {
+        super::read_custody::observe(executor, &dependency)?;
+    }
+    let original = super::read_custody::observe(executor, resource)?;
     let (mut cached, files) = {
         let job = super::backing::lock(resource)?;
         let owner = executor
@@ -308,7 +332,8 @@ pub(in crate::host_cache::owner) async fn execute(
             .lock()
             .map_err(|_| invalid("admission cache custody poisoned"))?;
         reconcile::verify(&owner, &job)?;
-        let cached = CachedAdmission::prepare(executor, &owner, &job, Arc::clone(&running))?;
+        let cached =
+            CachedAdmission::prepare(executor, &owner, &job, Arc::clone(&running), original)?;
         let files = job
             .files
             .iter()

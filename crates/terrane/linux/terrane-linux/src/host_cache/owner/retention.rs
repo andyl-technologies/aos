@@ -307,6 +307,11 @@ impl NativeMetadataOwner {
                 let mut maintenance: Option<(super::publication::eviction::DueRetirements, usize)> =
                     None;
                 loop {
+                    if let Err(error) = executor.quarantine_failed_encoded_reads() {
+                        eprintln!(
+                            "terrane: failed encoded quarantine retained for recovery: {error}"
+                        );
+                    }
                     if let Err(error) = executor.quarantine_failed_reads() {
                         eprintln!(
                             "terrane: failed sealed quarantine retained for recovery: {error}"

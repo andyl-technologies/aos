@@ -261,12 +261,30 @@ def run_dictionary_custody(driver, uuid):
         control("finish")
         lines.until("PASS actual same-bytes rewrite retains original inode and plaintext but refuses a fresh encoded grant at the original admission stamp without policy mutation",
                     timeout=15)
-        changed = dependent_path.stat()
-        driver.require(files(root / "chunks") == canonical
+        control("quarantine")
+        lines.until("READY rewritten encoded original quarantined with dictionary dependency and funding retained", timeout=15)
+        entries = list((root / "quarantine").iterdir())
+        prefix = "encoded." + dependent_path.name + "."
+        driver.require(len(entries) == 1 and entries[0].name.startswith(prefix)
+                       and re.fullmatch("[0-9a-f]{64}", entries[0].name[len(prefix):]),
+                       "rewritten source lacks exact original encoded quarantine name")
+        changed = entries[0].stat()
+        remaining = {name: value for name, value in canonical.items()
+                     if not name.endswith(dependent_digest + ".2")}
+        original_body = next(value for name, value in canonical.items()
+                             if name.endswith(dependent_digest + ".2"))
+        moved = files(root / "quarantine")
+        driver.require(files(root / "chunks") == remaining and not dependent_path.exists()
+                       and list(moved.values()) == [original_body]
+                       and changed.st_nlink == 1 and changed.st_uid == 840
+                       and changed.st_mode & 0o7777 == 0o640
+                       and changed.st_blocks == initial_metadata.st_blocks
                        and (changed.st_ctime_ns, changed.st_mtime_ns) != original_stamp
                        and snapshot.read_bytes() == before_rewrite,
-                       "same-bytes rewrite did not independently preserve original inode, bytes and policy while changing metadata")
+                       "same-bytes refusal lost original encoded inode, bytes, allocation, dictionary or policy")
         print("PASS independent observer verifies unchanged original encoded bytes/inodes, changed timestamps and zero policy effects for the refused fresh grant", flush=True)
+        print("PASS independent observer verifies rewritten encoded original quarantined with dictionary and dependency funding retained", flush=True)
+        control("quarantine-checked")
         lines.until("PASS actual original dictionary and admitted dependent retain dependency protection and refuse dictionary retirement through actual grace; no Ready",
                     timeout=15)
         output, error = process.communicate(timeout=10)

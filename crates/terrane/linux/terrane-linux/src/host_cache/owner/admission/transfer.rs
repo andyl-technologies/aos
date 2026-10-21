@@ -118,6 +118,7 @@ impl TransferredFunding {
         job.directory_progress.clear();
         job.dependencies.clear();
         job.cached = None;
+        job.read_observation = None;
         Ok(())
     }
 

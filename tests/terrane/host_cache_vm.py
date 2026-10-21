@@ -93,7 +93,7 @@ MANIFEST_CASES += [
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
 CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]
-CASES += ["publication-read-failure", "publication-prepare-failure"]
+CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -717,6 +717,54 @@ def admission_cases(helper, uuid):
             process.kill()
             process.wait(timeout=5)
 
+
+
+def encoded_failed_read_case(uuid):
+    """Changes actual encoded bytes and independently checks retained quarantine."""
+    case = "encoded-read-failure"
+    process = controlled_actor(case, "encoded-read-failure", uuid)
+    try:
+        lines = Lines(process)
+        lines.until("READY genuine encoded consumers verified with physical policy held")
+        candidates = list((root(case) / "chunks").glob("*/*"))
+        require(len(candidates) == 1, "encoded failure original inventory differs")
+        canonical = candidates[0]
+        original = canonical.stat()
+        content = canonical.read_bytes()
+        records = (root(case) / "state/cache/records.toml").read_bytes()
+        with canonical.open("r+b") as damaged:
+            damaged.seek(1)
+            damaged.write(bytes([content[1] ^ 1]))
+            damaged.flush()
+            os.fsync(damaged.fileno())
+        process.stdin.write(b"damaged\n")
+        process.stdin.flush()
+        lines.until("READY original encoded failure latched before restoring bytes")
+        with canonical.open("r+b") as restored:
+            restored.write(content)
+            restored.flush()
+            os.fsync(restored.fileno())
+        process.stdin.write(b"restored\n")
+        process.stdin.flush()
+        lines.until("READY actual encoded failed-read quarantine completed with original funding retained")
+        entries = list((root(case) / "quarantine").iterdir())
+        require(not canonical.exists() and len(entries) == 1,
+                "encoded read failure did not quarantine exactly the original")
+        moved = entries[0]
+        actual = moved.stat()
+        prefix = "encoded." + canonical.name + "."
+        require(moved.name.startswith(prefix) and re.fullmatch("[0-9a-f]{64}", moved.name[len(prefix):])
+                and (actual.st_dev, actual.st_ino, actual.st_blocks, actual.st_nlink)
+                == (original.st_dev, original.st_ino, original.st_blocks, 1)
+                and actual.st_uid == 840 and actual.st_mode & 0o7777 == 0o640
+                and moved.read_bytes() == content
+                and (root(case) / "state/cache/records.toml").read_bytes() == records,
+                "encoded quarantine lost original inode, bytes or durable funding")
+        finish_controlled(process, "finish")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 def failed_preparation_case(uuid):
     """Requires source preparation itself to retain a genuine failed-body report."""
@@ -1414,6 +1462,7 @@ def main():
         publication_cases(publisher, uuid)
         failed_read_case(uuid)
         failed_preparation_case(uuid)
+        encoded_failed_read_case(uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without

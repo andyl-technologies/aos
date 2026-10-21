@@ -40,6 +40,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-cancel"
             | "cache-admission-handoff"
             | "dictionary-custody"
+            | "encoded-read-failure"
             | "encoded-eviction"
             | "recover-encoded"
             | "refuse-encoded"
@@ -146,6 +147,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "encoded-eviction" => {
             super::encoded_eviction::run(&owner, &runtime, &inputs, original)?;
+        }
+        "encoded-read-failure" => {
+            super::encoded_read_failure::run(&owner, &runtime, &inputs, original)?;
         }
         "dictionary-custody" => {
             super::dictionary_custody::run(&owner, &runtime, &inputs, original)?;

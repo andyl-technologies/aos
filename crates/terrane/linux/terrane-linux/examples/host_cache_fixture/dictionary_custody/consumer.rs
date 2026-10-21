@@ -217,8 +217,15 @@ pub(super) fn reject_rewritten(
             "rewritten admission refused outside its original stamp check or changed policy: {error:?}"
         )));
     }
-    runtime.block_on(owner.sweep_consumer_leases())?;
     super::emit(
         "PASS actual same-bytes rewrite retains original inode and plaintext but refuses a fresh encoded grant at the original admission stamp without policy mutation",
-    )
+    )?;
+    super::control("quarantine")?;
+    if runtime.block_on(owner.sweep_consumer_leases()).is_ok() {
+        return Err(invalid("rewritten source did not fault its original owner"));
+    }
+    super::emit(
+        "READY rewritten encoded original quarantined with dictionary dependency and funding retained",
+    )?;
+    super::control("quarantine-checked")
 }

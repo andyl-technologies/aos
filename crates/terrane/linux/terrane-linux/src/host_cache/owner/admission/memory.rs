@@ -216,6 +216,7 @@ fn check_parts(
         + super::super::publication::eviction::activity_storage_bytes()
         + super::super::publication::eviction::entry_storage_bytes()
         + super::eviction::storage_bytes()
+        + crate::publisher_local::client::EncodedReadObservation::storage_bytes()
         + super::super::publication::retirement_observation_bytes()
         + size_of::<super::super::publication::RecoveredInlineJob>()
         + size_of::<super::super::consumer::ConsumerJob>()

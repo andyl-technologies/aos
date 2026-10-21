@@ -13,6 +13,7 @@ use crate::{
     },
     host_cache::{NativeChunkSource, NativeHostLayout},
     host_quota::{NativeProject, synchronized_allocated_bytes},
+    publisher_local::client::EncodedReadObservation,
 };
 use rustix::fs::{self, Mode, OFlags};
 use std::{
@@ -34,6 +35,7 @@ pub(in crate::host_cache::owner) struct AdmittedRead {
 
 struct Member {
     job: Arc<Mutex<AdmissionJob>>,
+    observation: Arc<EncodedReadObservation>,
     order: u64,
     identity: Identity,
     length: usize,
@@ -120,8 +122,8 @@ impl AdmittedRead {
             )
         };
         // Canonical open and decompression happen without embedded custody held.
-        let source =
-            NativeChunkSource::open_bounded(&layout, identity, length, final_chunk, limit)?;
+        let source = NativeChunkSource::open_bounded(&layout, identity, length, final_chunk, limit)
+            .inspect_err(|error| reject_read(&members, error))?;
         let read = Self {
             layout,
             source,
@@ -179,7 +181,10 @@ impl AdmittedRead {
     /// Refuses changed native backing, identity or boundary and bounded decode failures.
     pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         self.check_native()?;
-        let bytes = self.source.read_verified_at()?;
+        let bytes = self
+            .source
+            .read_verified_at()
+            .inspect_err(|error| reject_read(&self.members, error))?;
         self.check_native()?;
         Ok(bytes)
     }
@@ -191,7 +196,10 @@ impl AdmittedRead {
     /// boundaries and reads exceeding the configured allocation window.
     pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
         self.check_native()?;
-        let bytes = self.source.read_encoded_at()?;
+        let bytes = self
+            .source
+            .read_encoded_at()
+            .inspect_err(|error| reject_read(&self.members, error))?;
         self.check_native()?;
         Ok(bytes)
     }
@@ -272,8 +280,14 @@ impl AdmittedRead {
     }
 
     fn check_native(&self) -> io::Result<()> {
-        self.layout.recheck()?;
+        for member in &self.members {
+            member.observation.check_readable()?;
+        }
+        self.layout
+            .recheck()
+            .inspect_err(|_| reject_custody(&self.members))?;
         if self.source.handles().count() != self.members.len() {
+            reject_custody(&self.members);
             return Err(invalid("admitted read changed actual member count"));
         }
         for (identity, length, file) in self.source.handles() {
@@ -282,24 +296,56 @@ impl AdmittedRead {
                 .iter()
                 .find(|member| member.identity == *identity && member.length == length)
                 .ok_or_else(|| invalid("admitted read lost original member binding"))?;
-            member.stamp.check(file)?;
-            let metadata = file.metadata()?;
-            if member.inode.0 != self.layout.directory_binding("layout-root")?.0
-                || (metadata.dev(), metadata.ino(), metadata.len()) != member.inode
-                || metadata.uid() != member.uid
-                || metadata.gid() != member.gid
-                || !metadata.is_file()
-                || metadata.nlink() != 1
-                || metadata.mode() & 0o7777 != 0o640
-                || fs::fcntl_getfl(file)?.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
-                || NativeProject::inspect(file)?.project_id != self.project
-            {
-                return Err(invalid(
-                    "admitted consumer changed its original native backing",
-                ));
-            }
+            let checked = (|| {
+                member.stamp.check(file)?;
+                let metadata = file.metadata()?;
+                if member.inode.0 != self.layout.directory_binding("layout-root")?.0
+                    || (metadata.dev(), metadata.ino(), metadata.len()) != member.inode
+                    || metadata.uid() != member.uid
+                    || metadata.gid() != member.gid
+                    || !metadata.is_file()
+                    || metadata.nlink() != 1
+                    || metadata.mode() & 0o7777 != 0o640
+                    || fs::fcntl_getfl(file)?
+                        .intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH)
+                    || NativeProject::inspect(file)?.project_id != self.project
+                {
+                    return Err(invalid(
+                        "admitted consumer changed its original native backing",
+                    ));
+                }
+                Ok(())
+            })();
+            checked.inspect_err(|_| member.observation.reject(1))?;
         }
-        self.layout.recheck()
+        self.layout
+            .recheck()
+            .inspect_err(|_| reject_custody(&self.members))?;
+        for member in &self.members {
+            member.observation.check_readable()?;
+        }
+        Ok(())
+    }
+}
+
+/// Retains ambiguous body/dictionary failures as one rejected verification set.
+fn reject_read(members: &[Member], error: &io::Error) {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::OutOfMemory | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+    ) {
+        return;
+    }
+    // A complete decode depends on both original members. If the decoder cannot
+    // attribute a failure, withhold both; neither allocation or pin is released.
+    for member in members {
+        member.observation.reject(2);
+    }
+}
+
+fn reject_custody(members: &[Member]) {
+    for member in members {
+        member.observation.reject(1);
     }
 }
 
@@ -323,7 +369,15 @@ fn member(
     let Input::Chunk { descriptor, .. } = &job.input else {
         return Err(invalid("admitted read member is not a chunk"));
     };
-    let stamp = job.files[0].read_stamp(owner)?;
+    let observation = Arc::clone(
+        job.read_observation
+            .as_ref()
+            .ok_or_else(|| invalid("admitted read lacks original publisher observation"))?,
+    );
+    observation.check_readable()?;
+    let stamp = job.files[0]
+        .read_stamp(owner)
+        .inspect_err(|_| observation.reject(1))?;
     let file = job.files[0]
         .readonly
         .as_ref()
@@ -331,6 +385,7 @@ fn member(
     let metadata = file.metadata()?;
     Ok(Member {
         job: Arc::clone(resource),
+        observation,
         order: job.order,
         identity: TERRANE_V1
             .from_digest(IdentityKind::Chunk, descriptor.digest())

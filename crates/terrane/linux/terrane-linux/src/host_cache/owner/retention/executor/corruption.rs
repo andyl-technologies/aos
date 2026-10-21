@@ -13,6 +13,33 @@ pub(crate) struct PublisherCorruptionTurn<'turn> {
 }
 
 impl NativeOwnerExecutor {
+    /// Shares the original executor's report flag without exposing policy custody.
+    pub(in crate::host_cache::owner) fn encoded_failure_notifier(
+        &self,
+    ) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.encoded_failures)
+    }
+
+    /// Processes encoded reports without scanning healthy admission jobs.
+    ///
+    /// # Errors
+    /// Refuses absent Running custody, lost original resources or uncertain IO.
+    pub(in crate::host_cache::owner) fn quarantine_failed_encoded_reads(
+        &mut self,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        if !self
+            .encoded_failures
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(());
+        }
+        let running = self.running.as_ref().cloned().ok_or_else(|| {
+            io::Error::other("encoded read failure lacks original Running custody")
+        })?;
+        super::super::super::admission::read_custody::quarantine(self, running)
+    }
+
     /// Registers original native backing before any external read can begin.
     ///
     /// # Errors
