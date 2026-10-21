@@ -1691,9 +1691,10 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   publish segments as trace leaves, and resume from chain positions.
   Executor and observer logs seal into per-attempt directories, and
   prepared-result journals own copies of the segments their results
-  reference. Checkpoint- and fork-offset seals and chain-position resume
-  remain open; scheduler continuations reference the scheduler log's sealed
-  segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
+  reference. Seal points depend only on size and the modeled attempt stop
+  (amended CCOMP-26), so no checkpoint- or fork-offset seal is required;
+  chain-position resume moves to T-CAM-10.3. Scheduler continuations
+  reference the scheduler log's sealed segments (T-CAM-4.16). Resolved-effect traces seal into trace segments by
   size only, checkpoints carry trace positions, and exact closures retain the
   referenced trace segments (CCOMP-31).
 - [ ] **T-CAM-4.12** Convert finding replay captures, CLI explanation,
@@ -1716,7 +1717,8 @@ races a live generation. A daemon lifecycle adapter now implements fresh,
   active persistent recovery actions, or the newest emitted tick can still
   select, and checkpoints that window in production fault-runtime version 8
   (CMEAS-26). The issued QEMU action ledger still grows with the run until
-  the plugin reports rule retirement.
+  the plugin reports rule retirement. T-CAM-10.1 supersedes the scheduler
+  staging part of this task.
 - [ ] **T-CAM-4.14** Retain reproduction schedules as sealed schedule
   segments under a manifest, reference them from campaign reproduction
   records, prepared-result journals, and the finding and occurrence object
@@ -2297,7 +2299,8 @@ automated Phase 6 and Phase 7 evidence recorded below.
   objects share backing across siblings and through child admission. QEMU fault
   fingerprint and sequence maps also share immutable backing. Each child
   restores its own mutable scheduler, fault evaluator, adapter, and event
-  ledgers. The complete clone-cost gate remains open.
+  ledgers. The complete clone-cost gate remains open; T-CAM-10.1 supersedes
+  the clone part of this task, and the pairing part is unchanged.
 - [ ] **T-CAM-7.4** Implement atomic multi-node world fork with failed-node and
   non-VM I/O-node semantics.
 - [x] **T-CAM-7.5** Integrate `HotCheckpointManager`, hotness scoring,
@@ -2674,7 +2677,139 @@ manual-bundle, trusted-signers, legacy evidence, or compatibility input path.
 `gate:campaign-release-acceptance`, `gate:campaign-envoy-network-five-vm`, and
 `gate:e2e-determinism`.
 
-## 11.12 Implementation completion definition
+## 11.12 Phase 10 — Run Arena and Run Journal
+
+Primary crates: `crucible`, `crucible-api`, `crucible-daemon`, `crucible-qemu`,
+and `crucible-cas`. [§16](16-run-arena-and-run-journal.md) and
+[§16a](16a-run-authority-and-restart.md) define the architecture. Tasks are
+listed in implementation order ([§16.11](16-run-arena-and-run-journal.md#1611-staged-implementation)).
+Each task is independently useful and keeps every existing gate green. New
+test contracts register exact selectors in
+`crates/crucible-harness/src/campaign_gates.rs` and the matching
+`tests/crucible/*.nix` aggregate, with their evidence keys, when they land.
+
+- [ ] **T-CAM-10.0** Give every paused attempt-state record an explicit `Raw`
+  or `Promoted` phase in a new record version; admit resume only from
+  `Promoted`; and return the retryable `not-current(promotion-pending)`
+  disposition for submit and resume while a record is raw or promoting, with
+  bounded coordinator backoff. Fixes the live admission defect of
+  [§16.13](16-run-arena-and-run-journal.md#1613-known-defects-found-during-the-survey)
+  and is the prerequisite of T-CAM-10.8. Acceptance: a component-contract test
+  submits and resumes a raw and a promoting record and observes no state change
+  and no lost promotion work.
+- [ ] **T-CAM-10.3** Merge the scheduler event log and the executor attempt
+  logs into one Run Journal per run, in sub-steps that each keep gates green:
+  (a) maintain the entry-prefix digest and a running causal digest on append
+  and switch replay, observation-stop, and checkpoint proofs to O(1)
+  comparisons, bumping the persisted proof and observation formats in one
+  commit; (b) make the scheduler the single writer, give the driver, observer,
+  session, debug, and finding consumers journal handles, delete the
+  `resume_state` copy, `from_entries` re-seal, `move_to_store`, and
+  `complete_log`, reference inherited prefixes by position, and seal into a
+  durable executor segment store with seal receipts and once-only quota
+  charging (single-scheduler continuation version 11); (c) list segments as
+  `ContentId(Trace, _)` in closure version 12, trust seal receipts at L2 and
+  L3, and reference resolved-effect trace segments at capture instead of
+  reading them; (d) stop storing per-append segment objects and per-quantum
+  appended bytes and text, keeping `EventLogOffset` as a hash-only projection,
+  and update the event-log needle checks in the same commit; (e) bound the
+  condition prefix by completing T-CAM-3.7, so restore authenticates fold state
+  instead of refolding and the debug condition prefix is bounded; (f) root
+  segments as RJRNL-8 requires, sweep unrooted segments at startup, remove
+  per-attempt driver and observer directories, and add long-horizon
+  flat-memory and capture-cost assertions to `gate:campaign-performance` and
+  `gate:exact-closure-streaming`. Depends on T-CAM-3.7; provides the reader
+  the remaining items of T-CAM-4.12, T-CAM-4.15, and T-CAM-4.16 need.
+- [ ] **T-CAM-10.2** Split the production lifecycle loop by the five classes of
+  [§16.4](16-run-arena-and-run-journal.md#164-splitting-the-lifecycle-loop):
+  (a) regroup the fields into `RunArena`, `RunInputs`, `RunCaches`,
+  `RunAuthority`, and `RunTransients` as a pure move, record the planned
+  decomposition of `inner`, and add an exhaustive-destructuring test that fails
+  to compile when a field is unclassified; (b) introduce `FrozenRunArena` and
+  the exact and hot tier attachments, turn `into_restore_parts` and
+  `try_clone_for_branch` into moves or clones of the frozen arena, and have the
+  closure encoder and decoders take the frozen arena with current closure bytes
+  unchanged; (c) add one `freeze(purpose)` with the shared QEMU harvest,
+  recording the kind of every harvested value; (d) add `settle(purpose)` and
+  `unsettled(purpose)` with retry-after-quantum and blocked classes, keeping
+  `exact_checkpoint_ready` as a thin wrapper until its fakes migrate.
+- [ ] **T-CAM-10.1** Replace staging and rollback clones and encode-to-compare
+  checks with persistent values: give `History` a persistent chunk index;
+  move trigger-action vectors and `recorded_controls` into `History`; make the
+  fault runtime's issued and committed QEMU action ledgers persistent maps, or
+  retire them when the plugin reports rule retirement; share the trace writer's
+  sealed references and tail chunks; share immutable 9p trees by reference
+  with path-copy updates; make block overlay and connection maps persistent;
+  and replace canonical-encode equality with generation tokens plus
+  structural comparison. Commit and rollback stay a value swap, the
+  poison-after-shared-commit rule of the 9p path is unchanged, clone-time
+  resource errors move to append-time charges so a clone cannot fail, and
+  equality proofs return the same answers as the full comparison. Supersedes
+  the staging part of T-CAM-4.13 and the clone part of T-CAM-7.3. Acceptance:
+  the long-horizon copy-cost contract of
+  [§16.11](16-run-arena-and-run-journal.md#1611-staged-implementation) in
+  `gate:host-clone-cost`, with new evidence keys beside the retained
+  sibling-sharing evidence, whose private-ledger evidence is redefined as
+  isolation rather than eager copying.
+- [ ] **T-CAM-10.4** (a) Add the StateRoot v0 probe to the hot-fork equivalence
+  matrix as an observation and remove every tier-variant field it finds;
+  (b) define the table, canonical codec, Merkle tree, and content-defined
+  chunking primitives in an Apache crate with no QEMU dependency, with every
+  subsystem first an opaque-record table; (c) convert subsystems to structured
+  tables one at a time (recorded controls with prefix references in place of
+  embedded schedules, service states and failed host I/O, trigger and
+  assertion state, scheduler ledgers, fault ledgers and runtime, and the
+  modeled state inside `QemuNode`), removing each `Arc<Mutex<_>>` alias and
+  re-encoding the JSON network adapter checkpoint as it lands; (d) add the
+  read-only table browser and root diff; (e) make StateRoot equality a failing
+  check in `gate:hot-fork-equivalence` once the probe reports no variance.
+- [ ] **T-CAM-10.5** Specify and register the arena manifest and the closure
+  version that carries it, with generations only in the tier attachment, and
+  unify `ClosureManifest` with `ExactCheckpointClosureRecord`; prove restore
+  and StateRoot equivalence by capturing both closure versions from one frozen
+  arena in tests, then switch production with current-only decoders and retire
+  the superseded registry rows; place only chunks dirty against the parent
+  manifest, traverse table trees in GC, and add persist-bytes checks.
+- [ ] **T-CAM-10.6** (a) Record every run's resources in a durable authority
+  journal and reconcile it at startup before any native namespace is retired,
+  which fixes the unread `run-state.json` and the `RootNotEmpty` refusal after
+  a crash; (b) after T-CAM-10.2, describe every authority resource by a
+  resource slot with kind, mode, dependencies, recipe, and expected proof,
+  rebind in one verified transaction, tear down in reverse dependency order,
+  and prove every slot reaped or quarantined at run end.
+- [ ] **T-CAM-10.8** Add the pool's `draining` phase and the checkpoint-drain
+  stop with per-phase deadline semantics; demote published-boundary hot
+  sources to exact fallbacks under source promotion keys (after T-CAM-10.9's
+  exact-source routing); require transferred roots to pass the replay oracle at
+  the destination; and add the restart StateRoot-sequence test to
+  `gate:campaign-operational-continuity` after T-CAM-10.4. Depends on
+  T-CAM-10.0 and T-CAM-10.6 (a).
+- [ ] **T-CAM-10.7** Add the read-only Campaign Arena view through an
+  in-process executor RPC with per-source generation stamps and bounded
+  answers, then, after T-CAM-10.4 and T-CAM-10.5, the trait-backed evicting
+  spill cache for sealed chunks.
+- [ ] **T-CAM-10.9** Resolve the survey defects no other Phase 10 task owns:
+  route exact-resume attempts through the hot-first router so demanded
+  `ExactCheckpoint` hot-fork sources are captured and used, with a
+  `gate:hot-fork-equivalence` test that an attempt resumed from a retained
+  exact source matches exact resume (this item lands before T-CAM-10.8's
+  exact demotion); and make production debug goto restore the nearest exact
+  root and replay only the suffix, keeping the candidate and verifier pairing
+  and verifying against live evidence, with resident debug runtime evidence
+  bounded at 4,096 samples and older samples sealed (RFC-0010
+  `gate:replay-oracle` for DBG-14). The stale numbers in §04a and §05 were
+  corrected with the chapter 16 revision.
+
+**Gates:** `gate:campaign-performance`, `gate:host-clone-cost`,
+`gate:hot-fork-equivalence`, `gate:hot-fork-isolation`,
+`gate:exact-closure-streaming`, `gate:campaign-replay`,
+`gate:content-address`, `gate:attempt-idempotence`,
+`gate:control-responsiveness`, `gate:campaign-store-composition`,
+`gate:campaign-store-equivalence`, `gate:campaign-cold-continuity`,
+`gate:campaign-operational-continuity`, `gate:campaign-component-contract`,
+`gate:e2e-determinism`, `gate:license-boundary`, and `gate:abi-conformance`.
+
+## 11.13 Implementation completion definition
 
 This RFC is implemented only when:
 
@@ -2703,7 +2838,7 @@ This RFC is implemented only when:
   authenticated evidence;
 - every required gate is green with no alternate compatibility runtime.
 
-## 11.13 Requirement and schema traceability
+## 11.14 Requirement and schema traceability
 
 The authoritative mapping in [`requirement-traceability.tsv`](requirement-traceability.tsv)
 names an implementing task and executable gate for each normative
@@ -2717,13 +2852,15 @@ traceability records:
 | `SEL-1..21` | 2 | typed choice, ABI conformance, end-to-end determinism |
 | `GUIDE-1..32` | 3, 4 | lazy frontier, campaign statistics, campaign replay |
 | `LAZY-1..48`, `LAZY-54` | 4 | lazy frontier, attempt idempotence, campaign replay |
-| `CCOMP-1..30` | 0, 4, 8 | component contract, control responsiveness, attempt idempotence, ABI conformance |
+| `CCOMP-1..34`, `CCOMP-36`, `CCOMP-37`, `CCOMP-39`, `CCOMP-42` | 0, 4, 8, 10 | component contract, control responsiveness, attempt idempotence, ABI conformance |
 | `HFORK-1..24` | 6, 7 | hot-fork equivalence/isolation/scaling, world-fork atomicity, ABI/license |
-| `CSTORE-1..28` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
+| `CSTORE-1..31` | 1, 5 | store equivalence, store composition, exact-closure streaming, continuity |
 | `CAPI-1..14` | 8 | CLI/API contracts, continuity, campaign replay |
-| `CMEAS-1..22` | 3, 8 | campaign model, replay, ABI conformance |
+| `CMEAS-1..29`, `CMEAS-31`, `CMEAS-33`, `CMEAS-36`, `CMEAS-37` | 3, 4, 8 | campaign model, replay, ABI conformance |
 | `CSEC-1..12` | 1–9 | license boundary, ABI conformance, isolation, store equivalence |
-| `CPERF-1..10` | 4–7, 9 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `CPERF-1..11` | 4–7, 9, 10 | branch-point model, lazy frontier, hot-fork scaling/equivalence, exact-closure streaming |
+| `ARENA-1..33` | 10 | hot-fork equivalence/isolation, exact-closure streaming, performance, host clone cost, content address, operational and cold continuity, store composition, license boundary |
+| `RJRNL-1..11` | 10 | campaign replay, content address, attempt idempotence, cold continuity, control responsiveness |
 
 The executable traceability check required by T-CAM-0.4 must require one row per
 requirement ID, name at least one implementing task and test for each, reject

@@ -56,11 +56,14 @@ segment.
   state of [§15.4](#154-bounded-evaluation-state), independent of the number of
   sealed segments.
 - **[CCOMP-26]** The executor MUST seal the open tail before an append would
-  make its encoding exceed 8 MiB, at every checkpoint or fork offset, and at
-  the attempt stop. A sealed segment MUST NOT exceed 16 MiB encoded, and a
-  single entry whose encoding exceeds 8 MiB MUST fail the attempt closed.
-  Seal points MUST be a pure function of the attempt's entry sequence and its
-  checkpoint offsets, so the same execution path yields the same segments.
+  make its encoding exceed 8 MiB and at the attempt's modeled stop, and for no
+  other reason. A sealed segment MUST NOT exceed 16 MiB encoded, and a single
+  entry whose encoding exceeds 8 MiB MUST fail the attempt closed. Seal points
+  MUST be a pure function of the attempt's entry sequence and its modeled stop,
+  so the same execution path yields the same segments: checkpoint, pause, fork,
+  retention, and materialization decisions MUST NOT seal. A checkpoint or fork
+  carries the open tail by value ([CCOMP-33]), and a log restored or forked
+  from it MUST seal where the uninterrupted log would.
 - **[CCOMP-27]** Determinism, replay, and measurement comparisons MUST compare
   entries, never segment boundaries or chain hashes. Two executions whose
   entries are identical but whose segment boundaries differ are equivalent.
@@ -560,11 +563,14 @@ The single scheduler's own event log, which a scheduler continuation formerly
 embedded entry by entry, now uses the attempt segment format of
 [§15.2](#152-attempt-segments). The log keeps its per-append binary segments,
 which chain into its offset ([OBS-17]), and also seals its entries into
-attempt-format segments under the attempt writer's rule: before an entry
-would make the open tail's encoding exceed 8 MiB, and for no other reason.
-Sealed segments are stored in the scheduler's segment store under their
-content hash, so seal points depend only on the entry sequence and a
-restored log seals where the uninterrupted log would.
+attempt-format segments under the attempt writer's rule of [CCOMP-26]: before
+an entry would make the open tail's encoding exceed 8 MiB and at the modeled
+attempt stop, and for no other reason. A checkpoint or fork never seals; it
+carries the open tail. Sealed segments are stored in the scheduler's segment
+store under their content hash, so seal points depend only on the entry
+sequence and a restored log seals where the uninterrupted log would.
+[§16.5](16-run-arena-and-run-journal.md#165-run-journal) merges this log and
+the executor's attempt logs into one Run Journal under the same rule.
 
 ```text
 continuation event log (single-scheduler continuation v10):

@@ -594,6 +594,167 @@ This preserves the executor's ability to publish immutable content without
 granting it campaign mutation authority and gives direct and loopback paths the
 same canonical completion boundary.
 
+### D-40: Run state has one owner, named the Run Arena, and one event history, named the Run Journal
+
+A run's modeled host state belongs to one Run Arena of typed tables, and its
+event entries belong to one append-only segmented Run Journal. Exact capture,
+hot fork, persist, restore, introspection, and graceful restart are operations
+over those two owners. The campaign-level counterpart is the Campaign Arena.
+The names are fixed so code, metrics, and documentation share one vocabulary.
+
+Rejected: keeping the exact checkpoint set, the hot-fork continuation, and the
+closure wire as separately gathered representations of one field set, and
+keeping per-consumer event-log copies.
+
+### D-41: The arena architecture is two chapters of this RFC
+
+The Run Arena and Run Journal change how the executor realizes the tiers,
+checkpoints, and logs that this RFC already defines, and they reuse its
+requirements, gates, and task plan. They are specified in
+[§16](16-run-arena-and-run-journal.md), with the Run Authority, graceful
+restart, migration, spill cache, and Campaign Arena in
+[§16a](16a-run-authority-and-restart.md), rather than in a separate RFC.
+
+### D-42: The arena is built in this repository on safe Rust, extending its persistent collections
+
+Hot tables use persistent collections with structural sharing, built by
+extending the repository's `History` and `PersistentSet` first: `History`'s flat
+sealed-chunk index becomes a persistent tree, and a persistent ordered map
+follows the same pattern. Growing records use chunked tables over the existing
+content store; identity comes from canonical chunks and the StateRoot, never
+from in-memory node shapes. An evicting spill cache may use a pure-Rust
+embedded store behind a trait.
+
+Rejected: adding a third-party persistent-collection dependency without a
+separate decision (`imbl`, for example, is MPL-2.0); adopting an
+entity-component system, whose snapshots copy state and whose entity IDs are
+world-local; and using a key-value store as the arena, which provides rollback
+but not cheap writable forks and would duplicate identity computation.
+
+### D-43: Memory-mapped and pointer-persistent stores are excluded
+
+LMDB-style memory-mapped environments require `unsafe` at the call site and a
+C dependency, and they make physical layout part of the state. Persistent-memory
+heaps and process-fork snapshots of the daemon have the same problems. None is
+used for arena state.
+
+### D-44: Journal seal points depend only on size and the modeled stop
+
+A Run Journal, and every attempt log, seals before an entry would push its tail
+past 8 MiB and at the attempt's modeled stop, and for no other reason. A capture
+position names the sealed prefix and carries the open tail, at most 8 MiB, by
+value outside the chain; a restored or forked journal seals where the
+uninterrupted journal would. [CCOMP-26] is amended to this rule and [RJRNL-5]
+applies it.
+
+Rejected: sealing at checkpoint and fork offsets. Segment identities reach
+campaign observations through measurement evidence, so offset seals would make
+observation bytes depend on executor pause and fork decisions ([CCOMP-21]),
+and undoing them would need re-segmentation at publication, which [RJRNL-6]
+forbids.
+
+### D-45: The per-append offset chain remains a hash-only projection
+
+`EventLogOffset` ([OBS-17]) stays an RFC-0010 evidence identity, maintained by
+hashing each append's entry material on append. The per-append segment
+objects, the per-quantum appended bytes, and the text view are no longer
+stored. No RFC-0010 requirement changes.
+
+Rejected: retiring the offset chain, which would change RFC-0010 OBS-17 and bump
+the observation and materialized-state schemas for no capture benefit; and
+keeping the per-append objects, which no reader decodes.
+
+### D-46: A sealed segment has one identity in one durable executor store
+
+Every placement of a journal segment uses `ContentId(Trace,
+ATTEMPT_LOG_SEGMENT_SCHEMA)`: continuation references, native-catalog keys, the
+closure's segment list, prepared-result journals, trace leaves, and
+campaign-root placements, where segments are `Trace` objects deduplicated with
+trace leaves. The executor segment store synchronizes each segment before its
+seal receipt, survives restart, charges each distinct segment once, and is
+swept of unrooted segments at startup. L2 and L3 trust its receipts. State and
+equivalence identities use the running entry-prefix digest
+`H("crucible.run-journal.entry-prefix.v1", digest_(n-1), u64be sequence, entry
+content_hash)`, which replaces the count-prefixed savepoint, observation, and
+causal digests with version bumps
+([§16.5](16-run-arena-and-run-journal.md#165-run-journal)).
+
+Rejected: keeping a bare `ContentHash` at L2 and `ContentId(DeviceState, _)` at
+L3 beside the trace identity, which forces publication to re-hash and re-read
+every segment; and digests that hash the entry count first, which force a
+rescan of the whole log for every proof.
+
+### D-47: Freeze refusal is reported per purpose
+
+A run exposes `unsettled(purpose)` for exact checkpoint, hot fork, persist, and
+source retention, returning typed reasons classed as retry-after-quantum or
+blocked, and a separate side-effecting `settle(purpose)` that runs first.
+Purpose-specific admissibility conditions are reported through the same
+predicate ([ARENA-9]).
+
+Rejected: one purpose-free predicate. Exact capture resumes publication states
+that hot fork refuses, and source retention adds admissibility conditions that
+are not transients, so a single predicate either refuses valid captures or
+admits invalid ones.
+
+### D-48: StateRoot is a BLAKE3 Merkle root at settled boundaries, gated after a probe
+
+Arena hashes are BLAKE3 with domain tags and length-prefixed fields. Chunks and
+table-tree nodes are `merkle-node` objects in the content store. Table roots are
+Merkle trees over chunk descriptors (fixed fanout for append-only tables,
+content-defined for keyed tables), so an update recomputes one path. Tables that
+already have a segmented form reuse it. A normative strip list removes
+tier-variant fields, and the StateRoot is defined only at settled boundaries.
+A StateRoot v0 probe over today's encodings precedes any StateRoot gate, and
+transitional opaque-record tables let subsystems convert one at a time
+([§16.3](16-run-arena-and-run-journal.md#163-run-arena-model)).
+
+Rejected: a flat ordered descriptor list, which makes every update O(chunks);
+a root at every quantum boundary, which would include transients; and gating
+on StateRoot equality before the probe shows which fields vary by tier.
+
+### D-49: Clone-cost acceptance is a deterministic copied-bytes ratio
+
+T-CAM-10.1 is accepted by a deterministic exact-selector test that records bytes
+copied by staging and rollback per quantum at 10, 50, and 90 percent of a
+horizon of at least 10^6 journal entries ending with a long phase after a deep
+branch point, and requires the later samples to stay within 1.25 times the
+first. It is registered under `gate:host-clone-cost` with new evidence keys,
+beside the existing sibling-sharing evidence. Commit and rollback stay value
+swaps, resource charging moves to append time, and equality proofs become
+structural or generation-token comparisons.
+
+Rejected: wall-clock trends alone, which are noisy and host-dependent; and
+treating the sibling-sharing gate as evidence of long-horizon flatness.
+
+### D-50: Restart containment is journaled, and drain is a pool phase
+
+Each run records its resources and their live identities in a durable authority
+journal that startup reconciles before retiring any native namespace. Resource
+slots use a closed kind vocabulary with `mode` and `dependency` fields, and
+teardown runs in reverse dependency order. Graceful restart adds a `draining`
+pool phase with deadline semantics per ledger phase, requires promotion-only
+resume admission with an explicit Raw/Promoted phase first, renames the
+demotable hot sources to published-boundary sources tracked under source
+promotion keys, and requires a transferred root to pass the replay oracle at
+the destination unless OQ-9 decides otherwise
+([§16a](16a-run-authority-and-restart.md)).
+
+Rejected: in-process quarantine by leak or retry thread, which protects nothing
+after a crash; and draining by cancellation, which discards running work.
+
+### D-51: Debug reposition restores the nearest root, and exact sources are reachable
+
+Production debug `goto` restores the nearest exact root at or before its target
+and replays only the suffix, keeping the candidate and verifier pairing and
+verifying against live evidence, with bounded resident evidence ([ARENA-32]).
+Exact-resume attempts route through the hot-first router so demanded
+`ExactCheckpoint` sources are captured and used ([ARENA-33]), which exact
+source demotion depends on.
+
+Rejected: deleting the exact-source path, which would leave exact demotion of
+hot sources without a restore-to-template route.
+
 ## Deliberately rejected representations
 
 The following patterns are outside the design even if they appear convenient
@@ -614,7 +775,11 @@ for a prototype:
 - claims of exhaustive coverage for a progressively widened domain without a
   separately proven finite closure;
 - treating a hot process image as the only durable representation of a branch;
-  and
+- a consumer-owned complete copy of a run's event log, or a checkpoint that
+  embeds log entries instead of referencing a journal position;
+- journal or attempt-log seal points chosen by checkpoint, pause, fork, or
+  retention decisions;
+- persisting live descriptors, process IDs, or host paths as run state; and
 - linking the Apache host against QEMU to accelerate the fork path.
 
 ## Open questions to resolve by measurement
@@ -704,6 +869,41 @@ inputs.
 Evidence required: replay and audit exercises showing which facts are needed to
 explain a result without making worker scheduling part of scenario identity.
 
+### OQ-9: How should graceful restart pay the promotion replay floor?
+
+Resume requires a promoted root, and promotion compares each live node of the
+paused root, one at a time, with an independently realized thin path replayed
+from baked genesis to the boundary. A checkpoint-drain restart therefore costs
+one replay from scenario genesis per node of each paused attempt
+([§16a.5](16a-run-authority-and-restart.md#16a5-restart-cost-floor)). The same
+question decides whether a root transferred to another host must be promoted
+again there. The options are:
+
+1. keep the floor and accept the prefix replay at startup;
+2. promote stride checkpoints in the background while the attempt runs, so a
+   drained root needs only a suffix comparison against a promoted ancestor;
+   this is the recommended option and requires defining promotion by suffix in
+   §05.9 and §04a; or
+3. accept a closure produced by the same daemon identity on the same host
+   without a new comparison, which relaxes the rule that persisted bytes alone
+   cannot authorize a restore.
+
+Evidence required: restart time and guest replay time against attempt length
+for each option, and a soundness argument for options 2 and 3 reviewed against
+the replay-oracle contract.
+
+### OQ-10: When should the ledger and journals move into Campaign Arena tables?
+
+The Campaign Arena starts as a read-only view over the campaign ref, the
+assignment ledger, pins and fallbacks, the hot pool, prepared-result journals,
+Run Journals, and authority journals. Moving the ledger and journal indexes into arena tables would
+give the executor's operational state one versioned structure, at the cost of a
+storage migration of crash-critical records.
+
+Evidence required: the read-only view in production use, recovery tests at
+every 04a ordering boundary on the table-backed form, and a measured benefit
+in restart time or code removed.
+
 ## Resolution ownership
 
 Ownership names subsystem roles rather than individuals so the plan remains
@@ -719,6 +919,8 @@ valid across staffing changes:
 | OQ-6 | Campaign projector/supervisor maintainers | T-CAM-4.5, T-CAM-4.6 |
 | OQ-7 | Campaign store maintainers | T-CAM-5.1, T-CAM-5.5, T-CAM-5.7 |
 | OQ-8 | Campaign model, API, and operations maintainers | T-CAM-0.3, T-CAM-1.1, T-CAM-3.4 |
+| OQ-9 | Executor recovery and replay-oracle maintainers | T-CAM-10.8 |
+| OQ-10 | Executor recovery and campaign store maintainers | T-CAM-10.7 |
 
 ## Review exit criterion
 
