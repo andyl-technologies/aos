@@ -319,17 +319,21 @@ fn admitted_create(
     scope: ControllerRequestScopeV1,
 ) -> Result<(OperationPlan, PublicProjectionPlanV1), Box<dyn Error>> {
     let key = format!("q04-negative-flight-{tag}").into_bytes();
-    let descriptor = ObjectDescriptor {
-        media_type: "application/vnd.aos.vm-negative-fixture".to_owned(),
+    let policy = ObjectDescriptor {
+        media_type: "application/vnd.aos.sandbox.policy.v1+cbor".to_owned(),
         sha256: vec![tag; 32],
         encoded_size: 1,
         ..Default::default()
     };
+    let specification = ObjectDescriptor {
+        media_type: "application/vnd.aos.sandbox.spec.v1+cbor".to_owned(),
+        ..policy.clone()
+    };
     let request = CreateSandboxRequest {
         project_id: PROJECT.as_bytes().to_vec(),
         expected_project_resource_version: vec![0xa1; 32],
-        specification: Some(descriptor.clone()).into(),
-        requested_policy: Some(descriptor.clone()).into(),
+        specification: Some(specification.clone()).into(),
+        requested_policy: Some(policy.clone()).into(),
         idempotency_key: key.clone(),
         operation_timeout: Some(Duration {
             nanoseconds: 1,
@@ -374,8 +378,8 @@ fn admitted_create(
                     digest,
                 ),
             desired: Some(SandboxDesiredState {
-                specification: Some(descriptor.clone()).into(),
-                requested_policy: Some(descriptor.clone()).into(),
+                specification: Some(specification).into(),
+                requested_policy: Some(policy.clone()).into(),
                 lifecycle: DesiredLifecycle::DESIRED_LIFECYCLE_STOPPED.into(),
                 generation: 1,
                 ..Default::default()
@@ -389,7 +393,7 @@ fn admitted_create(
                 ..Default::default()
             })
             .into(),
-            effective_policy: Some(descriptor).into(),
+            effective_policy: Some(policy).into(),
             created_at: Some(timestamp.clone()).into(),
             updated_at: Some(timestamp).into(),
             ..Default::default()
@@ -437,5 +441,43 @@ impl SingleNodeEffectExecutor for NoExternalEffects {
         Err(EffectFailure::Permanent(
             "VM fixture never applies positive effects".to_owned(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn negative_fixture_preserves_checked_public_descriptor_roles() {
+        let scope = ControllerRequestScopeV1::new(SCOPE_DIGEST).unwrap();
+        let (admission, projection) = admitted_create(
+            OperationId::from_bytes([0x60; 16]),
+            SandboxId::from_bytes([0xe0; 16]),
+            0x60,
+            scope,
+        )
+        .unwrap();
+
+        let checked = projection.checked_record().unwrap();
+        let PublicProjectionResourceV1::Sandbox(sandbox) = checked.resource() else {
+            panic!("sandbox projection");
+        };
+        let desired = sandbox.desired.as_option().unwrap();
+        assert_ne!(
+            desired.specification.as_option().unwrap().media_type,
+            desired.requested_policy.as_option().unwrap().media_type,
+        );
+        let context = admission.effects[0]
+            .public_mutation_context()
+            .unwrap()
+            .unwrap();
+        let aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(request) =
+            context.validated_request().unwrap()
+        else {
+            panic!("Create request");
+        };
+        assert_eq!(desired.specification, request.specification);
+        assert_eq!(desired.requested_policy, request.requested_policy);
     }
 }
