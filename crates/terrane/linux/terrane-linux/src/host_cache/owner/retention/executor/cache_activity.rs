@@ -55,6 +55,27 @@ impl NativeOwnerExecutor {
             .for_admission(source, owner.preparation.config.state.records)
     }
 
+    /// Shares activity only after binding the actual metadata pair source.
+    ///
+    /// # Errors
+    /// Refuses another worker/root, exhausted registry storage or native errors.
+    pub(in crate::host_cache::owner) fn metadata_read_activity(
+        &self,
+        source: &crate::host_cache::owner::admission::metadata_reads::AdmittedMetadataRead,
+    ) -> io::Result<ReadActivities> {
+        self.check_physical_worker()?;
+        let owner = self
+            .custody()
+            .lock()
+            .map_err(|_| io::Error::other("admitted activity custody poisoned"))?;
+        source.check_protected(&owner)?;
+        self.cache
+            .activities
+            .lock()
+            .map_err(|_| io::Error::other("read activity registry poisoned"))?
+            .for_metadata(source, owner.preparation.config.state.records)
+    }
+
     /// Shares activity for a completed metadata source's original owned admission.
     ///
     /// # Errors

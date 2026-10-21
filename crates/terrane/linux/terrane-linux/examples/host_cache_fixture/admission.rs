@@ -568,14 +568,14 @@ pub(super) fn manifest(value: u8) -> io::Result<Vec<u8>> {
 }
 
 // These are ordinary fixture bytes and expected policy hashes, not authority.
-struct MetadataPair {
-    id: PackId,
-    pack: Vec<u8>,
-    index: Vec<u8>,
+pub(super) struct MetadataPair {
+    pub(super) id: PackId,
+    pub(super) pack: Vec<u8>,
+    pub(super) index: Vec<u8>,
     hashes: BTreeSet<String>,
 }
 
-fn metadata_pair() -> io::Result<MetadataPair> {
+pub(super) fn metadata_pair() -> io::Result<MetadataPair> {
     let id = random_id()?;
     let mut writer = PackWriter::new(id, PackClass::Meta, false);
     let mut hashes = BTreeSet::new();

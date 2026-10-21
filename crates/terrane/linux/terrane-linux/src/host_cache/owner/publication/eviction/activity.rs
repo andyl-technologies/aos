@@ -179,9 +179,29 @@ impl Registry {
         source: &crate::host_cache::owner::admission::reads::AdmittedRead,
         limit: usize,
     ) -> io::Result<ReadActivities> {
+        self.for_admission_allocations(source.original_allocations(), limit)
+    }
+
+    /// Shares scheduling state for both verified original metadata members.
+    ///
+    /// # Errors
+    /// Refuses exhausted finite activity storage.
+    pub(in crate::host_cache::owner) fn for_metadata(
+        &mut self,
+        source: &crate::host_cache::owner::admission::metadata_reads::AdmittedMetadataRead,
+        limit: usize,
+    ) -> io::Result<ReadActivities> {
+        self.for_admission_allocations(source.original_allocations(), limit)
+    }
+
+    fn for_admission_allocations(
+        &mut self,
+        allocations: impl Iterator<Item = ((u64, u64), u64)>,
+        limit: usize,
+    ) -> io::Result<ReadActivities> {
         let mut activities = Vec::new();
         activities.try_reserve_exact(2).map_err(io::Error::other)?;
-        for (inode, order) in source.original_allocations() {
+        for (inode, order) in allocations {
             let activity = self.for_inode(inode, ReadOrigin::Admission(order), limit)?;
             if !activities.iter().any(|old| Arc::ptr_eq(old, &activity)) {
                 activities.push(activity);

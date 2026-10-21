@@ -59,7 +59,7 @@ impl Drop for ReadPermit<'_> {
 
 /// Shares actual immutable backing and short atomic grant updates with readers.
 pub(in crate::host_cache::owner) struct ReadView {
-    /// Original independently verified chunk identity.
+    /// Original independently verified content identity.
     pub(super) identity: Identity,
     /// Original durable lease owner label, never serving authority alone.
     pub(super) owner: String,
@@ -308,7 +308,7 @@ impl NativeConsumerLease {
         &self.initial_accounting
     }
 
-    /// Reads verified plaintext under a live grant without an embedded-store lock.
+    /// Reads verified content under a live grant without an embedded-store lock.
     ///
     /// A short private slot lock only clones original immutable backing. Actual
     /// IO holds no slot, embedded, worker-job or publisher-RPC mutex. Renewal
@@ -332,7 +332,8 @@ impl NativeConsumerLease {
     ///
     /// Encoded admissions preserve their exact codec envelope, including an
     /// original one-hop dictionary reference. Sealed residences return the raw
-    /// codec envelope. The complete body is verified before any bytes escape.
+    /// codec envelope. Metadata returns its canonical body bytes. The complete
+    /// body is verified before any bytes escape.
     /// Reads retain the same finite read permit and backing until completion,
     /// use positioned I/O and hold no embedded-store or owner-queue lock.
     ///

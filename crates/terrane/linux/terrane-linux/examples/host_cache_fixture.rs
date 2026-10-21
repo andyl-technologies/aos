@@ -24,6 +24,8 @@ mod encoded_read_failure;
 mod lower_fetch;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
+#[path = "host_cache_fixture/metadata_read_failure.rs"]
+mod metadata_read_failure;
 #[path = "host_cache_fixture/network.rs"]
 mod network;
 #[path = "host_cache_fixture/publication.rs"]
@@ -54,6 +56,8 @@ fn main() -> std::process::ExitCode {
             "dictionary-custody",
             "encoded-read-failure",
             "encoded-dictionary-read-failure",
+            "metadata-pack-read-failure",
+            "metadata-index-read-failure",
             "seed-manifest",
             "seed-bad-manifest",
             "seed-unsealed-manifest",

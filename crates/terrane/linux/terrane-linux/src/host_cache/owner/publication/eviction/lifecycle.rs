@@ -323,13 +323,16 @@ pub(in crate::host_cache::owner) async fn restore_for(
     executor: &mut NativeOwnerExecutor,
     identity: &Identity,
 ) -> io::Result<()> {
-    if identity.kind() != IdentityKind::Chunk || identity.profile() != TERRANE_V1.name() {
+    if identity.kind() == IdentityKind::Pack || identity.profile() != TERRANE_V1.name() {
         return Err(invalid(
-            "cache restoration requires a registered chunk identity",
+            "cache restoration requires a registered content identity",
         ));
     }
     let hash = state::hex(identity.digest());
     encoded::restore_for(executor, &hash)?;
+    if identity.kind() != IdentityKind::Chunk {
+        return Ok(());
+    }
     let keys: Vec<_> = executor
         .cache
         .pending

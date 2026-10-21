@@ -105,7 +105,7 @@ RECOVERABLE_ENCODED_QUARANTINE = {
     "quarantine-encoded-private", "quarantine-encoded-readonly",
 }
 CASES += QUARANTINE_CASES
-CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure"]
+CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -729,6 +729,67 @@ def admission_cases(helper, uuid):
             process.kill()
             process.wait(timeout=5)
 
+
+
+def metadata_failed_read_case(uuid, case):
+    """Checks whole-pair quarantine from either original member's read failure."""
+    process = controlled_actor(case, case, uuid)
+    try:
+        lines = Lines(process)
+        lines.until("READY genuine metadata consumers verified with physical policy held")
+        candidates = list((root(case) / "objects/pack").glob("*/*"))
+        require(len(candidates) == 2 and {path.suffix for path in candidates} == {".pack", ".idx"},
+                "metadata failure original pair inventory differs")
+        originals = {path: (path.stat(), path.read_bytes()) for path in candidates}
+        policy = tomllib.loads((root(case) / "state/cache/records.toml").read_text())
+        consumers = [row["owner"] for row in policy["leases"] if row["owner"].startswith("consumer:")]
+        require(len(consumers) == 2 and len(set(consumers)) == 2
+                and all(sum(row["owner"] == owner for row in policy["pins"]) == 2 for owner in consumers),
+                "metadata fixture lacks two independent metadata/container pin sets")
+        extension = ".pack" if case == "metadata-pack-read-failure" else ".idx"
+        canonical = next(path for path in candidates if path.suffix == extension)
+        content = originals[canonical][1]
+        records = (root(case) / "state/cache/records.toml").read_bytes()
+        with canonical.open("r+b") as damaged:
+            damaged.write(bytes([content[0] ^ 1]))
+            damaged.flush()
+            os.fsync(damaged.fileno())
+        process.stdin.write(b"damaged\n")
+        process.stdin.flush()
+        lines.until("READY original metadata failure latched before restoring bytes")
+        with canonical.open("r+b") as restored:
+            restored.write(content)
+            restored.flush()
+            os.fsync(restored.fileno())
+        process.stdin.write(b"restored\n")
+        process.stdin.flush()
+        lines.until("READY actual metadata failed-read quarantine completed with original funding retained")
+        entries = list((root(case) / "quarantine").iterdir())
+        require(len(entries) == 2 and all(not path.exists() for path in candidates),
+                "metadata failure did not quarantine both original members")
+        tokens = set()
+        for path, (original, content) in originals.items():
+            prefix = "encoded." + path.name + "."
+            matches = [entry for entry in entries if entry.name.startswith(prefix)]
+            require(len(matches) == 1, "metadata quarantine lost original pair member")
+            moved = matches[0]
+            token = moved.name[len(prefix):]
+            tokens.add(token)
+            actual = moved.stat()
+            require(re.fullmatch("[0-9a-f]{64}", token)
+                    and (actual.st_dev, actual.st_ino, actual.st_blocks, actual.st_nlink)
+                    == (original.st_dev, original.st_ino, original.st_blocks, 1)
+                    and actual.st_uid == 840 and actual.st_gid == 845
+                    and actual.st_mode & 0o7777 == 0o640 and moved.read_bytes() == content,
+                    "metadata quarantine changed original inode, custody or bytes")
+        require(len(tokens) == 1 and (root(case) / "state/cache/records.toml").read_bytes() == records,
+                "metadata quarantine changed pair incarnation or durable funding")
+        finish_controlled(process, "finish")
+        print("PASS independent observer verifies both original metadata members quarantined with unchanged consumer funding: " + case, flush=True)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def encoded_failed_read_case(uuid, case="encoded-read-failure"):
@@ -1508,6 +1569,8 @@ def main():
         failed_preparation_case(uuid)
         encoded_failed_read_case(uuid)
         encoded_failed_read_case(uuid, "encoded-dictionary-read-failure")
+        metadata_failed_read_case(uuid, "metadata-pack-read-failure")
+        metadata_failed_read_case(uuid, "metadata-index-read-failure")
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without

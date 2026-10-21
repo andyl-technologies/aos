@@ -8694,6 +8694,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Metadata consumer preparation (2026-10-21): independent consumer grants now
+retain the original completed cached metadata admission, both original read-only
+pack/index descriptors and their pre-failure publisher observation. Reads check
+the entire pair against its verified admitted bytes before reading the selected
+canonical body, without policy, admission-job or publisher locks. Both member
+allocations participate in read activity and remain protected by independent
+metadata/container pins. Either member's native or byte failure permanently
+denies every original alias and reports the pair to original-incarnation
+quarantine without releasing durable funding. Separate native controls damage
+the pack or detached index, restore bytes and independently check both original
+quarantined inodes and unchanged policy. Runtime/application qualification is
+pending. ContentStore metadata selection and retained reconstruction sources
+still require integration; no T2 task is accepted.
+
 Encoded dependency/refetch qualification preparation (2026-10-21): a second
 actual read-failure actor keeps its dictionary under original producer funding
 while handing only the dependent into cache custody. Independent consumers

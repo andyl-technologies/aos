@@ -1,4 +1,4 @@
-//! Selects original sealed or encoded backing for independent consumer grants.
+//! Selects original sealed, encoded or metadata backing for consumer grants.
 //!
 //! Encoded grants retain their actual completed admission jobs and pin every
 //! one-hop dependency. The public producer residence source stays sealed-only.
@@ -7,7 +7,7 @@ use super::invalid;
 use crate::host_cache::{
     NativeChunkSpan, NativeResidentChunkSource,
     owner::{
-        admission::{AdmissionJob, reads::AdmittedRead},
+        admission::{AdmissionJob, metadata_reads::AdmittedMetadataRead, reads::AdmittedRead},
         publication::{
             self,
             eviction::{ReadActivities, ReadActivity},
@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use terrane_format::{
-    identity::{Identity, TERRANE_V1},
+    identity::{Identity, IdentityKind, TERRANE_V1},
     properties::Domain,
 };
 use terrane_sdk::{
@@ -39,6 +39,10 @@ pub(in crate::host_cache::owner) struct ConsumerSource {
 
 enum Backing {
     Sealed(NativeResidentChunkSource),
+    Metadata {
+        source: Box<AdmittedMetadataRead>,
+        activity: ReadActivities,
+    },
     Encoded {
         source: Box<AdmittedRead>,
         activity: ReadActivities,
@@ -91,6 +95,20 @@ impl ConsumerSource {
         executor: &mut NativeOwnerExecutor,
         identity: Identity,
     ) -> io::Result<Self> {
+        if identity.kind() != IdentityKind::Chunk {
+            let source = AdmittedMetadataRead::prepare(executor, identity)?;
+            let activity = executor.metadata_read_activity(&source)?;
+            let mut hashes: Vec<_> = source.digests().map(super::state::hex).collect();
+            hashes.sort();
+            hashes.dedup();
+            return Ok(Self {
+                backing: Backing::Metadata {
+                    source: Box::new(source),
+                    activity,
+                },
+                hashes,
+            });
+        }
         let sealed = {
             let owner = executor
                 .custody()
@@ -121,11 +139,12 @@ impl ConsumerSource {
         })
     }
 
-    /// Borrows the independently verified original chunk identity.
+    /// Borrows the independently verified original content identity.
     pub(super) fn identity(&self) -> &Identity {
         match &self.backing {
             Backing::Sealed(source) => source.identity(),
             Backing::Encoded { source, .. } => source.identity(),
+            Backing::Metadata { source, .. } => source.identity(),
         }
     }
 
@@ -142,6 +161,7 @@ impl ConsumerSource {
         match &self.backing {
             Backing::Sealed(source) => source.check_protected(owner),
             Backing::Encoded { source, .. } => source.check_protected(owner),
+            Backing::Metadata { source, .. } => source.check_protected(owner),
         }
     }
 
@@ -153,6 +173,7 @@ impl ConsumerSource {
         match &self.backing {
             Backing::Sealed(source) => source.check_consumer_backing(owner),
             Backing::Encoded { source, .. } => source.check_consumer_backing(owner),
+            Backing::Metadata { source, .. } => source.check_consumer_backing(owner),
         }
     }
 
@@ -163,6 +184,11 @@ impl ConsumerSource {
     pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_verified(),
+            Backing::Metadata { source, activity } => {
+                let bytes = source.read_verified()?;
+                activity.record()?;
+                Ok(bytes)
+            }
             Backing::Encoded { source, activity } => {
                 let bytes = source.read_verified()?;
                 activity.record()?;
@@ -179,6 +205,11 @@ impl ConsumerSource {
     pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_encoded(),
+            Backing::Metadata { source, activity } => {
+                let bytes = source.read_verified()?;
+                activity.record()?;
+                Ok(bytes)
+            }
             Backing::Encoded { source, activity } => {
                 let encoded = source.read_encoded()?;
                 activity.record()?;
@@ -200,6 +231,10 @@ impl ConsumerSource {
                     backing: allocated,
                 })
             }
+            Backing::Metadata { source, .. } => Ok(Allocation {
+                sealed: 0,
+                backing: source.synchronize_pin_backing()?,
+            }),
             Backing::Encoded { source, .. } => Ok(Allocation {
                 sealed: 0,
                 backing: source.synchronize_pin_backing()?,
@@ -209,7 +244,11 @@ impl ConsumerSource {
 
     /// Recognizes original admitted resources until the consumer job is reclaimed.
     pub(super) fn retains(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
-        matches!(&self.backing, Backing::Encoded { source, .. } if source.retains(job))
+        match &self.backing {
+            Backing::Sealed(_) => false,
+            Backing::Encoded { source, .. } => source.retains(job),
+            Backing::Metadata { source, .. } => source.retains(job),
+        }
     }
 }
 
@@ -224,7 +263,9 @@ pub(in crate::host_cache::owner) fn storage_bytes(
     domain: usize,
 ) -> io::Result<usize> {
     let per_job = std::mem::size_of::<ConsumerSource>()
-        .checked_add(AdmittedRead::storage_bytes(domain)?)
+        .checked_add(
+            AdmittedRead::storage_bytes(domain)?.max(AdmittedMetadataRead::storage_bytes()?),
+        )
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
         // A verified encoded read records both actual body and dictionary units.
         .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Arc<ReadActivity>>()))
@@ -237,6 +278,8 @@ pub(in crate::host_cache::owner) fn storage_bytes(
     records
         .checked_add(1)
         .and_then(|count| count.checked_mul(per_job))
+        // Metadata pair verification uses an additional fixed scratch window.
+        .and_then(|bytes| bytes.checked_add(reads.checked_add(1)?.checked_mul(8192)?))
         // Encoded envelope, dictionary decode/copy and body decode/copy overlap.
         // Each read and the one serialized preparation own at most five windows.
         .and_then(|bytes| {

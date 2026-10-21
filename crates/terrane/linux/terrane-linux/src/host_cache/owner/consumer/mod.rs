@@ -23,7 +23,7 @@ use std::{
     io,
     sync::{Arc, Mutex, mpsc},
 };
-use terrane_format::identity::Identity;
+use terrane_format::identity::{Identity, IdentityKind};
 use tokio::sync::oneshot;
 
 /// Reports independent measurements after an actual synchronized lease mutation.
@@ -176,6 +176,38 @@ impl NativeMetadataOwner {
     /// Refuses an elapsed/unrepresentable expiry, a full/stopped queue, absent
     /// Resume or backing, exhausted resources, and native durability/quota failures.
     pub async fn pin_resident_chunk(
+        &self,
+        identity: Identity,
+        expires: u64,
+    ) -> io::Result<NativeConsumerLease> {
+        if identity.kind() != IdentityKind::Chunk {
+            return Err(invalid("resident chunk grant requires a chunk identity"));
+        }
+        self.pin_resident_content(identity, expires).await
+    }
+
+    /// Synchronizes an independent consumer pin over an original cached metadata pair.
+    ///
+    /// Both original pack and detached index remain protected through release grace.
+    /// Dropping the waiter never cancels accepted physical pin work.
+    ///
+    /// # Errors
+    /// Refuses non-metadata identities, absent actual cache custody, expired grants,
+    /// changed native resources, exhausted limits or durability failures.
+    pub async fn pin_resident_metadata(
+        &self,
+        identity: Identity,
+        expires: u64,
+    ) -> io::Result<NativeConsumerLease> {
+        if matches!(identity.kind(), IdentityKind::Chunk | IdentityKind::Pack) {
+            return Err(invalid(
+                "resident metadata grant requires a metadata identity",
+            ));
+        }
+        self.pin_resident_content(identity, expires).await
+    }
+
+    async fn pin_resident_content(
         &self,
         identity: Identity,
         expires: u64,

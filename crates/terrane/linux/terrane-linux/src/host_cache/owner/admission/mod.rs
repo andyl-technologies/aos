@@ -15,6 +15,7 @@ pub(super) mod handoff;
 mod io;
 mod memory;
 pub(in crate::host_cache::owner) mod metadata;
+pub(in crate::host_cache::owner) mod metadata_reads;
 mod pressure;
 pub(in crate::host_cache::owner) mod read_custody;
 pub(in crate::host_cache::owner) mod reads;

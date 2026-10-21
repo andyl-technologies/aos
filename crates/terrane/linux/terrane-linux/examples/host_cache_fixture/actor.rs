@@ -42,6 +42,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "dictionary-custody"
             | "encoded-read-failure"
             | "encoded-dictionary-read-failure"
+            | "metadata-pack-read-failure"
+            | "metadata-index-read-failure"
             | "encoded-eviction"
             | "recover-encoded"
             | "refuse-encoded"
@@ -151,6 +153,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "encoded-read-failure" | "encoded-dictionary-read-failure" => {
             super::encoded_read_failure::run(&owner, &runtime, &inputs, original)?;
+        }
+        "metadata-pack-read-failure" | "metadata-index-read-failure" => {
+            super::metadata_read_failure::run(&owner, &runtime, &inputs, original)?;
         }
         "dictionary-custody" => {
             super::dictionary_custody::run(&owner, &runtime, &inputs, original)?;
