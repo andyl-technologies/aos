@@ -103,6 +103,11 @@
 /var/lib/aos/sandboxd/broker-session/storage/session\.journal(\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t
 /var/lib/aos/sandboxd/broker-session/(host|mount|network)/session\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t
 
+# Persistent empty targets; PID1 overlays privately delivered credential inodes.
+/var/lib/aos/sandbox-storage/broker-session/(host/)?custody -d system_u:object_r:aos_sandbox_storage_custody_mount_t
+/var/lib/aos/sandbox-storage/broker-session/custody/(broker-session-manifest|broker-hello-signing-key|broker-outcome-signing-key) -- system_u:object_r:aos_sandbox_storage_custody_mount_t
+/var/lib/aos/sandbox-storage/broker-session/host/custody/(broker-session-manifest|client-hello-signing-key|client-record-signing-key) -- system_u:object_r:aos_sandbox_storage_custody_mount_t
+
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 
 # The selected carrier's daemon is already sealed with this exact object type.

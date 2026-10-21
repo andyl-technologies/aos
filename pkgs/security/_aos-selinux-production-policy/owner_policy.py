@@ -88,7 +88,14 @@ ROOT_CUSTODY_CUTS = (
 
 STORAGE_CREDENTIAL_SOURCE = "aos_sandbox_storage_credential_source_t"
 STORAGE_CREDENTIAL = "aos_sandbox_storage_credential_t"
+STORAGE_CUSTODY_MOUNT = "aos_sandbox_storage_custody_mount_t"
 STORAGE_CREDENTIAL_NAMES = (
+    "storage-broker-manifest",
+    "storage-broker-hello-key",
+    "storage-broker-record-key",
+    "storage-host-client-manifest",
+    "storage-host-client-hello-key",
+    "storage-host-client-record-key",
     "storage-zfs-hold-key-v1",
     "operator-recovery-controller-public-key-v1",
     "operator-recovery-storage-owner-key-v1",
@@ -624,13 +631,30 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         ),
         (
             "aos_method46_storage_floor_t",
-            ("create", "getattr", "open", "read", "search"),
+            ("add_name", "create", "getattr", "open", "read", "search", "write"),
         ),
     ):
         positive.extend(accesses(provisioner, object_type, "dir", permissions))
         negative.extend(accesses(
             provisioner, object_type, "file", ("open", "read", *file_mutate),
         ))
+    positive.extend(accesses(provisioner, STORAGE_CUSTODY_MOUNT, "dir", (
+        "add_name", "create", "getattr", "open", "read", "search", "setattr", "write",
+    )))
+    positive.extend(accesses(provisioner, STORAGE_CUSTODY_MOUNT, "file", ("create", "getattr", "open", "read")))
+    positive.extend(accesses("init_t", STORAGE_CUSTODY_MOUNT, "dir", ("getattr", "open", "search")))
+    positive.extend(accesses("init_t", STORAGE_CUSTODY_MOUNT, "file", ("getattr", "mounton")))
+    positive.extend(accesses(storage, STORAGE_CUSTODY_MOUNT, "dir", ("getattr", "open", "read", "search")))
+    negative.extend(accesses(provisioner, STORAGE_CUSTODY_MOUNT, "file", (
+        "append", "link", "lock", "rename", "setattr", "unlink", "write", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(storage, STORAGE_CUSTODY_MOUNT, "file", ("open", "read", *file_mutate)))
+    negative.extend(accesses(storage, STORAGE_CUSTODY_MOUNT, "dir", (*dir_mutate, "mounton")))
+    for actor in set(all_roles):
+        if actor not in (storage, "init_t"):
+            negative.extend(accesses(actor, STORAGE_CUSTODY_MOUNT, "file", ("open", "read", *file_mutate)))
+            negative.extend(accesses(actor, STORAGE_CUSTODY_MOUNT, "dir", (*dir_mutate, "mounton")))
+
     for object_type in ("aos_sandbox_storage_state_t", "aos_method46_storage_floor_t"):
         negative.append(Access(provisioner, object_type, "dir", "setattr"))
 

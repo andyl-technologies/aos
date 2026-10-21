@@ -67,6 +67,12 @@
       lib.optionals completelyConfigured (map (file: "${file.credential}:/run/credentials/@system/${credentials.${file.option}}")
         files);
 
+    # PID1 mounts its own credential inodes over fixed empty targets. The
+    # service never copies a secret or changes the custody directory's mode.
+    readOnlyBinds = lib.optionals completelyConfigured (
+      map (file: "%d/${file.credential}:${custody}/${file.installed}") files
+    );
+
     installCommands = lib.optionals completelyConfigured (
       [
         "${pkgs.coreutils}/bin/install -d -m 0700 ${endpoint.journalRoot}"
@@ -111,6 +117,7 @@ in {
   in {
     assertions = lib.concatMap (state: state.assertions) states;
     loadCredentials = lib.concatMap (state: state.loadCredentials) states;
+    readOnlyBinds = lib.concatMap (state: state.readOnlyBinds) states;
     installCommands = lib.concatMap (state: state.installCommands) states;
   };
 }

@@ -509,7 +509,11 @@ in {
         SELinuxContext = lib.mkIf startupImageDelivery "system_u:system_r:aos_sandbox_storage_t";
         OpenFile = lib.mkIf startupImageDelivery ["/proc/1/exe:aos-method46-pid1-image:read-only"];
         FileDescriptorStoreMax = lib.mkIf startupImageDelivery 0;
-        ExecStartPre = brokerSessionConfiguration.installCommands;
+        # Required mode uses the stage-0 provisioner's empty custody targets.
+        # PID1 supplies readonly credential mounts before applying this service's
+        # seccomp filter; Storage retains no mode-changing syscall.
+        ExecStartPre = lib.optionals (!cfg.method46TpmFloor.required) brokerSessionConfiguration.installCommands;
+        BindReadOnlyPaths = lib.optionals cfg.method46TpmFloor.required brokerSessionConfiguration.readOnlyBinds;
         ExecStart = ''
           ${cfg.package}/bin/aos-storaged \
             ${toString controller.uid} \
@@ -572,6 +576,9 @@ in {
         DevicePolicy = "closed";
         DeviceAllow = lib.optional cfg.method46TpmFloor.required "/dev/tpmrm0 rw";
         LimitNOFILE = 256;
+        # Fixed native owner reservoirs also occupy the initial thread's stack.
+        # Keep its kernel limit finite inside the service's memory enclosure.
+        LimitSTACK = "32M";
         LimitCORE = 0;
         LockPersonality = true;
         MemoryMax = "512M";

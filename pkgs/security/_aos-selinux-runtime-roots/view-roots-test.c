@@ -46,8 +46,43 @@ static void require_result(const char *name, const struct view_mount_response *r
         }
 }
 
+static void test_storage_custody_metadata(void) {
+        const dev_t device = makedev(8, 2);
+        const struct stat valid = {
+                .st_mode = S_IFREG | 0400,
+                .st_uid = 0,
+                .st_gid = 0,
+                .st_nlink = 1,
+                .st_size = 0,
+                .st_dev = device,
+        };
+        struct stat rejected[] = {valid, valid, valid, valid, valid, valid, valid, valid};
+
+        rejected[0].st_mode = S_IFLNK | 0400;
+        rejected[1].st_mode = S_IFREG | 0600;
+        rejected[2].st_mode = S_IFREG | 0440;
+        rejected[3].st_uid = 811;
+        rejected[4].st_gid = 811;
+        rejected[5].st_nlink = 2;
+        rejected[6].st_size = 32;
+        rejected[7].st_dev = makedev(8, 3);
+
+        if (!empty_custody_target_metadata(&valid, device)) {
+                fputs("view-roots-test: exact empty custody target refused\n", stderr);
+                exit(1);
+        }
+        for (size_t index = 0; index < sizeof(rejected) / sizeof(rejected[0]); ++index) {
+                if (empty_custody_target_metadata(&rejected[index], device)) {
+                        fprintf(stderr, "view-roots-test: unsafe custody metadata case %zu accepted\n", index);
+                        exit(1);
+                }
+        }
+}
+
 int main(void) {
         struct view_mount_response response;
+
+        test_storage_custody_metadata();
 
         response = fixture(false);
         require_result("exact ext4", &response, false, true);

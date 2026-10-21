@@ -833,6 +833,7 @@ static int select_var_device(struct stat *device_st) {
 
 struct owner_tree_spec {
         bool enabled;
+        bool storage_custody;
         struct directory_spec root;
         struct directory_spec broker;
         struct directory_spec floor;
@@ -842,6 +843,7 @@ struct owner_tree_spec {
 static const struct owner_tree_spec owner_trees[] = {
         {
                 AOS_CONTROLLER_FLOOR_REQUIRED,
+                false,
                 {"sandboxd", "/var/lib/aos/sandboxd", "system_u:object_r:aos_sandbox_controller_state_t",
                  0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
                 {"broker-session", "/var/lib/aos/sandboxd/broker-session", "system_u:object_r:aos_sandbox_controller_state_t",
@@ -852,6 +854,7 @@ static const struct owner_tree_spec owner_trees[] = {
         },
         {
                 AOS_STORAGE_FLOOR_REQUIRED,
+                true,
                 {"sandbox-storage", "/var/lib/aos/sandbox-storage", "system_u:object_r:aos_sandbox_storage_state_t",
                  0700, 0, 0},
                 {"broker-session", "/var/lib/aos/sandbox-storage/broker-session", "system_u:object_r:aos_method46_storage_floor_t",
@@ -871,6 +874,8 @@ static int owner_directory_step(int parent, const struct directory_spec *spec,
                 return -2;
         return fd;
 }
+
+#include "storage-custody.h"
 
 static int walk_owner_tree(int aos_fd, const struct owner_tree_spec *tree,
                            uint64_t mount_id, dev_t device, bool create) {
@@ -896,6 +901,9 @@ static int walk_owner_tree(int aos_fd, const struct owner_tree_spec *tree,
                         goto out;
                 parent = descriptors[index];
         }
+        if (tree->storage_custody &&
+            prepare_storage_custody(parent, mount_id, device, create) < 0)
+                goto out;
         if (identities_are_distinct(identities, count) < 0)
                 goto out;
         parent = aos_fd;

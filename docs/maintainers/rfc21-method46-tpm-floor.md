@@ -827,6 +827,33 @@ from the non-MLS production base.
 This receipt covers compiled policy. Enforcing installed startup and the normal
 Controller/Storage TPM lifecycle remain separate qualification requirements.
 
+## Required-mode Storage credential mount targets
+
+Required mode delivers the Storage broker and Host-client BSA credentials as
+PID 1 readonly file mounts over separately labelled, empty fixed targets.
+Storage does not run the legacy copy/chmod preparation under its syscall
+filter. The stage-0 runtime-root provisioner creates only those empty targets;
+it receives neither secret bytes nor permission to mutate floor journal files
+or delivered credential inodes. External credential originals retain their
+independent provisioning and reader policy.
+
+Custody directories are sealed at mode 0500 after their three mode-0400,
+root-owned, single-link empty targets are created and synced. Existing wrong
+modes, labels, links, contents, foreign mounts and names fail closed. A crash
+during directory birth can leave an unsealed mode-0700 directory; startup
+refuses it rather than repairing it. Trusted offline provisioning must resolve
+that incomplete birth before normal startup is retried.
+
+The production policy build passes at
+`/nix/store/zcr1z2m333994z2xxkdl6vhw503fjkf1-aos-selinux-production-policy-1`,
+including 143 policy unit tests and the compiled negative checks. The native
+runtime-root package passes at
+`/nix/store/6r2z85icsmbspcrma7vjm847q72lnwb5-aos-selinux-runtime-roots-1`.
+The actual C metadata predicates and existing pure statmount cases also pass
+when compiled and executed with the AOS toolchain. These checks do not qualify
+PID 1 credential mount delivery, installed reader closure, daemon restart or
+the two TPM owner hooks. The method-46 qualification gate remains closed.
+
 ## Primary references
 
 The durability, extend, and interrupted-write rules are in

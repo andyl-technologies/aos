@@ -1003,6 +1003,31 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(domain, target, "file", permission)
                     )
 
+    def test_storage_custody_mounts_keep_targets_empty_and_runtime_readonly(self) -> None:
+        target = effective_policy.owner_policy.STORAGE_CUSTODY_MOUNT
+        provisioner = "aos_sandbox_runtime_roots_t"
+        storage = "aos_sandbox_storage_t"
+
+        for actor, object_class, permission in (
+            (provisioner, "file", "create"),
+            (provisioner, "file", "open"),
+            (provisioner, "dir", "setattr"),
+            ("init_t", "file", "mounton"),
+            (storage, "dir", "search"),
+        ):
+            self.assert_missing_allow_rejected(effective_policy.Access(actor, target, object_class, permission))
+
+        for actor, object_class, permission in (
+            (provisioner, "file", "write"),
+            (provisioner, "file", "setattr"),
+            (storage, "file", "open"),
+            (storage, "dir", "setattr"),
+            ("aos_sandbox_controller_t", "file", "read"),
+            ("aos_sandbox_policy_authority_t", "file", "read"),
+            ("aos_method46_storage_helper_t", "dir", "write"),
+        ):
+            self.assert_forbidden_allow_rejected(effective_policy.Access(actor, target, object_class, permission))
+
     def test_root_controller_lock_identity_is_readonly_and_storage_lock_is_private(self) -> None:
         root = "aos_sandbox_policy_authority_t"
         controller_lock = "aos_method46_controller_lock_t"
@@ -2607,6 +2632,8 @@ class RuntimeDeploymentPolicyTest(unittest.TestCase):
         self.assertEqual(owner.RUNTIME_DOMAINS, ())
         self.assertFalse(set(owner.RUNTIME_KNOWN_DOMAINS).intersection(owner.ENFORCING))
         self.assertEqual(owner.STORAGE_CREDENTIAL_NAMES, (
+            "storage-broker-manifest", "storage-broker-hello-key", "storage-broker-record-key",
+            "storage-host-client-manifest", "storage-host-client-hello-key", "storage-host-client-record-key",
             "storage-zfs-hold-key-v1",
             "operator-recovery-controller-public-key-v1",
             "operator-recovery-storage-owner-key-v1",

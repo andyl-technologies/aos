@@ -292,6 +292,14 @@ in
   assert partialCredentials.installCommands == [];
   assert builtins.length completeCredentials.loadCredentials == 3;
   assert builtins.length completeCredentials.installCommands == 6;
+  assert bootstrapCredentials.readOnlyBinds == [];
+  assert partialCredentials.readOnlyBinds == [];
+  assert completeCredentials.readOnlyBinds
+  == [
+    "%d/host-manifest:/var/lib/aos/sandboxd/broker-session/host/custody/broker-session-manifest"
+    "%d/host-hello-key:/var/lib/aos/sandboxd/broker-session/host/custody/client-hello-signing-key"
+    "%d/host-record-key:/var/lib/aos/sandboxd/broker-session/host/custody/client-record-signing-key"
+  ];
   assert builtins.elem "host-record-key:/run/credentials/@system/test-record" completeCredentials.loadCredentials;
   assert q04PackageAdmitted q04Evaluation;
   assert q04PackageAdmitted q04OnlineEvaluation;
