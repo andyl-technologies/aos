@@ -73,6 +73,18 @@ pub struct NativeCachePlan {
 }
 
 impl NativeCachePlan {
+    /// Borrows one configured domain's immutable chunk profile without opening resources.
+    ///
+    /// This is operator intent only. A trusted caller compares it with the
+    /// protected original repository profile before starting native recovery.
+    pub fn chunk_profile(&self, domain: &str) -> Option<&terrane_format::chunking::ChunkProfile> {
+        self.host
+            .domains
+            .iter()
+            .find(|entry| entry.native.domain == domain)
+            .map(|entry| &entry.native.profile)
+    }
+
     /// Checks domain coverage, role identity, paths, profiles and resource policy.
     ///
     /// This performs no filesystem, publisher or quota IO. Every configured

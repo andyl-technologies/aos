@@ -194,7 +194,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO == "reassembly" else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "sdk"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)

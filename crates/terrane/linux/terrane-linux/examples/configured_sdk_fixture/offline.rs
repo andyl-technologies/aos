@@ -5,7 +5,7 @@
 //! wrapper retains that actual backend for metadata and counts every refused
 //! chunk read. It never supplies replacement bytes, authority or readiness.
 
-use super::{FixtureResult, MAIN, PAYLOAD, check_owner, expected_commit, fs};
+use super::{FixtureResult, MAIN, check_owner, expected_commit, fs};
 use std::{
     path::Path,
     sync::{
@@ -133,7 +133,9 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
             let actual = repository
                 .read_file(&View::parse(MAIN)?, b"file", &token, "sdk")
                 .await?;
-            if actual != (expected, PAYLOAD.to_vec()) || chunk_calls.load(Ordering::Relaxed) != 0 {
+            if actual != (expected, super::payload::expected(root)?)
+                || chunk_calls.load(Ordering::Relaxed) != 0
+            {
                 return Err(
                     "native resident read used lower chunks or changed signed payload".into(),
                 );

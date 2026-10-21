@@ -79,7 +79,7 @@ fn preflight_refuses_unavailable_compositions_before_missing_authority_io() -> T
     for (host, expected) in [
         (
             "[host_tier]\npath='/missing-cache'\nsize_bytes=1024\nreassembly='always'\n[host_tier.domains.public]\npath='/missing-cache/public'\nwipe='none'\n",
-            FailureKind::NativeCacheObjectPolicy,
+            FailureKind::NativeCacheConfiguration,
         ),
         (
             "[host_tier]\npath='/missing-configured-sdk-bucket'\nsize_bytes=1024\nreassembly='never'\n[host_tier.domains.public]\npath='/missing-configured-sdk-bucket/cache'\nwipe='none'\n",
@@ -359,4 +359,12 @@ impl Drop for Temporary {
         // A test panic must not replace its original diagnostic with cleanup.
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn actual_original_profile_mismatch_requires_process_exit() {
+    let error = Error::refused(FailureKind::NativeCacheProfile);
+    assert!(error.requires_process_exit());
+    assert_eq!(error.kind(), FailureKind::NativeCacheProfile);
+    assert!(!Error::refused(FailureKind::NativeCacheConfiguration).requires_process_exit());
 }

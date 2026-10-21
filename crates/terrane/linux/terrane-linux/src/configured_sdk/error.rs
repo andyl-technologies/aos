@@ -15,8 +15,8 @@ pub enum FailureKind {
     ServeOnly,
     /// Explicit same-domain native cache inputs are missing or invalid.
     NativeCacheConfiguration,
-    /// Whole-object native preparation is unavailable through this SDK adapter.
-    NativeCacheObjectPolicy,
+    /// The protected original profile differs from the native domain configuration.
+    NativeCacheProfile,
     /// Actual native cache recovery or publisher Resume failed.
     NativeCacheOpen,
     /// The store is not one exact local file-bucket leaf.
@@ -119,6 +119,7 @@ impl Error {
             FailureKind::Confinement
                 | FailureKind::ConfinementChanged
                 | FailureKind::Runtime
+                | FailureKind::NativeCacheProfile
                 | FailureKind::NativeCacheOpen
                 | FailureKind::RepositoryOpen
                 | FailureKind::Preparation
@@ -146,8 +147,8 @@ impl fmt::Display for Error {
             FailureKind::NativeCacheConfiguration => {
                 "configured SDK native cache configuration is invalid"
             }
-            FailureKind::NativeCacheObjectPolicy => {
-                "configured SDK native cache requires chunk serving policy"
+            FailureKind::NativeCacheProfile => {
+                "configured SDK native cache profile differs from original repository"
             }
             FailureKind::NativeCacheOpen => "configured SDK native cache recovery failed",
             FailureKind::UnsupportedStore => {

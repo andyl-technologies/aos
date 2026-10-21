@@ -40,6 +40,7 @@ pub struct NativeReady {
     limits: PortableReadLimits,
     max_allocation_bytes: usize,
     max_requests: usize,
+    consumer_release_grace: std::time::Duration,
 }
 
 impl NativeReady {
@@ -81,6 +82,7 @@ impl NativeReady {
         let before = validate(&portable_config, limits).await?;
         let reads = config.reads;
         let max_requests = config.inventory_entries;
+        let consumer_release_grace = config.policy.release_grace;
         let mut preparation = NativeCachePreparation::inspect(config, confinement)?;
         preparation.bind_portable_catalog(&before)?;
         let layout = Arc::clone(preparation.layout());
@@ -112,7 +114,13 @@ impl NativeReady {
             limits,
             max_allocation_bytes: reads.max_allocation_bytes,
             max_requests,
+            consumer_release_grace,
         })
+    }
+
+    /// Supplies scheduling policy only; the physical sweep still proves release.
+    pub(super) fn consumer_release_grace(&self) -> std::time::Duration {
+        self.consumer_release_grace
     }
 
     pub(super) fn request_bounds(&self) -> (usize, usize) {

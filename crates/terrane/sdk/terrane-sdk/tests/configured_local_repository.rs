@@ -657,3 +657,105 @@ async fn sdk_schema_preparation_never_calls_object_presentation() -> TestResult 
     assert!(!fixture.parent.join("configured").exists());
     Ok(())
 }
+
+#[tokio::test]
+async fn explicit_seed_bootstrap_registers_original_profile_and_refuses_reseeding() -> TestResult {
+    use std::time::Duration;
+    use terrane_format::{
+        auth::Authority,
+        refs::{Locality, PrincipalKind},
+    };
+    use terrane_sdk::{
+        ref_advance::CommitTiming,
+        repository::{
+            LocalAuthorityIdentity, LocalAuthorityParameters, LocalRepositoryLocation,
+            LocalRepositoryPolicy, Repository,
+        },
+    };
+
+    let fixture = Fixture::new().await?;
+    let location = LocalRepositoryLocation {
+        bucket: fixture.parent.join("explicit-seed-bucket"),
+        authority: fixture.parent.join("explicit-seed-authority"),
+    };
+    let grants = vec![Grant::new("refs/**".into(), Verbs::new(31)?)?];
+    let parameters = || LocalAuthorityParameters {
+        owner_uid: fixture.owner,
+        authority: Authority {
+            issuer: "local".into(),
+            key_id: "initial".into(),
+            subject: "owner".into(),
+            kind: PrincipalKind::Human,
+            groups: Vec::new(),
+            not_after: u64::MAX,
+            not_before: None,
+            token_id: [7; 16],
+            grants: grants.clone(),
+            workload: None,
+        },
+    };
+    let policy = || -> Result<LocalRepositoryPolicy, Box<dyn std::error::Error>> {
+        Ok(LocalRepositoryPolicy {
+            store_name: "local".into(),
+            domain: "private:owner".into(),
+            default_private_domain: "private:owner".into(),
+            acl: vec![("owner".into(), 31)],
+            locality: Locality::default(),
+            timing: CommitTiming::new(
+                Duration::from_secs(30),
+                Duration::from_secs(60),
+                Duration::from_secs(10),
+            )?,
+            policy_authority: Some(MAIN.into()),
+            bootstrap_properties: Vec::new(),
+        })
+    };
+    let (repository, authority) = Repository::initialize_local_with_seed(
+        &location,
+        parameters(),
+        policy()?,
+        MAIN,
+        [7; 32],
+        TokioLocalFs,
+        TokioClock,
+    )
+    .await?;
+    assert_eq!(repository.chunk_profile().seed(), [7; 32]);
+    let before = std::fs::read(location.bucket.join("publication/PORTABLE"))?;
+    drop(repository);
+    drop(authority);
+
+    assert!(
+        Repository::initialize_local_with_seed(
+            &location,
+            parameters(),
+            policy()?,
+            MAIN,
+            [8; 32],
+            TokioLocalFs,
+            TokioClock
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        std::fs::read(location.bucket.join("publication/PORTABLE"))?,
+        before
+    );
+    let (reopened, _) = Repository::open_local(
+        &location,
+        &LocalAuthorityIdentity {
+            owner_uid: fixture.owner,
+            issuer: "local".into(),
+            key_id: "initial".into(),
+        },
+        policy()?,
+        MAIN,
+        TokioLocalFs,
+        TokioClock,
+    )
+    .await?;
+
+    assert_eq!(reopened.chunk_profile().seed(), [7; 32]);
+    Ok(())
+}

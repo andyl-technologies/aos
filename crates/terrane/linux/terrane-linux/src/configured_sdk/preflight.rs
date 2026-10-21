@@ -15,7 +15,7 @@ use super::{Error, FailureKind, ValidatedSdk, tokens};
 ///
 /// Routed and remote compositions are unavailable here. A native cache must
 /// bind the trusted repository domain and remain disjoint from original state.
-/// Whole-object native preparation is not yet composed through this adapter.
+/// Object policy selects actual native chunked reads or sealed publication.
 /// Instance credentials and non-file exposure providers are not silently ignored. The
 /// returned plan still has no repository authority or kernel receipt.
 ///
@@ -55,9 +55,6 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         if !host.domains.contains_key(&trusted.domain) {
             return Err(Error::refused(FailureKind::NativeCacheConfiguration));
         }
-        if host.reassembly != terrane_sdk::config::host::Reassembly::Never {
-            return Err(Error::refused(FailureKind::NativeCacheObjectPolicy));
-        }
         for directory in host.domains.values() {
             for path in std::iter::once(directory.path.as_str())
                 .chain(directory.administrative_root.as_deref())
@@ -95,6 +92,14 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
             )
             .map_err(|error| Error::io(FailureKind::NativeCacheConfiguration, error))?,
             policy,
+            match host.reassembly {
+                terrane_sdk::config::host::Reassembly::Never => {
+                    terrane_sdk::host::cache::ReassemblyMode::Never
+                }
+                terrane_sdk::config::host::Reassembly::Always => {
+                    terrane_sdk::host::cache::ReassemblyMode::Always
+                }
+            },
         ))
     } else {
         None

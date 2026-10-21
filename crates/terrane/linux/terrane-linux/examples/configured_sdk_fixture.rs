@@ -21,6 +21,9 @@
 #[path = "configured_sdk_fixture/offline.rs"]
 mod offline;
 
+#[path = "configured_sdk_fixture/payload.rs"]
+mod payload;
+
 #[path = "configured_sdk_fixture/publication.rs"]
 mod publication;
 
@@ -94,11 +97,15 @@ fn dispatch() -> FixtureResult<&'static str> {
     }
     let root = Path::new(root);
     match command.as_str() {
-        "setup" => {
+        "setup" | "setup-manifest" => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            runtime.block_on(setup(root, owner))?;
+            if command == "setup-manifest" {
+                runtime.block_on(setup_payload(root, owner, &payload::manifest()))?;
+            } else {
+                runtime.block_on(setup(root, owner))?;
+            }
             Ok("PASS: separate-process configured SDK fixture setup")
         }
         "run" => {
@@ -132,6 +139,10 @@ fn dispatch() -> FixtureResult<&'static str> {
 }
 
 async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
+    setup_payload(root, owner, PAYLOAD).await
+}
+
+async fn setup_payload(root: &Path, owner: u32, payload: &[u8]) -> FixtureResult<()> {
     fs::create_dir(root)?;
     fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
     check_owner(root, owner)?;
@@ -144,7 +155,7 @@ async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
         .await?
         .try_into()
         .map_err(|_| "unexpected fixture entropy length")?;
-    let (repository, authority) = Repository::initialize_local(
+    let (repository, authority) = Repository::initialize_local_with_seed(
         &location,
         LocalAuthorityParameters {
             owner_uid: owner,
@@ -176,13 +187,17 @@ async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
             bootstrap_properties: Vec::new(),
         },
         MAIN,
+        [7; 32],
         TokioLocalFs,
         TokioClock,
     )
     .await?;
     let source = root.join("source");
     fs::create_dir(&source)?;
-    write_private(&source.join("file"), PAYLOAD)?;
+    write_private(&source.join("file"), payload)?;
+    if payload != PAYLOAD {
+        write_private(&root.join("expected.payload"), payload)?;
+    }
     let mut session = repository.begin(MAIN, authority.token(), "sdk").await?;
     let commit = repository
         .commit_directory(
@@ -286,7 +301,7 @@ fn run(root: &Path, owner: u32) -> FixtureResult<()> {
             || status.realizer.is_some()
             || !status.features.is_empty()
             || status.last_commit.is_some()
-            || fs::read(snapshot.endpoint().join("file"))? != PAYLOAD
+            || fs::read(snapshot.endpoint().join("file"))? != payload::expected(root)?
         {
             return Err("SDK completion did not match the independent fixture".into());
         }
@@ -303,7 +318,7 @@ fn expected_commit(root: &Path) -> FixtureResult<[u8; 32]> {
 
 fn verify_payloads(root: &Path) -> FixtureResult<()> {
     for id in ["first", "second"] {
-        if fs::read(root.join(format!("snapshot-{id}/file")))? != PAYLOAD {
+        if fs::read(root.join(format!("snapshot-{id}/file")))? != payload::expected(root)? {
             return Err("stopping SDK presentation removed its durable snapshot".into());
         }
     }

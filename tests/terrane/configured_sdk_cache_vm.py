@@ -1,6 +1,8 @@
 """Checks actual configured CLI snapshots with separately recovered native caches."""
 
+import fcntl
 import os
+import struct
 import select
 import subprocess
 import sys
@@ -9,6 +11,18 @@ import tomllib
 
 
 PAYLOAD = b"independent configured SDK snapshot payload\n"
+
+
+def manifest_payload():
+    """Computes the supervisor's independent expected multi-chunk plaintext."""
+    state = 7
+    result = bytearray()
+    for _ in range(2097153):
+        state ^= (state << 13) & 0xffffffff
+        state ^= state >> 17
+        state ^= (state << 5) & 0xffffffff
+        result.append(state & 255)
+    return bytes(result)
 
 
 def actor(driver, image, label, arguments, success=True):
@@ -48,14 +62,14 @@ def actor(driver, image, label, arguments, success=True):
     return tuple(map(bytes, output))
 
 
-def host_configuration(driver, refused=False):
-    """Supplies explicit operator intent for the two independently enrolled owners."""
+def host_configuration(driver, refused=False, mode="never"):
+    """Uses the same explicit one-second retirement/grace policy as reassembly controls."""
     root = driver.ROOT / "positive"
     text = f"""
 [host_tier]
 path = "{root}"
 size_bytes = 67108864
-reassembly = "never"
+reassembly = "{mode}"
 [host_tier.publisher]
 socket_path = "/run/terrane-initial-publisher/publisher.sock"
 serve_uid = 840
@@ -76,7 +90,7 @@ administrative_root = "{root}/{directory}-admin"
 wipe = "none"
 quota_owner_id = "{owner}"
 [host_tier.domains."{domain}".publisher]
-retirement_grace_ms = 30000
+retirement_grace_ms = 1000
 chunk_profile = "cdc-1m"
 chunk_seed = "{"07" * 32}"
 [host_tier.domains."{domain}".cache]
@@ -84,7 +98,7 @@ state_gid = 844
 capacity_bytes = 25165824
 low_watermark_bytes = 16777216
 probation_bytes = 65536
-release_grace_seconds = 30
+release_grace_seconds = 1
 scan_limit = 64
 max_read_bytes = 2097152
 state_bytes = 65536
@@ -116,6 +130,48 @@ def cache_states(driver):
     return result
 
 
+def verify_funding(driver, directory, before, after):
+    """Distinguishes actual startup allowance from still-funded consumer grace."""
+    owner = "fixture-" + directory
+    reservations = after["reservations"]
+    driver.require(len({row["id"] for row in reservations}) == len(reservations),
+                   "native SDK repeats a reservation token")
+    added = [row for row in reservations if row not in before["reservations"]]
+    bootstraps = []
+    for row in added:
+        driver.require(row["owner"] == owner and row["bytes"] == 262144,
+                       "native SDK changed a new hold's exact owner or funding")
+        names = {"consumer:" + row["id"], "consumer-grace:" + row["id"]}
+        leases = [lease for lease in after["leases"] if lease["owner"] in names]
+        if not leases:
+            bootstraps.append(row)
+            continue
+        driver.require(len(leases) == 1, "native SDK gives one consumer two lifecycle owners")
+        lease = leases[0]
+        driver.require(lease["owner"].startswith("consumer-grace:"),
+                       "completed SDK still owns a live consumer grant")
+        pins = [pin for pin in after["pins"] if pin["owner"] == lease["owner"]]
+        driver.require(pins and all(pin["expires"] == lease["expires"]
+                                   and len(pin["hash"]) == 64
+                                   and all(char in "0123456789abcdef" for char in pin["hash"])
+                                   for pin in pins),
+                       "native SDK consumer hold lacks its exact durable pin closure")
+    driver.require(len(bootstraps) == 1,
+                   "native SDK lacks exactly one new bootstrap hold: " + repr(added))
+    now = int(time.time())
+    for row in before["reservations"]:
+        if row in reservations:
+            continue
+        names = {"consumer:" + row["id"], "consumer-grace:" + row["id"]}
+        leases = [lease for lease in before["leases"] if lease["owner"] in names]
+        driver.require(len(leases) == 1 and row["owner"] == owner and row["bytes"] == 262144,
+                       "native SDK dropped an original non-consumer hold")
+        lease = leases[0]
+        end = lease["expires"] + (1 if lease["owner"].startswith("consumer:") else 0)
+        driver.require(end <= now,
+                       "native SDK dropped consumer funding before its original grace expired")
+
+
 def run(driver, image):
     """Requires real native startup and a closed failure before SDK presentation."""
     driver.require((image / "share/configured_sdk_proof.py").read_bytes()
@@ -127,12 +183,22 @@ def run(driver, image):
     parent.mkdir(mode=0o700)
     os.chown(parent, 840, 840)
 
-    for name, refused in [("success", False), ("refused", True)]:
+    large = manifest_payload()
+    for name, refused, mode, payload in [
+            ("inline", False, "never", PAYLOAD),
+            ("never", False, "never", large),
+            ("always", False, "always", large),
+            ("profile", True, "never", PAYLOAD),
+            ("refused", True, "never", PAYLOAD)]:
         root = parent / name
+        setup = "setup-manifest" if payload == large else "setup"
         actor(driver, image, name + "-setup",
-              ["configured-sdk-cache-example", "setup", root, 840])
+              ["configured-sdk-cache-example", setup, root, 840])
         config = root / "config.toml"
-        config.write_text(config.read_text() + host_configuration(driver, refused))
+        host = host_configuration(driver, name == "refused", mode)
+        if name == "profile":
+            host = host.replace("07" * 32, "08" * 32)
+        config.write_text(config.read_text() + host)
         before = cache_states(driver)
         stdout, stderr = actor(driver, image, name + "-cli",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
@@ -141,11 +207,16 @@ def run(driver, image):
         actor(driver, image, name + "-publication",
               ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
         if refused:
+            if name == "profile":
+                driver.require(not stdout and stderr ==
+                               b"terrane: configured SDK native cache profile differs from original repository\n",
+                               "profile mismatch did not fail at the original/native binding")
             driver.require(after == before
                            and all(not (root / ("snapshot-" + item)).exists()
                                    for item in ["first", "second"]),
                            "unavailable native custody started presentation or changed policy")
-            print("PASS actual configured SDK refuses an unenrolled native cache before any snapshot or policy effect", flush=True)
+            witness = ("mismatched original profile" if name == "profile" else "an unenrolled native cache")
+            print("PASS actual configured SDK refuses " + witness + " before any snapshot or policy effect", flush=True)
             continue
 
         root.with_suffix(".stdout").write_bytes(stdout)
@@ -154,27 +225,33 @@ def run(driver, image):
               ["configured-sdk-cache-example", "verify-cli", root, 840])
         for directory, encoded in after.items():
             state = tomllib.loads(encoded.decode())
-            old = tomllib.loads(before[directory].decode()) if before[directory] else {"reservations": []}
-            added = [row for row in state["reservations"] if row not in old["reservations"]]
-            driver.require(len(added) == 1 and added[0]["bytes"] == 262144
-                           and added[0]["owner"] == "fixture-" + directory
-                           and all(row in state["reservations"] for row in old["reservations"]),
-                           "native SDK lacks exact newly funded recovery of each original owner: "
-                           + repr({"domain": directory, "added": added, "before": old["reservations"],
-                                   "after": state["reservations"]}))
+            old = tomllib.loads(before[directory].decode()) if before[directory] else {"reservations": [], "leases": [], "pins": []}
+            verify_funding(driver, directory, old, state)
         for item in ["first", "second"]:
             path = root / ("snapshot-" + item) / "file"
-            driver.require(path.read_bytes() == PAYLOAD and path.stat().st_uid == 840,
+            driver.require(path.read_bytes() == payload and path.stat().st_uid == 840,
                            "native SDK snapshot differs from independent original payload")
-        chunks = driver.ROOT / "positive/private/chunks"
-        candidates = [path for path in chunks.glob("*/*")
-                      if path.is_file() and path.stat().st_size == len(PAYLOAD) + 1
-                      and path.read_bytes() == b"\x00" + PAYLOAD]
-        driver.require(len(candidates) == 1, "native SDK did not actually admit the original chunk")
-        metadata = candidates[0].stat()
-        driver.require(metadata.st_uid == 840 and metadata.st_gid == 845
-                       and metadata.st_nlink == 1 and metadata.st_mode & 0o7777 == 0o640,
-                       "native SDK admitted chunk has different original custody")
+        sealed = driver.ROOT / "positive/private/sealed"
+        candidates = [path for path in sealed.rglob("*")
+                      if path.is_file() and path.stat().st_size == len(payload)
+                      and path.read_bytes() == payload]
+        if name == "never":
+            driver.require(not candidates, "never-mode manifest unexpectedly assembled a whole object")
+            print("PASS actual configured SDK never policy reads a native multi-chunk object without whole-object sealing", flush=True)
+        else:
+            driver.require(len(candidates) == 1, "native SDK did not read a genuine whole sealed object")
+            metadata = candidates[0].stat()
+            driver.require(metadata.st_uid == 841 and metadata.st_gid == 845
+                           and metadata.st_nlink == 1 and metadata.st_mode & 0o7777 == 0o400,
+                           "native SDK sealed object has different original custody")
+            measurement = bytearray(68)
+            struct.pack_into("=HH", measurement, 0, 0, 64)
+            with candidates[0].open("rb") as file:
+                fcntl.ioctl(file, 0xc0046686, measurement, True)
+            algorithm, digest_size = struct.unpack_from("=HH", measurement)
+            driver.require(algorithm == 1 and digest_size == 32,
+                           "native SDK whole object lacks actual SHA-256 fs-verity")
+            print("PASS actual configured SDK " + mode + " policy reads genuine fs-verity object and completes cache handoff", flush=True)
         actor(driver, image, name + "-offline",
               ["configured-sdk-cache-example", "read-cache-offline", root, 840])
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)

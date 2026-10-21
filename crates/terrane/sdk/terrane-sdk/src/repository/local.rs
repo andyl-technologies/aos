@@ -215,6 +215,59 @@ where
         fs: F,
         clock: C,
     ) -> Result<(Self, LocalAuthority), Error> {
+        Self::initialize_local_inner(
+            location,
+            authority_parameters,
+            policy,
+            reference,
+            fs,
+            clock,
+            None,
+        )
+        .await
+    }
+
+    /// Creates a fresh repository with an explicitly selected immutable CDC seed.
+    ///
+    /// Trusted bootstrap uses this when a repository and its same-domain host
+    /// tier must share a profile. The seed is ordinary initialization intent;
+    /// the actual genesis publication and protected Original records establish
+    /// its immutable registration. Existing state is never reprofiled. Call
+    /// [`Self::initialize_local`] to choose a fresh seed from native entropy.
+    ///
+    /// # Errors
+    /// Preserves all path, policy, authorization and durable-publication errors
+    /// from [`Self::initialize_local`], including refusals of existing state.
+    pub async fn initialize_local_with_seed(
+        location: &LocalRepositoryLocation,
+        authority_parameters: LocalAuthorityParameters,
+        policy: LocalRepositoryPolicy,
+        reference: &str,
+        seed: [u8; 32],
+        fs: F,
+        clock: C,
+    ) -> Result<(Self, LocalAuthority), Error> {
+        Self::initialize_local_inner(
+            location,
+            authority_parameters,
+            policy,
+            reference,
+            fs,
+            clock,
+            Some(seed),
+        )
+        .await
+    }
+
+    async fn initialize_local_inner(
+        location: &LocalRepositoryLocation,
+        authority_parameters: LocalAuthorityParameters,
+        policy: LocalRepositoryPolicy,
+        reference: &str,
+        fs: F,
+        clock: C,
+        seed: Option<[u8; 32]>,
+    ) -> Result<(Self, LocalAuthority), Error> {
         validate_policy(&policy)?;
         validate_local_reference(reference)?;
         match fs.symlink_metadata(&location.bucket).await {
@@ -236,11 +289,14 @@ where
             authority_parameters,
         )
         .await?;
-        let seed = fs
-            .random_bytes(32)
-            .await?
-            .try_into()
-            .map_err(|_| Error::Denied)?;
+        let seed = match seed {
+            Some(seed) => seed,
+            None => fs
+                .random_bytes(32)
+                .await?
+                .try_into()
+                .map_err(|_| Error::Denied)?,
+        };
         let profile = ChunkProfile::cdc_1m(seed);
         let tree = initial_tree(&policy, profile.minimum() as u64)?;
         let root = tree.root();

@@ -11480,3 +11480,40 @@ Read-through admission is restricted to object chunks and manifests: verified
 control/history metadata stays lower content, preserving the finite durable
 consumer budget for the requested payload. No records, holds or grace periods
 are erased to make room. The repeated VM remains pending and T2 remains open.
+
+
+#### Configured native object policy and original profile binding
+
+Configured SDK reads now bind the actual native object-presentation provider for
+both trunk reassembly modes. Inline/single-chunk objects use real sealed backing;
+`never` multi-chunk manifests use original consumer grants, and `always` uses the
+actual fs-verity publication. Repository verification and byte comparison still
+precede presentation. Source retirement waits out original consumer grace and
+requires a real durable sweep; elapsed time never permits transfer by itself.
+The conservative sealing wait refuses intervals above 300 seconds.
+
+Startup compares the selected native profile with the protected original
+repository profile before any cache recovery or quota opening. Mismatch is a
+terminal post-confinement error. An explicit fresh-repository seed initializer
+allows trusted bootstrap to select the same immutable profile, preserving the
+existing entropy-based initializer. A real protected-genesis integration control
+checks seed registration, unchanged publication after attempted reseeding, and
+reopen from the original registered seed. All ten repository controls pass.
+
+The expanded SDK VM supplies independent deterministic multi-chunk plaintext and
+checks actual `never` chunk serving, `always` whole-file sealing, SHA-256
+fs-verity, cold native reads with lower chunks unavailable, profile refusal and
+unenrolled-owner refusal. Its explicit one-second retirement and consumer-grace
+policy matches the existing reassembly fixture; actor, VM, state, capacity and
+read limits are unchanged. The real profile-boundary control passes. Native VM
+and complete application-target requalification remain pending.
+
+The `bdbacad7b6` VM diagnostic confirms that the earlier funding oracle omitted
+a genuine consumer-grace metadata hold: the private domain retained one bootstrap
+allowance and one released consumer allowance, each 262144 bytes. The supervisor
+now requires exactly one added bootstrap allowance, exact matching consumer
+leases/pins and funding for every additional hold, and no live grant after SDK
+completion. Original non-consumer holds remain unchanged; removed old consumer
+holds must have passed their original grace deadline. State rows remain ordinary
+comparison data, with actual native custody checked separately by the fresh
+recovery reader. The earlier failed VMs provide no completion credit for T2.

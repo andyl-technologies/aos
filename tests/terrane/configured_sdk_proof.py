@@ -19,6 +19,7 @@ import tomllib
 
 
 CASES = [
+    "actual_original_profile_mismatch_requires_process_exit",
     "preflight_refuses_unavailable_compositions_before_missing_authority_io",
     "preflight_refuses_roles_and_missing_trust_without_installation",
     "role_selection_and_instance_credentials_fail_before_any_repository_open",
@@ -168,8 +169,8 @@ def inventory(binary, environment, cwd):
     listed = [line.removesuffix(": test") for line in result.stdout.splitlines()
               if line.startswith(PREFIX) and line.endswith(": test")]
     expected = [PREFIX + case for case in CASES]
-    require(len(listed) == 11 and sorted(listed) == sorted(expected),
-            "actual configured SDK test inventory differs from the eleven required cases")
+    require(len(listed) == len(CASES) and sorted(listed) == sorted(expected),
+            "actual configured SDK test inventory differs from its required cases")
     return result.stdout
 
 
@@ -364,7 +365,7 @@ def launch(image, kind, arguments, native_cache=False):
 
 
 def unit(image, source):
-    """Runs all and only the eleven genuine configured SDK cases independently."""
+    """Runs all and only the registered genuine configured SDK cases independently."""
     identity = verify(image, source)
     native = native_helper(image / "share/native_sdk_test_image.py")
     require(identity["input_sha256"] == native.source_hashes(pathlib.Path.cwd(), source),
