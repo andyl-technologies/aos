@@ -7,8 +7,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
   if campaignComposition != null
   then
@@ -17,53 +16,18 @@ in
       inherit (campaignComposition) mode system;
     }
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-campaign-model";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
-
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
       ATTR_PATH = attrPath;
       TASK_IDS = builtins.concatStringsSep "," taskIds;
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-campaign-model";
           script = ''
             set -euo pipefail
             : "$DEPENDENCY_PATHS"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
             run_exact_lib_test() {
               gate_package=$1
@@ -72,9 +36,7 @@ in
               gate_test_log="$TMPDIR/campaign-model-test.log"
 
               printf 'listing library tests for %s\n' "$gate_package"
-              if cargo test --frozen --offline \
-                --manifest-path crates/Cargo.toml \
-                --target-dir "$TMPDIR/campaign-model-target" \
+              if crucible-cargo test \
                 -p "$gate_package" --lib -- --list 2>&1 \
                 | "${pkgs.coreutils}/bin/tee" "$gate_list_log"; then
                 :
@@ -91,9 +53,7 @@ in
               fi
 
               printf 'running exact test %s::%s\n' "$gate_package" "$gate_test"
-              if cargo test --frozen --offline \
-                --manifest-path crates/Cargo.toml \
-                --target-dir "$TMPDIR/campaign-model-target" \
+              if crucible-cargo test \
                 -p "$gate_package" --lib -- --exact "$gate_test" --test-threads=1 2>&1 \
                 | "${pkgs.coreutils}/bin/tee" "$gate_test_log"; then
                 :
@@ -109,12 +69,8 @@ in
               fi
             }
 
-            cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/campaign-model-target" \
-              -p crucible-campaign --lib -- --test-threads=1
-            cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/campaign-model-target" \
-              -p crucible-campaign --test gate_campaign_model -- --test-threads=1
+            crucible-cargo test -p crucible-campaign --lib -- --test-threads=1
+            crucible-cargo test -p crucible-campaign --test gate_campaign_model -- --test-threads=1
             run_exact_lib_test \
               crucible \
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples

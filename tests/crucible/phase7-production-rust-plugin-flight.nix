@@ -59,86 +59,65 @@
   idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   blockRecoveryNanos = 5000000000;
   blockGuest = import ./phase2-qemu-live-block-io-guest.nix {inherit pkgs;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate mkCrucibleBinaries workspaceTests;
+  testSupportFlag = lib.optionalString ackPollExperiment "--features test-support";
+  # Debug tests that must pass before the flight executables are trusted.
+  flightPrerequisites = mkCrucibleTestGate {
+    pname = "crucible-production-rust-plugin-flight-prerequisites";
+    src = source;
+    phases = [
+      {
+        name = "run-flight-prerequisites";
+        script = ''
+          set -eu
+          test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
+            crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
+          crucible-cargo test \
+            -p crucible-qemu \
+            ${testSupportFlag} \
+            --example crucible-qemu-production-plugin-flight
+          crucible-cargo test \
+            -p crucible-qemu --lib \
+            spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
+          crucible-cargo test \
+            -p crucible-qemu --lib \
+            runtime_trace_budget_rejects_unbounded_or_empty_admission
+          crucible-cargo test \
+            -p crucible-qemu --lib \
+            supervision::runtime_determinism_trace::tests
+          mkdir -p "$out"
+          printf 'PASS\n' > "$out/result"
+        '';
+      }
+    ];
+  };
+  flightBinaries = mkCrucibleBinaries {
+    pname = "crucible-production-rust-plugin-flight-binaries";
+    builds =
+      [workspaceTests.apacheRelease]
+      ++ lib.optional ackPollExperiment workspaceTests.apacheReleaseTestSupport;
+    executables = {
+      crucible-qemu-production-plugin-flight = "build --release -p crucible-qemu ${testSupportFlag} --example crucible-qemu-production-plugin-flight";
+      crucible-daemon-host-parallel-flight = "test --release -p crucible-daemon --lib";
+    };
+  };
   flight = pkgs.mkDerivation {
     pname = "crucible-production-rust-plugin-flight";
     version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    src = source;
-    buildDeps = [
-      pkgs.coreutils
-      pkgs.jq
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
-      pkgs.sed
-
-      pkgs.sqlite
-    ];
+    src = null;
+    buildDeps = [pkgs.coreutils flightPrerequisites flightBinaries];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
+        name = "install";
         script = ''
           set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
-          cargo build --frozen --offline --release \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
-            ${lib.optionalString ackPollExperiment "--features test-support"} \
-            --example crucible-qemu-production-plugin-flight
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
-            ${lib.optionalString ackPollExperiment "--features test-support"} \
-            --example crucible-qemu-production-plugin-flight
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
-            spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
-            runtime_trace_budget_rejects_unbounded_or_empty_admission
-          cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
-            supervision::runtime_determinism_trace::tests
-          cargo test --frozen --offline --release --no-run \
-            --message-format=json-render-diagnostics \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/daemon-messages.jsonl"
-          daemon_test=$(jq -r \
-            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-            "$TMPDIR/daemon-messages.jsonl")
-          test -f "$daemon_test"
-          mkdir -p "$out/bin"
-          cp \
-            "$TMPDIR/target/release/examples/crucible-qemu-production-plugin-flight" \
-            "$out/bin/"
-          cp "$daemon_test" "$out/bin/crucible-daemon-host-parallel-flight"
-          mkdir -p "$out/share"
-          cp tests/crucible/fixtures/e2e-determinism.scenario.toml "$out/share/"
+          test "$(cat ${flightPrerequisites}/result)" = PASS
+          mkdir -p "$out/bin" "$out/share"
+          cp ${flightBinaries}/bin/crucible-qemu-production-plugin-flight "$out/bin/"
+          cp ${flightBinaries}/bin/crucible-daemon-host-parallel-flight "$out/bin/"
+          cp ${source}/tests/crucible/fixtures/e2e-determinism.scenario.toml "$out/share/"
         '';
       }
     ];
