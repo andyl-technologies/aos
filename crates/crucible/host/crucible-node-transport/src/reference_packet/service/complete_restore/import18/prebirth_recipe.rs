@@ -138,26 +138,33 @@ impl PacketNativeImport18PrebirthRecipeWireData {
         &self.fields.identity
     }
 
-    /// Restricts independent initial demand to the same announced whole escrow.
+    /// Restricts initial demand to its original Prepare partition and whole escrow.
     ///
     /// This comparison grants no phase claim; full native recomputation remains
     /// necessary before any model or Hold effect.
     ///
     /// # Errors
-    /// Refuses an initial axis larger than the original escrow announcement.
+    /// Refuses an initial axis larger than its original Prepare partition or escrow.
     pub(in crate::reference_packet) fn authenticate_initial_limits_data(
         &self,
         initial: &crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
     ) -> Result<(), ProviderError> {
-        for (demand, maximum) in [
+        let demands = [
             initial.retained_requested_bytes,
             initial.maximum_simultaneous_transient_bytes,
             initial.declared_counter_scratch_bytes,
-        ]
-        .into_iter()
-        .zip(self.fields.escrow)
-        {
-            if demand > maximum {
+        ];
+        let prepare =
+            &self.fields.phases[PacketNativeImport18PrebirthPhase::Prepare.ordinal_data()];
+        for (axis, demand) in demands.into_iter().enumerate() {
+            if demand > prepare[axis] {
+                // Later phase maxima cannot fund already-spent Prepare work,
+                // even when the complete escrow and every copied header agree.
+                return Err(ProviderError::ResourceExhausted(
+                    "original import18 initial Prepare partition",
+                ));
+            }
+            if demand > self.fields.escrow[axis] {
                 return Err(invalid());
             }
         }
@@ -569,6 +576,11 @@ pub fn native_import18_prebirth_recipe_counter_scratch_data() -> usize {
         + size_of::<[usize; 5]>()
         + size_of::<RestoredSettledNative17Limits>()
         + size_of::<Result<RestoredSettledNative17Limits, ProviderError>>()
+        + size_of::<[U64; 3]>()
+        + size_of::<&[U64; 3]>()
+        + size_of::<std::iter::Enumerate<std::array::IntoIter<U64, 3>>>()
+        + size_of::<(usize, U64)>()
+        + size_of::<usize>()
         + size_of::<std::slice::Iter<'static, [U64; 3]>>()
         + size_of::<std::slice::Iter<'static, U64>>()
         + size_of::<

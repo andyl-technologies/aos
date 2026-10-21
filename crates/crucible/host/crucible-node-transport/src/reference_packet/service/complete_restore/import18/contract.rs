@@ -11,6 +11,7 @@ const CONTRACT: &[u8] = br#"{
   "native_families":{"snapshot17":"source-owned.packet-native-continuation/17","snapshot18":"source-owned.packet-native-continuation/18"},
   "independent_families":"native Snapshot family is required independently of Source lineage and seventh-bank family; Source18 never implies Snapshot18; labels do not create completed owners",
   "prebirth_recipe_identity":{"algorithm":"BLAKE3 derive-key","domain":"source-owned.packet-native-import-prebirth-recipe-identity/18","body":"canonical JSON of every RecipeFields24 field except identity; closed field names and serde representations unchanged","meaning":"self-consistency only; complete independent native recipe reconstruction from actual seven-bank inputs precedes model or Hold effects"},
+  "initial_partition":"each independently derived initial retained/transient/counter demand fits its original Prepare partition; whole escrow or later phase maxima cannot substitute",
   "prepare_completion":"independently funded prepared-to-receive expected seven empty bank headers and original escrow; completed bytes and full recipe recomputation are required before model adoption, Hold, Arm or World",
   "role_order":["snapshot","after","control","anchor5","journal"],
   "input_bank_order":["after","control","anchor5","snapshot","journal","normalization18","explicit_semantic_spend_family"],

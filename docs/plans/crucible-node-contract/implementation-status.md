@@ -981,9 +981,13 @@ incomplete transfer, absent initial completion, foreign thread, expired cut,
 expiry during a real callback and callback refusal. Both full Transport suites
 pass 1,803 tests, zero failures, no filtering and sixteen existing ignores.
 The affected all-feature/all-target check and all six architecture gates pass.
-The required application check is running against the immutable source at
-`/nix/store/vlvwkxnx6pj2nywxncvnz5k9jn42zyns-aos-workspace-src`, with all
-145 Rust paths byte-exact to `7d46895ce4`.
+Required application compilation passes at
+`/nix/store/qg46v68riqzgqa885rc96wfji6qw5n6z-aos-test-targets-0.1.0`.
+Its immutable source at
+`/nix/store/vlvwkxnx6pj2nywxncvnz5k9jn42zyns-aos-workspace-src` matches all
+145 Rust paths changed through `7d46895ce4` byte for byte. Its inventory contains
+180 test executables across 58 package identities, including 71 integration
+targets.
 This is a guarded DATA inspection boundary; native signed Prepare custody,
 semantic decoding, complete recipe reconstruction and model adoption remain
 separate required transitions.
@@ -1013,12 +1017,43 @@ produce a sealed native graph or installation.
 
 Both full Transport configurations pass 1,804 tests, zero failures, no filtering
 and sixteen existing ignores. The affected all-feature/all-target check and
-all six architecture gates pass. Required application compilation is running
-against `/nix/store/il5xn75s7xyw180ryl4p9fd48bgj24qr-aos-workspace-src`, whose
-147 changed Rust paths match this checkpoint's implementation byte for byte.
+all six architecture gates pass. Required application compilation passes at
+`/nix/store/cqw73y7rk8p961xpa2scqb6yyzlvri8p-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities and 71 integration targets.
+Its source at
+`/nix/store/il5xn75s7xyw180ryl4p9fd48bgj24qr-aos-workspace-src` matches all
+147 Rust paths changed through `dd7892c5d6` byte for byte.
 Full graph/Controller/Source proof conjunction, semantic-spend and normalization
 validation, independent complete recipe reconstruction and native model adoption
 remain required before readiness.
+
+## Initial demand stays in the original Prepare partition
+
+Native initial header authentication now compares every independently derived
+retained, transient and counter axis with its own original Prepare partition,
+then with the whole escrow. A later phase's larger maximum or redistributed
+retained row cannot fund this already-spent initial work. The Import18 definition
+binds this rule explicitly; older contract editions remain unchanged.
+
+Three additional inherited-socket flights preserve the original whole escrow,
+valid recipe commitment and matching copied headers while independently reducing
+one Prepare axis. Each refuses at the actual partition check. The positive inert
+fixture previously assigned only ten MiB to Prepare despite roughly thirty-nine
+MiB of independently derived initial retained demand. It now assigns forty-two
+MiB to Prepare and two MiB to each later inert phase, preserving the same fifty-MiB
+retained sum and all original transient/counter maxima. This does not constitute
+a complete producer recipe or raise a native resource ceiling.
+
+All five focused tests pass in standard and raw-value builds, covering
+forty-eight inherited-socket flights. Both full Transport suites pass 1,804 tests,
+zero failures, no filtering and sixteen existing ignores. The added fixed
+comparison controls also enter the shared initial counter calculation. Affected
+all-feature/all-target checking and all six architecture gates pass. Application
+and funded-Source VM checks are running. The application capture at
+`/nix/store/d5m7plgzv9dfpx928pgklwygf0ywzdn1-aos-workspace-src` matches all
+147 changed Rust paths byte for byte. Full native phase custody, complete recipe
+production/reconstruction, model installation and RFC qualification remain
+unfinished.
 
 ## Original launch custody and shared startup geometry
 

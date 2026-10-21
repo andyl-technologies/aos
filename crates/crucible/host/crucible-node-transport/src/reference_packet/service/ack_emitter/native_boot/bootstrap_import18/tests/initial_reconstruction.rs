@@ -22,11 +22,32 @@ mod native_framing;
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
-    recipe["phases"] = json!(([["10485760", "167772160", "4194304"]; 5]));
+    // Prepare owns the independently derived initial retained population. The
+    // later inert rows share the remaining eight MiB of the same fifty-MiB sum.
+    recipe["phases"] = json!([
+        ["44040192", "167772160", "4194304"],
+        ["2097152", "167772160", "4194304"],
+        ["2097152", "167772160", "4194304"],
+        ["2097152", "167772160", "4194304"],
+        ["2097152", "167772160", "4194304"]
+    ]);
     recipe["escrow"] = json!(["52428800", "167772160", "4194304"]);
     if case == "initial_small_escrow" {
         recipe["phases"] = json!(([["1", "1", "1"]; 5]));
         recipe["escrow"] = json!(["5", "1", "1"]);
+    }
+    if let Some(axis) = match case {
+        "initial_short_prepare_retained" => Some(0),
+        "initial_short_prepare_transient" => Some(1),
+        "initial_short_prepare_scratch" => Some(2),
+        _ => None,
+    } {
+        recipe["phases"][0][axis] = json!("1");
+        if axis == 0 {
+            // Move exactly the missing retained partition to Commit. The sum
+            // and all whole-escrow axes still match the ordinary positive case.
+            recipe["phases"][1][0] = json!("46137343");
+        }
     }
     if case.starts_with("initial_inputs_") {
         completed_inputs::commit_recipe(&mut recipe);
@@ -197,6 +218,19 @@ pub(super) fn assert_child(
         .unwrap();
     } else {
         let result = owner.reconstruct_initial_data();
+        if matches!(
+            case,
+            "initial_short_prepare_retained"
+                | "initial_short_prepare_transient"
+                | "initial_short_prepare_scratch"
+        ) {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::ResourceExhausted(
+                    "original import18 initial Prepare partition"
+                ))
+            ));
+        }
         if matches!(case, "initial_bad_birth" | "initial_bad_host_executable") {
             // Canonical extents, raw hashes and all funding announcements still
             // match. The actual new private-identity join must reject this DATA.
@@ -306,6 +340,9 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_prefix_recipe",
         "initial_overstated_prefix",
         "initial_small_escrow",
+        "initial_short_prepare_retained",
+        "initial_short_prepare_transient",
+        "initial_short_prepare_scratch",
     ] {
         flight(case);
     }
