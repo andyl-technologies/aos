@@ -746,6 +746,17 @@ This qualifies those component cases, including original-process retirement
 and delegated-writer rejection; it does not establish installed execution
 creation or publication through the Controller.
 
+The AOS Nix QEMU check `fleet.sandbox-native-owner-units` passes the complete
+ordinary Broker (405), Guest-root realization (14), Host (407), Linux (541),
+and Network (416) unit suites. All 41 exact cases assigned to these owners by
+the Nix-sandbox native profile pass; no tests are filtered. Twelve separate
+installed-fixture tests remain explicitly ignored. The suites run as UID 1000
+with cleared supplementary groups, a 32 MiB stack and serial execution. Linux
+compilation and guest execution consume the exact running kernel's associated
+clone-layout DATA. The passing artifact is
+`/nix/store/4k4akakjb1fkfpk1x85zj9j0s2863hil-aos-fleet-test-sandbox-native-owner-units-0`.
+These unit tests do not establish the normal installed Controller lifecycle.
+
 Native recovery queries now bind the separately allocated Provider acquisition
 retained in the protected Mount row. The local Mount acquisition still selects
 that exact row. A fully signed and resealed graph that substitutes the local
