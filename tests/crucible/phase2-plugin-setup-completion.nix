@@ -10,6 +10,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
+  pluginMapping = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/setup/mapping.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs;
   protocol = builtins.concatStringsSep "\n" (map builtins.readFile [
@@ -26,6 +27,9 @@
       inherit lib;
       entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs;
     };
+  # RFC-0010 describes the original three-role exchange. The executable checks
+  # below also cover the later Source publication/cancellation roles and the
+  # optional digest workspace; the historical prose is not the current roster.
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -68,8 +72,12 @@
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocol [
       {
-        label = "setup descriptor count";
-        needle = "pub const SETUP_DESCRIPTOR_COUNT: usize = 3;";
+        label = "Source setup descriptor count";
+        needle = "pub const SETUP_DESCRIPTOR_COUNT: usize = 5;";
+      }
+      {
+        label = "workspace setup descriptor count";
+        needle = "pub const SETUP_WORKSPACE_DESCRIPTOR_COUNT: usize = 6;";
       }
       {
         label = "received setup token";
@@ -156,8 +164,8 @@
         needle = "send_setup_failure_ack(stream, PluginSetupFailureStage::ReceiveSetup)";
       }
       {
-        label = "maps advertised region length";
-        needle = "mmap_setup_region(shmem_fd.as_fd(), region_len)";
+        label = "mapping preparation retains the installing Source and advertised length";
+        needle = "mapping::prepare(original, shmem_fd.as_fd(), region_len)";
       }
       {
         label = "validates mapped header";
@@ -177,7 +185,7 @@
       }
       {
         label = "wake fd armed";
-        needle = "ArmedWakeFd::arm(wake_fd)";
+        needle = "ArmedWakeFd::arm_role(wake_fd)";
       }
       {
         label = "ready setup ack";
@@ -218,6 +226,24 @@
       {
         label = "node-count failure test";
         needle = "prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees";
+      }
+    ]
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup/mapping.rs" pluginMapping [
+      {
+        label = "mapping requires the retained installing Source";
+        needle = "native mapping has no retained installing Source";
+      }
+      {
+        label = "mapping corroborates the actual backing identity";
+        needle = "SetupRegionBackingIdentity::from_parts(device, inode, region_len)";
+      }
+      {
+        label = "native Source creates and retains the physical mapping";
+        needle = ".create_setup_mapping(identity)";
+      }
+      {
+        label = "standalone owned mapping is confined to the component fixture";
+        needle = "#[cfg(test)]\n    if source.is_none_or(InstallerStartupSource::has_setup_model)";
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
@@ -349,8 +375,11 @@ in
             status=partial
             gates=gate:abi-conformance,gate:control-responsive
             rust_tests=crucible-qemu-plugin::setup
-            setup_descriptors=exactly-two-SCM_RIGHTS
-            setup_region=mmap-region_len-and-validate-ABI
+            qualification=component-tests-and-source-contracts
+            native_source_positive=unexecuted
+            setup_descriptors=five-SCM_RIGHTS-or-six-with-digest-workspace
+            setup_region=native-Source-owned-mapping-with-backing-identity-and-ABI-validation
+            standalone_owned_mapping=test-fixture-only
             setup_cross_check=handshake-slot-and-node-count
             setup_ack=nonzero-on-failure-ready-after-callbacks
             RESULT
