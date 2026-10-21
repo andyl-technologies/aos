@@ -73,11 +73,14 @@ in {
         # fixed worker launch. Recipients compare its kernel identity with the
         # compiled aggregate; the descriptor is never a payer or effect grant.
         # The readiness helper and main do not consume a worker protocol.
-        TasksMax = lib.mkIf (name
+        # Unit provenance also inspects nested properties before rendering.
+        # Keep this optional envelope's guard next to its dependent value.
+        TasksMax = lib.mkIf (selected
+          && name
           != "aos-storaged"
           && name != "aos-sandbox-zfs-ready"
           && name != "aos-sandbox-guest-root-publisher@") (lib.mkForce (workerTasks name));
-        OpenFile = lib.mkIf (name != "aos-storaged" && name != "aos-sandbox-zfs-ready") [
+        OpenFile = lib.mkIf (selected && name != "aos-storaged" && name != "aos-sandbox-zfs-ready") [
           "/sys/fs/cgroup/aos.slice/aos-control.slice/aos-control-storage.slice:aos-storage-worker-aggregate-v1:read-only"
         ];
       };
