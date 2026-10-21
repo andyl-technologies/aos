@@ -55,6 +55,15 @@ pub struct NativePublicationInitialization {
     timestamp: u64,
     #[cfg(unix)]
     copy: Option<CopyInputs>,
+    #[cfg(unix)]
+    creator: Option<NativeFreshCreator>,
+}
+
+/// Retains the original root from the successful absent-root creation event.
+#[cfg(unix)]
+struct NativeFreshCreator {
+    root: Arc<std::fs::File>,
+    stamp: super::super::MetadataStamp,
 }
 
 /// Retains verified copy data and actual exclusion, without registration authority.
@@ -150,6 +159,7 @@ pub(crate) fn request_for_open(
             profile,
             timestamp,
             copy: None,
+            creator: None,
         })
     }
 

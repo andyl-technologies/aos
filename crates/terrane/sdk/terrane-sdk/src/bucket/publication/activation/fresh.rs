@@ -31,6 +31,11 @@ pub(super) mod test_fs;
 #[path = "copy_tests.rs"]
 pub(crate) mod copy_tests;
 
+/// Seals actual fresh creators for first administrative enrollment.
+#[cfg(unix)]
+#[path = "../../enrollment/native.rs"]
+pub(crate) mod enrollment;
+
 use super::NativePendingRoot;
 use crate::bucket::BucketBinding;
 use crate::store::{LocalFs, StoreErrorKind, StoreFailure};
@@ -75,7 +80,7 @@ pub(crate) fn initialize(
 
 #[cfg(unix)]
 async fn create(
-    request: NativePublicationInitialization,
+    mut request: NativePublicationInitialization,
 ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
     if request.copy.is_some() {
         return copy::create(request).await;
@@ -133,6 +138,12 @@ async fn create(
             None,
         )
         .await?;
+    // Only this successful create-new event can supply first-enrollment evidence.
+    // Copy initialization and existing-root recovery never receive this brand.
+    request.creator = Some(super::NativeFreshCreator {
+        root: Arc::clone(&root.file),
+        stamp: root.stamp,
+    });
     bootstrap::retain_directory(&directories, root)?;
 
     let coordination_key = BucketKey::parse("CAPABILITIES")

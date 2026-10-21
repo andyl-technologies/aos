@@ -229,6 +229,21 @@ pub fn provision_project(root: &File, project_id: u32, hard_limit_bytes: u64) ->
             "finite aligned project limit required",
         ));
     }
+    assign_project(root, project_id, true)?;
+    let mut limit = Dqblk {
+        block_hard: hard_limit_bytes / 1024,
+        valid: 1,
+        ..Dqblk::default()
+    };
+    quota(root, Q_SETQUOTA, project_id, &mut limit)?;
+    root.sync_all()
+}
+
+/// Assigns project attributes without changing unrelated native flags.
+///
+/// Only administrative directory provisioning and original enrollment receipts
+/// call this helper. It establishes neither a durable claim nor a quota limit.
+pub(super) fn assign_project(root: &File, project_id: u32, inherit: bool) -> io::Result<()> {
     let mut attributes = FsXattr::default();
     // SAFETY: The descriptor is live and the ioctl writes an ABI-compatible struct.
     if unsafe {
@@ -247,18 +262,14 @@ pub fn provision_project(root: &File, project_id: u32, hard_limit_bytes: u64) ->
         ));
     }
     attributes.project_id = project_id;
-    attributes.flags |= FS_XFLAG_PROJINHERIT;
+    if inherit {
+        attributes.flags |= FS_XFLAG_PROJINHERIT;
+    }
     // SAFETY: The ioctl reads only the initialized ABI-compatible attributes.
     if unsafe { libc::ioctl(root.as_raw_fd(), 0x401c5820 as libc::c_ulong, &attributes) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    let mut limit = Dqblk {
-        block_hard: hard_limit_bytes / 1024,
-        valid: 1,
-        ..Dqblk::default()
-    };
-    quota(root, Q_SETQUOTA, project_id, &mut limit)?;
-    root.sync_all()
+    Ok(())
 }
 
 /// Reads the external filesystem UUID from a retained native descriptor.

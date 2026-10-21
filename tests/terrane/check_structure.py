@@ -79,7 +79,7 @@ def main():
                 "host_quota/custody.rs": "14d975499b2766284f4d4e2f78433abf692296076ce58f12ee79e0efdbd96b48",
                 "host_quota/guard.rs": "d0b9f99cb13475def9f5482aec416fc68b5beb2410e11435118585154ded3944",
                 "host_quota/namespace.rs": "288636e7b7c86422d0533ad6ddce4929dd1ff83d9285c442d9161185036a7a2b",
-                "host_quota/native.rs": "63d23cfcc0ee38daa738148ff736f08e1c1ff17609fddb5a877626ce579d1be9",
+                "host_quota/native.rs": "ee67dc101f75238ce954b5aa89e1cfb694ab4e05ca70732ad32d890bad49b609",
                 "host_quota/socket.rs": "78a16b9580400da66c2876d72ea476684f3a0dc9539d71bacbdecc7c9102c2c3",
                 "host_quota/socket_signal_tests.rs": "c4f041e5cb000943899f5ab4ac6a2b2b47a3d5ba02c6408a5d2f915ee4011cc6",
                 "publisher_io/native.rs": "b4c8f4bdda791ee3a4a24e7400c886b238f4e9c6b08319456c5e867059de40b9",
