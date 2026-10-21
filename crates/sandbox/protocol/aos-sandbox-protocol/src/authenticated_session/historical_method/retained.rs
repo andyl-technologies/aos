@@ -135,10 +135,11 @@ impl HistoricalMethodCaptureV2 {
             .ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
         let peer = checkpoint.peer();
         let policy = crate::PeerPolicy { uid: peer.uid, gid: Some(peer.gid), audience: checkpoint.context().audience() };
-        // This is the actual durable companion's historical parse coordinate,
-        // never a fresh clock, deadline renewal or current dispatch authority.
-        let retained_time = prepared.request_companion().deadline_boottime_nanoseconds()
-            .checked_sub(1).ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
+        // The durable method and deadline select only a historical parse
+        // coordinate, never a fresh clock or current dispatch authority.
+        let retained_time = historical_request_verification_time_v1(
+            method, prepared.request_companion().deadline_boottime_nanoseconds(),
+        )?;
         let prior = self.prior.as_ref().and_then(|result|result.as_ref().ok())
             .ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
         let admission = self.request_capture.capture_once_v1(AuthenticatedBrokerRequestDirectionV1::ClientSend,

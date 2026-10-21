@@ -163,8 +163,10 @@ pub(super) fn reconstruct_retained_request_engine<'original>(history: &BrokerSes
     let bindings = security_value(authenticated_semantic_bindings_from_envelope_v1(canonical.message(), method)
         .map_err(|_| BrokerSessionSecurityError::Currentness), bindings_slot)?;
     let descriptor_count = canonical.message().descriptors.len();
-    let time = security_value(head.request_companion().deadline_boottime_nanoseconds().checked_sub(1)
-        .ok_or(BrokerSessionSecurityError::Currentness), time_slot)?;
+    let time = security_value(
+        aos_sandbox_protocol::authenticated_session::historical_method::historical_request_verification_time_v1(
+            method, head.request_companion().deadline_boottime_nanoseconds(),
+        ).map_err(|_| BrokerSessionSecurityError::Currentness), time_slot)?;
     let admission = admission_value(direction, &prior, head.request_packet(), descriptor_count,
         peer, policy, *time, *bindings, context, admission_slot)?;
     let request = match admission {

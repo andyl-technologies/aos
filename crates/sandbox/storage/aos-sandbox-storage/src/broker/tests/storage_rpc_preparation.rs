@@ -83,6 +83,62 @@ fn fresh_signed_expiry_survives_the_session_header_deadline() {
         .argument_commitment(),
     );
 
+    // Historical reconstruction must preserve the same signed meaning even
+    // when its catalog expiry precedes the transport deadline. The old parse
+    // coordinate rejected this valid request during exact terminal replay.
+    let deadline = reheadered
+        .header
+        .as_option()
+        .unwrap()
+        .deadline_boottime_nanoseconds;
+    assert!(
+        CanonicalStoragePreparationSemanticsV1::decode(
+            &bytes,
+            rpc_peer(),
+            rpc_peer_policy(),
+            deadline - 1,
+        )
+        .is_err()
+    );
+    let historical_time = aos_sandbox_protocol::authenticated_session::historical_method::historical_request_verification_time_v1(
+        aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+        deadline,
+    ).unwrap();
+    let historical = CanonicalStoragePreparationSemanticsV1::decode(
+        &bytes,
+        rpc_peer(),
+        rpc_peer_policy(),
+        historical_time,
+    )
+    .unwrap();
+    assert_eq!(
+        historical.argument_commitment(),
+        semantics.argument_commitment()
+    );
+    assert_eq!(historical.expires_boottime_nanoseconds(), expiry);
+
+    // History does not renew the request's live expiry or accept a zero bound.
+    assert!(
+        CanonicalStoragePreparationSemanticsV1::decode(
+            &bytes,
+            rpc_peer(),
+            rpc_peer_policy(),
+            expiry,
+        )
+        .is_err()
+    );
+    let mut zero_expiry = reheadered.clone();
+    zero_expiry.preparation_expires_boottime_nanoseconds = 0;
+    assert!(
+        CanonicalStoragePreparationSemanticsV1::decode(
+            &zero_expiry.encode_to_vec(),
+            rpc_peer(),
+            rpc_peer_policy(),
+            historical_time,
+        )
+        .is_err()
+    );
+
     reheadered.preparation_expires_boottime_nanoseconds += 1;
     let changed_bytes = reheadered.encode_to_vec();
     let changed = CanonicalStoragePreparationSemanticsV1::decode(

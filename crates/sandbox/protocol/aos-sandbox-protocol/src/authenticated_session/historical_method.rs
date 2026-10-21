@@ -5,6 +5,8 @@
 
 mod retained;
 
+use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
+
 #[doc(hidden)]
 pub use retained::{HistoricalStorageMethodCaptureV1, HistoricalStartResourceMethodCaptureV2, HistoricalStorageGuestRootMethodCaptureV2, HistoricalDeleteCleanupMethodCaptureV4};
 
@@ -27,6 +29,31 @@ pub enum HistoricalMethodReplayErrorV1 {
     /// A recorded packet, semantic binding or exact historical predecessor differs.
     #[error("invalid historical authenticated broker method")]
     Invalid,
+}
+
+/// Selects a structural parse coordinate for an authenticated historical request.
+///
+/// Prepare has an independent catalog expiry that can precede its transport
+/// deadline. Its historical parser checks both nonzero horizons from the boot
+/// origin, rather than treating the transport deadline as an admission time.
+/// This coordinate supplies neither a clock observation nor live currentness;
+/// new requests still require their actual protected clock and authorization.
+///
+/// # Errors
+///
+/// Rejects a zero durable transport deadline.
+pub fn historical_request_verification_time_v1(
+    method: BrokerMethod,
+    deadline_boottime_nanoseconds: u64,
+) -> Result<u64, HistoricalMethodReplayErrorV1> {
+    let before_deadline = deadline_boottime_nanoseconds
+        .checked_sub(1)
+        .ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
+
+    Ok(match method {
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => 0,
+        _ => before_deadline,
+    })
 }
 
 /// Reconstructs one successful historical terminal outcome and its exact request.
@@ -130,11 +157,9 @@ pub fn historical_client_request(
         gid: Some(peer.gid),
         audience: checkpoint.context().audience(),
     };
-    let retained_time = prepared
-        .request_companion()
-        .deadline_boottime_nanoseconds()
-        .checked_sub(1)
-        .ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
+    let retained_time = historical_request_verification_time_v1(
+        method, prepared.request_companion().deadline_boottime_nanoseconds(),
+    )?;
     let (request, pending_traffic) =
         match prepare_client_sent_authenticated_broker_method_request_v1(
             &prior,
