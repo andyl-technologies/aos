@@ -90,7 +90,9 @@ fn inherited_raw_bootstrap_child() {
     }
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
+    assert!(owner.inputs.is_empty_data());
     let result = owner.receive();
+    assert!(owner.inputs.is_empty_data());
     let received = owner.received;
     let retained = owner.retained_requested_bytes().unwrap();
 

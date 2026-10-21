@@ -447,6 +447,14 @@ and the real five-second open-writer timeout. The private child helper is ignore
 in ordinary discovery and invoked explicitly by its parent tests. These fixtures
 contain inert raw bodies and construct no opaque Initial or Recipe.
 
+The same raw owner also constructs seven distinct empty receiving-bank headers
+before any read. Their exact role order, transfer state and zero capacities
+survive successful and refused receipt. The raw floor includes their actual
+inline headers and constructor/counter states; the census counts any backing
+separately. All eight physical inherited-channel controls pass with these
+headers. No backing allocation, Prepare token, reference binding or completed
+seven-bank custody is implied by their empty construction.
+
 This physical precursor remains unselected from native startup. Its floor is
 only raw receiver demand; typed body parsing, complete seven-bank custody and
 their independent Initial producer remain unfinished. No model, native Boot,

@@ -19,6 +19,10 @@ use crate::reference_packet::service::complete_restore::import18::{
 };
 use std::{mem::size_of, os::unix::net::UnixStream, thread::ThreadId, time::Duration};
 
+#[path = "bootstrap_import18/receiving_banks.rs"]
+mod receiving_banks;
+use receiving_banks::OriginalImport18ReceivingBanks;
+
 /// Restricts the three raw inputs independently of their announced allocation.
 #[derive(Clone, Copy)]
 pub(super) struct Import18RawBootstrapBounds {
@@ -38,6 +42,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     prefix_received: usize,
     header: Option<PacketNativeImport18PrivatePrefixData>,
     bodies: [Vec<u8>; 3],
+    inputs: OriginalImport18ReceivingBanks,
     received: [usize; 3],
     tail: [u8; 1],
     tail_received: usize,
@@ -63,6 +68,7 @@ impl OriginalImport18RawBootstrap {
             prefix_received: 0,
             header: None,
             bodies: std::array::from_fn(|_| Vec::new()),
+            inputs: OriginalImport18ReceivingBanks::empty(),
             received: [0; 3],
             tail: [0; 1],
             tail_received: 0,
@@ -162,9 +168,15 @@ impl OriginalImport18RawBootstrap {
     /// Counts actual capacities even after a partial or failed read.
     pub(super) fn retained_requested_bytes(&self) -> Result<usize, ProviderError> {
         self.authenticate_origin()?;
-        self.bodies.iter().try_fold(size_of::<Self>(), |sum, bank| {
-            sum.checked_add(bank.capacity()).ok_or_else(exhausted)
-        })
+        let retained = self
+            .bodies
+            .iter()
+            .try_fold(size_of::<Self>(), |sum, bank| {
+                sum.checked_add(bank.capacity()).ok_or_else(exhausted)
+            })?;
+        retained
+            .checked_add(self.inputs.retained_backing_data()?)
+            .ok_or_else(exhausted)
     }
 
     fn authenticate_origin(&self) -> Result<(), ProviderError> {
@@ -215,8 +227,10 @@ pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], Provi
         + size_of::<Option<PacketNativeImport18PrivatePrefixData>>()
         + size_of::<OriginalImport18RawBootstrap>()
         + size_of::<Result<OriginalImport18RawBootstrap, ProviderError>>()
-        + size_of::<Result<(), ProviderError>>();
+        + size_of::<Result<(), ProviderError>>()
+        + OriginalImport18ReceivingBanks::construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
+        + OriginalImport18ReceivingBanks::counter_scratch_data()
         + size_of::<&OriginalImport18RawBootstrap>()
         + size_of::<&mut OriginalImport18RawBootstrap>()
         + size_of::<&UnixStream>()
