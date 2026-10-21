@@ -2260,7 +2260,9 @@ All 5,265 tracked crate Rust/TOML files in immutable
 `jfv13k43pv4sq8463bdmfyilj2l96id9-aos-workspace-src` match committed Git blobs;
 source manifest SHA256 is
 `c3809ce92a2e455339610d25b27ca08638b29d2f4623a07929de576ba7675742`.
-The 193-case exact supervision gate remains pending. Current coverage has 310
+All 193 exact hermetic supervision cases pass at
+`/nix/store/sab3vk1ijpffdhn2cc7rwzsbvbgzp7v6-crucible-gate-ram-supervision-0`.
+Coverage at that checkpoint has 310
 bindings (291 component and nineteen native), 148 uncovered requirements and
 none qualified. Genuine Source issuance and complete physical cleanup remain
 unfinished.
@@ -2276,6 +2278,31 @@ launched Source/Root the sole refusal. The formal causal positive times out at
 An earlier 43.380-second diagnostic bypassed repeated provider metadata
 loading and is not a formal timing pass. This candidate remains uncommitted;
 matched integration and real metadata authentication efficiency are in progress.
+
+### 2026-10-21 paired publisher purpose and plan-nine preparation
+
+Commit `9d9a713dae` adds independently implemented permissive Rust preparation
+for the sealed 224-byte `CRUCPSP1` publisher purpose and `CRUCSUP9` plan carrier.
+It checks the publisher's account, process, capability and reservation against
+the existing process purpose. Plan nine adds eight header bytes and a 224-byte
+tail inside the unchanged aggregate cap; the existing encoder preserves exact
+plan-eight bytes. Separate decoders refuse mixed editions and fallback.
+Workspace-present and absent carriers retain their same original bindings.
+
+All 160 protocol unit tests and 95 integration tests pass, including eight new
+literal, truncation, geometry, identity, workspace and aggregate-limit controls.
+Strict protocol Clippy, all 73 focused policy checks and five hygiene checks
+pass. Mandatory application compilation and the 201-case exact supervision gate
+remain pending. All 5,269 tracked crate Rust/TOML files in the application's
+immutable `rlsg3b0cpsk22nv3qjqkw1fqwdq60hnb-aos-workspace-src` match committed
+Git blobs; source manifest SHA256 is
+`2726dcb90be4eae0b8904793ec4071b300444b28fbe32ed17950ecca0367ec53`.
+
+The inventory contains 318 bindings (299 component and nineteen native), with
+148 requirements uncovered and none qualified. These codecs create no funded
+lender, queued alias, mapping, native session or operation. Genuine producer
+construction, matched transport integration, physical returns, class-one
+execution and activation remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
