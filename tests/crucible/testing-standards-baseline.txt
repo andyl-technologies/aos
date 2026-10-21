@@ -113,7 +113,6 @@ crucible-qemu-host	src/linux_cgroup/attempt_owner	thread::sleep	1
 crucible-qemu-host	src/linux_cgroup/quarantine	thread::sleep	1
 crucible-qemu-host	src/linux_cgroup	retry	1
 crucible-qemu-host	src/linux_cgroup	thread::sleep	1
-crucible-qemu-host	src/spawn	thread::sleep	1
 crucible-control-server	src/debug_gateway	std::thread::sleep	1
 crucible-control-server	src/debug_gateway	thread::sleep	1
 crucible-daemon	src/vm_lifecycle/network_faults/route/custody_and_payload	retry	1

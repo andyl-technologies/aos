@@ -104,6 +104,27 @@ new helper controls bring the component inventory to 105 cases. The inventory
 still has 149 requirements without named cases and no qualified requirements;
 named cases remain distinct from native qualification.
 
+The partial-probe increment retains stdout, stderr and observed exit status in
+that same helper journal while polling. Timeout, excess output and unwind cannot
+destroy an already collected prefix. The fresh-launch recipe reserves both fixed
+1 MiB capture capacities before process-family sizing; the probe allocates them
+before helper birth and cannot reuse that capture reservation for another probe.
+The whitebox probe uses the same bound. Three new controls exercise actual probe
+processes and bounded capture growth. They establish neither genuine Main funding
+handoff nor native helper/Source return.
+
+The updated host run passes 1,236 library tests with the same eight missing-receiver
+failures and four ignored probes; all integration targets pass. All 70 specific
+source-policy controls pass, while the broad gate retains the same 21 unfinished
+paths. The moved polling removes its obsolete parent-module sleep baseline. Five
+hygiene, two rustdoc, eighteen ABI and four license controls pass; the Nix hygiene
+check and required application test-target compilation also pass. The expanded
+supervision gate passes all ten exact cases. Coverage now binds 108 component
+cases and still has 149 uncovered requirements and zero qualified requirements.
+The full plugin run also passes 1,088 unit tests and every integration gate.
+Native activation, complete diagnostic funding, genuine receiving ownership,
+simultaneous families and CPU/wall parity remain implementation obligations.
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

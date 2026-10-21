@@ -1,6 +1,6 @@
 //! Binds image-helper polling to its creator's saved Original and child.
 //!
-//! Only the bounded sleep is classified. The receiver retains process cleanup
+//! Only the two bounded sleeps are classified. The receiver retains process cleanup
 //! and unresolved diagnostic custody; this contract issues neither custody.
 
 use super::{Companion, Contract};
@@ -41,35 +41,71 @@ loop {
 }"#,
             1,
         ),
+        (
+            r#"pub(super) fn wait_probe(
+    child: &mut QemuNodeChild,
+    original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    input: &[u8],
+    maximum_output_bytes: usize,
+    deadline: &HostSupervisionDeadline,
+    output: &mut Option<RetainedHelperOutput>,
+) -> Result<Output, QemuSpawnError>"#,
+            1,
+        ),
+        (
+            r#"loop {
+    let remaining = wait_slice(original)?;
+    if !deadline.has_time_remaining() {
+        return Err(QemuSpawnError::GuardedQemuProbeTimeout);
+    }"#,
+            1,
+        ),
+        (
+            r#"if !progressed {
+    thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining));
+}"#,
+            1,
+        ),
+        (
+            r#"fn prepare_storage() -> Option<RetainedHelperOutput> {
+    Some(RetainedHelperOutput::PartialProbe(PartialProbeOutput {
+        stdout: ProbeCapture::new(MAXIMUM_PROBE_OUTPUT_BYTES),
+        stderr: ProbeCapture::new(MAXIMUM_PROBE_OUTPUT_BYTES),
+        status: None,
+    }))
+}"#,
+            1,
+        ),
     ],
     expressions: &[(
         "thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining));",
-        1,
+        2,
     )],
     identifiers: &[],
     companions: &[
         Companion {
+            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose.rs",
+            required: &[(
+                r#".checked_add(helper_error_bytes)
+.and_then(|bytes| {
+    bytes.checked_add(crate::spawn::helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?,)
+})"#,
+                1,
+            )],
+        },
+        Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs",
             required: &[
                 (
-                    r#"process_contract.with_spawned_helper(command, operation, |child, original| {
+                    r#"process_contract.with_spawned_helper(command, operation, |child, original, _output| {
     helper_receiver::wait_image_tool(child, original, operation)
 })"#,
                     1,
                 ),
                 (
-                    r#"let mut status = None;
-loop {
-    let remaining = helper_receiver::wait_slice(original)?;
-    if !deadline.has_time_remaining() {
-        return Err(QemuSpawnError::GuardedQemuProbeTimeout);
-    }"#,
-                    1,
-                ),
-                (
-                    r#"if !progressed {
-    thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining));
-}"#,
+                    r#"helper_receiver::wait_probe(
+    child, original, input, maximum_output_bytes, &deadline, output,
+)"#,
                     1,
                 ),
             ],
@@ -82,7 +118,10 @@ loop {
                     "let post = HelperPost { original: &self.origin, slot: &mut slot, };",
                     1,
                 ),
-                ("Some(child) => body(child, &self.origin),", 1),
+                (
+                    "Some(child) => body(child, &self.origin, &mut post.slot.output),",
+                    1,
+                ),
                 ("self.slot.after = self.original.wait_slice().err();", 1),
             ],
         },

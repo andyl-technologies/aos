@@ -153,6 +153,9 @@
         (case "host_supervision::tests::saturated_work_inventory_retains_two_finite_control_records" "adversarial" ["TIME-9"] "Finite ordinary work saturation preserves separately bounded control and cleanup records; no native fault-service availability qualification.")
       ])
       (group "qemu/crucible-qemu-host" "lib" [] [
+        (case "spawn::helper_receiver::tests::probe_timeout_retains_both_partial_streams_and_the_live_child" "adversarial" ["TIME-7" "TIME-9"] "A real component probe times out with both actual partial diagnostic streams retained in its receiving slot and its child still owned for cleanup; no native Source, funding transfer or full-owner return qualification.")
+        (case "spawn::helper_receiver::tests::probe_output_limit_keeps_the_first_bounded_bytes_and_child_custody" "adversarial" ["TIME-7" "TIME-9"] "The production probe rejects excess real output while preserving each bounded prefix and actual process custody; no native Source or final diagnostic funding qualification.")
+        (case "spawn::helper_receiver::tests::probe_capture_never_grows_beyond_its_prepaid_capacity" "adversarial" ["TIME-9"] "A capture refuses excess bytes without growing its admitted allocation; this allocation-bound control issues no native resource credit.")
         (case "spawn::helper_receiver::tests::image_wait_observes_success_under_the_existing_original" "positive" ["TIME-2" "TIME-9"] "A real component child completes under the same retained operation identity; no native Source, helper recipient or funding qualification.")
         (case "spawn::helper_receiver::tests::image_wait_retains_the_live_child_when_its_same_original_is_canceled" "adversarial" ["TIME-2" "TIME-7" "TIME-9"] "Cancellation after process birth refuses the production image wait with the same typed operation cause while the component retains the live child for containment; no native cleanup-return or funding qualification.")
       ])

@@ -20,7 +20,8 @@ use super::{
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
 const X86_WHITEBOX_MONITOR_QUERY: &[u8] = b"info mtree -f\nquit\n";
-const MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES: usize =
+    crate::spawn::helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES;
 const X86_WHITEBOX_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A setup-time proof for the architecture's frozen white-box instruction.

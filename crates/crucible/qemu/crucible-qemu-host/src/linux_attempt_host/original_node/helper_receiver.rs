@@ -18,6 +18,7 @@ pub(super) struct HelperDebt {
     after: Option<HostSupervisionError>,
     output: Option<RetainedHelperOutput>,
     panicked: bool,
+    probe_prepared: bool,
     first_cleanup: Option<crate::QemuNodeError>,
     latest_cleanup: Option<crate::QemuNodeError>,
 }
@@ -40,6 +41,12 @@ pub struct QemuIssuedHelperHistory<'a> {
     pub process_id: Option<u32>,
     /// Actual retained probe bytes and exit output before a refused post.
     pub probe_output: Option<&'a std::process::Output>,
+    /// Actual stdout bytes, including a partial capture retained on refusal.
+    pub probe_stdout: Option<&'a [u8]>,
+    /// Actual stderr bytes, including a partial capture retained on refusal.
+    pub probe_stderr: Option<&'a [u8]>,
+    /// Actual observed exit, independent of stream completion and later refusal.
+    pub probe_status: Option<std::process::ExitStatus>,
     /// Whether an image helper's successful body output remains retained.
     pub image_completed: bool,
     /// Whether the real callback unwound while this helper field was borrowed.
@@ -48,6 +55,11 @@ pub struct QemuIssuedHelperHistory<'a> {
 
 impl HelperDebt {
     pub(super) fn history(&self) -> QemuIssuedHelperHistory<'_> {
+        let probe_bytes = self
+            .output
+            .as_ref()
+            .and_then(RetainedHelperOutput::probe_bytes);
+
         QemuIssuedHelperHistory {
             first: self.first.as_ref().map(SharedFirst::source_ref),
             before: self.before,
@@ -62,6 +74,12 @@ impl HelperDebt {
                 Some(RetainedHelperOutput::Probe(output)) => Some(output),
                 _ => None,
             },
+            probe_stdout: probe_bytes.map(|(stdout, _)| stdout),
+            probe_stderr: probe_bytes.map(|(_, stderr)| stderr),
+            probe_status: self
+                .output
+                .as_ref()
+                .and_then(RetainedHelperOutput::probe_status),
             image_completed: matches!(self.output, Some(RetainedHelperOutput::Image)),
             panicked: self.panicked,
         }
@@ -124,6 +142,7 @@ impl OriginalNativeFreshLaunchError {
         body: impl FnOnce(
             &mut crate::QemuNodeChild,
             &HostOperationGuard,
+            &mut Option<RetainedHelperOutput>,
         ) -> Result<T, crate::QemuSpawnError>,
     ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
         let refused = || {
@@ -141,7 +160,8 @@ impl OriginalNativeFreshLaunchError {
                 self,
             ));
         }
-        if slot.panicked
+        if (T::CAPTURES_PROBE && slot.probe_prepared)
+            || slot.panicked
             || slot.child.is_some()
             || slot.output.is_some()
             || slot.before.is_some()
@@ -164,31 +184,38 @@ impl OriginalNativeFreshLaunchError {
                 .save_first(crate::QemuSpawnError::SourceAdmission {
                     source: first.into(),
                 }),
-            Ok(_) => match command.spawn() {
-                Err(source) => post
-                    .slot
-                    .save_first(crate::QemuSpawnError::Io { operation, source }),
-                Ok(child) => {
-                    // Save the actual child before pipe validation or any post.
-                    post.slot.child = Some(crate::node::RetainedChild::new(
-                        crate::QemuNodeChild::new(child),
-                        None,
-                    ));
-                    let result = match post
+            Ok(_) => {
+                // The Source recipe pays both fixed probe capacities before
+                // child birth. Keep the buffers in this same journal while the
+                // body mutates them, including on refused reads and unwind.
+                post.slot.probe_prepared |= T::CAPTURES_PROBE;
+                post.slot.output = T::prepare_storage();
+                match command.spawn() {
+                    Err(source) => post
                         .slot
-                        .child
-                        .as_mut()
-                        .and_then(crate::node::RetainedChild::direct_child_mut)
-                    {
-                        Some(child) => body(child, &self.origin),
-                        None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
-                    };
-                    match result {
-                        Ok(output) => post.slot.output = Some(output.retain()),
-                        Err(first) => post.slot.save_first(first),
+                        .save_first(crate::QemuSpawnError::Io { operation, source }),
+                    Ok(child) => {
+                        // Save the actual child before pipe validation or any post.
+                        post.slot.child = Some(crate::node::RetainedChild::new(
+                            crate::QemuNodeChild::new(child),
+                            None,
+                        ));
+                        let result = match post
+                            .slot
+                            .child
+                            .as_mut()
+                            .and_then(crate::node::RetainedChild::direct_child_mut)
+                        {
+                            Some(child) => body(child, &self.origin, &mut post.slot.output),
+                            None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
+                        };
+                        match result {
+                            Ok(output) => post.slot.output = Some(output.retain()),
+                            Err(first) => post.slot.save_first(first),
+                        }
                     }
                 }
-            },
+            }
         }
         drop(post);
         if let Some(first) = slot.after {

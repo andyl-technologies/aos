@@ -1091,6 +1091,13 @@ pub(super) fn fresh_launch_control_extent() -> Result<u64, OriginalActorAccountE
         .pad_to_align()
         .size()
         .checked_add(helper_error_bytes)
+        // A single probe owns these two disjoint capacities through its same
+        // Source journal; reserve the full floor before process-family sizing.
+        .and_then(|bytes| {
+            bytes.checked_add(
+                crate::spawn::helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?,
+            )
+        })
         .and_then(|bytes| {
             bytes.checked_add(
                 usize::from(super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS)

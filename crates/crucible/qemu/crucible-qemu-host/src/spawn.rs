@@ -2071,6 +2071,13 @@ fn run_guarded_qemu_setup_probe_inner(
         return Err(QemuGuardedImagePreparationError::local(source));
     }
 
+    if maximum_output_bytes > helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES {
+        return Err(QemuGuardedImagePreparationError::local(invalid_input(
+            "prepare guarded QEMU setup probe",
+            "probe output exceeds the issued Source capture capacity",
+        )));
+    }
+
     let deadline = HostSupervisionDeadline::start(timeout);
     let mut command = Command::new(launch.executable());
     command
@@ -2094,102 +2101,15 @@ fn run_guarded_qemu_setup_probe_inner(
     process_contract.with_spawned_helper(
         command,
         "spawn guarded QEMU setup probe",
-        |child, original| {
-            let (child_stdin, child_stdout, child_stderr) = child.take_guarded_probe_pipes()?;
-            nonblocking_probe_pipe(&child_stdin)
-                .and_then(|()| nonblocking_probe_pipe(&child_stdout))
-                .and_then(|()| nonblocking_probe_pipe(&child_stderr))?;
-            let mut stdin = (!input.is_empty()).then_some(child_stdin);
-            let mut stdout = child_stdout;
-            let mut stderr = child_stderr;
-            let mut written = 0;
-            let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
-            let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
-            let mut status = None;
-
-            loop {
-                let remaining = helper_receiver::wait_slice(original)?;
-                if !deadline.has_time_remaining() {
-                    return Err(QemuSpawnError::GuardedQemuProbeTimeout);
-                }
-
-                let mut progressed = false;
-                if let Some(pipe) = stdin.as_mut() {
-                    match pipe.write(&input[written..]) {
-                        Ok(0) => {
-                            return Err(QemuSpawnError::Io {
-                                operation: "write guarded QEMU setup probe input",
-                                source: io::ErrorKind::WriteZero.into(),
-                            });
-                        }
-                        Ok(count) => {
-                            written += count;
-                            progressed = true;
-                            if written == input.len() {
-                                stdin = None;
-                            }
-                        }
-                        Err(error) if retryable_probe_io(&error) => {}
-                        Err(source) => {
-                            return Err(QemuSpawnError::Io {
-                                operation: "write guarded QEMU setup probe input",
-                                source,
-                            });
-                        }
-                    }
-                }
-
-                match stdout_capture.read_once(&mut stdout) {
-                    Ok(read_progressed) => progressed |= read_progressed,
-                    Err(source) => {
-                        return Err(QemuSpawnError::Io {
-                            operation: "read guarded QEMU setup probe stdout",
-                            source,
-                        });
-                    }
-                }
-                match stderr_capture.read_once(&mut stderr) {
-                    Ok(read_progressed) => progressed |= read_progressed,
-                    Err(source) => {
-                        return Err(QemuSpawnError::Io {
-                            operation: "read guarded QEMU setup probe stderr",
-                            source,
-                        });
-                    }
-                }
-                if stdout_capture.exceeded || stderr_capture.exceeded {
-                    return Err(QemuSpawnError::GuardedQemuProbeOutputLimit {
-                        maximum_bytes: maximum_output_bytes,
-                    });
-                }
-
-                if status.is_none() {
-                    match child.try_wait_natural_exit_raw() {
-                        Ok(observed) => status = observed,
-                        Err(error) => {
-                            return Err(QemuSpawnError::from_helper_wait(
-                                "poll guarded QEMU setup probe",
-                                error,
-                            ));
-                        }
-                    }
-                }
-                if stdout_capture.eof
-                    && stderr_capture.eof
-                    && stdin.is_none()
-                    && let Some(status) = status
-                {
-                    return Ok(Output {
-                        status,
-                        stdout: stdout_capture.bytes,
-                        stderr: stderr_capture.bytes,
-                    });
-                }
-
-                if !progressed {
-                    thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining));
-                }
-            }
+        |child, original, output| {
+            helper_receiver::wait_probe(
+                child,
+                original,
+                input,
+                maximum_output_bytes,
+                &deadline,
+                output,
+            )
         },
     )
 }
@@ -2253,7 +2173,7 @@ struct ProbeCapture {
 impl ProbeCapture {
     fn new(maximum_bytes: usize) -> Self {
         Self {
-            bytes: Vec::with_capacity(maximum_bytes.min(64 * 1024)),
+            bytes: Vec::with_capacity(maximum_bytes),
             maximum_bytes,
             exceeded: false,
             eof: false,
@@ -2356,7 +2276,7 @@ fn run_guarded_image_tool_for_purpose(
         .freeze_for_launch()
         .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
 
-    process_contract.with_spawned_helper(command, operation, |child, original| {
+    process_contract.with_spawned_helper(command, operation, |child, original, _output| {
         helper_receiver::wait_image_tool(child, original, operation)
     })
 }

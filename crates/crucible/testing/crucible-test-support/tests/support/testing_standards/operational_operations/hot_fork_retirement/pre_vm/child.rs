@@ -14,6 +14,7 @@ pub(super) const CALLER: Companion = Companion {
     body: impl FnOnce(
         &mut QemuNodeChild,
         &crucible_host_resources::host_supervision::HostOperationGuard,
+        &mut Option<RetainedHelperOutput>,
     ) -> Result<T, QemuSpawnError>,
 ) -> Result<T, QemuGuardedImagePreparationError> {
     #[cfg(target_os = "linux")]
@@ -69,6 +70,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     body: impl FnOnce(
         &mut crate::QemuNodeChild,
         &HostOperationGuard,
+        &mut Option<RetainedHelperOutput>,
     ) -> Result<T, crate::QemuSpawnError>,
 ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
     let refused = || {
@@ -82,7 +84,8 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
             crate::QemuSpawnError::HelperFailure { first: first.clone(), }, self,
         ));
     }
-    if slot.panicked || slot.child.is_some() || slot.output.is_some()
+    if (T::CAPTURES_PROBE && slot.probe_prepared)
+        || slot.panicked || slot.child.is_some() || slot.output.is_some()
         || slot.before.is_some() || slot.after.is_some() || slot.first_cleanup.is_some()
     { return Err(refused()); }
     slot.lender = Some(receiver.clone());
@@ -91,7 +94,10 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     let post = HelperPost { original: &self.origin, slot: &mut slot, };
     match before {
         Err(first) => post.slot.save_first(crate::QemuSpawnError::SourceAdmission { source: first.into(), }),
-        Ok(_) => match command.spawn() {
+        Ok(_) => {
+            post.slot.probe_prepared |= T::CAPTURES_PROBE;
+            post.slot.output = T::prepare_storage();
+            match command.spawn() {
             Err(source) => post.slot.save_first(crate::QemuSpawnError::Io { operation, source }),
             Ok(child) => {
                 post.slot.child = Some(crate::node::RetainedChild::new(
@@ -100,7 +106,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
                 let result = match post.slot.child.as_mut()
                     .and_then(crate::node::RetainedChild::direct_child_mut)
                 {
-                    Some(child) => body(child, &self.origin),
+                    Some(child) => body(child, &self.origin, &mut post.slot.output),
                     None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
                 };
                 match result {
@@ -108,7 +114,8 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
                     Err(first) => post.slot.save_first(first),
                 }
             }
-        },
+            }
+        }
     }
     drop(post);
     if let Some(first) = slot.after {
