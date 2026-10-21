@@ -23,13 +23,17 @@ COMPONENTS = (
     "apic-timer-storage", "clock-callback-custody", "clock-canonical-rows",
     "clock-storage-return", "flatview-custody", "memory-discard-custody",
     "memory-region-custody", "provider-metadata", "publisher-member-return",
-    "shmem-callback-return",
+    "shmem-callback-return", "publisher-service-transfer",
+    "initial-register-read", "ram-mapping-journal",
 )
 FULL_LINK = {
     "action-edge-post", "apic-timer-storage", "clock-storage-return",
     "shmem-callback-return",
 }
-QOM_LINK = {"flatview-custody", "memory-discard-custody", "memory-region-custody"}
+QOM_LINK = {
+    "flatview-custody", "memory-discard-custody", "memory-region-custody",
+    "ram-mapping-journal",
+}
 TARGET_FLAGS = {"apic-timer-storage", "clock-storage-return"}
 
 

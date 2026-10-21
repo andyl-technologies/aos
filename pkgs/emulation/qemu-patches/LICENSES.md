@@ -330,6 +330,14 @@ The atomic integration patch creates these QEMU source files:
 | `system/crucible-native-park-request.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-bounded-thread.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-cpu-instance.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-register-read.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-initial-register-read.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-publisher-service.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-register-read.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-initial-register-read.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-service-transfer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-ram-mapping-journal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-ram-mapping-qmp.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The Rust
