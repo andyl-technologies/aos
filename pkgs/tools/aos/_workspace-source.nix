@@ -75,6 +75,9 @@ in
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"
         || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString
+        || pathString == "${repoRootString}/tests/sandbox"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.cases"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.hex"
         || (
           selectedCrates
           == null
@@ -101,10 +104,7 @@ in
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
-        || pathString == "${repoRootString}/tests/sandbox"
         || pathString == "${repoRootString}/tests/sandbox/method46-tpm-transport-probe.c"
-        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.cases"
-        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.hex"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile";

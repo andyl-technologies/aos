@@ -262,6 +262,10 @@ in
   assert builtins.pathExists (expectedWorkspaceSource + "/crates/sandbox/model/aos-sandbox-policy/src/native/target/opening.rs")
   == builtins.pathExists ../../crates/sandbox/model/aos-sandbox-policy/src/native/target/opening.rs;
   assert !(builtins.pathExists (expectedWorkspaceSource + "/crates/target"));
+  assert builtins.readFile (expectedWorkspaceSource + "/tests/sandbox/network-kernel-plan-v1.cases")
+  == builtins.readFile ../sandbox/network-kernel-plan-v1.cases;
+  assert builtins.readFile (expectedWorkspaceSource + "/tests/sandbox/network-kernel-plan-v1.hex")
+  == builtins.readFile ../sandbox/network-kernel-plan-v1.hex;
   assert lib.length (lib.unique roleArtifactFamilies) == 12;
   assert controllerSelectionsRetained false;
   assert controllerSelectionsRetained true;
