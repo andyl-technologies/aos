@@ -30,6 +30,8 @@ struct RetainedOffer {
     ticket_issued: bool,
     withdrawal_attempted: bool,
     withdrawn: bool,
+    revocation_attempted: bool,
+    revoked: bool,
 }
 
 /// Lives in the session's prepaid body before mappings or command birth.
@@ -153,6 +155,8 @@ impl<Custody> SessionBody<Custody> {
             ticket_issued: false,
             withdrawal_attempted: false,
             withdrawn: false,
+            revocation_attempted: false,
+            revoked: false,
         });
         let offer = self
             .command
@@ -264,6 +268,67 @@ impl<Custody> SessionBody<Custody> {
             .ok_or(OperationFailure::Geometry)?
             .withdrawn = won;
         Ok(won)
+    }
+
+    /// Revokes an existing offer without changing its immutable command.
+    ///
+    /// The old command identity remains in the retained journal. The next wire
+    /// sequence makes existing recipients' exact-publication posts refuse;
+    /// permission also prevents a new receiver from acquiring the offer. This
+    /// physical change neither consumes the ticket nor returns any Source loan.
+    pub(super) fn revoke_command_offer(&mut self) -> Result<(), OperationFailure> {
+        let result = self.revoke_command_offer_inner();
+        if let Err(first) = result {
+            self.command.first.get_or_insert(first);
+        }
+        result
+    }
+
+    fn revoke_command_offer_inner(&mut self) -> Result<(), OperationFailure> {
+        let offer = self
+            .command
+            .offer
+            .as_mut()
+            .ok_or(OperationFailure::Geometry)?;
+        if offer.revocation_attempted {
+            return if offer.revoked {
+                Ok(())
+            } else {
+                Err(OperationFailure::Geometry)
+            };
+        }
+        if !offer.publication_committed {
+            return Err(OperationFailure::Geometry);
+        }
+        let previous = offer.publication.sequence;
+        let sequence = previous
+            .checked_add(2)
+            .filter(|sequence| *sequence < u64::MAX)
+            .ok_or(OperationFailure::Geometry)?;
+
+        // Once attempted, an uncertain seqlock transition is retained rather
+        // than retried. The actual born command and ticket are never replaced.
+        offer.revocation_attempted = true;
+        let words = self.command_words()?;
+        words[PUBLICATION_WORD]
+            .compare_exchange(
+                previous.to_be(),
+                (sequence - 1).to_be(),
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| OperationFailure::Geometry)?;
+        words[PUBLICATION_WORD + 3].store(
+            (PublisherPermission::Revoked as u64).to_be(),
+            Ordering::SeqCst,
+        );
+        words[PUBLICATION_WORD].store(sequence.to_be(), Ordering::SeqCst);
+        self.command
+            .offer
+            .as_mut()
+            .ok_or(OperationFailure::Geometry)?
+            .revoked = true;
+        Ok(())
     }
 }
 

@@ -269,3 +269,85 @@ fn uncertain_actual_mapping_blocks_command_and_preserves_physical_custody() {
     body.mapping_return_uncertain = false;
     assert!(body.return_physical(true));
 }
+
+#[test]
+fn revocation_changes_actual_permission_without_replacing_command_or_consuming_ticket() {
+    for phase in [
+        PublisherTicketPhase::Issued,
+        PublisherTicketPhase::Acquired,
+        PublisherTicketPhase::ReturnRequested,
+    ] {
+        let mut body = ready_session();
+        let expected = publication();
+        let identity = body.publish_command_offer(expected).unwrap();
+        replace_ticket(&body, identity.ticket_serial, phase);
+        let before = region_bytes(&body);
+
+        let (result, allocations) = TestAllocationObserver::count(|| body.revoke_command_offer());
+
+        result.unwrap();
+        assert_eq!(allocations.allocations, 0);
+        assert_eq!(allocations.reallocations, 0);
+        assert!(!allocations.overflow);
+        let after = region_bytes(&body);
+        let mut changed = before;
+        changed[256..264].copy_from_slice(&4_u64.to_be_bytes());
+        changed[280..288].copy_from_slice(&(PublisherPermission::Revoked as u64).to_be_bytes());
+        assert_eq!(after, changed);
+        let observed = PublisherPublication::decode(&after[256..1792]).unwrap();
+        assert_eq!(observed.sequence, 4);
+        assert_eq!(observed.permission, PublisherPermission::Revoked);
+        assert_eq!(observed.command, expected.command);
+        assert_eq!(ticket(&body).phase, phase);
+
+        let retained = body.command.offer.as_ref().unwrap();
+        assert_eq!(retained.publication, expected);
+        assert_eq!(retained.bytes, expected.encode().unwrap());
+        assert!(retained.revocation_attempted && retained.revoked);
+        body.revoke_command_offer().unwrap();
+        assert_eq!(region_bytes(&body), after);
+        assert!(!body.return_physical(false));
+        assert!(body.return_physical(true));
+    }
+}
+
+#[test]
+fn changed_actual_sequence_retains_uncertain_revocation_and_refuses_another_cas() {
+    let mut body = ready_session();
+    body.publish_command_offer(publication()).unwrap();
+    body.command_words().unwrap()[PUBLICATION_WORD].store(4_u64.to_be(), Ordering::SeqCst);
+    let before = region_bytes(&body);
+
+    assert!(body.revoke_command_offer().is_err());
+
+    assert_eq!(region_bytes(&body), before);
+    let retained = body.command.offer.as_ref().unwrap();
+    assert!(retained.revocation_attempted);
+    assert!(!retained.revoked);
+    assert!(matches!(
+        body.command.first,
+        Some(OperationFailure::Geometry)
+    ));
+
+    // Restore only this deliberately changed component word. Its journal still
+    // refuses another CAS even when the old expected bits are visible again.
+    body.command_words().unwrap()[PUBLICATION_WORD].store(2_u64.to_be(), Ordering::SeqCst);
+    let restored = region_bytes(&body);
+    assert!(body.revoke_command_offer().is_err());
+    assert_eq!(region_bytes(&body), restored);
+    assert!(body.return_physical(true));
+}
+
+#[test]
+fn absent_actual_offer_cannot_be_revoked_or_gain_birth_privilege_after_refusal() {
+    let mut body = ready_session();
+    let before = region_bytes(&body);
+
+    assert!(body.revoke_command_offer().is_err());
+
+    assert!(body.command.offer.is_none());
+    assert!(body.command.first.is_some());
+    assert!(body.publish_command_offer(publication()).is_err());
+    assert_eq!(region_bytes(&body), before);
+    assert!(body.return_physical(true));
+}
