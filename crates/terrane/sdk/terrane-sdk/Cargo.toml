@@ -12,12 +12,8 @@ buffa-types = { version = "=0.9.2", features = ["json"] }
 serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
-zstd.workspace = true
 blake3.workspace = true
 zeroize.workspace = true
-xattr = { version = "=1.6.1", optional = true }
-libc = { workspace = true, optional = true }
-rustix = { workspace = true, optional = true, features = ["process"] }
 
 reqwest = { workspace = true, optional = true, features = ["http2"] }
 tokio = { workspace = true, optional = true }
@@ -27,6 +23,19 @@ connectrpc = { workspace = true, optional = true, features = ["server-tls"] }
 rustls = { workspace = true, optional = true }
 jsonwebtoken = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
+
+# Preserve native parallel Zstd support without requiring POSIX threads on wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+zstd.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+zstd = "0.13"
+
+# Native filesystem dependencies must not enter portable std/wasm builds.
+[target.'cfg(unix)'.dependencies]
+xattr = { version = "=1.6.1", optional = true }
+libc = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["process"] }
 
 [dev-dependencies]
 prost.workspace = true

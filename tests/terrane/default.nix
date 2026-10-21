@@ -343,6 +343,8 @@
     ];
   };
 
+  wasmHostProof = import ./wasm-host-profile.nix {inherit pkgs sourceGateWithInputs;};
+
   workloadIssuerProof = import ./workload-issuer.nix {inherit sourceGate;};
   instanceIssuerProof = import ./gcp-instance-issuer.nix {inherit sourceGate;};
   configuredIssuerProof = import ./configured-workload-issuer.nix {inherit sourceGate;};
@@ -361,7 +363,7 @@
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes;}
-          // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof;}
+          // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof wasmHostProof sourceGateWithInputs;}
           // lib.optionalAttrs (file == "auth.nix") {inherit workloadIssuerProof instanceIssuerProof configuredIssuerProof;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof initialEnrollmentProof moduleEval;}
@@ -447,6 +449,7 @@ in {
   integration.native-quota-confinement-image = quotaConfinementProof.image;
   integration.native-quota-confinement = quotaConfinementProof.native;
   integration.configured-sdk-image = configuredSdkProof.image;
+  integration.wasm-host-profile = wasmHostProof;
   integration.configured-sdk-unit = configuredSdkProof.unit;
   integration.native-configured-sdk = configuredSdkProof.native;
   integration.host-cache-image = hostCacheProof.image;

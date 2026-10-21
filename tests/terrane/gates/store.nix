@@ -1,6 +1,8 @@
 {
   sourceGate,
+  sourceGateWithInputs,
   hostCacheProof,
+  wasmHostProof,
   ...
 }: let
   # Cargo succeeds when a filter matches nothing, so require the exact test
@@ -40,7 +42,19 @@ in {
     printf 'PASS: content and ref interfaces remain distinct\n' > "$out/result"
   '';
 
-  runtime-agnostic = sourceGate "runtime-agnostic" ''
+  runtime-agnostic = sourceGateWithInputs {extraBuildDeps = [wasmHostProof];} "runtime-agnostic" ''
+    python3 - ${wasmHostProof}/source-review.json "$src" <<'PY_WASM'
+    import json
+    import pathlib
+    import sys
+
+    evidence = json.loads(pathlib.Path(sys.argv[1]).read_text())
+    if (evidence["source"] != sys.argv[2]
+            or evidence["target"] != "wasm32-unknown-unknown"
+            or evidence["sdk_features"] != ["wasm"]
+            or evidence["compilation_only"] is not True):
+        raise SystemExit("portable wasm32 prerequisite source or profile mismatch")
+    PY_WASM
     cd crates
     ${focusedTest}
     cargo check --frozen --offline -p terrane-sdk --lib --no-default-features
@@ -79,7 +93,7 @@ in {
     run_store_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes --features tokio
     run_store_test store::bindings::tests::native_nofollow_sync_rejects_replacement_symlink_and_nonregular_files --features tokio
     run_store_test store::tests::native_http_client_is_send_and_sync --features tokio
-    printf 'PASS: portable store traits and native binding compile\n' > "$out/result"
+    printf 'PASS: portable store traits, native binding cases and actual wasm32 host-binding compilation\n' > "$out/result"
   '';
 
   feature-matrix = sourceGate "feature-matrix" ''

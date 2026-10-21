@@ -12153,3 +12153,27 @@ Linux and CLI Clippy, formatting, owning derivation evaluation and native
 no-default and `std,wasm` feature checks pass. The latter is not a wasm32
 cross-build. Local runtime and frozen gate qualification remain pending. No
 deadline or safety window is increased, and no additional task is accepted.
+
+The portable host-binding profile now cross-compiles for
+`wasm32-unknown-unknown`. Unix filesystem dependencies are target-scoped;
+native Zstd retains its parallel feature while the wasm32 codec retains
+compression, decompression and dictionary support without POSIX threads.
+The actual SDK `wasm` check passes, and an AOS Rust/LLVM release build produces
+format and SDK library archives. Local proof verifies their WebAssembly object
+headers, exact source, features, release profile and retained archive digests.
+This is compilation evidence, not execution inside a WebAssembly host.
+
+A source-bound `integration.wasm-host-profile` check now owns those artifacts;
+the runtime-agnostic gate requires it from the identical immutable source.
+Strict native all-target SDK/Linux/CLI Clippy and Nix evaluation pass. Frozen
+qualification and the native host forwarding case remain pending. An actual
+`std,wasm` filesystem-profile cross-check still fails on native-only code paths;
+its diagnostics are retained. The passing portable host profile does not
+qualify that filesystem profile, optional edge services or another whole task.
+
+The `c86390959e` growing-population prerequisite fails: the 4,096 ordinary
+population reaches its unchanged 1,800-second process bound. The two 1,024
+and two 2,048 cases pass, but the 4,096 adversarial case is not reached.
+All six must pass before the index qualification blocker can be removed.
+Original logs and the failed build directory are retained for diagnosis;
+no population, work assertion, current shard check or deadline is weakened.
