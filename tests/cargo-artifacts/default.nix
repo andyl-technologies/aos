@@ -1,6 +1,7 @@
 ##! Regression checks for reusable Cargo dependency artifacts.
 {pkgs}: let
   cachePermissions = import ./cache-permissions.nix {inherit pkgs;};
+  cacheFreshness = import ./cache-freshness.nix {inherit pkgs;};
   sourceA = builtins.path {
     path = ./source-a;
     name = "cargo-artifact-source-a";
@@ -56,7 +57,7 @@ in
       pname = "cargo-artifacts-check";
       version = "1";
       src = null;
-      buildDeps = [consumer cachePermissions pkgs.jq];
+      buildDeps = [consumer cachePermissions cacheFreshness pkgs.jq];
       phases = [
         {
           name = "check";
@@ -76,5 +77,5 @@ in
           '';
         }
       ];
-      passthru = {inherit artifacts cachePermissions consumer dummyA dummyB dummyManifestChange;};
+      passthru = {inherit artifacts cacheFreshness cachePermissions consumer dummyA dummyB dummyManifestChange;};
     }

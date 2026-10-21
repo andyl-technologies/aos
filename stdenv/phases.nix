@@ -591,6 +591,83 @@ in rec {
       then "--release"
       else "";
 
+    # Development target trees persist across sandboxes, while every unpack
+    # gives the source fresh copy-time mtimes. Cargo compares those mtimes
+    # with its outputs, so without help every workspace crate would rebuild
+    # on each attempt. Content hashes decide freshness instead: a file whose
+    # bytes match the last successful build of this tree, and which no
+    # failed attempt has changed since, receives an old mtime so Cargo keeps
+    # the units compiled from it. Every other file is touched newer than the
+    # tree's outputs. The configure phase holds the tree's source lock
+    # through all following phases, so the recorded state cannot race.
+    #
+    # The whole unpacked source root is hashed because include_str! and
+    # similar compile inputs may live outside the Cargo workspace.
+    cargoTargetPrune =
+      if cargoRoot == "."
+      then "./target"
+      else "./${cargoRoot}/target";
+    sharedSourceFreshness = {
+      configure = ''
+        # The configure phase has already entered the Cargo root. Hash from
+        # the unpacked source root without changing the caller's directory.
+        (
+          cd ${
+          if cargoRoot == "."
+          then "."
+          else "\"\${PWD%/${cargoRoot}}\""
+        }
+          aosSourceHashes="$NIX_BUILD_TOP/aos-source-hashes"
+          aosBuiltHashes="$CARGO_TARGET_DIR/.aos-source-hashes"
+          aosDirtyPaths="$CARGO_TARGET_DIR/.aos-source-dirty"
+
+          # sha256sum escapes names containing a newline or backslash. Such
+          # lines cannot be mapped back to a path and count as changed.
+          find . \( -path ./.cargo -o -path ${cargoTargetPrune} \) -prune \
+              -o -type f -print0 \
+            | xargs -0 -r sha256sum \
+            | LC_ALL=C sort > "$aosSourceHashes"
+
+          if [ -f "$aosBuiltHashes" ]; then
+            touch "$aosDirtyPaths"
+            LC_ALL=C sort -u "$aosDirtyPaths" > "$NIX_BUILD_TOP/aos-source-dirty"
+            LC_ALL=C comm -12 "$aosSourceHashes" "$aosBuiltHashes" \
+              | { grep -v '^\\' || true; } \
+              | cut -c 67- \
+              | LC_ALL=C sort > "$NIX_BUILD_TOP/aos-source-unchanged"
+            LC_ALL=C comm -23 "$NIX_BUILD_TOP/aos-source-unchanged" \
+                "$NIX_BUILD_TOP/aos-source-dirty" \
+              > "$NIX_BUILD_TOP/aos-source-clean"
+            tr '\n' '\0' < "$NIX_BUILD_TOP/aos-source-clean" \
+              | xargs -0 -r touch -m -d @1 --
+            find . \( -path ./.cargo -o -path ${cargoTargetPrune} \) -prune \
+                -o -type f -print \
+              | LC_ALL=C sort \
+              | LC_ALL=C comm -23 - "$NIX_BUILD_TOP/aos-source-clean" \
+              > "$NIX_BUILD_TOP/aos-source-changed"
+
+            # Record changed paths before any compiler runs. An attempt that
+            # fails after compiling some of them keeps them dirty, even if a
+            # later source returns them to their last successful bytes.
+            cat "$NIX_BUILD_TOP/aos-source-changed" >> "$aosDirtyPaths"
+            tr '\n' '\0' < "$NIX_BUILD_TOP/aos-source-changed" \
+              | xargs -0 -r touch -m --
+          else
+            find . \( -path ./.cargo -o -path ${cargoTargetPrune} \) -prune \
+              -o -type f -exec touch -m {} +
+          fi
+        )
+      '';
+
+      # A failed or interrupted build must not claim that the new source
+      # was compiled; only a completed build phase records its hashes.
+      commit = ''
+        cp "$NIX_BUILD_TOP/aos-source-hashes" "$CARGO_TARGET_DIR/.aos-source-hashes.next"
+        mv -f "$CARGO_TARGET_DIR/.aos-source-hashes.next" "$CARGO_TARGET_DIR/.aos-source-hashes"
+        rm -f "$CARGO_TARGET_DIR/.aos-source-dirty" "$CARGO_TARGET_DIR/.aos-source-id"
+      '';
+    };
+
     gitSourceLines = builtins.concatStringsSep "" (
       builtins.map (
         dep: "printf '[source.\"git+${dep.url}\"]\\ngit = \"${dep.url}\"\\nreplace-with = \"vendored-sources\"\\n\\n' >> .cargo/config.toml\n"
@@ -736,16 +813,7 @@ in rec {
           ${
             if cargoSourceId == null
             then ""
-            else ''
-              # Nix normalizes copied source mtimes. A changed source can
-              # otherwise look older than Cargo's previous fingerprint and
-              # be incorrectly reported Fresh. The configure phase holds the
-              # source lock through all following build phases.
-              if [ ! -f "$CARGO_TARGET_DIR/.aos-source-id" ] || \
-                  [ "$(cat "$CARGO_TARGET_DIR/.aos-source-id")" != "${cargoSourceId}" ]; then
-                find . -path ./target -prune -o -type f -exec touch {} +
-              fi
-            ''
+            else sharedSourceFreshness.configure
           }
           if [ -n "${
             if cargoArtifacts == null
@@ -777,11 +845,7 @@ in rec {
           ${
             if cargoSourceId == null
             then ""
-            else ''
-              # A failed or interrupted build must not claim that the new
-              # source was compiled. The next attempt will touch it again.
-              printf '%s\n' '${cargoSourceId}' > "$CARGO_TARGET_DIR/.aos-source-id"
-            ''
+            else sharedSourceFreshness.commit
           }
         '';
       }
