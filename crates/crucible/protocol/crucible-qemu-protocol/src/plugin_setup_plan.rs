@@ -26,6 +26,7 @@
 use thiserror::Error;
 
 mod preexec;
+mod publisher;
 mod startup_operation;
 
 /// Fixed byte length of the current issued workspace record.
@@ -171,6 +172,7 @@ impl PluginSetupPlan {
             None,
             self.startup_operation.map(|startup| startup.encode()),
             None,
+            None,
         )
     }
 
@@ -193,7 +195,12 @@ impl PluginSetupPlan {
             .as_ref()
             .ok_or(PluginSetupPlanError::InvalidPreexecSection { section: "startup" })?;
         preexec::validate_binding(startup, purpose, workspace.map(|bytes| bytes.as_slice()))?;
-        self.encode_body(workspace.copied(), Some(startup.encode()), Some(purpose))
+        self.encode_body(
+            workspace.copied(),
+            Some(startup.encode()),
+            Some(purpose),
+            None,
+        )
     }
 
     fn encode_body(
@@ -201,11 +208,15 @@ impl PluginSetupPlan {
         workspace_bytes: Option<[u8; DEVICE_DIGEST_PURPOSE_BYTES]>,
         startup_bytes: Option<[u8; STARTUP_OPERATION_BYTES]>,
         purpose: Option<&[u8; PROCESS_PURPOSE_BYTES]>,
+        publisher: Option<&[u8; crate::publisher_subscription::PUBLISHER_PURPOSE_BYTES]>,
     ) -> Result<Vec<u8>, PluginSetupPlanError> {
         let workspace_len = workspace_bytes.as_ref().map_or(0, |bytes| bytes.len());
         let startup_len = startup_bytes.as_ref().map_or(0, |bytes| bytes.len());
         let purpose_len = purpose.map_or(0, |bytes| bytes.len());
-        let total_len = self.encoded_body_len(workspace_len, startup_len, purpose_len)?;
+        let total_len = publisher::with_publisher_extent(
+            self.encoded_body_len(workspace_len, startup_len, purpose_len)?,
+            publisher.is_some(),
+        )?;
 
         let app_random_bytes = self.app_random_branch_plan.encode();
         let selectable_bytes = self
@@ -230,15 +241,28 @@ impl PluginSetupPlan {
             }
         })?;
         let mut bytes = Vec::with_capacity(total_len);
-        bytes.extend_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
-        bytes.extend_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
+        let (magic, version, header) = if publisher.is_some() {
+            (b"CRUCSUP9", 9_u32, 48_u32)
+        } else {
+            (
+                &PLUGIN_SETUP_PLAN_MAGIC,
+                PLUGIN_SETUP_PLAN_VERSION,
+                PLUGIN_SETUP_PLAN_HEADER_BYTES as u32,
+            )
+        };
+        bytes.extend_from_slice(magic);
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend_from_slice(&header.to_be_bytes());
         bytes.extend_from_slice(&total_len_u32.to_be_bytes());
         bytes.extend_from_slice(&app_random_len.to_be_bytes());
         bytes.extend_from_slice(&selectable_len.to_be_bytes());
         bytes.extend_from_slice(&(workspace_len as u32).to_be_bytes());
         bytes.extend_from_slice(&(startup_len as u32).to_be_bytes());
         bytes.extend_from_slice(&(purpose_len as u32).to_be_bytes());
+        if let Some(publisher) = publisher {
+            bytes.extend_from_slice(&(publisher.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&0_u32.to_be_bytes());
+        }
         bytes.extend_from_slice(&app_random_bytes);
         bytes.extend_from_slice(&selectable_bytes);
         if let Some(workspace) = workspace_bytes {
@@ -249,6 +273,9 @@ impl PluginSetupPlan {
         }
         if let Some(purpose) = purpose {
             bytes.extend_from_slice(purpose);
+        }
+        if let Some(publisher) = publisher {
+            bytes.extend_from_slice(publisher);
         }
         Ok(bytes)
     }

@@ -3,6 +3,7 @@
 use super::*;
 
 mod records;
+mod purpose;
 
 const HEADER: &str = "
 43525543504c4d31000000010000100000000000000000030000000000000000

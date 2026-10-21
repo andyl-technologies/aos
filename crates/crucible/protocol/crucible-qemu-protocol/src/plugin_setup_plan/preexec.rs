@@ -27,19 +27,35 @@ const PURPOSE: usize = PROCESS_PURPOSE_BYTES;
 pub(super) fn decode_parts(
     bytes: &[u8],
 ) -> Result<(AppRandomBranchPlan, SelectableCatalogPlan), PluginSetupPlanError> {
+    decode_profile(bytes, false)
+}
+
+pub(super) fn decode_profile(
+    bytes: &[u8],
+    publisher: bool,
+) -> Result<(AppRandomBranchPlan, SelectableCatalogPlan), PluginSetupPlanError> {
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
+    let header = if publisher { 48 } else { HEADER };
+    let tail = if publisher {
+        crate::publisher_subscription::PUBLISHER_PURPOSE_BYTES
+    } else {
+        0
+    };
     if bytes.len() > PLUGIN_SETUP_PLAN_MAX_BYTES {
         return Err(PluginSetupPlanError::PlanTooLarge {
             bytes: bytes.len(),
             maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
         });
     }
-    if bytes.len() < HEADER
-        || bytes[..8] != *b"CRUCSUP8"
-        || read_u32(bytes, 8)? != 8
-        || read_u32(bytes, 12)? != HEADER as u32
+    if bytes.len() < header
+        || bytes[..8] != *(if publisher { b"CRUCSUP9" } else { b"CRUCSUP8" })
+        || read_u32(bytes, 8)? != if publisher { 9 } else { 8 }
+        || read_u32(bytes, 12)? != header as u32
     {
         return Err(invalid("outer"));
+    }
+    if publisher && (read_u32(bytes, 40)? as usize != tail || read_u32(bytes, 44)? != 0) {
+        return Err(invalid("publisher header"));
     }
     let declared = read_u32(bytes, 16)? as usize;
     let app_len = read_u32(bytes, 20)? as usize;
@@ -54,7 +70,7 @@ pub(super) fn decode_parts(
     {
         return Err(invalid("lengths"));
     }
-    let app_end = HEADER.checked_add(app_len).ok_or(invalid("lengths"))?;
+    let app_end = header.checked_add(app_len).ok_or(invalid("lengths"))?;
     let selectable_end = app_end
         .checked_add(selectable_len)
         .ok_or(invalid("lengths"))?;
@@ -64,18 +80,26 @@ pub(super) fn decode_parts(
     let startup_end = workspace_end
         .checked_add(STARTUP_OPERATION_BYTES)
         .ok_or(invalid("lengths"))?;
-    if startup_end.checked_add(PURPOSE) != Some(bytes.len()) {
+    let purpose_end = startup_end.checked_add(PURPOSE).ok_or(invalid("lengths"))?;
+    if purpose_end.checked_add(tail) != Some(bytes.len()) {
         return Err(invalid("lengths"));
     }
     let startup = StartupOperation::decode(&bytes[workspace_end..startup_end])
         .map_err(|source| PluginSetupPlanError::Startup { source })?;
     validate_binding(
         &startup,
-        &bytes[startup_end..],
+        &bytes[startup_end..purpose_end],
         (workspace_len != 0).then_some(&bytes[selectable_end..workspace_end]),
     )?;
 
-    let app = AppRandomBranchPlan::decode(&bytes[HEADER..app_end])
+    if publisher {
+        let subscription =
+            crate::publisher_subscription::PublisherPurpose::decode(&bytes[purpose_end..])
+                .map_err(|_| invalid("publisher purpose"))?;
+        super::publisher::validate_binding(&subscription, &bytes[startup_end..purpose_end])?;
+    }
+
+    let app = AppRandomBranchPlan::decode(&bytes[header..app_end])
         .map_err(|source| PluginSetupPlanError::AppRandom { source })?;
     let selectable = SelectableCatalogPlan::decode(&bytes[app_end..selectable_end])
         .map_err(|source| PluginSetupPlanError::Selectable { source })?;

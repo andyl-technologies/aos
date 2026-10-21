@@ -16,10 +16,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 mod records;
+mod purpose;
 
 use crate::boundary_action::{ACTION_BYTES, ActionObservation};
 
 pub use records::{PublisherLoanIdentity, PublisherOutcome, PublisherReturn, PublisherTerminal};
+pub use purpose::{PUBLISHER_PURPOSE_BYTES, PublisherPurpose};
 
 /// Requested file extent of the proposed subscription region.
 pub const PUBLISHER_REGION_BYTES: usize = 4096;
