@@ -1,7 +1,7 @@
-From 40ce1399fbf7eebdf501a0c238997d23d8431dba Mon Sep 17 00:00:00 2001
+From 9b3c140c4ed0bbbd9513b69183684e83acf576c8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: decode the actual NODE_HANG ARM event
+Subject: [PATCH] crucible: round-trip the actual ordinary fault aggregate
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -483,6 +483,20 @@ unknown-phase and wrong-producer controls. Preserve the existing ordinary
 registration, pending and storage assertions and their omission controls.
 This is an ordinary event-codec correction, not aggregate restore, selected
 Source admission or launched lifecycle qualification.
+
+Exercise the complete ordinary fault aggregate through actual device VMState,
+with real zero-instruction RR genesis, requested control boundary and drained
+synchronous stop. Configure the realized ordinary generation and register,
+clock, hardware and interrupt manifests through their actual public APIs.
+Retain a genuine NODE_HANG rule, unconsumed ARM event and queued remove command;
+save and reload the full device stream and compare exact event fields/bytes.
+Observe actual restored pending handoff, validation and staging physical
+journals before dispatching remove. Independently rebuild omitted staging
+return and queue handoff writes, retaining every prior ordinary predicate and
+physical-return assertion and all original limits. These are ordinary aggregate
+component observations; selected funding, full handler retirement, deferred
+consumers, CPU borrowers and launched Source lifecycle remain unqualified.
+Reference returns do not establish whole shared body or allocator destruction.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -245224,10 +245238,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c3e76d438e1f727a8392256d072b667753f3314
+index 0000000000000000000000000000000000000000..30da6f6c5583048d15d355512e41f48600028d36
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,590 @@
+@@ -0,0 +1,647 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -245818,6 +245832,361 @@ index 0000000000000000000000000000000000000000..3c3e76d438e1f727a8392256d072b667
 +live hang recovery reservation and refuses its reservation census. The focused
 +event correction does not override those installation/profile dependencies or
 +qualify aggregate restore, deferred work, CPU borrowers or Source closure.
++
++Ordinary aggregate composition
++------------------------------
++
++The live fixture's ``--aggregate`` mode uses the public lifecycle process-
++generation setter before admitting commands. ``--process-generation`` defaults
++to 1 for this ordinary component; it is fixture configuration, not selected
++Source authentication. Selected generation checks and missing-payer refusal are
++unchanged. ``--rr-switch-quantum`` defaults to 1 and configures the actual icount
++service prerequisite. No guest instruction is retired; this is no runtime CPU-operation
++qualification. A supported PC machine and its
++actual BIOS/search directory are supplied with ``--machine pc --bios PATH``.
++The 1 MiB guest RAM and 30-second execution limit are unchanged.
++
++``--prime-genesis`` registers the actual public observation-only boundary with
++raw ceiling zero and a real control-boundary callback after system initialization.
++Normal VM start and the ordinary main loop let the actual RR thread establish
++its genesis cursor. The observer requests the existing drained control boundary;
++that actual callback requests the synchronous stop and verifies PAUSED, actual
++stop quiescence and raw icount zero before running the fixture. It returns
++through normal dispatch and requests ordinary shutdown after the test. There is
++no direct genesis call, callback-frame insertion or scheduler-field assignment.
++The callbacks and constructor ownership are not selected Source qualification.
++
++Before commands, the fixture queries each actual register, clock, hardware-error
++and interrupt manifest, binds every returned row through its public API and
++seals each complete table. Identity bytes use SHA-256 over length-prefixed
++``qemu.ordinary.aggregate.identity.v1``, family, role and the actual returned name.
++Each string length and all scalar fields use the existing big-endian VMState
++writers. The architecture identity hashes the register manifest domain,
++architecture and actual model name. Manifest files retain the actual descriptor
++fields, register masks, target CPU arrays, names and exact binding hashes in
++returned order; clock and hardware seals receive their file digest. These
++ordinary fixture identities establish no Source owner or allocation authority.
++Every actual constructor, bind and seal result must succeed.
++
++With a real retained NODE_HANG rule and an actually queued remove command, the
++fixture enables aggregate VMState, records the stopped global state, saves the
++actual complete device stream and reloads the unchanged file through the public
++save/load entry points. It observes each genuine section save result without
++substituting sections or callbacks. The real decoder, node-rule staging,
++validation, reservation census, commit and pending handoff all remain mandatory.
++The command observer checks the actual staging retirement journal and the
++restored queued child's nominal membership before dispatching that real command.
++Independent rebuilt staging-return and staging-handoff omissions must reach
++their physical or membership assertions. Actual state, payload, row and control
++returns remain separate from callback first/post histories.
++
++Earlier failed aggregate attempts remain evidence: machine-none lacks fw_cfg;
++the unbound lifecycle uses a narrower profile with an unmatched live reservation;
++unsealed clock and CPU identity tables refuse; zero RR service quantum does
++not round-trip the canonical unconfigured service image; and saving before real
++RR genesis leaves a timer cursor that full-device load refuses. Configuring genuine
++supported prerequisites does not remove those refusals. Rule and JSON reference
++returns do not prove destruction of shared GLib bodies. Deferred hang execution,
++CPU consumers, full handler/impulse retirement, selected allocation funding and
++the mandatory launched Source lifecycle remain unqualified.
+diff --git a/tests/unit/crucible-fault-command-restore-fixture.inc.h b/tests/unit/crucible-fault-command-restore-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ccee61df89ecf56a18b6faf1c268f7dc5646275a
+--- /dev/null
++++ b/tests/unit/crucible-fault-command-restore-fixture.inc.h
+@@ -0,0 +1,27 @@
++/*
++ * Observations of the actual aggregate command restore and its physical cursor.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#undef NDEBUG
++#include <assert.h>
++
++void crucible_fault_command_restore_observe(void);
++
++void crucible_fault_command_restore_observe(void)
++{
++    CruciblePendingFault *pending = QTAILQ_FIRST(&crucible_pending_faults);
++
++    assert(crucible_fault_pending_custody.stage_retirement.issuance);
++    assert(crucible_fault_pending_custody.stage_retirement.physically_returned);
++    assert(!crucible_fault_pending_custody.stage_retirement.active);
++    assert(!crucible_fault_pending_custody.stage_retirement.holder);
++    assert(!crucible_fault_pending_custody.stage_retirement.first_status);
++    assert(!crucible_fault_pending_custody.stage_retirement.post_status);
++    assert(!crucible_fault_pending_custody.stages);
++    assert(!crucible_fault_pending_custody.callback.calling);
++    assert(pending && !QTAILQ_NEXT(pending, link));
++    assert(pending->control && !pending->control->stage);
++    assert(pending->control->location == CRUCIBLE_PENDING_QUEUED);
++    assert(crucible_pending_row_current_locked(pending));
++    puts("PASS actual aggregate pending handoff and physical staging return");
++}
+diff --git a/tests/unit/crucible-fault-manifest-live-fixture.inc.h b/tests/unit/crucible-fault-manifest-live-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ef03a68b97687bcce9265fee9a8d7e7b9b12ef2b
+--- /dev/null
++++ b/tests/unit/crucible-fault-manifest-live-fixture.inc.h
+@@ -0,0 +1,259 @@
++/*
++ * Ordinary fixture identities for actual realized manifest rows.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++static void live_manifest_string(GByteArray *bytes, const char *text)
++{
++    size_t length;
++
++    assert(text);
++    length = strlen(text);
++    assert(length <= UINT32_MAX);
++    qemu_crucible_fault_vmstate_put_u32(bytes, length);
++    qemu_crucible_fault_vmstate_put_bytes(bytes, text, length);
++}
++
++static void live_manifest_digest(const GByteArray *bytes, uint8_t out[32])
++{
++    GChecksum *checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    size_t length = 32;
++
++    g_checksum_update(checksum, bytes->data, bytes->len);
++    g_checksum_get_digest(checksum, out, &length);
++    assert(length == 32);
++    g_checksum_free(checksum);
++}
++
++static void live_manifest_identity(const char *family, const char *role,
++                                   const char *name, uint8_t out[32])
++{
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++
++    live_manifest_string(bytes, "qemu.ordinary.aggregate.identity.v1");
++    live_manifest_string(bytes, family);
++    live_manifest_string(bytes, role);
++    live_manifest_string(bytes, name);
++    live_manifest_digest(bytes, out);
++}
++
++static void live_manifest_record(const char *name, GByteArray *bytes,
++                                 uint8_t digest[32])
++{
++    GError *error = NULL;
++    g_autofree char *hex = g_compute_checksum_for_data(
++        G_CHECKSUM_SHA256, bytes->data, bytes->len);
++
++    live_manifest_digest(bytes, digest);
++    assert(g_file_set_contents(name, (char *)bytes->data, bytes->len, &error));
++    assert(!error);
++    fprintf(stderr, "ordinary manifest %s bytes=%u sha256=%s\n",
++            name, bytes->len, hex);
++}
++
++static void live_register_manifest_bind(void)
++{
++    struct qemu_plugin_crucible_fault_register_capability *rows;
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    const char *model = NULL;
++    uint16_t architecture = 0;
++    uint8_t digest[32];
++    size_t count = qemu_plugin_crucible_fault_register_manifest(
++        NULL, 0, &architecture, &model);
++
++    assert(count && count <= UINT32_MAX && count <= G_MAXSIZE / sizeof(*rows));
++    rows = g_new0(struct qemu_plugin_crucible_fault_register_capability, count);
++    assert(qemu_plugin_crucible_fault_register_manifest(
++        rows, count, &architecture, &model) == count);
++    live_manifest_string(bytes, "qemu.ordinary.aggregate.register.v1");
++    qemu_crucible_fault_vmstate_put_u16(bytes, architecture);
++    live_manifest_string(bytes, model);
++    live_manifest_digest(bytes, digest);
++    assert(qemu_plugin_crucible_fault_register_bind_architecture(digest) == 0);
++    qemu_crucible_fault_vmstate_put_bytes(bytes, digest, sizeof(digest));
++    qemu_crucible_fault_vmstate_put_u32(bytes, count);
++    for (size_t i = 0; i < count; i++) {
++        const struct qemu_plugin_crucible_fault_register_capability *row = &rows[i];
++        const uint8_t *masks[] = { row->writable_mask, row->reserved_mask,
++                                   row->ignored_mask, row->read_only_mask };
++        uint8_t id[32];
++
++        assert(!row->reserved);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->numeric_id);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->width_bits);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->group);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->model_phase_mask);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->side_effects);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->capabilities);
++        live_manifest_string(bytes, row->name);
++        assert(row->mask_bytes <= UINT32_MAX);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->mask_bytes);
++        for (size_t j = 0; j < G_N_ELEMENTS(masks); j++) {
++            assert(masks[j] || !row->mask_bytes);
++            qemu_crucible_fault_vmstate_put_bytes(bytes, masks[j], row->mask_bytes);
++        }
++        live_manifest_identity("register", "name", row->name, id);
++        qemu_crucible_fault_vmstate_put_bytes(bytes, id, sizeof(id));
++        assert(qemu_plugin_crucible_fault_register_bind(id, row->numeric_id) == 0);
++    }
++    live_manifest_record("ordinary-register-manifest.bin", bytes, digest);
++    assert(qemu_plugin_crucible_fault_register_bindings_seal() == 0);
++    g_free(rows);
++}
++
++static void live_clock_manifest_bind(void)
++{
++    struct qemu_plugin_crucible_fault_clock_capability *rows;
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    uint16_t architecture = 0;
++    uint8_t digest[32];
++    size_t count = qemu_plugin_crucible_fault_clock_manifest(NULL, 0, &architecture);
++
++    assert(count && count <= UINT32_MAX && count <= G_MAXSIZE / sizeof(*rows));
++    rows = g_new0(struct qemu_plugin_crucible_fault_clock_capability, count);
++    assert(qemu_plugin_crucible_fault_clock_manifest(rows, count, &architecture) == count);
++    live_manifest_string(bytes, "qemu.ordinary.aggregate.clock.v1");
++    qemu_crucible_fault_vmstate_put_u16(bytes, architecture);
++    qemu_crucible_fault_vmstate_put_u32(bytes, count);
++    for (size_t i = 0; i < count; i++) {
++        const struct qemu_plugin_crucible_fault_clock_capability *row = &rows[i];
++        uint8_t id[32];
++
++        for (size_t j = 0; j < sizeof(row->reserved); j++) {
++            assert(!row->reserved[j]);
++        }
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->source_kind);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->architecture);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->base_domain);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->timer_relationship);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->width_bits);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->flags);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->frequency_numerator);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->frequency_denominator);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->model_phase_mask);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->vmstate);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->monotonicity);
++        qemu_crucible_fault_vmstate_put_u64(bytes, (uint64_t)row->epoch_ns);
++        live_manifest_string(bytes, row->id);
++        live_manifest_string(bytes, row->implementation);
++        live_manifest_identity("clock", "id", row->id, id);
++        qemu_crucible_fault_vmstate_put_bytes(bytes, id, sizeof(id));
++        assert(qemu_plugin_crucible_fault_clock_bind(i, id) == 0);
++    }
++    live_manifest_record("ordinary-clock-manifest.bin", bytes, digest);
++    assert(qemu_plugin_crucible_fault_clock_bindings_seal(digest) == 0);
++    g_free(rows);
++}
++
++static void live_hardware_manifest_bind(void)
++{
++    struct qemu_plugin_crucible_fault_hardware_error_capability *rows;
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    uint16_t architecture = 0;
++    uint8_t digest[32];
++    size_t count = qemu_plugin_crucible_fault_hardware_error_manifest(
++        NULL, 0, &architecture);
++
++    assert(count && count <= UINT32_MAX && count <= G_MAXSIZE / sizeof(*rows));
++    rows = g_new0(struct qemu_plugin_crucible_fault_hardware_error_capability, count);
++    assert(qemu_plugin_crucible_fault_hardware_error_manifest(
++        rows, count, &architecture) == count);
++    live_manifest_string(bytes, "qemu.ordinary.aggregate.hardware.v1");
++    qemu_crucible_fault_vmstate_put_u16(bytes, architecture);
++    qemu_crucible_fault_vmstate_put_u32(bytes, count);
++    for (size_t i = 0; i < count; i++) {
++        const struct qemu_plugin_crucible_fault_hardware_error_capability *row = &rows[i];
++        const char *roles[] = { "id", "bank", "channel", "rank", "firmware", "state" };
++        const char *names[] = { row->id, row->bank, row->channel, row->rank,
++                                row->firmware, row->state };
++        uint8_t identities[G_N_ELEMENTS(roles)][32];
++
++        assert(!row->reserved0 && !row->reserved1);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->record_kind);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->error_class);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->mechanism);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->visibility_mask);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->bank_number);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->bank_count);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->vector);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->status_required);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->status_allowed);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->syndrome_required);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->syndrome_allowed);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->model_phase_mask);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->privilege_mask);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->corrected);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->maskable);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->vmstate);
++        for (size_t j = 0; j < G_N_ELEMENTS(names); j++) {
++            live_manifest_string(bytes, names[j]);
++            live_manifest_identity("hardware", roles[j], names[j], identities[j]);
++            qemu_crucible_fault_vmstate_put_bytes(bytes, identities[j], 32);
++        }
++        assert(qemu_plugin_crucible_fault_hardware_error_bind(
++            i, identities[0], identities[1], identities[2], identities[3],
++            identities[4], identities[5]) == 0);
++    }
++    live_manifest_record("ordinary-hardware-manifest.bin", bytes, digest);
++    assert(qemu_plugin_crucible_fault_hardware_error_bindings_seal(digest) == 0);
++    g_free(rows);
++}
++
++static void live_interrupt_manifest_bind(void)
++{
++    struct qemu_plugin_crucible_fault_interrupt_capability *rows;
++    g_autoptr(GByteArray) bytes = g_byte_array_new();
++    uint16_t architecture = 0;
++    uint8_t digest[32];
++    size_t count = qemu_plugin_crucible_fault_interrupt_manifest(NULL, 0, &architecture);
++
++    assert(count && count <= UINT32_MAX && count <= G_MAXSIZE / sizeof(*rows));
++    rows = g_new0(struct qemu_plugin_crucible_fault_interrupt_capability, count);
++    assert(qemu_plugin_crucible_fault_interrupt_manifest(rows, count, &architecture) == count);
++    live_manifest_string(bytes, "qemu.ordinary.aggregate.interrupt.v1");
++    qemu_crucible_fault_vmstate_put_u16(bytes, architecture);
++    qemu_crucible_fault_vmstate_put_u32(bytes, count);
++    for (size_t i = 0; i < count; i++) {
++        const struct qemu_plugin_crucible_fault_interrupt_capability *row = &rows[i];
++        const char *roles[] = { "id", "controller", "source" };
++        const char *names[] = { row->id, row->controller, row->source };
++        uint8_t identities[G_N_ELEMENTS(roles)][32];
++
++        assert(!row->reserved);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->family);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->trigger);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->polarity);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->delivery_drop);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->vector_start);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->vector_end);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->replacement_vector_start);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->replacement_vector_end);
++        qemu_crucible_fault_vmstate_put_u16(bytes, row->priority);
++        qemu_crucible_fault_vmstate_put_u8(bytes, row->vmstate);
++        qemu_crucible_fault_vmstate_put_u64(bytes, row->model_phase_mask);
++        assert(row->target_vcpu_count <= UINT32_MAX);
++        qemu_crucible_fault_vmstate_put_u32(bytes, row->target_vcpu_count);
++        for (size_t j = 0; j < row->target_vcpu_count; j++) {
++            qemu_crucible_fault_vmstate_put_u32(bytes, row->target_vcpus[j]);
++        }
++        live_manifest_string(bytes, row->controller_version);
++        for (size_t j = 0; j < G_N_ELEMENTS(names); j++) {
++            live_manifest_string(bytes, names[j]);
++            live_manifest_identity("interrupt", roles[j], names[j], identities[j]);
++            qemu_crucible_fault_vmstate_put_bytes(bytes, identities[j], 32);
++        }
++        assert(qemu_plugin_crucible_fault_interrupt_bind(
++            i, identities[0], identities[1], identities[2]) == 0);
++    }
++    live_manifest_record("ordinary-interrupt-manifest.bin", bytes, digest);
++    assert(qemu_plugin_crucible_fault_interrupt_bindings_seal() == 0);
++    g_free(rows);
++}
++
++static void live_ordinary_manifest_bindings(void)
++{
++    assert(!qemu_plugin_crucible_startup_source_retained());
++    live_register_manifest_bind();
++    live_clock_manifest_bind();
++    live_hardware_manifest_bind();
++    live_interrupt_manifest_bind();
++}
 diff --git a/tests/unit/crucible-fault-node-event-fixture.inc.h b/tests/unit/crucible-fault-node-event-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..580c8847b0d3ddd5f2183d581e3c8ace9f1ed089
@@ -245874,10 +246243,10 @@ index 0000000000000000000000000000000000000000..580c8847b0d3ddd5f2183d581e3c8ace
 +}
 diff --git a/tests/unit/crucible-fault-node-live-fixture.inc.h b/tests/unit/crucible-fault-node-live-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d9d457278
+index 0000000000000000000000000000000000000000..8323a398cd8336187a311bb8c0580eb61932c3df
 --- /dev/null
 +++ b/tests/unit/crucible-fault-node-live-fixture.inc.h
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,238 @@
 +/*
 + * Ordinary node producer exercise in a real initialized system executable.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -245906,6 +246275,11 @@ index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d
 +
 +#ifdef CRUCIBLE_NODE_LIVE_EVENT_ROUNDTRIP
 +#include "crucible-fault-node-event-fixture.inc.h"
++#endif
++
++#ifdef CRUCIBLE_NODE_LIVE_AGGREGATE
++#include "crucible-fault-node-restore-fixture.inc.h"
++#include "crucible-fault-manifest-live-fixture.inc.h"
 +#endif
 +
 +static void live_node_field(GByteArray *payload, uint16_t tag, uint16_t type,
@@ -245978,6 +246352,11 @@ index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d
 +    command->authorization_ceiling_tick = command->target_tick;
 +    assert(qemu_plugin_crucible_fault_submit(
 +        command, payload->data, payload->len) == 0);
++#ifdef CRUCIBLE_NODE_LIVE_AGGREGATE
++    if (command->command_sequence == 3) {
++        live_node_aggregate_restore(command);
++    }
++#endif
 +    qemu_crucible_fault_dispatch_boundary(command->phase, command->target_icount);
 +    assert(qemu_plugin_crucible_fault_poll(
 +        &result, evidence, sizeof(evidence), &length) == 1);
@@ -245999,6 +246378,12 @@ index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d
 +    assert(bql_locked());
 +    assert(!qemu_plugin_crucible_startup_source_retained());
 +    assert(qemu_plugin_crucible_single_threaded_rr());
++#ifdef CRUCIBLE_NODE_LIVE_AGGREGATE
++    assert(qemu_plugin_crucible_lifecycle_set_process_generation(
++        CRUCIBLE_NODE_LIVE_PROCESS_GENERATION) == 0);
++    assert(qemu_crucible_fault_lifecycle_process_bound());
++    live_ordinary_manifest_bindings();
++#endif
 +    assert(!live_node_owner(CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM));
 +    assert(qemu_crucible_fault_node_register(
 +        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
@@ -246086,7 +246471,11 @@ index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d
 +    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RULE]
 +           .payload_returned);
 +    assert(!crucible_node_storage.head);
++#ifdef CRUCIBLE_NODE_LIVE_AGGREGATE
++    assert(hang->validation.issuance == 4);
++#else
 +    assert(hang->validation.issuance == 3);
++#endif
 +    assert(!hang->pending_retirement.active);
 +    assert(!hang->pending_retirement.holder);
 +    assert(!hang->pending_retirement.first_status);
@@ -246098,25 +246487,229 @@ index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d
 +}
 diff --git a/tests/unit/crucible-fault-node-live-main.c b/tests/unit/crucible-fault-node-live-main.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..efcedfee3711a012d1b6f5d3f5fbd3404c9a8316
+index 0000000000000000000000000000000000000000..84b1ef0e9634a2be28b2935de6bb8a4bec93951d
 --- /dev/null
 +++ b/tests/unit/crucible-fault-node-live-main.c
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,70 @@
 +/*
 + * Sequence an ordinary component after actual system initialization.
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
 +#include "qemu/osdep.h"
++#undef NDEBUG
++#include <assert.h>
++#ifdef CRUCIBLE_NODE_LIVE_PRIME_GENESIS
++#include "plugins/qemu-plugin.h"
++#include "qemu/main-loop.h"
++#include "qemu/plugin.h"
++#include "system/cpus.h"
++#include "system/runstate.h"
++
++static bool live_control_requested;
++static bool live_control_entered;
++#endif
 +
 +void __real_qemu_init(int argc, char **argv);
 +void __wrap_qemu_init(int argc, char **argv);
 +void crucible_fault_node_live_fixture(void);
 +
++#ifdef CRUCIBLE_NODE_LIVE_PRIME_GENESIS
++static uint64_t live_genesis_ceiling(void *opaque)
++{
++    assert(!opaque);
++    return 0;
++}
++
++static void live_genesis_observe(uint64_t icount, void *opaque)
++{
++    assert(!opaque && icount == 0);
++    if (!live_control_requested) {
++        assert(qemu_plugin_request_control_boundary() == 0);
++        live_control_requested = true;
++    }
++}
++
++static void live_genesis_control(unsigned int vcpu, uint64_t icount, void *opaque)
++{
++    assert(!opaque && vcpu == 0 && icount == 0);
++    assert(live_control_requested && !live_control_entered);
++    live_control_entered = true;
++    assert(bql_locked());
++    assert(qemu_plugin_request_vmstop() == 0);
++    assert(runstate_check(RUN_STATE_PAUSED));
++    assert(qemu_plugin_crucible_vmstop_quiesced());
++    assert(qemu_plugin_icount_raw() == 0);
++    puts("PASS actual RR genesis and drained control stop at raw icount zero");
++
++    crucible_fault_node_live_fixture();
++    assert(qemu_plugin_icount_raw() == 0);
++    qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++}
++#endif
++
 +void __wrap_qemu_init(int argc, char **argv)
 +{
 +    __real_qemu_init(argc, argv);
++#ifdef CRUCIBLE_NODE_LIVE_PRIME_GENESIS
++    assert(!qemu_plugin_crucible_startup_source_retained());
++    qemu_plugin_register_sim_shmem_observer_cb(
++        live_genesis_observe, live_genesis_ceiling, NULL);
++    qemu_plugin_register_control_boundary_cb(live_genesis_control, NULL);
++    vm_start();
++#else
 +    crucible_fault_node_live_fixture();
 +    exit(EXIT_SUCCESS);
++#endif
++}
+diff --git a/tests/unit/crucible-fault-node-restore-fixture.inc.h b/tests/unit/crucible-fault-node-restore-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..535781b250b17527a4e84cc964043d06f9d54c79
+--- /dev/null
++++ b/tests/unit/crucible-fault-node-restore-fixture.inc.h
+@@ -0,0 +1,144 @@
++/*
++ * Actual ordinary aggregate save/load with a retained rule and queued command.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "io/channel-buffer.h"
++#include "io/channel-file.h"
++#include "migration/global_state.h"
++#include "migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "qapi/error.h"
++
++void crucible_fault_command_restore_observe(void);
++
++static void live_node_aggregate_restore(
++    const struct qemu_plugin_crucible_fault_command *command)
++{
++    QemuCrucibleFaultRegistration *owner = live_node_owner(command->command_kind);
++    QemuCrucibleFaultRule *original_rule = node_find_rule(
++        command->command_kind, command->binding_hash, NULL);
++    CrucibleNodeEvent *queued = QTAILQ_FIRST(&crucible_node_events);
++    struct qemu_plugin_crucible_fault_event original_event;
++    g_autoptr(GBytes) original_envelope = NULL;
++    QIOChannelBuffer *buffer = qio_channel_buffer_new(4096);
++    QIOChannelFile *input;
++    QEMUFile *file;
++    Error *error = NULL;
++    GError *write_error = NULL;
++    g_autofree char *stream_hash = NULL;
++    struct qemu_plugin_crucible_fault_event event;
++    uint8_t event_payload[4096];
++    size_t event_length;
++    uint64_t pending_issuance;
++    int status;
++
++    assert(queued && queued->event.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    assert(queued->event.model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM);
++    original_event = queued->event;
++    original_envelope = g_bytes_new(
++        queued->payload ? queued->payload->data : queued->inline_payload,
++        queued->payload_length);
++    assert(g_file_set_contents("aggregate-original-event.bin",
++                               g_bytes_get_data(original_envelope, NULL),
++                               g_bytes_get_size(original_envelope), &write_error));
++    assert(!write_error);
++    assert(owner && original_rule && owner->pending);
++    assert(owner->pending->location == CRUCIBLE_PENDING_QUEUED);
++    pending_issuance = owner->pending->issuance;
++#ifdef CRUCIBLE_NODE_LIVE_CONSUME_EVENTS
++    assert(qemu_plugin_crucible_fault_event_poll(
++        &event, event_payload, sizeof(event_payload), &event_length) == 1);
++    assert(event.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    assert(event.model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM);
++    assert(g_file_set_contents("aggregate-consumed-event.bin",
++                               (char *)event_payload, event_length, &write_error));
++    assert(!write_error);
++    fprintf(stderr, "ordinary consumed event model-phase=%u bytes=%zu\n",
++            event.model_phase, event_length);
++    assert(qemu_plugin_crucible_fault_event_poll(
++        &event, event_payload, sizeof(event_payload), &event_length) == 0);
++#endif
++    assert(qemu_crucible_fault_vmstate_enable() == 0);
++    global_state_store();
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file, &error);
++    if (error) {
++        error_report_err(error);
++        error = NULL;
++    }
++    assert(status == 0);
++    status = qemu_fflush(file);
++    fprintf(stderr, "ordinary aggregate flush status=%d\n", status);
++    assert(status == 0);
++    assert(buffer->usage);
++    assert(g_file_set_contents("aggregate-stream.bin", (char *)buffer->data,
++                               buffer->usage, &write_error));
++    assert(!write_error);
++    stream_hash = g_compute_checksum_for_data(G_CHECKSUM_SHA256,
++                                              buffer->data, buffer->usage);
++    fprintf(stderr, "ordinary aggregate stream bytes=%zu sha256=%s\n",
++            buffer->usage, stream_hash);
++    assert(qemu_fclose(file) == 0);
++
++    object_unref(OBJECT(buffer));
++    input = qio_channel_file_new_path("aggregate-stream.bin", O_RDONLY, 0, &error);
++    assert(input && !error);
++    file = qemu_file_new_input(QIO_CHANNEL(input));
++    status = qemu_load_device_state(file, &error);
++    if (error) {
++        error_report_err(error);
++        error = NULL;
++    }
++    assert(status == 0);
++    assert(qemu_fclose(file) == 0);
++    object_unref(OBJECT(input));
++
++    crucible_fault_command_restore_observe();
++    assert(!crucible_node_vmstate_prepared);
++    assert(owner->pending && owner->pending->issuance > pending_issuance);
++    assert(owner->pending->location == CRUCIBLE_PENDING_QUEUED);
++    assert(qemu_crucible_fault_node_pending_current_v1(owner->pending) == 0);
++    assert(owner->pending->callback_returned[CRUCIBLE_PENDING_ARM]);
++    assert(owner->pending_retirement.physically_returned);
++    assert(owner->pending_retirement.state_returned);
++    assert(owner->pending_retirement.payload_returned);
++    assert(owner->pending_retirement.row_returned);
++    assert(owner->validation.physically_returned);
++    assert(!owner->validation.first_status && !owner->validation.post_status);
++    assert(node_find_rule(command->command_kind, command->binding_hash, NULL));
++    assert(node_find_rule(command->command_kind, command->binding_hash, NULL) !=
++           original_rule);
++#ifndef CRUCIBLE_NODE_LIVE_CONSUME_EVENTS
++    assert(qemu_plugin_crucible_fault_event_poll(
++        &event, event_payload, sizeof(event_payload), &event_length) == 1);
++    assert(event.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    assert(event.model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM);
++#define SAME_EVENT_FIELD(field) assert(event.field == original_event.field)
++    SAME_EVENT_FIELD(command_kind);
++    SAME_EVENT_FIELD(outcome);
++    SAME_EVENT_FIELD(model_phase);
++    SAME_EVENT_FIELD(target_kind);
++    SAME_EVENT_FIELD(evidence_length);
++    SAME_EVENT_FIELD(event_sequence);
++    SAME_EVENT_FIELD(rule_command_sequence);
++    SAME_EVENT_FIELD(observed_icount);
++    SAME_EVENT_FIELD(observed_tick);
++    SAME_EVENT_FIELD(generation);
++#undef SAME_EVENT_FIELD
++#define SAME_EVENT_HASH(field) assert(!memcmp(event.field, original_event.field, 32))
++    SAME_EVENT_HASH(binding_hash);
++    SAME_EVENT_HASH(opportunity_hash);
++    SAME_EVENT_HASH(action_hash);
++    SAME_EVENT_HASH(target_hash);
++    SAME_EVENT_HASH(before_hash);
++    SAME_EVENT_HASH(after_hash);
++#undef SAME_EVENT_HASH
++    assert(event_length == g_bytes_get_size(original_envelope));
++    assert(!memcmp(event_payload, g_bytes_get_data(original_envelope, NULL),
++                   event_length));
++    assert(g_file_set_contents("aggregate-restored-event.bin",
++                               (char *)event_payload, event_length, &write_error));
++    assert(!write_error);
++#endif
++    puts("PASS actual ordinary aggregate rule and queued-command restore");
 +}
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
@@ -271701,10 +272294,10 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +}
 diff --git a/tests/unit/test-crucible-fault-node-live.py b/tests/unit/test-crucible-fault-node-live.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833f85c9239
+index 0000000000000000000000000000000000000000..bef4c62cb358e53f21979d0f0f0d9569ae6be388
 --- /dev/null
 +++ b/tests/unit/test-crucible-fault-node-live.py
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,369 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Link ordinary fault custody into a matched, actual system executable.
 +
@@ -271747,10 +272340,30 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +    parser.add_argument("--resident-plugin", type=Path, required=True)
 +    parser.add_argument("--output-dir", type=Path, required=True)
 +    parser.add_argument("--event-roundtrip", action="store_true")
++    parser.add_argument("--aggregate", action="store_true")
++    parser.add_argument("--consume-events", action="store_true")
++    parser.add_argument("--prime-genesis", action="store_true")
++    parser.add_argument("--machine", choices=("none", "pc"), default="none")
++    parser.add_argument("--bios", type=Path)
++    parser.add_argument("--rr-switch-quantum", type=int, default=1,
++                        help="ordinary aggregate service quantum; guest remains stopped")
++    parser.add_argument("--process-generation", type=int, default=1,
++                        help="ordinary lifecycle generation bound before aggregate commands")
 +    parser.add_argument("--defect", choices=("validation-return", "pending-return",
 +                                           "storage-return", "event-arm",
-+                                           "event-unknown", "event-producer"))
++                                           "event-unknown", "event-producer",
++                                           "stage-return", "stage-handoff"))
 +    args = parser.parse_args()
++    if args.defect in ("event-arm", "event-unknown", "event-producer") and not args.event_roundtrip:
++        parser.error("event phase defects require --event-roundtrip")
++    if args.prime_genesis and not args.aggregate:
++        parser.error("genesis priming requires --aggregate")
++    if args.defect in ("stage-return", "stage-handoff") and not args.aggregate:
++        parser.error("aggregate staging defects require --aggregate")
++    if not 0 < args.rr_switch_quantum <= 2**31 - 1:
++        parser.error("RR switch quantum must be a positive int32")
++    if not 0 < args.process_generation < 2**64:
++        parser.error("process generation must be a nonzero uint64")
 +    root = args.source_root.resolve()
 +    build = args.build_root.resolve()
 +    output = args.output_dir.resolve()
@@ -271811,8 +272424,16 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        "storage-return": ("crucible-fault-storage.inc.h",
 +                           "crucible_node_storage.returning[kind].physically_returned = true;"),
 +    }
++    defects.update({
++        "stage-return": ("crucible-fault-pending.inc.h",
++                         "crucible_fault_pending_custody.stage_retirement.physically_returned = true;"),
++        "stage-handoff": ("crucible-fault-pending.inc.h",
++                          "control->stage = NULL;\n    control->location = CRUCIBLE_PENDING_QUEUED;"),
++    })
 +    body = (root / "plugins/crucible-fault-node.c").read_text()
-+    for name in ("crucible-fault-registration.inc.h", "crucible-fault-storage.inc.h"):
++    command_body = (root / "plugins/crucible-fault.c").read_text()
++    for name in ("crucible-fault-registration.inc.h", "crucible-fault-storage.inc.h",
++                 "crucible-fault-pending.inc.h"):
 +        contents = (root / "plugins" / name).read_text()
 +        if args.defect in defects and defects[args.defect][0] == name:
 +            needle = defects[args.defect][1]
@@ -271822,6 +272443,7 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        included = output / name
 +        included.write_text(contents)
 +        body = body.replace('"' + name + '"', '"' + str(included) + '"')
++        command_body = command_body.replace('"' + name + '"', '"' + str(included) + '"')
 +    if args.defect in ("event-arm", "event-unknown", "event-producer"):
 +        needle = "return model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM;"
 +        replacement = {
@@ -271840,6 +272462,24 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +    node = output / "actual-node-with-observations.c"
 +    node.write_text(body + '\n#include "' + str(
 +        root / "tests/unit/crucible-fault-node-live-fixture.inc.h") + '"\n')
++
++    observed_command = None
++    observed_vmstate = None
++    if args.aggregate:
++        observed_command = output / "actual-command-with-observations.c"
++        observed_command.write_text(command_body + '\n#include "' + str(
++            root / "tests/unit/crucible-fault-command-restore-fixture.inc.h") + '"\n')
++
++    if args.aggregate:
++        vmstate_body = (root / "plugins/crucible-fault-vmstate.c").read_text()
++        needle = "status = section->save(payload);"
++        if vmstate_body.count(needle) != 1:
++            raise RuntimeError("actual aggregate section save observation changed")
++        vmstate_body = vmstate_body.replace(needle, needle +
++            '\n        fprintf(stderr, "ordinary aggregate save section=%s status=%d bytes=%u\\n",' +
++            '\n                section->name, status, payload->len);')
++        observed_vmstate = output / "actual-vmstate-with-observations.c"
++        observed_vmstate.write_text(vmstate_body)
 +
 +    def compile_row(row, source_override=None, label_override=None):
 +        original_build = Path(row["directory"])
@@ -271863,6 +272503,14 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        command = [raw[0], "-iquote", str(root / "plugins")]
 +        if args.event_roundtrip:
 +            command.append("-DCRUCIBLE_NODE_LIVE_EVENT_ROUNDTRIP")
++        if args.aggregate:
++            command += ["-DCRUCIBLE_NODE_LIVE_AGGREGATE",
++                        "-DCRUCIBLE_NODE_LIVE_PROCESS_GENERATION="
++                        f"UINT64_C({args.process_generation})"]
++        if args.consume_events:
++            command.append("-DCRUCIBLE_NODE_LIVE_CONSUME_EVENTS")
++        if args.prime_genesis:
++            command.append("-DCRUCIBLE_NODE_LIVE_PRIME_GENESIS")
 +        index = 1
 +        while index < len(raw):
 +            value = raw[index]
@@ -271892,7 +272540,14 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        return row["output"], str(target)
 +
 +    def compile_production(row):
-+        return compile_row(row, node if row["file"] == "../plugins/crucible-fault-node.c" else None)
++        override = None
++        if row["file"] == "../plugins/crucible-fault-node.c":
++            override = node
++        elif row["file"] == "../plugins/crucible-fault.c":
++            override = observed_command
++        elif row["file"] == "../plugins/crucible-fault-vmstate.c":
++            override = observed_vmstate
++        return compile_row(row, override)
 +
 +    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
 +        replacements = dict(pool.map(compile_production, selected))
@@ -271922,14 +272577,31 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        "dependencies": {str(path.relative_to(root)): digest(path)
 +                         for path in dependencies},
 +        "sources": provenance, "resident_plugin": digest(plugin),
++        "fixture_sources": {str(path.relative_to(root)): digest(path)
++                            for path in sorted((root / "tests/unit").glob(
++                                "crucible-fault-*-fixture.inc.h"))},
++        "wrapper": digest(root / "tests/unit/crucible-fault-node-live-main.c"),
++        "driver": digest(Path(__file__).resolve()),
++        "observed_bodies": {path.name: digest(path) for path in
++                            (node, observed_command, observed_vmstate) if path},
 +        "build_ninja": digest(build / "build.ninja"),
 +        "compile_commands": digest(database),
 +        "scope": "ordinary component; no selected Source ownership qualification",
 +        "defect": args.defect, "event_roundtrip": args.event_roundtrip,
++        "aggregate": args.aggregate, "prime_genesis": args.prime_genesis,
++        "process_generation": args.process_generation if args.aggregate else None,
++        "rr_switch_quantum": args.rr_switch_quantum if args.aggregate else None,
++        "bios": digest(args.bios.resolve()) if args.bios else None,
 +    }, indent=2) + "\n")
-+    command = [str(binary), "-machine", "none", "-m", "1M", "-accel", "sim",
-+               "-icount", "shift=0,align=off,sleep=off", "-nodefaults",
++    icount = "shift=0,align=off,sleep=off"
++    if args.aggregate:
++        icount += f",rr_switch_quantum={args.rr_switch_quantum}"
++    command = [str(binary), "-machine", args.machine, "-m", "1M", "-accel", "sim",
++               "-icount", icount, "-nodefaults",
 +               "-display", "none", "-S", "-plugin", str(plugin)]
++    if args.bios:
++        bios = args.bios.resolve()
++        command += ["-bios", str(bios), "-L", str(bios.parent)]
 +    (output / "runtime.command.json").write_text(json.dumps(command, indent=2) + "\n")
 +    try:
 +        result = subprocess.run(command, cwd=output, stdout=subprocess.PIPE,
@@ -271948,6 +272620,8 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +            "event-arm": "crucible_node_vmstate_get_event(&reader, &decoded)",
 +            "event-unknown": "!crucible_node_vmstate_event_phase_valid",
 +            "event-producer": "!crucible_node_vmstate_event_phase_valid",
++            "stage-return": "stage_retirement.physically_returned",
++            "stage-handoff": "pending->control && !pending->control->stage",
 +        }[args.defect]
 +        if result.returncode != -6 or expected not in transcript:
 +            raise RuntimeError(
@@ -271964,6 +272638,29 @@ index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833
 +        (output / "event-identity.json").write_text(json.dumps({
 +            "bytes": (output / "node-event-stream.bin").stat().st_size,
 +            "sha256": digest(output / "node-event-stream.bin"),
++        }, indent=2) + "\n")
++    if (args.prime_genesis and
++            "PASS actual RR genesis and drained control stop" not in transcript):
++        raise RuntimeError("actual RR genesis and control stop were not reached")
++    if args.aggregate:
++        if "PASS actual ordinary aggregate" not in transcript:
++            raise RuntimeError("actual aggregate restore was not reached")
++        if digest(output / "aggregate-stream.bin") not in transcript:
++            raise RuntimeError("saved aggregate byte identity changed")
++        manifests = sorted(output.glob("ordinary-*-manifest.bin"))
++        if (len(manifests) != 4 or
++                any(digest(path) not in transcript for path in manifests)):
++            raise RuntimeError("actual manifest byte identity changed")
++        if not args.consume_events:
++            if (output / "aggregate-original-event.bin").read_bytes() != (
++                    output / "aggregate-restored-event.bin").read_bytes():
++                raise RuntimeError("restored event envelope changed")
++        (output / "aggregate-identity.json").write_text(json.dumps({
++            "bytes": (output / "aggregate-stream.bin").stat().st_size,
++            "sha256": digest(output / "aggregate-stream.bin"),
++            "manifests": {path.name: digest(path) for path in manifests},
++            "unconsumed_event": not args.consume_events,
++            "event_envelope": digest(output / "aggregate-original-event.bin"),
 +        }, indent=2) + "\n")
 +    print(transcript, end="")
 +
