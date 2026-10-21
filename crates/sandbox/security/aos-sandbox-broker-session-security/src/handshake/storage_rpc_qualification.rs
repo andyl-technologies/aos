@@ -134,6 +134,11 @@ fn exchange(
                 BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
                     let mut request =
                         PrepareStorageCatalogRequest::decode_from_slice(&envelope.body).unwrap();
+                    assert!(
+                        request.preparation_expires_boottime_nanoseconds
+                            <= header.deadline_boottime_nanoseconds,
+                        "signed preparation expiry exceeds the actual session deadline"
+                    );
                     request.header = Some(header).into();
                     request.encode_to_vec()
                 }

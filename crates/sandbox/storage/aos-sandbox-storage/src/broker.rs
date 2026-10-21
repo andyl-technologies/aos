@@ -5037,6 +5037,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     mod storage_prepare_native_clock;
+    mod storage_rpc_preparation;
 
     use std::cell::Cell;
     use std::fs;
@@ -5640,15 +5641,14 @@ mod tests {
 
         fn preparation_artifacts_for_rpc(
             &self,
-            apply_request: &[u8],
             preparation_request: &[u8],
-            current_wall_seconds: i64,
+            clock: &RawPairedClockSample,
         ) -> ValidatedUntrustedAuthorizationArtifacts {
             let semantics = CanonicalStoragePreparationSemanticsV1::decode(
                 preparation_request,
                 rpc_peer(),
                 rpc_peer_policy(),
-                vm_clock().boottime_nanoseconds(),
+                clock.boottime_nanoseconds(),
             )
             .unwrap();
             let grant = BrokerGrant::new(
@@ -5661,11 +5661,11 @@ mod tests {
             .unwrap();
 
             self.signed_artifacts(
-                decode_assignment(apply_request).unwrap(),
+                semantics.fence().broker_assignment().unwrap(),
                 vec![grant],
-                current_wall_seconds - 30,
-                current_wall_seconds + 600,
-                current_wall_seconds + 600,
+                clock.wall_seconds() - 30,
+                clock.wall_seconds() + 600,
+                clock.wall_seconds() + 600,
                 BrokerAudience::Storage,
                 ProtocolId::StorageBroker,
                 ProtocolVersion::new(1, 0),
@@ -9280,11 +9280,8 @@ mod tests {
             .get_or_insert_default()
             .protocol_minor = 0;
         let prepare_request = prepare_request.encode_to_vec();
-        let prepare_artifacts = fixture.preparation_artifacts_for_rpc(
-            &prepare_apply_request,
-            &prepare_request,
-            prepare_clock.wall_seconds(),
-        );
+        let prepare_artifacts =
+            fixture.preparation_artifacts_for_rpc(&prepare_request, &prepare_clock);
         let prepare_artifacts = BrokerAuthorizationArtifactsV1 {
             broker_plan: prepare_artifacts.broker_plan().to_vec(),
             broker_plan_signature: prepare_artifacts.broker_plan_signature().to_vec(),
@@ -9477,7 +9474,7 @@ mod tests {
         let command_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("command");
         let result_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("result");
         let mut previous = String::new();
-        let mut prepared_response = None;
+        let mut prepared_packet = None;
         let mut live_inventory_response: Option<Vec<u8>> = None;
 
         loop {
@@ -9527,15 +9524,14 @@ mod tests {
                     "retry-rejected"
                 }
                 "prepare" => {
-                    assert!(prepared_response.is_none());
-                    prepared_response = Some(storage_rpc_prepare());
+                    assert!(prepared_packet.is_none());
+                    prepared_packet = Some(storage_rpc_prepare());
                     "prepare"
                 }
                 "prepare-retry" => {
-                    assert!(prepared_response.is_some());
                     storage_rpc_session::reject_conflicting_operation(
                         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
-                        &storage_rpc_prepare_packet(),
+                        prepared_packet.as_deref().unwrap(),
                     );
                     "prepare-retry-rejected"
                 }
@@ -9569,23 +9565,20 @@ mod tests {
 
     fn storage_rpc_prepare_packet() -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
-        let request =
+        let template =
             fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-request.pb")).unwrap();
-        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
-            &fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-artifacts.pb"))
-                .unwrap(),
-        )
-        .unwrap();
+        let (request, artifacts) =
+            storage_rpc_preparation::fresh(&Fixture::new(), &template, &vm_clock());
         encode_authorized_request_envelope(
             ProtocolId::StorageBroker,
             method,
             &request,
             &[],
             AuthorizationArtifactBytes {
-                broker_plan: &artifacts.broker_plan,
-                broker_plan_signature: &artifacts.broker_plan_signature,
-                ownership_lease: &artifacts.ownership_lease,
-                ownership_lease_signature: &artifacts.ownership_lease_signature,
+                broker_plan: artifacts.broker_plan(),
+                broker_plan_signature: artifacts.broker_plan_signature(),
+                ownership_lease: artifacts.ownership_lease(),
+                ownership_lease_signature: artifacts.ownership_lease_signature(),
             },
         )
         .unwrap()
@@ -9618,7 +9611,7 @@ mod tests {
         assert_eq!(prepared.catalog_generation, expected_generation);
         assert_eq!(prepared.catalog_digest, expected_digest);
         assert!(!prepared.non_authorizing_receipt.is_empty());
-        exact_body.clone()
+        packet
     }
 
     fn storage_rpc_method_unavailable(method: BrokerMethod, minor: u32) {

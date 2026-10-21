@@ -741,6 +741,13 @@ in {
       assert replay_claims() == prepare_claims == 1
       assert dataset_snapshot() == prepare_datasets
 
+      # Exercise the distinct-session conflict while the original signed
+      # preparation is live. The positive machine separately cold-reopens its
+      # catalog below; expiry must not masquerade as an operation conflict.
+      if scenario == "prepare-conflict":
+          reject_and_stop("prepare-retry", "prepare-retry-rejected")
+          return
+
       stable_hash = prepare_after
       machine.succeed("systemctl stop aos-storaged.service")
       machine.succeed(audit_command, timeout=60)
@@ -769,9 +776,6 @@ in {
       assert replay_claims() == 1
       assert dataset_snapshot() == prepare_datasets
 
-      if scenario == "prepare-conflict":
-          reject_and_stop("prepare-retry", "prepare-retry-rejected")
-          return
       assert journal_hash() == stable_hash
       assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
       assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
