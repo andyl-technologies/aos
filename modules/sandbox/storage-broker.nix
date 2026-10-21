@@ -320,8 +320,12 @@ in {
 
     # The controller receives traverse-only access to the socket directory. It
     # cannot unlink or replace the root-owned endpoint path.
+    # The dormant backend opens the fixed Snapshot metadata directory without
+    # creating it, so boot provisioning establishes that custody first.
     environment.etc."tmpfiles.d/aos-sandbox-storage.conf".text = ''
       d /run/aos/sandbox-storage 0710 root aos-sandboxd - -
+      d /var/lib/aos/sandbox-storage 0700 root root - -
+      d /var/lib/aos/sandbox-storage/snapshot-metadata 0700 root root - -
     '';
 
     systemd.sockets.aos-storaged = lib.mkMerge [

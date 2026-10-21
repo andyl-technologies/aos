@@ -293,6 +293,10 @@ in {
     assert controller_account[2:4] == ["811", "811"], controller_account
     machine.wait_for_unit("aos-sandbox-zfs-ready.service", timeout=30)
     machine.succeed("systemctl is-active --quiet aos-sandbox-zfs-ready.service")
+    snapshot_metadata_custody = machine.succeed(
+        "stat -c '%u:%g:%a' ${stateDirectory}/snapshot-metadata"
+    ).strip()
+    assert snapshot_metadata_custody == "0:0:700", snapshot_metadata_custody
     for unit in (
         "aos-sandbox-zfs-worker.socket",
         "aos-sandbox-workspace-pin-worker.socket",
