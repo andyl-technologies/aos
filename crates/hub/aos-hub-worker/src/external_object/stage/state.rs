@@ -25,6 +25,9 @@ use super::{
     protocol::{Intent, Receipt, SourceProof, Turn},
 };
 
+/// Bounds independent destination-part turns retained by one physical journal.
+pub(crate) const MAX_PENDING_DESTINATION_PARTS: usize = 64;
+
 pub(in crate::external_object) const MAX_INCARNATION: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,7 +214,7 @@ impl Session {
             );
         }
         ensure!(
-            self.pending_parts.len() <= 64
+            self.pending_parts.len() <= MAX_PENDING_DESTINATION_PARTS
                 && (self.pending_parts.is_empty()
                     || (self.destination
                         && self.phase == Phase::DestinationActive
@@ -609,7 +612,7 @@ pub(super) fn begin(
             "part turn exists without matching pending reference"
         );
         ensure!(
-            part_number.is_none() || session.pending_parts.len() < 64,
+            part_number.is_none() || session.pending_parts.len() < MAX_PENDING_DESTINATION_PARTS,
             "concurrent destination part bound reached"
         );
         None

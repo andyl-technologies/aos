@@ -132,3 +132,6 @@ pub(crate) use stage::observation::Attempt as VerificationFaultAttempt;
 pub(crate) use inspection::execute as execute_inspection;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use inspection::execute_prepared as inspect_prepared_control;
+
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) use stage::state::MAX_PENDING_DESTINATION_PARTS;

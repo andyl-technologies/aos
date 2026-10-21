@@ -6,6 +6,8 @@ use anyhow::{ensure, Result};
 use aos_hub_db::direct_upload::DirectManifestPart;
 use futures_util::future::join_all;
 
+use crate::external_object::MAX_PENDING_DESTINATION_PARTS;
+
 /// Copies independent original parts without canceling dispatched neighbors.
 ///
 /// A failed wave is fully drained before returning its error. Later waves and
@@ -14,24 +16,20 @@ use futures_util::future::join_all;
 /// shared capacity and original Native permission at each actual dispatch.
 ///
 /// # Errors
-/// Refuses invalid concurrency, changed part geometry, or any failed copy.
+/// Refuses changed part geometry or any failed copy.
 pub(super) async fn copy_parts<'a, F, T>(
     parts: &'a [DirectManifestPart],
-    maximum: usize,
     copy: F,
 ) -> Result<Vec<DirectManifestPart>>
 where
     F: Fn(&'a DirectManifestPart) -> T,
     T: Future<Output = Result<DirectManifestPart>>,
 {
-    // The physical journal admits at most 64 independent pending part turns.
-    ensure!(
-        maximum > 0 && maximum <= 64,
-        "direct copy concurrency exceeds bound"
-    );
-
+    // Pipeline compact journal controls up to the journal's own pending-turn
+    // bound. Object and provider limits govern different resources: every
+    // actual Fetch still acquires the shared, metadata-reserving provider pool.
     let mut copied = Vec::with_capacity(parts.len());
-    for wave in parts.chunks(maximum) {
+    for wave in parts.chunks(MAX_PENDING_DESTINATION_PARTS) {
         let results = join_all(wave.iter().map(&copy)).await;
         for (original, result) in wave.iter().zip(results) {
             let part = result?;
