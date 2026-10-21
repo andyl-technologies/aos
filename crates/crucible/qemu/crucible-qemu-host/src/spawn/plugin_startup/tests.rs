@@ -5,6 +5,7 @@
 
 use super::*;
 use std::sync::Arc;
+use std::os::unix::fs::FileTypeExt;
 
 use crate::ram_control::{RamControlClient, RamControlRegistrar, RamControlRegistration};
 use crucible_host_resources::host_services::HostServiceAllocator;
@@ -333,5 +334,66 @@ fn actual_artifact_first_cause_keeps_a_later_same_original_cancellation_post()
     let released =
         services.reserve_resources(0, 2, OriginalPluginStartup::host_allocation_extent()?)?;
     drop(released);
+    Ok(())
+}
+
+// Real Setup guards and local kernel files establish constructor ordering only.
+// These controls create no installed Source or native construction authority.
+#[test]
+fn startup_constructor_refuses_before_physical_birth_after_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin_control(HostOperationClass::Setup)?;
+    supervisor.cancel()?;
+    let mut entered = false;
+
+    let (first, after) = observe_startup_under_original(&original, || {
+        entered = true;
+        File::open("/dev/null").map_err(PluginStartupCause::Kernel)
+    });
+
+    assert!(!entered);
+    assert!(matches!(first, Err(PluginStartupCause::Original(_))));
+    assert!(after.is_some());
+    Ok(())
+}
+
+#[test]
+fn startup_constructor_preserves_kernel_refusal_and_independent_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin_control(HostOperationClass::Setup)?;
+
+    let (first, after) = observe_startup_under_original(&original, || {
+        let file = File::open("/dev/null").map_err(PluginStartupCause::Kernel)?;
+        supervisor.cancel().map_err(PluginStartupCause::Original)?;
+        drop(file);
+        Err::<(), _>(PluginStartupCause::Kernel(io::Error::from_raw_os_error(
+            libc::EBADF,
+        )))
+    });
+
+    assert!(matches!(first, Err(PluginStartupCause::Kernel(error))
+        if error.raw_os_error() == Some(libc::EBADF)));
+    assert!(after.is_some());
+    Ok(())
+}
+
+#[test]
+fn startup_constructor_retains_physical_result_across_refused_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin_control(HostOperationClass::Setup)?;
+
+    let (first, after) = observe_startup_under_original(&original, || {
+        let file = File::open("/dev/null").map_err(PluginStartupCause::Kernel)?;
+        supervisor.cancel().map_err(PluginStartupCause::Original)?;
+        Ok(file)
+    });
+
+    let retained = first?;
+    assert!(after.is_some());
+    assert!(retained.metadata()?.file_type().is_char_device());
+    drop(retained);
     Ok(())
 }

@@ -12,9 +12,7 @@ use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, Read};
 
-use crucible_host_resources::host_services::process_birth::{
-    ServiceBirthError, SourceHostControlLease,
-};
+use crucible_host_resources::host_services::process_birth::{ServiceBirthError, SourceHostControlLease};
 use crucible_host_resources::host_supervision::{
     HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
 };
@@ -44,6 +42,14 @@ struct PluginStartupState {
     standing: super::source_supervision::OriginalSourceSupervision,
     original: HostOperationGuard,
     record: StartupOperation,
+}
+
+// Keeps the physically constructed owners with their observation until the
+// same Setup's independent post permits installation in the retained body.
+struct PreparedStartupObservation {
+    record: StartupOperation,
+    #[cfg(target_os = "linux")]
+    standing: super::source_supervision::OriginalSourceSupervision,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -186,20 +192,6 @@ impl OriginalPluginStartup {
         let control: SourceHostControlLease = return Err(refuse_before(
             PluginStartupCause::InstalledProfileUnavailable,
         ));
-        // The fixed body is admitted and allocated before any startup operation
-        // or descriptor effect. Its temporary live state is included above.
-        let mut body = Box::new(None);
-        #[cfg(target_os = "linux")]
-        let standing = match super::source_supervision::OriginalSourceSupervision::prepare(source) {
-            Ok(standing) => standing,
-            Err(error) => {
-                return Err(PluginStartupError {
-                    source: PluginStartupCause::Standing(error),
-                    original_after: None,
-                    _control: Some(control),
-                });
-            }
-        };
         let original = match supervisor.begin_control(HostOperationClass::Setup) {
             Ok(original) => original,
             Err(source) => {
@@ -210,7 +202,10 @@ impl OriginalPluginStartup {
                 });
             }
         };
-        let observed = (|| {
+        // Both bodies remain under the same admitted host peak. Enter the
+        // actual Setup before allocating or constructing its physical controls.
+        let mut body = Box::new(None);
+        let (observed, after) = observe_startup_under_original(&original, || {
             let metadata = rustix::fs::fstat(&contract.cancellation_event)
                 .map_err(|source| PluginStartupCause::Kernel(source.into()))?;
             let event_id = event_identity(contract.cancellation_event.as_raw_fd())
@@ -269,22 +264,28 @@ impl OriginalPluginStartup {
             original
                 .check_original_setup_cancellation()
                 .map_err(PluginStartupCause::Original)?;
-            Ok(record)
-        })();
-        // This raw cut remains independent even when an earlier kernel step
-        // refused before a subscription could be published.
-        let after = original.wait_slice().err();
+            // Standing birth also observes the actual inherited cancellation
+            // event through this same Setup, after its real subscriber is held.
+            #[cfg(target_os = "linux")]
+            let standing = super::source_supervision::OriginalSourceSupervision::prepare(source)
+                .map_err(PluginStartupCause::Standing)?;
+            Ok(PreparedStartupObservation {
+                record,
+                #[cfg(target_os = "linux")]
+                standing,
+            })
+        });
         match (observed, after) {
-            (Ok(record), None) => {
+            (Ok(observation), None) => {
                 *body = Some(PluginStartupState {
                     #[cfg(target_os = "linux")]
                     source: source.clone(),
                     #[cfg(target_os = "linux")]
-                    standing,
+                    standing: observation.standing,
                     #[cfg(target_os = "linux")]
                     workspace: None,
                     original,
-                    record,
+                    record: observation.record,
                 });
                 Ok(Self {
                     body,
@@ -570,6 +571,22 @@ pub(super) fn event_identity(descriptor: i32) -> io::Result<u64> {
 #[cfg(not(target_os = "linux"))]
 fn require_installed_process_purpose() -> Result<(), PluginStartupCause> {
     Err(PluginStartupCause::InstalledProfileUnavailable)
+}
+
+// The actual caller retains its paid control and any resulting physical owners.
+// The independent post also runs when construction refuses before a cancellation
+// subscription exists; neither failure replaces the other.
+fn observe_startup_under_original<T>(
+    original: &HostOperationGuard,
+    observe: impl FnOnce() -> Result<T, PluginStartupCause>,
+) -> (Result<T, PluginStartupCause>, Option<HostSupervisionError>) {
+    let first = original
+        .wait_slice()
+        .map_err(PluginStartupCause::Original)
+        .and_then(|_| observe());
+    let after = original.wait_slice().err();
+
+    (first, after)
 }
 
 // The actual startup remains the owner of its body/control on either refusal.
