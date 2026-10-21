@@ -723,6 +723,10 @@ impl<T: ObserveMetadata, const N: usize> ObserveMetadata for [T; N] {
     }
 }
 
+pub(crate) use native_import18_json_profile::bootstrap::{
+    BootstrapBodyMetadataProfileData, bootstrap_body_metadata_counter_scratch_data,
+};
+
 mod complete_source;
 pub use complete_source::{
     RetainedCompleteSourceDefinition, RetainedCompleteSourceMetadata,

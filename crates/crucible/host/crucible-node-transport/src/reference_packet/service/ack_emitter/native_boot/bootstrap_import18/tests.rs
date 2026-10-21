@@ -1,7 +1,8 @@
 //! Exercises raw receipt over an actual inherited parent/child socket.
 //!
 //! Header fixtures are inert protocol bytes. No fixture constructs an opaque
-//! Recipe/Initial, parses a body, installs native state or supplies readiness.
+//! Recipe/Initial, installs native state or supplies readiness. The child
+//! typed controls exercise only real inert DTO decoding.
 
 #![cfg(test)]
 // crucible-lint: allow panic-shortcut -- Actual inherited-channel test assertions deliberately panic on mismatch.
@@ -17,6 +18,9 @@ use std::{
     net::Shutdown,
     process::{Command, Stdio},
 };
+
+#[path = "tests/typed.rs"]
+mod typed;
 
 const CHILD_CASE: &str = "CRUCIBLE_IMPORT18_RAW_BOOTSTRAP_CHILD";
 const CHILD_TEST: &str = "reference_packet::service::ack_emitter::native_boot::bootstrap_import18::tests::inherited_raw_bootstrap_child";
@@ -37,10 +41,17 @@ fn bounds() -> Import18RawBootstrapBounds {
 // This independent fixed-wire fixture deliberately cannot produce live recipe
 // DATA. It tests only the actual raw receiver's origin, framing and storage cut.
 fn prefix(row: [usize; 3]) -> [u8; NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES] {
+    prefix_for_bodies(row, BODIES)
+}
+
+fn prefix_for_bodies(
+    row: [usize; 3],
+    bodies: [&[u8]; 3],
+) -> [u8; NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES] {
     let mut bytes = [0; NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES];
     bytes[..8].copy_from_slice(&NATIVE_IMPORT17_PRIVATE_PREFIX_MAGIC);
     bytes[8..16].copy_from_slice(&NATIVE_IMPORT17_STARTUP_WRAPPER_VERSION.to_be_bytes());
-    for (index, body) in BODIES.into_iter().enumerate() {
+    for (index, body) in bodies.into_iter().enumerate() {
         bytes[16 + index * 8..24 + index * 8].copy_from_slice(&(body.len() as u64).to_be_bytes());
         bytes[40 + index * 32..72 + index * 32].copy_from_slice(blake3::hash(body).as_bytes());
     }
@@ -84,7 +95,14 @@ fn child(case: &str, wire: &[u8]) {
 fn inherited_raw_bootstrap_child() {
     let case = std::env::var(CHILD_CASE).unwrap();
     let original = rustix::io::dup(rustix::stdio::stdin()).unwrap();
-    let mut selected_bounds = bounds();
+    let mut selected_bounds = if case.starts_with("typed_") {
+        typed::bounds()
+    } else {
+        bounds()
+    };
+    if case == "typed_independent_peak" {
+        selected_bounds.requested_peak = typed::required_peak(&case) - 1;
+    }
     if case == "independent_peak" {
         selected_bounds.requested_peak = 1;
     }
@@ -93,6 +111,10 @@ fn inherited_raw_bootstrap_child() {
     assert!(owner.inputs.is_empty_data());
     let result = owner.receive();
     assert!(owner.inputs.is_empty_data());
+    if case.starts_with("typed_") {
+        typed::assert_child(&case, owner, result);
+        return;
+    }
     let received = owner.received;
     let retained = owner.retained_requested_bytes().unwrap();
 

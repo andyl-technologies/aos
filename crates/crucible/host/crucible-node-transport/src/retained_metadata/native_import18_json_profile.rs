@@ -5,6 +5,8 @@
 //! before each partial. Cumulative facts include every ordinary and child visit.
 //! These DATA profiles establish no admission, completion or currentness.
 
+pub(super) mod bootstrap;
+
 use super::*;
 use crate::protocol_snapshot::raw_value_reparse::JsonValueReparseConstructionData;
 

@@ -38,6 +38,9 @@ mod startup_wire;
 pub use hello::PacketNativeImport18HelloDeclarationData;
 
 #[cfg(test)]
+pub(in crate::reference_packet) mod inert_bootstrap_fixtures;
+
+#[cfg(test)]
 mod tests;
 
 pub use super::import17::{
@@ -181,6 +184,11 @@ pub use initial_funding::{
 
 // This borrowed DATA preserves all partial initial-result operands.
 pub use initial_funding::PacketNativeImport18InitialFundingHistoryData;
+
+pub(in crate::reference_packet) use startup_wire::{
+    OriginalImport18DecodedBodies, OriginalImport18DecodedBodyLoans,
+    private_body_decode_counter_scratch_data, private_body_owner_counter_scratch_data,
+};
 
 pub use startup_wire::{
     NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA, PacketNativeImport18PrivateBootProjectionView,

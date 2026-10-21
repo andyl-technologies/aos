@@ -41,6 +41,14 @@ pub(in crate::reference_packet) use decoding::{
     private_body_decode_backing_data, private_body_decode_counter_scratch_data,
 };
 
+#[path = "startup_wire/retained.rs"]
+mod retained;
+
+pub(in crate::reference_packet) use retained::{
+    OriginalImport18DecodedBodies, OriginalImport18DecodedBodyLoans,
+    private_body_owner_counter_scratch_data,
+};
+
 #[path = "startup_wire/source_declaration.rs"]
 mod source_declaration;
 

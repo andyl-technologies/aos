@@ -460,9 +460,10 @@ separately. All eight physical inherited-channel controls pass with these
 headers. No backing allocation, Prepare token, reference binding or completed
 seven-bank custody is implied by their empty construction.
 
-This physical precursor remains unselected from native startup. Its floor is
-only raw receiver demand; typed body parsing, complete seven-bank custody and
-their independent Initial producer remain unfinished. No model, native Boot,
+This physical precursor remains unselected from native startup. Its raw floor
+omits dynamic typed backing; the later decode transition below derives that
+additional demand independently. Complete seven-bank custody and the independent
+Initial producer remain unfinished. No model, native Boot,
 startup finalizer, common Ready or full-RFC qualification follows. All six
 architecture checks pass for the final EOF source. Application compilation still
 needs that refinement; the passing funded VM snapshot predates it.
@@ -488,8 +489,8 @@ Source bytes, Bytes growth boundaries, malformed codec/schema prefixes, exact
 and one-byte-short complete work, and RawValue behavior. A fifth control checks
 inline versus actual allocating container geometry. The complete standard and RawValue
 Transport libraries each pass 1,760 tests with no failures, no filtering and
-sixteen existing ignores. All-feature/all-target checking passes. Current
-architecture checks remain pending at this checkpoint. These are inert parser/accounting controls; physical
+sixteen existing ignores. All-feature/all-target checking and all six
+architecture checks pass for this accounting checkpoint. These are inert parser/accounting controls; physical
 typed receipt and complete Initial/Recipe production remain unfinished.
 
 The funded Source VM also passes on the later source containing the final
@@ -499,6 +500,40 @@ production application-target gate emits
 `zsj7xsyixc3nhhirm5zvwmdax440smrr-aos-test-targets-0.1.0`; its capture predates
 the later base64-counter, heap-geometry and complete parser-quote additions.
 Neither result qualifies those later additions or full native startup.
+
+## Physical import18 typed DATA receipt
+
+The original inherited-socket owner now retains empty actual recipe, selected9
+and boot18 output slots before receipt. After complete raw hashes and EOF, its
+separate once transition derives parser demand from those unchanged owned banks.
+It combines all simultaneous retained owners with sequential maximum work,
+checks each announced axis and the independent complete restriction, and spends
+the occurrence before parsing. Actual strict Value parsing and the real owned
+DTO decoders install each successful prefix before the next fallible body.
+Every parse outcome receives terminal original-channel/hash/cut authentication.
+No operational deadline or failed occurrence is renewed.
+
+The retained census walks actual selected-launch fields, private key/birth banks,
+opaque Source bytes, Host registration, private ID and executable reference.
+Constructor-specific lexical/reset populations fund the walk, including expanded
+RawValue depth and work. Ordinary depth/work limits and SDK response-forest
+allowances remain separate. A later decoder refusal preserves the original raw
+banks, successfully installed typed prefixes, actual capacities and spent state.
+
+Both complete Transport library configurations pass 1,766 tests with zero
+failures, no filtering and sixteen existing ignores. Six new parent/child
+controls exercise actual producer/reactive decoding, every underfunded parser
+axis, independent complete restriction, malformed recipe/launch/boot prefixes,
+RawValue expansion, changed raw bytes, foreign thread, expiry, retry and checked
+ownership overflow. All-feature/all-target checking and the six architecture
+gates pass. The refreshed required application compilation and funded Source VM
+checks are still running at this checkpoint.
+
+The fixtures and returned loans contain inert DATA. No parsed announcement is
+converted into an opaque Recipe/Initial. Seven empty headers still contain no
+input backing, Prepare token or completed native custody. Genuine Initial/full
+Recipe production, semantic joins, startup selection, native effects and common
+Ready remain unfinished; this receipt does not qualify full RFC-0025 completion.
 
 ## Original launch custody and shared startup geometry
 

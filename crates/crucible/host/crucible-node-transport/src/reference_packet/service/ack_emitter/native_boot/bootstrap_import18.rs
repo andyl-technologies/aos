@@ -5,22 +5,27 @@
 //! ```
 //!
 //! This receiver owns partial bytes and one nonrenewing operational cut. Its
-//! independently calculated raw-storage floor precedes body allocation. It
-//! creates no typed parser, Initial, Recipe, native model or readiness grant;
+//! independently calculated raw-storage floor precedes body allocation. Its
+//! typed DATA transition independently checks complete raw/parser storage before
+//! decoding. It creates no Initial, Recipe, native model or readiness grant;
 //! those require their separate complete constructors and original custody.
 
 use crate::ProviderError;
 use crate::operational_time::OperationalDeadline;
 use crate::reference_packet::service::complete_restore::import18::{
-    NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, PacketNativeImport18PrivatePrefixData,
-    decode_native_import18_private_prefix_data,
+    NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, OriginalImport18DecodedBodies,
+    PacketNativeImport18PrivatePrefixData, decode_native_import18_private_prefix_data,
     native_import18_private_prefix_construction_transient_data,
-    native_import18_private_prefix_counter_scratch_data,
+    native_import18_private_prefix_counter_scratch_data, private_body_decode_counter_scratch_data,
+    private_body_owner_counter_scratch_data,
 };
 use std::{mem::size_of, os::unix::net::UnixStream, thread::ThreadId, time::Duration};
 
 #[path = "bootstrap_import18/receiving_banks.rs"]
 mod receiving_banks;
+
+#[path = "bootstrap_import18/decoding.rs"]
+mod decoding;
 use receiving_banks::OriginalImport18ReceivingBanks;
 
 /// Restricts the three raw inputs independently of their announced allocation.
@@ -43,6 +48,10 @@ pub(super) struct OriginalImport18RawBootstrap {
     header: Option<PacketNativeImport18PrivatePrefixData>,
     bodies: [Vec<u8>; 3],
     inputs: OriginalImport18ReceivingBanks,
+    parsed: OriginalImport18DecodedBodies,
+    decoding_row: Option<[usize; 3]>,
+    decode_started: bool,
+    decoded: bool,
     received: [usize; 3],
     tail: [u8; 1],
     tail_received: usize,
@@ -69,6 +78,10 @@ impl OriginalImport18RawBootstrap {
             header: None,
             bodies: std::array::from_fn(|_| Vec::new()),
             inputs: OriginalImport18ReceivingBanks::empty(),
+            parsed: OriginalImport18DecodedBodies::empty(),
+            decoding_row: None,
+            decode_started: false,
+            decoded: false,
             received: [0; 3],
             tail: [0; 1],
             tail_received: 0,
@@ -174,8 +187,11 @@ impl OriginalImport18RawBootstrap {
             .try_fold(size_of::<Self>(), |sum, bank| {
                 sum.checked_add(bank.capacity()).ok_or_else(exhausted)
             })?;
+        let input_backing = self.inputs.retained_backing_data()?;
+        let typed_backing = self.parsed.retained_backing_data()?;
         retained
-            .checked_add(self.inputs.retained_backing_data()?)
+            .checked_add(input_backing)
+            .and_then(|n| n.checked_add(typed_backing))
             .ok_or_else(exhausted)
     }
 
@@ -214,7 +230,7 @@ impl OriginalImport18RawBootstrap {
 
 /// Calculates only this physical raw receiver's actual userspace construction.
 ///
-/// The complete Initial producer must add its typed parsers, seven-bank
+/// The complete Initial producer must add dynamic typed parser and seven-bank
 /// construction and all their overlapping owners before issuing Initial DATA.
 /// No caller-supplied row enters this calculation.
 pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], ProviderError> {
@@ -228,9 +244,13 @@ pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], Provi
         + size_of::<OriginalImport18RawBootstrap>()
         + size_of::<Result<OriginalImport18RawBootstrap, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
-        + OriginalImport18ReceivingBanks::construction_transient_data();
+        + OriginalImport18ReceivingBanks::construction_transient_data()
+        + size_of::<OriginalImport18DecodedBodies>();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + OriginalImport18ReceivingBanks::counter_scratch_data()
+        + private_body_decode_counter_scratch_data()
+        + private_body_owner_counter_scratch_data()
+        + decoding::counter_scratch_data()
         + size_of::<&OriginalImport18RawBootstrap>()
         + size_of::<&mut OriginalImport18RawBootstrap>()
         + size_of::<&UnixStream>()

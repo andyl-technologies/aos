@@ -154,6 +154,29 @@ pub fn native_import18_source_declaration_bank_view_data<'a>(
 }
 
 impl PacketNativeImport18SourceDeclarationWireData {
+    /// Observes the actual declaration backing without parsing its opaque bank.
+    ///
+    /// # Errors
+    /// Refuses checked capacity or population overflow.
+    pub(super) fn observe_backing_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        let Self {
+            schema,
+            source_birth,
+            fresh_restore_allocation_selection,
+        } = self;
+        const {
+            assert!(!std::mem::needs_drop::<(
+                DeclarationSchema,
+                Option<PacketNative5FreshRestoreAllocationSelection>
+            )>());
+        }
+        let _ = (schema, fresh_restore_allocation_selection);
+        observer.observe(source_birth)
+    }
+
     /// Borrows the exact original canonical pre-report Source birth bytes.
     pub fn source_birth_data(&self) -> &Bytes {
         &self.source_birth

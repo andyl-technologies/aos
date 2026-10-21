@@ -64,6 +64,16 @@ pub fn observe_retained_native_coordinator(
 pub fn observe_retained_native_launch(
     original: &crate::reference_packet::service::PacketNative5SourceLaunch,
 ) -> Result<RetainedProtocolMetadataFacts, ProviderError> {
+    let mut observer = MetadataObserver::new();
+    observe_native_launch_into(original, &mut observer)?;
+    Ok(observer.finish())
+}
+
+/// Walks the same exhaustive launch roster in its caller's retained population scope.
+pub(super) fn observe_native_launch_into(
+    original: &crate::reference_packet::service::PacketNative5SourceLaunch,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
     use crate::reference_packet::service::{
         PacketConnectedSourceProgram, PacketNative5SourceLaunch, PacketNative5StorageLimits,
     };
@@ -90,7 +100,6 @@ pub fn observe_retained_native_launch(
         fresh_restore_allocation_selection,
         effects,
     } = original;
-    let mut observer = MetadataObserver::new();
     observer.observe(schema_version)?;
     observer.observe(selection)?;
     match program {
@@ -133,7 +142,7 @@ pub fn observe_retained_native_launch(
     // PathBuf exposes the real native OsString backing capacity. A lossy or
     // serialized path length would omit its separately retained spare storage.
     observer.vector::<u8>(effects.capacity())?;
-    Ok(observer.finish())
+    Ok(())
 }
 
 /// Borrows the closed actual contract/provider owners in a complete installation.
@@ -311,6 +320,9 @@ pub fn retained_native_launch_counter_scratch_data() -> usize {
 
     size_of::<&PacketNative5SourceLaunch>()
         + size_of::<MetadataObserver<'static>>()
+        + size_of::<&mut MetadataObserver<'static>>()
+        + size_of::<&PacketNative5SourceLaunch>()
+        + size_of::<Result<(), ProviderError>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<Result<RetainedProtocolMetadataFacts, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
