@@ -24,55 +24,67 @@ PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
            "overflow_checks": True, "test": False}
 
 UNIT_NAME = "terrane-fs-unit"
-UNIT_PREFIXES = ("configured::tests::", "host_cache::owner::", "host_cache::recovery_inspection::",
-                 "publisher_local::client::recovery_manifest::", "publisher_local::socket::tests::")
+# The five creator fixtures require the actual guest administrator; every other
+# library case runs as an isolated ordinary user on ext4.
+UNIT_PREFIXES = ("configured::", "configured_sdk::", "host_cache::", "host_quota::socket::",
+                 "publisher_io::", "publisher_local::", "quota_confinement::")
+ROOT_UNIT_TESTS = (
+    'host_quota::initial_enrollment::tests::actual_initial_receipt_refuses_shared_and_other_root_guards_before_effects',
+    'host_quota::initial_enrollment::tests::actual_initial_receipt_rejects_unknown_entries_before_scaffold_effects',
+    'host_quota::initial_enrollment::tests::actual_scaffold_creation_retains_all_original_inodes_bytes_and_exclusions',
+    'host_quota::initial_enrollment::tests::extended_observation_closes_on_original_preimages_after_actual_enumeration',
+    'host_quota::initial_enrollment::tests::extended_scaffold_recheck_refuses_same_bytes_replacement_and_untracked_names',
+)
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
-    'configured::tests::configured_preflight_requires_real_quota_inputs_before_startup',
-    'configured::tests::configured_preflight_rejects_later_domain_policy_before_any_open',
-    'configured::tests::configured_preflight_refuses_overlapping_roots_and_aliasing_endpoints',
-    'configured::tests::configured_preflight_binds_distinct_explicit_administrative_roots',
-    'configured::tests::configured_preflight_rejects_unrepresentable_unix_socket',
     'configured::tests::configured_cache_plan_checks_all_domains_without_opening_missing_helper',
-    'configured::tests::configured_cache_plan_requires_exact_resource_domain_coverage',
     'configured::tests::configured_cache_plan_refuses_later_invalid_resources_before_native_startup',
-    'host_cache::recovery_inspection::quarantine::tests::encoded_quarantine_names_are_closed_routing_fields_without_content_authority',
-    'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
-    'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
-    'publisher_local::socket::tests::socket_chmod_rejects_wrong_type_and_owner_before_mutation',
-    'publisher_local::socket::tests::kernel_peer_credentials_cannot_be_claimed_in_packet',
-    'publisher_local::socket::tests::real_seqpacket_roundtrip_requires_response_correlation',
-    'publisher_local::socket::tests::duplicate_active_request_is_rejected_before_dispatch',
-    'publisher_local::socket::tests::unsolicited_and_mismatched_responses_are_rejected',
-    'publisher_local::socket::tests::oversized_payload_and_excess_rights_are_rejected',
-    'publisher_local::socket::tests::received_rights_are_close_on_exec_and_writable_sources_fail',
-    'publisher_local::socket::tests::rejected_rights_do_not_accumulate_descriptors',
-    'publisher_local::socket::tests::ancillary_truncation_and_unregistered_credentials_are_rejected',
-    'publisher_local::socket::tests::configured_domain_selection_has_no_fallback',
-    'host_cache::owner::publication::eviction::activity::tests::verified_read_order_keeps_first_promotion_separate_from_later_hits',
-    'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_reads_share_one_order_without_losing_first_hits',
-    'host_cache::owner::publication::eviction::activity::tests::verified_read_group_overflow_preserves_body_and_dictionary_activity',
-    'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_read_groups_keep_dictionary_hits_in_the_same_clock_cut',
-    'host_cache::owner::publication::eviction::activity::tests::reused_inode_starts_fresh_activity_without_changing_other_allocations',
-    'host_cache::owner::publication::residence::view::tests::close_refuses_new_reads_until_started_backing_is_dropped',
-    'host_cache::owner::publication::residence::view::tests::concurrent_close_does_not_report_quiescence_during_backing_destruction',
-    'host_cache::owner::consumer::sweep::tests::delayed_sweep_uses_original_expiry_and_never_restarts_grace',
-    'host_cache::owner::consumer::sweep::tests::explicit_grace_has_no_second_grace_and_retained_producers_do_not_expire',
-    'host_cache::owner::consumer::sweep::tests::partial_pin_expiry_is_persisted_without_releasing_the_remaining_owner',
+    'configured::tests::configured_cache_plan_requires_exact_resource_domain_coverage',
+    'configured::tests::configured_preflight_binds_distinct_explicit_administrative_roots',
+    'configured::tests::configured_preflight_refuses_overlapping_roots_and_aliasing_endpoints',
+    'configured::tests::configured_preflight_rejects_later_domain_policy_before_any_open',
+    'configured::tests::configured_preflight_rejects_unrepresentable_unix_socket',
+    'configured::tests::configured_preflight_requires_real_quota_inputs_before_startup',
+    'configured_sdk::tests::actual_original_profile_mismatch_requires_process_exit',
+    'configured_sdk::tests::complete_exposure_list_rejects_late_unsupported_credentials_without_effects',
+    'configured_sdk::tests::credential_references_have_no_provider_or_path_normalization_fallback',
+    'configured_sdk::tests::encoded_bucket_traversal_is_rejected_without_path_normalization',
+    'configured_sdk::tests::failure_display_debug_and_entire_source_chain_redact_private_data',
+    'configured_sdk::tests::fifo_and_device_credentials_are_classified_before_any_read',
+    'configured_sdk::tests::native_token_reads_are_regular_nofollow_and_bounded',
+    'configured_sdk::tests::preflight_refuses_roles_and_missing_trust_without_installation',
+    'configured_sdk::tests::preflight_refuses_unavailable_compositions_before_missing_authority_io',
+    'configured_sdk::tests::preflight_rejects_endpoints_overlapping_repository_state',
+    'configured_sdk::tests::pure_sdk_profile_matches_the_actual_compiled_registry',
+    'configured_sdk::tests::role_selection_and_instance_credentials_fail_before_any_repository_open',
     'host_cache::owner::admission::io::tests::actual_admission_byte_check_is_positioned_and_rejects_modified_inode_bytes',
     'host_cache::owner::admission::memory::tests::simultaneous_active_copies_and_state_headers_are_checked',
     'host_cache::owner::admission::metadata::tests::actual_metadata_pair_rejects_wrong_index_key_class_and_window',
     'host_cache::owner::admission::metadata_reads::tests::registry_absence_never_masks_native_missing_or_corrupt_backing',
     'host_cache::owner::admission::tests::cancelled_started_phase_faults_without_native_authority_or_mutexes',
     'host_cache::owner::admission::tests::untrusted_pair_input_is_bounded_with_checked_addition',
-    'host_cache::owner::snapshot::tests::actual_snapshot_io_retains_readback_and_rejects_replaced_inode',
     'host_cache::owner::config::tests::native_host_cache_config_refuses_ambiguous_custody_and_unfunded_capacity',
     'host_cache::owner::config::tests::native_host_cache_config_validation_needs_no_existing_paths',
     'host_cache::owner::config::tests::native_index_repair_policy_defaults_closed_and_funds_payload_overlap',
+    'host_cache::owner::consumer::sweep::tests::delayed_sweep_uses_original_expiry_and_never_restarts_grace',
+    'host_cache::owner::consumer::sweep::tests::explicit_grace_has_no_second_grace_and_retained_producers_do_not_expire',
+    'host_cache::owner::consumer::sweep::tests::partial_pin_expiry_is_persisted_without_releasing_the_remaining_owner',
     'host_cache::owner::index_io::tests::classified_index_open_reads_regular_inode_and_refuses_fifo_and_symlink',
     'host_cache::owner::index_io::tests::classified_index_open_refuses_character_device_before_read_open',
     'host_cache::owner::index_io::tests::invalid_index_error_preserves_typed_source',
+    'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_read_groups_keep_dictionary_hits_in_the_same_clock_cut',
+    'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_reads_share_one_order_without_losing_first_hits',
+    'host_cache::owner::publication::eviction::activity::tests::reused_inode_starts_fresh_activity_without_changing_other_allocations',
+    'host_cache::owner::publication::eviction::activity::tests::verified_read_group_overflow_preserves_body_and_dictionary_activity',
+    'host_cache::owner::publication::eviction::activity::tests::verified_read_order_keeps_first_promotion_separate_from_later_hits',
+    'host_cache::owner::publication::residence::view::tests::close_refuses_new_reads_until_started_backing_is_dropped',
+    'host_cache::owner::publication::residence::view::tests::concurrent_close_does_not_report_quiescence_during_backing_destruction',
+    'host_cache::owner::recovery_cold::tests::cold_metadata_pins_require_the_separate_verified_source_closure',
+    'host_cache::owner::recovery_cold::tests::cold_pins_require_complete_verified_backing_without_erasing_candidates',
+    'host_cache::owner::recovery_cold::tests::standalone_replacement_cannot_erase_an_original_cold_range',
+    'host_cache::owner::recovery_encoded::tests::before_canonical_publish_the_verified_original_range_remains_selected',
+    'host_cache::owner::recovery_encoded::tests::extraction_crash_selection_keeps_one_residence_and_checks_both_lengths',
     'host_cache::owner::recovery_inline::tests::inline_reconstruction_keeps_each_exact_whole_chunk_range',
     'host_cache::owner::recovery_manifest_state::tests::changed_residence_cannot_pass_a_policy_snapshot_comparison',
     'host_cache::owner::recovery_manifest_state::tests::extra_cold_rows_are_refused_and_preserved',
@@ -80,19 +92,20 @@ UNIT_TESTS = (
     'host_cache::owner::recovery_namespace::tests::actual_name_scan_counts_coordination_unknown_and_non_utf8_entries',
     'host_cache::owner::recovery_residences::tests::conflicts_and_capacity_are_refused_without_clearing_prior_candidates',
     'host_cache::owner::recovery_residences::tests::repeated_occurrences_select_one_stable_range_independent_of_scan_order',
-    'host_cache::owner::recovery_cold::tests::cold_pins_require_complete_verified_backing_without_erasing_candidates',
-    'host_cache::owner::recovery_cold::tests::cold_metadata_pins_require_the_separate_verified_source_closure',
-    'host_cache::owner::recovery_cold::tests::standalone_replacement_cannot_erase_an_original_cold_range',
-    'host_cache::owner::recovery_encoded::tests::extraction_crash_selection_keeps_one_residence_and_checks_both_lengths',
-    'host_cache::owner::recovery_encoded::tests::before_canonical_publish_the_verified_original_range_remains_selected',
     'host_cache::owner::recovery_state_parent::tests::actual_state_parent_scan_refuses_unknown_file_and_directory_siblings',
     'host_cache::owner::retention::recovery_manifest::tests::abandoned_rpc_effect_faults_without_a_state_or_client_lock',
     'host_cache::owner::retention::recovery_manifest::tests::cancelled_in_flight_retention_never_reactivates_the_live_phase',
     'host_cache::owner::retention::recovery_manifest::tests::only_reconciled_retention_returns_to_active',
     'host_cache::owner::retention::recovery_manifest::tests::reconciled_rpc_effect_releases_the_exclusive_phase',
     'host_cache::owner::retention::snapshot_provenance_tests::previous_write_cannot_certify_new_generation_or_another_inode',
+    'host_cache::owner::snapshot::tests::actual_snapshot_io_retains_readback_and_rejects_replaced_inode',
+    'host_cache::reassembly::tests::streamed_manifest_handles_short_writes_without_collecting_an_output_buffer',
+    'host_cache::reassembly::tests::streamed_manifest_preserves_write_failure_and_original_partial_output',
+    'host_cache::reassembly::tests::streamed_manifest_refuses_truncated_trailing_reordered_and_modified_input',
+    'host_cache::reassembly::tests::streamed_manifest_rejects_wrong_whole_hash_after_valid_ordered_chunks',
     'host_cache::recovery_inspection::collection::tests::duplicate_candidates_consume_the_occurrence_budget',
     'host_cache::recovery_inspection::collection::tests::native_names_reject_aliases_and_wrong_widths',
+    'host_cache::recovery_inspection::quarantine::tests::encoded_quarantine_names_are_closed_routing_fields_without_content_authority',
     'host_cache::recovery_inspection::tests::actual_metadata_pack_requires_the_exact_original_manifest_record_range',
     'host_cache::recovery_inspection::tests::actual_pack_bytes_derive_exact_index_but_corrupt_body_never_does',
     'host_cache::recovery_inspection::tests::compressed_pack_dictionary_respects_remaining_plaintext_budget',
@@ -110,8 +123,44 @@ UNIT_TESTS = (
     'host_cache::recovery_inspection::tests::retained_manifest_verifies_full_plaintext_and_preserves_its_metadata_identity',
     'host_cache::recovery_inspection::tests::structural_pack_allocation_is_bounded_before_decoded_records',
     'host_cache::recovery_inspection::tests::unresolved_verification_failure_preserves_its_typed_source',
+    'host_cache::source::tests::encoded_consumer_verifies_original_envelope_before_returning_bytes',
+    'host_cache::source::tests::native_chunk_open_classifies_fifo_symlink_and_character_device_before_read_open',
+    'host_cache::source::tests::native_chunk_read_enforces_owner_window_before_allocation_or_cursor_changes',
+    'host_cache::source::tests::native_chunk_source_errors_preserve_typed_causes',
+    'host_cache::tests::native_host_cache_rejects_symlink_ancestors',
+    'host_quota::socket::signal_tests::interrupted_receive_keeps_the_same_connection',
+    'host_quota::socket::signal_tests::repeated_interruptions_do_not_extend_the_original_deadline',
+    'host_quota::socket::tests::descriptor_ancillary_is_rejected_without_returning_custody',
+    'host_quota::socket::tests::kernel_peer_identity_is_not_a_packet_assertion',
+    'host_quota::socket::tests::oversized_native_packet_is_rejected_after_receive_truncation',
+    'publisher_io::manifest::tests::received_metapack_rejects_wrong_range_size_writer_budget_and_mutation',
+    'publisher_io::manifest::tests::received_metapack_uses_positioned_reads_and_exact_canonical_claim',
+    'publisher_io::worker::binding_repair::tests::actual_parent_sync_failure_withholds_repair_success',
+    'publisher_io::worker::binding_repair::tests::binding_capture_refuses_special_inodes_before_read_open',
+    'publisher_io::worker::binding_repair::tests::repair_refuses_replacement_and_same_inode_mutation',
+    'publisher_io::worker::inventory::startup::tests::cleanup_grammar_matches_only_actual_generated_temporary_names',
+    'publisher_io::worker::inventory::state::tests::retained_manifest_budget_includes_canonical_and_decoded_payloads',
+    'publisher_io::worker::inventory::state::tests::retained_snapshot_rejects_mode_links_and_canonical_inode_replacement',
+    'publisher_io::worker::inventory::tests::key_parser_refuses_noncanonical_names',
+    'publisher_io::worker::inventory::tests::physical_entry_budget_counts_directories_and_bodies',
+    'publisher_io::worker::inventory::tests::private_remnant_names_prevent_empty_namespace_classification',
+    'publisher_io::worker::inventory::tests::retained_open_rejects_symlinks_and_wrong_inode_kinds',
+    'publisher_io::worker::inventory::tests::snapshot_pages_use_single_use_owner_cursors',
     'publisher_local::client::recovery_manifest::tests::candidate_comparison_requires_the_complete_registered_key',
     'publisher_local::client::recovery_manifest::tests::retained_claim_comparison_rejects_other_domains_and_content',
+    'publisher_local::socket::tests::ancillary_truncation_and_unregistered_credentials_are_rejected',
+    'publisher_local::socket::tests::configured_domain_selection_has_no_fallback',
+    'publisher_local::socket::tests::duplicate_active_request_is_rejected_before_dispatch',
+    'publisher_local::socket::tests::kernel_peer_credentials_cannot_be_claimed_in_packet',
+    'publisher_local::socket::tests::oversized_payload_and_excess_rights_are_rejected',
+    'publisher_local::socket::tests::real_seqpacket_roundtrip_requires_response_correlation',
+    'publisher_local::socket::tests::received_rights_are_close_on_exec_and_writable_sources_fail',
+    'publisher_local::socket::tests::rejected_rights_do_not_accumulate_descriptors',
+    'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
+    'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
+    'publisher_local::socket::tests::socket_chmod_rejects_wrong_type_and_owner_before_mutation',
+    'publisher_local::socket::tests::unsolicited_and_mismatched_responses_are_rejected',
+    'quota_confinement::policy::tests::setter_denial_survives_command_padding_and_preserves_get_and_verity',
 )
 
 
@@ -136,23 +185,21 @@ def unit_inventory(output):
     selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
     shared.require(selected == sorted(UNIT_TESTS) and len(selected) == len(UNIT_TESTS),
                    "FS unit module-prefix inventory changed")
+    shared.require(sorted(names) == sorted((*UNIT_TESTS, *ROOT_UNIT_TESTS)),
+                   "complete native feature test inventory changed")
     return sorted(names)
 
 
 def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
-    source_roots = [workspace / "terrane/linux/terrane-linux/src/configured.rs",
-                    workspace / "terrane/linux/terrane-linux/src/host_cache/owner",
-                    workspace / "terrane/linux/terrane-linux/src/host_cache/recovery_inspection",
-                    workspace / "terrane/linux/terrane-linux/src/publisher_local/client/recovery_manifest.rs",
-                    workspace / "terrane/linux/terrane-linux/src/publisher_local/socket_tests.rs"]
+    root = workspace / "terrane/linux/terrane-linux/src"
     declared = []
-    for root in source_roots:
-        for path in sorted(root.rglob("*.rs")) if root.is_dir() else [root]:
-            declared.extend(re.findall(r"#\[test\]\s*fn\s+(\w+)\s*\(", path.read_text()))
-    shared.require(len(declared) == len(UNIT_TESTS)
-                   and sorted(declared) == sorted(name.rsplit("::", 1)[1] for name in UNIT_TESTS),
-                   "source FS unit declarations differ from retained selection")
+    for path in sorted(root.rglob("*.rs")):
+        declared.extend(re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", path.read_text()))
+    expected = (*UNIT_TESTS, *ROOT_UNIT_TESTS)
+    shared.require(len(declared) == len(expected)
+                   and sorted(declared) == sorted(name.rsplit("::", 1)[1] for name in expected),
+                   "source native unit declarations differ from the complete inventory")
 
 
 def unit_artifact(workspace, temporary, target, packages):
@@ -277,7 +324,7 @@ def main():
         shared.require(path.read_bytes() == (source / relative).read_bytes(), "executed proof helper differs from source")
     artifacts = selected_artifacts(workspace, temporary, target)
     source_hashes = shared.source_hashes(workspace, source)
-    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "native_sdk_test_image.py"]:
+    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "native_feature_units_vm.py", "native_sdk_test_image.py"]:
         path = source / "tests/terrane" / name
         shared.require(path.read_bytes() == (workspace.parent / "tests/terrane" / name).read_bytes(), "mutable proof input: " + name)
         source_hashes["tests/terrane/" + name] = digest(path)
@@ -322,7 +369,7 @@ def main():
                            "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
     checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
     supervisor_helpers = {}
-    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py"]:
+    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "native_feature_units_vm.py"]:
         helper_source = source / "tests/terrane" / helper_name
         helper_installed = output / "share" / helper_name
         shutil.copy2(helper_source, helper_installed)
@@ -394,6 +441,7 @@ def main():
                                capture_output=True).stdout)
     shared.require(digest(unit_elf) == unit_hash, "unit discovery changed installed FS ELF")
     unit_identity = {"full_inventory": full_units, "selected_inventory": sorted(UNIT_TESTS),
+                     "root_inventory": sorted(ROOT_UNIT_TESTS),
                      "prefixes": list(UNIT_PREFIXES), "working_directory": "crates/terrane/linux/terrane-linux",
                      "profile": UNIT_PROFILE, "guest_uid": 842, "guest_gid": 842}
     identity = {"schema_version": 1, "source": str(source), "artifacts": identities,

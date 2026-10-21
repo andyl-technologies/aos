@@ -1,4 +1,8 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  hostCacheProof,
+  ...
+}: let
   # Cargo succeeds when a filter matches nothing, so require the exact test
   # before executing a focused conformance check.
   focusedTest = ''
@@ -78,6 +82,13 @@ in {
   '';
 
   feature-matrix = sourceGate "feature-matrix" ''
+        # Native fixtures require initial-namespace root and real ext4 setgid
+        # operations. Their complete library inventory executes in the guest;
+        # the Nix lane still compiles every requested native feature profile.
+        test "$(cat ${hostCacheProof.native}/result)" = PASS
+        mkdir -p "$out/nix-support"
+        printf '%s\n' ${hostCacheProof.native} > "$out/nix-support/native-feature-proof"
+        native_profiles=0
         cd crates
         # This milestone supports native Linux. Extend the target matrix when
         # the edge host becomes a supported build target.
@@ -118,6 +129,20 @@ in {
         test_crate() {
           package_name=$1
           shift
+          if [ "$package_name" = terrane-linux ]; then
+            for feature_argument in "$@"; do
+              case "$feature_argument" in
+                --all-features|native-test-fixtures)
+                  native_profiles=$((native_profiles + 1))
+                  native_events="$out/native-profile-$native_profiles.jsonl"
+                  cargo test --frozen --offline -p "$package_name" --lib "$@" \
+                    --no-run --message-format=json > "$native_events"
+                  python3 ../tests/terrane/check_native_feature_build.py "$native_events"
+                  return
+                  ;;
+              esac
+            done
+          fi
           if [ "$package_name" = terrane-cli ]; then
             cargo test --frozen --offline -p "$package_name" --bin terrane "$@"
           elif [ "$package_name" = terrane-sdk ]; then
@@ -159,6 +184,8 @@ in {
             raise SystemExit(f"missing intentional binding rejection: {sys.argv[2]}")
     PY
         done
+
+        test "$native_profiles" -eq 2
 
         cargo test --frozen --offline -p terrane-sdk --no-default-features --features tokio --doc
         cargo test --frozen --offline -p terrane-sdk --no-default-features --features wasm --doc

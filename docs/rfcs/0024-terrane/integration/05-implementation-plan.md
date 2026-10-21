@@ -11843,3 +11843,25 @@ actual portable/native Cargo artifact. Application-target compilation remains
 pending. The earlier schema change at `696dcc900d` also passes the required
 application-target compilation: 184 test executables across 59 packages,
 bound to 7,875 immutable source files; this is compilation evidence only.
+
+
+#### Native feature-matrix execution environment
+
+The earlier matrix at `ed6795f606` failed in the Nix sandbox: its all-feature
+Linux profile enabled fixtures that require real setgid operations or the
+initial user namespace and actual UID zero. This is retained as a failed run.
+The matrix now compiles and validates each requested native profile in Nix
+and requires complete native library execution in the existing ext4 VM.
+The exact 128-case inventory includes 123 ordinary-user cases and five initial
+creator cases. The latter create their own real enrollment receipts as guest
+UID/GID zero; both groups execute with empty groups, no capabilities and
+`no_new_privs`. Source declarations, full libtest inventory, Cargo artifact,
+features, profile and each bounded selector remain checked. The unchanged
+30-second case bounds and 870-second complete native cache bound still apply.
+Qualification of this harness correction remains pending.
+
+Frozen transport qualification at `c68a24f54b` exposed a DNS dependency in the
+TLS fixture after the other transport encodings passed. The fixture now
+resolves `localhost` directly to its actual loopback listener while retaining
+normal TLS identity verification. All six local cases pass again; the failed
+frozen run remains recorded and requires a successful replacement.

@@ -1246,6 +1246,7 @@ def verify_image():
         "host_cache_pending_packs_vm.py",
         "encoded_eviction_vm.py",
         "shared_reextract_vm.py",
+        "native_feature_units_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1427,6 +1428,7 @@ def main():
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
     verify_image()
     filesystem_unit_cases()
+    runpy.run_path(str(IMAGE / "share/native_feature_units_vm.py"))["execute"](sys.modules[__name__])
     publisher_confinement_cases()
     administrative_preflight("before")
     scaffold()
