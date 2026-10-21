@@ -92,7 +92,7 @@ junit = { path = "junit.xml" }
 
 # Protected ancestry, real cgroup-v2 and user-xattr fixtures require the
 # host-native profile described in README.md. Default and ci stay unfiltered.
-# Exclude only these exact 53 native cases from the hermetic sandbox.
+# Exclude only these exact 58 native cases from the hermetic sandbox.
 # Stack failures are not excluded: both entries set RUST_MIN_STACK=33554432.
 [profile.nix-sandbox]
 inherits = "ci"
@@ -161,6 +161,13 @@ not (
     test(=cgroup::retained_limit_active_tests::complete_initial_boundary_probes_retire_before_the_next_native_interval) or
     test(=cgroup::retained_limit_active_tests::failed_final_anchor_keeps_actual_completed_initial_active_probes) or
     test(=cgroup::retained_native::tests::complete_root_and_child_probes_retire_after_the_same_real_outputs_move)
+  )) or
+  (package(=aos-sandbox-publisher) & (
+    test(=publisher_sessions::kernel_tests::prepare_abort_closes_and_activation_authenticates_original_process) or
+    test(=publisher_sessions::kernel_tests::fatal_receive_retires_transport_but_keeps_live_execution_reservation) or
+    test(=publisher_sessions::kernel_tests::postcommit_prepared_retirement_keeps_exact_live_peer_pin) or
+    test(=publisher_sessions::kernel_tests::same_cgroup_delegated_writer_is_not_the_registered_execution) or
+    test(=publisher_sessions::kernel_tests::retired_original_process_must_exit_before_its_reservation_is_released)
   )) or
   (package(=aos-sandbox-network) & (
     test(=kernel_reader::artifact_path::tests::native_missing_component_keeps_prior_directory_pins_and_first_error)
