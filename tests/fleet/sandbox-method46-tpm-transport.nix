@@ -22,6 +22,7 @@ in {
     tpm = true;
   };
   testScript = ''
+    import signal
     import time
 
     vm.wait_for_unit("multi-user.target", timeout=180)
@@ -102,6 +103,31 @@ in {
         vm.fail(f"${command} recover {role} {state}")
         vm.succeed(f"${command} read {role} {state}")
         vm.fail(f"${command} read {role} {state}.old")
+
+    # Also cut power with preparation durable but the TPM unable to execute
+    # the extend. An authenticated predecessor must not be mistaken for the
+    # target or silently discard the pending operation.
+    state = "/var/lib/method46-transport/endpoint-0"
+    vm.succeed(
+        f"${command} advance-paused 0 {state} > {state}.paused-log 2>&1 "
+        f"& echo $! > {state}.paused-pid"
+    )
+    pid = int(vm.succeed(f"cat {state}.paused-pid").strip())
+    vm.wait_until_succeeds(f"test $(cut -d ' ' -f 3 /proc/{pid}/stat) = T")
+    pending = vm.succeed(f"od -v -An -tx1 -j98 -N32 {state}")
+    assert "".join(pending.split()) == "51" * 32, pending
+    assert vm.swtpm_proc is not None and vm.swtpm_proc.poll() is None
+    vm.swtpm_proc.send_signal(signal.SIGSTOP)
+    vm.succeed(f"kill -CONT {pid}")
+    # The kernel TPM driver may wait uninterruptibly for the stopped device.
+    vm.wait_until_succeeds(
+        f"case $(cut -d ' ' -f 3 /proc/{pid}/stat) in S|D) exit 0;; *) exit 1;; esac"
+    )
+    vm.power_cycle(timeout=240)
+    vm.wait_for_unit("multi-user.target", timeout=180)
+    vm.fail(f"${command} recover 0 {state}")
+    vm.succeed(f"${command} read 0 {state}")
+    assert vm.succeed(f"od -v -An -tx1 -j98 -N32 {state}") == pending
 
     # Only the external test provisioner has hierarchy reset authority.
     vm.succeed("${pkgs.tpm2-tools}/bin/tpm2_clear -T device:/dev/tpmrm0")

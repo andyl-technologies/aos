@@ -3,6 +3,7 @@
  * This fixture owns provisioning authority. It does not qualify the helper's
  * carrier, SELinux transition, daemon journals, or public Create admission. */
 #include "nv_esys.c"
+#include <signal.h>
 #include <stdio.h>
 
 struct fixture {
@@ -218,13 +219,19 @@ int main(int argc, char **argv)
             require(result != 0, "reject foreign index credential");
         } else {
             require(result == 0, "production authenticated NV read");
-            if (strcmp(argv[1], "advance") == 0) {
+            if (strcmp(argv[1], "advance") == 0
+                || strcmp(argv[1], "advance-paused") == 0) {
                 require(memcmp(observation + 96, fixture.checkpoint, 32) == 0,
                     "exact predecessor before extend");
                 require(!nonzero(fixture.pending, sizeof(fixture.pending)),
                     "no previous pending operation");
                 memset(fixture.pending, 0x51, sizeof(fixture.pending));
                 save_fixture(argv[3], &fixture);
+                /* The VM harness can suspend the independent TPM after this
+                 * durable preparation, then resume this actual ESYS caller
+                 * before cutting power to both processes. */
+                if (strcmp(argv[1], "advance-paused") == 0)
+                    require(raise(SIGSTOP) == 0, "pause prepared extend");
                 require(extend_index(&context, fixture.pending) == 0,
                     "production encrypted NV extend");
                 /* Deliberately leave the checkpoint behind the TPM, as when
