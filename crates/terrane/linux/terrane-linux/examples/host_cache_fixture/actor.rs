@@ -40,6 +40,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-cancel"
             | "cache-admission-handoff"
             | "dictionary-custody"
+            | "read-through-chunk"
             | "encoded-read-failure"
             | "encoded-dictionary-read-failure"
             | "metadata-pack-read-failure"
@@ -156,6 +157,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "metadata-pack-read-failure" | "metadata-index-read-failure" => {
             super::metadata_read_failure::run(&owner, &runtime, &inputs, original)?;
+        }
+        "read-through-chunk" => {
+            super::read_through::run(&owner, &runtime, &inputs, original)?;
         }
         "dictionary-custody" => {
             super::dictionary_custody::run(&owner, &runtime, &inputs, original)?;

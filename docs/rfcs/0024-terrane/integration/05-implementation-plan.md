@@ -8694,6 +8694,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Automatic resident/lower chunk read preparation (2026-10-21): the actual native
+owner now attempts an original durable consumer grant before the existing
+verified, circuit-controlled lower fetch. Resident hits check exact repository
+length, boundary and dictionary context without lower dispatch. Missing or
+rejected originals can return independently verified lower bytes while actual
+admission remains a separate ticket and all old aliases, quarantine and funding
+remain retained. Descriptor algorithm and chunk kind are validated before IO
+for both entry points. The native controls exercise a completed lower admission,
+a resident hit, invalid-context refusals and automatic fallback after both raw
+and dictionary-backed corruption. This does not reconcile a faulted owner or
+release quarantine. Runtime/application qualification remains pending.
+
 Metadata deduplication preparation (2026-10-21): an existing metadata upload
 uses the same original pack/index consumer grant as ordinary ContentStore reads
 before returning its identity. The upload still verifies every chunk dependency

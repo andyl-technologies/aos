@@ -132,10 +132,11 @@ pub(super) fn run(
     ];
     let validator = MetadataValidator::new(profile);
     let fetched = runtime
-        .block_on(owner.fetch_chunk(
+        .block_on(owner.read_or_fetch_chunk(
             &lower,
             &mut circuits,
             &TokioClock,
+            expires,
             NativeChunkFetchRequest {
                 descriptor: &descriptor,
                 position,
@@ -151,6 +152,8 @@ pub(super) fn run(
         ));
     }
     let (_, admission) = fetched.into_parts();
+    let admission = admission
+        .ok_or_else(|| invalid("rejected original unexpectedly returned a resident read"))?;
     let failed = match admission {
         Ok(ticket) => runtime.block_on(ticket.finish()).is_err(),
         Err(_) => true,
@@ -164,6 +167,9 @@ pub(super) fn run(
             "verified lower refetch revived rejected native custody or changed original protection",
         ));
     }
+    emit(
+        "PASS automatic original-then-lower read preserves permanent rejected aliases and actual quarantine funding",
+    )?;
     emit(
         "READY verified good lower refetch returned while rejected aliases, original quarantine and funding remain retained",
     )?;

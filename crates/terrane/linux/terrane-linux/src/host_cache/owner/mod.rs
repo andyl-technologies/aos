@@ -15,6 +15,7 @@ mod index_io;
 mod policy_stall_fixture;
 mod preparation;
 mod publication;
+mod read_through;
 mod recovery;
 mod recovery_accounting;
 mod recovery_candidates;
@@ -63,6 +64,7 @@ pub use publication::{
     NativeInlinePublication, NativeManifestPublication, NativeProducerReadClosure,
     NativeResidentChunkSource, NativeSourceCleanupReport,
 };
+pub use read_through::NativeReadChunk;
 pub use recovery::CompletedRecovery;
 pub(crate) use recovery::RunningRecovery;
 pub(crate) use recovery_pending::PublisherRecoveryRetirementTurn;

@@ -30,6 +30,8 @@ mod metadata_read_failure;
 mod network;
 #[path = "host_cache_fixture/publication.rs"]
 mod publication;
+#[path = "host_cache_fixture/read_through.rs"]
+mod read_through;
 #[path = "host_cache_fixture/recovery.rs"]
 mod recovery;
 #[path = "host_cache_fixture/running_retention.rs"]
@@ -54,6 +56,7 @@ fn main() -> std::process::ExitCode {
             "admit-cancel",
             "cache-admission-handoff",
             "dictionary-custody",
+            "read-through-chunk",
             "encoded-read-failure",
             "encoded-dictionary-read-failure",
             "metadata-pack-read-failure",

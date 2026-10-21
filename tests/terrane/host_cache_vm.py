@@ -108,6 +108,7 @@ RECOVERABLE_ENCODED_QUARANTINE = {
 }
 CASES += QUARANTINE_CASES
 CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure"]
+CASES += ["read-through"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1563,6 +1564,14 @@ def main():
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
+        output = actor("read-through", "read-through-chunk", uuid)
+        expected = b"\0actual verified native read-through content"
+        candidates = [path for path in (root("read-through") / "chunks").rglob("*") if path.is_file()]
+        require(len(candidates) == 1 and candidates[0].read_bytes() == expected
+                and candidates[0].stat().st_uid == 840 and candidates[0].stat().st_gid == 845
+                and candidates[0].stat().st_nlink == 1 and candidates[0].stat().st_mode & 0o7777 == 0o640,
+                "actual read-through lacks its exact original encoded cache inode")
+        print("PASS independent observer verifies actual read-through cache inode, original bytes and role custody", flush=True)
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)

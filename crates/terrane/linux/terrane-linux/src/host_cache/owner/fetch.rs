@@ -6,7 +6,7 @@
 
 use super::{NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeMetadataOwner};
 use std::{io, time::Duration};
-use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
+use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::{
     bucket::BucketBinding,
     host::cache::{CircuitBreaker, FetchRequirement, fetch_verified},
@@ -85,19 +85,7 @@ impl NativeMetadataOwner {
         C: Clock + BucketBinding,
         V: ContentValidator + BucketBinding,
     {
-        let length = usize::try_from(request.descriptor.size()).map_err(invalid)?;
-        if length > self.chunk_profile.maximum() {
-            return Err(invalid(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "lower chunk exceeds the configured profile",
-            )));
-        }
-        self.admission_bounds
-            .check(length.max(1), 0)
-            .map_err(capacity)?;
-        let identity = TERRANE_V1
-            .from_digest(IdentityKind::Chunk, request.descriptor.digest())
-            .map_err(invalid)?;
+        let (identity, length) = self.fetch_context(&request)?;
         let requirement = FetchRequirement::Chunk {
             identity: &identity,
             length,
@@ -130,6 +118,31 @@ impl NativeMetadataOwner {
             encoded.clone(),
         );
         Ok(NativeFetchedChunk { encoded, admission })
+    }
+
+    /// Checks descriptor kind, immutable profile and local read bounds before IO.
+    pub(super) fn fetch_context(
+        &self,
+        request: &NativeChunkFetchRequest<'_>,
+    ) -> Result<(Identity, usize), StoreFailure> {
+        let length = usize::try_from(request.descriptor.size()).map_err(invalid)?;
+        if request.descriptor.algorithm() != TERRANE_V1.algorithm()
+            || request.descriptor.domain()
+                != TERRANE_V1.domain(IdentityKind::Chunk).map_err(invalid)?
+            || length > self.chunk_profile.maximum()
+        {
+            return Err(invalid(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lower chunk descriptor differs from the configured chunk profile",
+            )));
+        }
+        self.admission_bounds
+            .check(length.max(1), 0)
+            .map_err(capacity)?;
+        let identity = TERRANE_V1
+            .from_digest(IdentityKind::Chunk, request.descriptor.digest())
+            .map_err(invalid)?;
+        Ok((identity, length))
     }
 }
 

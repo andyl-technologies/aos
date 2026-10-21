@@ -53,7 +53,7 @@ pub use owner::{
     NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeChunkFetchRequest,
     NativeConsumerLease, NativeFetchedChunk, NativeIndexRepairReport, NativeInlinePublication,
     NativeLeaseAccounting, NativeManifestPublication, NativeMetadataAdmission,
-    NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure,
+    NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure, NativeReadChunk,
     NativeResidentChunkSource, NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
