@@ -145,18 +145,29 @@ impl NativeContentStore {
                 let plaintext = if requirement.identity == empty_chunk()? {
                     Vec::new()
                 } else {
-                    let lease = self.pin(&requirement.identity).await.map_err(|error| {
-                        if matches!(error.kind(), StoreErrorKind::Absent(_)) {
-                            invalid(requirement.missing_rule_id)
-                        } else {
-                            error
+                    // Repeated references share this request's original grant.
+                    // Each position still verifies actual bytes and its own CDC
+                    // context; reference count must not multiply durable pins.
+                    let index = match leases
+                        .iter()
+                        .position(|lease| lease.identity() == &requirement.identity)
+                    {
+                        Some(index) => index,
+                        None => {
+                            let lease = self.pin(&requirement.identity).await.map_err(|error| {
+                                if matches!(error.kind(), StoreErrorKind::Absent(_)) {
+                                    invalid(requirement.missing_rule_id)
+                                } else {
+                                    error
+                                }
+                            })?;
+                            leases.push(lease);
+                            leases.len() - 1
                         }
-                    })?;
-                    let plaintext = lease
+                    };
+                    leases[index]
                         .read_verified()
-                        .map_err(|error| native_failure(error, &requirement.identity));
-                    leases.push(lease);
-                    plaintext?
+                        .map_err(|error| native_failure(error, &requirement.identity))?
                 };
                 if plaintext.len() != requirement.declared_plaintext_len {
                     return Err(invalid("CDC-12"));

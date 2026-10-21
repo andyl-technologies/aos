@@ -1,5 +1,8 @@
 //! Exercises real content operations after the physical owner's acknowledged Resume.
 
+#[path = "content/repeated.rs"]
+mod repeated;
+
 use std::{collections::BTreeMap, io};
 use terrane_format::{
     chunking::ChunkProfile,
@@ -134,5 +137,6 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         store.has(&[metadata]).await.map_err(io::Error::other)?,
         [true]
     );
+    repeated::exercise(store, profile).await?;
     Ok(())
 }

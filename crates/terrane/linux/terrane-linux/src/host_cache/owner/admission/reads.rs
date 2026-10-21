@@ -82,7 +82,10 @@ impl AdmittedRead {
                     continue;
                 }
                 if job.cached.is_none() {
-                    return Err(invalid("consumer source has not entered cache custody"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "consumer source has not entered cache custody",
+                    ));
                 }
                 if job.dependencies.len() > 1 {
                     return Err(invalid("consumer admission exceeds one dictionary"));

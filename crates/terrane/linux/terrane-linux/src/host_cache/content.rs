@@ -200,7 +200,9 @@ fn native_failure(error: io::Error, identity: &Identity) -> StoreFailure {
         io::ErrorKind::InvalidData => StoreErrorKind::Corrupt(
             terrane_sdk::store::CorruptSubject::Identity(identity.clone()),
         ),
-        io::ErrorKind::OutOfMemory | io::ErrorKind::StorageFull => StoreErrorKind::Capacity,
+        io::ErrorKind::OutOfMemory | io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
+            StoreErrorKind::Capacity
+        }
         io::ErrorKind::Unsupported => StoreErrorKind::Unsupported,
         _ => StoreErrorKind::Unavailable { retry_after: None },
     };
