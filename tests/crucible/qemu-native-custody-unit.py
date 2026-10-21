@@ -22,7 +22,8 @@ COMPONENTS = (
     "action-edge-post", "apic-getter-custody", "apic-getter-errors",
     "apic-timer-storage", "clock-callback-custody", "clock-canonical-rows",
     "clock-storage-return", "flatview-custody", "memory-discard-custody",
-    "memory-region-custody", "provider-metadata", "shmem-callback-return",
+    "memory-region-custody", "provider-metadata", "publisher-member-return",
+    "shmem-callback-return",
 )
 FULL_LINK = {
     "action-edge-post", "apic-timer-storage", "clock-storage-return",
@@ -221,7 +222,7 @@ def main():
         print(f"PASS native custody component: {name}", flush=True)
     (output / "result").write_text(
         "PASS\nscope=standalone-real-body-components-only\n"
-        "components=12\ncomponent_timeout_seconds=180\n"
+        f"components={len(COMPONENTS)}\ncomponent_timeout_seconds=180\n"
         "aggregate_address_space_bytes=6442450944\n"
         "launched_source_authority=false\n")
 

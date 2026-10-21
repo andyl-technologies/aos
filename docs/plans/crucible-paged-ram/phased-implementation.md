@@ -60,12 +60,12 @@ failed attempts appear in the dated entries below.
 
 | Surface | Latest checkpoint | Remaining qualification |
 | --- | --- | --- |
-| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests, strict protocol Clippy, 73 focused policy checks and five hygiene checks pass. All 5,271 committed Rust/TOML files match the immutable application input. | Mandatory application compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8`; all 206 exact supervision cases pass at `xgxkghygzs95cp23d4pgjhmcswdi1x75`. Paid producer/session construction and native module transfer remain unfinished. |
-| Prior carrier validation | `9d9a713dae`: mandatory application compilation and all 201 exact supervision cases pass; all 5,269 committed source files match the immutable input. | These verdicts precede the Setup6 transport checkpoint. |
-| Native integration | Commit `b69de00f81` retains signed `3376c0ee90`, tree `54e3dd7f`, with architecture, getter, clock, retirement storage and publisher-session prerequisites. The configured delivery entry passes in 50.057 seconds under its unchanged limits. Signed reconstruction, 187 owning scenarios and the 318-file license inventory pass. | Clean hermetic delivery fails on build-relative compiler includes; the full package completes 3,895 compile/link actions but passes only twenty of twenty-six fixtures. Five fixture dependency/extraction regressions and the mandatory launched lifecycle refusal remain. Fresh raw ABI passes at `xsw5495756h6a8n7gqgg504i9ndrq4qx`; all twelve standalone custody components pass, with the final failure-evidence refinement under hermetic replay; later bounded registry, receiver lifetime, workspace and RAM disposal changes remain outside this artifact. |
-| Committed native build | The preceding `5a39df062d` artifact compiles all 3,863 targets and passes 25 of 26 fixture drivers. | Mandatory launched Source/Root/read-post/rearm/ACK/physical-return still refuses. Later candidate results do not qualify that installed lifecycle. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | Strict workspace Clippy/license qualification retains its recorded failures. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
-| Requirements | 323 bindings: 304 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests and strict protocol Clippy pass for preparation-only Setup6 framing. | Actual paid publisher construction and the paired runtime caller remain unfinished. |
+| Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
+| Native integration | `83ecde0031` retains signed `9770a340c3`, tree `ca1face2`, including bounded registries, real RAM disposal exclusion, receiver lifetime, workspace pairs and fixture corrections. Signed reconstruction, 187 owning scenarios and the 319-file license inventory pass. The configured delivery entry passes in 49.089 seconds. | The full package completes 3,991 compile/link actions and passes 25 of 26 fixtures; mandatory launched capture lifecycle remains the sole failure. Fresh ABI and all twelve prior independent custody suites pass; all thirteen custody suites pass at `sdg49q1ywai7b0nij91wcs18nzlqwj59`. The canonical license-boundary gate is blocked by strict controller Clippy. Later header observation and mapping changes remain outside this artifact. |
+| Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The canonical license-boundary check is blocked by strict controller Clippy (1,177 host-library and 1,250 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Requirements | 328 bindings: 309 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Earlier workspace evidence
 
@@ -2349,6 +2349,94 @@ receipt only: the actual paid host lender/session construction, matched queued
 owner, native module transfer, class-one operation and activation remain
 unfinished. It does not authenticate the physical role meanings or issue an
 Original from matching bytes.
+
+### 2026-10-21 per-alias pre-exec ownership journal
+
+Commit `90f00965fa` fixes the actual standing descriptor duplication path.
+Previously, both aliases were duplicated before either entered the paid owner's
+journal; failure of the second duplication dropped the first outside that
+journal. The issuer now lends each role from its retained funded publication,
+and each duplicate enters its canonical slot before the next original check or
+kernel effect. Existing final observation and uncertain-close retention remain
+in force. No publisher session or new descriptor role is created.
+
+Five real Unix-socket controls verify second-effect refusal, original refusal
+between effects, first-effect refusal, occupied-slot refusal and ordered success.
+They inspect actual alias identity and use the live socket peer. All five pass,
+as do 73 focused policy controls and five hygiene controls. Mandatory application
+test-target compilation passes at
+`yyiy0g0z5lfdkx3x563k0sgnf1i20d1c-aos-test-targets-0.1.0`.
+All 5,272 committed Rust/TOML files match immutable
+`wh9blqs3azsix2b4zk69iy3jqinvk6ix-aos-workspace-src`; manifest SHA256 is
+`cf081994390c99665b8e0b399d50163416faf7467115f40a7c12a842dc844ab4`.
+All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. These component checks issue
+no native Source or Original and leave activation disabled.
+
+### 2026-10-21 complete native followup integration
+
+Commit `83ecde0031` retains signed atomic
+`9770a340c3237f1339c19447cbba078e401a86c0`, tree
+`ca1face2c22f19d4b5c777fb27b2dda95c91a909`. It composes bounded resize/discard
+registries, real RAM disposal exclusion, receiver/member lifetime, exact workspace
+editions, the actual installing module service and fixture dependency corrections
+with the prior complete provider chain. The existing four publisher action bodies
+remain present in their actual Source translation unit; this does not connect the
+new Setup6 atomic publisher to a genuine host producer.
+
+All 955 changed source hashes and 7,946 retained evidence hashes match. The fresh
+configured cohort rebuilds 1,917 dependent objects and relinks both system targets.
+The actual configured delivery entry passes in 49.089 seconds under its unchanged
+60-second and 6 GiB limits. Public component evidence passes 187 Source scenarios,
+46 pre-exec omission classifiers, 47 original causal controls and four additional
+cold/rearm controls. These scopes remain distinct from installed lifecycle proof.
+
+Independent signed reconstruction passes at
+`9vjfw0bfb51hcbxpajn899mi3bkjsghw-crucible-qemu-atomic-patch-repository-0`;
+the exact 319-file license ledger passes at
+`rwhg74ia69prwsh78awq2c71304nrya2-crucible-phase6-qemu-patch-license-ledger-0`.
+The new publisher-member return control is GPL-2.0-or-later; the two existing
+LGPL-2.1-or-later additions remain unchanged. The repository's owning Source check
+passes at `9vn9ph79kp6fi4ilp8978abaksb1mihx-crucible-qemu-startup-source-unit-11.1.1`.
+Fresh raw ABI passes at
+`cd85rk6rdvcb3nk1nf53kl6qzcz1xzix-crucible-phase2-abi-conformance-0`.
+All 5,272 committed Rust/TOML files match immutable
+`da9c16hf8x9rqn5pg8frw5fr8msmxw5x-crucible-workspace-src`; manifest SHA256 is
+`9f43bc401d8a9162375ff2725cbfd08c81ce2aaa41f86c467c5158c8da32c052`.
+All twelve prior independent custody suites pass at
+`pgp2mlwpcxl24k3df2ndfwyzpiyv75zr-crucible-qemu-native-custody-unit-11.1.1`,
+with 247.524 seconds total, 44.860 seconds for the longest component and
+449,417,216 bytes peak sampled aggregate address space. The expanded thirteen-suite run also passes at
+`sdg49q1ywai7b0nij91wcs18nzlqwj59-crucible-qemu-native-custody-unit-11.1.1`.
+It takes 250.603 seconds total, with a longest component of 36.455 seconds
+and peak sampled aggregate address space of 449,413,120 bytes. The canonical license-boundary check fails before its assertions
+because the controller dependency fails strict Clippy (1,177 host-library and
+1,250 host-test errors).
+
+The clean full package completes all 3,991 compile/link actions and passes 25 of
+26 fixture drivers. All five prior dependency/extraction regressions are resolved.
+Dirty iteration reaches its mandatory genuine launched capture lifecycle refusal;
+no later Source/Root/read-post/rearm/ACK/physical-return obligation is thereby
+qualified. All 955 signed changed files match the retained failed package source;
+manifest SHA256 is
+`4b34f0f7c480cd9a4f72bb28297ad9126691846587155ca8b1dc4fce799c7e88`.
+The full package remains failing. Later header observation, anonymous mapping
+journaling and runtime module transfer belong to separate implementation cuts.
+
+### 2026-10-21 publisher-member return control execution
+
+The independent native custody runner now executes the actual
+`test-crucible-publisher-member-return.py` suite alongside the prior twelve
+components. Its positive and twenty-one independently rebuilt omissions exercise
+literal provider cleanup/span/installer bodies; they issue no Source or owner
+admission. The runner reports its actual component count, preserving every
+existing 180-second component and aggregate 6 GiB bound.
+
+All thirteen suites pass at
+`sdg49q1ywai7b0nij91wcs18nzlqwj59-crucible-qemu-native-custody-unit-11.1.1`.
+The run takes 250.603 seconds total, with a longest component of 36.455 seconds
+and peak sampled aggregate address space of 449,413,120 bytes. This evidence is
+scoped to native `9770a340c3`; genuine module transfer and physical Runtime
+parent return remain separate requirements.
 
 ### 2026-10-21 integrated native custody prerequisites
 
