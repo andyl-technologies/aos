@@ -9222,11 +9222,13 @@ mod tests {
 
         let prepare_manifest = assignment_manifest_at(&specification, 7);
         let prepare_clock = vm_clock();
+        // The preparation expiry must fit the signed lease's conservative
+        // local fail-stop, just like the seed Create above.
         let prepare_apply_request = vm_prepare_create_request(
             prepare_manifest.digest(),
             prepare_clock
                 .boottime_nanoseconds()
-                .checked_add(600_000_000_000)
+                .checked_add(240_000_000_000)
                 .unwrap(),
         );
         let CatalogPlanV1::CreateWorkspace {
