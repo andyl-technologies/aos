@@ -59,7 +59,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     environment.etc."aos/sandbox-network-worker-profile-v2" = {
-      source = workerProfile;
+      source = toString workerProfile;
       mode = "0444";
     };
 
