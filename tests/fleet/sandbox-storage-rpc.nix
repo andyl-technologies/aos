@@ -592,6 +592,14 @@ in {
         f"{COREUTILS}/stat -c '%u:%g:%a' '{PIN_ROOT}'"
     ).strip() == "0:0:700"
 
+    broker_pid = int(machine.succeed(
+        "systemctl show aos-storaged.service --property=MainPID --value"
+    ).strip())
+    assert broker_pid > 1
+    broker_namespace = machine.succeed(f"{COREUTILS}/readlink /proc/{broker_pid}/ns/mnt").strip()
+    host_namespace = machine.succeed(f"{COREUTILS}/readlink /proc/1/ns/mnt").strip()
+    assert broker_namespace != host_namespace, (broker_namespace, host_namespace)
+
     assert journal_hash() == baseline_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_started
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_started

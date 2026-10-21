@@ -8,6 +8,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
 
 use aos_linux_descriptors::boot::KernelBootId;
+use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 
@@ -25,6 +26,7 @@ pub(crate) struct WorkspacePinHostCaptureV1 {
     root_original: aos_sandbox_linux::path::BeneathRootOwnedOriginalV2,
     root: Option<BeneathRoot>,
     root_metadata: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    root_mount_id: Option<Result<MountId, aos_linux_descriptors::Error>>,
     view_original: aos_sandbox_linux::path::BeneathRootResolveOriginalV2,
     attempted: bool,
 }
@@ -68,6 +70,12 @@ impl WorkspacePinHostCaptureV1 {
             .or_else(|| {
                 self.view_original
                     .failure()
+                    .map(|cause| cause as &dyn std::error::Error)
+            })
+            .or_else(|| {
+                self.root_mount_id
+                    .as_ref()
+                    .and_then(|value| value.as_ref().err())
                     .map(|cause| cause as &dyn std::error::Error)
             })
     }
@@ -148,6 +156,13 @@ impl WorkspacePinHostCaptureV1 {
                 "pin-root ownership",
             ));
         }
+        self.root_mount_id = Some(MountId::from_fd(root.as_fd()));
+        if !matches!(self.root_mount_id, Some(Ok(_))) {
+            return Err(WorkspacePinObserverError::HostScopeObservation(
+                "pin-root mount identity",
+            ));
+        }
+
         // Systemd delivers O_RDONLY directories. The observer wire protocol
         // requires O_PATH; resolve only this already retained directory itself.
         self.view_original
@@ -169,10 +184,14 @@ impl WorkspacePinHostCaptureV1 {
         let Some(pin_root) = self.view_original.take_completed_once() else {
             std::process::abort()
         };
+        let Some(Ok(pin_root_mount_id)) = self.root_mount_id.take() else {
+            std::process::abort()
+        };
         Ok(WorkspacePinHostCustody {
             kernel_boot_id: boot.into_bytes(),
             mount_namespace,
             pin_root,
+            pin_root_mount_id,
             _root_carrier: self.root.take(),
         })
     }

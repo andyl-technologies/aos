@@ -100,6 +100,7 @@ pub(crate) struct WorkspacePinHostCustody {
     kernel_boot_id: [u8; 16],
     mount_namespace: NamespaceFd,
     pin_root: ResolvedPath,
+    pin_root_mount_id: MountId,
     _root_carrier: Option<BeneathRoot>,
 }
 
@@ -118,11 +119,13 @@ impl WorkspacePinHostCustody {
         let kernel_boot_id = KernelBootId::current()?.into_bytes();
         let mount_namespace = open_current_mount_namespace()?;
         let pin_root = open_fixed_pin_root()?;
+        let pin_root_mount_id = MountId::from_fd(pin_root.as_fd())?;
 
         Ok(Self {
             kernel_boot_id,
             mount_namespace,
             pin_root,
+            pin_root_mount_id,
             _root_carrier: None,
         })
     }
@@ -143,11 +146,26 @@ impl WorkspacePinHostCustody {
         &self.pin_root
     }
 
-    /// Revalidates and binds the complete retained descriptor identity.
+    /// Describes the initial host descriptors without entering their namespace.
+    ///
+    /// This binding authorizes no observation. The one-shot helper revalidates
+    /// the boot, entered namespace, fixed path and mount before using it. The
+    /// capability-empty broker cannot perform that helper-only validation from
+    /// its private mount namespace.
     pub(crate) fn catalog_binding(
         &self,
     ) -> Result<WorkspaceCatalogCustodyBindingV1, WorkspacePinObserverError> {
-        current_catalog_custody_binding(&self.mount_namespace, &self.pin_root)
+        let namespace = self.mount_namespace.identity();
+        let root = self.pin_root.identity();
+        WorkspaceCatalogCustodyBindingV1::new(
+            self.kernel_boot_id,
+            namespace.device,
+            namespace.inode,
+            self.pin_root_mount_id.get(),
+            root.device,
+            root.inode,
+        )
+        .map_err(|_| WorkspacePinObserverError::HostScopeMismatch)
     }
 }
 
