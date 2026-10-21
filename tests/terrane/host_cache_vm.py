@@ -552,6 +552,10 @@ def manifest_recovery_cases(uuid, seeded, helper):
                         and retained.stat().st_mode & 0o7777 == 0o600,
                         "unsealed quarantine changed its original inode, mode or retained binding")
                 print("PASS actual bound unsealed manifest reached funded adoption and original-inode quarantine; stale binding and metadata funding retained; no Resume", flush=True)
+        if case in {"manifest-binding-conflict", "manifest-bound-unsealed"}:
+            inspection = actor(case, "inspect-quarantine", uuid)
+            require("PASS authenticated quarantine descriptor retains original publisher-only inode and configured project without content or Resume authority"
+                    in inspection.splitlines(), "missing authenticated original quarantine inspection: " + case)
         require(hashlib.sha256(retained.read_bytes()).hexdigest() == original["hash"],
                 "recovery changed actual candidate body bytes")
 

@@ -107,6 +107,7 @@ fn main() -> std::process::ExitCode {
             "refuse-conflicting-binding",
             "seed-bound-unsealed",
             "refuse-bound-unsealed",
+            "inspect-quarantine",
             "encoded-eviction",
             "seed-encoded",
             "recover-encoded",

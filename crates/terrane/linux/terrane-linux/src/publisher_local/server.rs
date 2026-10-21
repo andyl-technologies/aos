@@ -369,6 +369,9 @@ fn native_operation(
         Operation::InspectPending => NativeOperation::InspectPending {
             key: required_body()?,
         },
+        Operation::InspectQuarantine => NativeOperation::InspectQuarantine {
+            key: required_body()?,
+        },
         Operation::Unspecified => return Err(Error::Invalid("operation")),
     })
 }
@@ -505,6 +508,7 @@ fn native_response(
         NativeCommandResult::Pending { incarnation } => {
             packet.body_incarnation = incarnation.bytes().to_vec();
         }
+        NativeCommandResult::Quarantined { body } => files.push(body.into_handle()),
         NativeCommandResult::Complete => {}
         NativeCommandResult::Inventory { keys, next_cursor } => {
             packet.inventory = keys.into_iter().map(wire_key).collect();

@@ -18,6 +18,8 @@ mod encoded_cache;
 mod manifest;
 #[cfg(feature = "tokio")]
 mod publication;
+#[cfg(feature = "tokio")]
+mod quarantine;
 mod receipt;
 #[cfg(feature = "tokio")]
 mod recovery;

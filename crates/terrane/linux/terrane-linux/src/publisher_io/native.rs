@@ -530,6 +530,29 @@ impl NativePublisher {
         self.retire(claim)
     }
 
+    /// Opens only the original publisher-owned quarantined inode read-only.
+    ///
+    /// No content, seal or lifecycle claim follows from this observation. The
+    /// consumer must check its actual project and retained namespace identity.
+    #[cfg(feature = "tokio")]
+    pub(super) fn inspect_quarantined_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
+        self.confinement.check_current()?;
+        let name: String = descriptor
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        // O_PATH classification precedes the readable open so an unexpected
+        // special file is never opened as a device or a blocking FIFO.
+        let file = adoption::open_candidate(&self.quarantine, &name, &self.sealed)?;
+        let metadata = file.metadata()?;
+        if metadata.nlink() != 1 || !matches!(metadata.mode() & 0o7777, 0o400 | 0o600) {
+            return Err(invalid("unsafe quarantined sealed inode custody"));
+        }
+        self.quarantine.sync_all()?;
+        Ok(file)
+    }
+
     // This observation intentionally does not measure verity or hash bytes.
     // A pending sealed entry may be corrupt and still need safe retirement.
     #[cfg(feature = "tokio")]

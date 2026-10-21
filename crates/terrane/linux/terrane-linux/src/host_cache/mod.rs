@@ -61,8 +61,9 @@ pub use ready::NativeReady;
 pub use reassembly::NativeReassemblyPlan;
 #[cfg(feature = "tokio")]
 pub use recovery_inspection::{
-    DerivedIndexRepair, DetachedIndexStatus, NativeRecoveryCandidate, NativeRecoveryInspection,
-    NativeRecoveryInspector, RecoveryIssue, VerifiedEncodedBody, VerifiedStandaloneChunk,
+    DerivedIndexRepair, DetachedIndexStatus, NativeQuarantinedInode, NativeRecoveryCandidate,
+    NativeRecoveryInspection, NativeRecoveryInspector, RecoveryIssue, VerifiedEncodedBody,
+    VerifiedStandaloneChunk,
 };
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
 pub use seal::NativeSealCapability;

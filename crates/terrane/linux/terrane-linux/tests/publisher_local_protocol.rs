@@ -64,6 +64,69 @@ fn publish(manifest: bool) -> Packet {
 }
 
 #[test]
+fn quarantine_inspection_returns_only_one_unverified_descriptor() {
+    let request = Packet {
+        operation: Operation::InspectQuarantine as i32,
+        body: publish(false).body,
+        ..probe()
+    };
+    assert_eq!(
+        decode_packet(&request.encode_to_vec(), 0, false, &policy()).unwrap(),
+        request
+    );
+    assert!(validate_packet(&request, 1, false, &policy()).is_err());
+    assert!(
+        validate_packet(
+            &Packet {
+                claim: publish(false).claim,
+                ..request.clone()
+            },
+            0,
+            false,
+            &policy()
+        )
+        .is_err()
+    );
+    for kind in [BodyKind::Chunk, BodyKind::Pack] {
+        let mut changed = request.clone();
+        changed.body.as_mut().unwrap().kind = kind as i32;
+        assert!(validate_packet(&changed, 0, false, &policy()).is_err());
+    }
+
+    let response = Packet {
+        operation: Operation::InspectQuarantine as i32,
+        response: true,
+        wait_budget_ms: 0,
+        ..probe()
+    };
+    assert_eq!(
+        decode_packet(&response.encode_to_vec(), 1, true, &policy()).unwrap(),
+        response
+    );
+    for count in [0, 2] {
+        assert!(validate_packet(&response, count, true, &policy()).is_err());
+    }
+    for changed in [
+        Packet {
+            body_incarnation: vec![3; 32],
+            ..response.clone()
+        },
+        Packet {
+            verity_algorithm: 1,
+            verity_digest: vec![4; 32],
+            ..response.clone()
+        },
+        Packet {
+            result: 3,
+            ..response
+        },
+    ] {
+        assert!(validate_packet(&changed, 1, true, &policy()).is_err());
+        assert!(decode_packet(&changed.encode_to_vec(), 1, true, &policy()).is_err());
+    }
+}
+
+#[test]
 fn registered_probe_roundtrips_without_descriptors() {
     let response = Packet {
         response: true,

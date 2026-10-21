@@ -366,6 +366,7 @@ def main():
         "refuse-conflicting-binding",
         "seed-bound-unsealed",
         "refuse-bound-unsealed",
+        "inspect-quarantine",
         "encoded-eviction",
         "seed-encoded", "recover-encoded", "refuse-encoded",
         "shared-reextract",

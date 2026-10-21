@@ -65,6 +65,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-mixed-manifest"
             | "refuse-conflicting-binding"
             | "refuse-bound-unsealed"
+            | "inspect-quarantine"
             | "publish-inline"
             | "publish-inline-cancel"
             | "publish-inline-transfer"
@@ -91,6 +92,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     if mode == "prepare" {
         emit("PASS actual native preparation; no recovery or Resume")?;
         return Ok(());
+    }
+    if mode == "inspect-quarantine" {
+        super::recovery::inspect_quarantine(&preparation.recovery_inspector()?, &inputs)?;
+        return require_empty_capabilities();
     }
     let original = snapshot(&inputs)?;
     let started = NativeMetadataOwner::start(preparation);

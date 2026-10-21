@@ -95,7 +95,9 @@ pub(super) async fn exercise(
         panic!("unsealed inventory cannot grant a body or binding")
     };
     assert_eq!(keys.len(), 2);
-    assert!(keys.contains(&NativeBodyKey::Sealed { descriptor }));
+    assert!(keys.contains(&NativeBodyKey::Sealed {
+        descriptor: descriptor.clone(),
+    }));
     assert!(next_cursor.is_none());
     assert_eq!(fs::metadata(&canonical).unwrap().ino(), inode.ino());
     assert_eq!(fs::metadata(&record).unwrap().ino(), record_inode);
@@ -122,6 +124,46 @@ pub(super) async fn exercise(
     assert_eq!(fs::read(&quarantine).unwrap(), plaintext);
     assert_eq!(fs::metadata(&record).unwrap().ino(), record_inode);
     assert_eq!(fs::read(&record).unwrap(), record_bytes);
+
+    let observation = worker
+        .execute(
+            context.clone(),
+            NativeOperation::InspectQuarantine {
+                key: NativeBodyKey::Sealed {
+                    descriptor: descriptor.clone(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let NativeCommandResult::Quarantined { body } = observation else {
+        panic!("quarantine inspection cannot grant a publication or lifecycle token")
+    };
+    let file = body.into_handle();
+    let observed = file.metadata().unwrap();
+    assert_eq!((observed.dev(), observed.ino()), (inode.dev(), inode.ino()));
+    assert_eq!(observed.mode() & 0o7777, 0o600);
+    assert!(!rustix::fs::fcntl_getfl(&file).unwrap().intersects(
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::PATH
+    ));
+    assert_eq!(
+        crate::host_quota::NativeProject::inspect(&file)
+            .unwrap()
+            .project_id,
+        crate::host_quota::NativeProject::inspect(&unsealed)
+            .unwrap()
+            .project_id
+    );
+    assert_eq!(
+        crate::verity::measure(&file).unwrap_err().raw_os_error(),
+        Some(libc::ENODATA)
+    );
+    assert_eq!(fs::metadata(&quarantine).unwrap().ino(), inode.ino());
+    assert!(!canonical.exists());
+    assert_eq!(fs::read(&record).unwrap(), record_bytes);
+    println!(
+        "PASS actual original unsealed quarantine inode inspected read-only without seal or lifecycle authority"
+    );
 
     // Restore the genuine previously published inode, then require actual
     // adoption rather than copying a binding or declaring inventory Ready.

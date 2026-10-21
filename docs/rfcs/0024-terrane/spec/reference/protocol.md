@@ -52,6 +52,7 @@ enum PublisherOperation {
   PUBLISHER_INVENTORY = 9;
   PUBLISHER_RESUME = 10;
   PUBLISHER_INSPECT_PENDING = 11;
+  PUBLISHER_INSPECT_QUARANTINE = 12;
 }
 
 enum PublisherBodyKind {
@@ -130,11 +131,12 @@ retirement unit. Keys use existing identity and layout rules unchanged.
 | Inventory | none | none | Enumerate at most 64 configured body keys for recovery; no content or serving authority |
 | Resume | none | none | Leave recovery custody after actual cache state reconciliation |
 | InspectPending | none | none | Retain a pending inode incarnation for non-serving lifecycle recovery |
+| InspectQuarantine | none | one read-only unverified quarantine inode | Observe existing publisher-owned sealed-body quarantine custody; no lifecycle token |
 
 Error responses carry no descriptors, binding or body-incarnation token.
 Replies echo version, request ID, operation, domain and cache incarnation.
-Only successful Probe, Publish, Adopt and InspectBody replies carry a
-descriptor. Body-incarnation tokens are unguessable, scoped to the publisher
+Only successful Probe, Publish, Adopt, InspectBody and InspectQuarantine
+replies carry a descriptor. Body-incarnation tokens are unguessable, scoped to the publisher
 instance, domain, key, retained inode and lifecycle state; callers cannot mint
 them by supplying device/inode numbers. They are invalid after publisher
 restart. A fresh InspectBody or verified Adopt is required after recovery.
@@ -160,6 +162,7 @@ are zero. Claims, bodies and tokens are absent unless required below.
 | Drain, Resume | none | none |
 | Inventory | optional inventory cursor | inventory and optional next cursor |
 | InspectPending | body | body-incarnation token |
+| InspectQuarantine | sealed body | none |
 
 Claim profile and plaintext size must agree with configured profile and
 verified content. Inline claims have zero manifest offset/length and no
@@ -211,6 +214,17 @@ effect and coordinated state are durable. No retirement method silently
 substitutes unlinking for zero wiping. Neither returning a descriptor nor
 unlinking its name revokes existing open descriptors or mappings.
 
+InspectQuarantine opens only an existing publisher-owned regular file under
+that domain's configured `quarantine/` root, using the digest of a registered
+sealed-body key. The read-only descriptor is an opaque custody observation:
+its bytes may be corrupt or unsealed. No content verification, verity binding,
+body-incarnation token, restore, retirement, pin or serving authority follows.
+The receiver independently checks its actual device, inode, project and
+namespace custody before using it for recovery accounting. The operation
+creates, renames and deletes no entry and leaves publication records unchanged.
+It is permitted in recovery and running custody. Unknown operation values
+remain rejected; an older receiver cannot substitute another operation.
+
 InspectPending is permitted during recovery custody. It independently opens
 the domain's pending entry through its typed key and verifies directory-relative
 inode custody before issuing a fresh token after restart. It returns no file
@@ -226,7 +240,8 @@ ownership. The native owner finishes or cleans up before releasing its holds;
 late reply descriptors are closed. A new cache incarnation MUST first use
 Drain; the publisher rejects conflicting work until all prior-incarnation
 commands finish. Drain then grants the new incarnation exclusive recovery
-custody: Inventory, Probe, InspectBody, InspectPending and Adopt are permitted.
+custody: Inventory, Probe, InspectBody, InspectPending, InspectQuarantine and
+Adopt are permitted.
 Restore and FinishRetirement of verified pending incarnations are permitted;
 ordinary publication and new retirement remain blocked. The cache reconstructs its real
 durable state and pins before sending Resume. Resume succeeds only for that

@@ -136,6 +136,11 @@ pub enum NativeOperation {
         /// The registered body key whose pending entry is inspected.
         key: NativeBodyKey,
     },
+    /// Opens an existing quarantined sealed-body inode without verifying its bytes.
+    InspectQuarantine {
+        /// A registered sealed key selecting only its scoped quarantine name.
+        key: NativeBodyKey,
+    },
     /// Begins two-phase deletion of an exact retained incarnation.
     Retire {
         /// Its configured domain's body key.
@@ -178,11 +183,11 @@ impl NativeBodyIncarnation {
     }
 }
 
-/// Retains an unsealed body without claiming verified bytes or serving authority.
+/// Retains an unverified body without claiming valid bytes or serving authority.
 pub struct NativeBodyHandle(File);
 
 impl NativeBodyHandle {
-    /// Transfers the unsealed descriptor for independent cache verification.
+    /// Transfers the unverified descriptor for independent cache inspection.
     pub fn into_handle(self) -> File {
         self.0
     }
@@ -213,6 +218,11 @@ pub enum NativeCommandResult {
     Pending {
         /// The actual retained pending inode incarnation.
         incarnation: NativeBodyIncarnation,
+    },
+    /// An opaque quarantine observation with no seal, binding or lifecycle token.
+    Quarantined {
+        /// A read-only descriptor requiring independent custody and charge checks.
+        body: NativeBodyHandle,
     },
     /// A completed fixed lifecycle or barrier operation.
     Complete,
@@ -352,6 +362,7 @@ impl CommandOwner {
         match &operation {
             NativeOperation::InspectBody { key, .. }
             | NativeOperation::InspectPending { key }
+            | NativeOperation::InspectQuarantine { key }
             | NativeOperation::Retire { key, .. }
             | NativeOperation::Restore { key, .. }
             | NativeOperation::FinishRetirement { key, .. } => key.validate()?,
@@ -438,6 +449,17 @@ impl CommandOwner {
             }
             NativeOperation::InspectBody { key, .. } => self.inspect_encoded(key, false).await,
             NativeOperation::InspectPending { key } => self.inspect_pending(key).await,
+            NativeOperation::InspectQuarantine {
+                key: NativeBodyKey::Sealed { descriptor },
+            } => self.kernel(|native| {
+                let file = native.inspect_quarantined_sealed(&descriptor)?;
+                Ok(NativeCommandResult::Quarantined {
+                    body: NativeBodyHandle(file),
+                })
+            }),
+            NativeOperation::InspectQuarantine { .. } => {
+                Err(invalid("quarantine inspection requires a sealed-body key"))
+            }
             NativeOperation::Retire { key, incarnation } => {
                 self.transition(key, incarnation, Transition::Retire).await
             }

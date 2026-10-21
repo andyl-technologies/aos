@@ -27,7 +27,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
 use terrane_format::{
@@ -442,6 +442,54 @@ fn write(
     rustix::fs::fchown(&file, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid)))?;
     file.set_permissions(fs::Permissions::from_mode(mode))?;
     file.sync_all()
+}
+
+/// Inspects an actual previously quarantined inode from a fresh drained session.
+///
+/// # Errors
+/// Refuses readable private paths, changed original custody or policy, and
+/// unauthenticated descriptors or incorrect native projects.
+pub(super) fn inspect_quarantine(
+    inspector: &terrane_linux::host_cache::NativeRecoveryInspector,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let fixture = Fixture::new()?;
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Manifest, &fixture.manifest)
+        .map_err(io::Error::other)?;
+    let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, &fixture.manifest)
+        .map_err(io::Error::other)?;
+    let path = inputs.root.join("quarantine").join(&fixture.manifest_hash);
+    let original_inode = fs::metadata(&path)?;
+    let policy_path = inputs.root.join("state/cache/records.toml");
+    let original_policy = fs::read(&policy_path)?;
+    if !matches!(fs::read(&path), Err(error) if error.kind() == io::ErrorKind::PermissionDenied) {
+        return Err(invalid("publisher-only quarantine path became readable"));
+    }
+
+    let observation = inspector.inspect_quarantined_sealed(&descriptor)?;
+    observation.check_current()?;
+    let received_inode = observation.handle().metadata()?;
+    if (
+        original_inode.dev(),
+        original_inode.ino(),
+        original_inode.len(),
+    ) != (
+        received_inode.dev(),
+        received_inode.ino(),
+        received_inode.len(),
+    ) || NativeProject::inspect(observation.handle())?.project_id != inspector.project_id()
+        || fs::metadata(&path)?.ino() != original_inode.ino()
+        || fs::read(&policy_path)? != original_policy
+    {
+        return Err(invalid(
+            "quarantine inspection changed original custody or policy",
+        ));
+    }
+    println!(
+        "PASS authenticated quarantine descriptor retains original publisher-only inode and configured project without content or Resume authority"
+    );
+    Ok(())
 }
 
 /// Exercises genuine manifest reconciliation and actual rejected-file controls.

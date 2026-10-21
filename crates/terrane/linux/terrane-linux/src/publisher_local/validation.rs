@@ -107,7 +107,11 @@ pub fn validate_packet(
         }
         let returned_fd = matches!(
             operation,
-            Operation::Probe | Operation::Publish | Operation::Adopt | Operation::InspectBody
+            Operation::Probe
+                | Operation::Publish
+                | Operation::Adopt
+                | Operation::InspectBody
+                | Operation::InspectQuarantine
         );
         if descriptors != usize::from(returned_fd) {
             return Err(Error::Invalid("response descriptor count"));
@@ -132,6 +136,7 @@ pub fn validate_packet(
             Operation::Probe | Operation::Publish | Operation::Adopt
         ) && !binding
             || !returned_fd && binding
+            || operation == Operation::InspectQuarantine && binding
         {
             return Err(Error::Invalid("response binding"));
         }
@@ -171,6 +176,7 @@ pub fn validate_packet(
             operation,
             Operation::InspectBody
                 | Operation::InspectPending
+                | Operation::InspectQuarantine
                 | Operation::Retire
                 | Operation::Restore
                 | Operation::FinishRetirement
@@ -183,6 +189,7 @@ pub fn validate_packet(
         || packet.body.is_some() != needs_body
         || packet.body_incarnation.len() != if needs_token { 32 } else { 0 }
         || needs_claim && !sealed
+        || operation == Operation::InspectQuarantine && !sealed
     {
         return Err(Error::Invalid("request command fields"));
     }
@@ -280,7 +287,7 @@ fn allowed_fields(packet: &Packet) -> Result<u32, Error> {
                 fields |= bits(&[8, 9])
             }
             Operation::Inventory => fields |= bits(&[14]),
-            Operation::InspectPending => fields |= bits(&[8]),
+            Operation::InspectPending | Operation::InspectQuarantine => fields |= bits(&[8]),
             _ => {}
         }
     }

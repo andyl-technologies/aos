@@ -37,6 +37,7 @@ EXPECTED = {
         "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
     },
     "publisher_local_protocol": {
+        "quarantine_inspection_returns_only_one_unverified_descriptor",
         "registered_probe_roundtrips_without_descriptors",
         "unknown_fields_fail_at_every_message_depth",
         "duplicate_singular_wrong_wire_and_boolean_fields_fail",

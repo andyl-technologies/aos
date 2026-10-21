@@ -17,6 +17,7 @@ mod collection;
 mod files;
 mod inspection;
 mod manifest;
+mod quarantine;
 mod verification;
 
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod tests;
 
 pub use inspection::{NativeRecoveryCandidate, NativeRecoveryInspection, RecoveryIssue};
 pub(in crate::host_cache) use manifest::VerifiedRecoveryManifest;
+pub use quarantine::NativeQuarantinedInode;
 pub use verification::{
     DerivedIndexRepair, DetachedIndexStatus, VerifiedEncodedBody, VerifiedStandaloneChunk,
 };
@@ -44,6 +46,7 @@ pub struct NativeRecoveryInspector {
     max_candidates: usize,
     charge_owner: String,
     project_id: u32,
+    publisher_uid: u32,
     custody: ContentCustody,
 }
 
@@ -68,6 +71,7 @@ impl NativeRecoveryInspector {
             max_candidates: config.inventory_entries,
             charge_owner: observation.owner_id.clone(),
             project_id: observation.project_id,
+            publisher_uid: config.publisher.identities.publish_uid,
             custody: ContentCustody {
                 uid: config.content_uid,
                 gid: config.content_gid,

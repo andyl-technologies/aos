@@ -2803,6 +2803,21 @@ is added rather than editing history.
     or gate name changes. This decision does not complete a host task.
   - **Affects:** HOST-3, HOST-25, DOM-18 and PROP-15.
 
+- **[D-129] Inspect quarantined custody without issuing backing authority.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Register publisher-local operation 12, InspectQuarantine.
+    A typed sealed-body key selects an existing publisher-owned quarantine
+    inode. The response carries one read-only unverified descriptor and no
+    verity binding or lifecycle token. It performs no namespace mutation and
+    never substitutes for content verification, pinning or recovery completion.
+    Native recovery can independently inspect the original inode's project
+    and allocation without opening publisher-only files by pathname.
+  - **Rationale:** Quarantined sealed files retain publisher ownership and may
+    be unreadable to the cache identity. O_PATH observations cannot perform
+    the native project ioctl; file names and decoded state cannot establish
+    correct physical charge ownership.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

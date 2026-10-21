@@ -33,6 +33,8 @@ pub enum Operation {
     Resume = 10,
     /// Retains pending inode custody without returning backing access.
     InspectPending = 11,
+    /// Observes retained quarantine custody without content or lifecycle authority.
+    InspectQuarantine = 12,
 }
 
 /// The registered bodykind discriminants.
