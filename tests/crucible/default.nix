@@ -3068,6 +3068,9 @@ in rec {
     qemuConfiguredTestInventory = import ./phase7-qemu-configured-test-inventory.nix {
       inherit pkgs;
     };
+    qemuNativeCustodyUnit = import ./phase7-qemu-native-custody-unit.nix {
+      inherit pkgs;
+    };
     qemuStartupSourceUnit = import ./phase7-qemu-startup-source-unit.nix {
       inherit pkgs;
     };
