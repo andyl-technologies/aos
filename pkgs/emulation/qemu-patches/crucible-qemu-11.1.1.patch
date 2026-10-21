@@ -1,7 +1,7 @@
-From db7d16a91a1cfcd038776657939ca1a697e2f738 Mon Sep 17 00:00:00 2001
+From 857b67d8204fb170e4faa5a0b232afe541e6857b Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain pending command and restore custody
+Subject: [PATCH] crucible: execute ordinary registered node custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -447,6 +447,32 @@ Add actual ordinary reservation construction, split, consume, release, discard
 and failed-post controls to the component sweep; they provide no registered
 Node, Source payer, ARM, copied-rule consumer or aggregate-restore qualification.
 Selected construction stays refused and full registration return unsupported.
+
+Exercise ordinary registered Node custody through actual initialized system
+entry and the unchanged resident-RAM observer. Use complete matching system
+objects and rebuild actual Source, Native, Core, API, VL and every fault provider
+from the same retained public source. Refuse incompatible private layouts;
+append observations to actual producer bodies rather than supplying an issuer.
+
+Check genuine registration, duplicate impulse retention, Submit PREPARE_ONLY,
+upsert, remove and real callback/storage physical receipts. Independently rebuild
+validation, pending and storage journal omissions to their intended assertions.
+Retain actual commands, provider/header identities and binary runtime transcripts.
+The external complete-build fixture provides ordinary component evidence only:
+selected construction, full registration retirement, aggregate restore, deferred
+consumers, CPU borrowers and mandatory launched Source lifecycle remain unavailable
+or unqualified. Preserve every original limit, failed attempt and refusal.
+
+Authenticate each configured output once when the declared output and actual
+compiler operand are byte-identical. Differently spelled values still resolve
+independently, and all command, containment, compiler, support-cohort and
+physical-object checks remain. Share no result across provider calls or causal
+controls. Preserve canonical exact-value equivalence and all seven comparison
+cases, including differently spelled same-path identity and genuine refusals.
+The preceding ordinary causal positive timed out at its original 60-second
+bound before any defect; retain that failure independently of diagnostic costs
+and subsequent qualification. No assertion, resource ceiling or selected
+admission is changed.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -202491,7 +202517,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..89a707530abde0541df84eb80b3ca82eee31205d
+index 0000000000000000000000000000000000000000..722e7aa4fbf5767d8bc0c6526554816e306b2cf5
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -202519,7 +202545,7 @@ index 0000000000000000000000000000000000000000..89a707530abde0541df84eb80b3ca82e
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
++        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -245175,10 +245201,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9523584a17ccb3776ba4f7f05944578fc685d6e
+index 0000000000000000000000000000000000000000..9fdaeefc62617f50fa36a082a98c7643176584d2
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,525 @@
+@@ -0,0 +1,560 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -245704,6 +245730,280 @@ index 0000000000000000000000000000000000000000..c9523584a17ccb3776ba4f7f05944578
 +its additional interval defect reaches that exact refusal. Genuine owned ARM,
 +temporary-rule cleanup, copied/committed rule consumers, deferred callbacks,
 +aggregate restore streams and Source terminal cleanup remain unexecuted.
++
++Ordinary registered node execution
++----------------------------------
++
++``test-crucible-fault-node-live.py`` accepts a complete configured system build,
++its compile database, the matching complete source and the unchanged resident-RAM
++observer plugin. It rejects differing CPU/thread/SDK layouts, rebuilds the actual
++Source, Native, Core, API, VL and all linked fault producers against that one
++source, and preserves the normal system link inputs. Its wrapper calls actual
++``qemu_init`` before the component, using a stopped ``machine none`` with real
++nonempty RAM and the ordinary resident-RAM observer. It creates no Source,
++registration, callback frame or pending control by substitution. This fixture
++requires those external build inputs; it is separate from the mandatory launched
++Source/Root fixture and does not qualify that lifecycle.
++
++The real lazy CPU-register node registration constructor appends a handler. A
++real duplicate NODE_LIFECYCLE registration refuses while retaining its original
++handler and impulse. The actual NODE_HANG handler then executes ordinary Submit,
++ARM, PREPARE, COMMIT and FREE_STATE through PREPARE_ONLY, upsert and remove.
++Requests use the versioned node payload and policy-JSON framing; subsequent
++preconditions come from the preceding actual result. The test observes genuine
++validation and pending children, independent first/post, physical temporary state,
++payload, row and control return, plus copied-rule and reservation destruction.
++It checks the two actual JSON reference returns and payload free separately;
++these facts do not establish destruction of shared GLib objects. No empty queue
++or status substitutes for a physical receipt. Full registration return continues
++to refuse.
++
++Three separately rebuilt production-body omissions remove the validation,
++pending-control or storage physical-return journal write. Each must fail its
++physical-receipt assertion. Commands, source/dependency hashes, actual link inputs
++and byte transcripts are retained in the caller's output directory. Real aggregate
++VMState restore, deferred hang execution, CPU consumers and selected constructor
++funding remain outside this component. Selected ENOKEY and activation availability
++are unchanged.
+diff --git a/tests/unit/crucible-fault-node-live-fixture.inc.h b/tests/unit/crucible-fault-node-live-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bfffdf2e7d7ad585a8f5bac342f95fbf3fb675b5
+--- /dev/null
++++ b/tests/unit/crucible-fault-node-live-fixture.inc.h
+@@ -0,0 +1,211 @@
++/*
++ * Ordinary node producer exercise in a real initialized system executable.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#undef NDEBUG
++#include <assert.h>
++#include "qemu/main-loop.h"
++
++void crucible_fault_node_live_fixture(void);
++
++static QemuCrucibleFaultRegistration *live_node_owner(uint16_t kind)
++{
++    QemuCrucibleFaultRegistration *owner;
++
++    for (owner = crucible_node_registrations.head; owner; owner = owner->next) {
++        CrucibleNodeOwnedHandler *producer = container_of(
++            owner, CrucibleNodeOwnedHandler, registration);
++
++        if (producer->handler.capability.command_kind == kind &&
++            owner->registry_published) {
++            return owner;
++        }
++    }
++    return NULL;
++}
++
++static void live_node_field(GByteArray *payload, uint16_t tag, uint16_t type,
++                            const void *data, uint32_t length)
++{
++    uint8_t header[CRUCIBLE_NODE_FAULT_FIELD_HEADER_V1_BYTES] = { 0 };
++
++    stw_le_p(header + CRUCIBLE_NODE_FAULT_FIELD_TAG_OFFSET, tag);
++    stw_le_p(header + CRUCIBLE_NODE_FAULT_FIELD_TYPE_OFFSET, type);
++    stl_le_p(header + CRUCIBLE_NODE_FAULT_FIELD_LENGTH_OFFSET, length);
++    g_byte_array_append(payload, header, sizeof(header));
++    g_byte_array_append(payload, data, length);
++}
++
++static GByteArray *live_node_hang_payload(uint16_t operation,
++                                         uint64_t generation)
++{
++    GByteArray *payload = g_byte_array_sized_new(512);
++    uint8_t value[32];
++    const char scope[] = CRUCIBLE_NODE_FAULT_POLICY_JSON_MAGIC_V1 "{\"kind\":\"node\"}";
++    const char watchdog[] = CRUCIBLE_NODE_FAULT_POLICY_JSON_MAGIC_V1 "{\"kind\":\"disabled\"}";
++
++    g_byte_array_set_size(payload, CRUCIBLE_NODE_FAULT_PAYLOAD_HEADER_V1_BYTES);
++    memset(payload->data, 0, payload->len);
++    memcpy(payload->data, CRUCIBLE_NODE_MAGIC, 8);
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_OFFSET,
++             CRUCIBLE_NODE_FAULT_PAYLOAD_VERSION_V1);
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_COMMAND_KIND_OFFSET,
++             CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_OPERATION_OFFSET,
++             operation);
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_KIND_OFFSET,
++             CRUCIBLE_NODE_FAULT_TARGET_NODE);
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_MODEL_PHASE_OFFSET,
++             QEMU_CRUCIBLE_MODEL_PHASE_ARM);
++    stq_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_GENERATION_OFFSET,
++             generation);
++    memset(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_ACTION_HASH_OFFSET, 1, 32);
++    memset(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_TARGET_HASH_OFFSET, 2, 32);
++    memset(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_SCHEMA_HASH_OFFSET, 3, 32);
++    if (operation == CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) {
++        return payload;
++    }
++    stw_le_p(payload->data + CRUCIBLE_NODE_FAULT_PAYLOAD_FIELD_COUNT_OFFSET, 4);
++    stl_le_p(value, 1);
++    live_node_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P1,
++                    CRUCIBLE_NODE_FAULT_FIELD_TYPE_U32, value, 4);
++    live_node_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P2,
++                    CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES, scope,
++                    sizeof(scope) - 1);
++    memset(value, 4, sizeof(value));
++    live_node_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P3,
++                    CRUCIBLE_NODE_FAULT_FIELD_TYPE_HASH, value, sizeof(value));
++    live_node_field(payload, CRUCIBLE_NODE_FAULT_FIELD_P4,
++                    CRUCIBLE_NODE_FAULT_FIELD_TYPE_BYTES, watchdog,
++                    sizeof(watchdog) - 1);
++    return payload;
++}
++
++static struct qemu_plugin_crucible_fault_result live_node_dispatch(
++    struct qemu_plugin_crucible_fault_command *command, GByteArray *payload)
++{
++    struct qemu_plugin_crucible_fault_result result;
++    uint8_t evidence[4096];
++    size_t length = 0;
++
++    command->target_icount = qemu_plugin_icount_raw();
++    command->authorization_ceiling_icount = command->target_icount;
++    command->target_tick = qemu_plugin_sim_tick_observed();
++    command->authorization_ceiling_tick = command->target_tick;
++    assert(qemu_plugin_crucible_fault_submit(
++        command, payload->data, payload->len) == 0);
++    qemu_crucible_fault_dispatch_boundary(command->phase, command->target_icount);
++    assert(qemu_plugin_crucible_fault_poll(
++        &result, evidence, sizeof(evidence), &length) == 1);
++    assert(result.command_sequence == command->command_sequence);
++    fprintf(stderr, "ordinary sequence=%" PRIu64 " status=%u evidence=%zu\n",
++            result.command_sequence, result.status, length);
++    return result;
++}
++
++void crucible_fault_node_live_fixture(void)
++{
++    const uint32_t boundary = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
++    QemuCrucibleFaultRegistration *lifecycle, *hang;
++    QemuCrucibleFaultImpulseFn original_impulse;
++    struct qemu_plugin_crucible_fault_command command = { 0 };
++    struct qemu_plugin_crucible_fault_result result;
++    g_autoptr(GByteArray) payload = NULL;
++
++    assert(bql_locked());
++    assert(!qemu_plugin_crucible_startup_source_retained());
++    assert(qemu_plugin_crucible_single_threaded_rr());
++    assert(!live_node_owner(CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM));
++    assert(qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++        "ordinary.register.constructor", NULL));
++    assert(live_node_owner(CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM));
++
++    lifecycle = live_node_owner(CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE);
++    hang = live_node_owner(CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    assert(lifecycle && hang && lifecycle->impulse_published);
++    original_impulse = lifecycle->impulse;
++    assert(original_impulse);
++    assert(!qemu_crucible_fault_node_register(
++        CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE,
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++        "ordinary.duplicate.must.refuse", NULL));
++    assert(live_node_owner(CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE) == lifecycle);
++    assert(lifecycle->impulse == original_impulse);
++    assert(crucible_node_impulses[CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE] ==
++           original_impulse);
++
++    command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
++    command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
++    command.command_kind = CRUCIBLE_FAULT_COMMAND_NODE_HANG;
++    command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
++    command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
++    memset(command.binding_hash, 5, sizeof(command.binding_hash));
++    memset(command.target_node_hash, 6, sizeof(command.target_node_hash));
++    command.command_sequence = 1;
++    command.command_flags = CRUCIBLE_FAULT_COMMAND_FLAG_PREPARE_ONLY;
++    payload = live_node_hang_payload(CRUCIBLE_NODE_FAULT_OPERATION_UPSERT, 1);
++    result = live_node_dispatch(&command, payload);
++    assert(result.status == CRUCIBLE_FAULT_STATUS_PREPARED);
++    assert(hang->validation.entered);
++    assert(hang->validation.physically_returned);
++    assert(!hang->validation.holder);
++    assert(!hang->validation.first_status && !hang->validation.post_status);
++    assert(hang->pending_retirement.physically_returned);
++    assert(hang->pending_retirement.state_returned);
++    assert(hang->pending_retirement.callback_returned[CRUCIBLE_PENDING_ARM]);
++    assert(hang->pending_retirement.callback_returned[CRUCIBLE_PENDING_PREPARE]);
++    assert(!hang->pending_retirement.callback_entered[CRUCIBLE_PENDING_COMMIT]);
++    assert(hang->pending_retirement.callback_returned[CRUCIBLE_PENDING_FREE_STATE]);
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_STAGING]
++           .json_references_returned == 2);
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_STAGING]
++           .payload_returned);
++    memcpy(command.expected_precondition_hash, result.before_hash, 32);
++
++    command.command_sequence++;
++    command.command_flags = 0;
++    result = live_node_dispatch(&command, payload);
++    assert(result.status == CRUCIBLE_FAULT_STATUS_APPLIED);
++    assert(hang->pending_retirement.callback_returned[CRUCIBLE_PENDING_COMMIT]);
++    assert(hang->pending_retirement.physically_returned);
++    for (size_t callback = 0; callback < CRUCIBLE_PENDING_CALLBACKS; callback++) {
++        assert(hang->pending_retirement.callback_entered[callback]);
++        assert(hang->pending_retirement.callback_returned[callback]);
++        assert(!hang->pending_retirement.callback_first[callback]);
++        assert(!hang->pending_retirement.callback_post[callback]);
++    }
++    assert(node_find_rule(command.command_kind, command.binding_hash, NULL));
++    memcpy(command.expected_precondition_hash, result.after_hash, 32);
++    g_clear_pointer(&payload, g_byte_array_unref);
++
++    command.command_sequence++;
++    payload = live_node_hang_payload(CRUCIBLE_NODE_FAULT_OPERATION_REMOVE, 2);
++    result = live_node_dispatch(&command, payload);
++    assert(result.status == CRUCIBLE_FAULT_STATUS_APPLIED);
++    assert(!node_find_rule(command.command_kind, command.binding_hash, NULL));
++    assert(hang->pending_retirement.physically_returned);
++    assert(hang->pending_retirement.state_returned);
++    assert(hang->pending_retirement.payload_returned);
++    assert(hang->pending_retirement.row_returned);
++    for (size_t kind = 0; kind < CRUCIBLE_NODE_STORAGE_KINDS; kind++) {
++        assert(crucible_node_storage.returning[kind].physically_returned);
++        assert(!crucible_node_storage.returning[kind].active);
++        assert(!crucible_node_storage.returning[kind].post_status);
++    }
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RULE]
++           .json_references_returned == 2);
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RULE]
++           .payload_returned);
++    assert(!crucible_node_storage.head);
++    assert(hang->validation.issuance == 3);
++    assert(!hang->pending_retirement.active);
++    assert(!hang->pending_retirement.holder);
++    assert(!hang->pending_retirement.first_status);
++    assert(!hang->pending_retirement.post_status);
++    assert(qemu_crucible_fault_node_registration_return_v1(
++        &hang->holder) == -ENOTSUP);
++    puts("PASS actual ordinary registration, duplicate retention, Submit and node callback/storage returns");
++    puts("Source admission and full registration/consumer retirement remain unavailable");
++}
+diff --git a/tests/unit/crucible-fault-node-live-main.c b/tests/unit/crucible-fault-node-live-main.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..efcedfee3711a012d1b6f5d3f5fbd3404c9a8316
+--- /dev/null
++++ b/tests/unit/crucible-fault-node-live-main.c
+@@ -0,0 +1,16 @@
++/*
++ * Sequence an ordinary component after actual system initialization.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++
++void __real_qemu_init(int argc, char **argv);
++void __wrap_qemu_init(int argc, char **argv);
++void crucible_fault_node_live_fixture(void);
++
++void __wrap_qemu_init(int argc, char **argv)
++{
++    __real_qemu_init(argc, argv);
++    crucible_fault_node_live_fixture();
++    exit(EXIT_SUCCESS);
++}
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
@@ -248268,7 +248568,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..25cdf07679605487b439a81ae3eb74a58c833502
+index 0000000000000000000000000000000000000000..b838af1541814fae1624440397c86328165d367c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -248286,7 +248586,7 @@ index 0000000000000000000000000000000000000000..25cdf07679605487b439a81ae3eb74a5
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
++        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
 +}
 +
 +FUNCTIONS = (
@@ -248374,7 +248674,7 @@ index 0000000000000000000000000000000000000000..25cdf07679605487b439a81ae3eb74a5
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..71acfb823f63b6290fe503cd405057c648f8cdc3
+index 0000000000000000000000000000000000000000..5a0cdf01d9f4438e5d5a10fee49023f67fff1228
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -248405,7 +248705,7 @@ index 0000000000000000000000000000000000000000..71acfb823f63b6290fe503cd405057c6
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
++        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
 +}
 +
 +FUNCTIONS = (
@@ -248621,7 +248921,7 @@ index 0000000000000000000000000000000000000000..71acfb823f63b6290fe503cd405057c6
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0eb49fca569e21a9b400959f48f013413f63b7ce
+index 0000000000000000000000000000000000000000..94e1d6b107ef6f636804c61b25f8c4764139a2f4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -248645,7 +248945,7 @@ index 0000000000000000000000000000000000000000..0eb49fca569e21a9b400959f48f01341
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
++        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
 +}
 +
 +FUNCTIONS = (
@@ -248739,7 +249039,7 @@ index 0000000000000000000000000000000000000000..0eb49fca569e21a9b400959f48f01341
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd9350934f298ec1c5b3adeab86a6166347f4e8f
+index 0000000000000000000000000000000000000000..89f1f5ddb3f3db17c166b88fc6d36ac77e68d00a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -248780,9 +249080,9 @@ index 0000000000000000000000000000000000000000..cd9350934f298ec1c5b3adeab86a6166
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
++        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '1ef4bd4ef25959915885f35e79de1a96f39a3ff976e512fc3cc3e0dc50cca93f',
++        '06299297075b8fe42e034d718c8c53a6d6909c28ea055fccb4c53ad6ea0f16dc',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -248918,7 +249218,7 @@ index 0000000000000000000000000000000000000000..cd9350934f298ec1c5b3adeab86a6166
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b71601cc092ab09236485afd43f29898b3e2d90c
+index 0000000000000000000000000000000000000000..64817fd79736c458ac4d0e4e383d74ef2d40f87e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1240 @@
@@ -249030,7 +249330,7 @@ index 0000000000000000000000000000000000000000..b71601cc092ab09236485afd43f29898
 +    'plugins/crucible-ram-owner-diagnostic.h':
 +        '437aa8ed61c184163b7a6b0fb5e36c799d6d748410b32166a02e43eb44e2bf1e',
 +    'tests/unit/test-crucible-ram-worker-inventory.py':
-+        '2a38021ab4f688cdfebed46ffc6ae64475025d911b33e3ae31d0cdf4e77b4d33',
++        'db752d0c06a5dce21f4c15fc795544e25e959b612907a0f7a000fefdbdc2283b',
 +    'tests/unit/test-crucible-checkpoint-receiving.c':
 +        'c566ba5524cccb7e5fded88101e457c2ee18d998119c450b8d3121b7fd0561f2',
 +    'plugins/crucible-parent-park.inc.h':
@@ -271285,6 +271585,248 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +                    test_e1000_rejects_incomplete_state);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-fault-node-live.py b/tests/unit/test-crucible-fault-node-live.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111549060b7
+--- /dev/null
++++ b/tests/unit/test-crucible-fault-node-live.py
+@@ -0,0 +1,236 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Link ordinary fault custody into a matched, actual system executable.
++
++Requires a complete source-built configured system build with compatible CPU
++and thread layouts. Production constructors and dispatch create every owner;
++the test appends observations to the full node translation unit. The unchanged
++resident-RAM observer supplies its existing ordinary component prerequisite.
++This does not exercise selected Source admission or launched capture ownership.
++"""
++
++import argparse
++import concurrent.futures
++import hashlib
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++def digest(path):
++    return hashlib.sha256(path.read_bytes()).hexdigest()
++
++
++def record_command(output, label, command, cwd):
++    (output / f"{label}.command.json").write_text(json.dumps({
++        "argv": command, "cwd": str(cwd),
++    }, indent=2) + "\n")
++    with (output / f"{label}.log").open("w") as log:
++        subprocess.run(command, cwd=cwd, stdout=log,
++                       stderr=subprocess.STDOUT, check=True)
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--build-root", type=Path, required=True)
++    parser.add_argument("--compile-commands", type=Path)
++    parser.add_argument("--resident-plugin", type=Path, required=True)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--defect", choices=("validation-return", "pending-return",
++                                           "storage-return"))
++    args = parser.parse_args()
++    root = args.source_root.resolve()
++    build = args.build_root.resolve()
++    output = args.output_dir.resolve()
++    plugin = args.resident_plugin.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    database = (args.compile_commands or build / "compile_commands.json").resolve()
++
++    # A new CPUClass or thread shape cannot be mixed with old device/target
++    # objects. Rebuilding a few providers does not repair that incompatibility.
++    shapes = ("include/hw/core/cpu.h", "include/qemu/thread.h",
++              "target/i386/cpu.h", "include/plugins/qemu-plugin.h")
++    identities = {}
++    for name in shapes:
++        source_hash = digest(root / name)
++        configured_hash = digest(build.parent / name)
++        identities[name] = {"source": source_hash, "configured": configured_hash}
++    (output / "layout-identities.json").write_text(
++        json.dumps(identities, indent=2) + "\n")
++    if any(row["source"] != row["configured"] for row in identities.values()):
++        raise RuntimeError(
++            "complete matched system objects required; private layouts differ")
++    if plugin.name != "libcrucible-resident-ram-observer.so":
++        raise RuntimeError("the unchanged resident-RAM observer is required")
++
++    ninja = (build / "build.ninja").read_text()
++    begin = ninja.index("build qemu-system-x86_64:")
++    stanza = ninja[begin:ninja.index("\n\n", begin)].splitlines()
++    first = stanza[0].split(": ", 1)[1]
++    rule, inputs = first.split(" ", 1)
++    if rule not in ("c_LINKER", "c_LINKER_RSP") or "$" in inputs:
++        raise RuntimeError("unsupported system link rule; preserve actual build inputs")
++    objects = shlex.split(inputs.split(" | ", 1)[0])
++    link_args = next(line.split(" = ", 1)[1] for line in stanza[1:]
++                     if line.startswith(" LINK_ARGS = "))
++    records = json.loads(database.read_text())
++    selected = []
++    providers = {"../plugins/crucible-startup-source.c",
++                 "../plugins/crucible-native-invocation.c",
++                 "../plugins/core.c", "../plugins/api.c",
++                 "../plugins/api-system.c", "../system/vl.c"}
++    for row in records:
++        if row["output"] not in objects:
++            continue
++        if row["file"].startswith("../plugins/crucible-fault") or row["file"] in providers:
++            selected.append(row)
++    expected = {"../plugins/crucible-fault.c", "../plugins/crucible-fault-node.c"}
++    if not expected.union(providers).issubset({row["file"] for row in selected}):
++        raise RuntimeError(
++            "actual fault and Source/Native/Core/API providers are required")
++
++    # Each defect removes one journal write from the actual producing body.
++    # It neither creates an owner nor substitutes a callback/provider.
++    defects = {
++        "validation-return": ("crucible-fault-registration.inc.h",
++                              "child->physically_returned = true;"),
++        "pending-return": ("crucible-fault-registration.inc.h",
++                           "owner->pending_retirement.physically_returned = true;"),
++        "storage-return": ("crucible-fault-storage.inc.h",
++                           "crucible_node_storage.returning[kind].physically_returned = true;"),
++    }
++    body = (root / "plugins/crucible-fault-node.c").read_text()
++    for name in ("crucible-fault-registration.inc.h", "crucible-fault-storage.inc.h"):
++        contents = (root / "plugins" / name).read_text()
++        if args.defect and defects[args.defect][0] == name:
++            needle = defects[args.defect][1]
++            if contents.count(needle) != 1:
++                raise RuntimeError("physical journal defect requires one exact real write")
++            contents = contents.replace(needle, "/* Deliberately omitted for causal control. */")
++        included = output / name
++        included.write_text(contents)
++        body = body.replace('"' + name + '"', '"' + str(included) + '"')
++    node = output / "actual-node-with-observations.c"
++    node.write_text(body + '\n#include "' + str(
++        root / "tests/unit/crucible-fault-node-live-fixture.inc.h") + '"\n')
++
++    def compile_row(row, source_override=None, label_override=None):
++        original_build = Path(row["directory"])
++
++        def relocate(value):
++            path = Path(value)
++            if not path.is_absolute():
++                path = original_build / path
++            path = Path(os.path.normpath(path))
++            if path.is_relative_to(original_build):
++                return str(build / path.relative_to(original_build))
++            if path.is_relative_to(original_build.parent):
++                return str(root / path.relative_to(original_build.parent))
++            return value
++
++        label = label_override or row["output"].replace("/", "-")
++        target = output / (label + ".o")
++        raw = shlex.split(row["command"])
++        if not Path(raw[0]).is_absolute():
++            raise RuntimeError("an explicit source-built compiler is required")
++        command = [raw[0], "-iquote", str(root / "plugins")]
++        index = 1
++        while index < len(raw):
++            value = raw[index]
++            if value in ("-MQ", "-MF"):
++                index += 2
++                continue
++            if value == "-MD":
++                index += 1
++                continue
++            if value in ("-I", "-iquote", "-isystem"):
++                command += [value, relocate(raw[index + 1])]
++                index += 2
++                continue
++            if value.startswith("-I"):
++                command.append("-I" + relocate(value[2:]))
++            elif value == "-o":
++                command += [value, str(target)]
++                index += 2
++                continue
++            elif value == row["file"]:
++                value = source_override or relocate(value)
++                command.append(str(value))
++            else:
++                command.append(value)
++            index += 1
++        record_command(output, label, command, build)
++        return row["output"], str(target)
++
++    def compile_production(row):
++        return compile_row(row, node if row["file"] == "../plugins/crucible-fault-node.c" else None)
++
++    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
++        replacements = dict(pool.map(compile_production, selected))
++    node_row = next(row for row in selected
++                    if row["file"] == "../plugins/crucible-fault-node.c")
++    _, wrapper = compile_row(node_row, root / "tests/unit/crucible-fault-node-live-main.c",
++                             "actual-init-wrapper")
++    binary = output / "ordinary-node-system"
++    compiler = shlex.split(node_row["command"])[0]
++    arguments = ["-m64", "-o", str(binary)]
++    arguments += [replacements.get(name, name) for name in objects]
++    original_build = node_row["directory"]
++    relocated_link_args = [value.replace(original_build, str(build))
++                           for value in shlex.split(link_args)]
++    arguments += [wrapper, "-Wl,--wrap=qemu_init", *relocated_link_args]
++    response = output / "actual-system-link.rsp"
++    response.write_text(shlex.join(arguments) + "\n")
++    record_command(output, "actual-system-link", [compiler, "@" + str(response)], build)
++    provenance = {row["file"]: digest(root / row["file"].removeprefix("../"))
++                  for row in selected}
++    dependencies = [root / "include/qemu/crucible-fault.h",
++                    root / "include/qemu/crucible-fault-registration.h",
++                    root / "include/aos/crucible/crucible_shmem_abi.h",
++                    root / "plugins/crucible-startup-source.h"]
++    dependencies += sorted((root / "plugins").glob("crucible-*.inc.h"))
++    (output / "production-identities.json").write_text(json.dumps({
++        "dependencies": {str(path.relative_to(root)): digest(path)
++                         for path in dependencies},
++        "sources": provenance, "resident_plugin": digest(plugin),
++        "build_ninja": digest(build / "build.ninja"),
++        "compile_commands": digest(database),
++        "scope": "ordinary component; no selected Source ownership qualification",
++        "defect": args.defect,
++    }, indent=2) + "\n")
++    command = [str(binary), "-machine", "none", "-m", "1M", "-accel", "sim",
++               "-icount", "shift=0,align=off,sleep=off", "-nodefaults",
++               "-display", "none", "-S", "-plugin", str(plugin)]
++    (output / "runtime.command.json").write_text(json.dumps(command, indent=2) + "\n")
++    try:
++        result = subprocess.run(command, cwd=output, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30)
++    except subprocess.TimeoutExpired as error:
++        (output / "runtime.bin").write_bytes(error.stdout or b"")
++        raise
++    (output / "runtime.bin").write_bytes(result.stdout)
++    transcript = result.stdout.decode("utf-8", errors="backslashreplace")
++    (output / "runtime.log").write_text(transcript)
++    if args.defect:
++        expected = {
++            "validation-return": "hang->validation.physically_returned",
++            "pending-return": "hang->pending_retirement.physically_returned",
++            "storage-return": "hang->pending_retirement.physically_returned",
++        }[args.defect]
++        if result.returncode != -6 or expected not in transcript:
++            raise RuntimeError(
++                f"defect missed its physical assertion: {result.returncode}\n"
++                f"{transcript}")
++        print(f"PASS independently rebuilt {args.defect} omission")
++        return
++    if result.returncode or "PASS actual ordinary registration" not in transcript:
++        raise RuntimeError(
++            f"ordinary production fixture refused: {result.returncode}\n{transcript}")
++    print(transcript, end="")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-fault-registration.py b/tests/unit/test-crucible-fault-registration.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..064b3f49854cee2b9a74880e8cef0ebabeaa3c61
@@ -296180,10 +296722,10 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..10c70131bd1cf529d8e4c3aba906c4fa95702319
+index 0000000000000000000000000000000000000000..1264c0dcee9c1087f281eb03bedf95e29dacbc28
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,1065 @@
+@@ -0,0 +1,1069 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -296313,10 +296855,14 @@ index 0000000000000000000000000000000000000000..10c70131bd1cf529d8e4c3aba906c4fa
 +    command = configured_command(entry, build_dir)
 +    if command.count("-o") != 1:
 +        raise ValueError("ambiguous configured object output")
-+    output = configured_path(command[command.index("-o") + 1], build_dir)
++    output_value = command[command.index("-o") + 1]
++    output = configured_path(output_value, build_dir)
 +    if not output.is_relative_to(build_dir):
 +        raise ValueError("configured object escapes its build directory")
-+    if "output" in entry and configured_path(entry["output"], build_dir) != output:
++    # Identical declarations share this record's authenticated resolution.
++    # Different spellings still require their own canonical identity check.
++    if ("output" in entry and entry["output"] != output_value and
++            configured_path(entry["output"], build_dir) != output):
 +        raise ValueError("configured object output mismatch")
 +    return output
 +

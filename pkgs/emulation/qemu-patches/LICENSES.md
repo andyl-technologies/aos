@@ -37,6 +37,9 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-fault-pending.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-storage.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-fault-storage.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-fault-node-live-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-fault-node-live-main.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-fault-node-live.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-fault-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-initial-manifest-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-publisher-subscription.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
