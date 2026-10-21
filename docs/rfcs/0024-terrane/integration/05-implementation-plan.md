@@ -11964,3 +11964,22 @@ on a fixture file. The unsafe-special-bit fixture now sets and independently
 checks a sticky bit, retaining exact-mode rejection, all other permission and
 key-file assertions, and the unchanged production 0400/0600 allowlist. The
 original failed run remains retained; replacement qualification is required.
+
+#### Retained-range validation work
+
+Closing validation no longer repeats an initial ancestry check immediately
+before the first range read. Every read still freshly checks the original named
+ancestors, retained directory descriptors and leaf before and after consuming
+bytes. A final check follows all byte comparisons, including for an empty
+consumption receipt. A new regression replaces an empty receipt's original
+inode with equal bytes and verifies that fresh capture cannot revive the old
+receipt. All 19 native range cases pass; the runtime-agnostic gate includes the
+new exact selector. Growing-population qualification remains required with all
+six original cases and the unchanged 1,800-second per-case limit. No performance
+improvement or T2 acceptance is claimed from the focused cases.
+
+Replacement issuer qualification at `241337e5e1` passes both complete seven-case
+inventories. Independent review checks 7,904 immutable source files, 5,219 crate
+inputs and each actual Cargo test artifact and execution log. The earlier
+setuid-fixture failure remains retained. Required application compilation and
+deployed issuer integration remain separate obligations.

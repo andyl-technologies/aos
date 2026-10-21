@@ -60,6 +60,7 @@ in {
     run_store_test store::native_effect::payload_ranges::tests::changed_ancestor_mode_refuses_old_receipt_and_keeps_capture_independent --features tokio
     run_store_test store::native_effect::payload_ranges::tests::original_ranges_read_exact_bytes_and_revalidate_without_whole_body --features tokio
     run_store_test store::native_effect::payload_ranges::tests::closing_batch_checks_every_original_and_never_rebinds_a_changed_suffix --features tokio
+    run_store_test store::native_effect::payload_ranges::tests::empty_consumption_receipt_still_closes_on_its_original_inode --features tokio
     run_store_test store::native_effect::payload_ranges::tests::zero_range_at_original_end_is_checked_and_overflow_refuses --features tokio
     run_store_test store::native_effect::payload_ranges::tests::equal_bytes_replaced_leaf_cannot_rebind_original_descriptor --features tokio
     run_store_test store::native_effect::payload_ranges::tests::replaced_original_ancestor_refuses_before_bounded_read --features tokio

@@ -533,7 +533,8 @@ impl RetainedPayloadRanges {
     /// # Errors
     /// Refuses changed ancestors, leaf incarnations or consumed bytes and I/O failures.
     pub(in crate::store::native_effect) fn check_ranges(&self) -> io::Result<()> {
-        self.original.check()?;
+        // Each read brackets its bytes with fresh original checks. The final
+        // check follows comparison and also covers receipts with no ranges.
         for expected in &self.ranges {
             let bytes = self.original.read(expected.range)?;
             if bytes != expected.bytes {

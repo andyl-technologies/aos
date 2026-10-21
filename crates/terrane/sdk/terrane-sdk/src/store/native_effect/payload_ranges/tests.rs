@@ -40,6 +40,30 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn empty_consumption_receipt_still_closes_on_its_original_inode() {
+    let fixture = Fixture::new();
+    let retained = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &fixture.path)
+        .await
+        .unwrap()
+        .finish();
+    assert!(retained.ranges.is_empty());
+    retained.revalidate(&TokioLocalFs).await.unwrap();
+
+    let bytes = std::fs::read(&fixture.path).unwrap();
+    let replaced = fixture.root.join("retained-original.pack");
+    std::fs::rename(&fixture.path, &replaced).unwrap();
+    std::fs::write(&fixture.path, &bytes).unwrap();
+
+    assert!(retained.revalidate(&TokioLocalFs).await.is_err());
+    let fresh = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &fixture.path)
+        .await
+        .unwrap()
+        .finish();
+    fresh.revalidate(&TokioLocalFs).await.unwrap();
+    assert!(retained.revalidate(&TokioLocalFs).await.is_err());
+}
+
+#[tokio::test]
 async fn closing_batch_checks_every_original_and_never_rebinds_a_changed_suffix() {
     let fixture = Fixture::new();
     let second_path = fixture.root.join("second.pack");
