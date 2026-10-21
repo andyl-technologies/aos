@@ -110,6 +110,73 @@ impl NativeCachePlan {
         Ok(Self { host, domains })
     }
 
+    /// Checks explicit TOML cache resources and binds host locality to each domain.
+    ///
+    /// Every domain must configure its cache resource table. Portable roots and
+    /// chunk profiles derive from that same domain's host configuration; neither
+    /// an unrelated store expression nor repository credentials are opened.
+    ///
+    /// # Errors
+    /// Refuses missing resources or publisher policy and every invalid binding,
+    /// role identity or resource setting rejected by [`Self::new`].
+    pub fn from_host(
+        host: &HostTier,
+        locality: terrane_format::refs::Locality,
+    ) -> io::Result<Self> {
+        let mut domains = BTreeMap::new();
+        for (label, directory) in &host.domains {
+            let cache = directory
+                .cache
+                .as_ref()
+                .ok_or_else(|| invalid("explicit native cache resources required"))?;
+            let publisher = directory
+                .publisher
+                .as_ref()
+                .ok_or_else(|| invalid("native cache publisher profile required"))?;
+            let settings = NativeCacheDomainSettings {
+                portable: FileBucketConfig {
+                    root: directory.path.clone().into(),
+                    chunk_profile_name: publisher.chunk_profile.clone(),
+                    chunk_profile: publisher.profile().map_err(io::Error::other)?,
+                    locality: locality.clone(),
+                    publication_control: None,
+                },
+                portable_limits: PortableReadLimits {
+                    max_file_bytes: cache.portable.max_file_bytes,
+                    max_input_bytes: cache.portable.max_input_bytes,
+                    max_files: cache.portable.max_files,
+                    max_selected_bytes: cache.portable.max_selected_bytes,
+                },
+                state_gid: cache.state_gid,
+                policy: PolicyConfig {
+                    capacity: cache.capacity_bytes,
+                    low_watermark: cache.low_watermark_bytes,
+                    probation_bytes: cache.probation_bytes,
+                    release_grace: Duration::from_secs(cache.release_grace_seconds),
+                    scan_limit: cache.scan_limit,
+                },
+                reads: HostReadLimits {
+                    max_allocation_bytes: cache.max_read_bytes,
+                },
+                state: StateLimits {
+                    bytes: cache.state_bytes,
+                    records: cache.state_records,
+                },
+                inventory_entries: cache.inventory_entries,
+                queued_commands: cache.queued_commands,
+                metadata_sync_hold_bytes: cache.metadata_sync_hold_bytes,
+                index_repair: cache.index_repair.map(|repair| IndexRepairPolicy {
+                    max_index_bytes: repair.max_index_bytes,
+                    future_hold_bytes: repair.future_hold_bytes,
+                }),
+                publisher_wait_budget_ms: cache.publisher_wait_budget_ms,
+                consumer_lease_duration: Duration::from_secs(cache.consumer_lease_seconds),
+            };
+            domains.insert(label.clone(), settings);
+        }
+        Self::new(host, domains)
+    }
+
     /// Opens genuinely recovered native stores under the original confinement.
     ///
     /// The caller installs confinement after checking the plan and before

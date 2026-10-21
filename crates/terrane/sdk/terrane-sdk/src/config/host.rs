@@ -10,6 +10,7 @@
 //! wipe = "none"
 //! ```
 
+pub mod cache;
 mod runtime;
 
 pub use runtime::{DomainPublisher, Publisher, Quota};
@@ -79,6 +80,8 @@ pub struct DomainDirectory {
     pub publisher: Option<DomainPublisher>,
     /// Configured helper owner identifier, required for native quota observation.
     pub quota_owner_id: Option<String>,
+    /// Explicit finite cache resources; omission leaves native cache startup unavailable.
+    pub cache: Option<cache::DomainCache>,
 }
 
 /// Selects a registered trunk wipe policy.
@@ -132,6 +135,20 @@ impl HostTier {
                 return Err(ConfigError::Invalid(
                     "sealed host tiers cannot honor wipe=zero",
                 ));
+            }
+
+            if let Some(cache) = &directory.cache {
+                cache.validate()?;
+                if cache.capacity_bytes > self.size_bytes
+                    || self
+                        .publisher
+                        .as_ref()
+                        .is_some_and(|publisher| cache.state_gid == publisher.content_gid)
+                {
+                    return Err(ConfigError::Invalid(
+                        "native cache budget or group isolation differs",
+                    ));
+                }
             }
 
             if let Some(publisher) = &directory.publisher {

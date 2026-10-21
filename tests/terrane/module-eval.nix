@@ -220,6 +220,32 @@
     attempt = builtins.tryEval (builtins.deepSeq cfg.environment.etc."terrane/terrane.toml".text (checksPass cfg));
   in
     !attempt.success || !attempt.value;
+  cacheFixture = {
+    stateGid = 844;
+    capacityBytes = 25165824;
+    lowWatermarkBytes = 16777216;
+    probationBytes = 65536;
+    releaseGraceSeconds = 30;
+    scanLimit = 64;
+    maxReadBytes = 2097152;
+    stateBytes = 65536;
+    stateRecords = 64;
+    inventoryEntries = 128;
+    queuedCommands = 4;
+    metadataSyncHoldBytes = 262144;
+    publisherWaitBudgetMs = 10000;
+    consumerLeaseSeconds = 30;
+    portable = {
+      maxFileBytes = 67108864;
+      maxInputBytes = 268435456;
+      maxFiles = 4096;
+      maxSelectedBytes = 33554432;
+    };
+  };
+  cached = evaluate (lib.recursiveUpdate nativeFixture {
+    aos.terrane.hostTier.domains.public.cache = cacheFixture;
+  });
+  cachedFile = cached.environment.etc."terrane/terrane.toml".text;
   localFixture = {
     aos.terrane = {
       store = lib.mkForce "bucket(file:///var/lib/terrane-bucket)";
@@ -764,6 +790,46 @@
       in
         checksPass cfg && rootLines == ["d /srv/terrane-domain 0750 root terrane-content - -"])
       ["private" "tenant" "group"];
+    }
+    {
+      name = "native-cache-resources-rendered-exactly";
+      pass =
+        checksPass cached
+        && builtins.all (word: lib.hasInfix word cachedFile) [
+          "[host_tier.domains.public.cache]"
+          "capacity_bytes = 25165824"
+          "state_records = 64"
+          "state_gid = 844"
+          "metadata_sync_hold_bytes = 262144"
+          "consumer_lease_seconds = 30"
+          "[host_tier.domains.public.cache.portable]"
+          "max_files = 4096"
+        ];
+    }
+    {
+      name = "native-cache-omission-preserved";
+      pass = !(lib.hasInfix "[host_tier.domains.public.cache]" nativeFile);
+    }
+    {
+      name = "native-cache-incomplete-resources-refused";
+      pass = rejectedNative {aos.terrane.hostTier.domains.public.cache = builtins.removeAttrs cacheFixture ["stateRecords"];};
+    }
+    {
+      name = "native-cache-shared-state-group-refused";
+      pass = rejectedNative {aos.terrane.hostTier.domains.public.cache = cacheFixture // {stateGid = 845;};};
+    }
+    {
+      name = "native-cache-unfunded-repair-refused";
+      pass = rejectedNative {
+        aos.terrane.hostTier.domains.public.cache =
+          cacheFixture
+          // {
+            indexRepair = {
+              maxIndexBytes = 65536;
+              futureHoldBytes = 262144;
+            };
+          };
+      };
     }
   ];
   failures = map (check: check.name) (builtins.filter (check: !check.pass) (assertions ++ extraAssertions));

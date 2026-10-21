@@ -30,6 +30,29 @@ fn configuration(case: &Case) -> HostTier {
                 (
                     DOMAINS[owner].to_owned(),
                     DomainDirectory {
+                        cache: Some(terrane_sdk::config::host::cache::DomainCache {
+                            state_gid: 844,
+                            capacity_bytes: 24 * 1024 * 1024,
+                            low_watermark_bytes: 16 * 1024 * 1024,
+                            probation_bytes: 65536,
+                            release_grace_seconds: 30,
+                            scan_limit: 64,
+                            max_read_bytes: 2 * 1024 * 1024,
+                            state_bytes: 65536,
+                            state_records: 64,
+                            inventory_entries: 128,
+                            queued_commands: 4,
+                            metadata_sync_hold_bytes: 256 * 1024,
+                            index_repair: None,
+                            publisher_wait_budget_ms: 10_000,
+                            consumer_lease_seconds: 30,
+                            portable: terrane_sdk::config::host::cache::PortableLimits {
+                                max_file_bytes: 64 * 1024 * 1024,
+                                max_input_bytes: 256 * 1024 * 1024,
+                                max_files: 4096,
+                                max_selected_bytes: 32 * 1024 * 1024,
+                            },
+                        }),
                         path: case.root(owner).to_string_lossy().into_owned(),
                         administrative_root: Some(
                             case.administrative(owner).to_string_lossy().into_owned(),
@@ -76,46 +99,14 @@ enum Preparation {
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
     super::reader::actual_identity(840, &[844, 845])?;
-    use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
-    use terrane_linux::configured::{NativeCacheDomainSettings, NativeCachePlan};
-    use terrane_sdk::bucket::portable_reader::PortableReadLimits;
-    use terrane_sdk::host::cache::{HostReadLimits, PolicyConfig, StateLimits};
+    use terrane_linux::configured::NativeCachePlan;
 
     let case = Case::existing("positive")?;
-    let settings = (0..2)
-        .map(|owner| {
-            (
-                DOMAINS[owner].to_owned(),
-                NativeCacheDomainSettings {
-                    portable: case.bucket(owner, SEED),
-                    portable_limits: PortableReadLimits::default(),
-                    state_gid: 844,
-                    policy: PolicyConfig {
-                        capacity: 24 * 1024 * 1024,
-                        low_watermark: 16 * 1024 * 1024,
-                        probation_bytes: 65536,
-                        release_grace: Duration::from_secs(30),
-                        scan_limit: 64,
-                    },
-                    reads: HostReadLimits {
-                        max_allocation_bytes: 2 * 1024 * 1024,
-                    },
-                    state: StateLimits {
-                        bytes: 65536,
-                        records: 64,
-                    },
-                    inventory_entries: 128,
-                    queued_commands: 4,
-                    metadata_sync_hold_bytes: 256 * 1024,
-                    index_repair: None,
-                    publisher_wait_budget_ms: 10_000,
-                    consumer_lease_duration: Duration::from_secs(30),
-                },
-            )
-        })
-        .collect();
-    let plan = NativeCachePlan::new(&configuration(&case), settings)?;
+    let plan = NativeCachePlan::from_host(
+        &configuration(&case),
+        terrane_format::refs::Locality::default(),
+    )?;
     let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

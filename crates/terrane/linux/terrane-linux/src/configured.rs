@@ -594,6 +594,7 @@ mod tests {
                     (
                         label.into(),
                         DomainDirectory {
+                            cache: None,
                             path: format!("/var/lib/terrane/domain-{index}"),
                             administrative_root: Some(format!(
                                 "/var/lib/terrane-admin/domain-{index}"

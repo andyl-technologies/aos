@@ -9,6 +9,7 @@
   types = lib.types;
   toml = lib.formats.toml {inherit lib pkgs;};
   localRepository = import ./_local-repository.nix {inherit lib;};
+  nativeCache = import ./_cache.nix {inherit lib;};
   # Reject traversal and unit-file metacharacters before paths reach tmpfiles
   # or systemd. Parent ownership is part of the publisher's security boundary.
   pathType = types.strMatching "/[A-Za-z0-9_./-]+";
@@ -80,6 +81,7 @@
         type = pathType;
         description = "Absolute filesystem root for this disclosure domain.";
       };
+      cache = option (types.nullOr nativeCache.type) null "Explicit finite native cache resources; omission leaves cache startup unavailable.";
       publisher = option (types.nullOr domainPublisherType) null "Explicit native publisher profile for this domain; omission supplies no defaults.";
       administrativeRoot = option (types.nullOr pathType) null "Explicit protected administrative allocation root belonging only to this domain.";
       quotaOwnerId = option (types.nullOr ownerIdType) null "Explicit host allocation owner identifier.";
@@ -203,6 +205,7 @@
       domains =
         lib.mapAttrs (name: domain: {
           inherit (domain) path;
+          cache = nativeCache.render domain.cache;
           quota_owner_id = domain.quotaOwnerId;
           administrative_root =
             if domain.administrativeRoot != null
@@ -333,6 +336,12 @@ in {
       })
       ++ (import ./_identity-checks.nix {
         inherit config roleNames identities userFor groupsFor reservedGroupIds expectedGroupName;
+      })
+      ++ (nativeCache.checks {
+        domains = cfg.hostTier.domains;
+        tierBudget = cfg.hostTier.sizeBytes;
+        hasPublisher = cfg.hostTier.publisher != null;
+        hasQuota = cfg.hostTier.quota != null;
       })
       ++ [
         {
