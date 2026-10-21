@@ -1,7 +1,7 @@
-From 39fa2c7e87f1a72959638d3c443e182aa204c4b7 Mon Sep 17 00:00:00 2001
+From 68ad0c4ef04202b246718a545b74455e2378eb78 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: require standing producer retention edition1
+Subject: [PATCH] crucible: wait for real RCU registration before fixture fork
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -167,6 +167,23 @@ Exercise current syntax plus predecessor, edition, byte-order and unchanged
 output refusals. Retain prior native causal timeout and launched lifecycle
 failures as unresolved observations; no decoder or component result qualifies
 activation, Original, publisher membership, ACK or ActionReturn.
+
+Complete the lifetime component's real constructor-RCU prerequisite before its
+foreign-process identity control forks. A child otherwise can restart RCU while
+inheriting the thread-registry mutex held by the vanished constructor helper.
+Drain actual RCU callbacks, then inspect the real registry under that mutex:
+exactly one retained RCU_RESTART helper, its coordinator, no overflow and no
+in-flight starts. Expose the actual starts counter in process-private inventory
+only. Keep the helper record alive, every process-refusal assertion and all
+existing build/test ceilings. No sleep, synthetic readiness or fork grant is
+substituted. Refresh exact extractor fingerprints after the native header edit.
+
+The fixture starts no other QEMU threads in this scenario; actual callback
+completion follows thread registration, start-end consumption and RCU reader
+registration. This closes a concrete inherited-lock race, not the production
+hot-fork admission contract. Independently rebuilt retained-start debt refuses
+before fork. Preserve failed prior causal attempts and the mandatory launched
+Source/Root lifecycle refusal until their respective fresh checks qualify.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -77121,7 +77138,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..bece818ef45e7be1e9c7dfcacfd5e3bf
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..caaad5da96e7c8f957c0fb26255b0957fdcfbe5f 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..990671a847ca871fc3022033f2720382b65fd3e4 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -9,6 +9,7 @@ typedef struct QemuCond QemuCond;
@@ -77132,7 +77149,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..caaad5da96e7c8f957c0fb26255b0957
  
  /*
   * QemuEvent
-@@ -218,6 +219,450 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +219,451 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -77251,6 +77268,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..caaad5da96e7c8f957c0fb26255b0957
 +    uint64_t generation;
 +    size_t entry_count;
 +    size_t overflow_count;
++    size_t starts_in_flight;
 +    QemuThreadHotForkInventoryEntry *entries;
 +} QemuThreadHotForkInventory;
 +
@@ -195043,7 +195061,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..74ed5d19b2f31e5e12a794601ff6661f3dc7deca
+index 0000000000000000000000000000000000000000..094cdd26ec5e3ad309c957aed74991c4053fbb80
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -195071,7 +195089,7 @@ index 0000000000000000000000000000000000000000..74ed5d19b2f31e5e12a794601ff6661f
 +    'include/plugins/qemu-plugin.h':
 +        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
++        'aed553ae28d4232d883d7b97c159d05eddca5d91a5164994758d94769356ab5b',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -238846,7 +238864,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68a7fc81d8
+index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b21d17f29d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,361 @@
@@ -238867,11 +238885,11 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        '51e5c80f326eff7c390aa8ea491f7e36e22bde5af9214a1e8099fd38d1ddd7f1',
++        '042fcc3882531278beb9bf121b95069087f7f6cd4f266face56854d8b0f3489d',
 +    'util/oslib-posix.c':
 +        '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
 +    'include/qemu/thread.h':
-+        'b4efa814a832b1b891eb8e36b93b9a3cf219b3e51d5b902030dab48b73cd1103',
++        'f561d69c37a80df7596c6d1ed94889a40928ed1d357c10d94ef13f06009156e9',
 +    'include/qemu/thread-posix.h':
 +        '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
 +    'include/system/memory_cached.h':
@@ -239213,7 +239231,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7bcaa2a47b76634aa3d0a74df15a786129ebf0cd
+index 0000000000000000000000000000000000000000..db2a0a7d771a3f6b8c9d203c931f45a75580f6dc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -239231,7 +239249,7 @@ index 0000000000000000000000000000000000000000..7bcaa2a47b76634aa3d0a74df15a7861
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
++        'aed553ae28d4232d883d7b97c159d05eddca5d91a5164994758d94769356ab5b',
 +}
 +
 +FUNCTIONS = (
@@ -239319,7 +239337,7 @@ index 0000000000000000000000000000000000000000..7bcaa2a47b76634aa3d0a74df15a7861
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82bd807ebe3f975e9e9e31730c1e989737f02514
+index 0000000000000000000000000000000000000000..147c78ee67025dbfa5712dfce47f8ad8faeccb9e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -239350,7 +239368,7 @@ index 0000000000000000000000000000000000000000..82bd807ebe3f975e9e9e31730c1e9897
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
++        'aed553ae28d4232d883d7b97c159d05eddca5d91a5164994758d94769356ab5b',
 +}
 +
 +FUNCTIONS = (
@@ -239566,7 +239584,7 @@ index 0000000000000000000000000000000000000000..82bd807ebe3f975e9e9e31730c1e9897
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..904225ee67cab2bb451e27773146ba8847a78e18
+index 0000000000000000000000000000000000000000..dfd785ae9ee58562d7f9f51e70c718c07eddd249
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -239590,7 +239608,7 @@ index 0000000000000000000000000000000000000000..904225ee67cab2bb451e27773146ba88
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
++        'aed553ae28d4232d883d7b97c159d05eddca5d91a5164994758d94769356ab5b',
 +}
 +
 +FUNCTIONS = (
@@ -239684,7 +239702,7 @@ index 0000000000000000000000000000000000000000..904225ee67cab2bb451e27773146ba88
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b0be5e3e138d336c1501270a8fa82acbe8c3da1
+index 0000000000000000000000000000000000000000..111424c922cc8827ae42452ae3ab5acdbb294218
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -239725,9 +239743,9 @@ index 0000000000000000000000000000000000000000..5b0be5e3e138d336c1501270a8fa82ac
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
++        'aed553ae28d4232d883d7b97c159d05eddca5d91a5164994758d94769356ab5b',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'c51fe20a199194846f98652efe9edfae11ee2d91e967d193979ff82c6ee23496',
++        'f4a4fdb259d51406b1d1d4fce3b19b339525561682db9bbe14be5d4a525daaa0',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -239863,7 +239881,7 @@ index 0000000000000000000000000000000000000000..5b0be5e3e138d336c1501270a8fa82ac
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fbb12eb382c97ac2e126a27112d6b46959e6f371
+index 0000000000000000000000000000000000000000..7d3cb88c0459339b3640aa2e6adbe649a0322073
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1082 @@
@@ -240049,9 +240067,9 @@ index 0000000000000000000000000000000000000000..fbb12eb382c97ac2e126a27112d6b469
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        'b4efa814a832b1b891eb8e36b93b9a3cf219b3e51d5b902030dab48b73cd1103',
++        'f561d69c37a80df7596c6d1ed94889a40928ed1d357c10d94ef13f06009156e9',
 +    'util/qemu-thread-posix.c':
-+        '51e5c80f326eff7c390aa8ea491f7e36e22bde5af9214a1e8099fd38d1ddd7f1',
++        '042fcc3882531278beb9bf121b95069087f7f6cd4f266face56854d8b0f3489d',
 +    'include/qemu/crucible-process-purpose.h':
 +        'c9f09084526a14e5e3f3d08ab5c1dd8aff4d0fc3943a0651813363c65d19b070',
 +    'include/qemu/crucible-paged-ram.h':
@@ -256244,10 +256262,10 @@ index 0000000000000000000000000000000000000000..a1925d2fc2983a97c8ab27668ffecdcb
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f4777b064f45e410c1fa9b27b3f038fdef9e360
+index 0000000000000000000000000000000000000000..9e41a95269d345a0b70f894074cc77b587c49623
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2140 @@
+@@ -0,0 +1,2164 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -257230,6 +257248,7 @@ index 0000000000000000000000000000000000000000..1f4777b064f45e410c1fa9b27b3f038f
 + * an entered action, production Rust module, launched QEMU or qualification. */
 +#include "qemu/osdep.h"
 +#include <sys/wait.h>
++#include "qemu/rcu.h"
 +#include "plugins/crucible-startup-source.h"
 +
 +static QemuCrucibleStartupSourceControl startup_source;
@@ -257495,8 +257514,31 @@ index 0000000000000000000000000000000000000000..1f4777b064f45e410c1fa9b27b3f038f
 +        g_assert_cmpint(pthread_create(&thread, NULL, foreign_thread, NULL), ==, 0);
 +        g_assert_cmpint(pthread_join(thread, NULL), ==, 0);
 +    } else if (!strcmp(scenario, "foreign-process")) {
-+        pid_t process = fork();
++        QemuThreadHotForkInventory inventory;
++        unsigned int rcu_workers = 0;
++        pid_t process;
 +        int status;
++
++        /* Constructor return does not wait for the RCU helper to register.
++         * Its actual callback completion proves thread_start_end and RCU
++         * registration have run. The live registry observation acquires and
++         * releases the real registration mutex before fork. This component
++         * starts no other QEMU threads; the retained helper stays in its loop.
++         * This is only a process-identity control, not hot-fork admission. */
++        drain_call_rcu();
++        qemu_thread_hot_fork_inventory(&inventory);
++        g_assert_cmpuint(inventory.entry_count, ==, 2);
++        g_assert_cmpuint(inventory.overflow_count, ==, 0);
++        g_assert_cmpuint(inventory.starts_in_flight, ==, 0);
++        for (size_t index = 0; index < inventory.entry_count; index++) {
++            if (inventory.entries[index].disposition ==
++                    QEMU_THREAD_HOT_FORK_RCU_RESTART) {
++                rcu_workers++;
++            }
++        }
++        g_assert_cmpuint(rcu_workers, ==, 1);
++        qemu_thread_hot_fork_inventory_destroy(&inventory);
++        process = fork();
 +
 +        g_assert_cmpint(process, >=, 0);
 +        if (!process) {
@@ -309875,7 +309917,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..cf26f44bbd6bd2e288c15708f03719e7fc8f1f59 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..3c6fe6b7acd13b9b7d8667c9f52d59c296ebeb92 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -310693,7 +310735,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..cf26f44bbd6bd2e288c15708f03719e7
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,65 +1087,2270 @@ typedef struct {
+@@ -379,65 +1087,2271 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -312903,6 +312945,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..cf26f44bbd6bd2e288c15708f03719e7
 +    inventory->generation = qemu_hot_fork_thread_generation;
 +    inventory->entry_count = qemu_hot_fork_thread_count;
 +    inventory->overflow_count = qemu_hot_fork_thread_overflow;
++    inventory->starts_in_flight = qemu_hot_fork_thread_starts_in_flight;
 +    inventory->entries = g_new0(QemuThreadHotForkInventoryEntry,
 +                                inventory->entry_count);
 +    for (node = qemu_hot_fork_threads; node; node = node->next) {
@@ -313009,7 +313052,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..cf26f44bbd6bd2e288c15708f03719e7
      sigfillset(&set);
      /* Blocking the signals can result in undefined behaviour. */
      sigdelset(&set, SIGSEGV);
-@@ -450,18 +3363,178 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3364,178 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
