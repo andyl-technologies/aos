@@ -224,7 +224,13 @@ fn provision_controller_broker_credentials_after_boot() {
     directory(&root);
     let sessions = root.join("sessions");
     directory(&sessions);
-    let node = random::<16>();
+    // A broker-specific fixture may already have provisioned its authority.
+    // Keep the signed session on that same public node identity.
+    let node = match std::env::var_os("AOS_BSA_QUALIFICATION_NODE_FILE") {
+        Some(path) => fs::read(path).unwrap().try_into().unwrap(),
+        None => random::<16>(),
+    };
+    assert_ne!(node, [0; 16]);
     write_new(&root.join("node-id"), &node);
 
     for (name, protocol) in [

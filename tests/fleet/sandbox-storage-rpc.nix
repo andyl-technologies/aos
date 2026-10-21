@@ -12,6 +12,7 @@
   resolverPolicyDirectory = "/run/aos/sandbox-storage-resolver-policy";
   fixtureDirectory = "/run/aos/storage-rpc-fixture";
   stateDirectory = "/var/lib/aos/sandbox-storage";
+  credentialFixture = import ./_broker-session-credential-fixture.nix {inherit lib pkgs;};
   seccompProbeChmodStatus =
     if pkgs.stdenv.hostPlatform.isx86_64
     then "chmod"
@@ -134,6 +135,8 @@
           Slice = "aos-control.slice";
           RuntimeDirectory = "storage-rpc-controller";
           RuntimeDirectoryMode = "0700";
+          StateDirectory = "aos/sandboxd/broker-session/storage";
+          StateDirectoryMode = "0700";
           UMask = "0077";
 
           CapabilityBoundingSet = "";
@@ -416,6 +419,31 @@ in {
 
     assert machine.succeed("id -u aos-sandboxd").strip() == "811"
     assert machine.succeed("id -g aos-sandboxd").strip() == "811"
+    # Generate the BSA pair after boot. Each side receives only its own keys,
+    # at the fixed production custody root and with its actual service owner.
+    session_seed = "/run/aos/storage-rpc-session-credentials"
+    machine.succeed(
+        f"AOS_BSA_QUALIFICATION_ROOT={session_seed} "
+        "AOS_BSA_QUALIFICATION_NODE_FILE=${authorityDirectory}/node-id "
+        "${credentialFixture}/bin/broker-session-credential-fixture "
+        "--ignored --exact handshake::qualification_credentials::"
+        "provision_controller_broker_credentials_after_boot "
+        "--test-threads=1 --nocapture"
+    )
+    for role, owner, journal, key_names in (
+        ("client", 811, "/var/lib/aos/sandboxd/broker-session/storage",
+         ("client-hello-signing-key", "client-record-signing-key")),
+        ("broker", 0, "${stateDirectory}/broker-session",
+         ("broker-hello-signing-key", "broker-outcome-signing-key")),
+    ):
+        custody = f"{journal}/custody"
+        machine.succeed(f"install -d -o {owner} -g {owner} -m 0700 {journal}")
+        machine.succeed(f"install -d -o {owner} -g {owner} -m 0500 {custody}")
+        for name in ("broker-session-manifest", *key_names):
+            machine.succeed(
+                f"install -o {owner} -g {owner} -m 0400 "
+                f"{session_seed}/sessions/storage/{role}/{name} {custody}/{name}"
+            )
     machine.succeed("systemctl start aos-sandboxd.service")
     machine.wait_until_succeeds(
         "systemctl is-active --quiet aos-sandboxd.service", timeout=15

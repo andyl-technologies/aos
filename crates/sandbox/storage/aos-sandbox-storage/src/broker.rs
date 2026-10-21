@@ -5050,7 +5050,7 @@ mod tests {
 
     use aos_sandbox_api::aos::sandbox::local::v1::{
         ApplyStorageRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerClientHello,
-        BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, Feature, InventoryStorageRequest,
+        BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope, Feature,
         PrepareStorageCatalogRequest, PrepareStorageCatalogResponse,
         RepairStorageWorkspacePinRequest, StorageAction, StorageResult,
     };
@@ -5071,12 +5071,12 @@ mod tests {
         RawClockProvenance, ResourceVector, RevocationScopeId, SandboxId, TrustScopeId,
         descriptor_for_bytes, encode_sandbox_spec, sign_statement,
     };
+    use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1;
     use aos_sandbox_protocol::semantics::storage::CanonicalStorageSemanticsV1;
     use aos_sandbox_protocol::semantics::storage_repair::CanonicalStorageRepairSemanticsV1;
     use aos_sandbox_protocol::{
         AuthorizationArtifactBytes, MINIMUM_HOST_IDENTITY_RANGE, decode_request_envelope,
-        decode_response_envelope, decode_server_hello, decode_storage_resource_inventory_response,
-        encode_authorized_request_envelope, encode_unauthed_request_envelope,
+        decode_storage_resource_inventory_response, encode_authorized_request_envelope,
     };
     use buffa::Message;
     use ed25519_dalek::SigningKey;
@@ -5622,7 +5622,7 @@ mod tests {
                 semantics.broker_verb(),
                 semantics.grant_target(),
                 semantics.argument_commitment(),
-                request.len() as u32,
+                request.len() as u32 + STORAGE_RPC_HEADER_ALLOWANCE_BYTES,
                 0,
             )
             .unwrap();
@@ -5656,7 +5656,7 @@ mod tests {
                 semantics.broker_verb(),
                 semantics.grant_target(),
                 semantics.argument_commitment(),
-                preparation_request.len() as u32,
+                preparation_request.len() as u32 + STORAGE_RPC_HEADER_ALLOWANCE_BYTES,
                 0,
             )
             .unwrap();
@@ -9043,6 +9043,9 @@ mod tests {
     const STORAGE_RPC_FIXTURE_DIRECTORY: &str = "/run/aos/storage-rpc-fixture";
     const STORAGE_RPC_CONTROL_DIRECTORY: &str = "/run/storage-rpc-controller";
     const STORAGE_RPC_RESPONSE_BYTES: u32 = 1_048_576;
+    // Protected session headers select their own request IDs and limits. The
+    // fixture grants a finite allowance without changing portable arguments.
+    const STORAGE_RPC_HEADER_ALLOWANCE_BYTES: u32 = 1024;
 
     #[test]
     #[ignore = "requires the installed aos-storaged and systemd Storage workers"]
@@ -9137,11 +9140,32 @@ mod tests {
             .boottime_nanoseconds()
             .checked_add(240_000_000_000)
             .unwrap();
-        let create_request = vm_create_request(&specification, create_deadline);
+        let mut create_request = ApplyStorageRequest::decode_from_slice(&vm_create_request(
+            &specification,
+            create_deadline,
+        ))
+        .unwrap();
+        create_request
+            .header
+            .get_or_insert_default()
+            .maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
+        let create_request = create_request.encode_to_vec();
         let create_artifacts = fixture.artifacts_for_kernel_clock(
             &create_request,
             &catalog,
             admission_clock.wall_seconds(),
+        );
+        write_public_fixture_file(&fixture_directory.join("apply-request.pb"), &create_request);
+        let public_create_artifacts = BrokerAuthorizationArtifactsV1 {
+            broker_plan: create_artifacts.broker_plan().to_vec(),
+            broker_plan_signature: create_artifacts.broker_plan_signature().to_vec(),
+            ownership_lease: create_artifacts.ownership_lease().to_vec(),
+            ownership_lease_signature: create_artifacts.ownership_lease_signature().to_vec(),
+            ..Default::default()
+        };
+        write_public_fixture_file(
+            &fixture_directory.join("apply-artifacts.pb"),
+            &public_create_artifacts.encode_to_vec(),
         );
         prepare_for_apply(
             &mut coordinator,
@@ -9532,34 +9556,17 @@ mod tests {
             },
         )
         .unwrap();
-        let request = PrepareStorageCatalogRequest::decode_from_slice(&request).unwrap();
-        let request_id: [u8; 16] = request
-            .header
-            .as_option()
-            .unwrap()
-            .request_id
-            .as_slice()
-            .try_into()
-            .unwrap();
-        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
-        let (mut socket, session, deadline) = storage_rpc_handshake(method);
-        session.decode_request(&packet, 0).unwrap();
-        crate::transport::send(&mut socket, &packet, deadline).unwrap();
-        let response =
-            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
-                .unwrap();
-        let response = decode_response_envelope(
-            response.payload(),
-            &request_id,
+        let outcome = storage_rpc_session::exchange(
             method,
-            &[],
-            0,
-            session.maximum_response_bytes(),
-            maximum_response_bytes,
-        )
-        .unwrap();
-        assert!(response.error().is_none());
-        let prepared = PrepareStorageCatalogResponse::decode_from_slice(response.body()).unwrap();
+            BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
+        );
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+            panic!(
+                "Storage Prepare returned an authenticated error: {:?}",
+                outcome.result()
+            );
+        };
+        let prepared = PrepareStorageCatalogResponse::decode_from_slice(exact_body).unwrap();
         let expected_generation: u64 = fs::read_to_string(
             Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-catalog-generation"),
         )
@@ -9573,44 +9580,59 @@ mod tests {
         assert_eq!(prepared.catalog_generation, expected_generation);
         assert_eq!(prepared.catalog_digest, expected_digest);
         assert!(!prepared.non_authorizing_receipt.is_empty());
-        response.body().to_vec()
+        exact_body.clone()
     }
 
     fn storage_rpc_method_unavailable(method: BrokerMethod, minor: u32) {
-        let mut socket =
-            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
+        if minor == 2 {
+            // The signed Storage context is exactly 1.0. The legacy 1.2
+            // negotiation cannot be relabeled as an authenticated session.
+            let error = storage_rpc_session::connect(method, Some(minor))
+                .err()
                 .unwrap();
-        let deadline = crate::transport::boottime()
-            .unwrap()
-            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
-            .unwrap();
-        let hello = storage_rpc_client_hello_at(method, minor);
-        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
-        let response = crate::transport::receive(
-            &mut socket,
-            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
-            deadline,
+            assert!(matches!(
+                error.downcast_ref::<aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1>(),
+                Some(aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
+                    | Some(aos_sandbox_broker_session_security::DormantBrokerSessionHandshakeErrorV1::Protected(
+                        aos_sandbox_broker_session_security::BrokerSessionSecurityError::Manifest { .. }
+                    ))
+            ), "unexpected downgrade rejection: {error}");
+            return;
+        }
+
+        let prefix = match method {
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY => "apply",
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => "prepare",
+            other => panic!("unexpected unavailable Storage method {other:?}"),
+        };
+        let directory = Path::new(STORAGE_RPC_FIXTURE_DIRECTORY);
+        let body = fs::read(directory.join(format!("{prefix}-request.pb"))).unwrap();
+        let artifacts = BrokerAuthorizationArtifactsV1::decode_from_slice(
+            &fs::read(directory.join(format!("{prefix}-artifacts.pb"))).unwrap(),
         )
         .unwrap();
-        let feature = FeatureRef::new(
-            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
-            1,
-            0,
+        let packet = encode_authorized_request_envelope(
+            ProtocolId::StorageBroker,
+            method,
+            &body,
+            &[],
+            AuthorizationArtifactBytes {
+                broker_plan: &artifacts.broker_plan,
+                broker_plan_signature: &artifacts.broker_plan_signature,
+                ownership_lease: &artifacts.ownership_lease,
+                ownership_lease_signature: &artifacts.ownership_lease_signature,
+            },
         )
         .unwrap();
-        assert!(matches!(
-            decode_server_hello(
-                response.payload(),
-                ProtocolId::StorageBroker,
-                Audience::AUDIENCE_NODE_CONTROLLER,
-                ProtocolVersion::new(1, minor as u16),
-                &[feature],
-                &[method],
-                STORAGE_RPC_RESPONSE_BYTES,
-            ),
-            Err(aos_sandbox_protocol::ProtocolValidationError::BrokerRejected(code))
-                if code == BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
-        ));
+        let outcome = storage_rpc_session::exchange(
+            method,
+            BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
+        );
+        let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() else {
+            panic!("unavailable Storage method returned success");
+        };
+        assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST);
+        assert!(!error.retryable());
     }
 
     fn storage_rpc_decoy() {
@@ -9638,7 +9660,6 @@ mod tests {
 
     fn storage_rpc_missing_authority() {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN;
-        let (mut socket, _session, deadline) = storage_rpc_handshake(method);
         let request =
             fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("repair-request.pb")).unwrap();
         let packet = BrokerRequestEnvelope {
@@ -9648,11 +9669,7 @@ mod tests {
         }
         .encode_to_vec();
 
-        crate::transport::send(&mut socket, &packet, deadline).unwrap();
-        assert!(
-            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
-                .is_err()
-        );
+        storage_rpc_session::reject_missing_authority(&packet);
     }
 
     fn storage_rpc_repair(expect_conflict: bool) {
@@ -9677,41 +9694,26 @@ mod tests {
             },
         )
         .unwrap();
-        let request = RepairStorageWorkspacePinRequest::decode_from_slice(&request).unwrap();
-        let request_id: [u8; 16] = request
-            .header
-            .as_option()
-            .unwrap()
-            .request_id
-            .as_slice()
-            .try_into()
-            .unwrap();
-        let maximum_response_bytes = request.header.as_option().unwrap().maximum_response_bytes;
-        let (mut socket, session, deadline) = storage_rpc_handshake(method);
-        session.decode_request(&packet, 0).unwrap();
-        crate::transport::send(&mut socket, &packet, deadline).unwrap();
-        let response =
-            crate::transport::receive(&mut socket, maximum_response_bytes as usize, deadline)
-                .unwrap();
-        let response = decode_response_envelope(
-            response.payload(),
-            &request_id,
+        let outcome = storage_rpc_session::exchange(
             method,
-            &[],
-            0,
-            session.maximum_response_bytes(),
-            maximum_response_bytes,
-        )
-        .unwrap();
+            BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
+        );
 
         if expect_conflict {
-            let error = response.error().unwrap();
+            let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() else {
+                panic!("Storage repair retry returned success");
+            };
             assert_eq!(error.code(), BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
             assert!(!error.retryable());
-            assert!(response.body().is_empty());
         } else {
-            assert!(response.error().is_none());
-            let result = StorageResult::decode_from_slice(response.body()).unwrap();
+            let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result()
+            else {
+                panic!(
+                    "Storage repair returned an authenticated error: {:?}",
+                    outcome.result()
+                );
+            };
+            let result = StorageResult::decode_from_slice(exact_body).unwrap();
             let expected =
                 fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("workspace-handle"))
                     .unwrap();
@@ -9719,43 +9721,22 @@ mod tests {
         }
     }
 
-    fn storage_rpc_inventory(request_marker: u8) -> Vec<u8> {
+    fn storage_rpc_inventory(_request_marker: u8) -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES;
-        let now = crate::transport::boottime().unwrap();
-        let mut request = InventoryStorageRequest::default();
-        let header = request.header.get_or_insert_default();
-        header.protocol_major = 1;
-        header.protocol_minor = 0;
-        header.request_id = vec![request_marker; 16];
-        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
-        header.deadline_boottime_nanoseconds = now.checked_add(30_000_000_000).unwrap();
-        header.maximum_response_bytes = STORAGE_RPC_RESPONSE_BYTES;
-        let packet = encode_unauthed_request_envelope(
-            ProtocolId::StorageBroker,
+        let outcome = storage_rpc_session::exchange(
             method,
-            &request.encode_to_vec(),
-        )
-        .unwrap();
-        let request_id = [request_marker; 16];
-        let (mut socket, session, deadline) = storage_rpc_handshake(method);
-        session.decode_request(&packet, 0).unwrap();
-        crate::transport::send(&mut socket, &packet, deadline).unwrap();
-        let response =
-            crate::transport::receive(&mut socket, STORAGE_RPC_RESPONSE_BYTES as usize, deadline)
-                .unwrap();
-        let response = decode_response_envelope(
-            response.payload(),
-            &request_id,
-            method,
-            &[],
-            0,
-            session.maximum_response_bytes(),
-            STORAGE_RPC_RESPONSE_BYTES,
-        )
-        .unwrap();
-        assert!(response.error().is_none());
-
-        response.body().to_vec()
+            BrokerRequestEnvelope {
+                method: method.into(),
+                ..Default::default()
+            },
+        );
+        let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+            panic!(
+                "Storage Inventory returned an authenticated error: {:?}",
+                outcome.result()
+            );
+        };
+        exact_body.clone()
     }
 
     fn storage_rpc_inventory_count(response: &[u8]) -> usize {
@@ -9763,48 +9744,6 @@ mod tests {
             .unwrap()
             .workspaces()
             .len()
-    }
-
-    fn storage_rpc_handshake(
-        method: BrokerMethod,
-    ) -> (
-        aos_sandbox_linux::seqpacket::SeqpacketSocket,
-        aos_sandbox_protocol::NegotiatedBrokerSession,
-        u64,
-    ) {
-        let mut socket =
-            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
-                .unwrap();
-        let deadline = crate::transport::boottime()
-            .unwrap()
-            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
-            .unwrap();
-        let hello = storage_rpc_client_hello(method);
-        crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).unwrap();
-        let response = crate::transport::receive(
-            &mut socket,
-            aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
-            deadline,
-        )
-        .unwrap();
-        let feature = FeatureRef::new(
-            aos_sandbox_protocol::session::SIGNED_PLAN_LEASE_FEATURE_NAMESPACE.to_owned(),
-            1,
-            0,
-        )
-        .unwrap();
-        let session = decode_server_hello(
-            response.payload(),
-            ProtocolId::StorageBroker,
-            Audience::AUDIENCE_NODE_CONTROLLER,
-            ProtocolVersion::new(1, 0),
-            &[feature],
-            &[method],
-            STORAGE_RPC_RESPONSE_BYTES,
-        )
-        .unwrap();
-
-        (socket, session, deadline)
     }
 
     fn storage_rpc_client_hello(method: BrokerMethod) -> BrokerClientHello {
@@ -13686,6 +13625,7 @@ mod tests {
 
     pub(crate) mod missing_initial_runtime_tests;
     mod missing_initial_tests;
+    mod storage_rpc_session;
 
     #[test]
     fn repair_history_reopen_authenticates_pending_effect_and_rejects_resealed_drift() {
