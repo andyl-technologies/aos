@@ -1991,11 +1991,44 @@ Park operation, custody and physical-return predicate.
 Final mandatory application test-target compilation passes at
 `/nix/store/323s201w2mk9h29lhczicjx5xvhbf804-aos-test-targets-0.1.0`.
 All 5,261 tracked crate Rust/TOML files match `43d18f6986` and immutable
-`c8wy0i4dp4b8qmvik74z06ng2cqrn33m-aos-workspace-src`. The expanded 162-case
-exact supervision run is pending. Coverage binds 260 component and 19 native
+`c8wy0i4dp4b8qmvik74z06ng2cqrn33m-aos-workspace-src`. All 162 expanded
+exact supervision cases pass at
+`/nix/store/0y6vnx0f7v2ix5c6s4758f9f458h7v4j-crucible-gate-ram-supervision-0`. Coverage binds 260 component and 19 native
 cases across 243 requirements, with 149 uncovered and none fully qualified.
 General QMP diagnostics, runtime-to-channel formatting, checkpoint error boxes,
 complete payload funding and selected Source execution remain unfinished.
+
+### 2026-10-21 borrowed canonical fingerprint hashing
+
+Commit `9515ebefea` streams the unchanged execution-fingerprint recipe from
+borrowed sample fields through the existing exact-length canonical hasher.
+Both passes retain the original domain, UTF-8 byte length, word boundaries,
+field order, lowercase digests and newline separators. Active finite decode
+admission reserves hashing scratch before formatting and releases it before
+return. Actual admission refusal remains typed through channel and Node
+conversion; scheduler conversion retains the same cause through its existing
+shared carrier.
+
+Two engine streaming controls, the finite scratch-admission control and six
+host fingerprint controls pass. They cover exact old hashes and material bytes
+for one through eight vCPUs, numeric limits and UTF-8 boundaries, length changes
+and formatter refusal in either pass, and real exhausted scratch admission.
+The measured borrowed hash and already-refused channel/Node conversion have
+zero allocations or reallocations. All 219 Node tests pass with one existing
+ignored test, together with 73 focused policy checks and five hygiene checks.
+The first retained-cause test's compile failure remains recorded and corrected
+through the standard error-source chain.
+
+Mandatory application test-target compilation passes at
+`/nix/store/zrv3955dlphb8lkdxhylrm52vvjf2iv0-aos-test-targets-0.1.0`.
+All 5,261 tracked crate Rust/TOML files match `9515ebefea` and immutable
+`flc4dcb3piv8hfym8asjnaw9965l0wmq-aos-workspace-src`. The expanded 167-case
+supervision gate is still running. Coverage binds 265 component and 19 native
+cases across 243 requirements; 149 remain uncovered and none fully qualified.
+The diagnostic event counter gates the existing owned recipe but supplies no
+byte funding. Enabled diagnostic initialization and payloads, validation-error
+formatting, initial refusal allocation, scheduler-carrier birth and complete
+selected admission remain unqualified.
 
 ### 2026-10-21 native rule and reservation storage custody
 
@@ -2070,6 +2103,31 @@ activation remain unavailable; full registration return still refuses. Aggregate
 restore, deferred consumers, CPU borrowers and selected physical return remain
 unqualified. The full license gate remains blocked at controller lint
 prerequisites.
+
+### 2026-10-21 ordinary NODE_HANG event decoding
+
+Commit `979a045a31` integrates atomic
+`40ce1399fbf7eebdf501a0c238997d23d8431dba`, tree
+`02c4798f3dd6c1e233bb8c6cd8016957f4d3b86c`. The real event decoder accepts
+NODE_HANG's actual ARM model phase while preserving every envelope identity
+check and the other command families' phase limits. Seven independently rebuilt
+initialized-system runs pass: the positive, three physical-journal omissions
+and three phase-predicate defects. The actual unconsumed codec stream contains
+878 bytes with SHA-256
+`bfb5e2bd7bd14e42f476c8a3ed5c4b0b968b2152d4ab09e3dbefe265f23e7cfc`.
+
+All 187 owning scenarios, 34 independently compiled causal controls, signed
+reconstruction and the exact 284-file license ledger pass. The causal positive
+takes 47.593 seconds of the unchanged 60-second bound; all original resource
+limits remain. Raw ABI passes at
+`/nix/store/cgvgzs671vgb98in8vn1p4fv0biksjdx-crucible-phase2-abi-conformance-0`.
+All 5,261 tracked crate Rust/TOML files match commit `43d18f6986` and immutable
+`8sjrb9kdh4rw9lbqr146ms0sa5mibq5n-crucible-workspace-src`, excluding later
+fingerprint changes. Complete native compilation finishes all 3,863 targets;
+25/26 fixtures pass and the mandatory launched Source/Root lifecycle remains
+the sole failure. Earlier predicate and timeout failures remain recorded.
+Aggregate restore, full registration return, activation and selected CPU or
+physical-return authority remain unqualified at this checkpoint.
 
 ### Canonical native observation gate cutover (required)
 
