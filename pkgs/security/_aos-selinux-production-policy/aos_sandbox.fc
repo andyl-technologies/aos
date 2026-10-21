@@ -29,6 +29,8 @@
 /usr -l system_u:object_r:usr_t
 /aos-registration -- system_u:object_r:etc_t
 /usr/lib/aos/toplevel -l system_u:object_r:etc_t
+# Refpolicy leaves HOME_ROOT templated; AOS creates this fixed mountpoint.
+/home -d system_u:object_r:home_root_t
 /root -d system_u:object_r:user_home_dir_t
 /root(/.*)? system_u:object_r:user_home_t
 /run/current-system -l system_u:object_r:var_run_t
