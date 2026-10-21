@@ -212,8 +212,9 @@ in {
             assert f"SystemCallFilter=~{syscall}" in unit_text, (unit_name, syscall)
 
     # P removes the signed Destroy target's exact pin; O stays read-only.
+    # Manager properties require a concrete instance, even before it starts.
     preparation_policy = vm.succeed(
-        "systemctl show 'aos-sandbox-network-worker@.service' "
+        "systemctl show 'aos-sandbox-network-worker@profile-check.service' "
         "--property=SystemCallFilter --value"
     ).split()
     assert "umount2" in preparation_policy, preparation_policy
