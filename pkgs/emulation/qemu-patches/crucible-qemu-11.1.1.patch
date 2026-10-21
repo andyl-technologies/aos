@@ -1,7 +1,7 @@
-From e043d35971c4c33132fbeb6699aa2c9af65d0f32 Mon Sep 17 00:00:00 2001
+From d042f43ee8ab8b4f2aa58f1d8b7e01807e37a375 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain factual RR CPU custody before execution
+Subject: [PATCH] crucible: independently post actual action-current callbacks
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -524,6 +524,17 @@ all literal body hashes and every observation/refusal assertion. Retain the
 first complete build failure: all 3863 targets built, with mandatory launched
 lifecycle refusal and prepark duplicate-inventory refusal (24 of 26 fixtures).
 The corrected pin ownership grants no execution or admission authority.
+
+Reauthenticate the actual canonical Source Original and genuine Core/Native
+callback interval after every module-current callback. Preserve its exact
+serial, Main/member identity and immutable standing publication before entry;
+repeat row validation and unconditionally read the final retained-lender
+sequence even after another callback/post failure. Save the original first
+cause and independent first post without releasing any physical debt.
+Standing publication equality is corroboration only and supplies no scheduler
+Advance or asynchronous class-1 continuation owner. The literal predicate
+controls model local inputs and do not execute a genuine module callback,
+construct a Source provider or qualify selected admission or the lifecycle.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -101512,10 +101523,10 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..83fd7fd98864124d5ed43d52286b2539
      QLIST_INIT(&plugin.scoreboards);
 diff --git a/plugins/crucible-action-original.inc.h b/plugins/crucible-action-original.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..c2acecb099682f0b8f6ff42079437f1e3361bffb
+index 0000000000000000000000000000000000000000..6038f25d2d278f7c5f85dee87aeae873c0047ca6
 --- /dev/null
 +++ b/plugins/crucible-action-original.inc.h
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,718 @@
 +/*
 + * Actual entered Main fingerprint action ownership
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -101833,12 +101844,30 @@ index 0000000000000000000000000000000000000000..c2acecb099682f0b8f6ff42079437f1e
 +    return qatomic_load_acquire(&action->first_status);
 +}
 +
-+int qemu_crucible_source_action_original_current_v1(
-+    QemuCrucibleActionOriginal *action, qemu_plugin_id_t id)
++/* These are standing-publisher observations, never scheduler publication
++ * authority. Equality cannot manufacture the missing subscription owner. */
++static int action_original_publication_matches(QemuCrucibleActionOriginal *action,
++    uint64_t serial, uint64_t expected, uint64_t cached, uint64_t observed)
 +{
-+    QemuCrucibleMainPayloadBorrow *payload;
-+    QemuCrucibleCommandConsumerMember *member;
-+    int callback_status;
++    return serial && action->serial == serial && expected && !(expected & 1) &&
++        action->publisher_sequence == expected && cached == expected &&
++        observed == expected ? 0 : -ESTALE;
++}
++
++static int action_original_publication_current(QemuCrucibleActionOriginal *action,
++                                               uint64_t serial, uint64_t expected)
++{
++    uint64_t sequence = 0;
++    int status = qemu_crucible_preexec_standing_sequence_v1(
++        startup_source.standing.lender, &sequence);
++
++    return status ? status : action_original_publication_matches(
++        action, serial, expected, startup_source.standing.sequence, sequence);
++}
++
++static int action_original_call_identity(QemuCrucibleActionOriginal *action,
++                                         qemu_plugin_id_t id)
++{
 +    int status;
 +
 +    if (action != &startup_source.action_original) {
@@ -101856,6 +101885,35 @@ index 0000000000000000000000000000000000000000..c2acecb099682f0b8f6ff42079437f1e
 +    if (!status) {
 +        status = qemu_plugin_crucible_source_action_call_current_v1(action->main);
 +    }
++    return status;
++}
++
++static int action_original_current_results(QemuCrucibleActionOriginal *action,
++    int callback_status, int validation_status, int post_status)
++{
++    action_original_failure(action, callback_status);
++    action_original_failure(action, validation_status);
++    action_original_failure(action, post_status);
++    if (!action->post_status && post_status) {
++        action->post_status = post_status < 0 ? post_status : -EPROTO;
++    }
++    return qatomic_load_acquire(&action->first_status);
++}
++
++int qemu_crucible_source_action_original_current_v1(
++    QemuCrucibleActionOriginal *action, qemu_plugin_id_t id)
++{
++    QemuCrucibleMainPayloadBorrow *payload;
++    QemuCrucibleMainControlBorrow *main;
++    QemuCrucibleCommandConsumerMember *member;
++    uint64_t serial;
++    uint64_t publisher_sequence;
++    int callback_status;
++    int post_status;
++    int sequence_status;
++    int status;
++
++    status = action_original_call_identity(action, id);
 +    if (status || action->first_status) {
 +        return status ? status : action->first_status;
 +    }
@@ -101863,7 +101921,14 @@ index 0000000000000000000000000000000000000000..c2acecb099682f0b8f6ff42079437f1e
 +    if (status) {
 +        return action_original_failure(action, status);
 +    }
-+    payload = &action->main->payload_borrow;
++    main = action->main;
++    serial = action->serial;
++    publisher_sequence = action->publisher_sequence;
++    status = action_original_publication_current(action, serial, publisher_sequence);
++    if (status) {
++        return action_original_failure(action, status);
++    }
++    payload = &main->payload_borrow;
 +    member = action->member;
 +    SOURCE_CALLBACK_MASKED_INVOKE(
 +        callback_status, &member->action_current, member->action_current,
@@ -101878,8 +101943,23 @@ index 0000000000000000000000000000000000000000..c2acecb099682f0b8f6ff42079437f1e
 +        action->uncertain = true;
 +        status = -EPROTO;
 +    }
-+    action_original_failure(action, callback_status);
-+    return action_original_failure(action, status);
++    /* The module result cannot stand in for independent Source/Core post,
++     * including when that result or its canonical output already failed. */
++    post_status = action_original_call_identity(action, id);
++    if (!post_status && (action->main != main || action->member != member ||
++                        action->serial != serial)) {
++        post_status = -ESTALE;
++    }
++    if (!post_status) {
++        post_status = action_original_rows_current(action);
++    }
++    /* Always perform the final acquire observation, even after another post
++     * failure. No failure permits a callback retry or discharges its debt. */
++    sequence_status = action_original_publication_current(action, serial, publisher_sequence);
++    if (!post_status) {
++        post_status = sequence_status;
++    }
++    return action_original_current_results(action, callback_status, status, post_status);
 +}
 +
 +int qemu_crucible_source_action_original_enter_v1(QemuCrucibleMainControlBorrow *main)
@@ -202824,7 +202904,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cbe1b37e6ffbea0a57df4df27796232ed9f2dc50
+index 0000000000000000000000000000000000000000..575dbb75c850a53e25c1552826454d7186681234
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -202852,7 +202932,7 @@ index 0000000000000000000000000000000000000000..cbe1b37e6ffbea0a57df4df27796232e
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
++        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -245508,10 +245588,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..63c0a3b9816613d65f534ef0e319330c978e9f2f
+index 0000000000000000000000000000000000000000..94c149d39a48f14e6d21cabf271b61217ef8de13
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,713 @@
+@@ -0,0 +1,745 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -246225,6 +246305,38 @@ index 0000000000000000000000000000000000000000..63c0a3b9816613d65f534ef0e319330c
 +
 +This contract is an inventory of missing producers, not an accepting API,
 +compatibility route or license to activate an existing callback group.
++
++Source action-current independent post
++--------------------------------------
++
++The actual action-current callback now has an independent post on every
++callback outcome. Source repeats its canonical Original, process/thread,
++module holder/serial and entered Core/Native call checks, retains the saved
++Main/member/Original serial, rechecks the publisher rows and always reads the
++final standing sequence. Callback failure, changed module output or an earlier
++post failure cannot skip that final observation. First callback/validation
++failure and first post failure are retained independently; recording them
++returns no module, publisher, CPU or other physical child.
++
++The sequence fence rejects zero, odd, changed or mismatched standing evidence.
++It is publisher evidence only. Equality does not prove that a scheduler
++publication cannot wrap, bind its stop mode/ceilings or issue an Advance.
++Literal predicate controls test these local refusals and result preservation;
++they invoke no successful action/publisher/provider callback. The actual Source
++object is compiled, while the provider-backed callback and launched lifecycle
++remain unexecuted.
++
++The existing callback contract is specifically a fingerprint sample action.
++Its enter/current/post/return methods have payload, borrow and action holders
++and unit evidence, but no scheduler publication loan. Its current method also
++requires the entered Main thread and active Core callback. RR cannot call it
++as an asynchronous operation-current method after Main callback return.
++The future class-1 producer therefore needs a genuine retained continuation
++child and its own paired scheduler-current/post contract, not a weakened Main
++entry check. The publisher-action acquisition/current/snapshot/return methods
++are only declarations and call sites in this source tree; their absent
++production implementations are another required owner, not a test seam to
++fill with successful stubs.
 diff --git a/tests/unit/crucible-fault-command-restore-fixture.inc.h b/tests/unit/crucible-fault-command-restore-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..ccee61df89ecf56a18b6faf1c268f7dc5646275a
@@ -249611,7 +249723,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..758165f3e71a90257b0158806dd5271ef64aef55
+index 0000000000000000000000000000000000000000..acf8e3be7a715205ca26fc6d9239c926d2af9ed0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -249629,7 +249741,7 @@ index 0000000000000000000000000000000000000000..758165f3e71a90257b0158806dd5271e
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
++        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
 +}
 +
 +FUNCTIONS = (
@@ -249717,7 +249829,7 @@ index 0000000000000000000000000000000000000000..758165f3e71a90257b0158806dd5271e
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b6c0aaa9bbc3a9f2857a98b13b7dee35a55a25c
+index 0000000000000000000000000000000000000000..c6de07194525465eb7d932ad0b27cc5c0ce88439
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -249748,7 +249860,7 @@ index 0000000000000000000000000000000000000000..7b6c0aaa9bbc3a9f2857a98b13b7dee3
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
++        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
 +}
 +
 +FUNCTIONS = (
@@ -249964,7 +250076,7 @@ index 0000000000000000000000000000000000000000..7b6c0aaa9bbc3a9f2857a98b13b7dee3
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f4d526d6d898646f9e104332db96c97355bf7de2
+index 0000000000000000000000000000000000000000..c73a77e3b5ffd74d90e2490e209b14379d909079
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -249988,7 +250100,7 @@ index 0000000000000000000000000000000000000000..f4d526d6d898646f9e104332db96c973
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
++        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
 +}
 +
 +FUNCTIONS = (
@@ -250082,7 +250194,7 @@ index 0000000000000000000000000000000000000000..f4d526d6d898646f9e104332db96c973
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3fe8c59f3755225b9c6fdbb269f499e61c21bfa8
+index 0000000000000000000000000000000000000000..e51516a702398ec216213d0af613b094b365883f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -250123,9 +250235,9 @@ index 0000000000000000000000000000000000000000..3fe8c59f3755225b9c6fdbb269f499e6
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '9eecf09ea4b68122530070201cc2e2a4a9a0b9d3fcf6b17baa6f295773ac075d',
++        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '33a89a79b61c4124b8ea53ca37e9de9b2918060560c779ae9a3f6c2134d49879',
++        'd9471b81af1f51e7704325ed0aaa493dbbd6381c843d82cd8090518bc56f4fb1',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -250261,7 +250373,7 @@ index 0000000000000000000000000000000000000000..3fe8c59f3755225b9c6fdbb269f499e6
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8ef4a98a34099fab982597be74103fe4e0c6f4ea
+index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b495bf47a3
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1250 @@
@@ -250563,13 +250675,13 @@ index 0000000000000000000000000000000000000000..8ef4a98a34099fab982597be74103fe4
 +    'plugins/crucible-command-membership.inc.h':
 +        '7efae4fedd1d2f74feed8833a413325b16abeaeefec1fe79f7fffb43a57f490a',
 +    'plugins/crucible-action-original.inc.h':
-+        '799555c7bd425716bc257c8a6cf570295bba22c69809dc139bceada5e8097cfe',
++        'f93503d14f2cd996faa2d29184d7e73ac422e142b22a63be0475f84f00a810c7',
 +    'tests/unit/crucible-publisher-subscription-fixture.inc.h':
 +        'cbc3bbb742d94017cc1bdcfdd3cff3e2d06e6596fb01f8ff4f6659c264acad9a',
 +    'tests/unit/crucible-action-original-fixture.inc.h':
 +        '539ae53a564b8c758b5e1b6712054f513437a10adbbbe6a4c41b1a747d2a8c35',
 +    'tests/unit/test-crucible-action-original.py':
-+        '7f085dd3222403bd611ae5d3eacd6c6cc7362685221eae2a31376e089a85efd1',
++        '25bc1eaf3f4892fb487ab05688a734b78d33e60d1561758f8edbcb46ecbdc488',
 +    'plugins/crucible-publisher-subscription.inc.h':
 +        '03de4fcc32e1100712fee79294b4fd2671df8ff73843cf00991979f7dc7a38c1',
 +    'plugins/crucible-command-receive.inc.h':
@@ -258378,10 +258490,10 @@ index 0000000000000000000000000000000000000000..50f595239e1be81a66e8bf682ebabcf2
 +}
 diff --git a/tests/unit/test-crucible-action-original.py b/tests/unit/test-crucible-action-original.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b961d6f63a57a072904446a8b2523a05d3cbb3d3
+index 0000000000000000000000000000000000000000..0326a7c113bdebb5ecd11a30e2db1f412f23b792
 --- /dev/null
 +++ b/tests/unit/test-crucible-action-original.py
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,258 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check literal evidence and retained action/construction clock limits.
 +
@@ -258516,6 +258628,33 @@ index 0000000000000000000000000000000000000000..b961d6f63a57a072904446a8b2523a05
 +    assert(participant.held && participant.entered && participant.module_callback_active);
 +    assert(!participant.module_callback_returned && !participant.callback_returned);
 +    assert(!participant.physically_returned);
++
++    QemuCrucibleActionOriginal current_action = {
++        .serial = 11, .publisher_sequence = 8, .held = true, .uncertain = true,
++    };
++
++    assert(action_original_publication_matches(&current_action, 11, 8, 8, 8) == 0);
++    assert(action_original_publication_matches(&current_action, 0, 8, 8, 8) == -ESTALE);
++    assert(action_original_publication_matches(&current_action, 12, 8, 8, 8) == -ESTALE);
++    assert(action_original_publication_matches(&current_action, 11, 0, 0, 0) == -ESTALE);
++    current_action.publisher_sequence = 9;
++    assert(action_original_publication_matches(&current_action, 11, 9, 9, 9) == -ESTALE);
++    current_action.publisher_sequence = 8;
++    assert(action_original_publication_matches(&current_action, 11, 8, 10, 8) == -ESTALE);
++    assert(action_original_publication_matches(&current_action, 11, 8, 8, 10) == -ESTALE);
++    assert(action_original_publication_matches(&current_action, 11, 10, 10, 10) == -ESTALE);
++
++    assert(action_original_current_results(&current_action, -EIO, -EPROTO, -ESTALE) == -EIO);
++    assert(current_action.first_status == -EIO && current_action.post_status == -ESTALE);
++    assert(action_original_current_results(&current_action, -ECANCELED, 0, -ETIMEDOUT) == -EIO);
++    assert(current_action.first_status == -EIO && current_action.post_status == -ESTALE);
++    assert(current_action.held && current_action.uncertain && !current_action.module_closed);
++    current_action.first_status = current_action.post_status = 0;
++    assert(action_original_current_results(&current_action, 0, -EPROTO, -ECANCELED) == -EPROTO);
++    assert(current_action.post_status == -ECANCELED);
++    current_action.first_status = current_action.post_status = 0;
++    assert(action_original_current_results(&current_action, 1, 0, 2) == -EPROTO);
++    assert(current_action.post_status == -EPROTO);
 +    puts("PASS literal contracts, original deadlines and independent SDK first/post; no lifecycle authority");
 +    return 0;
 +}
@@ -258538,6 +258677,9 @@ index 0000000000000000000000000000000000000000..b961d6f63a57a072904446a8b2523a05
 +        "static int action_original_evidence(",
 +        "static int action_original_return_evidence(",
 +        "static int action_original_frozen_slice(",
++        "static int action_original_failure(",
++        "static int action_original_publication_matches(",
++        "static int action_original_current_results(",
 +    ))
 +    initial = (source / "plugins/crucible-initial-cpu.inc.h").read_text()
 +    startup = (source / "plugins/crucible-startup-source.c").read_text()
@@ -258548,6 +258690,23 @@ index 0000000000000000000000000000000000000000..b961d6f63a57a072904446a8b2523a05
 +    literal += "\n\n" + extract["function"](initial, "static void initial_cpu_sdk_record(")
 +    controls = {
 +        "positive": literal,
++        "omit-current-serial": literal.replace("action->serial == serial &&", "true &&"),
++        "omit-current-even": literal.replace("!(expected & 1) &&", "true &&"),
++        "omit-current-cached": literal.replace("cached == expected &&", "true &&"),
++        "omit-current-observed": literal.replace("observed == expected ?", "true ?"),
++        "omit-current-original-sequence": literal.replace(
++            "action->publisher_sequence == expected &&", "true &&"),
++        "omit-current-post": literal.replace(
++            "action->post_status = post_status < 0 ? post_status : -EPROTO;", ""),
++        "override-current-post": literal.replace(
++            "if (!action->post_status && post_status)", "if (post_status)"),
++        "skip-current-post-on-first": literal.replace(
++            "if (!action->post_status && post_status)",
++            "if (!callback_status && !action->post_status && post_status)"),
++        "override-current-first": literal.replace(
++            "    action_original_failure(action, callback_status);",
++            "    action->first_status = 0;\n"
++            "    action_original_failure(action, callback_status);"),
 +        "omit-containing-row": literal.replace(
 +            "index < action->cohort.planned_count", "index < 1"),
 +        "permit-unit-contract-change": literal.replace(
