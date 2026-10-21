@@ -33,6 +33,12 @@
 /home -d system_u:object_r:home_root_t
 /root -d system_u:object_r:user_home_dir_t
 /root(/.*)? system_u:object_r:user_home_t
+# Shared immutable-image scaffolding also exists without an Environment artifact.
+# Only these directories receive the ordinary store-state label.
+/nix/var -d system_u:object_r:var_t
+/nix/var/nix -d system_u:object_r:var_t
+/nix/var/nix/db -d system_u:object_r:var_t
+/nix/var/nix/gcroots -d system_u:object_r:var_t
 /run/current-system -l system_u:object_r:var_run_t
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t

@@ -356,12 +356,39 @@
         /(nix|nix\.lower|usr/lib/aos/nix)/store/${basename}/objects/[0-9a-f]{64} -- system_u:object_r:aos_environment_provision_t
         /nix -d system_u:object_r:usr_t
         /nix/store -d system_u:object_r:usr_t
-        /nix/var -d system_u:object_r:var_t
-        /nix/var/nix -d system_u:object_r:var_t
-        /nix/var/nix/gcroots -d system_u:object_r:var_t
         /nix/var/nix/gcroots/aos-selected-environment-v1 -l system_u:object_r:aos_environment_gcroot_t
         /var/lib/aos/sandbox/source-evidence/environment-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
       '';
+  # Initrd registration creates this exact empty scaffold even when no
+  # Environment provision artifact is selected. Verify the compiled policy's
+  # directory lookups for every production-policy composition.
+  storeScaffoldContextExpectations = builtins.toFile "aos-store-scaffold-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries =
+      map (path: {
+        inherit path;
+        kind = "directory";
+        context = "system_u:object_r:var_t";
+      }) ["/nix/var" "/nix/var/nix" "/nix/var/nix/db" "/nix/var/nix/gcroots"]
+      ++ [
+        {
+          path = "/nix/var/nix/db";
+          kind = "regular";
+          context = "system_u:object_r:default_t";
+        }
+        {
+          path = "/nix/var/nix/foreign";
+          kind = "directory";
+          context = "system_u:object_r:default_t";
+        }
+        {
+          path = "/nix/var/nix/db/foreign";
+          kind = "regular";
+          context = "system_u:object_r:default_t";
+        }
+      ];
+  });
+
   environmentContextExpectations = builtins.toFile "aos-environment-context-expectations.json" (builtins.toJSON {
     version = 1;
     entries =
@@ -717,6 +744,10 @@ in
             -o file_contexts.bin \
             file_contexts
           test -s file_contexts.bin
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${storeScaffoldContextExpectations}
           ${
             if environmentProvision == null
             then ""
