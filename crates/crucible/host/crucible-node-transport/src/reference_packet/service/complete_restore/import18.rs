@@ -30,6 +30,7 @@ mod launch_identity;
 mod normalization;
 mod phase;
 mod prebirth_recipe;
+pub(in crate::reference_packet) use prebirth_recipe::normalization_counter_scratch_data as native_import18_normalization_counter_scratch_data;
 mod private_prefix;
 mod receipt;
 mod selection;

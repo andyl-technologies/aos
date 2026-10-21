@@ -187,6 +187,39 @@ impl OriginalImport18NormalizationAttempt {
         }
     }
 
+    /// Borrows completed DATA only when it still matches the actual raw bank.
+    ///
+    /// The enclosing bootstrap repeats its recipe/Host joins and original guards.
+    /// This loan cannot substitute decoder completion for native authority.
+    ///
+    /// # Errors
+    /// Refuses incomplete/refused attempts, another raw body or absent output.
+    pub(in crate::reference_packet) fn completed_decoded_data(
+        &self,
+        raw: &[u8],
+    ) -> Result<&PacketNativeImport18Normalization, ProviderError> {
+        if self.stage != DecodeStage::Complete
+            || self.raw_fingerprint != Some(*blake3::hash(raw).as_bytes())
+        {
+            return Err(refused());
+        }
+        self.decoded.as_ref().ok_or_else(refused)
+    }
+
+    /// Names the fixed completed-DATA loan and original-byte hash controls.
+    pub(in crate::reference_packet) fn completed_loan_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&[u8]>()
+            + size_of::<blake3::Hasher>()
+            + size_of::<blake3::Hash>()
+            + size_of::<[u8; 32]>()
+            + size_of::<DecodeStage>()
+            + size_of::<&PacketNativeImport18Normalization>()
+            + size_of::<Option<&PacketNativeImport18Normalization>>()
+            + size_of::<Result<&PacketNativeImport18Normalization, ProviderError>>()
+            + size_of::<ProviderError>()
+    }
+
     /// Counts actual surviving typed backing after either outcome.
     ///
     /// A refused decoder or correspondence retains its actual formatted

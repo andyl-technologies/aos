@@ -18,7 +18,7 @@ use crate::reference_packet::service::complete_restore::import18::{
 use crucible_node_format::{ContentRef, Extensions, U64};
 use std::cell::Cell;
 
-fn roles(case: &str) -> [(ContentRef, Vec<u8>); 7] {
+pub(super) fn roles(case: &str) -> [(ContentRef, Vec<u8>); 7] {
     fn body(bytes: Vec<u8>) -> (ContentRef, Vec<u8>) {
         (
             canonical::content_ref(&bytes, "application/json").unwrap(),
@@ -98,7 +98,7 @@ pub(super) fn commit_recipe(case: &str, recipe: &mut Value) {
     }
 }
 
-fn fill(owner: &mut OriginalImport18RawBootstrap, roles: &[(ContentRef, Vec<u8>); 7]) {
+pub(super) fn fill(owner: &mut OriginalImport18RawBootstrap, roles: &[(ContentRef, Vec<u8>); 7]) {
     owner
         .inputs
         .reserve_data(

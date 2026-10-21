@@ -34,7 +34,7 @@ fn references(bodies: &[Vec<u8>; 7]) -> [ContentRef; 7] {
     })
 }
 
-fn normalization(case: &str) -> Value {
+pub(super) fn normalization(case: &str) -> Value {
     let bodies = base_bodies();
     let refs = references(&bodies);
     let [after, control, anchor, snapshot, journal, _, semantic] = refs.each_ref();

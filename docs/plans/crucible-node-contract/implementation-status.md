@@ -1088,13 +1088,46 @@ Seven focused tests pass in standard and raw-value builds, covering eighty
 inherited-socket flights and exact/one-byte-short quote controls. Both unfiltered
 Transport suites pass 1,806 tests with zero failures and sixteen existing ignores.
 Affected all-feature/all-target checking, scoped formatting and all six
-architecture gates pass. The required application gate is running against
-`/nix/store/33wsbwgiga6sf66qqcqn1llfpv7gz04x-aos-workspace-src`; all 152 owned
-changed Rust paths match this captured input byte for byte. A funded-Source VM
-qualification of the same final contract definition is also running. These
-pending runs supply no result yet. Full signed Prepare custody, complete native
+architecture gates pass. Required application compilation passes at
+`/nix/store/iv08x1n4k2mn77fxahfi58kz66vficjd-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities, including 71 integration
+targets. Its source at
+`/nix/store/33wsbwgiga6sf66qqcqn1llfpv7gz04x-aos-workspace-src` matches all
+152 owned changed Rust paths through `54ef51558a` byte for byte. A funded-Source
+VM qualification of the same final contract definition is running; it supplies
+no result yet. Full signed Prepare custody, complete native
 proof/semantic-spend validation, recipe production/reconstruction and model
 installation remain unfinished.
+
+## Normalization and native framing share the original input loan
+
+Completed normalization DATA now reborrows only with its exact original raw
+bank. A combined framing pass repeats its recipe and Host correspondence under
+the same original completed-input guards, then joins the embedded before full
+reference and Journal's semantic and Runtime references. It independently checks
+the before bank's whole original capacity, including spare bytes, against the
+normalization's own before limit. These comparisons allocate no replacement
+body and establish historical DATA correspondence only.
+
+Twenty new inherited-socket flights cover all three changed context references,
+full-reference media changes, absent/refused/foreign normalization, changed typed
+recipe/Host operands, exact and one-byte-short used/spare capacity, every cold
+framing admission boundary, callback refusal and expiry during the callback.
+They verify that the actual decoded owner is lent and all original input pointers
+and backing survive refusal. All eight focused reconstruction tests pass in both
+builds, covering one hundred inherited-socket flights and the separate quote
+control. Both complete Transport suites pass 1,807 tests, zero failures, no
+filtering and sixteen existing ignores. Affected all-feature/all-target checking,
+scoped formatting and all six architecture gates pass.
+
+Required application compilation is running against
+`/nix/store/z1ll67jfr386mifp4qhlclhbsh8p8xp6-aos-workspace-src`; its capture
+matches all 154 owned changed Rust paths byte for byte. It supplies no completed
+result yet. The original initial row, physical bootstrap fields and contract
+bytes are unchanged by this later input-validation pass. Genuine signed
+Controller/SDK/Source proof conjunction, complete native model/semantic-spend
+validation and independent recipe reconstruction remain mandatory before fresh
+native installation or Hold effects.
 
 ## Original launch custody and shared startup geometry
 

@@ -22,6 +22,9 @@ mod native_framing;
 #[path = "initial_reconstruction/normalization.rs"]
 mod normalization;
 
+#[path = "initial_reconstruction/normalized_framing.rs"]
+mod normalized_framing;
+
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
@@ -51,6 +54,9 @@ fn operands(case: &str) -> [Value; 3] {
             // and all whole-escrow axes still match the ordinary positive case.
             recipe["phases"][1][0] = json!("46137343");
         }
+    }
+    if case.starts_with("initial_context_") {
+        normalized_framing::commit_recipe(case, &mut recipe);
     }
     if case.starts_with("initial_inputs_") {
         completed_inputs::commit_recipe(&mut recipe);
@@ -294,6 +300,7 @@ pub(super) fn assert_child(
             || case.starts_with("initial_inputs_")
             || case.starts_with("initial_framing_")
             || case.starts_with("initial_normalization_")
+            || case.starts_with("initial_context_")
         {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -302,6 +309,10 @@ pub(super) fn assert_child(
             assert!(result.is_err());
             assert!(!owner.initial_reconstructed);
         }
+    }
+    if case.starts_with("initial_context_") {
+        normalized_framing::assert_child(case, &mut owner);
+        return;
     }
     if case.starts_with("initial_inputs_") {
         completed_inputs::assert_child(case, &mut owner);

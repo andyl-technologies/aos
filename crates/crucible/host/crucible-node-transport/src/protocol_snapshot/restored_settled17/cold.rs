@@ -12,6 +12,9 @@ use crate::protocol_snapshot::{
 };
 use crate::reference_packet::service::native_snapshot::PacketNativeRestoredSettled17SnapshotPlan;
 
+#[path = "cold_context.rs"]
+mod context;
+
 /// Borrows exactly framed native roles and their final Source Journal17.
 ///
 /// The plan cannot authorize native adoption or report semantic completion.
