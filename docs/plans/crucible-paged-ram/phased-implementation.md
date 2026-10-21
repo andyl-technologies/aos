@@ -1639,6 +1639,57 @@ The measured refusal layout shrinks from 384 to 248 bytes. This introduces no
 failure allocation and claims neither a passing full strict gate nor complete
 funding or native return qualification.
 
+### 2026-10-21 register workspace custody checkpoint
+
+The native workspace checkpoint at `f9faafee9a` is atomic commit
+`3516a7359c20041332cc2d17777125f393006b6f`, tree
+`a1fb4093e0f9d5bedfb2956675156460e4f15d24`. It derives checked typed spans
+from actual register geometry, retains the stopped CPU cohort through actual
+QOM/allocation dependencies, debits backing before mmap and retains uncertainty
+through unmap and QOM-return cursors. The selected constructors remain refused.
+
+All 187 owning scenarios pass with zero skips under the original limits. The
+complete 34-defect independently rebuilt causal sweep passes, including five
+new literal layout omission controls; positive execution is 52.482 seconds and
+the slowest mutant is 30.358 seconds under the unchanged 60-second limit.
+Signed sole-parent reconstruction and the 274-file license ledger pass. Full
+native compilation completes 3,863 targets and 25/26 fixture drivers pass; the
+mandatory launched lifecycle still fails.
+
+Raw ABI conformance passes at
+`/nix/store/sgkdscy7h3fj0acmxzar3zpc4ywkqn9v-crucible-phase2-abi-conformance-0`
+against immutable source
+`/nix/store/y4xzxjpxl482629pbgm7kf1rvhs2xmas-crucible-workspace-src`.
+All 5,258 tracked crate Rust/TOML files byte-match the captured source at
+`95245080b2` plus four frozen refusal-owner/source-policy paths. Later source
+bytes, including formatting corrections and runtime diagnostics, are outside
+that verdict. The actual installed map/unmap, QOM return and initial callback
+paths remain unexecuted. These results do not qualify manifest acceptance,
+Source activation, native operation issuance or physical peer return.
+
+### 2026-10-21 typed runtime diagnostic checkpoint
+
+Commit `1e86fbf04b` retains the actual typed host-supervision refusal without
+formatting another diagnostic allocation. Display preserves explicitly authored
+combined diagnostics, including the actual canceled Preparation and failed
+Unix wake during Pause rollback. The real canceled Quantum allocation control
+observes zero allocations and reallocations, and an existing owned message
+moves without changing its pointer.
+
+All 22 async-driver tests, 62 host-I/O controls, 73 source-policy controls and
+five hygiene checks pass. Mandatory application test compilation passes at
+`/nix/store/5pqyzldjwwph8xi06yynvd5csr7arbfr-aos-test-targets-0.1.0`.
+The expanded 139 exact-case hermetic supervision gate passes at
+`/nix/store/ssx9ldxj5w2dpjvibfxzpbbl47v8wz6z-crucible-gate-ram-supervision-0`,
+including all three new bindings. The preceding 138-case snapshot passed too,
+but predates the combined-diagnostic guard and rollback assertion; it does not
+qualify those later bytes.
+
+The inventory at this checkpoint has 256 bindings: 237 component and 19 native.
+It still has 243 requirements, 149 uncovered requirements and zero qualified
+requirements. Dynamic diagnostic payload funding, independent failure postcuts,
+native Source activation and physical peer return remain unfinished.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
