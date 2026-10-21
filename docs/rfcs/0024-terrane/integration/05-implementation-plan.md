@@ -11428,3 +11428,30 @@ review verifies 7,849 immutable source files, four original Cargo/installed
 executables and all fifteen enrollment/read-role controls across the two
 source-bound images. Native lower admission and whole-object SDK policy
 remain integration work; this checkpoint does not close T2.
+
+
+#### Bounded native SDK read-through
+
+The configured SDK now routes content through `NativeReadDriver`, retaining the
+actual running native owner and the actual opened same-domain lower backend.
+Misses verify full chunk identity, frame bounds, canonical chunk boundary and
+any named dictionary before native admission; metadata uses the existing
+validator. An explicit total lower deadline and circuit policy govern misses.
+Resident reads remain independent of that circuit. Admission timeout or failure
+returns only verified lower bytes and leaves any accepted physical work and
+funding with the original native owner. Current references and protected Original
+verification remain on the original backend.
+
+Configuration supplies finite lower budgets and thresholds explicitly. Three
+focused codec controls and strict all-target Clippy pass. The extended native SDK
+VM requires an actual admitted chunk with original custody, then a fresh confined
+actor that obtains real recovery/Resume owners and reads the signed file twice
+with original lower chunk reads unavailable. That new VM and the updated complete
+application-target build are pending. Whole-object preparation remains open;
+this increment does not close T2.
+
+On `af82dc0c4984`, the prior confined SDK startup VM, all 47 store-verification
+controls and the native publication/enrollment/reassembly gate pass. Independent
+reviews bind the actual immutable sources, Cargo executables and executed kernel
+witnesses. All application test targets also compile on that revision and on
+`a8c60c1abd`; these compile-only checks do not establish runtime readiness.

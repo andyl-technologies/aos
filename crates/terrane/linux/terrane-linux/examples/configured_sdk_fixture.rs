@@ -18,6 +18,9 @@
 //! `verify-reopen-publication ROOT UID` checks the exact original snapshot
 //! predecessor and permits only the existing capability probe timestamp refresh.
 
+#[path = "configured_sdk_fixture/offline.rs"]
+mod offline;
+
 #[path = "configured_sdk_fixture/publication.rs"]
 mod publication;
 
@@ -109,6 +112,12 @@ fn dispatch() -> FixtureResult<&'static str> {
         "verify-cli" => {
             verify_cli(root, owner)?;
             Ok("PASS: actual CLI receipts match the setup commit and durable SDK payloads")
+        }
+        "read-cache-offline" => {
+            offline::run(root, owner)?;
+            Ok(
+                "PASS: actual confined SDK reads recovered native residents while original lower chunks are unavailable",
+            )
         }
         "verify-reopen-publication" => {
             publication::verify(root, owner)?;

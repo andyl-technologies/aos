@@ -71,8 +71,20 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
                 }
             }
         }
+        let lower = host
+            .domains
+            .get(&trusted.domain)
+            .and_then(|domain| domain.cache.as_ref())
+            .and_then(|cache| cache.lower)
+            .ok_or_else(|| Error::refused(FailureKind::NativeCacheConfiguration))?;
+        let policy = crate::host_cache::NativeReadPolicy::new(
+            std::time::Duration::from_millis(lower.budget_ms),
+            lower.failure_threshold,
+            std::time::Duration::from_millis(lower.probe_interval_ms),
+        )
+        .map_err(|_| Error::refused(FailureKind::NativeCacheConfiguration))?;
         let locality = config.locality();
-        Some(
+        Some((
             crate::configured::NativeCachePlan::from_host(
                 host,
                 terrane_format::refs::Locality {
@@ -82,7 +94,8 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
                 },
             )
             .map_err(|error| Error::io(FailureKind::NativeCacheConfiguration, error))?,
-        )
+            policy,
+        ))
     } else {
         None
     };

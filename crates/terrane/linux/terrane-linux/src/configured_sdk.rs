@@ -12,7 +12,8 @@
 //! trust and compiled read-only pinned SDK surface. An explicit native host tier
 //! may supply same-domain resident content under `reassembly = "never"`; current
 //! references and Original verification retain the opened original repository.
-//! Whole-object native preparation remains a separate serving integration.
+//! Bounded lower reads verify bodies before actual native admission and enforce
+//! explicit circuit policy. Whole-object preparation remains separate.
 //! Completion means durable snapshots whose actual handles have drained and
 //! stopped. It never parks a pretend daemon or advertises host-tier readiness.
 //!
@@ -47,6 +48,7 @@ use terrane_sdk::{
 
 use crate::{
     configured::NativeCachePlan,
+    host_cache::NativeReadPolicy,
     quota_confinement::{self, Installed},
 };
 
@@ -56,7 +58,7 @@ use crate::{
 /// credentials, opening repository state or starting any executor.
 pub struct ValidatedSdk<'config> {
     config: &'config Config,
-    cache: Option<NativeCachePlan>,
+    cache: Option<(NativeCachePlan, NativeReadPolicy)>,
 }
 
 impl ValidatedSdk<'_> {
@@ -194,7 +196,7 @@ impl fmt::Debug for CompletedSnapshot {
 async fn start_exposures(
     config: &Config,
     installed: &Arc<Installed>,
-    cache: Option<NativeCachePlan>,
+    cache: Option<(NativeCachePlan, NativeReadPolicy)>,
 ) -> Result<Vec<CompletedSnapshot>, Error> {
     installed
         .check_current()
@@ -203,7 +205,7 @@ async fn start_exposures(
         .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
         .await
         .map_err(Error::local)?;
-    if let Some(plan) = cache {
+    if let Some((plan, policy)) = cache {
         let domain = &config
             .local_repository()
             .ok_or_else(|| Error::refused(FailureKind::NativeCacheConfiguration))?
@@ -215,7 +217,8 @@ async fn start_exposures(
         let cache = caches
             .remove(domain)
             .ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
-        let repository = repository.with_read_cache(cache.into_content());
+        let repository = repository
+            .with_read_driver(|original| cache.into_content().with_lower(original.clone(), policy));
         return present(config, installed, &repository).await;
     }
     present(config, installed, &repository).await

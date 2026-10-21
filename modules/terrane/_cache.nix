@@ -12,6 +12,13 @@
       maxSelectedBytes = required positive "Maximum retained selected key and value bytes.";
     };
   };
+  lowerType = types.submodule {
+    options = {
+      budgetMs = required (types.addCheck positive (value: value <= 300000)) "Total verified lower-read budget in milliseconds.";
+      failureThreshold = required (types.addCheck positive (value: value <= 1000)) "Consecutive failures before opening the lower circuit.";
+      probeIntervalMs = required (types.addCheck positive (value: value <= 300000)) "Interval between open-circuit probes in milliseconds.";
+    };
+  };
   repairType = types.submodule {
     options = {
       maxIndexBytes = required positive "Maximum derived detached-index payload bytes.";
@@ -35,6 +42,11 @@ in {
       metadataSyncHoldBytes = required positive "Logical future hold for metadata and snapshot synchronization.";
       publisherWaitBudgetMs = required (types.addCheck positive (value: value <= 300000)) "Finite publisher request wait in milliseconds.";
       consumerLeaseSeconds = required (types.addCheck positive (value: value <= 300)) "Whole-second consumer grant duration.";
+      lower = lib.mkOption {
+        type = types.nullOr lowerType;
+        default = null;
+        description = "Explicit lower-read policy required by native SDK read-through.";
+      };
       portable = required portableType "Explicit complete portable-validation limits.";
       indexRepair = lib.mkOption {
         type = types.nullOr repairType;
@@ -97,6 +109,14 @@ in {
       metadata_sync_hold_bytes = cache.metadataSyncHoldBytes;
       publisher_wait_budget_ms = cache.publisherWaitBudgetMs;
       consumer_lease_seconds = cache.consumerLeaseSeconds;
+      lower =
+        if cache.lower == null
+        then null
+        else {
+          budget_ms = cache.lower.budgetMs;
+          failure_threshold = cache.lower.failureThreshold;
+          probe_interval_ms = cache.lower.probeIntervalMs;
+        };
       portable = {
         max_file_bytes = cache.portable.maxFileBytes;
         max_input_bytes = cache.portable.maxInputBytes;

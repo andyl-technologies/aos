@@ -6,10 +6,12 @@
 //! substitutes for a native source. This host-local adapter grants no ref writes
 //! or guest authorization; callers apply their repository guard separately.
 
+mod driver;
 mod object;
 mod prepared;
 mod validation;
 
+pub use driver::{NativeReadDriver, NativeReadPolicy};
 pub use object::{NativeChunkedObject, NativeChunkedReader};
 pub use prepared::{NativePreparedObject, NativeSealedObject};
 

@@ -16,6 +16,10 @@
 //! metadata_sync_hold_bytes = 262144
 //! publisher_wait_budget_ms = 10000
 //! consumer_lease_seconds = 30
+//! [host_tier.domains.public.cache.lower]
+//! budget_ms = 10000
+//! failure_threshold = 3
+//! probe_interval_ms = 5000
 //! [host_tier.domains.public.cache.portable]
 //! max_file_bytes = 67108864
 //! max_input_bytes = 268435456
@@ -63,8 +67,22 @@ pub struct DomainCache {
     pub publisher_wait_budget_ms: u64,
     /// Consumer grant duration, from one through 300 whole seconds.
     pub consumer_lease_seconds: u64,
+    /// Optional explicit lower-read policy; required by configured SDK read-through.
+    pub lower: Option<LowerReads>,
     /// Finite complete portable-validation limits.
     pub portable: PortableLimits,
+}
+
+/// Bounds one complete lower fetch and its circuit without granting native readiness.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LowerReads {
+    /// Total lower-read budget, from one through 300000 milliseconds.
+    pub budget_ms: u64,
+    /// Consecutive failures before opening the circuit, from one through 1000.
+    pub failure_threshold: u32,
+    /// Interval between open-circuit probes, from one through 300000 milliseconds.
+    pub probe_interval_ms: u64,
 }
 
 /// Bounds one complete portable bucket validation using operator-selected resources.
@@ -118,6 +136,13 @@ impl DomainCache {
             return Err(ConfigError::Invalid(
                 "invalid finite native cache resources",
             ));
+        }
+        if let Some(lower) = self.lower
+            && (!(1..=300_000).contains(&lower.budget_ms)
+                || !(1..=1000).contains(&lower.failure_threshold)
+                || !(1..=300_000).contains(&lower.probe_interval_ms))
+        {
+            return Err(ConfigError::Invalid("invalid finite lower-read policy"));
         }
         if let Some(repair) = self.index_repair {
             let overlap = u64::try_from(repair.max_index_bytes)

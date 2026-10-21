@@ -56,6 +56,7 @@ fn configuration(
                             queued_commands: 4,
                             metadata_sync_hold_bytes: 256 * 1024,
                             index_repair: None,
+                            lower: None,
                             publisher_wait_budget_ms: 10_000,
                             consumer_lease_seconds: 30,
                             portable: terrane_sdk::config::host::cache::PortableLimits {

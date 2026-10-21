@@ -235,6 +235,11 @@
     metadataSyncHoldBytes = 262144;
     publisherWaitBudgetMs = 10000;
     consumerLeaseSeconds = 30;
+    lower = {
+      budgetMs = 10000;
+      failureThreshold = 3;
+      probeIntervalMs = 5000;
+    };
     portable = {
       maxFileBytes = 67108864;
       maxInputBytes = 268435456;
@@ -792,6 +797,20 @@
       ["private" "tenant" "group"];
     }
     {
+      name = "native-cache-rejects-unbounded-lower-policy";
+      pass = builtins.all (lower:
+        rejectedNative {
+          aos.terrane.hostTier.domains.public.cache = cacheFixture // {inherit lower;};
+        }) [
+        (cacheFixture.lower // {budgetMs = 0;})
+        (cacheFixture.lower // {budgetMs = 300001;})
+        (cacheFixture.lower // {failureThreshold = 0;})
+        (cacheFixture.lower // {failureThreshold = 1001;})
+        (cacheFixture.lower // {probeIntervalMs = 0;})
+        (cacheFixture.lower // {probeIntervalMs = 300001;})
+      ];
+    }
+    {
       name = "native-cache-resources-rendered-exactly";
       pass =
         checksPass cached
@@ -802,6 +821,10 @@
           "state_gid = 844"
           "metadata_sync_hold_bytes = 262144"
           "consumer_lease_seconds = 30"
+          "[host_tier.domains.public.cache.lower]"
+          "budget_ms = 10000"
+          "failure_threshold = 3"
+          "probe_interval_ms = 5000"
           "[host_tier.domains.public.cache.portable]"
           "max_files = 4096"
         ];

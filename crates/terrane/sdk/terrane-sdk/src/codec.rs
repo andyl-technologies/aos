@@ -144,6 +144,36 @@ pub fn inspect_chunk<'a>(
     Ok(chunk)
 }
 
+/// Reads a finite plaintext length from one complete encoded chunk.
+///
+/// Raw bodies supply their measured length; compressed bodies must contain an
+/// ordinary frame with a known content size. The complete envelope and frame
+/// pass [`inspect_chunk`] before this function returns, without allocating a
+/// plaintext buffer. The result is untrusted encoding metadata: callers still
+/// verify the expected identity, object position and dictionary with
+/// [`decode_verified`] before serving or admitting content.
+///
+/// # Errors
+/// Rejects unsupported or incomplete envelopes, malformed or concatenated
+/// frames, missing content sizes and lengths above `profile_max`.
+pub fn encoded_plaintext_len(encoded: &[u8], profile_max: usize) -> Result<usize, FrameError> {
+    let chunk = codec::parse_envelope(encoded)?;
+    let length = if matches!(chunk.codec, Codec::Raw) {
+        chunk.body.len()
+    } else {
+        if !chunk.body.starts_with(&ZSTD_FRAME_MAGIC) {
+            return Err(FrameError::InvalidFrame);
+        }
+        let size = zstd::zstd_safe::get_frame_content_size(chunk.body)
+            .map_err(|_| FrameError::InvalidFrame)?
+            .ok_or(FrameError::UnknownContentSize)?;
+        usize::try_from(size)
+            .map_err(|_| FrameError::Envelope(CodecError::DeclaredLengthTooLarge))?
+    };
+    inspect_chunk(encoded, length, profile_max)?;
+    Ok(length)
+}
+
 /// Encodes one chunk, choosing raw storage when zstd saves less than 3%.
 ///
 /// The dictionary is selected by the caller's content classification. Its

@@ -99,6 +99,10 @@ max_file_bytes = 67108864
 max_input_bytes = 268435456
 max_files = 4096
 max_selected_bytes = 33554432
+[host_tier.domains."{domain}".cache.lower]
+budget_ms = 10000
+failure_threshold = 3
+probe_interval_ms = 5000
 """
     return text
 
@@ -160,4 +164,15 @@ def run(driver, image):
             path = root / ("snapshot-" + item) / "file"
             driver.require(path.read_bytes() == PAYLOAD and path.stat().st_uid == 840,
                            "native SDK snapshot differs from independent original payload")
+        chunks = driver.ROOT / "positive/private/chunks"
+        candidates = [path for path in chunks.glob("*/*")
+                      if path.is_file() and path.stat().st_size == len(PAYLOAD) + 1
+                      and path.read_bytes() == b"\x00" + PAYLOAD]
+        driver.require(len(candidates) == 1, "native SDK did not actually admit the original chunk")
+        metadata = candidates[0].stat()
+        driver.require(metadata.st_uid == 840 and metadata.st_gid == 845
+                       and metadata.st_nlink == 1 and metadata.st_mode & 0o7777 == 0o640,
+                       "native SDK admitted chunk has different original custody")
+        actor(driver, image, name + "-offline",
+              ["configured-sdk-cache-example", "read-cache-offline", root, 840])
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)
