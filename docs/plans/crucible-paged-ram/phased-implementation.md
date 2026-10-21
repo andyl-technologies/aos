@@ -1555,6 +1555,47 @@ application unit/integration compilation passes at
 Strict all-target API checking then reaches nine existing integration-test
 `unwrap()` findings. The full license gate remains unqualified.
 
+### 2026-10-21 Quantum driver, refusal helpers and register count checkpoint
+
+The driver-issued Quantum at `7f8f8eb777` now remains entered through initial
+yield, publication, wait, finish and final yield. The successful report follows
+its final cancellation check and actual completion. All twenty async-driver
+controls pass, including five new cancellation and completion cases; 73 source
+policy and five hygiene controls pass. Mandatory application compilation passes
+at `/nix/store/4kp27kwc1918f5k1gdcdw6k6h9c6rzyw-aos-test-targets-0.1.0`.
+All 136 matched exact hermetic supervision cases pass at
+`/nix/store/l8f5xif6dk9nc0ivhs7xhh2qky2lsskv-crucible-gate-ram-supervision-0`.
+This does not issue a genuine native Advance or CPU child. Published coverage
+now binds 234 component and nineteen native cases to 243 requirements, with
+149 uncovered and none fully qualified.
+
+The cleanup-fixture checkpoint at `91be0c7406` propagates actual setup and
+capacity-reservation errors instead of unwrapping them in integration helpers.
+Strict all-target control API Clippy and both existing deallocation controls
+pass. Mandatory application compilation passes at
+`/nix/store/j8hacx08kxq6wl9chqx7p0bqfcy1kjpk-aos-test-targets-0.1.0`.
+A fresh full license-gate attempt still fails in its strict controller
+prerequisite: 910 host library and 952 host test-target errors. That attempt
+reports none of the previous control API or session findings. It includes the
+Quantum driver changes and precedes the static service-diagnostic change.
+
+The ARM register count checkpoint at `cbc6055afd` is atomic commit
+`2db28e26f017864cb54b04c00047ec42ee72f45e`, tree
+`298644ae0d58539cbfbc7e21e333f71ba52e0365`. It counts eligible realized
+registers without allocating the later sorted-description arrays. Its 187
+owning scenarios, complete 34-defect independently rebuilt causal sweep,
+signed reconstruction and 268-file license ledger pass. Full native
+compilation remains 3,863 targets and 25/26 fixture drivers; the mandatory
+launched lifecycle fails. Raw ABI conformance passes at
+`/nix/store/0vmjwr6xnh7frqvl995fssdbfxlysspx-crucible-phase2-abi-conformance-0`
+against immutable source
+`/nix/store/sfnh5zgrr36b9vd8p33c4l85rkmqmfbd-crucible-workspace-src`.
+All 5,257 tracked crate Rust/TOML files were byte-matched. That source includes
+`b3135cd7cd`; the later cleanup aliases, Quantum driver and cleanup fixtures
+are outside this ABI verdict. The caller-storage register-writer candidate is
+being checked separately. Actual initial callback and lease assertions remain
+unexecuted, and selected missing-payer refusal remains in force.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
