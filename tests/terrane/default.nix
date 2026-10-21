@@ -343,6 +343,9 @@
     ];
   };
 
+  workloadIssuerProof = import ./workload-issuer.nix {inherit sourceGate;};
+  instanceIssuerProof = import ./gcp-instance-issuer.nix {inherit sourceGate;};
+
   gateFiles = builtins.filter (name: lib.hasSuffix ".nix" name) (builtins.attrNames (builtins.readDir ./gates));
   taskGates =
     builtins.foldl' (
@@ -358,6 +361,7 @@
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes;}
           // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof;}
+          // lib.optionalAttrs (file == "auth.nix") {inherit workloadIssuerProof instanceIssuerProof;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof initialEnrollmentProof moduleEval;}
           // lib.optionalAttrs (file == "host-cache.nix") {inherit hostCacheProof initialEnrollmentProof;}
@@ -499,9 +503,9 @@ in {
 
   integration.pack-receive = import ./pack-receive.nix {inherit sourceGate;};
 
-  integration.workload-issuer = import ./workload-issuer.nix {inherit sourceGate;};
+  integration.workload-issuer = workloadIssuerProof;
 
-  integration.gcp-instance-issuer = import ./gcp-instance-issuer.nix {inherit sourceGate;};
+  integration.gcp-instance-issuer = instanceIssuerProof;
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
     coreutils = pkgs.coreutils;

@@ -1,4 +1,9 @@
-{sourceGate, ...}: let
+{
+  sourceGate,
+  workloadIssuerProof,
+  instanceIssuerProof,
+  ...
+}: let
   runTest = name: ''
     cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output)' "$TMPDIR/test.log"
@@ -20,6 +25,15 @@
     ${runTest "auth::tests::auth_attenuation_monotone_scope_union_and_caveats_survive_append"}
   '';
 in {
+  # AUTH-3 concerns actual workload identities and finite issuer lifetimes.
+  # Deployed CI exchange and downstream guard enforcement have separate owners.
+  auth-workload-mint = sourceGate "auth-workload-mint" ''
+    cd crates
+    python3 ../tests/terrane/workload_mint_proof.py \
+      ${workloadIssuerProof} ${instanceIssuerProof}
+    printf 'PASS: configured workload identities and bounded issuer lifetimes\n' > "$out/result"
+  '';
+
   auth-token-chain = sourceGate "auth-token-chain" ''
     cd crates
     ${chainTests}

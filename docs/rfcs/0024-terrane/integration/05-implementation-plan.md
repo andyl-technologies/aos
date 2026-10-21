@@ -11983,3 +11983,9 @@ inventories. Independent review checks 7,904 immutable source files, 5,219 crate
 inputs and each actual Cargo test artifact and execution log. The earlier
 setuid-fixture failure remains retained. Required application compilation and
 deployed issuer integration remain separate obligations.
+
+The owning `auth-workload-mint` gate now requires both issuer suites from the
+same immutable source, verifies their complete inventories and actual execution
+logs, and binds their Cargo artifacts. This gate owns AUTH-3 only. GCP issuance
+in the deployed serve role, CI's exact grant policy and downstream enforcement
+remain unqualified. Its frozen qualification is pending; T-AUTH-2 remains open.
