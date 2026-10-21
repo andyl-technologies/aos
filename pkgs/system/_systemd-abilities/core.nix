@@ -1,5 +1,6 @@
 ##! Publishes exact systemd platform tools to native boot consumers.
 {
+  config,
   lib,
   package,
   ...
@@ -22,9 +23,13 @@
     executable = "${package}/lib/systemd/systemd";
     arguments = [];
   };
-  config.aos.abilities.configuration.operations.file.effects.systemd-credential-encrypt-provider.input = {
-    path = "/etc/aos/providers/credential-encrypt";
-    content = "${package.handlers}/bin/aos-systemd-credential-encrypt\n";
-    mode = "0444";
+  # This locator serves the host's `apm credential encrypt` authoring command.
+  # Initrd credential recovery uses PID 1 directly and needs no authoring file.
+  config.aos.abilities.configuration.operations.file.effects.systemd-credential-encrypt-provider = lib.mkIf ((config.aos.boot.stage or "host") == "host") {
+    input = {
+      path = "/etc/aos/providers/credential-encrypt";
+      content = "${package.handlers}/bin/aos-systemd-credential-encrypt\n";
+      mode = "0444";
+    };
   };
 }
