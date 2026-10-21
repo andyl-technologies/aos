@@ -156,6 +156,11 @@
         (case "final_control_header_closes_before_original_paired_credit_returns" "positive" ["TIME-9"] "The production Source control owner closes its actual shared allocation while both original service loans remain charged; this component creates no Native Source or physical-return proof.")
         (case "concurrent_control_observers_close_before_one_paired_refund" "adversarial" ["TIME-9"] "Concurrent observers perform one actual control close before either paired account refunds; this control proves no native worker, process-family or complete diagnostic lifetime.")
       ])
+      (group "qemu/crucible-qemu-host" "lib" ["test-support"] [
+        (case "spawn::helper_first::tests::helper_first_control_retains_paired_credit_through_its_actual_free" "positive" ["TIME-9"] "The concrete helper cause retains real paired mechanism charges before and after its shared control is physically freed; no Native Source activation or error-payload funding qualification.")
+        (case "spawn::helper_first::tests::concurrent_helper_first_observers_close_once_before_paired_refund" "adversarial" ["TIME-9"] "Eight concurrent observers close the shared helper cause exactly once while both original charges remain held through deallocation; no Native return receipt.")
+        (case "linux_attempt_host::original_node::helper_receiver::tests::unfunded_helper_first_stays_in_preborn_journal_without_shared_birth" "adversarial" ["TIME-9"] "An unissued journal preserves its actual typed first cause without allocating a shared diagnostic or issuing replacement funding.")
+      ])
       (group "control/crucible-control-api" "backend_error_terminal" [] [
         (case "lifecycle_error_frees_its_control_before_returning_original_paired_credit" "positive" ["TIME-9"] "The production lifecycle error frees its actual shared allocation with both original service loans still charged; no native process or full diagnostic payload qualification.")
         (case "mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund" "adversarial" ["TIME-9"] "Concurrent typed and lifecycle observers preserve the same downcastable error and one allocation, then observe one physical control close before either paired loan refunds; no Native Source is issued.")

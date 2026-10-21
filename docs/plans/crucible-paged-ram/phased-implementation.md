@@ -223,7 +223,34 @@ missing-receiver failures and four ignored probes. Seventy specific source-polic
 controls, five hygiene, two rustdoc, eighteen ABI and four license controls pass;
 the broad source gate retains its same 21 unfinished paths. The hermetic
 supervision gate passes sixteen exact cases. Coverage names 114 component cases,
-with 149 uncovered and zero qualified requirements.
+with 149 uncovered and zero qualified requirements. All three retained-preparation
+daemon controls and the required application test-target compilation pass.
+
+
+Helper first-error controls now receive a distinct actual Source host loan during
+controller preparation, before helper effects. The journal transfers that loan
+into the closed shared first-error body before publishing independent observers.
+The last observer frees that control before destroying the concrete error and
+returning its loan. The public wrapper borrows the same typed cause and creates
+no independent account, deadline or return authority. An unissued journal can
+retain its actual local refusal without allocating a shared diagnostic.
+
+Two paired-credit allocator controls pass, including eight concurrent observers;
+they exercise the production generic cause body without issuing a Native Source.
+The unfunded-journal control observes zero shared allocations, and all five
+helper-journal controls pass. The complete host run passes 1,241 library tests
+and every integration target, retaining the same eight missing-receiver failures
+and four ignored probes. Source-policy checks bind the separate reservation,
+Original verification, journal handoff and closed owner, including omission and
+first-cause replacement controls. The broad gate retains the same 21 unfinished
+paths. Hygiene, rustdoc, ABI and license controls pass. Coverage names 117
+component cases, with 149 uncovered and zero qualified requirements.
+
+This fixed control loan does not fund an error's separately allocated payloads,
+command construction, returned output storage, or weak roster headers. The final
+diagnostic quarantine remains. Late helper work still needs its actual entered
+Work or Restore Original and current Source incarnation; retaining the creation
+Original cannot authorize that later action.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

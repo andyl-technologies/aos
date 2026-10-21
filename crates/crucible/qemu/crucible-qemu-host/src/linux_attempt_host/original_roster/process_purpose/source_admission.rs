@@ -346,6 +346,7 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
         .and_then(|bytes| {
             bytes.checked_add(controller_peak_bytes().ok()?)
         })
+        .and_then(|bytes| bytes.checked_add(crate::spawn::helper_first::control_peak_bytes()?))
         .and_then(|bytes| bytes.checked_add(source_extent))
         .and_then(|bytes| bytes.checked_add(crate::spawn::helper_receiver::retained_control_bytes()?))
         .and_then(|bytes| {

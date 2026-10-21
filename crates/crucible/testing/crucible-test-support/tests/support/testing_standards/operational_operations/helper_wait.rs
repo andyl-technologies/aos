@@ -98,6 +98,8 @@ loop {
     companions: &[
         funding::MAIN,
         funding::CONTROLLER,
+        funding::FIRST,
+        funding::JOURNAL,
         funding::ORIGINAL,
         funding::SHARED,
         funding::ERASED,
@@ -209,6 +211,10 @@ purpose.ready = true;"#,
             required: &[
                 (
                     ".and_then(|bytes| { bytes.checked_add(controller_peak_bytes().ok()?) })",
+                    1,
+                ),
+                (
+                    ".and_then(|bytes| bytes.checked_add(crate::spawn::helper_first::control_peak_bytes()?))",
                     1,
                 ),
                 (

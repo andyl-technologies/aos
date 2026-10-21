@@ -17,6 +17,7 @@ use std::ops::Deref;
 pub(in crate::linux_attempt_host) struct LaunchControllerFunding {
     pub(in crate::linux_attempt_host) host: AuthenticatedSourceHostPurpose,
     _control: SourceHostControlLease,
+    pub(super) helper_first: Option<SourceHostControlLease>,
 }
 
 impl LaunchControllerFunding {
@@ -32,9 +33,15 @@ impl LaunchControllerFunding {
         let control = host.reserve_controls(0, bytes)?;
         control.verify_original_capacity(original, 0, bytes)?;
 
+        let first_bytes = crate::spawn::helper_first::control_peak_bytes()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let helper_first = host.reserve_controls(0, first_bytes)?;
+        helper_first.verify_original_capacity(original, 0, first_bytes)?;
+
         Ok(Self {
             host,
             _control: control,
+            helper_first: Some(helper_first),
         })
     }
 }

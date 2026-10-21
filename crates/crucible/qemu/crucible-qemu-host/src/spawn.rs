@@ -148,6 +148,8 @@ impl AttemptResourceBinding {
 }
 
 mod child_privilege;
+pub(crate) mod helper_first;
+pub use helper_first::QemuIssuedHelperFailure;
 pub(crate) mod helper_receiver;
 pub use helper_receiver::QemuIssuedHelperReceiver;
 mod process_stage_binding;
@@ -1017,7 +1019,8 @@ pub enum QemuSpawnError {
     #[error("issued helper failed: {first:?}")]
     HelperFailure {
         /// Same concrete first error; its separately owned payload stays live.
-        first: crucible_engine::SharedOperationalCause<QemuSpawnError>,
+        #[source]
+        first: QemuIssuedHelperFailure,
     },
     /// The real Source host owner refused custody before or after process birth.
     #[error("authenticated Source custody refused: {source}")]

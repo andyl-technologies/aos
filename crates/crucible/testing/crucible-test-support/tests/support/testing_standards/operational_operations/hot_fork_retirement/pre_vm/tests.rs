@@ -259,8 +259,8 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "original_node/helper_receiver.rs",
-            "if self.first.is_none()",
-            "if true",
+            "if self.first_cause().is_some()",
+            "if false",
             "initiating typed helper error replaced",
         ),
         (

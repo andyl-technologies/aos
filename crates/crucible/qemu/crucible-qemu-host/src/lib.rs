@@ -434,7 +434,7 @@ pub(crate) use spawn::{
 
 pub use spawn::{
     PluginStartupError, QemuChildProcessContract, QemuPreparedRunDirectory, QemuSpawnError,
-    QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
+    QemuIssuedHelperFailure, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
 };
 pub use storage_array::{
     StorageArrayError, StorageArrayMemberWrite, StorageArrayWritePlan, plan_storage_array_write,

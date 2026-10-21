@@ -44,6 +44,7 @@ pub(super) const CONTROLLER: Companion = Companion {
             r#"pub(in crate::linux_attempt_host) struct LaunchControllerFunding {
     pub(in crate::linux_attempt_host) host: AuthenticatedSourceHostPurpose,
     _control: SourceHostControlLease,
+    pub(super) helper_first: Option<SourceHostControlLease>,
 }"#,
             1,
         ),
@@ -61,9 +62,15 @@ pub(super) const CONTROLLER: Companion = Companion {
         let control = host.reserve_controls(0, bytes)?;
         control.verify_original_capacity(original, 0, bytes)?;
 
+        let first_bytes = crate::spawn::helper_first::control_peak_bytes()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let helper_first = host.reserve_controls(0, first_bytes)?;
+        helper_first.verify_original_capacity(original, 0, first_bytes)?;
+
         Ok(Self {
             host,
             _control: control,
+            helper_first: Some(helper_first),
         })
     }
 }"#,
@@ -152,7 +159,7 @@ pub(super) const ORIGINAL: Companion = Companion {
     child_borrowed: std::sync::atomic::AtomicBool,
     helper: Mutex<helper_receiver::HelperDebt>,
     source_host: Option<retained_error::LaunchControllerFunding>,
-    helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
+    helper_first: OnceLock<crate::QemuIssuedHelperFailure>,
     exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }"#,
@@ -170,8 +177,14 @@ pub(super) const ORIGINAL: Companion = Companion {
         (
             r#"fn prepare_body(
         origin: &Arc<HostOperationGuard>,
-        funding: Option<retained_error::LaunchControllerFunding>,
+        mut funding: Option<retained_error::LaunchControllerFunding>,
     ) -> RetainedNativeFreshLaunchError {
+        let helper = helper_receiver::HelperDebt::new(
+            funding
+                .as_mut()
+                .and_then(|funding| funding.helper_first.take()),
+        );
+
         RetainedNativeFreshLaunchError::new(Self {
             origin: Arc::clone(origin),
             cleanup: OnceLock::new(),
@@ -179,7 +192,7 @@ pub(super) const ORIGINAL: Companion = Companion {
             original_after: OnceLock::new(),
             node: Mutex::new(RetainedLaunch::default()),
             child_borrowed: std::sync::atomic::AtomicBool::new(false),
-            helper: Mutex::new(helper_receiver::HelperDebt::default()),
+            helper: Mutex::new(helper),
             source_host: funding,
             helper_first: OnceLock::new(),
             exact_launch: Mutex::new(None),
@@ -346,4 +359,120 @@ pub(super) const CLAIM: Companion = Companion {
         }"#,
         1,
     )],
+};
+
+pub(super) const FIRST: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/spawn/helper_first.rs",
+    required: &[
+        (
+            r#"struct HelperCause<Funding> {
+    source: QemuSpawnError,
+    _funding: Funding,
+}"#,
+            1,
+        ),
+        (
+            r#"impl<Funding: fmt::Debug> Error for HelperCause<Funding> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"pub struct QemuIssuedHelperFailure {
+    first: SharedOperationalCause<HelperCause<SourceHostControlLease>>,
+}"#,
+            1,
+        ),
+        (
+            r#"impl QemuIssuedHelperFailure {
+    pub(crate) fn new(source: QemuSpawnError, funding: SourceHostControlLease) -> Self {
+        Self {
+            first: SharedOperationalCause::new(HelperCause {
+                source,
+                _funding: funding,
+            }),
+        }
+    }
+
+    /// Borrows the same concrete first error without detaching its funding.
+    #[must_use]
+    pub fn source_ref(&self) -> &QemuSpawnError {
+        &self.first.source_ref().source
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn control_peak_bytes() -> Option<u64> {
+    SharedOperationalCause::<HelperCause<SourceHostControlLease>>::allocation_bytes()
+        .ok()?
+        .checked_add(std::mem::size_of::<HelperCause<SourceHostControlLease>>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+}"#,
+            1,
+        ),
+    ],
+};
+
+pub(super) const JOURNAL: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_node/helper_receiver.rs",
+    required: &[
+        (
+            r#"pub(super) struct HelperDebt {
+    pub(super) child: Option<crate::node::RetainedChild>,
+    lender: Option<crate::linux_attempt_host::SourceCleanupLender>,
+    first: Option<SharedFirst>,
+    unshared_first: Option<crate::QemuSpawnError>,
+    first_funding:
+        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
+    before: Option<HostSupervisionError>,
+    after: Option<HostSupervisionError>,
+    output: Option<RetainedHelperOutput>,
+    panicked: bool,
+    probe_prepared: bool,
+    // This borrower outlives both the actual child and its retained captures.
+    controls: Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
+    first_cleanup: Option<crate::QemuNodeError>,
+    latest_cleanup: Option<crate::QemuNodeError>,
+}"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn new(
+        first_funding: Option<
+            crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+        >,
+    ) -> Self {
+        let mut debt = Self::default();
+        debt.first_funding = first_funding;
+        debt
+    }"#,
+            1,
+        ),
+        (
+            r#"fn first_cause(&self) -> Option<&crate::QemuSpawnError> {
+        self.first
+            .as_ref()
+            .map(SharedFirst::source_ref)
+            .or(self.unshared_first.as_ref())
+    }"#,
+            1,
+        ),
+        (
+            r#"fn save_first(&mut self, first: crate::QemuSpawnError) {
+        if self.first_cause().is_some() {
+            return;
+        }
+        match self.first_funding.take() {
+            Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+            // An unissued fixture can retain a local refusal in its existing
+            // journal, but cannot publish a shared diagnostic without a payer.
+            None => self.unshared_first = Some(first),
+        }
+    }"#,
+            1,
+        ),
+    ],
 };

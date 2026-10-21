@@ -64,7 +64,7 @@ pub struct OriginalNativeFreshLaunchError {
     child_borrowed: std::sync::atomic::AtomicBool,
     helper: Mutex<helper_receiver::HelperDebt>,
     source_host: Option<retained_error::LaunchControllerFunding>,
-    helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
+    helper_first: OnceLock<crate::QemuIssuedHelperFailure>,
     exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }
@@ -93,8 +93,14 @@ impl OriginalNativeFreshLaunchError {
 
     fn prepare_body(
         origin: &Arc<HostOperationGuard>,
-        funding: Option<retained_error::LaunchControllerFunding>,
+        mut funding: Option<retained_error::LaunchControllerFunding>,
     ) -> RetainedNativeFreshLaunchError {
+        let helper = helper_receiver::HelperDebt::new(
+            funding
+                .as_mut()
+                .and_then(|funding| funding.helper_first.take()),
+        );
+
         RetainedNativeFreshLaunchError::new(Self {
             origin: Arc::clone(origin),
             cleanup: OnceLock::new(),
@@ -102,7 +108,7 @@ impl OriginalNativeFreshLaunchError {
             original_after: OnceLock::new(),
             node: Mutex::new(RetainedLaunch::default()),
             child_borrowed: std::sync::atomic::AtomicBool::new(false),
-            helper: Mutex::new(helper_receiver::HelperDebt::default()),
+            helper: Mutex::new(helper),
             source_host: funding,
             helper_first: OnceLock::new(),
             exact_launch: Mutex::new(None),

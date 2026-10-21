@@ -48,7 +48,15 @@ pub(super) const HELPER: Companion = Companion {
     else if self.latest_cleanup.as_ref() != Some(&first) { self.latest_cleanup = Some(first); }
 }
 fn save_first(&mut self, first: crate::QemuSpawnError) {
-    if self.first.is_none() { self.first = Some(SharedFirst::new(first)); }
+    if self.first_cause().is_some() {
+        return;
+    }
+    match self.first_funding.take() {
+        Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+        // An unissued fixture can retain a local refusal in its existing
+        // journal, but cannot publish a shared diagnostic without a payer.
+        None => self.unshared_first = Some(first),
+    }
 }"#,
             1,
         ),
@@ -96,7 +104,9 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
             receiver,
         ));
     }
-    if (T::CAPTURES_PROBE && slot.probe_prepared)
+    if slot.first_funding.is_none()
+        || slot.unshared_first.is_some()
+        || (T::CAPTURES_PROBE && slot.probe_prepared)
         || slot.controls.is_some()
         || slot.panicked
         || slot.child.is_some()

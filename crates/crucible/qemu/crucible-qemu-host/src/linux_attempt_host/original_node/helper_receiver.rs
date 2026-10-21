@@ -7,13 +7,16 @@ use super::*;
 use crate::spawn::helper_receiver::{HelperOutput, RetainedHelperOutput};
 use std::process::Command;
 
-type SharedFirst = crucible_engine::SharedOperationalCause<crate::QemuSpawnError>;
+type SharedFirst = crate::QemuIssuedHelperFailure;
 
 #[derive(Default)]
 pub(super) struct HelperDebt {
     pub(super) child: Option<crate::node::RetainedChild>,
     lender: Option<crate::linux_attempt_host::SourceCleanupLender>,
     first: Option<SharedFirst>,
+    unshared_first: Option<crate::QemuSpawnError>,
+    first_funding:
+        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     before: Option<HostSupervisionError>,
     after: Option<HostSupervisionError>,
     output: Option<RetainedHelperOutput>,
@@ -56,6 +59,23 @@ pub struct QemuIssuedHelperHistory<'a> {
 }
 
 impl HelperDebt {
+    pub(super) fn new(
+        first_funding: Option<
+            crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+        >,
+    ) -> Self {
+        let mut debt = Self::default();
+        debt.first_funding = first_funding;
+        debt
+    }
+
+    fn first_cause(&self) -> Option<&crate::QemuSpawnError> {
+        self.first
+            .as_ref()
+            .map(SharedFirst::source_ref)
+            .or(self.unshared_first.as_ref())
+    }
+
     pub(super) fn history(&self) -> QemuIssuedHelperHistory<'_> {
         let probe_bytes = self
             .output
@@ -63,7 +83,7 @@ impl HelperDebt {
             .and_then(RetainedHelperOutput::probe_bytes);
 
         QemuIssuedHelperHistory {
-            first: self.first.as_ref().map(SharedFirst::source_ref),
+            first: self.first_cause(),
             before: self.before,
             after: self.after,
             first_cleanup: self.first_cleanup.as_ref(),
@@ -96,8 +116,14 @@ impl HelperDebt {
     }
 
     fn save_first(&mut self, first: crate::QemuSpawnError) {
-        if self.first.is_none() {
-            self.first = Some(SharedFirst::new(first));
+        if self.first_cause().is_some() {
+            return;
+        }
+        match self.first_funding.take() {
+            Some(funding) => self.first = Some(SharedFirst::new(first, funding)),
+            // An unissued fixture can retain a local refusal in its existing
+            // journal, but cannot publish a shared diagnostic without a payer.
+            None => self.unshared_first = Some(first),
         }
     }
 }
@@ -201,7 +227,9 @@ impl OriginalNativeFreshLaunchError {
                 receiver,
             ));
         }
-        if (T::CAPTURES_PROBE && slot.probe_prepared)
+        if slot.first_funding.is_none()
+            || slot.unshared_first.is_some()
+            || (T::CAPTURES_PROBE && slot.probe_prepared)
             || slot.controls.is_some()
             || slot.panicked
             || slot.child.is_some()
@@ -404,7 +432,7 @@ mod tests {
         );
 
         assert!(matches!(
-            slot.first.as_ref().map(SharedFirst::source_ref),
+            slot.first_cause(),
             Some(crate::QemuSpawnError::SourceAdmission {
                 source: OriginalActorAccountError::Unavailable,
             })
@@ -461,6 +489,28 @@ mod tests {
     }
 
     #[test]
+    fn unfunded_helper_first_stays_in_preborn_journal_without_shared_birth() {
+        let mut slot = HelperDebt::default();
+        let first = crate::QemuSpawnError::Io {
+            operation: "unfunded first error",
+            source: std::io::Error::from_raw_os_error(libc::EIO),
+        };
+        let ((), counts) =
+            crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+                slot.save_first(first);
+            });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(slot.first.is_none());
+        assert!(slot.first_funding.is_none());
+        assert!(matches!(slot.history().first,
+            Some(crate::QemuSpawnError::Io { source, .. })
+            if source.raw_os_error() == Some(libc::EIO)));
+    }
+
+    #[test]
     fn helper_projection_keeps_first_post_and_cleanup_as_distinct_typed_causes() {
         let mut slot = HelperDebt::default();
         slot.save_first(crate::QemuSpawnError::Io {
@@ -496,7 +546,7 @@ mod tests {
         assert!(history.probe_output.is_none());
         assert!(std::ptr::eq(
             history.first.unwrap(),
-            slot.first.as_ref().unwrap().source_ref()
+            slot.first_cause().unwrap()
         ));
     }
 }
