@@ -43,10 +43,8 @@ impl NativeRestoredSuffixStartupOwner {
         &self,
     ) -> Result<u64, ProviderError> {
         self.ensure_current()?;
-        Ok(
-            u64::try_from(self.sealed.as_ref().ok_or_else(refused)?.frame_bytes_data())
-                .map_err(|_| exhausted())?,
-        )
+        u64::try_from(self.sealed.as_ref().ok_or_else(refused)?.frame_bytes_data())
+            .map_err(|_| exhausted())
     }
 
     /// Checks the actual process/thread and sticky native failure state.

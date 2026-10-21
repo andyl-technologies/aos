@@ -78,11 +78,9 @@ impl Serialize for DecodedBodyView<'_> {
                 body.result.as_ref().map(MethodResultView),
             )
                 .serialize(serializer),
-            ReceivedBody::NativeImport18Bootstrap(_) => {
-                return Err(serde::ser::Error::custom(
-                    "bootstrap18 requires its distinct history grammar",
-                ));
-            }
+            ReceivedBody::NativeImport18Bootstrap(_) => Err(serde::ser::Error::custom(
+                "bootstrap18 requires its distinct history grammar",
+            )),
             ReceivedBody::Notification(body) => ("Notification", body).serialize(serializer),
         }
     }

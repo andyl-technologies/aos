@@ -537,11 +537,9 @@ impl ReceivedFrame {
                 }
                 Ok(())
             }
-            ReceivedBody::NativeImport18Bootstrap(_) => {
-                return Err(crate::ProviderError::Conflict(
-                    "bootstrap18 requires its distinct current owner",
-                ));
-            }
+            ReceivedBody::NativeImport18Bootstrap(_) => Err(crate::ProviderError::Conflict(
+                "bootstrap18 requires its distinct current owner",
+            )),
             ReceivedBody::Notification(body) => {
                 observer.boxed_value(body.as_ref())?;
                 observer.observe(body.as_ref())

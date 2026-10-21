@@ -84,11 +84,7 @@ pub(super) struct ControllerInputEmitterView<'a> {
 impl serde::Serialize for ControllerInputEmitterView<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use controller_restore::{ControllerTransferView, Encoding};
-        let encoding = match self.encoding {
-            Encoding::Ordinary => Encoding::Ordinary,
-            Encoding::Compact => Encoding::Compact,
-            Encoding::Owned => Encoding::Owned,
-        };
+        let encoding = self.encoding;
         let old = ControllerTransferView {
             policy: self.policy,
             encoding,

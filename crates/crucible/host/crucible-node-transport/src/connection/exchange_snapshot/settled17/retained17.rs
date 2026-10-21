@@ -427,11 +427,9 @@ impl Native17Build for HistoricalReceivedBody17 {
                 }
                 Ok(())
             }
-            ReceivedBody::NativeImport18Bootstrap(_) => {
-                return Err(crate::ProviderError::Conflict(
-                    "bootstrap18 requires its distinct current owner",
-                ));
-            }
+            ReceivedBody::NativeImport18Bootstrap(_) => Err(crate::ProviderError::Conflict(
+                "bootstrap18 requires its distinct current owner",
+            )),
             ReceivedBody::Notification(v) => {
                 o.boxed_value(v.as_ref())?;
                 NotificationBody::observe_output_data(v, o)
@@ -528,11 +526,9 @@ impl Native17Build for HistoricalReceivedFrame17 {
                 }
                 Ok(())
             }
-            ReceivedBody::NativeImport18Bootstrap(_) => {
-                return Err(crate::ProviderError::Conflict(
-                    "bootstrap18 requires its distinct current owner",
-                ));
-            }
+            ReceivedBody::NativeImport18Bootstrap(_) => Err(crate::ProviderError::Conflict(
+                "bootstrap18 requires its distinct current owner",
+            )),
             ReceivedBody::Notification(v) => {
                 o.boxed_value(v.as_ref())?;
                 NotificationBody::observe_output_data(v, o)
@@ -568,11 +564,9 @@ impl ReceivedFrame {
     ) -> Result<(), ProviderError> {
         crate::envelope::Envelope::observe_output_data(&self.envelope, observer)?;
         match &self.body {
-            ReceivedBody::NativeImport18Bootstrap(_) => {
-                return Err(crate::ProviderError::Conflict(
-                    "bootstrap18 requires its distinct current owner",
-                ));
-            }
+            ReceivedBody::NativeImport18Bootstrap(_) => Err(crate::ProviderError::Conflict(
+                "bootstrap18 requires its distinct current owner",
+            )),
             ReceivedBody::Request(body) => {
                 observer.boxed_value(body.as_ref())?;
                 observe_request(body, observer)

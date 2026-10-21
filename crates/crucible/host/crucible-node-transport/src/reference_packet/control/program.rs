@@ -155,7 +155,7 @@ impl NativeProgram {
             Self::OutputOnly(program) => Ok(program.inventory()),
             Self::Connected(program) => Self::project_inventory(program),
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }
@@ -261,7 +261,7 @@ impl NativeProgram {
             Self::OutputOnly(program) => program.open_gate(),
             Self::Connected(program) => program.open_gate(),
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }
@@ -279,7 +279,7 @@ impl NativeProgram {
                 program.definition().output.is_some(),
             ),
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }
@@ -297,7 +297,7 @@ impl NativeProgram {
                 Self::project_grant(program.run(operation, start, limit)?, emits)
             }
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }
@@ -310,7 +310,7 @@ impl NativeProgram {
                 .map(|grant| Self::project_grant(grant, program.definition().output.is_some()))
                 .transpose(),
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }
@@ -320,7 +320,7 @@ impl NativeProgram {
             Self::OutputOnly(program) => program.retire(operation, events),
             Self::Connected(program) => program.retire(operation, events),
             Self::RestorationInProgress => {
-                return Err(ProviderError::Conflict("packet restored model incomplete"));
+                Err(ProviderError::Conflict("packet restored model incomplete"))
             }
         }
     }

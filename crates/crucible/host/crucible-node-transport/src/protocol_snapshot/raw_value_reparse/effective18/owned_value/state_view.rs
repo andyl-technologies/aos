@@ -191,13 +191,10 @@ impl<'a> Iterator for NativeImport18FirstFlatArrayData<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.source {
-            ArrayData::Raw(values, state) => values.next().map(|value| raw_data(*state, value)),
+            ArrayData::Raw(values, state) => values.next().map(|value| raw_data(state, value)),
             ArrayData::Text(values, state) => {
                 values.next().map(|value| NativeImport18FirstFlatViewData {
-                    node: NodeData::Text {
-                        state: *state,
-                        value,
-                    },
+                    node: NodeData::Text { state, value },
                 })
             }
         }
@@ -211,15 +208,12 @@ impl<'a> Iterator for NativeImport18FirstFlatObjectData<'a> {
         match &mut self.source {
             ObjectData::Raw(values, state) => values
                 .next()
-                .map(|(key, value)| (key.as_str(), raw_data(*state, value))),
+                .map(|(key, value)| (key.as_str(), raw_data(state, value))),
             ObjectData::Text(values, state) => values.next().map(|(key, value)| {
                 (
                     key,
                     NativeImport18FirstFlatViewData {
-                        node: NodeData::Text {
-                            state: *state,
-                            value,
-                        },
+                        node: NodeData::Text { state, value },
                     },
                 )
             }),

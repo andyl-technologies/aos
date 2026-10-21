@@ -104,6 +104,8 @@ impl ControllerNative5Policy {
     }
 }
 
+/// Selects one of the retained controller encoding grammars.
+#[derive(Clone, Copy)]
 pub(super) enum Encoding {
     Ordinary,
     Compact,

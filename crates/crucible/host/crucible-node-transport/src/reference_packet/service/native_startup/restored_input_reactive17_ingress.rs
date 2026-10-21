@@ -411,7 +411,7 @@ fn fields(body: &Map<String, Value>, expected: &[&str]) -> Result<(), ProviderEr
     Ok(())
 }
 
-fn object<'a>(value: &'a Value) -> Result<&'a Map<String, Value>, ProviderError> {
+fn object(value: &Value) -> Result<&Map<String, Value>, ProviderError> {
     value.as_object().ok_or_else(invalid)
 }
 
