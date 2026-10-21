@@ -277,7 +277,8 @@ in {
             "journalctl -u aos-storaged.service --no-pager -n 200",
             "journalctl -b -u 'aos-sandbox-zfs-worker@*' "
             "-u 'aos-sandbox-workspace-pin-observer@*' "
-            "-u 'aos-sandbox-workspace-pin-worker@*' --no-pager -n 200",
+            "-u 'aos-sandbox-workspace-pin-worker@*' "
+            "-u 'aos-sandbox-guest-root-publisher@*' --no-pager -n 200",
         ):
             status, stdout, stderr = machine.execute(command)
             print(f"storaged diagnostic ({status}): {command}")
