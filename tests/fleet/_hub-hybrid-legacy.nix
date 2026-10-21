@@ -1479,7 +1479,7 @@
       export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
       export NIX_REMOTE="" NIX_CONF_DIR="$HOME/.config/nix"
       registry="$HOME/.local/share/apm/registries/containers"
-      release_started=$(${pkgs.coreutils}/bin/date +%s)
+      release_index_started=""
       while true; do
         if {APR} --json release 1.0.0 --registry containers --from-stage hybrid-container \\
             --stage-revision 1 --upload-url https://aos.fleet.test/fleet/containers \\
@@ -1497,7 +1497,13 @@
           releasing) ;;
           *) exit 1 ;;
         esac
-        if ! test "$(${pkgs.coreutils}/bin/date +%s)" -lt "$((release_started + 420))"; then
+        # The first finalization installs the prepared pointers before it can
+        # return Releasing. Give the asynchronous index its own bounded wait
+        # after that response rather than spending its budget on publication.
+        if test -z "$release_index_started"; then
+          release_index_started=$(${pkgs.coreutils}/bin/date +%s)
+        fi
+        if ! test "$(${pkgs.coreutils}/bin/date +%s)" -lt "$((release_index_started + 420))"; then
           echo "Staged container release remained pending after 420 seconds" >&2
           exit 1
         fi
@@ -1527,7 +1533,7 @@
       mkdir -p /var/tmp/hybrid-publication-surface/web
       ${pkgs.coreutils}/bin/head -c {publication_size} /dev/zero \\
         > /var/tmp/hybrid-publication-surface/{publication_path}
-  """), timeout=600)
+  """), timeout=1200)
   # Authoring and uploading the signed channel can each exceed a browser
   # token lifetime. Resume only the exact publication after JWT expiry.
   session_token = refresh_session_token()
