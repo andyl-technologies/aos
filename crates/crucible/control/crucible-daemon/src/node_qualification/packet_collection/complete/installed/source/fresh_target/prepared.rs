@@ -338,6 +338,12 @@ impl PreparedCompleteRestoration {
         bindings.push(host.binding.clone());
         owners.push(host.owner.clone());
 
+        let (maximum_content_bytes, maximum_total_content_bytes) =
+            self.funded_code_content_limits_data()?.unwrap_or((
+                limits.state.maximum_content_bytes,
+                limits.state.maximum_total_content_bytes,
+            ));
+
         self.code_graph = Some(
             self.code_factory
                 .admit_original_code_graph(
@@ -354,8 +360,8 @@ impl PreparedCompleteRestoration {
                         maximum_state_objects: 8,
                         maximum_connections: 2,
                         maximum_ports_or_lanes: 4,
-                        maximum_content_bytes: limits.state.maximum_content_bytes,
-                        maximum_total_content_bytes: limits.state.maximum_total_content_bytes,
+                        maximum_content_bytes,
+                        maximum_total_content_bytes,
                         ..AdmissionLimits::default()
                     },
                 )

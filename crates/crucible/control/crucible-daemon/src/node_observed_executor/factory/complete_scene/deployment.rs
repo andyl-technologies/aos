@@ -17,6 +17,7 @@ pub(in crate::node_observed_executor::factory) struct FundedTemplateCapsule {
     deployment: Rc<InstalledDeployment>,
     prepared: Option<PreparedCompleteRestoration>,
     attempted: bool,
+    started: bool,
     failure: Option<QualificationError>,
     retired: bool,
     #[cfg(feature = "test-support")]
@@ -35,6 +36,7 @@ impl FundedTemplateCapsule {
             deployment: InstalledDeployment::new(original),
             prepared: None,
             attempted: false,
+            started: false,
             failure: None,
             retired: false,
             #[cfg(feature = "test-support")]
@@ -42,11 +44,25 @@ impl FundedTemplateCapsule {
         }
     }
 
-    pub(super) fn prepare(&mut self) -> Result<(), NodeObservedError> {
+    /// Spends the retained entry and requests setup on the owning actor's poll.
+    ///
+    /// # Errors
+    /// Refuses a repeated or retired capsule without restarting its work.
+    pub(super) fn request_preparation(&mut self) -> Result<(), NodeObservedError> {
         if self.attempted || self.retired {
             return Err(refused("funded input preparation already attempted"));
         }
+        // Spend the original entry before replying. The same actor performs
+        // setup on its subsequent poll, outside the short control exchange.
         self.attempted = true;
+        Ok(())
+    }
+
+    fn prepare_requested(&mut self) -> Result<(), NodeObservedError> {
+        if !self.attempted || self.started || self.retired {
+            return Err(refused("funded input preparation cannot start"));
+        }
+        self.started = true;
         let result = (|| {
             self.deployment.initialize()?;
             let manifest = self.manifest.take().ok_or(QualificationError::Refused(
@@ -88,6 +104,8 @@ impl FundedTemplateCapsule {
             FundedTemplatePhase::Reclaimed
         } else if !self.attempted {
             FundedTemplatePhase::Unattempted
+        } else if !self.started {
+            FundedTemplatePhase::PreparationRequested
         } else if self.templates_authenticated && self.failure.is_some() {
             FundedTemplatePhase::DerivationFailed
         } else if self
@@ -119,6 +137,16 @@ impl FundedTemplateCapsule {
 
     pub(super) fn poll_derivation(&mut self) -> Result<(), NodeObservedError> {
         if self.retired {
+            return Ok(());
+        }
+        if self.attempted && !self.started {
+            // A preparation refusal remains observable in this same capsule.
+            // It must not become a derivation failure or force shutdown before
+            // the actual first failure can be published by the actor.
+            let _ = self.prepare_requested();
+            return Ok(());
+        }
+        if self.failure.is_some() {
             return Ok(());
         }
         let Some(prepared) = &mut self.prepared else {
@@ -185,8 +213,9 @@ impl InstalledNodeCatalog {
             original,
         )));
         // Catalog installation retains the capsule only. Fallible mechanism,
-        // namespace and Source preparation run on the later original command,
-        // after ordinary startup and signal polling are live.
+        // namespace and Source preparation run on the poll requested by the
+        // later original command, after ordinary startup and signal polling
+        // are live.
         Ok(())
     }
 }

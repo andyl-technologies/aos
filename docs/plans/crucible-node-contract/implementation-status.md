@@ -148,6 +148,31 @@ the actor publishes a terminal result. No worker or private-Birth success is
 claimed; synchronous preparation responsiveness and production code fetch limits
 remain unqualified.
 
+## Funded setup dispatch and code fetch budget
+
+The funded command now spends its original entry and returns its existing Refused
+result before setup. The same actor performs that setup on its subsequent poll;
+duplicate requests cannot create another attempt. A preparation refusal stays in
+the retained capsule. Setup itself is still synchronous within one actor poll,
+so this change does not qualify bounded polling or ordinary Ready.
+
+Funded code-graph fetches use the independently pinned scene's content budget,
+intersected with its memory limit and original reserved parent address space.
+Both per-object and cumulative fetches are bounded, and repeated reads remain
+charged. This supports the actual whole host ELF, which exceeds the cold decoder's
+64-MiB object default. Cold archive limits and the unfunded preparation route
+retain their existing caller-selected limits. The test observer distinguishes a
+spent entry awaiting its original poll without certifying completed preparation.
+
+Formatting and the final Daemon all-feature/all-target check pass. The complete
+configured Daemon library passes 1,824 tests with zero failures, no filtering and
+165 ignores, and all six architecture gates pass. The required application gate
+compiles 180 test executables across 58 package IDs and 71 integration targets.
+Its source snapshot predates the final test-only requested-state observer and
+rustdoc additions, which the final all-feature check includes. The fresh confined
+VM is pending; no runtime worker, private Birth, native or Ready success follows
+from these component checks.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

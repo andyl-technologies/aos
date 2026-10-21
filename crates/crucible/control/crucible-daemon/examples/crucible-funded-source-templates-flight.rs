@@ -139,14 +139,10 @@ fn await_phase(
     observer: &FundedTemplateObserver,
     phase: FundedTemplatePhase,
 ) -> Result<(), String> {
-    // The public exchange keeps its own deadline. The birth flight also waits
-    // for three confined jobs; the foundation flight needs only publication.
-    let deadline = Instant::now()
-        + if phase == FundedTemplatePhase::PrivateBirthsRetained {
-            Duration::from_secs(60)
-        } else {
-            Duration::from_secs(1)
-        };
+    // The public exchange keeps its own short deadline. The owning actor's
+    // subsequent setup and confined jobs have separate finite process limits;
+    // these observations wait within the VM consumer's 100-second wall limit.
+    let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let snapshot = observer.snapshot().map_err(|e| e.to_string())?;
         let observed = snapshot.phase();

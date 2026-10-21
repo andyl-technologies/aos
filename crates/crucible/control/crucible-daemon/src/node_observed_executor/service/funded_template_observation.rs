@@ -13,6 +13,8 @@ pub enum FundedTemplatePhase {
     Absent,
     /// The retained capsule has not consumed its preparation entry.
     Unattempted,
+    /// The entry is spent and awaits setup on the original actor's next poll.
+    PreparationRequested,
     /// The first preparation failed or unwound; its original custody remains.
     AttemptFailed,
     /// The first preparation returned authenticated template success only.

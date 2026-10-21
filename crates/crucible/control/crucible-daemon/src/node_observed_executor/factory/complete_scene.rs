@@ -33,7 +33,7 @@ impl InstalledNodeCatalog {
 
     pub(crate) fn prepare_complete_scene(&mut self) -> Result<(), NodeObservedError> {
         if let Some(original) = self.funded_templates.as_mut() {
-            original.prepare()?;
+            original.request_preparation()?;
             return Err(refused(
                 "funded templates remain unavailable for complete-scene preparation",
             ));

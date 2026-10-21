@@ -60,8 +60,9 @@ impl NodeObservationService {
     /// Refuses an absent, spent or withdrawn installation, any installed native
     /// or source gate, exhausted resources or unavailable actor. Success is
     /// inactive preparation only; it grants no ordinary acceptance or activation.
-    /// A funded-input capsule performs its real once-only foundation work here
-    /// and returns Refused even on success because the full lifecycle is absent.
+    /// A funded-input capsule spends its once-only entry and requests real
+    /// foundation work on the owning actor's next poll. The exchange returns
+    /// Refused because the full lifecycle is absent.
     pub fn prepare_complete_scene(&self) -> Result<(), NodeObservationServiceError> {
         let (reply, response) = mpsc::sync_channel(1);
         self.send(Command::CompleteScenePrepare { reply })?;

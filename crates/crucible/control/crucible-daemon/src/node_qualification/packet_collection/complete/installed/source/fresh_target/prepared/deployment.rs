@@ -55,6 +55,40 @@ impl PreparedCompleteRestoration {
         }
     }
 
+    /// Bounds whole-file code fetches by the actual funded scene and parent.
+    ///
+    /// Cold archive decoder limits apply to later archive records. This code
+    /// graph instead authenticates complete executable files, under the pinned
+    /// operator content policy and the original whole-parent reservation.
+    ///
+    /// # Errors
+    /// Refuses a revoked reservation, unavailable original policy, zero budget
+    /// or a ceiling that cannot be represented on this host.
+    pub(super) fn funded_code_content_limits_data(
+        &self,
+    ) -> Result<Option<(usize, usize)>, QualificationError> {
+        let Some(deployment) = &self.import18_templates.deployment else {
+            return Ok(None);
+        };
+        deployment.authenticate().map_err(|_| refused())?;
+        let context = deployment.context().map_err(|_| refused())?;
+        let parent = context.reserved_policy_data().map_err(|_| refused())?;
+        let maximum = self
+            .selected
+            .resources
+            .content_bytes
+            .get()
+            .min(self.selected.resources.memory_bytes.get())
+            .min(parent.address_space_bytes);
+        let maximum = usize::try_from(maximum).map_err(|_| refused())?;
+        if maximum == 0 {
+            return Err(refused());
+        }
+        // Both per-object and cumulative fetches remain within this ceiling.
+        // The actual reader charges every fetch, including repeated bodies.
+        Ok(Some((maximum, maximum)))
+    }
+
     pub(super) fn note_funded_operation_stage(&self, stage: &'static str) {
         if let Some(deployment) = &self.import18_templates.deployment {
             deployment.note_operation_stage(stage);
