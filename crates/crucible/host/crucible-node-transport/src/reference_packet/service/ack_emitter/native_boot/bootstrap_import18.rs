@@ -35,6 +35,9 @@ mod source_authentication;
 #[path = "bootstrap_import18/initial_reconstruction.rs"]
 mod initial_reconstruction;
 
+#[path = "bootstrap_import18/completed_inputs.rs"]
+mod completed_inputs;
+
 #[path = "bootstrap_import18/controller_measurement.rs"]
 mod controller_measurement;
 

@@ -955,6 +955,31 @@ These checks do not issue native Prepare custody, an opaque Recipe/Initial,
 model installation or readiness; actual semantic body validation and independent
 complete recipe reconstruction remain required.
 
+## Original completed-input loans
+
+The physical bootstrap now lends its same parsed recipe and seven completed
+reference/body pairs only after independent initial DATA reconstruction. It
+checks full recipe reference correspondence under the original parent, channel,
+raw-body and nonrenewing-cut guards, then repeats those checks after inspection,
+including callback refusal. References and bytes point into the retained banks;
+no replacement recipe or caller-selected reference enters this loan.
+
+The callback returns Copy DATA only. Constructed outputs must stay in the
+caller's retained attempt so that terminal refusal cannot drop an otherwise
+returned owning object. Its separate fixed counter names the actual raw guard,
+reference-join and loan work; initial-only construction and layouts are unchanged.
+
+Four focused inherited-socket tests pass in both standard and raw-value builds,
+covering thirty-five flights including eight new completed-input cases. They
+exercise unchanged bank pointers/census, equal-length role substitution,
+incomplete transfer, absent initial completion, foreign thread, expired cut,
+expiry during a real callback and callback refusal. Both full Transport suites
+pass 1,803 tests, zero failures, no filtering and sixteen existing ignores.
+Affected-crate, architecture and required application checks are running.
+This is a guarded DATA inspection boundary; native signed Prepare custody,
+semantic decoding, complete recipe reconstruction and model adoption remain
+separate required transitions.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

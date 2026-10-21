@@ -125,6 +125,11 @@ impl OriginalImport18ReceivingBanks {
             + size_of::<usize>() * 3
     }
 
+    /// Names future completed loans separately from initial empty-bank work.
+    pub(super) fn completed_loan_counter_scratch_data() -> usize {
+        Self::counter_scratch_data() + transfer::counter_scratch_data()
+    }
+
     #[cfg(test)]
     pub(super) fn is_empty_data(&self) -> bool {
         self.phase == ReceivePhase::Empty

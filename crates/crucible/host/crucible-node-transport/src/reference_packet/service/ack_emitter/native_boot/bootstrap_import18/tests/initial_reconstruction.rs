@@ -13,6 +13,9 @@ use crate::reference_packet::service::complete_restore::import18::{
 use crucible_node_format::{Bytes, Id, canonical};
 use serde_json::{Value, json};
 
+#[path = "initial_reconstruction/completed_inputs.rs"]
+mod completed_inputs;
+
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
@@ -21,6 +24,9 @@ fn operands(case: &str) -> [Value; 3] {
     if case == "initial_small_escrow" {
         recipe["phases"] = json!(([["1", "1", "1"]; 5]));
         recipe["escrow"] = json!(["5", "1", "1"]);
+    }
+    if case.starts_with("initial_inputs_") {
+        completed_inputs::commit_recipe(&mut recipe);
     }
     let mut selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
     let executable = measure_original_restore_current_executable().unwrap();
@@ -238,7 +244,9 @@ pub(super) fn assert_child(
                 ))
             ));
         }
-        if matches!(case, "initial_producer" | "initial_reactive") {
+        if matches!(case, "initial_producer" | "initial_reactive")
+            || case.starts_with("initial_inputs_")
+        {
             result.unwrap();
             assert!(owner.initial_reconstructed);
             assert!(owner.initial_construction.is_some());
@@ -246,6 +254,10 @@ pub(super) fn assert_child(
             assert!(result.is_err());
             assert!(!owner.initial_reconstructed);
         }
+    }
+    if case.starts_with("initial_inputs_") {
+        completed_inputs::assert_child(case, &mut owner);
+        return;
     }
     assert!(owner.initial_reconstruction_started);
     assert!(owner.reconstruct_initial_data().is_err());
