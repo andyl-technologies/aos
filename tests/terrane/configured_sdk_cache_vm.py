@@ -131,7 +131,7 @@ def cache_states(driver):
 
 
 def verify_funding(driver, directory, before, after):
-    """Distinguishes actual startup allowance from still-funded consumer grace."""
+    """Checks distinct startup, metadata retention and released-consumer holds."""
     owner = "fixture-" + directory
     reservations = after["reservations"]
     driver.require(len({row["id"] for row in reservations}) == len(reservations),
@@ -141,6 +141,25 @@ def verify_funding(driver, directory, before, after):
     for row in added:
         driver.require(row["owner"] == owner and row["bytes"] == 262144,
                        "native SDK changed a new hold's exact owner or funding")
+        metadata_owner = "metadata:" + row["id"]
+        metadata_leases = [lease for lease in after["leases"]
+                           if lease["owner"] == metadata_owner]
+        if metadata_leases:
+            # Manifest bodies and their source packs stay funded independently
+            # of consumer release. These rows do not prove native custody.
+            pins = [pin for pin in after["pins"] if pin["owner"] == metadata_owner]
+            driver.require(len(metadata_leases) == 1
+                           and metadata_leases[0]["expires"] == 9223372036854775807
+                           and len(pins) == 2 and len({pin["hash"] for pin in pins}) == 2
+                           and all(pin["expires"] == metadata_leases[0]["expires"]
+                                   and len(pin["hash"]) == 64
+                                   and all(char in "0123456789abcdef" for char in pin["hash"])
+                                   for pin in pins)
+                           and not any(lease["owner"] in
+                                       {"consumer:" + row["id"], "consumer-grace:" + row["id"]}
+                                       for lease in after["leases"]),
+                           "native SDK metadata hold lacks its exact durable pin closure")
+            continue
         names = {"consumer:" + row["id"], "consumer-grace:" + row["id"]}
         leases = [lease for lease in after["leases"] if lease["owner"] in names]
         if not leases:
@@ -157,7 +176,8 @@ def verify_funding(driver, directory, before, after):
                                    for pin in pins),
                        "native SDK consumer hold lacks its exact durable pin closure")
     driver.require(len(bootstraps) == 1,
-                   "native SDK lacks exactly one new bootstrap hold: " + repr(added))
+                   "native SDK lacks exactly one new bootstrap hold: "
+                   + repr({"holds": added, "leases": after["leases"]}))
     now = int(time.time())
     for row in before["reservations"]:
         if row in reservations:

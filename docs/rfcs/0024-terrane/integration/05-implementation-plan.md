@@ -11543,3 +11543,17 @@ publication controls; shared encoded source files use content GID 845. The
 observer now checks the exact private pair while preserving single-link,
 mode0400, independent plaintext and actual fs-verity measurement requirements.
 That failed run supplies no whole-object or lower-circuit completion credit.
+
+
+#### Native SDK manifest-metadata funding observation
+
+The sealed-policy VM passed inline and multi-chunk `never` reads, including
+the real lower deadline and shared-circuit controls, before the `always`
+funding observer rejected retained manifest metadata as additional bootstrap
+allowances. The owner retains each actual manifest body and source pack with
+its own permanent metadata lease, two pins and exact metadata-sync allowance.
+The observer now checks that distinct lifecycle explicitly; it still requires
+exactly one new bootstrap allowance and preserves all original non-consumer
+holds. Durable rows remain comparison data, with actual native recovery and
+physical sealed custody checked separately. The full expanded VM remains
+pending; the failed run provides no T2 completion credit.
