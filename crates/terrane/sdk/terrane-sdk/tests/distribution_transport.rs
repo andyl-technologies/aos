@@ -229,6 +229,7 @@ async fn tls13_serves_both_http_versions_and_refuses_tls12() -> TestResult {
     );
     for http2 in [false, true] {
         let builder = reqwest::Client::builder()
+            .resolve("localhost", running.address)
             .add_root_certificate(reqwest::Certificate::from_der(&der)?)
             .min_tls_version(reqwest::tls::Version::TLS_1_3)
             .timeout(Duration::from_secs(3));
@@ -267,6 +268,7 @@ async fn tls13_serves_both_http_versions_and_refuses_tls12() -> TestResult {
     .with_root_certificates(roots)
     .with_no_client_auth();
     let old_client = reqwest::Client::builder()
+        .resolve("localhost", running.address)
         .use_preconfigured_tls(tls12)
         .timeout(Duration::from_secs(3))
         .build()?;
