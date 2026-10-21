@@ -55,7 +55,9 @@ impl GuestRootStartupHealthOriginalV2 {
         if self.entered { self.positive = false; return self.refuse(First::Gate); }
         self.entered = true;
         self.dispatch = Some(runtime.worker_dispatch.enter().map_err(|_| StorageRuntimeError::Recovery));
-        if !matches!(self.dispatch, Some(Ok(_))) || !runtime.is_inventory_ready() {
+        // This no-effect probe precedes Repair admission, which must remain
+        // reachable while workspace/catalog convergence is still pending.
+        if !matches!(self.dispatch, Some(Ok(_))) || !runtime.is_repair_ready() {
             self.gate = Some(StorageRuntimeError::Recovery);
             return self.refuse(First::Gate);
         }

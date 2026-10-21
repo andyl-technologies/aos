@@ -2961,14 +2961,17 @@ impl StorageBrokerRuntime {
     ///
     /// # Errors
     ///
-    /// Returns an error when current Storage inventory is closed, or the
+    /// Returns an error when recovery excludes worker dispatch, or the
     /// socket-activated publisher cannot authenticate and exit cleanly.
     pub fn probe_guest_root_publisher(&self) -> Result<(), StorageRuntimeError> {
         let _dispatch = self
             .worker_dispatch
             .enter()
             .map_err(|_| StorageRuntimeError::Recovery)?;
-        if !self.is_inventory_ready() {
+        // Health has no effect or catalog result. Pending pins must still
+        // admit this probe so startup can serve the isolated Repair path.
+        // Inventory and Apply retain their separate convergence gates.
+        if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
         let mut publisher = SystemdGuestRootPublisherClientV1::new(

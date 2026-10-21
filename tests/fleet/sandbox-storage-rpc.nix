@@ -284,10 +284,10 @@ in {
             print(stdout.decode("utf-8", errors="replace"))
             print(stderr.decode("utf-8", errors="replace"))
 
-    def start_storaged(inventory_action, inventory_expected, expected_probe_passes):
+    def start_storaged(action, expected, expected_probe_passes):
         try:
             machine.succeed("systemctl start aos-storaged.service", timeout=150)
-            controller(inventory_action, inventory_expected)
+            controller(action, expected)
             machine.succeed("systemctl is-active --quiet aos-storaged.service")
             broker_pid = int(machine.succeed(
                 "systemctl show aos-storaged.service -p MainPID --value"
@@ -431,7 +431,9 @@ in {
     claims_before = replay_claims()
     baseline_hash = journal_hash()
     assert seccomp_probe_passes() == 0
-    start_storaged("inventory-empty", "inventory-empty", 1)
+    # Pending pins cannot yield authoritative empty inventory. The isolated
+    # Repair path stays reachable and rejects an unauthenticated request.
+    start_storaged("missing-authority", "missing-authority", 1)
     observer_started = socket_sample("aos-sandbox-workspace-pin-observer.socket")
     worker_started = socket_sample("aos-sandbox-workspace-pin-worker.socket")
     # Historical scope cannot be probed through the current namespace. It

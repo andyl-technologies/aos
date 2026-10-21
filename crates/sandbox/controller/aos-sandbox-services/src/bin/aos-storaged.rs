@@ -920,7 +920,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                     custody.recheck(state_root)?;
                 }
             }
-            if !storage.runtime().is_inventory_ready() {
+            // Pending recovery closes Inventory and Apply at their own entry
+            // points, but must leave authenticated Repair reachable.
+            if !storage.runtime().is_repair_ready() {
                 return Err(StorageRuntimeError::Recovery.into());
             }
 
