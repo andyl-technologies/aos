@@ -74,6 +74,9 @@
   roleTestPackages = role:
     "-p ${rolePackage role}"
     + lib.optionalString (role == "controller") " -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
+    # The Nix binary is a thin entry point; its isolated implementation suite
+    # belongs to Security and must run with the Nix role's own feature graph.
+    + lib.optionalString (role == "nix") " -p aos-sandbox-broker-session-security"
     + lib.optionalString (role == "policy-key-pin") " -p aos-sandbox-policy"
     + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
     + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
