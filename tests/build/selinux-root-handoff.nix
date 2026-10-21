@@ -149,7 +149,12 @@ in
           test "$(stat -c %i extracted/usr/lib/systemd/aos-selinux-root-handoff)" != \
             "$(stat -c %i extracted/usr/lib/systemd/aos-selinux-runtime-roots-handoff)"
           test ! -s extracted/usr/lib/systemd/aos-empty-ld-so-preload
-          if find extracted/usr/lib -name 'libtss2-tcti-*.so*' | grep -q .; then
+          # The physical store contains hash-pinned private TPM libraries. It
+          # is not a loader search directory; inspect the surrounding image
+          # directories without treating that retained closure as a default path.
+          if find extracted/usr/lib \
+            -path extracted/usr/lib/aos/nix/store -prune -o \
+            -name 'libtss2-tcti-*.so*' -print | grep -q .; then
             echo "constructed TCTI selector can reach an unpinned default-path DSO" >&2
             exit 1
           fi
