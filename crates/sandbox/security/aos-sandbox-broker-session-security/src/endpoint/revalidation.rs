@@ -206,8 +206,15 @@ impl EndpointRevalidationReceivingV1 {
         execution: &EndpointExecution,
         files: &ProtectedEndpointFiles,
     ) -> Result<(), BrokerSessionSecurityError> {
-        if self.closed.is_some() || self.admission.as_ref().is_some_and(|admission| admission.failure().is_some()) {
-            return Err(BrokerSessionSecurityError::Currentness);
+        if self.closed.is_some() {
+            return Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "endpoint revalidation already closed",
+            });
+        }
+        if self.admission.as_ref().is_some_and(|admission| admission.failure().is_some()) {
+            return Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "endpoint revalidation admission",
+            });
         }
         match self.archive.as_mut() {
             Some(archive) => archive.observe_once(execution, files),
@@ -216,7 +223,9 @@ impl EndpointRevalidationReceivingV1 {
                 observation.observe_once(execution, files, Disposition::Ordinary);
                 observation.classified_result()
             }
-            None => Err(BrokerSessionSecurityError::Currentness),
+            None => Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "endpoint revalidation archive absent",
+            }),
         }
     }
 
@@ -380,11 +389,15 @@ impl EndpointRevalidationArchiveV1 {
         files: &ProtectedEndpointFiles,
     ) -> Result<(), BrokerSessionSecurityError> {
         let Some(index) = self.observations.iter().position(Option::is_none) else {
-            self.exhausted.get_or_insert(BrokerSessionSecurityError::Currentness);
-            return Err(BrokerSessionSecurityError::Currentness);
+            let cause = self.exhausted.get_or_insert(
+                BrokerSessionSecurityError::CurrentnessObservation {
+                    observation: "endpoint revalidation archive exhausted",
+                },
+            );
+            return Err(cause.clone());
         };
-        if self.exhausted.is_some() {
-            return Err(BrokerSessionSecurityError::Currentness);
+        if let Some(cause) = &self.exhausted {
+            return Err(cause.clone());
         }
 
         self.observations[index] = Some(EndpointCurrentnessObservationV1::new());

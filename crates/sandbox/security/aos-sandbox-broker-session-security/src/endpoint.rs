@@ -1419,7 +1419,9 @@ impl ProtectedBrokerSessionBrokerV1 {
             *self.inner.files.manifest().binding().as_bytes(),
         )
         .map(UntrustedBrokerSessionEndpointPublicationV1::to_canonical_bytes)
-        .map_err(|_| BrokerSessionSecurityError::Currentness);
+        .map_err(|_| BrokerSessionSecurityError::CurrentnessObservation {
+            observation: "endpoint publication zero claim",
+        });
         let packet = match result {
             Ok(packet) => packet,
             Err(error) => return self.inner.poison(error),
@@ -2543,7 +2545,12 @@ mod tests {
         assert_eq!(archive.retained_file_count(), 8);
         assert_eq!(calls.load(Ordering::Relaxed), 4);
 
-        assert_eq!(archive.observe_once(&execution, &endpoint.files), Err(BrokerSessionSecurityError::Currentness));
+        assert_eq!(
+            archive.observe_once(&execution, &endpoint.files),
+            Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "endpoint revalidation archive exhausted",
+            })
+        );
         assert_eq!(calls.load(Ordering::Relaxed), 4);
         assert_eq!(archive.retained_file_count(), 8);
         assert!(std::ptr::eq(archive.failure_for(&first_error).unwrap()
