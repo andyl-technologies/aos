@@ -78,6 +78,20 @@ pub(super) fn reject_missing_authority(packet: &[u8]) {
     );
 }
 
+pub(super) fn reject_conflicting_operation(method: BrokerMethod, packet: &[u8]) {
+    assert_eq!(
+        invoke("reject-conflicting-operation", method, packet),
+        b"conflicting-operation-rejected-v1",
+    );
+}
+
+pub(super) fn reject_unavailable_method(method: BrokerMethod, packet: &[u8]) {
+    assert_eq!(
+        invoke("reject-unavailable-method", method, packet),
+        b"unavailable-method-rejected-v1",
+    );
+}
+
 /// Checks durable inventory equality independently of the broker incarnation.
 pub(super) fn assert_inventory_unchanged(previous: &[u8], current: &[u8], restarted: bool) {
     use aos_sandbox_protocol::decode_storage_resource_inventory_response_with_model;

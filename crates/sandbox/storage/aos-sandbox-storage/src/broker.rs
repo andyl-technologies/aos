@@ -9496,17 +9496,20 @@ mod tests {
                 }
                 "retry" => {
                     storage_rpc_repair(true);
-                    "retry-conflict"
+                    "retry-rejected"
                 }
                 "prepare" => {
                     assert!(prepared_response.is_none());
                     prepared_response = Some(storage_rpc_prepare());
                     "prepare"
                 }
-                "prepare-replay" => {
-                    let replayed_response = storage_rpc_prepare();
-                    assert_eq!(prepared_response.as_ref(), Some(&replayed_response));
-                    "prepare-replay"
+                "prepare-retry" => {
+                    assert!(prepared_response.is_some());
+                    storage_rpc_session::reject_conflicting_operation(
+                        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG,
+                        &storage_rpc_prepare_packet(),
+                    );
+                    "prepare-retry-rejected"
                 }
                 "prepare-one-two-unavailable" => {
                     storage_rpc_method_unavailable(
@@ -9536,7 +9539,7 @@ mod tests {
         }
     }
 
-    fn storage_rpc_prepare() -> Vec<u8> {
+    fn storage_rpc_prepare_packet() -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
         let request =
             fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-request.pb")).unwrap();
@@ -9545,7 +9548,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let packet = encode_authorized_request_envelope(
+        encode_authorized_request_envelope(
             ProtocolId::StorageBroker,
             method,
             &request,
@@ -9557,7 +9560,12 @@ mod tests {
                 ownership_lease_signature: &artifacts.ownership_lease_signature,
             },
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn storage_rpc_prepare() -> Vec<u8> {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
+        let packet = storage_rpc_prepare_packet();
         let outcome = storage_rpc_session::exchange(
             method,
             BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
@@ -9617,19 +9625,7 @@ mod tests {
             },
         )
         .unwrap();
-        let outcome = storage_rpc_session::exchange(
-            method,
-            BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
-        );
-        let error = outcome
-            .error
-            .as_option()
-            .expect("unavailable Storage method returned success");
-        assert_eq!(
-            error.code,
-            BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
-        );
-        assert!(!error.retryable);
+        storage_rpc_session::reject_unavailable_method(method, &packet);
     }
 
     fn storage_rpc_decoy() {
@@ -9691,19 +9687,13 @@ mod tests {
             },
         )
         .unwrap();
-        let outcome = storage_rpc_session::exchange(
-            method,
-            BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
-        );
-
         if expect_conflict {
-            let error = outcome
-                .error
-                .as_option()
-                .expect("Storage repair retry returned success");
-            assert_eq!(error.code, BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT);
-            assert!(!error.retryable);
+            storage_rpc_session::reject_conflicting_operation(method, &packet);
         } else {
+            let outcome = storage_rpc_session::exchange(
+                method,
+                BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
+            );
             assert!(
                 outcome.error.is_unset(),
                 "Storage repair failed: {:?}",

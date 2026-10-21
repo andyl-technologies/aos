@@ -110,7 +110,7 @@ fn connect(
 fn exchange(
     method: BrokerMethod,
     mut envelope: BrokerRequestEnvelope,
-) -> AuthenticatedBrokerMethodOutcomeV1 {
+) -> Result<AuthenticatedBrokerMethodOutcomeV1, crate::DormantBrokerSessionHandshakeErrorV1> {
     let (mut session, deadline) = connect(method, None).unwrap();
     let prepared = session
         .prepare_authenticated_request(method, |coordinates| {
@@ -169,7 +169,7 @@ fn exchange(
 
     loop {
         wait_for_handshake_readiness(session.as_fd().unwrap(), false, deadline).unwrap();
-        match session.receive_authenticated_response(outstanding).unwrap() {
+        match session.receive_authenticated_response(outstanding)? {
             DormantBrokerResponseProgressV1::Pending(pending) => outstanding = pending,
             DormantBrokerResponseProgressV1::Committed(committed) => {
                 let ProtectedBrokerOutcomeCommitResultV1::Committed(committed) = committed else {
@@ -177,7 +177,7 @@ fn exchange(
                 };
                 let (outcome, currentness) = committed.into_outcome_and_currentness();
                 drop(currentness);
-                return outcome;
+                return Ok(outcome);
             }
         }
     }
@@ -241,7 +241,41 @@ fn installed_storage_rpc_client() {
         "exchange" => {
             let envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
             assert_eq!(envelope.method, method);
-            exchange(method, envelope).canonical_packet().to_vec()
+            exchange(method, envelope)
+                .unwrap()
+                .canonical_packet()
+                .to_vec()
+        }
+        "reject-conflicting-operation" => {
+            assert!(matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            ));
+            let envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
+            assert_eq!(envelope.method, method);
+            // A fresh session selects a fresh request header. Reusing an
+            // already committed operation under that header is a conflicting
+            // request, not an exact replay of its original signed packet.
+            assert!(matches!(
+                exchange(method, envelope),
+                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
+            ));
+            b"conflicting-operation-rejected-v1".to_vec()
+        }
+        "reject-unavailable-method" => {
+            assert!(matches!(
+                method,
+                BrokerMethod::BROKER_METHOD_STORAGE_APPLY
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            ));
+            let envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
+            assert_eq!(envelope.method, method);
+            assert!(matches!(
+                exchange(method, envelope),
+                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
+            ));
+            b"unavailable-method-rejected-v1".to_vec()
         }
         "reject-downgrade" => {
             let error = connect(method, Some(2)).err().unwrap();

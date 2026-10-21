@@ -672,7 +672,7 @@ in {
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
-    controller("retry", "retry-conflict")
+    controller("retry", "retry-rejected")
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     controller("inventory-live", "inventory-live")
     observer_current = observer_after(observer_current, 1)
@@ -726,7 +726,9 @@ in {
     assert replay_claims() == 1
     assert dataset_snapshot() == prepare_datasets
 
-    controller("prepare-replay", "prepare-replay")
+    # A fresh authenticated session chooses a new request header. Reusing the
+    # operation must be refused; exact original-packet replay is a separate cut.
+    controller("prepare-retry", "prepare-retry-rejected")
     assert journal_hash() == stable_hash
     assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
