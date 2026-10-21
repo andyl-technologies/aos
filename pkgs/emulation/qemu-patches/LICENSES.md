@@ -37,6 +37,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-memory-discard-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-memory-region-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-provider-metadata.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-member-return.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-publisher-protocol.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-shmem-callback-return.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-cached-writer-memory.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
