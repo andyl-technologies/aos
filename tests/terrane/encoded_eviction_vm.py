@@ -273,7 +273,7 @@ def run(driver, uuid):
             "missing actual mixed encoded allocation identity inventory")
         paths = {
             "raw": (root / "chunks" / raw[:2] / (raw + ".0"), 840),
-            "sealed": (root / "sealed" / sealed, 841),
+            "sealed": (root / "sealed" / sealed[:2] / sealed, 841),
             "index": (root / "objects/pack" / pack[:2] / (pack + ".idx"), 840),
             "pack": (root / "objects/pack" / pack[:2] / (pack + ".pack"), 840),
             "dictionary": (root / "chunks" / dictionary[:2] / (dictionary + ".0"), 840),
