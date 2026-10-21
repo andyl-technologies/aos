@@ -26,7 +26,9 @@ pub(super) async fn exercise(
     let store = cache.content();
     assert_eq!(cache.reassembly(), ReassemblyMode::Always);
     let first = super::repeated::natural_chunk(profile)?;
-    let last = vec![71; 33];
+    // A manifest must exceed the inline threshold. A prefix of this known
+    // natural chunk remains a valid final chunk with no earlier CDC boundary.
+    let last = first[..profile.minimum() + 1].to_vec();
     let mut chunks = Vec::new();
     let mut expected = Vec::new();
     for (bytes, position) in [
@@ -100,6 +102,10 @@ pub(super) async fn exercise(
         assert!(object.handle().write_at(b"forbidden", 0).is_err());
 
         let report = object.into_cache().await.map_err(io::Error::other)?;
+        assert_eq!(
+            report.released_source_admissions,
+            if mode == ReassemblyMode::Always { 2 } else { 0 }
+        );
         super::assert_cache_grace(store, identity, report.release_grace_ends_at).await?;
         store.ready().validate_portable().await?;
         println!(

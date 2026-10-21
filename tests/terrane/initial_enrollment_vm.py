@@ -219,7 +219,7 @@ def configured_publication():
             for domain in ["public", "private"]:
                 domain_files = [row for row in files if row[0] == domain]
                 lengths = sorted(row[5] for row in domain_files)
-                require(len(domain_files) == 2 and lengths[0] == 33 and lengths[1] > 262144,
+                require(len(domain_files) == 2 and lengths[0] == 262145 and lengths[1] > lengths[0],
                         "domain lacks actual single and multi-chunk sealed objects")
                 sizes.append(lengths)
             require(sizes[0] == sizes[1], "domain reassembly plaintext lengths differ")
