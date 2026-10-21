@@ -675,13 +675,12 @@ impl Handshake {
                 "advertised implementation differs from installed measurement",
             ));
         }
-        let offered: BTreeSet<_> = request
-            .required_features
-            .iter()
-            .chain(&request.optional_features)
-            .collect();
+        // Request validation establishes strict ordering in each IdSet. Query
+        // those original arrays directly instead of allocating their union.
         if result.selected_features.iter().any(|feature| {
-            !offered.contains(feature) || !self.policy.supported_features.contains(feature)
+            let offered = request.required_features.binary_search(feature).is_ok()
+                || request.optional_features.binary_search(feature).is_ok();
+            !offered || !self.policy.supported_features.contains(feature)
         }) || request
             .required_features
             .iter()
@@ -831,13 +830,12 @@ impl Handshake {
         self.current_connection = Some(connection.clone());
         self.selected_features = Some(result.selected_features.clone());
         self.shared_epoch.store(next, Ordering::Release);
-        let envelope_extensions = self
-            .policy
-            .envelope_extension_features
-            .iter()
-            .filter(|(_, feature)| result.selected_features.contains(feature))
-            .map(|(name, _)| name.clone())
-            .collect();
+        let mut envelope_extensions = BTreeSet::new();
+        for (name, feature) in &self.policy.envelope_extension_features {
+            if result.selected_features.contains(feature) {
+                envelope_extensions.insert(name.clone());
+            }
+        }
         Ok(ConnectionAuthority {
             shared_epoch: Arc::clone(&self.shared_epoch),
             registration_gate: Arc::clone(&self.registration_gate),

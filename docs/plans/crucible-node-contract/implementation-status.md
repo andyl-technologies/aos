@@ -1860,6 +1860,22 @@ still needs the complete separately admitted SDK constructor row and genuine
 Native18 verifier before invoking this primitive; response publication, ACK,
 model-absent policy and opaque Initial/Recipe production remain unfinished.
 
+## Direct SDK selection lookup
+
+Initial Hello admission now queries the validated, strictly ordered required and
+optional feature arrays directly. It preserves their union membership semantics
+without collecting an intermediate tree. Selected envelope-extension names enter
+the final retained set by insertion, avoiding the temporary vector and stable
+sort used by the pinned standard library's `BTreeSet::from_iter` implementation.
+The complete installed policy still determines every retained selected name.
+
+Three focused controls pass: all 32 small advertised/selected feature
+combinations against an independent union oracle, invalid order/duplicate
+refusal before callbacks, and all four feature combinations against the complete
+installed envelope-name projection. Complete qualification remains pending.
+This change grants no native authority and does not supply the remaining SDK
+constructor funding row or Native18 verifier.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
