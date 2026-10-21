@@ -744,6 +744,26 @@ created; it does not open PID 1's procfs namespace or retain a host-root FD.
 Passing these native tests does not qualify the Storage restart/repair VM or
 the installed two-owner floor hooks.
 
+Application unit and integration test-target compilation, including the genuine
+Source startup fixture's external-credential probe, passes at
+`/nix/store/lly4dpnbqffhf7ckvvn9g0mcm2s5raxv-aos-test-targets-0.1.0`.
+This compiles the installed-test entry points; it does not execute their VM
+prerequisites.
+
+The root-handoff build check passes at
+`/nix/store/smynkb6ij1ypsygp1xgjcarcczda0p7n-selinux-root-handoff-check-0`.
+It retains the rejection of TPM transport DSOs on default loader paths while
+excluding the private pinned store from that search. The immutable image also
+labels its four always-created Nix state scaffold directories without granting
+labels to arbitrary descendants. This build result does not replace enforcing
+boot qualification.
+
+The separate `fleet.sandbox-root-initializer-mount-transfer` QEMU check passes at
+`/nix/store/y5q68w8x48lpxkl014p2fwmrcldpx6l5-aos-fleet-test-sandbox-root-initializer-mount-transfer-0`.
+Its native probe attaches an initializer-owned detached mount across the process
+boundary both with and without a user-namespace boundary. It does not establish
+an installed Root session, Controller lifecycle, or protected floor.
+
 The AOS Nix QEMU check `fleet.sandbox-publisher-native-sessions` passes the
 complete seven-test Publisher suite with `kernel-tests`, including all five
 process/cgroup cases assigned to native execution by the Nix-sandbox profile.
