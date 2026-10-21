@@ -109,10 +109,10 @@ in
           manifest=${stage0}/share/aos-selinux-stage0/systemd_runtime_manifest.bin
           header=${stage0}/share/aos-selinux-stage0/systemd_runtime_manifest.h
           test -s "$manifest"
-          grep -F '#define AOS_PHYSICAL_SYSTEMD_PATH "/nix.lower/store/' "$header"
-          grep -F '#define AOS_PHYSICAL_INTERPRETER_PATH "/nix.lower/store/' "$header"
+          grep -F '#define AOS_PHYSICAL_SYSTEMD_PATH "/usr/lib/aos/nix/store/' "$header"
+          grep -F '#define AOS_PHYSICAL_INTERPRETER_PATH "/usr/lib/aos/nix/store/' "$header"
           grep -F '#define AOS_RUNTIME_ROOTS_PATH "/nix/store/' "$header"
-          grep -F '#define AOS_PHYSICAL_RUNTIME_ROOTS_PATH "/nix.lower/store/' "$header"
+          grep -F '#define AOS_PHYSICAL_RUNTIME_ROOTS_PATH "/usr/lib/aos/nix/store/' "$header"
           grep -F '#define AOS_EXPECTED_POLICY_SHA256 "' "$header"
           grep -F '#define AOS_RUNTIME_CLOSURE_DIGEST "' "$header"
 
@@ -177,7 +177,7 @@ in
           assert preload["kind"] == "regular", preload
           assert preload["context"].split(":", 3)[2] == "lib_t", preload
           runtime_roots = entries[
-              "/nix.lower/store/${builtins.baseNameOf runtimeRootsProvisioner}/bin/"
+              "/usr/lib/aos/nix/store/${builtins.baseNameOf runtimeRootsProvisioner}/bin/"
               "aos-selinux-runtime-roots"
           ]
           assert runtime_roots["kind"] == "regular", runtime_roots

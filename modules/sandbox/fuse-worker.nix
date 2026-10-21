@@ -53,7 +53,7 @@ in {
         StartLimitIntervalSec = "infinity";
         StartLimitBurst = 1;
         CollectMode = "inactive-or-failed";
-        RequiresMountsFor = "/nix.lower/store";
+        RequiresMountsFor = "/usr/lib/aos/nix/store";
       };
       serviceConfig = {
         Type = "exec";
@@ -82,7 +82,7 @@ in {
         PrivateMounts = true;
         # Install before the dynamic loader runs; logical ELF/DSO paths must
         # resolve to the same physical image inodes pinned by PID 1.
-        BindReadOnlyPaths = ["/nix.lower/store:/nix/store"];
+        BindReadOnlyPaths = ["/usr/lib/aos/nix/store:/nix/store"];
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectControlGroups = true;

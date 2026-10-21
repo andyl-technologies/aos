@@ -63,7 +63,7 @@
     script = ''
       set -eu
 
-      exec 3< /sysroot/nix.lower/store/${systemdBasename}
+      exec 3< /sysroot/usr/lib/aos/nix/store/${systemdBasename}
       exec 4< /sysroot/nix/store/${glibcBasename}
       exec 5< /sysroot/nix/store/${libcapBasename}
       exec 6< /sysroot
@@ -135,7 +135,7 @@
     script = ''
       set -eu
 
-      exec 3< /nix.lower/store/${systemdBasename}
+      exec 3< /usr/lib/aos/nix/store/${systemdBasename}
       exec 4< /nix/store/${glibcBasename}
       exec 5< /nix/store/${libcapBasename}
       exec 6< /
@@ -377,7 +377,7 @@ in {
           marker = machine.succeed("cat /run/aos/selinux-root-handoff")
           assert "version=1" in marker
           assert "phase=switch-root" in marker
-          assert "systemd=/nix.lower/store/" in marker
+          assert "systemd=/usr/lib/aos/nix/store/" in marker
           assert "manifest_sha256=" in marker
           inode = prove_custody(machine)
 

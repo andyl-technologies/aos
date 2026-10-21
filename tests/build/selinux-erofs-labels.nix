@@ -134,9 +134,9 @@ in
           assert entries["/sys"]["context"].split(":", 3)[2] == "sysfs_t", entries["/sys"]
           ' \
             ${labeledRootfs}/rootfs-selinux-contexts.json \
-            /nix.lower/store/${builtins.baseNameOf pkgs.systemd}/lib/systemd/systemd \
+            /usr/lib/aos/nix/store/${builtins.baseNameOf pkgs.systemd}/lib/systemd/systemd \
             "$loader" \
-            /nix.lower/store/${builtins.baseNameOf pkgs.glibc}/lib/libc.so.6
+            /usr/lib/aos/nix/store/${builtins.baseNameOf pkgs.glibc}/lib/libc.so.6
 
           root=$TMPDIR/root
           coreutils_store=/nix/store/$(basename ${pkgs.coreutils})

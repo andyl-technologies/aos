@@ -78,7 +78,7 @@ impl FixedFuseWorkerImageV1 {
             ));
         }
         let root = BeneathRoot::from_owned(root)?;
-        let top = physical_store_link(&root, "aos-toplevel", None)?;
+        let top = physical_store_link(&root, "usr/lib/aos/toplevel", None)?;
         require_image_directory(&root, &top)?;
         let units = physical_store_link(&root, &format!("{top}/systemd-units"), None)?;
         require_image_directory(&root, &units)?;
@@ -252,7 +252,7 @@ fn physical_store_path(target: &[u8], suffix: Option<&str>) -> Result<String> {
     {
         return Err(invalid("store target does not have the fixed image shape"));
     }
-    Ok(format!("nix.lower/store/{relative}"))
+    Ok(format!("usr/lib/aos/nix/store/{relative}"))
 }
 
 fn executable_from_fragment(bytes: &[u8]) -> Result<String> {
@@ -309,10 +309,11 @@ mod tests {
     fn only_exact_image_store_links_are_projected() {
         assert_eq!(
             physical_store_path(STORE.as_bytes(), None).unwrap(),
-            "nix.lower/store/0123456789abcdfghijklmnpqrsvwxyz-worker"
+            "usr/lib/aos/nix/store/0123456789abcdfghijklmnpqrsvwxyz-worker"
         );
         for changed in [
             STORE.replace("/nix/store/", "/nix.lower/store/"),
+            STORE.replace("/nix/store/", "/usr/lib/aos/nix/store/"),
             STORE.replace('0', "e"),
             format!("{STORE}/extra"),
             format!("{STORE}/../outside"),
@@ -328,7 +329,7 @@ mod tests {
         let exact = format!("[Service]\nExecStart={STORE}{EXECUTABLE_SUFFIX} {ARGUMENT}\n");
         assert_eq!(
             executable_from_fragment(exact.as_bytes()).unwrap(),
-            format!("nix.lower/store/{}{EXECUTABLE_SUFFIX}", &STORE[11..])
+            format!("usr/lib/aos/nix/store/{}{EXECUTABLE_SUFFIX}", &STORE[11..])
         );
         for changed in [
             exact.replace("[Service]", "[Unit]"),

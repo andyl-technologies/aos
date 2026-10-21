@@ -457,7 +457,9 @@ in {
           cp "$src" "$out/$target"
         }
 
-        mkdir -p "$out"
+        # PID 1 authenticates this immutable parent before checking whether
+        # enrollment selectors are absent. Keep it even on unconfigured images.
+        mkdir -p "$out/aos"
         ${lib.concatMapStringsSep "\n" (
             entry:
               lib.escapeShellArgs [

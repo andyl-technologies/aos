@@ -154,7 +154,7 @@
       serviceConfig = {
         Type = "exec";
         ExecStart = "${pkgs.aos-netd}/bin/aos-sandbox-network-namespace-inspector";
-        BindReadOnlyPaths = ["/nix.lower/store:/nix/store"];
+        BindReadOnlyPaths = ["/usr/lib/aos/nix/store:/nix/store"];
         StandardInput = "socket";
         StandardOutput = "socket";
         # Keep loader failures visible when stage-2 journald is unavailable.
@@ -322,8 +322,8 @@ in
   assert toString inspectorLookalike != toString pkgs.aos-netd;
   assert packageOverrideRejected brokerPackageOverride;
   assert packageOverrideRejected workerPackageOverride;
-  assert protectedConfig.systemd.services.aos-netd.serviceConfig.BindReadOnlyPaths == ["/nix.lower/store:/nix/store"];
-  assert protectedConfig.systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.BindReadOnlyPaths == ["/nix.lower/store:/nix/store"];
+  assert protectedConfig.systemd.services.aos-netd.serviceConfig.BindReadOnlyPaths == ["/usr/lib/aos/nix/store:/nix/store"];
+  assert protectedConfig.systemd.services."aos-sandbox-network-lifecycle-worker@".serviceConfig.BindReadOnlyPaths == ["/usr/lib/aos/nix/store:/nix/store"];
   assert builtins.any
   (assertion:
     !assertion.assertion
@@ -539,13 +539,13 @@ in
             mount, filesystem = store_mounts[0]
             fields = mount.split()
             options = set(fields[5].split(","))
-            assert fields[3] == "/nix.lower/store", fields
+            assert fields[3] == "/usr/lib/aos/nix/store", fields
             assert filesystem.split()[0] == "erofs", filesystem
             assert {"ro", "nodev"} <= options, options
             assert "nosuid" not in options and "noexec" not in options, options
 
             private_executable = f"/proc/{pid}/root/nix/store/${netdBasename}/bin/{executable}"
-            physical_executable = f"/nix.lower/store/${netdBasename}/bin/{executable}"
+            physical_executable = f"/usr/lib/aos/nix/store/${netdBasename}/bin/{executable}"
             identities = machine.succeed(
                 f"stat -Lc '%d:%i' {private_executable} {physical_executable}"
             ).splitlines()
@@ -559,7 +559,7 @@ in
             machine.fail(f"grep -q AOS_SHADOWED_LIBSELINUX {private_shadowed}")
             private_dso = machine.succeed(
                 f"stat -Lc '%d:%i' {private_shadowed} "
-                "/nix.lower/store/${libselinuxBasename}/lib/libselinux.so.1"
+                "/usr/lib/aos/nix/store/${libselinuxBasename}/lib/libselinux.so.1"
             ).splitlines()
             assert len(private_dso) == 2 and private_dso[0] == private_dso[1], private_dso
 
@@ -604,7 +604,7 @@ in
         def assert_image_fragment(machine, unit, image_unit):
             expected = machine.succeed(
                 "${pkgs.coreutils}/bin/readlink "
-                f"/aos-toplevel/systemd-units/{image_unit}"
+                f"/usr/lib/aos/toplevel/systemd-units/{image_unit}"
             ).strip()
             actual = machine.succeed(
                 f"systemctl show -P FragmentPath '{unit}'"
@@ -740,7 +740,7 @@ in
             "${pkgs.util-linux}/bin/findmnt -n -o ID -T /"
         ).strip()
         lower_store_mount = protected.succeed(
-            "${pkgs.util-linux}/bin/findmnt -n -o ID -T /nix.lower/store"
+            "${pkgs.util-linux}/bin/findmnt -n -o ID -T /usr/lib/aos/nix/store"
         ).strip()
         assert root_mount == lower_store_mount, (root_mount, lower_store_mount)
         assert protected.succeed(
@@ -748,12 +748,12 @@ in
         ).strip("\x00\n") == "system_u:object_r:var_t"
         expected_label = protected.succeed(
             "${pkgs.attr}/bin/getfattr -n security.selinux --only-values "
-            "/nix.lower/store/${netdBasename}/bin/"
+            "/usr/lib/aos/nix/store/${netdBasename}/bin/"
             "aos-sandbox-network-namespace-inspector"
         ).strip("\x00\n")
         lookalike_label = protected.succeed(
             "${pkgs.attr}/bin/getfattr -n security.selinux --only-values "
-            "/nix.lower/store/${inspectorLookalikeBasename}/bin/"
+            "/usr/lib/aos/nix/store/${inspectorLookalikeBasename}/bin/"
             "aos-sandbox-network-namespace-inspector"
         ).strip("\x00\n")
         assert expected_label.split(":", 3)[2] == "aos_sandbox_namespace_inspector_exec_t"
@@ -851,7 +851,7 @@ in
         )
         protected.succeed(
             "cmp -s /etc/selinux/aos/policy/policy.33 "
-            "/nix.lower/store/${policyBasename}/etc/selinux/aos/policy/policy.33"
+            "/usr/lib/aos/nix/store/${policyBasename}/etc/selinux/aos/policy/policy.33"
         )
 
         # The image fragments must win even when mutable lookup paths contain

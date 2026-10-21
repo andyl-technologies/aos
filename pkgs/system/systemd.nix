@@ -316,6 +316,8 @@ in
       ./patches/0031-source-clone-dominant-permits.patch
       ./patches/0032-network-worker-reaped-status.patch
       ./patches/0033-controller-prepaid-recipient-range.patch
+      ./patches/0034-resource-enrollment-startup-diagnostics.patch
+      ./patches/0035-merged-usr-immutable-image-paths.patch
     ];
 
     buildDeps = [

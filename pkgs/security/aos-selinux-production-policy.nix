@@ -228,11 +228,11 @@
       if builtins.match "[0-9a-f]{32}" domain == null || domain == "00000000000000000000000000000000"
       then throw "online Nix file contexts require the selected nonzero domain"
       else ''
-        /(nix|nix\.lower)/store/${sandboxBasename}/bin/aos-sandbox-nixd -- system_u:object_r:aos_sandbox_nix_exec_t
-        /(nix|nix\.lower)/store/${helperBasename}/libexec/aos-nix-controller-tpm-helper -- system_u:object_r:aos_nix_controller_floor_helper_exec_t
-        /(nix|nix\.lower)/store/${helperBasename}/libexec/aos-nix-owner-tpm-helper -- system_u:object_r:aos_nix_owner_floor_helper_exec_t
-        /(nix|nix\.lower)/store/${readerBasename}/libexec/aos-nix-online-store-reader -- system_u:object_r:aos_nix_online_store_reader_exec_t
-        /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-nix-startup-profile-2(/.*)? system_u:object_r:aos_nix_startup_profile_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${sandboxBasename}/bin/aos-sandbox-nixd -- system_u:object_r:aos_sandbox_nix_exec_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${helperBasename}/libexec/aos-nix-controller-tpm-helper -- system_u:object_r:aos_nix_controller_floor_helper_exec_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${helperBasename}/libexec/aos-nix-owner-tpm-helper -- system_u:object_r:aos_nix_owner_floor_helper_exec_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${readerBasename}/libexec/aos-nix-online-store-reader -- system_u:object_r:aos_nix_online_store_reader_exec_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/[a-z0-9]{32}-aos-nix-startup-profile-2(/.*)? system_u:object_r:aos_nix_startup_profile_t
         /var/lib/aos/sandbox-nix/domains/${domain}/root(/.*)? system_u:object_r:aos_nix_online_store_t
         /var/lib/aos/sandbox-nix/domains/${domain}/root/nix/var/nix/gcroots/(aos-online|auto)(/.*)? system_u:object_r:aos_nix_online_gcroots_t
         /var/lib/aos/sandbox-nix/broker-session/controller(/.*)? system_u:object_r:aos_nix_online_owner_state_t
@@ -246,7 +246,7 @@
   # Its two-component version must not widen the existing owner-label helper.
   systemdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString systemd));
   systemdBasenameRegex = builtins.replaceStrings ["."] ["\\."] systemdBasename;
-  systemdPinPathRegex = "/(nix|nix\\.lower)/store/${systemdBasenameRegex}/share/aos/backend-policy-artifact-v2";
+  systemdPinPathRegex = "/(nix|nix\\.lower|usr/lib/aos/nix)/store/${systemdBasenameRegex}/share/aos/backend-policy-artifact-v2";
   systemdPinPath = root: basename: "/${root}/store/${basename}/share/aos/backend-policy-artifact-v2";
   systemdSiblingBasename =
     (
@@ -263,6 +263,7 @@
     && builtins.match "[a-z0-9]{32}-systemd-261\\.2" systemdBasename != null
     && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdBasename) != null
     && builtins.match systemdPinPathRegex (systemdPinPath "nix.lower" systemdBasename) != null
+    && builtins.match systemdPinPathRegex (systemdPinPath "usr/lib/aos/nix" systemdBasename) != null
     && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdSiblingBasename) == null
     && systemdVersionSibling != systemdBasename
     && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdVersionSibling) == null
@@ -296,9 +297,9 @@
       else [];
   in
     if builtins.elem entry.program allowedPrograms && builtins.match "[a-z0-9]{32}-${entry.program}" basename != null
-    then "/(nix|nix\\.lower)/store/${basename}/bin/${entry.program} -- system_u:object_r:aos_sandbox_${entry.role}_view_preparer_exec_t\n"
+    then "/(nix|nix\\.lower|usr/lib/aos/nix)/store/${basename}/bin/${entry.program} -- system_u:object_r:aos_sandbox_${entry.role}_view_preparer_exec_t\n"
     else throw "view preparation requires an exact evaluated fixed Source/Cache script entrypoint";
-  inspectorPathRegex = "/(nix|nix\\.lower)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
+  inspectorPathRegex = "/(nix|nix\\.lower|usr/lib/aos/nix)/store/${netdBasenameRegex}/bin/aos-sandbox-network-namespace-inspector";
   inspectorPath = basename: "/nix/store/${basename}/bin/aos-sandbox-network-namespace-inspector";
   siblingBasename =
     (
@@ -323,7 +324,7 @@
     && builtins.match inspectorPathRegex (inspectorPath siblingVersionBasename) == null;
   workerBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-filesystem-fuse-worker));
   workerBasenameRegex = builtins.replaceStrings ["."] ["\\."] workerBasename;
-  workerPathRegex = "/(nix|nix\\.lower)/store/${workerBasenameRegex}/bin/aos-filesystem-fuse-worker";
+  workerPathRegex = "/(nix|nix\\.lower|usr/lib/aos/nix)/store/${workerBasenameRegex}/bin/aos-filesystem-fuse-worker";
   workerPath = basename: "/nix/store/${basename}/bin/aos-filesystem-fuse-worker";
   workerSibling =
     (
@@ -349,10 +350,10 @@
       if builtins.match "[0-9abcdfghijklmnpqrsvwxyz]{32}-aos-environment-provision-1" basename == null
       then throw "Environment evidence requires the exact canonical provision package"
       else ''
-        /(nix|nix\.lower)/store/${basename} -d system_u:object_r:aos_environment_provision_t
-        /(nix|nix\.lower)/store/${basename}/objects -d system_u:object_r:aos_environment_provision_t
-        /(nix|nix\.lower)/store/${basename}/instruction-v1 -- system_u:object_r:aos_environment_provision_t
-        /(nix|nix\.lower)/store/${basename}/objects/[0-9a-f]{64} -- system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${basename} -d system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${basename}/objects -d system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${basename}/instruction-v1 -- system_u:object_r:aos_environment_provision_t
+        /(nix|nix\.lower|usr/lib/aos/nix)/store/${basename}/objects/[0-9a-f]{64} -- system_u:object_r:aos_environment_provision_t
         /nix -d system_u:object_r:usr_t
         /nix/store -d system_u:object_r:usr_t
         /nix/var -d system_u:object_r:var_t
@@ -392,7 +393,7 @@
           (entry "/var/lib/aos/sandbox/source-evidence/environment-authority-v1.journal.compact.tmp" "regular" "aos_sandbox_policy_authority_state_t")
         ]
         ++ artifactEntries artifact
-        ++ artifactEntries (builtins.replaceStrings ["/nix/store/"] ["/nix.lower/store/"] artifact);
+        ++ artifactEntries (builtins.replaceStrings ["/nix/store/"] ["/usr/lib/aos/nix/store/"] artifact);
   });
   fileContexts =
     if exactNetdLabel && exactWorkerLabel && exactPublisherLabel && exactSystemdPinLabel

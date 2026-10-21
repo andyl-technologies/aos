@@ -254,7 +254,7 @@ in {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
         RequiresMountsFor =
-          lib.optionals protectedRoots ["/nix.lower/store"]
+          lib.optionals protectedRoots ["/usr/lib/aos/nix/store"]
           ++ lib.optionals config.aos.sandbox.networkInspector.enable [
             "/var/lib/aos/sandbox-network/namespace-inspector/expected-staging"
             "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"

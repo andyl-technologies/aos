@@ -335,7 +335,7 @@ in {
       after = ["aos-sandbox-network-worker-ready.service"];
       unitConfig.RequiresMountsFor =
         ["/sys/fs/cgroup" cfg.authorityDirectory]
-        ++ lib.optionals protectedRoots ["/nix.lower/store"];
+        ++ lib.optionals protectedRoots ["/usr/lib/aos/nix/store"];
       serviceConfig = {
         Type = "exec";
         ExecStart = ''

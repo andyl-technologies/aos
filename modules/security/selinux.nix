@@ -352,7 +352,6 @@ in {
         "security=selinux"
         "enforcing=1"
         "aos.selinux.root_handoff=1"
-        "rootflags=nodev"
       ];
       aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With ({
           aos-selinux-production-policy = productionPolicy;

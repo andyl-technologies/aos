@@ -1,26 +1,26 @@
-/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
-/(nix|nix\.lower)/store/[a-z0-9]{32}-systemd-[^/]+/bin/systemd-nspawn -- system_u:object_r:aos_nspawn_exec_t
-/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
-/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
-/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
-/(nix|nix\.lower)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
-/(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-nix-floor-provision -- system_u:object_r:aos_nix_offline_prepare_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
-/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
-/(nix|nix\.lower)/store/@AOS_VIEW_TOOLS_BASENAME_REGEX@/libexec/(bash|stat|mkdir|chown|findmnt|mount|umount) -- system_u:object_r:aos_sandbox_view_preparer_tool_exec_t
-/(nix|nix\.lower)/store/@AOS_STORAGE_BASENAME_REGEX@/bin/aos-storaged -- system_u:object_r:aos_sandbox_storage_exec_t
-/(nix|nix\.lower)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[a-z0-9]{32}-systemd-[^/]+/bin/systemd-nspawn -- system_u:object_r:aos_nspawn_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-nix-floor-provision -- system_u:object_r:aos_nix_offline_prepare_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_VIEW_TOOLS_BASENAME_REGEX@/libexec/(bash|stat|mkdir|chown|findmnt|mount|umount) -- system_u:object_r:aos_sandbox_view_preparer_tool_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_STORAGE_BASENAME_REGEX@/bin/aos-storaged -- system_u:object_r:aos_sandbox_storage_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
 /dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
-/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-tpm-helper-5/libexec/aos-nix-offline-tpm-helper -- system_u:object_r:aos_nix_offline_tpm_helper_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-tpm-helper-5/libexec/aos-nix-offline-tpm-helper -- system_u:object_r:aos_nix_offline_tpm_helper_exec_t
 # These public immutable inputs are not signer secrets or runtime authority.
-/(nix|nix\.lower)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
-/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-(2|3)/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
-/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
-/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-(2|3)/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
 /usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
 /usr/lib/systemd/aos-selinux-runtime-roots-handoff -- system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t
 /usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
@@ -28,7 +28,7 @@
 /init -l system_u:object_r:init_exec_t
 /usr -l system_u:object_r:usr_t
 /aos-registration -- system_u:object_r:etc_t
-/aos-toplevel -l system_u:object_r:etc_t
+/usr/lib/aos/toplevel -l system_u:object_r:etc_t
 /root -d system_u:object_r:user_home_dir_t
 /root(/.*)? system_u:object_r:user_home_t
 /run/current-system -l system_u:object_r:var_run_t
@@ -81,10 +81,10 @@
 /run/credentials/aos-storaged\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2) -- system_u:object_r:aos_sandbox_storage_credential_t
 
 # Fixed disabled Host055 artifacts and independently provisioned originals.
-/(nix|nix\.lower)/store/[^/]+-aos-sandbox-runtime-publisher-0\.1\.0/bin/aos-sandbox-runtime-publisher -- system_u:object_r:aos_runtime_deployment_publisher_exec_t
-/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-tpm-helper-0\.1\.0/libexec/aos-runtime-deployment-tpm-helper -- system_u:object_r:aos_runtime_deployment_helper_exec_t
-/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-startup-profile-1/(profile\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
-/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-storage-profile-2/(storage\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[^/]+-aos-sandbox-runtime-publisher-0\.1\.0/bin/aos-sandbox-runtime-publisher -- system_u:object_r:aos_runtime_deployment_publisher_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[^/]+-aos-runtime-deployment-tpm-helper-0\.1\.0/libexec/aos-runtime-deployment-tpm-helper -- system_u:object_r:aos_runtime_deployment_helper_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[^/]+-aos-runtime-deployment-startup-profile-1/(profile\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/[^/]+-aos-runtime-deployment-storage-profile-2/(storage\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
 /run/credentials/aos-sandbox-runtime-publisher\.service -d system_u:object_r:aos_runtime_deployment_credential_t
 /run/credentials/aos-sandbox-runtime-publisher\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2|runtime-deployment-signing-seed-v1|runtime-deployment-tpm-index-auth-v1|runtime-deployment-boot-purpose-v1|phase0-probe-public-key-v1) -- system_u:object_r:aos_runtime_deployment_credential_t
 /var/lib/aos/sandbox/runtime-deployment -d system_u:object_r:aos_runtime_deployment_state_t
@@ -111,9 +111,9 @@
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 
 # The selected carrier's daemon is already sealed with this exact object type.
-/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mountd -- system_u:object_r:aos_sandbox_mount_exec_t
-/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mount-helper -- system_u:object_r:aos_sandbox_mount_helper_exec_t
-/(nix|nix\.lower)/store/@AOS_SOURCE_PROVIDER_BASENAME_REGEX@/bin/aos-source-providerd -- system_u:object_r:aos_source_provider_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mountd -- system_u:object_r:aos_sandbox_mount_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mount-helper -- system_u:object_r:aos_sandbox_mount_helper_exec_t
+/(nix|nix\.lower|usr/lib/aos/nix)/store/@AOS_SOURCE_PROVIDER_BASENAME_REGEX@/bin/aos-source-providerd -- system_u:object_r:aos_source_provider_exec_t
 /run/aos/mount-executable-carrier/(install|chmod) -- system_u:object_r:aos_sandbox_mount_install_exec_t
 
 /run/credentials/aos-sandbox-mountd\.service -d system_u:object_r:aos_sandbox_mount_credential_t

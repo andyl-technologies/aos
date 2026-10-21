@@ -225,7 +225,7 @@ in {
       unitConfig = {
         CollectMode = "inactive-or-failed";
         RequiresMountsFor = [
-          "/nix.lower/store"
+          "/usr/lib/aos/nix/store"
           "/sys/fs/cgroup"
           "/var/lib/aos/sandbox-network/namespace-inspector/expected-final"
           "/var/lib/aos/sandbox-network/namespace-inspector/spent-staging"

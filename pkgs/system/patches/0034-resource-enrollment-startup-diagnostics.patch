@@ -1,0 +1,40 @@
+Subject: [PATCH] core: report immutable enrollment startup failures
+
+Keep the original refusal and errno while identifying the authenticated image
+boundary that failed before ordinary services and journald can start.
+
+--- a/src/core/manager.c
++++ b/src/core/manager.c
+@@ -2133,6 +2133,6 @@
+         r = aos_resource_enrollment_begin(m, serialization != NULL);
+         if (r < 0)
+-                return r;
++                return log_error_errno(r, "Failed to begin original resource enrollment: %m");
+         r = aos_resource_parent_begin(m, serialization != NULL);
+         if (r < 0)
+-                return r;
++                return log_error_errno(r, "Failed to begin original component parent enclosure: %m");
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6370,9 +6370,9 @@
+         if (fs.f_type != EROFS_SUPER_MAGIC_V1 ||
+             !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
+-                return -EPERM;
++                return log_error_errno(SYNTHETIC_ERRNO(EPERM), "Immutable enrollment root lacks EROFS, readonly or nodev: %m");
+         r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
+         if (r < 0)
+-                return r;
++                return log_error_errno(r, "Failed to authenticate immutable enrollment toplevel: %m");
+         link = path_join(top, "etc-basedir");
+         if (!link)
+                 return -ENOMEM;
+@@ -6382,3 +6382,3 @@
+         r = aos_network_image_link(link, NULL, root_st.st_dev, &basedir);
+         if (r < 0)
+-                return r;
++                return log_error_errno(r, "Failed to authenticate immutable enrollment etc-basedir: %m");
+@@ -6397,3 +6397,3 @@
+                 parent_fd = aos_network_open_image_path(parent_path, O_PATH | O_DIRECTORY);
+                 if (parent_fd < 0)
+-                        return parent_fd;
++                        return log_error_errno(parent_fd, "Failed to authenticate immutable enrollment aos directory: %m");

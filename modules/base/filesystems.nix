@@ -118,6 +118,10 @@ in {
   };
 
   config = {
+    # PID 1 authenticates immutable enrollment inputs before fstab remounts
+    # run. Apply the root's existing nodev policy at the initial mount too.
+    aos.boot.kernelParams = ["rootflags=nodev"];
+
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [
