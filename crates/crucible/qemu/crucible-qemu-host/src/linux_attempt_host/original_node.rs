@@ -61,6 +61,9 @@ pub struct OriginalNativeFreshLaunchError {
     node: Mutex<RetainedLaunch>,
     child_borrowed: std::sync::atomic::AtomicBool,
     helper: Mutex<helper_receiver::HelperDebt>,
+    source_host: OnceLock<
+        crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
+    >,
     helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
     exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
@@ -83,10 +86,39 @@ impl OriginalNativeFreshLaunchError {
             node: Mutex::new(RetainedLaunch::default()),
             child_borrowed: std::sync::atomic::AtomicBool::new(false),
             helper: Mutex::new(helper_receiver::HelperDebt::default()),
+            source_host: OnceLock::new(),
             helper_first: OnceLock::new(),
             exact_launch: Mutex::new(None),
             workspace: Mutex::new(None),
         })
+    }
+
+    /// Retains the authentic Main Source payer before binding any helper route.
+    ///
+    /// # Errors
+    /// Refuses a second payer; matching numeric limits never replace this owner.
+    pub(super) fn retain_source_host(
+        &self,
+        host: crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
+    ) -> Result<(), OriginalActorAccountError> {
+        self.source_host
+            .set(host)
+            .map_err(|_| OriginalActorAccountError::Unavailable)
+    }
+
+    /// Borrows the same prepaid Main Source purpose for later native startup.
+    ///
+    /// # Errors
+    /// Refuses absent genuine Main custody without creating a replacement payer.
+    pub(super) fn retained_source_host(
+        &self,
+    ) -> Result<
+        &crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
+        OriginalActorAccountError,
+    > {
+        self.source_host
+            .get()
+            .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(crate) fn reserve_child_owner(

@@ -9,6 +9,16 @@ pub(super) const CONTRACT: Contract = Contract {
     package: "crucible-qemu-host",
     target: "src/spawn/helper_receiver",
     required: &[
+        ("pub(crate) const DESCRIPTOR_PEAK: u64 = 3 * 2 + 2;", 1),
+        (
+            r#"pub(crate) fn retained_control_bytes() -> Option<u64> {
+    std::mem::size_of::<crate::node::RetainedChild>()
+        .checked_add(std::mem::size_of::<RetainedHelperOutput>())
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+}"#,
+            1,
+        ),
         (
             r#"pub(super) fn wait_image_tool(
     child: &mut QemuNodeChild,
@@ -85,13 +95,43 @@ loop {
     companions: &[
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose.rs",
-            required: &[(
-                r#".checked_add(helper_error_bytes)
+            required: &[
+                (
+                    r#".checked_add(helper_error_bytes)
 .and_then(|bytes| {
     bytes.checked_add(crate::spawn::helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?,)
 })"#,
-                1,
-            )],
+                    1,
+                ),
+                (
+                    r#"let (_, peak, descriptors) = source_admission::source_host_peak()?;
+let host = normal.reserve_source_host_purpose(peak, descriptors, &original)
+    .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+let payer = host.downgrade();
+controller.retain_source_host(host)?;
+slot.source_control_payer = Some(payer);
+purpose.ready = true;"#,
+                    1,
+                ),
+            ],
+        },
+        Companion {
+            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose/source_admission.rs",
+            required: &[
+                (
+                    r#"let host = slot.source_controller.as_ref()
+    .ok_or(InstalledProcessPurposeError::Identity)?
+    .retained_source_host()?.clone();
+if !host.belongs_to(normal) || slot.source_control_payer.is_none() {
+    return Err(InstalledProcessPurposeError::Identity);
+}"#,
+                    1,
+                ),
+                (
+                    ".and_then(|bytes| bytes.checked_add(crate::spawn::helper_receiver::retained_control_bytes()?))",
+                    1,
+                ),
+            ],
         },
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs",
@@ -119,7 +159,29 @@ loop {
                     1,
                 ),
                 (
-                    "Some(child) => body(child, &self.origin, &mut post.slot.output),",
+                    "Some(child) => body(child, &self.origin, &mut slot.output),",
+                    1,
+                ),
+                (
+                    r#"let controls = match self.reserve_helper_controls() {
+    Ok(controls) => controls,
+    Err(source) => {
+        slot.save_first(crate::QemuSpawnError::SourceAdmission { source });
+        return;
+    }
+};
+slot.controls = Some(controls);
+slot.probe_prepared |= T::CAPTURES_PROBE;
+slot.output = T::prepare_storage();
+let child = match command.spawn()"#,
+                    1,
+                ),
+                (
+                    r#"let controls = self.retained_source_host()?
+    .reserve_controls(crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes)?;
+controls.verify_original_capacity(
+    &self.origin, crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes,
+)?;"#,
                     1,
                 ),
                 ("self.slot.after = self.original.wait_slice().err();", 1),

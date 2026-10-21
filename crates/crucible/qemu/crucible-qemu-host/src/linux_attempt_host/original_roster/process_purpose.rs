@@ -486,6 +486,27 @@ impl NativeAccountAttempt {
             purpose.process_bytes,
             &purpose.envelope,
         )?);
+        // Fresh artifact helpers precede installed-ELF verification. Their
+        // actual Main payer must already exist before the route becomes ready;
+        // later Source admission borrows this exact purpose rather than opening
+        // another Source window after those effects.
+        let normal = credit
+            .original
+            .as_ref()
+            .and_then(|retained| retained.normal.as_ref())
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let controller = slot
+            .source_controller
+            .as_ref()
+            .ok_or(InstalledProcessPurposeError::Identity)?;
+        let original = controller.launch_original();
+        let (_, peak, descriptors) = source_admission::source_host_peak()?;
+        let host = normal
+            .reserve_source_host_purpose(peak, descriptors, &original)
+            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        let payer = host.downgrade();
+        controller.retain_source_host(host)?;
+        slot.source_control_payer = Some(payer);
         purpose.ready = true;
         drop(state);
         contract

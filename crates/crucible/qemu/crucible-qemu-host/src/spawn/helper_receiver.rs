@@ -277,6 +277,24 @@ pub(crate) enum RetainedHelperOutput {
 /// Bounds both diagnostic allocations within the Source constructor recipe.
 pub(crate) const MAXIMUM_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
 
+/// Covers three stdio pipe pairs and libstd's fork/exec error-channel pair.
+///
+/// The pinned Rust 1.98.1 command creates these before discarding child ends.
+/// Helpers install pre-exec authority, and do not request an optional pidfd.
+/// Reserving only the three returned parent ends would miss this birth overlap.
+pub(crate) const DESCRIPTOR_PEAK: u64 = 3 * 2 + 2;
+
+/// Measures one helper's child journal and both full diagnostic capacities.
+///
+/// The containing Main Source reserves this fixed overlap before helper birth.
+/// This query creates no payer, operation or physical-return evidence.
+pub(crate) fn retained_control_bytes() -> Option<u64> {
+    std::mem::size_of::<crate::node::RetainedChild>()
+        .checked_add(std::mem::size_of::<RetainedHelperOutput>())
+        .and_then(|bytes| bytes.checked_add(MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+}
+
 /// Keeps in-progress bytes in the receiving journal across error and unwind.
 pub(crate) struct PartialProbeOutput {
     pub(super) stdout: ProbeCapture,

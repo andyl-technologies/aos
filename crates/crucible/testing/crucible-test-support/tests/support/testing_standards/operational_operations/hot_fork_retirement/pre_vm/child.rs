@@ -65,7 +65,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
             r#"pub(crate) fn with_spawned_helper<T: HelperOutput>(
     self: &Arc<Self>,
     receiver: &crate::linux_attempt_host::SourceCleanupLender,
-    mut command: Command,
+    command: Command,
     operation: &'static str,
     body: impl FnOnce(
         &mut crate::QemuNodeChild,
@@ -75,63 +75,126 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
 ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
     let refused = || {
         crate::spawn::QemuGuardedImagePreparationError::issued(
-            crate::spawn::helper_receiver::helper_custody_refusal(), self,
+            crate::spawn::helper_receiver::helper_custody_refusal(),
+            self,
         )
     };
     let mut slot = self.helper.try_lock().map_err(|_| refused())?;
     if let Some(first) = &slot.first {
         return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-            crate::QemuSpawnError::HelperFailure { first: first.clone(), }, self,
+            crate::QemuSpawnError::HelperFailure {
+                first: first.clone(),
+            },
+            self,
         ));
     }
     if (T::CAPTURES_PROBE && slot.probe_prepared)
-        || slot.panicked || slot.child.is_some() || slot.output.is_some()
-        || slot.before.is_some() || slot.after.is_some() || slot.first_cleanup.is_some()
-    { return Err(refused()); }
+        || slot.controls.is_some()
+        || slot.panicked
+        || slot.child.is_some()
+        || slot.output.is_some()
+        || slot.before.is_some()
+        || slot.after.is_some()
+        || slot.first_cleanup.is_some()
+    {
+        return Err(refused());
+    }
+
     slot.lender = Some(receiver.clone());
     let before = self.origin.wait_slice();
     slot.before = before.as_ref().err().copied();
-    let post = HelperPost { original: &self.origin, slot: &mut slot, };
+    let post = HelperPost {
+        original: &self.origin,
+        slot: &mut slot,
+    };
     match before {
-        Err(first) => post.slot.save_first(crate::QemuSpawnError::SourceAdmission { source: first.into(), }),
-        Ok(_) => {
-            post.slot.probe_prepared |= T::CAPTURES_PROBE;
-            post.slot.output = T::prepare_storage();
-            match command.spawn() {
-            Err(source) => post.slot.save_first(crate::QemuSpawnError::Io { operation, source }),
-            Ok(child) => {
-                post.slot.child = Some(crate::node::RetainedChild::new(
-                    crate::QemuNodeChild::new(child), None,
-                ));
-                let result = match post.slot.child.as_mut()
-                    .and_then(crate::node::RetainedChild::direct_child_mut)
-                {
-                    Some(child) => body(child, &self.origin, &mut post.slot.output),
-                    None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
-                };
-                match result {
-                    Ok(output) => post.slot.output = Some(output.retain()),
-                    Err(first) => post.slot.save_first(first),
-                }
-            }
-            }
-        }
+        Err(first) => post
+            .slot
+            .save_first(crate::QemuSpawnError::SourceAdmission {
+                source: first.into(),
+            }),
+        Ok(_) => self.run_helper(post.slot, command, operation, body),
     }
     drop(post);
     if let Some(first) = slot.after {
-        slot.save_first(crate::QemuSpawnError::SourceAdmission { source: first.into(), });
+        slot.save_first(crate::QemuSpawnError::SourceAdmission {
+            source: first.into(),
+        });
     }
-    if let Some(first) = &slot.first { let _ = self.helper_first.set(first.clone()); }
+    if let Some(first) = &slot.first {
+        let _ = self.helper_first.set(first.clone());
+    }
     self.settle_helper(&mut slot, receiver);
     if let Some(first) = &slot.first {
         return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
-            crate::QemuSpawnError::HelperFailure { first: first.clone(), }, self,
+            crate::QemuSpawnError::HelperFailure {
+                first: first.clone(),
+            },
+            self,
         ));
     }
     if slot.child.is_none() && slot.first_cleanup.is_none() {
-        if let Some(output) = slot.output.take() { return T::take(output).ok_or_else(refused); }
+        if let Some(output) = slot.output.take() {
+            let output = T::take(output).ok_or_else(refused)?;
+            if !T::CAPTURES_PROBE {
+                // Image output owns no buffers; actual reap already closed
+                // the last physical leaf before this borrower returns.
+                drop(slot.controls.take());
+            }
+            return Ok(output);
+        }
     }
     Err(refused())
+}
+
+/// Funds buffers and process custody before either can become live.
+fn run_helper<T: HelperOutput>(
+    &self,
+    slot: &mut HelperDebt,
+    mut command: Command,
+    operation: &'static str,
+    body: impl FnOnce(
+        &mut crate::QemuNodeChild,
+        &HostOperationGuard,
+        &mut Option<RetainedHelperOutput>,
+    ) -> Result<T, crate::QemuSpawnError>,
+) {
+    let controls = match self.reserve_helper_controls() {
+        Ok(controls) => controls,
+        Err(source) => {
+            slot.save_first(crate::QemuSpawnError::SourceAdmission { source });
+            return;
+        }
+    };
+    slot.controls = Some(controls);
+    slot.probe_prepared |= T::CAPTURES_PROBE;
+    slot.output = T::prepare_storage();
+
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            slot.save_first(crate::QemuSpawnError::Io { operation, source });
+            return;
+        }
+    };
+    // Publish the actual child before pipe validation or any Original post.
+    slot.child = Some(crate::node::RetainedChild::new(
+        crate::QemuNodeChild::new(child),
+        None,
+    ));
+
+    let result = match slot
+        .child
+        .as_mut()
+        .and_then(crate::node::RetainedChild::direct_child_mut)
+    {
+        Some(child) => body(child, &self.origin, &mut slot.output),
+        None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
+    };
+    match result {
+        Ok(output) => slot.output = Some(output.retain()),
+        Err(first) => slot.save_first(first),
+    }
 }"#,
             1,
         ),

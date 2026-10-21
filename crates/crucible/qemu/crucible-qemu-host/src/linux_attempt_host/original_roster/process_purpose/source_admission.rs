@@ -61,7 +61,7 @@ impl OriginalNativeNodeBinding {
             .roster
             .upgrade()
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        let mut state = roster
+        let state = roster
             .lock()
             .map_err(|_| InstalledProcessPurposeError::Identity)?;
         let slot = state
@@ -101,24 +101,21 @@ impl OriginalNativeNodeBinding {
             .as_ref()
             .and_then(|retained| retained.normal.as_ref())
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        let (_, peak, descriptors) = source_host_peak()?;
-        let host = normal
-            .reserve_source_host_purpose(peak, descriptors, original)
-            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        let host = slot
+            .source_controller
+            .as_ref()
+            .ok_or(InstalledProcessPurposeError::Identity)?
+            .retained_source_host()?
+            .clone();
+        if !host.belongs_to(normal) || slot.source_control_payer.is_none() {
+            return Err(InstalledProcessPurposeError::Identity);
+        }
         let control = host
             .reserve_controls(3, crate::artifact_identity::installer_verifier_extent())
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
         control
             .verify_original(original)
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-        let slot = state
-            .slots
-            .get_mut(self.index)
-            .filter(|slot| {
-                slot.active == Some(self.generation) && slot.source_control_payer.is_none()
-            })
-            .ok_or(InstalledProcessPurposeError::Identity)?;
-        slot.source_control_payer = Some(host.downgrade());
         self.source_host = Some(host);
         Ok(control)
     }
@@ -346,6 +343,7 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
         })
         .and_then(|bytes| bytes.checked_add(qmp_extent))
         .and_then(|bytes| bytes.checked_add(source_extent))
+        .and_then(|bytes| bytes.checked_add(crate::spawn::helper_receiver::retained_control_bytes()?))
         .and_then(|bytes| {
             bytes.checked_add(
                 crate::spawn::source_supervision::OriginalSourceSupervision::host_allocation_extent()?,
@@ -356,7 +354,8 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
     Ok((
         source_extent,
         peak,
-        22 + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak(),
+        22 + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak()
+            + crate::spawn::helper_receiver::DESCRIPTOR_PEAK,
     ))
 }
 

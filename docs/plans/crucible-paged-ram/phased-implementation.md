@@ -125,6 +125,30 @@ The full plugin run also passes 1,088 unit tests and every integration gate.
 Native activation, complete diagnostic funding, genuine receiving ownership,
 simultaneous families and CPU/wall parity remain implementation obligations.
 
+The Main helper-funding increment moves the authentic Source host reservation to
+configured-family binding, before the helper route becomes ready. Artifact
+verification borrows that same retained purpose instead of reserving a second
+Source window. Each helper borrows a checked control and descriptor overlap before
+probe storage or process birth. The descriptor recipe includes all three stdio
+pipe pairs and the pinned libstd fork/exec error-channel pair, including endpoints
+that disappear before `spawn` returns. Unknown process return and unwind retain that
+loan; successful image completion returns it only after observed reap. Probe
+controls remain retained for their one-use capture reservation. The negative
+component control verifies that an absent Main payer refuses before probe storage
+or spawn. This closes the earlier ordering gap, while complete command/error
+payload funding, returned-output lifetime and diagnostic allocation destruction
+still require their receiving-owner cutovers.
+
+The host funding run passes 1,237 unit tests with the same eight missing-receiver
+failures and four ignored probes; every integration target passes. The new
+missing-payer control passes, and all 70 specific source-policy controls pass
+alongside the unchanged broad-gate refusal on 21 paths. Causal mutations cover
+the Main-purpose handoff, actual control borrowing, allocation ordering and the
+complete descriptor recipe. Hygiene, rustdoc, ABI and license controls, the Nix
+hygiene check, and required application test-target compilation pass. Coverage
+now names 109 component cases, with 149 uncovered and zero qualified requirements.
+The updated hermetic supervision gate passes all eleven exact cases.
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

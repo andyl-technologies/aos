@@ -19,6 +19,8 @@ pub(super) struct HelperDebt {
     output: Option<RetainedHelperOutput>,
     panicked: bool,
     probe_prepared: bool,
+    // This borrower outlives both the actual child and its retained captures.
+    controls: Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     first_cleanup: Option<crate::QemuNodeError>,
     latest_cleanup: Option<crate::QemuNodeError>,
 }
@@ -100,6 +102,18 @@ impl HelperDebt {
     }
 }
 
+impl Drop for HelperDebt {
+    fn drop(&mut self) {
+        if self.child.is_some() || self.panicked {
+            // Unknown process return cannot replenish the containing Main's
+            // descriptor/metadata window, even during terminal destruction.
+            if let Some(controls) = self.controls.take() {
+                std::mem::forget(controls);
+            }
+        }
+    }
+}
+
 struct HelperPost<'a> {
     original: &'a HostOperationGuard,
     slot: &'a mut HelperDebt,
@@ -134,10 +148,29 @@ impl OriginalNativeFreshLaunchError {
         Ok(apply(slot.history()))
     }
 
+    fn reserve_helper_controls(
+        &self,
+    ) -> Result<
+        crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+        OriginalActorAccountError,
+    > {
+        let bytes = crate::spawn::helper_receiver::retained_control_bytes()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let controls = self
+            .retained_source_host()?
+            .reserve_controls(crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes)?;
+        controls.verify_original_capacity(
+            &self.origin,
+            crate::spawn::helper_receiver::DESCRIPTOR_PEAK,
+            bytes,
+        )?;
+        Ok(controls)
+    }
+
     pub(crate) fn with_spawned_helper<T: HelperOutput>(
         self: &Arc<Self>,
         receiver: &crate::linux_attempt_host::SourceCleanupLender,
-        mut command: Command,
+        command: Command,
         operation: &'static str,
         body: impl FnOnce(
             &mut crate::QemuNodeChild,
@@ -161,6 +194,7 @@ impl OriginalNativeFreshLaunchError {
             ));
         }
         if (T::CAPTURES_PROBE && slot.probe_prepared)
+            || slot.controls.is_some()
             || slot.panicked
             || slot.child.is_some()
             || slot.output.is_some()
@@ -184,38 +218,7 @@ impl OriginalNativeFreshLaunchError {
                 .save_first(crate::QemuSpawnError::SourceAdmission {
                     source: first.into(),
                 }),
-            Ok(_) => {
-                // The Source recipe pays both fixed probe capacities before
-                // child birth. Keep the buffers in this same journal while the
-                // body mutates them, including on refused reads and unwind.
-                post.slot.probe_prepared |= T::CAPTURES_PROBE;
-                post.slot.output = T::prepare_storage();
-                match command.spawn() {
-                    Err(source) => post
-                        .slot
-                        .save_first(crate::QemuSpawnError::Io { operation, source }),
-                    Ok(child) => {
-                        // Save the actual child before pipe validation or any post.
-                        post.slot.child = Some(crate::node::RetainedChild::new(
-                            crate::QemuNodeChild::new(child),
-                            None,
-                        ));
-                        let result = match post
-                            .slot
-                            .child
-                            .as_mut()
-                            .and_then(crate::node::RetainedChild::direct_child_mut)
-                        {
-                            Some(child) => body(child, &self.origin, &mut post.slot.output),
-                            None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
-                        };
-                        match result {
-                            Ok(output) => post.slot.output = Some(output.retain()),
-                            Err(first) => post.slot.save_first(first),
-                        }
-                    }
-                }
-            }
+            Ok(_) => self.run_helper(post.slot, command, operation, body),
         }
         drop(post);
         if let Some(first) = slot.after {
@@ -237,10 +240,66 @@ impl OriginalNativeFreshLaunchError {
         }
         if slot.child.is_none() && slot.first_cleanup.is_none() {
             if let Some(output) = slot.output.take() {
-                return T::take(output).ok_or_else(refused);
+                let output = T::take(output).ok_or_else(refused)?;
+                if !T::CAPTURES_PROBE {
+                    // Image output owns no buffers; actual reap already closed
+                    // the last physical leaf before this borrower returns.
+                    drop(slot.controls.take());
+                }
+                return Ok(output);
             }
         }
         Err(refused())
+    }
+
+    /// Funds buffers and process custody before either can become live.
+    fn run_helper<T: HelperOutput>(
+        &self,
+        slot: &mut HelperDebt,
+        mut command: Command,
+        operation: &'static str,
+        body: impl FnOnce(
+            &mut crate::QemuNodeChild,
+            &HostOperationGuard,
+            &mut Option<RetainedHelperOutput>,
+        ) -> Result<T, crate::QemuSpawnError>,
+    ) {
+        let controls = match self.reserve_helper_controls() {
+            Ok(controls) => controls,
+            Err(source) => {
+                slot.save_first(crate::QemuSpawnError::SourceAdmission { source });
+                return;
+            }
+        };
+        slot.controls = Some(controls);
+        slot.probe_prepared |= T::CAPTURES_PROBE;
+        slot.output = T::prepare_storage();
+
+        let child = match command.spawn() {
+            Ok(child) => child,
+            Err(source) => {
+                slot.save_first(crate::QemuSpawnError::Io { operation, source });
+                return;
+            }
+        };
+        // Publish the actual child before pipe validation or any Original post.
+        slot.child = Some(crate::node::RetainedChild::new(
+            crate::QemuNodeChild::new(child),
+            None,
+        ));
+
+        let result = match slot
+            .child
+            .as_mut()
+            .and_then(crate::node::RetainedChild::direct_child_mut)
+        {
+            Some(child) => body(child, &self.origin, &mut slot.output),
+            None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
+        };
+        match result {
+            Ok(output) => slot.output = Some(output.retain()),
+            Err(first) => slot.save_first(first),
+        }
     }
 
     fn settle_helper(
@@ -316,6 +375,38 @@ mod tests {
     use crucible_host_resources::host_supervision::{
         HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
     };
+
+    #[test]
+    fn unfunded_helper_refuses_before_buffers_or_process_birth() {
+        let supervisor =
+            HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
+        let controller = OriginalNativeFreshLaunchError::prepare(&original);
+        let mut slot = HelperDebt::default();
+        let effects = std::sync::atomic::AtomicUsize::new(0);
+
+        controller.run_helper::<std::process::Output>(
+            &mut slot,
+            Command::new("/nonexistent-unfunded-helper"),
+            "unfunded helper",
+            |_, _, _| {
+                effects.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                unreachable!("an unfunded helper must never enter its body")
+            },
+        );
+
+        assert!(matches!(
+            slot.first.as_ref().map(SharedFirst::source_ref),
+            Some(crate::QemuSpawnError::SourceAdmission {
+                source: OriginalActorAccountError::Unavailable,
+            })
+        ));
+        assert!(slot.child.is_none());
+        assert!(slot.controls.is_none());
+        assert!(slot.output.is_none());
+        assert!(!slot.probe_prepared);
+        assert_eq!(effects.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn helper_post_observes_same_original_on_pre_refusal_without_effect() {
