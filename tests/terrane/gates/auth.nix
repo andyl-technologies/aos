@@ -2,6 +2,7 @@
   sourceGate,
   workloadIssuerProof,
   instanceIssuerProof,
+  configuredIssuerProof,
   ...
 }: let
   runTest = name: ''
@@ -30,7 +31,7 @@ in {
   auth-workload-mint = sourceGate "auth-workload-mint" ''
     cd crates
     python3 ../tests/terrane/workload_mint_proof.py \
-      ${workloadIssuerProof} ${instanceIssuerProof}
+      ${workloadIssuerProof} ${instanceIssuerProof} ${configuredIssuerProof}
     printf 'PASS: configured workload identities and bounded issuer lifetimes\n' > "$out/result"
   '';
 

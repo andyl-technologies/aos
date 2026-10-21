@@ -12074,5 +12074,30 @@ protocol services and the complete observability gates remain open.
 Frozen `59066081e0` passes independent review of its ten opened-expression
 cases and the sixteen issuer cases required by the owning AUTH-3 gate: 7,910
 immutable source files and 5,221 crate inputs. Required application-target
-compilation remains running. The larger index populations, feature matrix
+compilation also passes independent review: 184 test executables across 59
+packages, compiled without execution. The larger index populations, feature matrix
 and aggregate trunk checks remain open. No additional task is accepted.
+
+
+#### Configured native workload issuers
+
+Trusted configuration now names static workload issuers with an independently
+pinned public key, private signing-file path, expected Unix owner and finite
+lifetime policy. Parsing validates the entire issuer map before any file is
+opened and rejects duplicate issuer/key identities, inline secrets and invalid
+paths, keys or bounds. Selecting the serve role is required before the native
+opener accesses a configured key file. The existing descriptor, permissions,
+owner and public-key checks apply to the actual file.
+
+Four integration cases pass, including real private-file opening and bounded
+CI token minting; all ten existing configured-repository cases also pass.
+Strict all-target SDK/Linux/CLI Clippy passes. The owning AUTH-3 gate now
+requires the configured opener's four cases alongside the eight static and
+eight GCP issuer cases, all from identical immutable source. Frozen
+qualification of this extended gate remains pending. Caller authentication,
+trusted job provisioning and deployed issuance endpoints remain separate
+integration work; no task is newly accepted.
+
+Frozen `e83a19b600` CLI qualification passes independent review of all four
+actual process cases and 7,916 immutable source files. Its guarded-history
+and required application-target qualification runs remain pending.

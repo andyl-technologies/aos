@@ -21,6 +21,7 @@ pub mod expression;
 pub mod host;
 pub mod local_repository;
 pub mod token;
+pub mod workload;
 
 /// Holds parsed foundation configuration without backend credentials or I/O.
 #[derive(Debug)]
@@ -31,6 +32,7 @@ pub struct Config {
     host_tier: Option<host::HostTier>,
     local_repository: Option<local_repository::TrustedLocalRepository>,
     tokens: token::Tokens,
+    static_workload_issuers: std::collections::BTreeMap<String, workload::StaticWorkloadIssuer>,
     store: expression::StoreExpression,
 }
 
@@ -43,8 +45,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns a typed error for malformed TOML, unknown keys or roles, invalid
-    /// store syntax, unsupported host-tier wipe policies, or any exposure naming
-    /// a missing surface or view policy.
+    /// store syntax, invalid static workload issuer policy, unsupported host-tier
+    /// wipe policies, or any exposure naming a missing surface or view policy.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
         let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
@@ -54,6 +56,7 @@ impl Config {
             host.validate()?;
         }
         raw.tokens.validate()?;
+        workload::validate(&raw.static_workload_issuers)?;
         if let Some(local) = &raw.local_repository {
             local.validate()?;
         }
@@ -65,6 +68,7 @@ impl Config {
             host_tier: raw.host_tier,
             local_repository: raw.local_repository,
             tokens: raw.tokens,
+            static_workload_issuers: raw.static_workload_issuers,
             store,
         })
     }
@@ -121,6 +125,13 @@ impl Config {
         &self.tokens
     }
 
+    /// Returns trusted static issuer configuration without reading signing keys.
+    pub fn static_workload_issuers(
+        &self,
+    ) -> &std::collections::BTreeMap<String, workload::StaticWorkloadIssuer> {
+        &self.static_workload_issuers
+    }
+
     /// Returns the immutable, parsed store-expression tree (ARCH-6).
     pub fn store(&self) -> &expression::StoreExpression {
         &self.store
@@ -140,6 +151,8 @@ struct RawConfig {
     local_repository: Option<local_repository::TrustedLocalRepository>,
     #[serde(default)]
     tokens: token::Tokens,
+    #[serde(default)]
+    static_workload_issuers: std::collections::BTreeMap<String, workload::StaticWorkloadIssuer>,
 }
 
 pub(super) fn absolute_path(path: &str) -> bool {

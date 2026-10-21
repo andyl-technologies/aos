@@ -1,4 +1,4 @@
-"""Checks both AUTH-3 issuer prerequisites against the owning gate's source."""
+"""Checks AUTH-3 issuance and configured opening against the owning source."""
 
 import json
 import os
@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from gcp_instance_proof import CASES as INSTANCE_CASES
+from configured_workload_issuer_proof import CASES as CONFIGURED_CASES
 from native_sdk_test_image import source_hashes
 from workload_issuer_proof import CASES as STATIC_CASES
 
@@ -51,10 +52,11 @@ def main():
     """Combines actual issuance evidence without claiming service deployment."""
     source = Path(os.environ["src"])
     inputs = source_hashes(Path.cwd(), source)
-    static, instance = map(Path, sys.argv[1:])
+    static, instance, configured = map(Path, sys.argv[1:])
     prerequisites = [
         review(static, source, inputs, "workload_issuer", STATIC_CASES),
         review(instance, source, inputs, "gcp_instance_issuer", INSTANCE_CASES),
+        review(configured, source, inputs, "configured_workload_issuer", CONFIGURED_CASES),
     ]
     output = Path(os.environ["out"])
     (output / "source-review.json").write_text(json.dumps({
