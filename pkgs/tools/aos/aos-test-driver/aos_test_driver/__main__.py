@@ -351,7 +351,7 @@ def _cleanup_machines(machines: list[Machine], exit_code: int) -> int:
                 isinstance(machine, QemuMachine) and machine.export_firmware_vars
             )
             try:
-                if exporting_firmware:
+                if exporting_firmware and isinstance(machine, QemuMachine):
                     machine.shutdown_for_firmware_export()
                 else:
                     machine.shutdown()

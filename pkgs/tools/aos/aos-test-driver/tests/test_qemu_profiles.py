@@ -20,6 +20,7 @@ def machine_entry(**overrides: object) -> dict[str, object]:
         "initrd": "/initrd",
         "disk": "/disk",
         "metadata": None,
+        "kernel_params": [],
         "memory_mib": 512,
         "vcpu_count": 2,
         "mac": "52:54:00:12:00:01",
