@@ -8,6 +8,7 @@
 use aos_sandbox_api::aos::sandbox::local::v1::PrepareNixStorageGenerationRequestV1;
 use aos_sandbox_controller_domain::journal::StoragePrepareNativeClockCaptureV1;
 use aos_sandbox_controller_domain::{Journal, JournalLimits, JournalRecord, JournalTransaction};
+use aos_sandbox_protocol::authenticated_session::historical_method::historical_request_verification_time_v1;
 use aos_sandbox_protocol::nix_generation::{
     CanonicalNixGenerationPreparationV1, NixGenerationControlV1, NixGenerationOriginV1,
     NixGenerationStartPrefixV1,
@@ -315,6 +316,44 @@ fn exact_transaction(fixture: &NativeFixture) -> JournalTransaction {
         ],
     )
     .unwrap()
+}
+
+#[test]
+fn selected_prepare_history_preserves_an_expiry_before_its_transport_deadline() {
+    let fixture = fixture(160, 300);
+    let request = fixture.original.request.as_ref().unwrap();
+    let admitted = fixture.original.checked.as_ref().unwrap().as_ref().unwrap();
+    let deadline = admitted.prefix().deadline_boottime_nanoseconds;
+    let expiry = admitted.prepare().expires_boottime_nanoseconds();
+
+    assert!(expiry < deadline - 1);
+    assert!(
+        CanonicalNixGenerationPreparationV1::decode(request, peer(), peer_policy(), deadline - 1)
+            .is_err()
+    );
+
+    let historical_time = historical_request_verification_time_v1(
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1,
+        deadline,
+    )
+    .unwrap();
+    let historical = CanonicalNixGenerationPreparationV1::decode(
+        request,
+        peer(),
+        peer_policy(),
+        historical_time,
+    )
+    .unwrap();
+
+    assert_eq!(&historical, admitted);
+    assert_eq!(historical.prepare().expires_boottime_nanoseconds(), expiry);
+    assert_eq!(historical.prefix().deadline_boottime_nanoseconds, deadline);
+
+    // Retained parsing preserves history; a fresh live request still expires.
+    assert!(
+        CanonicalNixGenerationPreparationV1::decode(request, peer(), peer_policy(), expiry)
+            .is_err()
+    );
 }
 
 #[test]

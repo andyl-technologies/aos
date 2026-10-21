@@ -33,9 +33,10 @@ pub enum HistoricalMethodReplayErrorV1 {
 
 /// Selects a structural parse coordinate for an authenticated historical request.
 ///
-/// Prepare has an independent catalog expiry that can precede its transport
-/// deadline. Its historical parser checks both nonzero horizons from the boot
-/// origin, rather than treating the transport deadline as an admission time.
+/// Catalog Prepare and its Nix generation wrapper have an independent catalog
+/// expiry that can precede their transport deadline. Their historical parser
+/// checks both nonzero horizons from the boot origin, rather than treating the
+/// transport deadline as an admission time.
 /// This coordinate supplies neither a clock observation nor live currentness;
 /// new requests still require their actual protected clock and authorization.
 ///
@@ -51,7 +52,8 @@ pub fn historical_request_verification_time_v1(
         .ok_or(HistoricalMethodReplayErrorV1::Invalid)?;
 
     Ok(match method {
-        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => 0,
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => 0,
         _ => before_deadline,
     })
 }
