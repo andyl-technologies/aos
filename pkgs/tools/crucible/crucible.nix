@@ -17,6 +17,7 @@
   crucible-fixtures,
   bash,
   coreutils,
+  gawk,
   grep,
   sed,
   util-linux,
@@ -182,6 +183,14 @@
     buildDeps = [buildRustDev buildPkgConfig sqlite];
     runtimeDeps = [sqlite];
   };
+  # Gate and flight test executables compiled once per selection. See
+  # _workspace-tests.nix for the build graph and the gate runner.
+  workspaceTests = import ./_workspace-tests.nix {
+    inherit lib mkDerivation mkCargoPackage mkCargoArtifacts mkCargoDummySource;
+    inherit version cargoDeps rust buildRustDev buildPkgConfig buildProtobuf openssl sqlite;
+    inherit bash coreutils gawk grep sed;
+    cargoEnv = controllerCargoEnv;
+  };
   controller = mkCargoPackage {
     inherit platformSupport;
     pname = "crucible-controller";
@@ -258,6 +267,7 @@
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
+      inherit workspaceTests;
     };
 
     cargoFlags = packageFlags;
