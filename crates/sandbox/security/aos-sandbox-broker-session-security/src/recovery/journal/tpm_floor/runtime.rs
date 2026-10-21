@@ -772,11 +772,6 @@ impl BrokerFloorV1 {
         &self,
         method: BrokerMethod,
     ) -> Result<(), FloorErrorV1> {
-        if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
-            && !matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.is_ready())
-        {
-            return Err(FloorErrorV1::Unavailable);
-        }
         #[cfg(feature = "online-nix")]
         if let FloorStateV1::Online { attached, .. } = &self.state {
             if crate::recovery::journal::online_nix_verb(method).is_none() || !attached.is_ready()
@@ -784,7 +779,14 @@ impl BrokerFloorV1 {
                 return Err(FloorErrorV1::Unavailable);
             }
         }
-        if method == BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT {
+        if matches!(
+            method,
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2
+                | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        ) {
+            // Preaccept precedes the Controller's durable REQUESTED row. It
+            // cannot promise output availability while the reserve method is
+            // closed, even when this endpoint has a ready physical floor.
             if !METHOD46_INSTALLED_QUALIFIED
                 || !matches!(
                     &self.state,
@@ -1015,15 +1017,17 @@ mod tests {
     }
 
     #[test]
-    fn tpm_floor_method46_is_closed_without_installed_qualification() {
+    fn execution_preaccept_and_output_reserve_require_installed_qualification() {
         for gate in [
             BrokerFloorV1::test_not_scoped(),
             BrokerFloorV1::unavailable(),
         ] {
-            assert!(
-                gate.require_method(BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT)
-                    .is_err()
-            );
+            for method in [
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_EXECUTION_AVAILABILITY_V2,
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT,
+            ] {
+                assert!(gate.require_method(method).is_err(), "{method:?}");
+            }
         }
         assert!(
             BrokerFloorV1::test_not_scoped()
