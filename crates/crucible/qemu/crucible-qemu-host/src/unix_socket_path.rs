@@ -94,7 +94,7 @@ pub(crate) fn connect_supervised(
         |source: crucible_host_resources::host_supervision::HostSupervisionError| {
             crate::qmp::QmpError::OperationalSupervision {
                 operation: OPERATION,
-                message: source.to_string(),
+                source,
             }
         };
     guard.wait_slice().map_err(supervision_error)?;

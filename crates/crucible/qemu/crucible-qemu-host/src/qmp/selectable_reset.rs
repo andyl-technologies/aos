@@ -45,7 +45,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
             .wait_slice()
             .map_err(|error| QmpError::OperationalSupervision {
                 operation: QmpCommandKind::SelectableReset.wire_name(),
-                message: error.to_string(),
+                source: error,
             })?;
         let correlation =
             self.selectable_reset_correlation

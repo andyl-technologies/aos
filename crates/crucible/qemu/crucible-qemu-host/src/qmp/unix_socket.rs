@@ -130,7 +130,7 @@ impl QmpClient<UnixStream> {
             .begin(crucible_host_resources::host_supervision::HostOperationClass::Preparation)
             .map_err(|source| QmpError::OperationalSupervision {
                 operation: "connect QMP Unix socket",
-                message: source.to_string(),
+                source,
             })?;
         #[cfg(target_os = "linux")]
         let stream = crate::unix_socket_path::connect_supervised(path.as_ref(), &admission)?;

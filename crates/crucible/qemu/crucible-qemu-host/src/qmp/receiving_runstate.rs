@@ -11,7 +11,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
             .verify_operation_class(HostOperationClass::Transfer)
             .map_err(|source| QmpError::OperationalSupervision {
                 operation: "receiving stopped runstate",
-                message: source.to_string(),
+                source,
             })?;
         let response = self.exchange_under(QmpCommand::QueryStatus, original)?;
         let running = response.value.get("running").and_then(Value::as_bool);

@@ -125,7 +125,7 @@ impl QmpKernelSwapCancellation {
             .wait_slice()
             .map_err(|error| QmpError::OperationalSupervision {
                 operation: "kernel-swap descriptor admission",
-                message: error.to_string(),
+                source: error,
             })?;
         if self.phase != CancellationPhase::Prepared || !valid_generation(generation) {
             return Err(invalid());
@@ -162,7 +162,7 @@ impl QmpKernelSwapCancellation {
             .wait_slice()
             .map_err(|error| QmpError::OperationalSupervision {
                 operation: "kernel-swap descriptor admission",
-                message: error.to_string(),
+                source: error,
             })?;
         if self.phase != CancellationPhase::Prepared
             || !valid_generation(generation)

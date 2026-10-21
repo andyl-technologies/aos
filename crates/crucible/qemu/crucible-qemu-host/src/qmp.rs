@@ -53,6 +53,8 @@ mod paused_cpu;
 #[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
 pub(crate) mod readonly_backing_stream;
 mod receiving_runstate;
+#[cfg(test)]
+mod supervision_tests;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use readonly_backing_stream::{
     BackingEvent as QmpReadOnlyBackingEvent, BackingOwner as QmpReadOnlyBackingOwner,
@@ -1100,7 +1102,7 @@ where
             deadline.shared = Some(supervisor.begin(HostOperationClass::Preparation).map_err(
                 |source| QmpError::OperationalSupervision {
                     operation: "read QMP greeting",
-                    message: source.to_string(),
+                    source,
                 },
             )?);
         }
@@ -1309,7 +1311,7 @@ where
             deadline.shared = Some(supervisor.begin(class).map_err(|error| {
                 QmpError::OperationalSupervision {
                     operation: command.wire_name(),
-                    message: error.to_string(),
+                    source: error,
                 }
             })?);
         }
@@ -1679,7 +1681,7 @@ impl QmpOperationDeadline<'_> {
                 .wait_slice()
                 .map_err(|error| QmpError::OperationalSupervision {
                     operation,
-                    message: error.to_string(),
+                    source: error,
                 });
         }
         if let Some(guard) = &self.shared {
@@ -1687,7 +1689,7 @@ impl QmpOperationDeadline<'_> {
                 .wait_slice()
                 .map_err(|error| QmpError::OperationalSupervision {
                     operation,
-                    message: error.to_string(),
+                    source: error,
                 });
         }
         // See `new`: this deadline gates a host control-plane wait, not guest
@@ -1755,7 +1757,7 @@ impl QmpOperationDeadline<'_> {
                 .and_then(|()| guard.wait_slice().map(|_| ()))
                 .map_err(|error| QmpError::OperationalSupervision {
                     operation,
-                    message: error.to_string(),
+                    source: error,
                 });
         }
         if let Some(guard) = &self.shared {
@@ -1764,7 +1766,7 @@ impl QmpOperationDeadline<'_> {
                 .and_then(|()| guard.complete().map(|_| ()))
                 .map_err(|error| QmpError::OperationalSupervision {
                     operation,
-                    message: error.to_string(),
+                    source: error,
                 })?;
         }
         Ok(())

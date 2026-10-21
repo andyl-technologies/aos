@@ -273,7 +273,7 @@ impl<S: QmpTimeoutStream> QmpClient<S> {
             .verify_operation_class(HostOperationClass::Cleanup)
             .map_err(|error| QmpError::OperationalSupervision {
                 operation: "parent Park retained Cleanup",
-                message: error.to_string(),
+                source: error,
             })?;
         if !self
             .parent_park_session
@@ -325,7 +325,7 @@ pub(super) fn paired_wait_slice(
         .and_then(|actor| family_slice.map(|family| actor.min(family)))
         .map_err(|error| QmpError::OperationalSupervision {
             operation,
-            message: error.to_string(),
+            source: error,
         })
 }
 

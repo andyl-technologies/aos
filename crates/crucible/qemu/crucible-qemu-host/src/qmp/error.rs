@@ -16,12 +16,22 @@ pub enum QmpError {
         original_after: crucible_host_resources::host_supervision::HostSupervisionError,
     },
     /// Shared host supervision expired, canceled, or lost operational authority.
-    #[error("{operation} host supervision failed: {message}")]
+    #[error("{operation} host supervision failed: {source}")]
     OperationalSupervision {
         /// The host control operation whose guard failed.
         operation: &'static str,
-        /// The exact operational failure, excluded from guest outcomes.
-        message: String,
+        /// The exact original refusal, retained without diagnostic formatting.
+        #[source]
+        source: crucible_host_resources::host_supervision::HostSupervisionError,
+    },
+    /// A runtime adapter refused before a separately retained QMP action.
+    #[error("{operation} host supervision failed: {source}")]
+    OperationalRuntime {
+        /// Actual QMP boundary that observed the adapter failure.
+        operation: &'static str,
+        /// Complete initiating adapter cause and its saved independent post.
+        #[source]
+        source: crate::QemuAsyncDriverRuntimeError,
     },
     /// The retained checkpoint original refused without diagnostic allocation.
     #[cfg(target_os = "linux")]
@@ -249,6 +259,13 @@ impl QmpError {
 impl From<QmpError> for QemuNodeChannelError {
     fn from(error: QmpError) -> Self {
         match error {
+            QmpError::OperationalSupervision { operation, source } => {
+                QemuNodeChannelError::operational_supervision(operation, source)
+            }
+            #[cfg(target_os = "linux")]
+            QmpError::CheckpointOriginal { operation, source } => {
+                QemuNodeChannelError::operational_supervision(operation, source)
+            }
             QmpError::Timeout { operation, timeout } => {
                 QemuNodeChannelError::bounded_await_timeout(
                     operation,

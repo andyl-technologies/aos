@@ -387,7 +387,7 @@ self.settle_parent_park_receipt(receipt)"#,
         .verify_operation_class(HostOperationClass::Cleanup)
         .map_err(|error| QmpError::OperationalSupervision {
             operation: "parent Park retained Cleanup",
-            message: error.to_string(),
+            source: error,
         })?;
     if !self
         .parent_park_session

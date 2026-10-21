@@ -42,7 +42,7 @@ impl QemuNode {
             .wait_slice()
             .map_err(|error| crate::QmpError::OperationalSupervision {
                 operation: "crucible-selectable-reset-v1",
-                message: error.to_string(),
+                source: error,
             })?;
         if self.selectable_resume_pending || self.reset_resume_is_pending() {
             return Err(crate::QmpError::InvalidBound {
@@ -74,7 +74,7 @@ impl QemuNode {
             .wait_slice()
             .map_err(|error| crate::QmpError::OperationalSupervision {
                 operation: "reconcile selectable reset",
-                message: error.to_string(),
+                source: error,
             })?;
         transition.state = ResetResumeState::Reconciled;
         Ok(completion)
