@@ -1453,10 +1453,17 @@ production ceilings and the independent 256 MiB restriction are unchanged.
 Both unfiltered standard and raw-value Transport libraries pass 1,836 tests
 with zero failures and sixteen existing ignores. The Format library passes
 33 tests with one existing ignore. Scoped formatting and all six architecture
-gates pass. Affected-target checking, the required application gate and the
-funded-Source VM are still running. All 183 owned changed Rust paths match
-the application capture and each of the three VM component captures; matching
-inputs alone do not complete those pending checks. Parsing supplies DATA only.
+gates and affected all-feature/all-target checking pass for `f2150ce5c7`. The
+required application gate passes with 180 test executables across 58 package
+IDs, including 71 integration targets. The funded-Source VM passes both
+independent consumers, each retaining three actual private Births and passing
+refusal/cleanup checks, plus the default-feature CLI refusal. All 183 owned
+changed Rust paths match the application capture and each of the three VM
+component captures byte for byte against that commit. The full configured Engine
+library passes 2,036 tests in 8.67 seconds, with zero failures, no filtering and
+34 existing ignores. The full configured Daemon library passes 1,826 tests in
+244.36 seconds, with zero failures, no filtering and 165 existing ignores.
+Parsing supplies DATA only.
 Complete Hello authentication, the model-absent native policy, bootstrap ACK,
 genuine Recipe/Initial producers and native adoption/restoration remain required.
 
