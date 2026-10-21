@@ -1,4 +1,4 @@
-From 465d47fe92e09345bb2e9e33ad83d3657292bf2f Mon Sep 17 00:00:00 2001
+From db7d16a91a1cfcd038776657939ca1a697e2f738 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
 Subject: [PATCH] crucible: retain pending command and restore custody
@@ -433,6 +433,20 @@ The first pending-custody causal positive exceeded its unchanged 60-second
 limit before the 34 defects. Two exact-source diagnostic positives also timed
 out during registration compiler invocations, with and without core files.
 These failed attempts remain evidence; neither diagnostic qualifies the gate.
+
+Retain actual node temporary-state, copied-rule and event-reservation storage
+membership through reference return and payload destruction. Serialize ordinary
+recursive storage operations and preserve prepaid retirement cursors through
+unpublication, independent post refusal and the real pending FREE_STATE receipt.
+Distinguish prepared reservation discard from live event-credit release.
+
+Keep the actual storage registry and cursors in the existing node fixed getter.
+Extract their literal types and layout, and include the genuine storage provider
+in the non-Node TCG fixture. Preserve its original assertions and omissions.
+Add actual ordinary reservation construction, split, consume, release, discard
+and failed-post controls to the component sweep; they provide no registered
+Node, Source payer, ARM, copied-rule consumer or aggregate-restore qualification.
+Selected construction stays refused and full registration return unsupported.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -72526,10 +72540,10 @@ index 0000000000000000000000000000000000000000..ae015acf95d98a9b3b88541600b9b4fe
 +#endif /* QEMU_CRUCIBLE_DEVICE_WORKSPACE_H */
 diff --git a/include/qemu/crucible-fault-registration.h b/include/qemu/crucible-fault-registration.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a0ec144a27826b013c68c059270b9fc2443ee48
+index 0000000000000000000000000000000000000000..3b750b7e3dd50d59c5573362ae07986b63a6b4fc
 --- /dev/null
 +++ b/include/qemu/crucible-fault-registration.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,142 @@
 +/*
 + * Process-private native fault registration custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -72578,6 +72592,7 @@ index 0000000000000000000000000000000000000000..3a0ec144a27826b013c68c059270b9fc
 +    void *handler_state;
 +    void *stage;
 +    uint64_t stage_issuance;
++    uint64_t state_issuance;
 +    QemuCrucibleFaultPendingLocation location;
 +    bool row_attempt_returned;
 +    bool row_returned;
@@ -72647,6 +72662,22 @@ index 0000000000000000000000000000000000000000..3a0ec144a27826b013c68c059270b9fc
 +    QemuCrucibleFaultPendingControl **out);
 +int qemu_crucible_fault_node_pending_current_v1(
 +    QemuCrucibleFaultPendingControl *control);
++int qemu_crucible_fault_node_pending_callback_v1(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len,
++    QemuCrucibleFaultPendingCallback callback,
++    QemuCrucibleFaultPendingControl **out);
++int qemu_crucible_fault_pending_callback_current_v1(
++    QemuCrucibleFaultPendingControl *control,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len,
++    QemuCrucibleFaultPendingCallback callback);
++int qemu_crucible_fault_pending_state_returning_v1(
++    QemuCrucibleFaultPendingControl *control, const void *state,
++    uint64_t issuance);
++int qemu_crucible_fault_node_state_returned_v1(
++    QemuCrucibleFaultPendingControl *control, const void *state,
++    uint64_t issuance, bool *physically_returned);
 +int qemu_crucible_fault_node_pending_return_v1(
 +    QemuCrucibleFaultPendingControl *control, bool *physically_returned);
 +/* Unsupported until every actual entrant/child and destruction is joined.
@@ -72657,10 +72688,10 @@ index 0000000000000000000000000000000000000000..3a0ec144a27826b013c68c059270b9fc
 +#endif
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9ec7007089258c6dfe09987d6aeef35f19d1b352
+index 0000000000000000000000000000000000000000..54a07f2a8b31ce82904dcdc5699d8aaa15952207
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,829 @@
+@@ -0,0 +1,832 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -72982,6 +73013,9 @@ index 0000000000000000000000000000000000000000..9ec7007089258c6dfe09987d6aeef35f
 +qemu_crucible_fault_event_reservation_split(
 +    QemuCrucibleFaultEventReservation *reservation, size_t count);
 +void qemu_crucible_fault_event_reservation_release(
++    QemuCrucibleFaultEventReservation *reservation);
++/* Actual prepared-storage destruction, without live reservation accounting. */
++void qemu_crucible_fault_event_reservation_discard(
 +    QemuCrucibleFaultEventReservation *reservation);
 +size_t qemu_crucible_fault_event_reservation_remaining(
 +    const QemuCrucibleFaultEventReservation *reservation);
@@ -123328,7 +123362,7 @@ index 0000000000000000000000000000000000000000..cd90a53e696cbc7c455e3552ff7e91f7
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0b50637171de8a292272ac9b5659c495d0d732aa
+index 0000000000000000000000000000000000000000..bd4ee3f86a6ce7daf8c5c2780bc8264551a36a60
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
 @@ -0,0 +1,3331 @@
@@ -126088,7 +126122,7 @@ index 0000000000000000000000000000000000000000..0b50637171de8a292272ac9b5659c495
 +{
 +    CrucibleInstructionVmstateImpulse *impulse = opaque;
 +
-+    g_free(impulse->reservation);
++    qemu_crucible_fault_event_reservation_discard(impulse->reservation);
 +    qemu_crucible_fault_rule_unref(impulse->rule);
 +    g_free(impulse);
 +}
@@ -126665,7 +126699,7 @@ index 0000000000000000000000000000000000000000..0b50637171de8a292272ac9b5659c495
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8864862cc74aebfef76b0036ef4d2b6eb194c56f
+index 0000000000000000000000000000000000000000..d82d12e75eac28e94a5a1a70dfa287fbf5fe8325
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
 @@ -0,0 +1,2936 @@
@@ -128955,7 +128989,7 @@ index 0000000000000000000000000000000000000000..8864862cc74aebfef76b0036ef4d2b6e
 +{
 +    CrucibleInterruptImpulse *impulse = opaque;
 +
-+    g_free(impulse->event_reservation);
++    qemu_crucible_fault_event_reservation_discard(impulse->event_reservation);
 +    qemu_crucible_fault_rule_unref(impulse->rule);
 +    g_free(impulse);
 +}
@@ -134275,10 +134309,10 @@ index 0000000000000000000000000000000000000000..542ce0a4b1bbcff09a1302f99768a96c
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e5381793b4fe16
+index 0000000000000000000000000000000000000000..d7826555fe7e4969eb4f3de18e4d8271b13b4a10
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,13257 @@
+@@ -0,0 +1,13592 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -134318,6 +134352,8 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +#include "system/memory.h"
 +#include "system/physmem.h"
 +#include "system/runstate.h"
++
++#include "crucible-fault-storage.inc.h"
 +
 +#define CRUCIBLE_NODE_EVENT_CAPACITY 4096
 +#define CRUCIBLE_NODE_INLINE_EVIDENCE_BYTES 400
@@ -134458,7 +134494,13 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +    uint64_t evidence_victim_rows;
 +};
 +
++typedef struct CrucibleNodeOwnedRule {
++    CrucibleNodeStorageControl storage;
++    QemuCrucibleFaultRule rule;
++} CrucibleNodeOwnedRule;
++
 +typedef struct CrucibleNodeStaging {
++    CrucibleNodeStorageControl storage;
 +    QemuCrucibleFaultRule rule;
 +    QemuCrucibleFaultRule *prior;
 +    QemuCrucibleFaultImpulseFn impulse;
@@ -134479,6 +134521,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +} CrucibleNodeEvent;
 +
 +struct QemuCrucibleFaultEventReservation {
++    CrucibleNodeStorageControl storage;
 +    size_t remaining;
 +};
 +
@@ -134921,23 +134964,62 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +           (a->generation < b->generation ? -1 : 1);
 +}
 +
-+static void node_rule_clear(QemuCrucibleFaultRule *rule)
++static void node_rule_clear(QemuCrucibleFaultRule *rule,
++                            CrucibleNodeStorageControl *control)
 +{
++    bool had_reference;
++
 +    if (!rule) {
 +        return;
 +    }
 +    for (size_t i = 0; i < rule->field_count; i++) {
++        had_reference = rule->fields[i].json != NULL;
 +        qobject_unref(rule->fields[i].json);
++        if (control && had_reference) {
++            control->json_references_returned++;
++        }
 +    }
++    had_reference = rule->row_counts != NULL;
 +    g_clear_pointer(&rule->row_counts, g_array_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_ROW_COUNTS;
++    }
++    had_reference = rule->translations != NULL;
 +    g_clear_pointer(&rule->translations, g_array_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_TRANSLATIONS;
++    }
++    had_reference = rule->retention_cells != NULL;
 +    g_clear_pointer(&rule->retention_cells, g_hash_table_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_RETENTION_CELLS;
++    }
++    had_reference = rule->row_counters != NULL;
 +    g_clear_pointer(&rule->row_counters, g_hash_table_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_ROW_COUNTERS;
++    }
++    had_reference = rule->evidence_mutation_records != NULL;
 +    g_clear_pointer(&rule->evidence_mutation_records, g_byte_array_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_MUTATION_RECORDS;
++    }
++    had_reference = rule->evidence_counter_records != NULL;
 +    g_clear_pointer(&rule->evidence_counter_records, g_byte_array_unref);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_COUNTER_RECORDS;
++    }
++    had_reference = rule->service_ledger != NULL;
 +    node_memory_service_ledger_release(rule->service_ledger);
++    if (control && had_reference) {
++        control->references_returned |= CRUCIBLE_NODE_REF_SERVICE_LEDGER;
++    }
 +    rule->service_ledger = NULL;
++    had_reference = rule->payload != NULL;
 +    g_free(rule->payload);
++    if (control && had_reference) {
++        control->payload_returned = true;
++    }
 +    rule->payload = NULL;
 +    rule->payload_len = 0;
 +    rule->field_count = 0;
@@ -134945,6 +135027,14 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +
 +static QemuCrucibleFaultRule *node_rule_ref(QemuCrucibleFaultRule *rule)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    QemuCrucibleFaultRegistration *origin;
++
++    if (!operation.entered || !rule || !node_storage_rule_origin(rule, &origin)) {
++        error_report("Crucible rule reference lost actual storage owner");
++        abort();
++    }
 +    g_assert(rule && rule->references != 0 &&
 +             rule->references != UINT32_MAX);
 +    rule->references++;
@@ -134954,11 +135044,46 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +static QemuCrucibleFaultRule *
 +node_rule_copy(const QemuCrucibleFaultRule *source);
 +
++static void node_owned_rule_destroy(QemuCrucibleFaultRule *rule)
++{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    CrucibleNodeStorageControl *control;
++    void *allocation;
++    uint64_t issuance;
++
++    if (!operation.entered) {
++        return;
++    }
++    control = node_storage_retire_begin(rule, CRUCIBLE_NODE_STORAGE_RULE);
++
++    if (!control) {
++        return;
++    }
++    allocation = control->allocation;
++    issuance = control->issuance;
++    node_rule_clear(rule, control);
++    if (!node_storage_unpublish(control)) {
++        return;
++    }
++    g_free(allocation);
++    node_storage_retire_post(allocation, issuance, CRUCIBLE_NODE_STORAGE_RULE);
++}
++
 +static void node_rule_unref(QemuCrucibleFaultRule *rule)
 +{
-+    if (rule && --rule->references == 0) {
-+        node_rule_clear(rule);
-+        g_free(rule);
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    QemuCrucibleFaultRegistration *origin;
++
++    if (!operation.entered || !rule) {
++        return;
++    }
++    if (!node_storage_rule_origin(rule, &origin) || !rule->references) {
++        return;
++    }
++    if (--rule->references == 0) {
++        node_owned_rule_destroy(rule);
 +    }
 +}
 +
@@ -134992,7 +135117,22 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +static QemuCrucibleFaultRule *
 +node_rule_copy(const QemuCrucibleFaultRule *source)
 +{
-+    QemuCrucibleFaultRule *copy = g_new0(QemuCrucibleFaultRule, 1);
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    QemuCrucibleFaultRegistration *origin;
++    CrucibleNodeOwnedRule *allocation;
++    QemuCrucibleFaultRule *copy;
++    uint64_t issuance;
++
++    if (!operation.entered || !node_storage_rule_origin(source, &origin) ||
++        !(issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_RULE))) {
++        error_report("Crucible rule copy lacks an owned allocation route");
++        abort();
++    }
++    allocation = g_new0(CrucibleNodeOwnedRule, 1);
++    copy = &allocation->rule;
++    node_storage_publish(&allocation->storage, allocation, copy, copy,
++                         CRUCIBLE_NODE_STORAGE_RULE, issuance, origin);
 +
 +    *copy = *source;
 +    copy->references = 1;
@@ -137359,18 +137499,43 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +
 +static void node_staging_clear(CrucibleNodeStaging *staging)
 +{
-+    if (!staging) {
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    CrucibleNodeStorageControl *control;
++    uint64_t issuance;
++
++    if (!operation.entered || !staging) {
 +        return;
 +    }
-+    node_rule_clear(&staging->rule);
++    control = node_storage_retire_begin(staging, CRUCIBLE_NODE_STORAGE_STAGING);
++    if (!control) {
++        return;
++    }
++    issuance = control->issuance;
++    node_rule_clear(&staging->rule, control);
 +    if (staging->impulse_evidence) {
 +        g_byte_array_unref(staging->impulse_evidence);
++        control->references_returned |= CRUCIBLE_NODE_REF_IMPULSE_EVIDENCE;
 +    }
 +    if (staging->event_reservation) {
++        const void *reservation = staging->event_reservation;
++        uint64_t reservation_issuance =
++            staging->event_reservation->storage.issuance;
++
 +        qemu_crucible_fault_event_reservation_release(
 +            staging->event_reservation);
++        if (!node_storage_returned(reservation, reservation_issuance,
++                                   CRUCIBLE_NODE_STORAGE_RESERVATION)) {
++            control->post_status = -EBUSY;
++            return;
++        }
++        control->references_returned |= CRUCIBLE_NODE_REF_EVENT_RESERVATION;
++    }
++    if (!node_storage_unpublish(control)) {
++        return;
 +    }
 +    g_free(staging);
++    node_storage_retire_post(staging, issuance, CRUCIBLE_NODE_STORAGE_STAGING);
 +}
 +
 +static int node_validate(
@@ -137380,7 +137545,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +    QemuCrucibleFaultRule rule = { 0 };
 +    int status = node_parse(command, payload, payload_len, &rule);
 +
-+    node_rule_clear(&rule);
++    node_rule_clear(&rule, NULL);
 +    return status;
 +}
 +
@@ -137388,16 +137553,47 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +                    const uint8_t *payload, size_t payload_len,
 +                    void **state_out)
 +{
-+    CrucibleNodeStaging *staging = g_new0(CrucibleNodeStaging, 1);
-+    int status = node_parse(command, payload, payload_len, &staging->rule);
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    QemuCrucibleFaultPendingControl *pending = NULL;
++    CrucibleNodeStaging *staging;
++    uint64_t issuance;
++    int status;
++
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return -ENOKEY;
++    }
++    if (!operation.entered) {
++        return -EPERM;
++    }
++    status = qemu_crucible_fault_node_pending_callback_v1(
++        command, payload, payload_len, CRUCIBLE_PENDING_ARM, &pending);
++    if (status) {
++        return status;
++    }
++    issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_STAGING);
++    if (!issuance) {
++        return -EBUSY;
++    }
++    staging = g_new0(CrucibleNodeStaging, 1);
++    node_storage_publish(&staging->storage, staging, staging, &staging->rule,
++                         CRUCIBLE_NODE_STORAGE_STAGING, issuance,
++                         pending->registration);
++    pending->state_issuance = issuance;
++    *state_out = staging;
++    status = node_parse(command, payload, payload_len, &staging->rule);
++    staging->storage.first_status = status;
 +
 +    if (status != 0) {
-+        node_staging_clear(staging);
++        /* The pending child owns this born output, including parse failure. */
 +        return status;
 +    }
 +    staging->impulse = crucible_node_impulses[command->command_kind];
-+    *state_out = staging;
-+    return 0;
++    pending = NULL;
++    status = qemu_crucible_fault_node_pending_callback_v1(
++        command, payload, payload_len, CRUCIBLE_PENDING_ARM, &pending);
++    staging->storage.post_status = status;
++    return status;
 +}
 +
 +static void node_encode_evidence(CrucibleNodeStaging *staging,
@@ -137698,18 +137894,64 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +    return 0;
 +}
 +
++static int node_staging_enter(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, CrucibleNodeStaging *staging,
++    QemuCrucibleFaultPendingCallback callback)
++{
++    QemuCrucibleFaultPendingControl *pending = NULL;
++    CrucibleNodeStorageControl *actual;
++    int status = qemu_crucible_fault_node_pending_callback_v1(
++        command, payload, payload_len, callback, &pending);
++
++    if (status || !node_storage_process_current()) {
++        return status ? status : -EPERM;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    actual = node_storage_find_locked(staging, CRUCIBLE_NODE_STORAGE_STAGING);
++    status = actual && actual->origin == pending->registration &&
++        pending->handler_state == staging && !actual->post_status ? 0 : -EPERM;
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return status;
++}
++
++static QemuCrucibleFaultEventReservation *node_staging_event_reserve(
++    CrucibleNodeStaging *staging, size_t count)
++{
++    QemuCrucibleFaultEventReservation *reservation =
++        qemu_crucible_fault_event_reserve(count);
++
++    if (reservation) {
++        /* Both allocations are actual constructor members, not caller tuples. */
++        g_mutex_lock(&crucible_node_storage.lock);
++        reservation->storage.origin = staging->storage.origin;
++        g_mutex_unlock(&crucible_node_storage.lock);
++    }
++    return reservation;
++}
++
 +static int node_prepare(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len, void *state,
 +    struct qemu_plugin_crucible_fault_result *result,
 +    GByteArray *result_payload)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    CrucibleNodeStaging *staging = state;
 +    uint8_t register_state_before[32] = { 0 };
 +    uint8_t register_state_after_validation[32] = { 0 };
 +    bool register_state_captured = false;
 +    int status;
 +
++    if (!operation.entered) {
++        return -EPERM;
++    }
++    status = node_staging_enter(command, payload, payload_len, staging,
++                                CRUCIBLE_PENDING_PREPARE);
++    if (status) {
++        return status;
++    }
 +    /* Cross-grant service is limited to the serialized CPU byte ticket. */
 +    if (staging->rule.command_kind ==
 +            CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE &&
@@ -137945,7 +138187,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +                    &staging->rule) : 1;
 +
 +        staging->event_reservation =
-+            qemu_crucible_fault_event_reserve(event_budget);
++            node_staging_event_reserve(staging, event_budget);
 +        if (!staging->event_reservation) {
 +            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
 +            return -ENOSPC;
@@ -137958,7 +138200,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +             CRUCIBLE_NODE_FAULT_OPERATION_REMOVE) &&
 +        staging->rule.command_kind ==
 +            CRUCIBLE_FAULT_COMMAND_CPU_VCPU_STATE) {
-+        staging->event_reservation = qemu_crucible_fault_event_reserve(1);
++        staging->event_reservation = node_staging_event_reserve(staging, 1);
 +        if (!staging->event_reservation) {
 +            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
 +            return -ENOSPC;
@@ -137975,7 +138217,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +
 +        if (event_budget != 0) {
 +            staging->event_reservation =
-+                qemu_crucible_fault_event_reserve(event_budget);
++                node_staging_event_reserve(staging, event_budget);
 +            if (!staging->event_reservation) {
 +                result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
 +                return -ENOSPC;
@@ -137986,7 +138228,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +            CRUCIBLE_NODE_FAULT_OPERATION_UPSERT &&
 +        staging->rule.command_kind ==
 +            CRUCIBLE_FAULT_COMMAND_ACCELERATOR_LIFECYCLE) {
-+        staging->event_reservation = qemu_crucible_fault_event_reserve(1);
++        staging->event_reservation = node_staging_event_reserve(staging, 1);
 +        if (!staging->event_reservation) {
 +            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
 +            return -ENOSPC;
@@ -137999,7 +138241,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +            qemu_crucible_fault_lifecycle_event_budget(&staging->rule);
 +
 +        staging->event_reservation =
-+            qemu_crucible_fault_event_reserve(event_budget);
++            node_staging_event_reserve(staging, event_budget);
 +        if (!staging->event_reservation) {
 +            result->status = CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT;
 +            return -ENOSPC;
@@ -138192,9 +138434,17 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +    struct qemu_plugin_crucible_fault_result *result,
 +    GByteArray *result_payload)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    CrucibleNodeStaging *staging = state;
 +    guint index;
 +
++    if (!operation.entered ||
++        node_staging_enter(command, payload, payload_len, staging,
++                           CRUCIBLE_PENDING_COMMIT)) {
++        error_report("Crucible node commit lost its actual entered staging owner");
++        abort();
++    }
 +    if (staging->rule.operation == CRUCIBLE_NODE_FAULT_OPERATION_UPSERT) {
 +        QemuCrucibleFaultRule *replacement = node_rule_copy(&staging->rule);
 +
@@ -138635,11 +138885,17 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +QemuCrucibleFaultEventReservation *
 +qemu_crucible_fault_event_reserve(size_t count)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    QemuCrucibleFaultEventReservation *reservation;
 +    size_t used = MIN(crucible_node_event_count,
 +                      (size_t)CRUCIBLE_NODE_EVENT_CAPACITY - 1);
 +    size_t available = CRUCIBLE_NODE_EVENT_CAPACITY - 1 - used;
++    uint64_t issuance;
 +
++    if (!operation.entered) {
++        return NULL;
++    }
 +    available -= MIN(crucible_node_event_reserved, available);
 +    if (count == 0 || crucible_node_event_terminal || count > available ||
 +        crucible_node_event_reserved > SIZE_MAX - count ||
@@ -138648,17 +138904,41 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +            UINT64_MAX - 1 - crucible_node_event_sequence - count) {
 +        return NULL;
 +    }
++    issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_RESERVATION);
++    if (!issuance) {
++        return NULL;
++    }
 +    reservation = g_new0(QemuCrucibleFaultEventReservation, 1);
++    node_storage_publish(&reservation->storage, reservation, reservation, NULL,
++                         CRUCIBLE_NODE_STORAGE_RESERVATION, issuance, NULL);
 +    reservation->remaining = count;
 +    crucible_node_event_reserved += count;
 +    crucible_node_event_sequence_reserved += count;
 +    return reservation;
 +}
 +
++static bool node_reservation_current(
++    const QemuCrucibleFaultEventReservation *reservation)
++{
++    bool current;
++
++    if (!node_storage_process_current()) {
++        return false;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    current = node_storage_find_locked(
++        reservation, CRUCIBLE_NODE_STORAGE_RESERVATION) != NULL;
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return current;
++}
++
 +void qemu_crucible_fault_event_reservation_consume(
 +    QemuCrucibleFaultEventReservation *reservation)
 +{
-+    if (!reservation || reservation->remaining == 0 ||
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    if (!operation.entered || !node_reservation_current(reservation) ||
++        reservation->remaining == 0 ||
 +        crucible_node_event_reserved == 0) {
 +        error_report("Invalid Crucible fault-event reservation consume");
 +        abort();
@@ -138672,13 +138952,25 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +qemu_crucible_fault_event_reservation_split(
 +    QemuCrucibleFaultEventReservation *reservation, size_t count)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    QemuCrucibleFaultEventReservation *split;
++    uint64_t issuance;
 +
-+    if (!reservation || count == 0 || count > reservation->remaining) {
++    if (!operation.entered || !node_reservation_current(reservation) ||
++        count == 0 || count > reservation->remaining) {
 +        error_report("Invalid Crucible fault-event reservation split");
 +        abort();
 +    }
++    issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_RESERVATION);
++    if (!issuance) {
++        error_report("Crucible event-reservation split lacks an allocation route");
++        abort();
++    }
 +    split = g_new0(QemuCrucibleFaultEventReservation, 1);
++    node_storage_publish(&split->storage, split, split, NULL,
++                         CRUCIBLE_NODE_STORAGE_RESERVATION, issuance,
++                         reservation->storage.origin);
 +    split->remaining = count;
 +    reservation->remaining -= count;
 +    return split;
@@ -138687,19 +138979,63 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +void qemu_crucible_fault_event_reservation_release(
 +    QemuCrucibleFaultEventReservation *reservation)
 +{
-+    if (crucible_node_vmstate_restoring) {
-+        g_free(reservation);
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    CrucibleNodeStorageControl *control;
++    uint64_t issuance;
++
++    if (!operation.entered ||
++        (!reservation && crucible_node_vmstate_restoring)) {
 +        return;
 +    }
-+    if (!reservation ||
++    control = node_storage_retire_begin(
++        reservation, CRUCIBLE_NODE_STORAGE_RESERVATION);
++    if (!control) {
++        return;
++    }
++    issuance = control->issuance;
++    if (!crucible_node_vmstate_restoring && (
 +        crucible_node_event_reserved < reservation->remaining ||
-+        crucible_node_event_sequence_reserved < reservation->remaining) {
++        crucible_node_event_sequence_reserved < reservation->remaining)) {
 +        error_report("Invalid Crucible fault-event reservation release");
 +        abort();
 +    }
-+    crucible_node_event_reserved -= reservation->remaining;
-+    crucible_node_event_sequence_reserved -= reservation->remaining;
++    if (!crucible_node_vmstate_restoring) {
++        crucible_node_event_reserved -= reservation->remaining;
++        crucible_node_event_sequence_reserved -= reservation->remaining;
++    }
++    if (!node_storage_unpublish(control)) {
++        return;
++    }
 +    g_free(reservation);
++    node_storage_retire_post(reservation, issuance,
++                             CRUCIBLE_NODE_STORAGE_RESERVATION);
++}
++
++/* Discarding prepared restore storage never retires live queue credits. */
++void qemu_crucible_fault_event_reservation_discard(
++    QemuCrucibleFaultEventReservation *reservation)
++{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++    CrucibleNodeStorageControl *control;
++    uint64_t issuance;
++
++    if (!operation.entered || !reservation) {
++        return;
++    }
++    control = node_storage_retire_begin(
++        reservation, CRUCIBLE_NODE_STORAGE_RESERVATION);
++    if (!control) {
++        return;
++    }
++    issuance = control->issuance;
++    if (!node_storage_unpublish(control)) {
++        return;
++    }
++    g_free(reservation);
++    node_storage_retire_post(reservation, issuance,
++                             CRUCIBLE_NODE_STORAGE_RESERVATION);
 +}
 +
 +void qemu_crucible_fault_vmstate_restoring(bool restoring)
@@ -138711,18 +139047,32 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +size_t qemu_crucible_fault_event_reservation_remaining(
 +    const QemuCrucibleFaultEventReservation *reservation)
 +{
-+    return reservation ? reservation->remaining : 0;
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
++
++    return operation.entered && node_reservation_current(reservation) ?
++        reservation->remaining : 0;
 +}
 +
 +QemuCrucibleFaultEventReservation *
 +qemu_crucible_fault_event_reservation_restore(size_t remaining)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    QemuCrucibleFaultEventReservation *reservation;
++    uint64_t issuance;
 +
-+    if (remaining == 0 || remaining > CRUCIBLE_NODE_EVENT_CAPACITY - 1) {
++    if (!operation.entered || remaining == 0 ||
++        remaining > CRUCIBLE_NODE_EVENT_CAPACITY - 1) {
 +        return NULL;
 +    }
-+    reservation = g_new(QemuCrucibleFaultEventReservation, 1);
++    issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_RESERVATION);
++    if (!issuance) {
++        return NULL;
++    }
++    reservation = g_new0(QemuCrucibleFaultEventReservation, 1);
++    node_storage_publish(&reservation->storage, reservation, reservation, NULL,
++                         CRUCIBLE_NODE_STORAGE_RESERVATION, issuance, NULL);
 +    reservation->remaining = remaining;
 +    return reservation;
 +}
@@ -138869,7 +139219,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +        return;
 +    }
 +    qemu_crucible_fault_rule_unref(service->rule);
-+    g_free(service->event_reservation);
++    qemu_crucible_fault_event_reservation_discard(service->event_reservation);
 +    memset(service, 0, sizeof(*service));
 +}
 +
@@ -146386,11 +146736,28 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +QemuCrucibleFaultRule *qemu_crucible_fault_rule_vmstate_load(
 +    QemuCrucibleFaultVmstateReader *reader)
 +{
++    g_auto(CrucibleNodeStorageOperation) operation =
++        node_storage_operation_begin();
 +    struct qemu_plugin_crucible_fault_command command = { 0 };
-+    QemuCrucibleFaultRule *rule = g_new0(QemuCrucibleFaultRule, 1);
++    CrucibleNodeOwnedRule *allocation;
++    QemuCrucibleFaultRule *rule;
 +    const uint8_t *rule_payload;
 +    uint16_t reserved;
 +    uint32_t rule_payload_len;
++    uint64_t issuance;
++
++    if (!operation.entered) {
++        return NULL;
++    }
++    issuance = node_storage_admit(CRUCIBLE_NODE_STORAGE_RULE);
++    if (!issuance) {
++        return NULL;
++    }
++    allocation = g_new0(CrucibleNodeOwnedRule, 1);
++    rule = &allocation->rule;
++    /* Restore owns real storage, not a registration grant from decoded data. */
++    node_storage_publish(&allocation->storage, allocation, rule, rule,
++                         CRUCIBLE_NODE_STORAGE_RULE, issuance, NULL);
 +
 +    if (!qemu_crucible_fault_vmstate_get_u16(reader, &command.phase) ||
 +        !qemu_crucible_fault_vmstate_get_u16(reader, &reserved) ||
@@ -146416,14 +146783,15 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +        rule_payload_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
 +        !qemu_crucible_fault_vmstate_get_view(
 +            reader, &rule_payload, rule_payload_len)) {
-+        g_free(rule);
++        allocation->storage.first_status = -EINVAL;
++        node_owned_rule_destroy(rule);
 +        return NULL;
 +    }
 +    command.command_kind = node_get_u16(
 +        rule_payload + CRUCIBLE_NODE_FAULT_PAYLOAD_COMMAND_KIND_OFFSET);
 +    if (node_parse(&command, rule_payload, rule_payload_len, rule) != 0) {
-+        node_rule_clear(rule);
-+        g_free(rule);
++        allocation->storage.first_status = -EINVAL;
++        node_owned_rule_destroy(rule);
 +        return NULL;
 +    }
 +    rule->references = 1;
@@ -146500,11 +146868,15 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +        .data = payload,
 +        .length = payload_len,
 +    };
-+    CrucibleNodeVmstate *state = g_new0(CrucibleNodeVmstate, 1);
++    CrucibleNodeVmstate *state;
 +    uint8_t magic[8], terminal, force_terminal;
 +    uint32_t rule_count, event_count;
 +    int status = -EINVAL;
 +
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return -ENOKEY;
++    }
++    state = g_new0(CrucibleNodeVmstate, 1);
 +    state->rules = g_ptr_array_new_with_free_func(
 +        (GDestroyNotify)node_rule_unref);
 +    state->events = g_ptr_array_new_with_free_func(
@@ -146555,8 +146927,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +            goto fail;
 +        }
 +        if (rule->operation != CRUCIBLE_NODE_FAULT_OPERATION_UPSERT) {
-+            node_rule_clear(rule);
-+            g_free(rule);
++            node_owned_rule_destroy(rule);
 +            status = -EINVAL;
 +            goto fail;
 +        }
@@ -146566,8 +146937,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +                node_field(rule, CRUCIBLE_NODE_FAULT_FIELD_P7)->json,
 +                "cpu_single_access") &&
 +            crucible_sim_shmem_dispatch_registered()) {
-+            node_rule_clear(rule);
-+            g_free(rule);
++            node_owned_rule_destroy(rule);
 +            status = -ENOTSUP;
 +            goto fail;
 +        }
@@ -146576,8 +146946,7 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +                state->rules, i - 1);
 +
 +            if (node_rule_compare(&previous, &rule) >= 0) {
-+                node_rule_clear(rule);
-+                g_free(rule);
++                node_owned_rule_destroy(rule);
 +                status = -EINVAL;
 +                goto fail;
 +            }
@@ -147538,10 +147907,10 @@ index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e53817
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-pending.inc.h b/plugins/crucible-fault-pending.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45fceabab62
+index 0000000000000000000000000000000000000000..4ac22b2f99e14b6bb2420ff5f2d0ded5ece1a395
 --- /dev/null
 +++ b/plugins/crucible-fault-pending.inc.h
-@@ -0,0 +1,629 @@
+@@ -0,0 +1,714 @@
 +/*
 + * Actual pending-command and command-VMState custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -147558,6 +147927,15 @@ index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45f
 +        QemuThread thread;
 +        bool calling;
 +    } birth;
++    struct {
++        QemuCrucibleFaultPendingControl *control;
++        const struct qemu_plugin_crucible_fault_command *command;
++        const uint8_t *payload;
++        size_t payload_len;
++        QemuCrucibleFaultPendingCallback kind;
++        QemuThread thread;
++        bool calling;
++    } callback;
 +    struct {
 +        QemuCrucibleFaultPendingControl *control;
 +        CruciblePendingFault *row;
@@ -147863,13 +148241,21 @@ index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45f
 +        return status ? status : -EPERM;
 +    }
 +    g_mutex_lock(&crucible_fault_pending_custody.lock);
-+    if (!crucible_pending_row_current_locked(pending) ||
++    if (crucible_fault_pending_custody.callback.calling ||
++        !crucible_pending_row_current_locked(pending) ||
 +        control->callback_active || control->callback_entered[callback]) {
 +        status = -EPERM;
 +    } else {
 +        control->callback_active = true;
 +        control->callback_entered[callback] = true;
 +        qemu_thread_get_self(&control->callback_thread);
++        crucible_fault_pending_custody.callback.control = control;
++        crucible_fault_pending_custody.callback.command = &pending->command;
++        crucible_fault_pending_custody.callback.payload = pending->payload;
++        crucible_fault_pending_custody.callback.payload_len = pending->payload_len;
++        crucible_fault_pending_custody.callback.kind = callback;
++        crucible_fault_pending_custody.callback.calling = true;
++        qemu_thread_get_self(&crucible_fault_pending_custody.callback.thread);
 +    }
 +    g_mutex_unlock(&crucible_fault_pending_custody.lock);
 +    return status;
@@ -147879,6 +148265,8 @@ index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45f
 +    QemuCrucibleFaultPendingCallback callback, int first)
 +{
 +    QemuCrucibleFaultPendingControl *control = pending->control;
++    bool state_returned = false;
++    int state_post = 0;
 +    int post;
 +
 +    if (!control) {
@@ -147897,11 +148285,11 @@ index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45f
 +    if (first && !control->first_status) {
 +        control->first_status = first;
 +    }
-+    if (callback == CRUCIBLE_PENDING_FREE_STATE) {
-+        control->state_returned = true;
-+        pending->handler_state = NULL;
-+    }
-+    post = control->callback_active &&
++    post = crucible_fault_pending_custody.callback.calling &&
++        crucible_fault_pending_custody.callback.control == control &&
++        crucible_fault_pending_custody.callback.kind == callback &&
++        qemu_thread_is_self(&crucible_fault_pending_custody.callback.thread) &&
++        control->callback_active &&
 +        qemu_thread_is_self(&control->callback_thread) &&
 +        control->row == pending && control->handler == pending->handler &&
 +        !memcmp(&control->command, &pending->command, sizeof(pending->command)) ? 0 : -EPERM;
@@ -147909,15 +148297,81 @@ index 0000000000000000000000000000000000000000..0156a044a4dbee9dbfba4b11d82fa45f
 +    if (!post) {
 +        post = qemu_crucible_fault_node_pending_current_v1(control);
 +    }
++    if (callback == CRUCIBLE_PENDING_FREE_STATE && pending->handler_state) {
++        state_post = qemu_crucible_fault_node_state_returned_v1(
++            control, pending->handler_state, control->state_issuance, &state_returned);
++    }
++    if (!post) {
++        post = state_post;
++    }
 +    g_mutex_lock(&crucible_fault_pending_custody.lock);
++    if (state_returned) {
++        control->state_returned = true;
++        pending->handler_state = NULL;
++    }
 +    control->callback_post[callback] = post;
 +    if (post) {
 +        control->post_status = post;
 +    } else {
++        if (callback == CRUCIBLE_PENDING_FREE_STATE) {
++            control->state_returned = true;
++            pending->handler_state = NULL;
++        }
 +        control->callback_active = false;
++        crucible_fault_pending_custody.callback.calling = false;
 +    }
 +    g_mutex_unlock(&crucible_fault_pending_custody.lock);
 +    return post;
++}
++
++int qemu_crucible_fault_pending_callback_current_v1(
++    QemuCrucibleFaultPendingControl *control,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len,
++    QemuCrucibleFaultPendingCallback callback)
++{
++    int status = -EPERM;
++
++    if (!command || (unsigned)callback >= CRUCIBLE_PENDING_CALLBACKS ||
++        !crucible_pending_process_current()) {
++        return status;
++    }
++    g_mutex_lock(&crucible_fault_pending_custody.lock);
++    if (crucible_fault_pending_custody.callback.calling &&
++        crucible_fault_pending_custody.callback.control == control &&
++        crucible_fault_pending_custody.callback.command == command &&
++        crucible_fault_pending_custody.callback.payload == payload &&
++        crucible_fault_pending_custody.callback.payload_len == payload_len &&
++        crucible_fault_pending_custody.callback.kind == callback &&
++        qemu_thread_is_self(&crucible_fault_pending_custody.callback.thread) &&
++        control->callback_active && control->callback_entered[callback] &&
++        !control->callback_returned[callback] && !control->post_status) {
++        status = 0;
++    }
++    g_mutex_unlock(&crucible_fault_pending_custody.lock);
++    return status;
++}
++
++int qemu_crucible_fault_pending_state_returning_v1(
++    QemuCrucibleFaultPendingControl *control, const void *state,
++    uint64_t issuance)
++{
++    int status = -EPERM;
++
++    if (!crucible_pending_process_current()) {
++        return status;
++    }
++    g_mutex_lock(&crucible_fault_pending_custody.lock);
++    if (crucible_fault_pending_custody.callback.calling &&
++        crucible_fault_pending_custody.callback.control == control &&
++        crucible_fault_pending_custody.callback.kind == CRUCIBLE_PENDING_FREE_STATE &&
++        qemu_thread_is_self(&crucible_fault_pending_custody.callback.thread) &&
++        control->callback_active && control->callback_returned[CRUCIBLE_PENDING_FREE_STATE] &&
++        control->handler_state == state && control->state_issuance == issuance) {
++        status = 0;
++    }
++    g_mutex_unlock(&crucible_fault_pending_custody.lock);
++    return status;
 +}
 +
 +static int crucible_pending_locate(CruciblePendingFault *pending,
@@ -149583,10 +150037,10 @@ index 0000000000000000000000000000000000000000..b5cc681df070baf9016072c4ce1223f1
 +}
 diff --git a/plugins/crucible-fault-registration.inc.h b/plugins/crucible-fault-registration.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..668629f025292216e1417c83f05e79b6db55a500
+index 0000000000000000000000000000000000000000..977fd9d41de5ed8cc8aac56e66e388f05767d2e4
 --- /dev/null
 +++ b/plugins/crucible-fault-registration.inc.h
-@@ -0,0 +1,476 @@
+@@ -0,0 +1,510 @@
 +/*
 + * Actual node producer registration owner; no selected allocation payer
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -149650,7 +150104,7 @@ index 0000000000000000000000000000000000000000..668629f025292216e1417c83f05e79b6
 +
 +uint64_t qemu_crucible_fault_node_registration_fixed_storage_bytes_v1(void)
 +{
-+    return sizeof(crucible_node_registrations);
++    return sizeof(crucible_node_registrations) + node_storage_fixed_bytes();
 +}
 +
 +/* Record only the real current process, never an issuer or allocation grant.
@@ -149876,6 +150330,40 @@ index 0000000000000000000000000000000000000000..668629f025292216e1417c83f05e79b6
 +    return status;
 +}
 +
++int qemu_crucible_fault_node_pending_callback_v1(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len,
++    QemuCrucibleFaultPendingCallback callback,
++    QemuCrucibleFaultPendingControl **out)
++{
++    QemuCrucibleFaultRegistration *owner;
++    int status = -EPERM;
++
++    if (!out || *out || !command ||
++        (unsigned)callback >= CRUCIBLE_PENDING_CALLBACKS ||
++        !node_registration_process_current()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    for (owner = crucible_node_registrations.head; owner; owner = owner->next) {
++        QemuCrucibleFaultPendingControl *control;
++
++        for (control = owner->pending; control; control = control->next) {
++            if (control->holder == control && control->registration == owner &&
++                owner->holder == owner && owner->process == getpid() &&
++                control->process == getpid() &&
++                !qemu_crucible_fault_pending_callback_current_v1(
++                    control, command, payload, payload_len, callback)) {
++                *out = control;
++                status = 0;
++                break;
++            }
++        }
++    }
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    return status;
++}
++
 +int qemu_crucible_fault_node_pending_return_v1(
 +    QemuCrucibleFaultPendingControl *control, bool *physically_returned)
 +{
@@ -150062,6 +150550,353 @@ index 0000000000000000000000000000000000000000..668629f025292216e1417c83f05e79b6
 +    status = qemu_crucible_fault_registration_observe_v1(actual, holder,
 +                                                        &observation);
 +    return status ? status : -ENOTSUP;
++}
+diff --git a/plugins/crucible-fault-storage.inc.h b/plugins/crucible-fault-storage.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f48209b941be5453fcfb87b17cb3314425b1063d
+--- /dev/null
++++ b/plugins/crucible-fault-storage.inc.h
+@@ -0,0 +1,341 @@
++/*
++ * Actual node rule and event-reservation storage custody
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++typedef enum CrucibleNodeStorageKind {
++    CRUCIBLE_NODE_STORAGE_STAGING,
++    CRUCIBLE_NODE_STORAGE_RULE,
++    CRUCIBLE_NODE_STORAGE_RESERVATION,
++    CRUCIBLE_NODE_STORAGE_KINDS,
++} CrucibleNodeStorageKind;
++
++typedef enum CrucibleNodeReturnedReference {
++    CRUCIBLE_NODE_REF_ROW_COUNTS = UINT64_C(1) << 0,
++    CRUCIBLE_NODE_REF_TRANSLATIONS = UINT64_C(1) << 1,
++    CRUCIBLE_NODE_REF_RETENTION_CELLS = UINT64_C(1) << 2,
++    CRUCIBLE_NODE_REF_ROW_COUNTERS = UINT64_C(1) << 3,
++    CRUCIBLE_NODE_REF_MUTATION_RECORDS = UINT64_C(1) << 4,
++    CRUCIBLE_NODE_REF_COUNTER_RECORDS = UINT64_C(1) << 5,
++    CRUCIBLE_NODE_REF_SERVICE_LEDGER = UINT64_C(1) << 6,
++    CRUCIBLE_NODE_REF_IMPULSE_EVIDENCE = UINT64_C(1) << 16,
++    CRUCIBLE_NODE_REF_EVENT_RESERVATION = UINT64_C(1) << 17,
++} CrucibleNodeReturnedReference;
++
++typedef struct CrucibleNodeStorageControl {
++    struct CrucibleNodeStorageControl *next;
++    struct CrucibleNodeStorageControl *holder;
++    void *allocation;
++    const void *resource;
++    const QemuCrucibleFaultRule *rule;
++    QemuCrucibleFaultRegistration *origin;
++    QemuThread creator;
++    pid_t process;
++    uint64_t issuance;
++    uint64_t references_returned;
++    size_t json_references_returned;
++    bool payload_returned;
++    bool retiring;
++    int first_status;
++    int post_status;
++    CrucibleNodeStorageKind kind;
++} CrucibleNodeStorageControl;
++
++static struct {
++    GMutex lock;
++    GRecMutex operations;
++    pid_t process;
++    uint64_t issuance;
++    CrucibleNodeStorageControl *head;
++    struct {
++        void *holder;
++        const void *resource;
++        QemuCrucibleFaultRegistration *origin;
++        QemuThread thread;
++        uint64_t issuance;
++        uint64_t references_returned;
++        size_t json_references_returned;
++        bool payload_returned;
++        bool active;
++        bool physically_returned;
++        bool post_returned;
++        int first_status;
++        int post_status;
++    } returning[CRUCIBLE_NODE_STORAGE_KINDS];
++} crucible_node_storage;
++
++static uint64_t node_storage_fixed_bytes(void)
++{
++    return sizeof(crucible_node_storage);
++}
++
++static bool node_storage_process_current(void)
++{
++    pid_t process = qatomic_load_acquire(&crucible_node_storage.process);
++
++    if (!process) {
++        process = qatomic_cmpxchg(&crucible_node_storage.process, 0, getpid());
++        if (!process) {
++            process = getpid();
++        }
++    }
++    return process == getpid();
++}
++
++/* Ordinary callers must own a valid reference for the whole use. This scope
++ * serializes reference/quota changes and nested destruction plus receipt
++ * observation; membership by itself is not a concurrent lifetime borrow.
++ * Selected callers have no payer for the recursive lock's opaque backing. */
++typedef struct CrucibleNodeStorageOperation {
++    bool entered;
++} CrucibleNodeStorageOperation;
++
++static CrucibleNodeStorageOperation node_storage_operation_begin(void)
++{
++    CrucibleNodeStorageOperation operation = { false };
++
++    if (!qemu_plugin_crucible_startup_source_retained() &&
++        node_storage_process_current()) {
++        g_rec_mutex_lock(&crucible_node_storage.operations);
++        operation.entered = true;
++    }
++    return operation;
++}
++
++static void node_storage_operation_clear(CrucibleNodeStorageOperation *operation)
++{
++    if (operation->entered) {
++        g_rec_mutex_unlock(&crucible_node_storage.operations);
++    }
++}
++
++G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(CrucibleNodeStorageOperation,
++                               node_storage_operation_clear)
++
++/* Only actual constructors call these helpers. An issuance or parsed row is
++ * not an allocation grant; selected construction refuses before its allocator. */
++static uint64_t node_storage_admit(CrucibleNodeStorageKind kind)
++{
++    uint64_t issuance = 0;
++
++    if (qemu_plugin_crucible_startup_source_retained() ||
++        !node_storage_process_current()) {
++        return 0;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    if (!crucible_node_storage.returning[kind].active &&
++        crucible_node_storage.issuance != UINT64_MAX) {
++        issuance = ++crucible_node_storage.issuance;
++    }
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return issuance;
++}
++
++static void node_storage_publish(CrucibleNodeStorageControl *control,
++    void *allocation, const void *resource, const QemuCrucibleFaultRule *rule,
++    CrucibleNodeStorageKind kind, uint64_t issuance,
++    QemuCrucibleFaultRegistration *origin)
++{
++    control->holder = control;
++    control->allocation = allocation;
++    control->resource = resource;
++    control->rule = rule;
++    control->kind = kind;
++    control->issuance = issuance;
++    control->origin = origin;
++    control->process = getpid();
++    qemu_thread_get_self(&control->creator);
++    g_mutex_lock(&crucible_node_storage.lock);
++    control->next = crucible_node_storage.head;
++    crucible_node_storage.head = control;
++    g_mutex_unlock(&crucible_node_storage.lock);
++}
++
++/* The caller holds the storage mutex. Authenticate membership before fields. */
++static CrucibleNodeStorageControl *node_storage_find_locked(
++    const void *resource, CrucibleNodeStorageKind kind)
++{
++    CrucibleNodeStorageControl *actual;
++
++    for (actual = crucible_node_storage.head; actual; actual = actual->next) {
++        if (actual->resource == resource && actual->kind == kind) {
++            return actual->holder == actual && actual->process == getpid() &&
++                actual->issuance && !actual->retiring &&
++                !actual->post_status ? actual : NULL;
++        }
++    }
++    return NULL;
++}
++
++static bool node_storage_rule_origin(const QemuCrucibleFaultRule *rule,
++                                    QemuCrucibleFaultRegistration **origin)
++{
++    CrucibleNodeStorageControl *actual;
++    bool current = false;
++
++    if (!rule || !origin || !node_storage_process_current()) {
++        return false;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    for (actual = crucible_node_storage.head; actual; actual = actual->next) {
++        if (actual->rule == rule && actual->holder == actual &&
++            actual->process == getpid() && actual->issuance &&
++            !actual->retiring && !actual->post_status) {
++            *origin = actual->origin;
++            current = true;
++            break;
++        }
++    }
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return current;
++}
++
++/* Reserve the real cursor before the first destructor effect. Membership stays
++ * live while child references and payload are being returned. */
++static CrucibleNodeStorageControl *node_storage_retire_begin(
++    const void *resource, CrucibleNodeStorageKind kind)
++{
++    CrucibleNodeStorageControl *control;
++
++    if (!node_storage_process_current()) {
++        return NULL;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    control = node_storage_find_locked(resource, kind);
++    if (!control || crucible_node_storage.returning[kind].active) {
++        g_mutex_unlock(&crucible_node_storage.lock);
++        return NULL;
++    }
++    control->retiring = true;
++    crucible_node_storage.returning[kind].holder = control->allocation;
++    crucible_node_storage.returning[kind].resource = resource;
++    crucible_node_storage.returning[kind].origin = control->origin;
++    crucible_node_storage.returning[kind].issuance = control->issuance;
++    crucible_node_storage.returning[kind].references_returned = 0;
++    crucible_node_storage.returning[kind].json_references_returned = 0;
++    crucible_node_storage.returning[kind].payload_returned = false;
++    crucible_node_storage.returning[kind].physically_returned = false;
++    crucible_node_storage.returning[kind].post_returned = false;
++    crucible_node_storage.returning[kind].first_status = control->first_status;
++    crucible_node_storage.returning[kind].post_status = control->post_status;
++    crucible_node_storage.returning[kind].active = true;
++    qemu_thread_get_self(&crucible_node_storage.returning[kind].thread);
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return control;
++}
++
++static bool node_storage_unpublish(CrucibleNodeStorageControl *control)
++{
++    CrucibleNodeStorageControl **link;
++    CrucibleNodeStorageKind kind = control->kind;
++
++    g_mutex_lock(&crucible_node_storage.lock);
++    if (!crucible_node_storage.returning[kind].active ||
++        crucible_node_storage.returning[kind].holder != control->allocation ||
++        crucible_node_storage.returning[kind].issuance != control->issuance ||
++        !qemu_thread_is_self(&crucible_node_storage.returning[kind].thread)) {
++        control->post_status = -EPERM;
++        g_mutex_unlock(&crucible_node_storage.lock);
++        return false;
++    }
++    for (link = &crucible_node_storage.head; *link && *link != control;
++         link = &(*link)->next) {
++    }
++    if (!*link) {
++        control->post_status = -EPERM;
++        g_mutex_unlock(&crucible_node_storage.lock);
++        return false;
++    }
++    crucible_node_storage.returning[kind].references_returned =
++        control->references_returned;
++    crucible_node_storage.returning[kind].json_references_returned =
++        control->json_references_returned;
++    crucible_node_storage.returning[kind].payload_returned =
++        control->payload_returned;
++    *link = control->next;
++    control->holder = NULL;
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return true;
++}
++
++/* Only the actual destructor calls this after free. It never reads the freed
++ * allocation/control. A failed post leaves the paid nominal cursor occupied. */
++static void node_storage_retire_post(void *allocation, uint64_t issuance,
++                                    CrucibleNodeStorageKind kind)
++{
++    if (!node_storage_process_current()) {
++        return;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    if (crucible_node_storage.returning[kind].active &&
++        crucible_node_storage.returning[kind].holder == allocation &&
++        crucible_node_storage.returning[kind].issuance == issuance) {
++        crucible_node_storage.returning[kind].physically_returned = true;
++        if (qemu_thread_is_self(&crucible_node_storage.returning[kind].thread)) {
++            crucible_node_storage.returning[kind].post_returned = true;
++            if (kind != CRUCIBLE_NODE_STORAGE_STAGING) {
++                crucible_node_storage.returning[kind].holder = NULL;
++                crucible_node_storage.returning[kind].active = false;
++            }
++        } else {
++            crucible_node_storage.returning[kind].post_status = -EPERM;
++        }
++    }
++    g_mutex_unlock(&crucible_node_storage.lock);
++}
++
++static bool node_storage_returned(const void *resource, uint64_t issuance,
++                                  CrucibleNodeStorageKind kind)
++{
++    bool returned;
++
++    if (!node_storage_process_current()) {
++        return false;
++    }
++    g_mutex_lock(&crucible_node_storage.lock);
++    returned = !crucible_node_storage.returning[kind].active &&
++        crucible_node_storage.returning[kind].resource == resource &&
++        crucible_node_storage.returning[kind].issuance == issuance &&
++        crucible_node_storage.returning[kind].physically_returned &&
++        !crucible_node_storage.returning[kind].post_status;
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return returned;
++}
++
++int qemu_crucible_fault_node_state_returned_v1(
++    QemuCrucibleFaultPendingControl *control, const void *state,
++    uint64_t issuance, bool *physically_returned)
++{
++    int status = -EBUSY;
++    CrucibleNodeStorageKind kind = CRUCIBLE_NODE_STORAGE_STAGING;
++
++    if (!physically_returned || *physically_returned ||
++        !node_storage_process_current()) {
++        return -EPERM;
++    }
++    status = qemu_crucible_fault_node_pending_current_v1(control);
++    if (!status) {
++        status = qemu_crucible_fault_pending_state_returning_v1(
++            control, state, issuance);
++    }
++    if (status) {
++        return status;
++    }
++    status = -EBUSY;
++    g_mutex_lock(&crucible_node_storage.lock);
++    if (crucible_node_storage.returning[kind].resource == state &&
++        crucible_node_storage.returning[kind].issuance == issuance) {
++        *physically_returned =
++            crucible_node_storage.returning[kind].physically_returned;
++        if (*physically_returned &&
++            crucible_node_storage.returning[kind].active &&
++            crucible_node_storage.returning[kind].post_returned &&
++            !crucible_node_storage.returning[kind].post_status &&
++            qemu_thread_is_self(&crucible_node_storage.returning[kind].thread)) {
++            crucible_node_storage.returning[kind].holder = NULL;
++            crucible_node_storage.returning[kind].active = false;
++            status = 0;
++        }
++    }
++    g_mutex_unlock(&crucible_node_storage.lock);
++    return status;
 +}
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
@@ -201656,7 +202491,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4107f4cb552386ee038301b1c8dbac78d7e4cef9
+index 0000000000000000000000000000000000000000..89a707530abde0541df84eb80b3ca82eee31205d
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -201684,7 +202519,7 @@ index 0000000000000000000000000000000000000000..4107f4cb552386ee038301b1c8dbac78
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '399724d60e1db950d8aa11304e4abd0112969c3bbf1c264afe6f83d090f4b1f0',
++        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -244340,10 +245175,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..f97212621a04a18e31d9671b96e112dd35b6ee79
+index 0000000000000000000000000000000000000000..c9523584a17ccb3776ba4f7f05944578fc685d6e
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,525 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -244796,6 +245631,79 @@ index 0000000000000000000000000000000000000000..f97212621a04a18e31d9671b96e112dd
 +missing-birth and locked-foreign-fork refusals with compiled defects. Genuine
 +owned allocation, callbacks, stream restore/handoff, partial cleanup and physical
 +row/control/staging return remain unexecuted; no launched lifecycle is qualified.
++
++Node rule and reservation storage
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++Actual ``node_arm`` now authenticates its real entered pending callback before
++allocating the temporary rule state. The frame binds the exact command/payload
++addresses, callback kind, process and thread to the actual retained registration
++child. ``node_prepare`` and ``node_commit`` join that same staging owner and
++actual callback. A failed parse returns its born state to the pending owner;
++the pending destructor performs its one state return. A returned free-state
++callback alone cannot mark that state physically returned: the exact state
++issuance must have an actual storage-destruction receipt. Physical return is
++saved independently of a negative post.
++
++Temporary state, heap rule copies and event reservations embed real canonical
++storage controls. Actual constructors publish them in an intrusive registry;
++foreign matching records cannot insert themselves by observation. Rule copies
++inherit the real registered origin when present. Existing rule references keep
++the same allocation alive across registry replacement, CPU borrowers, shadow
++transactions and deferred consumers. Reservation transfers and splits keep
++their actual allocation membership through the instruction, interrupt,
++hardware-error, lifecycle, clock, accelerator and memory-service consumers.
++Queue unlink, a transferred pointer and a remaining-event count do not remove
++this storage owner.
++
++Each actual destructor reserves a typed fixed cursor before its first effect.
++Rule cleanup separately journals returned JSON/array/hash/ledger references
++and the physical payload free. Returning a shared GLib reference does not prove
++that the referenced allocation was destroyed. Temporary impulse evidence and
++reservation return are separate debts. The actual wrapper free transfers the
++canonical holder to that cursor before unpublication; physical return and post
++are then recorded without reading destroyed storage. The temporary-state cursor
++stays occupied until the actual same-owner pending FREE_STATE returning frame
++consumes its exact physical receipt. A matching pointer or issuance alone cannot
++consume that cursor. Uncertain cleanup retains
++the nominal owner or cursor and prevents another destruction or same-kind
++construction while its cursor is occupied. No scalar journal is a constructor
++or a physical-return issuer.
++
++Rule and reservation restore constructors own ordinary storage independently
++of registered command origin. Decoded data supplies no registration or Source
++grant. The existing aggregate restoring mode and event-credit accounting remain
++separate from physical allocation return. Prepared reservation discard uses its
++own actual destructor without subtracting live queue credits; its three former
++raw-free callsites now use that path. Ordinary rule/VMState behavior remains
++implemented. Selected constructors and node-rule preparation refuse before
++their allocations; no authenticated selected byte payer has been supplied.
++
++The existing exact fixed inventory getter includes the actual storage registry
++and returning cursors. This cut does not establish allocation funding, complete
++GLib child destruction, nominal ownership of every deferred consumer container,
++handler removal, registration return or Source closure. Existing raw rule and
++reservation APIs retain their caller reference-lifetime requirements; storage
++membership is not a new externally transferable capability. An actual ordinary
++recursive operation lock serializes reference/quota changes and nested cleanup
++through receipt observation. Same-kind reentrant cleanup refuses while its
++cursor is occupied. Raw callers must still hold their own valid reference
++through each use; aggregate VMState and container mutation retain their existing
++caller serialization requirements. Selected callers refuse before acquiring
++the recursive lock, whose opaque backing is not selected-funded.
++
++The focused compiled component runs actual ordinary reservation construction,
++split, consume, release and prepared-storage discard, including real allocator
++frees and a locked foreign fork. It also checks selected and forced issuance
++exhaustion refusal, actual cross-thread operation exclusion and recursive
++operation entry. Four independently rebuilt production-body defects must reach the
++selected-prebirth, membership, serialization and physical-return assertions. A
++separate rebuilt wrong-thread post defect retains the actual freed allocation
++cursor, refuses repeated free and prevents new reservation birth. The
++registered-provider component stays empty and checks missing callback entry;
++its additional interval defect reaches that exact refusal. Genuine owned ARM,
++temporary-rule cleanup, copied/committed rule consumers, deferred callbacks,
++aggregate restore streams and Source terminal cleanup remain unexecuted.
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
@@ -247360,7 +248268,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..30bd6535188d225b1ca6eadc9cdbb418d539d8b2
+index 0000000000000000000000000000000000000000..25cdf07679605487b439a81ae3eb74a58c833502
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -247378,7 +248286,7 @@ index 0000000000000000000000000000000000000000..30bd6535188d225b1ca6eadc9cdbb418
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '399724d60e1db950d8aa11304e4abd0112969c3bbf1c264afe6f83d090f4b1f0',
++        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
 +}
 +
 +FUNCTIONS = (
@@ -247466,7 +248374,7 @@ index 0000000000000000000000000000000000000000..30bd6535188d225b1ca6eadc9cdbb418
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2aded99feb387459867a935ce2e457b8f38a751a
+index 0000000000000000000000000000000000000000..71acfb823f63b6290fe503cd405057c648f8cdc3
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -247497,7 +248405,7 @@ index 0000000000000000000000000000000000000000..2aded99feb387459867a935ce2e457b8
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '399724d60e1db950d8aa11304e4abd0112969c3bbf1c264afe6f83d090f4b1f0',
++        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
 +}
 +
 +FUNCTIONS = (
@@ -247713,7 +248621,7 @@ index 0000000000000000000000000000000000000000..2aded99feb387459867a935ce2e457b8
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..54ce0917e12ddf773d296c31c5b41216c917652c
+index 0000000000000000000000000000000000000000..0eb49fca569e21a9b400959f48f013413f63b7ce
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -247737,7 +248645,7 @@ index 0000000000000000000000000000000000000000..54ce0917e12ddf773d296c31c5b41216
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '399724d60e1db950d8aa11304e4abd0112969c3bbf1c264afe6f83d090f4b1f0',
++        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
 +}
 +
 +FUNCTIONS = (
@@ -247831,7 +248739,7 @@ index 0000000000000000000000000000000000000000..54ce0917e12ddf773d296c31c5b41216
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9a4249f5e558eaaadf908af581c8fbf55435f242
+index 0000000000000000000000000000000000000000..cd9350934f298ec1c5b3adeab86a6166347f4e8f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -247872,15 +248780,15 @@ index 0000000000000000000000000000000000000000..9a4249f5e558eaaadf908af581c8fbf5
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '399724d60e1db950d8aa11304e4abd0112969c3bbf1c264afe6f83d090f4b1f0',
++        '16be2996b4156af451ba33f49ac1aedfabc5d29491960dffda18791de37ebba9',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'd6f90e00d6cb40279a83b8fe2486160791aa85a424c94e3450dd652b27978698',
++        '1ef4bd4ef25959915885f35e79de1a96f39a3ff976e512fc3cc3e0dc50cca93f',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        'b3deb40186660ca70686061cc169cc7a4efdf4a3c2c50154aec6cd68257fb472',
++        '021c9b9ec5e86c8e0812dd763a0caef466221060b1a7ada5bcdb1720d3807241',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -248010,10 +248918,10 @@ index 0000000000000000000000000000000000000000..9a4249f5e558eaaadf908af581c8fbf5
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6909d6e935c0cbd362bfbe40f256b7b43e09b87c
+index 0000000000000000000000000000000000000000..b71601cc092ab09236485afd43f29898b3e2d90c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1232 @@
+@@ -0,0 +1,1240 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -248023,18 +248931,22 @@ index 0000000000000000000000000000000000000000..6909d6e935c0cbd362bfbe40f256b7b4
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-fault-storage.inc.h':
++        '3a4cac2c5c1960c46a943a1c9cdc296c3e9b64eeb553ec8d1f298bd1cd756852',
++    'tests/unit/test-crucible-fault-storage.py':
++        '4e9966f43310f84122b61b35f693ad595bdedd9485054c6c5034175878da646d',
 +    'plugins/crucible-fault-pending.inc.h':
-+        'a2254807817e2360e48f345626ccfafeba39b10005bba6da95664cb8c3424acd',
++        'ba190e1ff6a427528c0a4ffa657ee264d51ed21bd0ad06890b80abcc9b5e8e12',
 +    'include/qemu/crucible-fault-registration.h':
-+        '2885aa8b5fcd49d092b0cc207cd0515f7f0bcf7b69b44d622f70ede537f3fc2a',
++        '2102d2dd882050fcd2cd638ab15a02720ea5c3622b3590547421df2681b8049c',
 +    'plugins/crucible-fault-registration.inc.h':
-+        '3bb920f7284ff6aecabb6f0a90f028371874e6cf8d8aa9cef300157b7aaeca1a',
++        '0e7b43f8b46dba0a6af3f09c434417a5c3b075a85c63135c7467cd96c7e84feb',
 +    'plugins/crucible-fault.c':
 +        '0b6efd439e8bc7f04cd48ba7d810c76abe9acce1809656a74007656044d7171b',
 +    'plugins/crucible-fault-node.c':
-+        '302b62a1e4961e1419a6afa42e69ec325c075171eb81e597e9edd8c5b50904ea',
++        'bf9636ef5ee4db045372e78485fb39f3b9b7bd1527c128e0d2568755e7269662',
 +    'tests/unit/test-crucible-fault-registration.py':
-+        '2b8156e72bc247a552213d555cf2eb6e4ddd8e86ea5aba694082b257a6cd9ff0',
++        '9fbacbdd1b86520e7c4659b9533eb70422348ef59e20f46f40d6276a9e3128fd',
 +
 +    'include/qemu/crucible-register-workspace.h':
 +        '8540f0cd48acf6e6d5cfe4154ab72f5b73b2b3435be283a79bfafee4d95d5337',
@@ -248076,9 +248988,9 @@ index 0000000000000000000000000000000000000000..6909d6e935c0cbd362bfbe40f256b7b4
 +    'plugins/crucible-fault-register.c':
 +        'c11f809eb010c3996a56392e2a6e13f7582628b0fe634b20a0e4fe2ac6233d03',
 +    'plugins/crucible-fault-interrupt.c':
-+        '3f5c357c92667a0b4313c6a360c52d5d07bea69cc1450706fdd259571aead152',
++        'bee84b28c5e0b3905ea5bbf866538c0e023f1f85d29766323eb304ce9fcc6168',
 +    'include/qemu/crucible-fault.h':
-+        'f9a5b62e2befe912d8eba94b8582b8b58849b4fff4d65f95f1b51a244832ff69',
++        '0b2dafe860f6b8b17230c7b30213eef56c6cc9514004d0a66a7375a69035e413',
 +    'tests/unit/test-crucible-hardware-catalogue.py':
 +        '120ad28c8e65d2fa616c3d4c7d65806c45ab04d2e10adc80f51ee15d6702e1a6',
 +    'tests/unit/test-crucible-initial-manifest-refusal.py':
@@ -248930,6 +249842,9 @@ index 0000000000000000000000000000000000000000..6909d6e935c0cbd362bfbe40f256b7b4
 +        ("plugins/crucible-fault-pending.inc.h",
 +         "static struct {",
 +         "static uint64_t crucible_fault_pending_fixed_storage_bytes("),
++        ("plugins/crucible-fault-storage.inc.h",
++         "typedef enum CrucibleNodeStorageKind {",
++         "static uint64_t node_storage_fixed_bytes("),
 +        ("plugins/crucible-fault-registration.inc.h",
 +         "static struct {",
 +         "uint64_t qemu_crucible_fault_node_registration_fixed_storage_bytes_v1("),
@@ -249027,6 +249942,7 @@ index 0000000000000000000000000000000000000000..6909d6e935c0cbd362bfbe40f256b7b4
 +    getters = {
 +        "plugins/crucible-fault-pending.inc.h": (
 +            "crucible_fault_pending_fixed_storage_bytes",),
++        "plugins/crucible-fault-storage.inc.h": ("node_storage_fixed_bytes",),
 +        "plugins/crucible-fault-registration.inc.h": (
 +            "qemu_crucible_fault_node_registration_fixed_storage_bytes_v1",),
 +        "plugins/crucible-fault.c": (
@@ -249345,7 +250261,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dab2d8c5a1f8b91e345dafb6455197de1492a17a 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..5282a37e03ea5d3aa915812d5cbbc50efa295df5 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -249420,7 +250336,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dab2d8c5a1f8b91e345dafb6455197de
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1204 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1206 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -250245,6 +251161,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..dab2d8c5a1f8b91e345dafb6455197de
 +                        '../../include/qemu/crucible-fault-registration.h',
 +                        '../../plugins/crucible-fault-registration.inc.h',
 +                        '../../plugins/crucible-fault-pending.inc.h',
++                        '../../plugins/crucible-fault-storage.inc.h',
++                        'test-crucible-fault-storage.py',
 +                        '../../plugins/crucible-fault.c',
 +                        '../../plugins/crucible-fault-node.c',
 +                        '../../include/qemu/crucible-register-workspace.h',
@@ -265001,10 +265919,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a44596fc25380c2514a1b933dc083ec7d4cd46b7
+index 0000000000000000000000000000000000000000..cb4cc991ae95fc9ac7f3c9eb3051267da7c42cea
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2359 @@
+@@ -0,0 +1,2360 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -267353,6 +268271,7 @@ index 0000000000000000000000000000000000000000..a44596fc25380c2514a1b933dc083ec7
 +        ("test-crucible-register-description.py", "register-description"),
 +        ("test-crucible-register-workspace.py", "register-workspace"),
 +        ("test-crucible-fault-registration.py", "fault-registration"),
++        ("test-crucible-fault-storage.py", "fault-storage"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
 +    ):
 +        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
@@ -270368,10 +271287,10 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +}
 diff --git a/tests/unit/test-crucible-fault-registration.py b/tests/unit/test-crucible-fault-registration.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc896a7b88
+index 0000000000000000000000000000000000000000..064b3f49854cee2b9a74880e8cef0ebabeaa3c61
 --- /dev/null
 +++ b/tests/unit/test-crucible-fault-registration.py
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,279 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise real empty-provider refusals without constructing an issuer.
 +
@@ -270420,6 +271339,16 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +    assert(qemu_crucible_fault_pending_birth_current_v1(
 +        &foreign.handler, &command, &born_pending) == -EPERM);
 +    assert(qemu_crucible_fault_pending_returning_v1(&foreign_pending) == -EPERM);
++    assert(qemu_crucible_fault_pending_callback_current_v1(
++        &foreign_pending, &command, NULL, 0, CRUCIBLE_PENDING_ARM) == -EPERM);
++    assert(qemu_crucible_fault_node_pending_callback_v1(
++        &command, NULL, 0, CRUCIBLE_PENDING_ARM, &born_pending) == -EPERM);
++    assert(!born_pending);
++    assert(qemu_crucible_fault_pending_state_returning_v1(
++        &foreign_pending, &foreign_stage, 1) == -EPERM);
++    assert(qemu_crucible_fault_node_state_returned_v1(
++        &foreign_pending, &foreign_stage, 1, &pending_returned) == -EPERM);
++    assert(!pending_returned);
 +    assert(qemu_crucible_fault_node_pending_acquire_v1(
 +        &foreign.handler, &command, &born_pending) == -EPERM);
 +    assert(!born_pending);
@@ -270448,7 +271377,7 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +    assert(qemu_crucible_fault_registration_append_current_v1(
 +        &foreign.registration, &foreign.registration.holder, &foreign.handler) == -EPERM);
 +    assert(qemu_crucible_fault_node_registration_fixed_storage_bytes_v1() ==
-+           sizeof(crucible_node_registrations));
++           sizeof(crucible_node_registrations) + sizeof(crucible_node_storage));
 +    assert(qemu_crucible_fault_node_registration_identity_v1(
 +        &foreign.registration, &foreign.registration.holder, false, &handler) == -EPERM);
 +    assert(!handler);
@@ -270538,6 +271467,7 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +    fault = fault.replace('#include "crucible-fault-pending.inc.h"', pending)
 +    node = (root / "plugins/crucible-fault-node.c").read_text()
 +    owner = (root / "plugins/crucible-fault-registration.inc.h").read_text()
++    storage = (root / "plugins/crucible-fault-storage.inc.h").read_text()
 +    thread = (root / "util/qemu-thread-posix.c").read_text()
 +    declarations = fault[fault.index("#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY"):
 +                         fault.index("static void crucible_fault_flush_complete_on_cpu(")]
@@ -270564,6 +271494,7 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +        "bypass-pending-membership": owner,
 +        "bypass-staging-membership": owner,
 +        "bypass-pending-birth-interval": owner,
++        "bypass-pending-callback-interval": owner,
 +    }
 +    current = extract["function"](fault, "int qemu_crucible_fault_validation_current_v1(")
 +    bypass_current = current[:current.index("{")] + "{ return 0; }"
@@ -270573,6 +271504,8 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +        pending, "static bool crucible_pending_stage_current_locked(")
 +    birth_current = extract["function"](
 +        pending, "int qemu_crucible_fault_pending_birth_current_v1(")
++    callback_current = extract["function"](
++        pending, "int qemu_crucible_fault_pending_callback_current_v1(")
 +    proof = {}
 +    for name, literal in variants.items():
 +        actual_declarations = declarations
@@ -270587,6 +271520,9 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +        elif name == "bypass-pending-birth-interval":
 +            actual_declarations = declarations.replace(birth_current,
 +                birth_current[:birth_current.index("{")] + "{ return 0; }")
++        elif name == "bypass-pending-callback-interval":
++            actual_declarations = declarations.replace(callback_current,
++                callback_current[:callback_current.index("{")] + "{ return 0; }")
 +        generated = output / f"{name}.c"
 +        generated.write_text(
 +            '#include "qemu/osdep.h"\n#include <assert.h>\n'
@@ -270598,6 +271534,7 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +            '#define qemu_plugin_crucible_startup_source_retained() selected\n' +
 +            extract["function"](thread, "void qemu_thread_get_self(") + "\n" +
 +            extract["function"](thread, "bool qemu_thread_is_self(") + "\n" +
++            storage + "\n" +
 +            actual_declarations +
 +            "\n" + impulse + "\n" +
 +            literal + "\n" + methods + CHECKS)
@@ -270619,6 +271556,7 @@ index 0000000000000000000000000000000000000000..9582b7446be6d932d151097f1a964cbc
 +            "bypass-pending-membership": "qemu_crucible_fault_node_pending_current_v1",
 +            "bypass-staging-membership": "crucible_pending_stage_current_locked",
 +            "bypass-pending-birth-interval": "qemu_crucible_fault_pending_birth_current_v1",
++            "bypass-pending-callback-interval": "qemu_crucible_fault_pending_callback_current_v1",
 +        }.get(name, "qemu_crucible_fault_node_registration_identity_v1")
 +        if name != "positive" and assertion not in result.stdout:
 +            raise RuntimeError("control missed its exact refusal assertion")
@@ -271202,6 +272140,264 @@ index 0000000000000000000000000000000000000000..26a65d793ef136b1631383a1be9380d7
 +    subprocess.run(command, check=True)
 +    print("Compiled production-body differential rule-presence fixture", flush=True)
 +    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-fault-storage.py b/tests/unit/test-crucible-fault-storage.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..dea0f81a8899769a0fc5340b513dfb22357adc56
+--- /dev/null
++++ b/tests/unit/test-crucible-fault-storage.py
+@@ -0,0 +1,252 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Run actual ordinary reservation constructors and storage retirement.
++
++No registration or Source provider is populated. Selected construction refuses;
++ordinary production constructors create their own real allocation membership.
++ARM, committed rule consumers and VMState streams remain outside this component.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++CHECKS = r"""
++static gpointer check_operation_exclusion(gpointer unused)
++{
++    bool entered = g_rec_mutex_trylock(&crucible_node_storage.operations);
++
++    if (entered) {
++        g_rec_mutex_unlock(&crucible_node_storage.operations);
++    }
++    assert(!entered);
++    return NULL;
++}
++
++int main(void)
++{
++    QemuCrucibleFaultEventReservation foreign = { 0 };
++    QemuCrucibleFaultEventReservation *original, *split, *restored;
++    uint64_t original_issuance, split_issuance, restored_issuance;
++
++    foreign.storage.holder = &foreign.storage;
++    foreign.storage.resource = &foreign;
++    foreign.storage.process = getpid();
++    foreign.storage.issuance = 1;
++    foreign.storage.kind = CRUCIBLE_NODE_STORAGE_RESERVATION;
++    foreign.remaining = 3;
++    assert(!crucible_node_storage.head);
++    assert(!node_reservation_current(&foreign));
++    assert(!qemu_crucible_fault_event_reservation_remaining(&foreign));
++    qemu_crucible_fault_event_reservation_release(&foreign);
++    assert(foreign.remaining == 3 && !crucible_node_storage.head);
++
++    selected = true;
++    assert(!qemu_crucible_fault_event_reserve(2));
++    assert(!qemu_crucible_fault_event_reservation_restore(1));
++    assert(!crucible_node_storage.head && !crucible_node_storage.issuance);
++    assert(!crucible_node_event_reserved && !crucible_node_event_sequence_reserved);
++    selected = false;
++
++    {
++        g_auto(CrucibleNodeStorageOperation) operation = node_storage_operation_begin();
++        GThread *other;
++
++        assert(operation.entered);
++        other = g_thread_new("storage-exclusion", check_operation_exclusion, NULL);
++        g_thread_join(other);
++        /* Nested same-thread operations retain the outer exclusion. */
++        g_auto(CrucibleNodeStorageOperation) nested = node_storage_operation_begin();
++
++        assert(nested.entered);
++    }
++
++    assert(!qemu_crucible_fault_event_reserve(0));
++    assert(!qemu_crucible_fault_event_reserve(CRUCIBLE_NODE_EVENT_CAPACITY));
++    original = qemu_crucible_fault_event_reserve(3);
++    assert(original && node_reservation_current(original));
++    original_issuance = original->storage.issuance;
++    assert(original->storage.holder == &original->storage);
++    assert(crucible_node_event_reserved == 3 &&
++           crucible_node_event_sequence_reserved == 3);
++
++    split = qemu_crucible_fault_event_reservation_split(original, 1);
++    assert(split && split != original && node_reservation_current(split));
++    split_issuance = split->storage.issuance;
++    assert(split_issuance > original_issuance);
++    assert(qemu_crucible_fault_event_reservation_remaining(original) == 2);
++    assert(qemu_crucible_fault_event_reservation_remaining(split) == 1);
++    assert(crucible_node_event_reserved == 3 &&
++           crucible_node_event_sequence_reserved == 3);
++    qemu_crucible_fault_event_reservation_consume(split);
++    assert(!qemu_crucible_fault_event_reservation_remaining(split));
++    assert(crucible_node_event_reserved == 2 &&
++           crucible_node_event_sequence_reserved == 2);
++    qemu_crucible_fault_event_reservation_release(split);
++#ifdef EXPECT_FAILED_POST
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RESERVATION].active);
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RESERVATION].physically_returned);
++    assert(crucible_node_storage.returning[CRUCIBLE_NODE_STORAGE_RESERVATION].post_status == -EPERM);
++    assert(!node_reservation_current(split));
++    qemu_crucible_fault_event_reservation_release(split);
++    assert(!qemu_crucible_fault_event_reserve(1));
++    assert(!qemu_crucible_fault_event_reservation_restore(1));
++    assert(crucible_node_event_reserved == 2);
++    assert(crucible_node_storage.head == &original->storage);
++    puts("PASS actual free retained after injected independent post refusal; no repeated free or rebirth");
++    return 0;
++#endif
++    assert(node_storage_returned(split, split_issuance,
++                                 CRUCIBLE_NODE_STORAGE_RESERVATION));
++    /* No new allocation intervenes: this is the actual removed holder. */
++    qemu_crucible_fault_event_reservation_release(split);
++    assert(crucible_node_event_reserved == 2);
++
++    restored = qemu_crucible_fault_event_reservation_restore(2);
++    assert(restored && node_reservation_current(restored));
++    restored_issuance = restored->storage.issuance;
++    assert(restored_issuance > split_issuance && !restored->storage.origin);
++    assert(crucible_node_event_reserved == 2);
++    qemu_crucible_fault_event_reservation_discard(restored);
++    assert(node_storage_returned(restored, restored_issuance,
++                                 CRUCIBLE_NODE_STORAGE_RESERVATION));
++    assert(crucible_node_event_reserved == 2);
++    qemu_crucible_fault_event_reservation_release(original);
++    assert(node_storage_returned(original, original_issuance,
++                                 CRUCIBLE_NODE_STORAGE_RESERVATION));
++    assert(!crucible_node_event_reserved && !crucible_node_event_sequence_reserved);
++    assert(!crucible_node_storage.head);
++
++    /* Actual foreign-process refusal precedes the inherited storage mutex. */
++    g_mutex_lock(&crucible_node_storage.lock);
++    pid_t child = fork();
++    int child_status;
++
++    assert(child >= 0);
++    if (!child) {
++        assert(!node_reservation_current(&foreign));
++        assert(!qemu_crucible_fault_event_reserve(1));
++        assert(!qemu_crucible_fault_event_reservation_restore(1));
++        _exit(0);
++    }
++    assert(waitpid(child, &child_status, 0) == child);
++    g_mutex_unlock(&crucible_node_storage.lock);
++    assert(WIFEXITED(child_status) && !WEXITSTATUS(child_status));
++    /* Force only the refusal boundary; no owner is manufactured at exhaustion. */
++    crucible_node_storage.issuance = UINT64_MAX;
++    assert(!qemu_crucible_fault_event_reserve(1));
++    assert(!qemu_crucible_fault_event_reservation_restore(1));
++    assert(!crucible_node_storage.head &&
++           crucible_node_storage.issuance == UINT64_MAX);
++    assert(!crucible_node_event_reserved && !crucible_node_event_sequence_reserved);
++    puts("PASS actual ordinary reservation birth/split/consume/release/discard; selected and foreign refusal");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    root = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    extract = runpy.run_path(str(root / "tests/unit/extract-crucible-startup-source-controls.py"))
++    node = (root / "plugins/crucible-fault-node.c").read_text()
++    storage = (root / "plugins/crucible-fault-storage.inc.h").read_text()
++    thread = (root / "util/qemu-thread-posix.c").read_text()
++    reservation_start = node.index("struct QemuCrucibleFaultEventReservation {")
++    reservation = node[reservation_start:node.index("};", reservation_start) + 2]
++    methods = "\n\n".join(extract["function"](node, name) for name in (
++        "QemuCrucibleFaultEventReservation *\nqemu_crucible_fault_event_reserve(",
++        "static bool node_reservation_current(",
++        "void qemu_crucible_fault_event_reservation_consume(",
++        "QemuCrucibleFaultEventReservation *\nqemu_crucible_fault_event_reservation_split(",
++        "void qemu_crucible_fault_event_reservation_release(",
++        "void qemu_crucible_fault_event_reservation_discard(",
++        "size_t qemu_crucible_fault_event_reservation_remaining(",
++        "QemuCrucibleFaultEventReservation *\nqemu_crucible_fault_event_reservation_restore(",
++    ))
++    declarations = "\n".join(line for line in node.splitlines() if line.startswith((
++        "#define CRUCIBLE_NODE_EVENT_CAPACITY ",
++        "static size_t crucible_node_event_count;",
++        "static uint64_t crucible_node_event_sequence;",
++        "static bool crucible_node_event_terminal;",
++        "static size_t crucible_node_event_reserved;",
++        "static uint64_t crucible_node_event_sequence_reserved;",
++        "static bool crucible_node_vmstate_restoring;",
++    )))
++    # No actual pending callback exists in this component. The registration
++    # component compiles this bridge against the real pending providers.
++    storage = storage.replace(extract["function"](
++        storage, "int qemu_crucible_fault_node_state_returned_v1("), "")
++    current = extract["function"](node, "static bool node_reservation_current(")
++    post = extract["function"](storage, "static void node_storage_retire_post(")
++    failed_post = post.replace(
++        "if (qemu_thread_is_self(&crucible_node_storage.returning[kind].thread))",
++        "if (false)")
++    assert failed_post != post
++    variants = {
++        "positive": (storage, methods),
++        "omit-selected-prebirth-refusal": (
++            storage.replace("qemu_plugin_crucible_startup_source_retained() ||", "false ||").replace(
++                "!qemu_plugin_crucible_startup_source_retained() &&", "true &&"), methods),
++        "bypass-reservation-membership": (
++            storage, methods.replace(current, current[:current.index("{")] + "{ return true; }")),
++        "omit-operation-serialization": (
++            storage.replace("g_rec_mutex_lock(&crucible_node_storage.operations);", "").replace(
++                "g_rec_mutex_unlock(&crucible_node_storage.operations);", ""), methods),
++        "retain-after-independent-post-refusal": (
++            storage.replace(post, failed_post), methods),
++        "omit-physical-return-journal": (
++            storage.replace(post, post[:post.index("{")] + "{}"), methods),
++    }
++    proof = {}
++    for name, (actual_storage, actual_methods) in variants.items():
++        generated = output / f"{name}.c"
++        generated.write_text(
++            '#include "qemu/osdep.h"\n#include <assert.h>\n#include <sys/wait.h>\n'
++            '#include "qemu/atomic.h"\n#include "qemu/crucible-fault-registration.h"\n'
++            'static bool selected;\n'
++            '#define qemu_plugin_crucible_startup_source_retained() selected\n'
++            '#define error_report(...) fprintf(stderr, __VA_ARGS__)\n' +
++            extract["function"](thread, "void qemu_thread_get_self(") + "\n" +
++            extract["function"](thread, "bool qemu_thread_is_self(") + "\n" +
++            ("#define EXPECT_FAILED_POST\n" if name == "retain-after-independent-post-refusal" else "") +
++            actual_storage + "\n" + reservation + "\n" + declarations + "\n" +
++            actual_methods + "\n" + CHECKS)
++        binary = output / name
++        command = [*shlex.split(os.environ.get("CC", "cc")),
++                   *shlex.split(os.environ.get("CFLAGS", "")), str(generated),
++                   "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, text=True, timeout=30,
++                                cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected_assertion = {
++            "omit-selected-prebirth-refusal": "!qemu_crucible_fault_event_reserve(2)",
++            "bypass-reservation-membership": "!node_reservation_current(&foreign)",
++            "omit-physical-return-journal": "node_storage_returned(split",
++            "omit-operation-serialization": "!entered",
++        }.get(name)
++        if result.returncode != (0 if name in ("positive", "retain-after-independent-post-refusal") else -6):
++            raise RuntimeError(f"unexpected {name}: {result.returncode}\n{result.stdout}")
++        if expected_assertion and expected_assertion not in result.stdout:
++            raise RuntimeError(f"{name} missed its exact causal assertion")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS four independently rebuilt storage defects reached exact assertions; failed-post retention passed")
 +
 +
 +if __name__ == "__main__":
@@ -310003,10 +311199,10 @@ index 0000000000000000000000000000000000000000..4cfe85bd0dffb73724aab8bc15eb6f83
 +    main()
 diff --git a/tests/unit/test-crucible-tcg-fast-paths.py b/tests/unit/test-crucible-tcg-fast-paths.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..57e14122f0470be6c7a65a461f18fe75a2897801
+index 0000000000000000000000000000000000000000..2cd2937533cd353c6ae41f20700e9ec6013ff1d6
 --- /dev/null
 +++ b/tests/unit/test-crucible-tcg-fast-paths.py
-@@ -0,0 +1,843 @@
+@@ -0,0 +1,844 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise queue and instruction-completion production bodies.
 +
@@ -310742,6 +311938,7 @@ index 0000000000000000000000000000000000000000..57e14122f0470be6c7a65a461f18fe75
 +                      header.index("void qemu_crucible_fault_register(")]
 +    registration_header = (ROOT / "include/qemu/crucible-fault-registration.h").read_text()
 +    registration = (ROOT / "plugins/crucible-fault-registration.inc.h").read_text()
++    storage = (ROOT / "plugins/crucible-fault-storage.inc.h").read_text()
 +    node = (ROOT / "plugins/crucible-fault-node.c").read_text()
 +    thread = (ROOT / "util/qemu-thread-posix.c").read_text()
 +    # These are actual empty producer and thread providers, not an owner
@@ -310776,7 +311973,7 @@ index 0000000000000000000000000000000000000000..57e14122f0470be6c7a65a461f18fe75
 +    registration_provider = (
 +        definition(thread, "void qemu_thread_get_self(") + "\n" +
 +        definition(thread, "bool qemu_thread_is_self(") + "\n" +
-+        impulse + "\n" + registration + "\n" +
++        impulse + "\n" + storage + "\n" + registration + "\n" +
 +        definition(queue, "int qemu_crucible_fault_registration_observe_v1("))
 +    globals_ = queue[queue.index("#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY"):
 +                     queue.index("static void crucible_fault_flush_complete_on_cpu(")]
