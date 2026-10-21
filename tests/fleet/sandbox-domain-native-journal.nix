@@ -6,7 +6,7 @@
   pkgs,
   ...
 }: let
-  tests = import ./_sandbox-domain-unit-tests.nix {inherit lib pkgs;};
+  tests = import ./_sandbox-native-unit-tests.nix {inherit lib pkgs;};
   system = mkSystem [
     ../../systems/server-test.nix
     {environment.systemPackages = [tests pkgs.util-linux];}
@@ -24,7 +24,7 @@ in {
     # immutable and run under an unprivileged UID in its private directory,
     # reached through actual root-owned guest ancestry.
     vm.succeed("install -d -m 0700 -o 1000 -g 1000 /var/lib/aos-sandbox-domain-tests")
-    vm.succeed("install -m 0755 ${tests}/bin/sandbox-domain-unit-tests /var/lib/aos-sandbox-domain-tests/suite")
+    vm.succeed("install -m 0755 ${tests}/bin/sandbox-unit-tests /var/lib/aos-sandbox-domain-tests/suite")
     output = vm.succeed(
         "cd /var/lib/aos-sandbox-domain-tests && "
         "RUST_MIN_STACK=33554432 ${pkgs.util-linux}/bin/setpriv "

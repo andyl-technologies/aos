@@ -108,9 +108,11 @@ not (
     test(=journal::protected_storage::opening::retained::captured_readonly::tests::ordinary_empty_readonly_materializes_actual_readonly_owner_with_legacy_basename) or
     test(=journal::protected_storage::opening::retained::captured_readonly::tests::readonly_incomplete_tail_keeps_its_post_and_never_repairs_the_actual_file) or
     test(=journal::protected_storage::opening::retained::writable::tests::incomplete_tail_keeps_its_original_post_before_writable_repair) or
-    test(=journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure) or
-    test(=policy_compiler::create_storage_current::controller_readonly::native_read::completed::tests::an_already_transferred_model_cannot_also_retire_as_complete_data) or
-    test(=policy_compiler::create_storage_current::controller_readonly::native_read::completed::tests::incomplete_native_handoff_returns_the_same_live_file_owner)
+    test(=journal::root_readonly_model::tests::saved_challenge_refusal_preserves_acquisition_and_owed_names_after_mount_failure)
+  )) or
+  (package(=aos-sandbox-policy) & (
+    test(=native::readonly::completed::tests::an_already_transferred_model_cannot_also_retire_as_complete_data) or
+    test(=native::readonly::completed::tests::incomplete_native_handoff_returns_the_same_live_file_owner)
   )) or
   (package(=aos-sandbox-broker) & (
     test(=canonical_journal::opening::ordinary_held::append::tests::borrowed_partial_index_failure_preserves_its_typed_cause_and_unpublished_native) or
