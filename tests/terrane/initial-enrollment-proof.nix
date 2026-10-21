@@ -76,6 +76,10 @@
       mount -t ext4 -o loop,prjquota "$proof_disk" "$TERRANE_INITIAL_FIXTURE_ROOT"
       proof_mounted=1
       chmod 755 "$TERRANE_INITIAL_FIXTURE_ROOT"
+      # Minimal guest init mounts /run with tmpfs's permissive default. Match
+      # production runtime ancestry before the real publisher's protected walk.
+      chmod 755 /run
+      test "$(stat -c '%u:%g:%a' /run)" = 0:0:755
       mkdir /run/terrane-initial-publisher
       chown 841:845 /run/terrane-initial-publisher
       chmod 2750 /run/terrane-initial-publisher
