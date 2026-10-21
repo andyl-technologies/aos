@@ -15,7 +15,7 @@ use terrane_sdk::{
     store::{CapabilityReport, RefCapability, TokioClock, TokioLocalFs},
 };
 
-fn actual_identity(uid: u32, groups: &[u32]) -> io::Result<()> {
+pub(super) fn actual_identity(uid: u32, groups: &[u32]) -> io::Result<()> {
     terrane_linux::host_quota::require_host_root_namespace_boundary()?;
     let status = fs::read_to_string("/proc/self/status")?;
     for label in ["Uid:", "Gid:"] {

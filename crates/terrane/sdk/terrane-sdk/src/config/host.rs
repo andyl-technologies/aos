@@ -68,6 +68,11 @@ pub enum Reassembly {
 pub struct DomainDirectory {
     /// Absolute directory dedicated to this domain.
     pub path: String,
+    /// Explicit protected administrative allocation root for this domain.
+    ///
+    /// Omission supplies no administrative-root quota binding. It never selects
+    /// the tier-wide path or another domain's administrative directory.
+    pub administrative_root: Option<String>,
     /// Requested wipe policy, validated against the sealed tier's capabilities.
     pub wipe: Wipe,
     /// Optional explicit publication policy for this domain.
@@ -108,6 +113,16 @@ impl HostTier {
             {
                 return Err(ConfigError::Invalid(
                     "invalid or duplicate domain directory",
+                ));
+            }
+
+            if directory
+                .administrative_root
+                .as_ref()
+                .is_some_and(|path| !super::absolute_path(path))
+            {
+                return Err(ConfigError::Invalid(
+                    "administrative root requires an absolute path",
                 ));
             }
 

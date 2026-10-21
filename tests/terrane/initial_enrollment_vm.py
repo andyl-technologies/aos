@@ -154,6 +154,29 @@ def broker_ready(process):
     return output
 
 
+def configured_publication():
+    """Requires the real two-domain publisher and actual content-role preparation."""
+    publisher = subprocess.Popen(role_command("publisher-positive", 841, [845]),
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 start_new_session=True)
+    try:
+        socket = pathlib.Path("/run/terrane-initial-publisher/publisher.sock")
+        deadline = min(DEADLINE, time.monotonic() + 20)
+        while not socket.exists():
+            require(publisher.poll() is None and time.monotonic() < deadline,
+                    "configured publisher failed before binding actual listener")
+            time.sleep(0.02)
+        run_case("prepare-public-private", role_command("prepare-public-private", 840, [844, 845]))
+        require(publisher.poll() is None, "configured publisher exited during actual preparation")
+    finally:
+        stop(publisher)
+        output = publisher.stdout.read(MAX_OUTPUT + 1)
+        require(len(output) <= MAX_OUTPUT, "configured publisher output bound exceeded")
+        text = output.decode("utf-8", errors="replace")
+        (ROOT / "proof-logs/publisher.log").write_text(text)
+        print(text, end="", flush=True)
+
+
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
     verify_inputs()
@@ -178,6 +201,7 @@ def main():
         run_case("read-private", role_command("read-private", 840, [844, 845]))
         run_case("read-publisher", role_command("read-publisher", 841, [845]))
         run_case("foreign-private", role_command("foreign-private", 842, []))
+        configured_publication()
         run_case("verify-positive", admin_command("verify-positive"))
         run_case("capabilities-update", admin_command("capabilities-update"), expected_pass=False)
         require(broker.poll() is None, "actual quota broker exited during queries")

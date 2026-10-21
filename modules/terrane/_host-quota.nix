@@ -21,8 +21,11 @@
   ledgerPath = "${ledgerDirectory}/ledger.toml";
   socketDirectory = "/run/aos-terrane-host";
   configPath = "/etc/terrane-host/host.toml";
+  administrativeRoot = domain:
+    (terrane.hostTier.domains.${domain} or {administrativeRoot = null;}).administrativeRoot;
   expectedRoots = domain: let
     root = domainRoots.${domain};
+    administrative = administrativeRoot domain;
   in
     map (label: {
       roleDirectory = label;
@@ -32,9 +35,12 @@
         else "${root}/${label}";
     })
     requiredLabels
-    ++ lib.optional (domain == "public" && publicRoot != terrane.hostTier.path) {
+    ++ lib.optional (administrative != null || (domain == "public" && publicRoot != terrane.hostTier.path)) {
       roleDirectory = "administrative-root";
-      path = terrane.hostTier.path;
+      path =
+        if administrative != null
+        then administrative
+        else terrane.hostTier.path;
     };
   sameRoots = owner:
     builtins.hasAttr owner.domain domainRoots

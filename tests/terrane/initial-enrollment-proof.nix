@@ -76,6 +76,9 @@
       mount -t ext4 -o loop,prjquota "$proof_disk" "$TERRANE_INITIAL_FIXTURE_ROOT"
       proof_mounted=1
       chmod 755 "$TERRANE_INITIAL_FIXTURE_ROOT"
+      mkdir /run/terrane-initial-publisher
+      chown 841:845 /run/terrane-initial-publisher
+      chmod 2750 /run/terrane-initial-publisher
       mkdir "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
       chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
       export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"

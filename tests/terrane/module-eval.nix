@@ -428,6 +428,28 @@
         && builtins.all (field: lib.hasInfix field nativeFile) ["[host_tier.publisher]" "socket_path = \"/run/terrane-publish/publisher.sock\"" "serve_uid = 840" "content_gid = 845" "max_connections = 8" "[host_tier.quota]" "configuration_epoch = \"00112233445566778899aabbccddeeff\"" "quota_owner_id = \"owner-public\"" "retirement_grace_ms = 5000" "chunk_profile = \"cdc-1m\"" "chunk_seed = \"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\""];
     }
     {
+      name = "domain-administrative-roots-projected-independently";
+      pass = let
+        cfg = evaluate {
+          aos.terrane.hostTier.domains = {
+            public = {
+              path = "/var/lib/terrane-public";
+              administrativeRoot = "/var/lib/terrane-admin-public";
+            };
+            "private:example" = {
+              path = "/var/lib/terrane-private";
+              administrativeRoot = "/var/lib/terrane-admin-private";
+              wipe = "none";
+            };
+          };
+        };
+        text = cfg.environment.etc."terrane/terrane.toml".text;
+      in
+        checksPass cfg
+        && lib.hasInfix "administrative_root = \"/var/lib/terrane-admin-public\"" text
+        && lib.hasInfix "administrative_root = \"/var/lib/terrane-admin-private\"" text;
+    }
+    {
       name = "sdk-config-has-no-implicit-native-sections";
       pass = !(lib.hasInfix "[host_tier.publisher]" file) && !(lib.hasInfix "[host_tier.quota]" file) && !(lib.hasInfix "chunk_seed" file);
     }

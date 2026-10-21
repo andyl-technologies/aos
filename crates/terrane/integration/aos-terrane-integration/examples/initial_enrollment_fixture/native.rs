@@ -6,6 +6,8 @@ mod admin;
 mod config;
 #[path = "observations.rs"]
 mod observations;
+#[path = "publisher.rs"]
+mod publisher;
 #[path = "reader.rs"]
 mod reader;
 
@@ -23,6 +25,8 @@ const SELECTORS: &[&str] = &[
     "initialize-existing",
     "initialize-unsafe-parent",
     "serve-positive",
+    "publisher-positive",
+    "prepare-public-private",
     "verify-positive",
     "read-public",
     "read-private",
@@ -67,6 +71,8 @@ pub(super) fn run() -> io::Result<()> {
             println!("PASS immutable initial claim bytes and incarnations");
             Ok(())
         }
+        "publisher-positive" => publisher::run(),
+        "prepare-public-private" => publisher::prepare(),
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {
             reader::run(selector)
         }

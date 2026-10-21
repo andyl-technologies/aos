@@ -81,6 +81,7 @@
         description = "Absolute filesystem root for this disclosure domain.";
       };
       publisher = option (types.nullOr domainPublisherType) null "Explicit native publisher profile for this domain; omission supplies no defaults.";
+      administrativeRoot = option (types.nullOr pathType) null "Explicit protected administrative allocation root belonging only to this domain.";
       quotaOwnerId = option (types.nullOr ownerIdType) null "Explicit host allocation owner identifier.";
       wipe = option (types.nullOr (types.enum ["none" "zero"])) null "Wipe policy; unset defaults to zero for private domains and none otherwise (DOM-18). Sealed host tiers reject zero, including the private-domain default (D-128).";
     };
@@ -203,6 +204,12 @@
         lib.mapAttrs (name: domain: {
           inherit (domain) path;
           quota_owner_id = domain.quotaOwnerId;
+          administrative_root =
+            if domain.administrativeRoot != null
+            then domain.administrativeRoot
+            else if name == "public" && domain.path != cfg.hostTier.path
+            then cfg.hostTier.path
+            else null;
           publisher =
             if domain.publisher == null
             then null

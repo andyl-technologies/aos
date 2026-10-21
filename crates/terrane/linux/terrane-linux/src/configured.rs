@@ -7,6 +7,9 @@
 
 #![cfg(feature = "tokio")]
 
+mod administrative;
+
+use administrative::AdministrativeRoot;
 use std::{
     collections::BTreeSet,
     fs::File,
@@ -67,6 +70,8 @@ pub fn run_configured_publisher(host: &HostTier) -> io::Result<()> {
         network,
         quotas,
         _socket_ancestors: socket_ancestors,
+        quota_path: config.quota_path.clone(),
+        quota_epoch: config.quota_epoch,
     });
 
     // Preparation is readonly and retains actual roots. No domain starts
@@ -135,13 +140,13 @@ struct Preflight {
     quota_path: PathBuf,
     quota_epoch: [u8; 16],
     tier_budget: u64,
-    administrative_root: PathBuf,
 }
 
 struct Domain {
     native: NativePublisherConfig,
     profile_name: String,
     owner_id: String,
+    administrative_root: Option<PathBuf>,
 }
 
 // These actual files, observations and shared guards remain together. A wire
@@ -150,6 +155,7 @@ struct CheckedQuota {
     observation: VerifiedQuotaObservation,
     roots: Vec<File>,
     publication_state: File,
+    administrative: Option<AdministrativeRoot>,
     _guard: DomainProvisioningGuard,
 }
 
@@ -162,6 +168,8 @@ pub(crate) struct ConfiguredPublisherCustody {
     confinement: Arc<crate::quota_confinement::Installed>,
     network: Arc<crate::quota_confinement::PublisherInstalled>,
     quotas: Vec<CheckedQuota>,
+    quota_path: PathBuf,
+    quota_epoch: [u8; 16],
     _socket_ancestors: Vec<OwnedFd>,
 }
 
@@ -212,7 +220,22 @@ impl ConfiguredPublisherCustody {
                 "publication state differs from authenticated charge owner",
             ));
         }
-        for (file, expected) in checked.roots.iter().zip(&observation.roots) {
+        if let Some(administrative) = &checked.administrative {
+            administrative.check_current()?;
+            // The publisher cannot read the root-only administrative directory.
+            // Requery actual privileged project/UUID facts while retaining its
+            // independent O_PATH inode and the domain's shared provisioning guard.
+            let mut helper = HostQuotaClient::connect(&self.quota_path, 0, self.quota_epoch)?;
+            let fresh = helper.query(&observation.owner_id, &observation.domain)?;
+            check_same_partition(observation, fresh.observation())?;
+            administrative.check_current()?;
+        }
+        for (file, expected) in checked.roots.iter().zip(
+            observation
+                .roots
+                .iter()
+                .filter(|root| root.role_directory != "administrative-root"),
+        ) {
             let actual = NativeProject::inspect(file)?;
             if actual.device != expected.device
                 || actual.inode != expected.inode
@@ -263,7 +286,7 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
             "publisher role identity mismatch",
         ));
     }
-    let administrative_root = normalized_path(&host.path)?;
+    normalized_path(&host.path)?;
     let socket_path = normalized_path(&publisher.socket_path)?;
     let quota_path = normalized_path(&quota.socket_path)?;
     rustix::net::SocketAddrUnix::new(&socket_path)?;
@@ -316,7 +339,29 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
             },
             profile_name: policy.chunk_profile.clone(),
             owner_id: owner_id.clone(),
+            administrative_root: directory
+                .administrative_root
+                .as_deref()
+                .map(normalized_path)
+                .transpose()?,
         });
+    }
+    // Administrative allocations belong to exactly one physical domain. Check
+    // the entire partition before confinement, quota connections or native IO.
+    for (index, domain) in domains.iter().enumerate() {
+        if let Some(root) = &domain.administrative_root
+            && (domains.iter().any(|other| {
+                root.starts_with(&other.native.layout_root)
+                    || other.native.layout_root.starts_with(root)
+            }) || domains[..index].iter().any(|other| {
+                other
+                    .administrative_root
+                    .as_ref()
+                    .is_some_and(|other| root.starts_with(other) || other.starts_with(root))
+            }))
+        {
+            return Err(invalid("administrative allocations overlap another owner"));
+        }
     }
     Ok(Preflight {
         endpoint: ServerConfig {
@@ -331,7 +376,6 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
         quota_path,
         quota_epoch: quota.configuration_epoch,
         tier_budget: host.size_bytes,
-        administrative_root,
     })
 }
 
@@ -387,6 +431,7 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
             .ok_or_else(|| invalid("quota partition sum overflow"))?;
         let mut labels = BTreeSet::new();
         let mut roots = Vec::new();
+        let mut administrative = None;
         for expected in &observation.roots {
             if !labels.insert(expected.role_directory.as_str()) {
                 return Err(invalid("duplicate quota root"));
@@ -394,10 +439,20 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
             let file = match expected.role_directory.as_str() {
                 "layout-root" => root.try_clone()?,
                 "administrative-root" => {
-                    if config.administrative_root == domain.native.layout_root {
-                        return Err(invalid("administrative quota root aliases domain root"));
+                    let path = domain.administrative_root.as_ref().ok_or_else(|| {
+                        invalid("quota administrative root requires explicit domain configuration")
+                    })?;
+                    if !expected.project_inherit
+                        || !actual_roots.insert((expected.device, expected.inode))
+                    {
+                        return Err(invalid("invalid administrative quota root"));
                     }
-                    open_host_path(&config.administrative_root, true)?
+                    administrative = Some(AdministrativeRoot::open(
+                        path,
+                        expected.device,
+                        expected.inode,
+                    )?);
+                    continue;
                 }
                 label if ROOT_LABELS.contains(&label) => File::from(rustix::fs::openat(
                     &root,
@@ -425,6 +480,9 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
             }
             roots.push(file);
         }
+        if administrative.is_some() != domain.administrative_root.is_some() {
+            return Err(invalid("quota administrative allocation coverage mismatch"));
+        }
         if ROOT_LABELS.iter().any(|label| !labels.contains(label)) {
             return Err(invalid("quota observation lacks allocation root coverage"));
         }
@@ -444,6 +502,7 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
             observation: verified,
             roots,
             publication_state,
+            administrative,
             _guard: guard,
         });
     }
@@ -453,6 +512,32 @@ fn check_quotas(config: &Preflight) -> io::Result<Vec<CheckedQuota>> {
         ));
     }
     Ok(checked)
+}
+
+// Compare immutable authenticated configuration; measured usage may change as
+// genuine work allocates. A current over-budget observation always fails closed.
+fn check_same_partition(
+    expected: &crate::host_quota::QuotaObservation,
+    current: &crate::host_quota::QuotaObservation,
+) -> io::Result<()> {
+    if current.configuration_epoch != expected.configuration_epoch
+        || current.owner_id != expected.owner_id
+        || current.domain != expected.domain
+        || current.filesystem_uuid != expected.filesystem_uuid
+        || current.project_id != expected.project_id
+        || !current.accounting
+        || !current.enforcement
+        || current.hard_limit_bytes != expected.hard_limit_bytes
+        || current.hard_inode_limit != expected.hard_inode_limit
+        || current.tier_charge_budget_bytes != expected.tier_charge_budget_bytes
+        || current.configured_limit_sum_bytes != expected.configured_limit_sum_bytes
+        || current.roots != expected.roots
+        || current.charged_reserved_bytes > current.hard_limit_bytes
+        || (current.hard_inode_limit != 0 && current.charged_inodes > current.hard_inode_limit)
+    {
+        return Err(invalid("live administrative quota partition changed"));
+    }
+    Ok(())
 }
 
 fn open_publication_state(root: &File) -> io::Result<File> {
@@ -492,6 +577,9 @@ mod tests {
                         label.into(),
                         DomainDirectory {
                             path: format!("/var/lib/terrane/domain-{index}"),
+                            administrative_root: Some(format!(
+                                "/var/lib/terrane-admin/domain-{index}"
+                            )),
                             wipe: Wipe::None,
                             publisher: Some(DomainPublisher {
                                 retirement_grace_ms: 30_000,
@@ -576,6 +664,47 @@ mod tests {
         assert_eq!(
             preflight(&config).err().unwrap().kind(),
             io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_preflight_binds_distinct_explicit_administrative_roots() {
+        let config = configuration();
+        let checked = preflight(&config).unwrap();
+        assert_ne!(
+            checked.domains[0].administrative_root,
+            checked.domains[1].administrative_root
+        );
+
+        for root in [
+            config.domains["private:fixture"].path.clone(),
+            format!("{}/child", config.domains["private:fixture"].path),
+            "/var/lib/terrane-admin".into(),
+        ] {
+            let mut config = configuration();
+            config
+                .domains
+                .get_mut("public")
+                .unwrap()
+                .administrative_root = Some(root);
+            assert!(preflight(&config).is_err());
+        }
+
+        let mut config = configuration();
+        config
+            .domains
+            .get_mut("public")
+            .unwrap()
+            .administrative_root = None;
+        let checked = preflight(&config).unwrap();
+        assert!(
+            checked
+                .domains
+                .iter()
+                .find(|domain| domain.native.domain == "public")
+                .unwrap()
+                .administrative_root
+                .is_none()
         );
     }
 
