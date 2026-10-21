@@ -12,6 +12,8 @@ mod node_construction;
 mod fork_target;
 #[path = "host_physical_custody/normal_world.rs"]
 mod normal_world;
+#[path = "host_physical_custody/roster_storage.rs"]
+mod roster_storage;
 #[path = "host_physical_custody/roster_retirement.rs"]
 mod roster_retirement;
 #[path = "host_physical_custody/target_dispatcher.rs"]

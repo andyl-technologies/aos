@@ -338,7 +338,7 @@ pub(super) const LENDER: Companion = Companion {
         ),
         (
             r#"pub(crate) fn same_identity(&self, other: &Self) -> bool {
-    Weak::ptr_eq(&self.roster, &other.roster)
+    RosterWeak::ptr_eq(&self.roster, &other.roster)
         && self.index == other.index
         && self.generation == other.generation
         && self.process_generation == other.process_generation
@@ -365,7 +365,7 @@ pub(super) const LENDER: Companion = Companion {
         .filter(|allocation| !allocation.physical_retired)
         .ok_or(OriginalActorAccountError::Unavailable)?;
     Ok(SourceCleanupLender {
-        roster: Weak::clone(&self.roster), index: self.index, generation: self.generation,
+        roster: RosterWeak::clone(&self.roster), index: self.index, generation: self.generation,
         process_generation: Some(allocation.process_generation),
     })
 }"#,
@@ -404,7 +404,7 @@ pub(super) const LENDER: Companion = Companion {
 ) -> Result<SourceCleanupOriginal, OriginalActorAccountError> {
     let controller = self.controller()?;
     let attempt = NativeAccountAttempt {
-        roster: Weak::clone(&self.roster), index: self.index, generation: self.generation,
+        roster: RosterWeak::clone(&self.roster), index: self.index, generation: self.generation,
     };
     let original = attempt.cleanup_entry()?;
     let current = self.controller()?;

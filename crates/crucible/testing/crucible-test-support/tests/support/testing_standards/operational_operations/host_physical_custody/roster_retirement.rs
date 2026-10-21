@@ -7,113 +7,115 @@
 use super::{Companion, Contract};
 
 const HELD_TEST: &str = r#"fn contended_cleanup_retains_the_same_binding_and_paired_credit()
--> Result<(), Box<dyn std::error::Error>> {
-    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
-    let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
-    let (credit, resident, metadata) = OriginalNativeAccountCredit::mechanism_credit(original)?;
-    let (mut roster, binding) =
-        OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1)?;
-    let held = binding
-        .roster
-        .upgrade()
-        .ok_or(OriginalActorAccountError::Unavailable)?;
-    let state = held
-        .lock()
-        .map_err(|_| OriginalActorAccountError::Unavailable)?;
-    let credit = state.slots[0]
-        .credit
-        .as_ref()
-        .ok_or(OriginalActorAccountError::Unavailable)?;
-    let address = std::ptr::from_ref(credit);
-
-    // This is the actual binding's mutex, held in this same thread. A
-    // blocking entry cannot reach the original-bound retirement checks.
-    let error = roster
-        .retry_unsettled()
-        .expect_err("contended cleanup must refuse");
-    let QemuVmRealizationError::ModelCopy { source } = error else {
-        panic!("preserve the original typed roster refusal");
-    };
-    assert!(matches!(
-        source.downcast_ref::<OriginalActorAccountError>(),
-        Some(OriginalActorAccountError::Unavailable)
-    ));
-    assert!(Arc::ptr_eq(
-        roster
-            .held
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = Arc::new(supervisor.begin(HostOperationClass::Preparation)?);
+        let (credit, resident, metadata) = OriginalNativeAccountCredit::mechanism_credit(original)?;
+        let (mut roster, binding) =
+            OriginalNativeAccountRoster::publish([Some(credit), None, None, None], 1)?;
+        let held = binding
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = held
+            .lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let credit = state.slots[0]
+            .credit
             .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?,
-        &held
-    ));
-    assert_eq!(
-        std::ptr::from_ref(
-            state.slots[0]
-                .credit
-                .as_ref()
-                .ok_or(OriginalActorAccountError::Unavailable)?
-        ),
-        address
-    );
-    assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
-    drop(source);
-    drop(state);
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let address = std::ptr::from_ref(credit);
 
-    roster.retry_unsettled()?;
-    roster.verify_quiescent()?;
-    assert!(
-        roster.try_close().is_err(),
-        "the real binding still blocks release"
-    );
-    drop(held);
-    drop(binding);
-    roster.try_close()?;
-    assert!(roster.is_physically_returned());
-    drop(OriginalNativeAccountCredit::reserve_mechanism_pair(
-        &resident, &metadata,
-    )?);
-    roster.try_close()?;
-    Ok(())
-}"#;
+        // This is the actual binding's mutex, held in this same thread. A
+        // blocking entry cannot reach the original-bound retirement checks.
+        let error = roster
+            .retry_unsettled()
+            .expect_err("contended cleanup must refuse");
+        let QemuVmRealizationError::ModelCopy { source } = error else {
+            panic!("preserve the original typed roster refusal");
+        };
+        assert!(matches!(
+            source.downcast_ref::<OriginalActorAccountError>(),
+            Some(OriginalActorAccountError::Unavailable)
+        ));
+        assert!(std::ptr::eq(
+            &**roster
+                .held
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?,
+            &*held
+        ));
+        assert_eq!(
+            std::ptr::from_ref(
+                state.slots[0]
+                    .credit
+                    .as_ref()
+                    .ok_or(OriginalActorAccountError::Unavailable)?
+            ),
+            address
+        );
+        assert!(OriginalNativeAccountCredit::reserve_mechanism_pair(&resident, &metadata).is_err());
+        drop(source);
+        drop(state);
+
+        roster.retry_unsettled()?;
+        roster.verify_quiescent()?;
+        assert!(
+            roster.try_close().is_err(),
+            "the real binding still blocks release"
+        );
+        drop(held);
+        drop(binding);
+        roster.try_close()?;
+        assert!(roster.is_physically_returned());
+        drop(OriginalNativeAccountCredit::reserve_mechanism_pair(
+            &resident, &metadata,
+        )?);
+        roster.try_close()?;
+        Ok(())
+    }"#;
 
 const RETIRED_BODY: &str = r#"fn retire_with_post_free(
-    &mut self,
-    post_free: impl FnOnce(),
-) -> Result<(), OriginalActorAccountError> {
-    if let Some(held) = self.held.as_mut() {
-        if self.retiring_credits.iter().any(Option::is_some) {
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        let state = Arc::get_mut(held)
-            .ok_or(OriginalActorAccountError::Unavailable)?
-            .get_mut()
-            .map_err(|_| OriginalActorAccountError::Unavailable)?;
-        for slot in &state.slots {
-            verify_closed_slot(slot)?;
-            if let Some(credit) = &slot.credit {
-                credit.require_return_phase()?;
+        &mut self,
+        post_free: impl FnOnce(),
+    ) -> Result<(), OriginalActorAccountError> {
+        if let Some(held) = self.held.as_mut() {
+            if self.retiring_credits.iter().any(Option::is_some) {
+                return Err(OriginalActorAccountError::Unavailable);
             }
+            held.retire_body(
+                |state| {
+                    for slot in &state.slots {
+                        verify_closed_slot(slot)?;
+                        if let Some(credit) = &slot.credit {
+                            credit.require_return_phase()?;
+                        }
+                    }
+                    Ok(())
+                },
+                |state| {
+                    for (slot, retained) in state.slots.iter_mut().zip(&mut self.retiring_credits) {
+                        *retained = slot.credit.take();
+                    }
+                },
+            )?;
+            // The same pairs are now outside the allocation they financed.
+            drop(self.held.take());
+            post_free();
         }
 
-        for (slot, retained) in state.slots.iter_mut().zip(&mut self.retiring_credits) {
-            *retained = slot.credit.take();
-        }
-        // The same pairs are now outside the allocation they financed.
-        drop(self.held.take());
-        post_free();
-    }
-
-    for retained in &mut self.retiring_credits {
-        if let Some(credit) = retained {
-            let result = credit.retire_after_control_free();
-            if credit.is_physically_returned() {
-                *retained = None;
+        for retained in &mut self.retiring_credits {
+            if let Some(credit) = retained {
+                let result = credit.retire_after_control_free();
+                if credit.is_physically_returned() {
+                    *retained = None;
+                }
+                result?;
             }
-            result?;
+            *retained = None;
         }
-        *retained = None;
-    }
-    Ok(())
-}"#;
+        Ok(())
+    }"#;
 
 pub(in super::super::super) const RECONCILE_BODY: &str = r#"pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError> {
     let launch_return = self.retry_failed_launch_bodies();
@@ -137,7 +139,7 @@ pub(in super::super::super) const RECONCILE_BODY: &str = r#"pub fn retry_unsettl
         };
         if let Some(generation) = generation {
             NativeAccountAttempt {
-                roster: Arc::downgrade(held), index, generation,
+                roster: held.downgrade(), index, generation,
             }.cleanup().map_err(original_error)?;
         }
     }
@@ -501,6 +503,8 @@ slot.source_cleanup_assigned = false;"#,
                 ),
             ],
         },
+        super::roster_storage::STORAGE,
+        super::roster_storage::FUNDING,
     ],
 };
 
@@ -550,7 +554,7 @@ fn held_roster_regression_requires_contention_identity_and_physical_credit_retur
             "let error = roster.retry_unsettled()",
             "drop(state); let error = roster.retry_unsettled()",
         ),
-        ("assert!(Arc::ptr_eq(", "unproved_identity(Arc::ptr_eq("),
+        ("assert!(std::ptr::eq(", "unproved_identity(std::ptr::eq("),
         (
             "assert_eq!(std::ptr::from_ref(",
             "unproved_address(std::ptr::from_ref(",
@@ -568,7 +572,7 @@ fn held_roster_regression_requires_contention_identity_and_physical_credit_retur
         rejects(&mutate_body(HELD_TEST, needle, replacement), &companions);
     }
     for (needle, replacement) in [
-        ("Arc::get_mut(held)", "Arc::make_mut(held)"),
+        ("held.retire_body(", "held.unproved_retirement("),
         (
             "*retained = slot.credit.take();",
             "drop(slot.credit.take());",
@@ -594,6 +598,22 @@ fn held_roster_regression_requires_contention_identity_and_physical_credit_retur
         ("slot.source_controller.as_ref()", "slot.foreign_controller.as_ref()"),
     ] {
         rejects(&mutate_body(FAILED_BODIES, needle, replacement), &companions);
+    }
+    for (index, needle, replacement) in [
+        (4, "if Arc::strong_count(&self.shared) != 1", "if false"),
+        (4, "gate.seal();", "drop(gate);"),
+        (4, "let gate = self.funding.as_ref().map(NativeRosterAllocationFunding::try_open).transpose().ok()?;", "let gate = ();"),
+        (4, "shared: Weak<Mutex<NativeRoster>>, funding: Option<NativeRosterAllocationFunding>,", "funding: Option<NativeRosterAllocationFunding>, shared: Weak<Mutex<NativeRoster>>,"),
+        (5, "let metadata = self.owner.owner.reserve_metadata(extent)", "let metadata = unrelated.reserve_metadata(extent)"),
+        (5, ".checked_add(allocation_bytes)", ".checked_add(16)"),
+    ] {
+        let mut changed = companions.clone();
+        let original = crate::scrub_comments_and_strings(&changed[index]);
+        changed[index] = super::super::replace_one_obligation(
+            &original, &super::super::source_pattern(needle), replacement,
+        );
+        assert_ne!(changed[index], original, "mutation missed actual roster funding: {needle}");
+        rejects(&code, &changed);
     }
     Ok(())
 }

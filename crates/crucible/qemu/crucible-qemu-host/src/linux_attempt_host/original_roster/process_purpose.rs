@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::path::Path;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use crucible_host_resources::host_supervision::{HostOperationGuard, HostOperationSupervisor};
 
@@ -15,7 +15,7 @@ use crate::QemuChildProcessContract;
 use crate::artifact_identity::InstallerControlIdentity;
 use crate::spawn::{ConfiguredProcessEnvelope, ProcessEnvelopeRefinementError};
 
-use super::{NativeAccountAttempt, NativeRoster, OriginalActorAccountError, OriginalNativeNodeBinding};
+use super::{NativeAccountAttempt, OriginalActorAccountError, OriginalNativeNodeBinding, RosterWeak};
 
 mod family;
 use family::InstalledProcessFamily;
@@ -237,7 +237,7 @@ impl InstalledProcessState {
 /// thread join and dropping a facade never refund a live or uncertain share.
 #[must_use = "retain the loan in the actual node through physical containment"]
 pub(crate) struct InstalledProcessPurposeLoan {
-    roster: Weak<std::sync::Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     generation: u64,
     process_generation: u64,
@@ -250,7 +250,7 @@ pub(crate) struct InstalledProcessPurposeLoan {
 /// owner consumes it after real reap, all worker/import borrowers and successful
 /// registry retirement; no caller-supplied disposition can release a share.
 pub(crate) struct InstalledIncarnationRetirement {
-    roster: Weak<std::sync::Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     generation: u64,
     process_generation: u64,
@@ -630,7 +630,7 @@ impl NativeAccountAttempt {
                 .journal
                 .issue(process_generation, guest_ram_bytes, startup, setup_mapping)?;
         let loan = InstalledProcessPurposeLoan {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
             process_generation,
@@ -862,7 +862,7 @@ impl OriginalNativeNodeBinding {
         if loan.subdivision_index != 1
             || loan.index != self.index
             || loan.generation != self.generation
-            || !Weak::ptr_eq(&loan.roster, &self.roster)
+            || !RosterWeak::ptr_eq(&loan.roster, &self.roster)
         {
             return Err(OriginalActorAccountError::Unavailable);
         }
@@ -905,7 +905,7 @@ impl OriginalNativeNodeBinding {
             .ok_or(OriginalActorAccountError::Unavailable)?;
         cleanup
             .retain_installed_incarnation(InstalledIncarnationRetirement {
-                roster: Weak::clone(&loan.roster),
+                roster: RosterWeak::clone(&loan.roster),
                 index: loan.index,
                 generation: loan.generation,
                 process_generation: loan.process_generation,
@@ -974,7 +974,7 @@ impl OriginalNativeNodeBinding {
         record: IssuedInstalledProcessRecord,
     ) -> Result<(), InstalledProcessPurposeError> {
         if self.installed_process.is_some()
-            || !Weak::ptr_eq(&self.roster, &loan.roster)
+            || !RosterWeak::ptr_eq(&self.roster, &loan.roster)
             || self.index != loan.index
             || self.generation != loan.generation
         {

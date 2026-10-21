@@ -320,7 +320,7 @@ pub(super) const CONTRACT: Contract = Contract {
 ) -> Result<OriginalParentParkCleanup, OriginalActorAccountError> {
     Ok(OriginalParentParkCleanup {
         guard: self.cleanup()?,
-        roster: Weak::clone(&self.roster),
+        roster: RosterWeak::clone(&self.roster),
         index: self.index,
         generation: self.generation,
     })
@@ -332,7 +332,7 @@ pub(super) const CONTRACT: Contract = Contract {
     &self,
     binding: &OriginalNativeNodeBinding,
 ) -> Result<(), OriginalActorAccountError> {
-    if !Weak::ptr_eq(&self.roster, &binding.roster)
+    if !RosterWeak::ptr_eq(&self.roster, &binding.roster)
         || self.index != binding.index
         || self.generation != binding.generation
     {

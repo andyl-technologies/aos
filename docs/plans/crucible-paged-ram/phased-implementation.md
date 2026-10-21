@@ -356,7 +356,8 @@ return. The containing receive remains retained and cannot return a Host
 publisher or peer merely because its local delivery closed.
 
 All 1,110 plugin unit tests pass, including seven actual module-journal controls
-and fifteen receive/delivery wrapper controls. Required hermetic application
+and fifteen receive/delivery wrapper controls. The expanded hermetic supervision
+gate passes all 45 exact cases. Required hermetic application
 test-target compilation passes. Four independently rebuilt Rust defects fail the intended
 assertions for copied-holder acceptance, omitted payload destruction, lost
 born-negative claim and skipped lifetime consumption after a negative payload
@@ -366,6 +367,30 @@ Rust/QEMU pairing. Coverage now names 143 component cases and nineteen native
 cases, with 149 uncovered and zero qualified requirements. Operational payload
 use, live publisher membership, entered action Originals, actual CPU borrowers,
 ACK and physical peer return still require genuine integration.
+
+
+Normal roster publication now reserves the entire actual Arc allocation from
+its same authenticated Main before moving native credit or allocating the
+roster. This independent charge includes the funding control and its own
+construction/lease storage. Closed strong and Weak wrappers retain that charge
+after their Arc fields. Every actual Weak upgrade holds one common gate through
+strong acquisition. Final retirement checks the physical slots and same retained
+Original, then checks real strong uniqueness under the gate before sealing it.
+The body dies before native credit return; its entire allocation remains paid
+until the final Weak deallocation. Private/component rosters retain their prior
+strong-and-weak uniqueness requirement.
+
+All 53 original-roster controls pass, including seven new allocation controls
+with real paired counters and observed Arc deallocation. All 261 active
+host-resource unit cases and their integration targets pass, with one existing
+ignored case. Five independently rebuilt defects fail their intended assertions
+for omitted strong uniqueness, omitted sealing, early strong/Weak funding
+refund and pricing only the Arc header. Strict host-resource Clippy, engineering
+hygiene, and the 71 focused custody source-policy controls pass. Component
+storage tests use explicit mechanism pairs and cannot authenticate a Main,
+Source, native process or action. Coverage names 153
+component cases and nineteen native cases; 149 requirements remain uncovered
+and none qualified.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

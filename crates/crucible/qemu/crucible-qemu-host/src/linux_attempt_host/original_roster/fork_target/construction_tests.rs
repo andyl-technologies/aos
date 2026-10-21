@@ -9,7 +9,7 @@ fn absent_roster_never_becomes_a_returned_target_even_for_old_or_future_epochs()
     for epoch in [0, 1, u64::MAX] {
         let mut loan = QemuForkTargetConstructionLoan {
             attempt: NativeAccountAttempt {
-                roster: Weak::new(),
+                roster: RosterWeak::new(),
                 index: 0,
                 generation: 1,
             },

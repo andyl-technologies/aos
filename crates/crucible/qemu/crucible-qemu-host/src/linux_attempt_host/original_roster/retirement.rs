@@ -1,10 +1,12 @@
 //! Retires an exclusive native roster before returning its original pairs.
 //!
 //! Final retirement accepts no caller cleanup assertion. Every live slot and
-//! control must already have completed its physical close, and atomic Arc
-//! uniqueness excludes both strong owners and weak factory bindings. Paired
-//! credit moves into the externally prepaid roster facade before that Arc is
-//! freed. A late original refusal keeps those same pairs there.
+//! control must already have completed its physical close. Normal rosters seal
+//! their funded upgrade gate and exclude real strong borrowers; an independent
+//! Main charge keeps the entire Arc allocation paid through final Weak closure.
+//! Legacy rosters require strong and weak uniqueness. Paired credit moves into
+//! the prepaid external facade before the actual body dies. A late Original
+//! refusal keeps those same pairs there.
 
 use super::*;
 
@@ -41,8 +43,9 @@ impl OriginalNativeAccountRoster {
     /// roster or external pairs; it does not reopen any slot or birth.
     ///
     /// # Errors
-    /// Refuses remaining strong or weak bindings, poisoned bookkeeping, live
-    /// native slots or controls, and the retained original before pair release.
+    /// Refuses real strong borrowers, unfunded weak bindings, poisoned or
+    /// contended bookkeeping, live native slots or controls, and the retained
+    /// Original before pair release.
     pub fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
         self.retry_failed_launch_bodies()?;
         self.retire_with_post_free(|| {})
@@ -91,20 +94,22 @@ impl OriginalNativeAccountRoster {
             if self.retiring_credits.iter().any(Option::is_some) {
                 return Err(OriginalActorAccountError::Unavailable);
             }
-            let state = Arc::get_mut(held)
-                .ok_or(OriginalActorAccountError::Unavailable)?
-                .get_mut()
-                .map_err(|_| OriginalActorAccountError::Unavailable)?;
-            for slot in &state.slots {
-                verify_closed_slot(slot)?;
-                if let Some(credit) = &slot.credit {
-                    credit.require_return_phase()?;
-                }
-            }
-
-            for (slot, retained) in state.slots.iter_mut().zip(&mut self.retiring_credits) {
-                *retained = slot.credit.take();
-            }
+            held.retire_body(
+                |state| {
+                    for slot in &state.slots {
+                        verify_closed_slot(slot)?;
+                        if let Some(credit) = &slot.credit {
+                            credit.require_return_phase()?;
+                        }
+                    }
+                    Ok(())
+                },
+                |state| {
+                    for (slot, retained) in state.slots.iter_mut().zip(&mut self.retiring_credits) {
+                        *retained = slot.credit.take();
+                    }
+                },
+            )?;
             // The same pairs are now outside the allocation they financed.
             drop(self.held.take());
             post_free();
@@ -188,12 +193,12 @@ mod tests {
             source.downcast_ref::<OriginalActorAccountError>(),
             Some(OriginalActorAccountError::Unavailable)
         ));
-        assert!(Arc::ptr_eq(
-            roster
+        assert!(std::ptr::eq(
+            &**roster
                 .held
                 .as_ref()
                 .ok_or(OriginalActorAccountError::Unavailable)?,
-            &held
+            &*held
         ));
         assert_eq!(
             std::ptr::from_ref(

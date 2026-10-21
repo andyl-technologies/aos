@@ -6,11 +6,11 @@
 //! native family purpose pays the single workspace backing inside its local share.
 //! The allocation-only record never claims the retired precise source proof.
 
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use crucible_host_resources::host_supervision::HostOperationGuard;
 
-use super::{NativeAccountAttempt, OriginalActorAccountError};
+use super::{NativeAccountAttempt, OriginalActorAccountError, RosterWeak};
 
 #[derive(Clone, Copy, Default)]
 pub(super) struct DigestPurposeState {
@@ -214,7 +214,7 @@ impl NativeAccountAttempt {
         };
         Ok(OriginalDeviceDigestWorkspacePurpose {
             account: NativeAccountAttempt {
-                roster: Weak::clone(&self.roster),
+                roster: RosterWeak::clone(&self.roster),
                 index: self.index,
                 generation: self.generation,
             },

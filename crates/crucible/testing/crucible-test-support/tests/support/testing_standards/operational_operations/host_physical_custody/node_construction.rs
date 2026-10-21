@@ -274,6 +274,8 @@ pub(super) const CONTRACT: Contract = Contract {
         NODE_ROSTER_RETURN,
         NODE_CREDIT_RETURN,
         super::roster_retirement::SOURCE_ORIGINAL,
+        super::roster_storage::STORAGE,
+        super::roster_storage::FUNDING,
     ],
 };
 

@@ -10,7 +10,7 @@ use crucible_host_resources::host_supervision::HostSupervisionError;
 /// roster control. It neither issues a Source nor completes either lender.
 pub struct OriginalParentParkCleanup {
     guard: Arc<HostOperationGuard>,
-    roster: Weak<Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     generation: u64,
 }
@@ -21,7 +21,7 @@ impl NativeAccountAttempt {
     ) -> Result<OriginalParentParkCleanup, OriginalActorAccountError> {
         Ok(OriginalParentParkCleanup {
             guard: self.cleanup()?,
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
         })
@@ -33,7 +33,7 @@ impl OriginalParentParkCleanup {
         &self,
         binding: &OriginalNativeNodeBinding,
     ) -> Result<(), OriginalActorAccountError> {
-        if !Weak::ptr_eq(&self.roster, &binding.roster)
+        if !RosterWeak::ptr_eq(&self.roster, &binding.roster)
             || self.index != binding.index
             || self.generation != binding.generation
         {

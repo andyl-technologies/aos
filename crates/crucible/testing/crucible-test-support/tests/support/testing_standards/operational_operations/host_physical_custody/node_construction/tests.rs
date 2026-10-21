@@ -309,8 +309,18 @@ fn node_construction_contracts_preserve_stages_physical_return_and_independent_p
         ),
         (
             &NODE_PUBLISHER,
-            r#"retained.original.as_ref().and_then(|original| original.normal.as_ref()).is_none()"#,
-            r#"false"#,
+            r#"let normal = original.normal.as_ref().ok_or(OriginalActorAccountError::Unavailable)?;"#,
+            r#"let normal = foreign.normal.as_ref().ok_or(OriginalActorAccountError::Unavailable)?;"#,
+        ),
+        (
+            &NODE_PUBLISHER,
+            r#"normal.reserve_roster_allocation(controls, &original.preparation)?"#,
+            r#"normal.reserve_roster_allocation(16, &original.preparation)?"#,
+        ),
+        (
+            &NODE_PUBLISHER,
+            r#"Self::publish_allocated([Some(credit), None, None, None], 1, Some(funding),)"#,
+            r#"Self::publish_allocated([Some(credit), None, None, None], 1, None)"#,
         ),
         (
             &NODE_PUBLISHER,
@@ -374,8 +384,8 @@ fn node_construction_contracts_preserve_stages_physical_return_and_independent_p
         ),
         (
             &NODE_ROSTER_RETURN,
-            r#"Arc::get_mut(held)"#,
-            r#"Arc::make_mut(held)"#,
+            r#"held.retire_body("#,
+            r#"held.unproved_retirement("#,
         ),
         (
             &NODE_ROSTER_RETURN,

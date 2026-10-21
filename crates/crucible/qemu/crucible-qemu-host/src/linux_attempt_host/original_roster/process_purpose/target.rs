@@ -139,14 +139,14 @@ impl NativeAccountAttempt {
         slot.fork_target.retain_process_generation(generation)?;
         slot.node_bindings_live += 1;
         let loan = InstalledProcessPurposeLoan {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
             process_generation: generation,
             subdivision_index: 1,
         };
         let mut binding = OriginalNativeNodeBinding {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
             installed_process: None,
@@ -198,7 +198,7 @@ impl OriginalNativeNodeBinding {
         let original = Arc::clone(original);
         drop(state);
         NativeAccountAttempt {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
         }

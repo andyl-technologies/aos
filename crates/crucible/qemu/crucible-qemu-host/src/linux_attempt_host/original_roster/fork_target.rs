@@ -587,7 +587,7 @@ impl NativeAccountAttempt {
         // no second roster lock/lookup that can lose a born role on refusal.
         let cleanup = QemuForkTargetConstructionLoan {
             attempt: NativeAccountAttempt {
-                roster: Weak::clone(&self.roster),
+                roster: RosterWeak::clone(&self.roster),
                 index: self.index,
                 generation: self.generation,
             },
@@ -600,7 +600,7 @@ impl NativeAccountAttempt {
         Ok((
             ForkTargetReservation {
                 attempt: NativeAccountAttempt {
-                    roster: Weak::clone(&self.roster),
+                    roster: RosterWeak::clone(&self.roster),
                     index: self.index,
                     generation: self.generation,
                 },
@@ -650,7 +650,7 @@ impl NativeAccountAttempt {
 impl ForkTargetReservation {
     pub(in crate::linux_attempt_host) fn borrow_attempt(&self) -> NativeAccountAttempt {
         NativeAccountAttempt {
-            roster: Weak::clone(&self.attempt.roster),
+            roster: RosterWeak::clone(&self.attempt.roster),
             index: self.attempt.index,
             generation: self.attempt.generation,
         }
@@ -683,7 +683,7 @@ impl ForkTargetReservation {
         &self,
         binding: &OriginalNativeAccountFactoryBinding,
     ) -> bool {
-        Weak::ptr_eq(&binding.roster, &self.attempt.roster)
+        RosterWeak::ptr_eq(&binding.roster, &self.attempt.roster)
     }
 
     pub(in crate::linux_attempt_host) fn check_logical_reservation(
@@ -786,7 +786,7 @@ impl ForkTargetReservation {
         &self,
         binding: &OriginalNativeAccountFactoryBinding,
     ) -> Result<(), OriginalActorAccountError> {
-        if !Weak::ptr_eq(&binding.roster, &self.attempt.roster) {
+        if !RosterWeak::ptr_eq(&binding.roster, &self.attempt.roster) {
             return Err(OriginalActorAccountError::Unavailable);
         }
         self.attempt.require_original()?;

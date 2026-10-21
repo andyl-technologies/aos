@@ -19,8 +19,8 @@ use crate::ram_policy::HostResourceVector;
 
 mod source_host;
 pub use source_host::{
-    AuthenticatedSourceChild, AuthenticatedSourceHostPurpose, SourceHostControlLease,
-    SourceHostControlPayer,
+    AuthenticatedSourceChild, AuthenticatedSourceHostPurpose, NativeRosterAllocationFunding,
+    NativeRosterUpgradeGate, SourceHostControlLease, SourceHostControlPayer,
 };
 
 mod native_pool;

@@ -48,7 +48,7 @@ fn nominal_helper_receiver_cannot_promote_an_unissued_source() {
             ..lender.clone()
         },
         SourceCleanupLender {
-            roster: Weak::new(),
+            roster: RosterWeak::new(),
             ..lender.clone()
         },
     ] {

@@ -1,12 +1,13 @@
 //! Retains native account credit outside the genuine factory and state controls.
 //!
 //! The fixed roster is sized by the authored one, two or four native workers.
-//! Its own shared allocation is paid as initial actor structure. Each native
+//! Normal shared storage is prepaid by the same Main through final Weak free;
+//! private/component storage remains inside the initial actor structure. Each native
 //! pair remains charged throughout the campaign; closing a slot only permits
 //! reuse after that exact owner's physical vector and native control close.
 //! This account binding does not issue Source, backing or launch permission.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 use crucible_host_resources::host_supervision::HostOperationGuard;
 
@@ -26,6 +27,10 @@ pub(crate) use fork_target::{TargetCleanupLoan, TargetCleanupOriginal};
 pub use fork_target::{QemuForkTargetConstructionError, QemuForkTargetConstructionLoan};
 pub(crate) use target_dispatcher::TargetWatcherOriginal;
 mod retirement;
+mod storage;
+
+use storage::{RosterOwner, RosterWeak};
+use crucible_host_resources::host_services::process_birth::NativeRosterAllocationFunding;
 
 use process_purpose::{cleanup_control_extent, fresh_launch_control_extent};
 
@@ -48,7 +53,7 @@ const MAX_ORIGINAL_NATIVE_NODE_GENERATIONS: u8 = 2;
 /// separate from an individual slot's physical vector closure.
 #[must_use = "retain original native accounts through genuine factory retirement"]
 pub struct OriginalNativeAccountRoster {
-    held: Option<Arc<Mutex<NativeRoster>>>,
+    held: Option<RosterOwner>,
     retiring_credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
 }
 
@@ -813,7 +818,7 @@ mod tests {
 /// only be obtained from the already admitted roster; it is not a domain or
 /// process-birth permission.
 pub struct OriginalNativeAccountFactoryBinding {
-    roster: Weak<Mutex<NativeRoster>>,
+    roster: RosterWeak,
 }
 
 /// Identifies one admitted native generation from birth through node destruction.
@@ -823,7 +828,7 @@ pub struct OriginalNativeAccountFactoryBinding {
 /// the node has physically dropped this inline field. It is not a Source or
 /// process-birth permission.
 pub(crate) struct OriginalNativeNodeBinding {
-    roster: Weak<Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     generation: u64,
     installed_process: Option<InstalledProcessPurposeLoan>,
@@ -839,7 +844,7 @@ mod parent_park_cleanup;
 pub use parent_park_cleanup::OriginalParentParkCleanup;
 
 pub(crate) struct NativeAccountAttempt {
-    roster: Weak<Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     generation: u64,
 }
@@ -1096,8 +1101,9 @@ impl std::fmt::Debug for NativeAccountAttempt {
 impl OriginalNativeAccountRoster {
     /// Publishes a width-one normal roster from its same prepaid credit slot.
     ///
-    /// All geometry and genuine normal-purpose checks precede credit movement.
-    /// Allocation and returned holder construction are infallible after that cut.
+    /// Geometry, genuine normal-purpose checks and the same Main's independent
+    /// allocation charge precede credit movement. Allocation and returned holder
+    /// construction are infallible after that cut.
     ///
     /// # Errors
     /// Refuses absent credit, wrong control geometry or lack of a genuine normal
@@ -1109,25 +1115,35 @@ impl OriginalNativeAccountRoster {
         let retained = credit
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        if retained.normal_controls_bytes != controls
-            || retained
-                .original
-                .as_ref()
-                .and_then(|original| original.normal.as_ref())
-                .is_none()
-        {
+        if retained.normal_controls_bytes != controls {
             return Err(OriginalActorAccountError::Unavailable);
         }
+        let original = retained
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let normal = original
+            .normal
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+
+        // Main prepays the full Arc allocation before the native pair moves.
+        // Weak observers retain this separate charge after the body closes.
+        let funding = normal.reserve_roster_allocation(controls, &original.preparation)?;
         let credit = credit
             .take()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        Ok(Self::publish_allocated([Some(credit), None, None, None], 1))
+        Ok(Self::publish_allocated(
+            [Some(credit), None, None, None],
+            1,
+            Some(funding),
+        ))
     }
 
     pub(super) fn matches_binding(&self, binding: &OriginalNativeAccountFactoryBinding) -> bool {
         self.held
             .as_ref()
-            .is_some_and(|held| Weak::ptr_eq(&Arc::downgrade(held), &binding.roster))
+            .is_some_and(|held| binding.roster.matches_owner(held))
     }
 
     pub(super) fn publish(
@@ -1140,43 +1156,49 @@ impl OriginalNativeAccountRoster {
         {
             return Err(OriginalActorAccountError::Unavailable);
         }
-        Ok(Self::publish_allocated(credits, width))
+        Ok(Self::publish_allocated(credits, width, None))
     }
 
     fn publish_allocated(
         credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
         width: usize,
+        funding: Option<NativeRosterAllocationFunding>,
     ) -> (Self, OriginalNativeAccountFactoryBinding) {
-        let roster = Arc::new(Mutex::new(NativeRoster {
-            slots: credits.map(|credit| NativeSlot {
-                issuer_controls_bytes: credit.as_ref().map_or(0, |held| held.normal_controls_bytes),
-                credit,
-                family_constructor_bytes: 0,
-                active: None,
-                node_bindings_live: 0,
-                digest_purposes: [device_digest::DigestPurposeState::default();
-                    MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
-                launch_controls_bytes: 0,
-                cleanup_controls_bytes: 0,
-                process_binding_bytes: 0,
-                installed_process: None,
-                source_control_payer: None,
-                launch_in_flight: false,
-                launch_abandoned: false,
-                launch_refusal: None,
-                source_controller: None,
-                source_cleanup_assigned: false,
-                control: None,
-                cleanup: None,
-                unsettled: None,
-                fork_target: fork_target::ForkTargetSlot::default(),
+        let roster = RosterOwner::new(
+            Mutex::new(NativeRoster {
+                slots: credits.map(|credit| NativeSlot {
+                    issuer_controls_bytes: credit
+                        .as_ref()
+                        .map_or(0, |held| held.normal_controls_bytes),
+                    credit,
+                    family_constructor_bytes: 0,
+                    active: None,
+                    node_bindings_live: 0,
+                    digest_purposes: [device_digest::DigestPurposeState::default();
+                        MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
+                    launch_controls_bytes: 0,
+                    cleanup_controls_bytes: 0,
+                    process_binding_bytes: 0,
+                    installed_process: None,
+                    source_control_payer: None,
+                    launch_in_flight: false,
+                    launch_abandoned: false,
+                    launch_refusal: None,
+                    source_controller: None,
+                    source_cleanup_assigned: false,
+                    control: None,
+                    cleanup: None,
+                    unsettled: None,
+                    fork_target: fork_target::ForkTargetSlot::default(),
+                }),
+                width,
+                next_generation: 1,
+                next_workspace_generation: 1,
             }),
-            width,
-            next_generation: 1,
-            next_workspace_generation: 1,
-        }));
+            funding,
+        );
         let binding = OriginalNativeAccountFactoryBinding {
-            roster: Arc::downgrade(&roster),
+            roster: roster.downgrade(),
         };
         (
             Self {
@@ -1248,7 +1270,7 @@ impl OriginalNativeAccountRoster {
             };
             if let Some(generation) = generation {
                 NativeAccountAttempt {
-                    roster: Arc::downgrade(held),
+                    roster: held.downgrade(),
                     index,
                     generation,
                 }
@@ -1416,7 +1438,7 @@ impl OriginalNativeAccountFactoryBinding {
             return Err(error);
         }
         Ok(NativeAccountAttempt {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index,
             generation,
         })
@@ -1479,7 +1501,7 @@ impl NativeAccountAttempt {
             return Err(OriginalActorAccountError::Unavailable);
         }
         Ok(Self {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
         })
@@ -1624,7 +1646,7 @@ impl NativeAccountAttempt {
             .ok_or(OriginalActorAccountError::Unavailable)?;
         let preparation = credit.prepare_fresh_launch(
             NativeAccountAttempt {
-                roster: Weak::clone(&self.roster),
+                roster: RosterWeak::clone(&self.roster),
                 index: self.index,
                 generation: self.generation,
             },
@@ -1724,7 +1746,7 @@ impl NativeAccountAttempt {
         }
         slot.node_bindings_live += 1;
         let binding = OriginalNativeNodeBinding {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             generation: self.generation,
             installed_process: None,
@@ -2006,7 +2028,7 @@ impl OriginalNativeNodeBinding {
         attempt: &NativeAccountAttempt,
         original: &Arc<HostOperationGuard>,
     ) -> Result<(), OriginalActorAccountError> {
-        if !Weak::ptr_eq(&self.roster, &attempt.roster)
+        if !RosterWeak::ptr_eq(&self.roster, &attempt.roster)
             || self.index != attempt.index
             || self.generation != attempt.generation
         {

@@ -161,19 +161,29 @@ pub(in super::super::super) const NODE_PUBLISHER: Companion = Companion {
         let retained = credit
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        if retained.normal_controls_bytes != controls
-            || retained
-                .original
-                .as_ref()
-                .and_then(|original| original.normal.as_ref())
-                .is_none()
-        {
+        if retained.normal_controls_bytes != controls {
             return Err(OriginalActorAccountError::Unavailable);
         }
+        let original = retained
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let normal = original
+            .normal
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+
+        // Main prepays the full Arc allocation before the native pair moves.
+        // Weak observers retain this separate charge after the body closes.
+        let funding = normal.reserve_roster_allocation(controls, &original.preparation)?;
         let credit = credit
             .take()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        Ok(Self::publish_allocated([Some(credit), None, None, None], 1))
+        Ok(Self::publish_allocated(
+            [Some(credit), None, None, None],
+            1,
+            Some(funding),
+        ))
     }"#,
             1,
         ),
@@ -188,7 +198,7 @@ pub(in super::super::super) const NODE_PUBLISHER: Companion = Companion {
         {
             return Err(OriginalActorAccountError::Unavailable);
         }
-        Ok(Self::publish_allocated(credits, width))
+        Ok(Self::publish_allocated(credits, width, None))
     }"#,
             1,
         ),
@@ -196,37 +206,43 @@ pub(in super::super::super) const NODE_PUBLISHER: Companion = Companion {
             r#"fn publish_allocated(
         credits: [Option<OriginalNativeAccountCredit>; MAX_NATIVE_WORKERS],
         width: usize,
+        funding: Option<NativeRosterAllocationFunding>,
     ) -> (Self, OriginalNativeAccountFactoryBinding) {
-        let roster = Arc::new(Mutex::new(NativeRoster {
-            slots: credits.map(|credit| NativeSlot {
-                issuer_controls_bytes: credit.as_ref().map_or(0, |held| held.normal_controls_bytes),
-                credit,
-                family_constructor_bytes: 0,
-                active: None,
-                node_bindings_live: 0,
-                digest_purposes: [device_digest::DigestPurposeState::default();
-                    MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
-                launch_controls_bytes: 0,
-                cleanup_controls_bytes: 0,
-                process_binding_bytes: 0,
-                installed_process: None,
-                source_control_payer: None,
-                launch_in_flight: false,
-                launch_abandoned: false,
-                launch_refusal: None,
-                source_controller: None,
-                source_cleanup_assigned: false,
-                control: None,
-                cleanup: None,
-                unsettled: None,
-                fork_target: fork_target::ForkTargetSlot::default(),
+        let roster = RosterOwner::new(
+            Mutex::new(NativeRoster {
+                slots: credits.map(|credit| NativeSlot {
+                    issuer_controls_bytes: credit
+                        .as_ref()
+                        .map_or(0, |held| held.normal_controls_bytes),
+                    credit,
+                    family_constructor_bytes: 0,
+                    active: None,
+                    node_bindings_live: 0,
+                    digest_purposes: [device_digest::DigestPurposeState::default();
+                        MAX_ORIGINAL_NATIVE_NODE_GENERATIONS as usize],
+                    launch_controls_bytes: 0,
+                    cleanup_controls_bytes: 0,
+                    process_binding_bytes: 0,
+                    installed_process: None,
+                    source_control_payer: None,
+                    launch_in_flight: false,
+                    launch_abandoned: false,
+                    launch_refusal: None,
+                    source_controller: None,
+                    source_cleanup_assigned: false,
+                    control: None,
+                    cleanup: None,
+                    unsettled: None,
+                    fork_target: fork_target::ForkTargetSlot::default(),
+                }),
+                width,
+                next_generation: 1,
+                next_workspace_generation: 1,
             }),
-            width,
-            next_generation: 1,
-            next_workspace_generation: 1,
-        }));
+            funding,
+        );
         let binding = OriginalNativeAccountFactoryBinding {
-            roster: Arc::downgrade(&roster),
+            roster: roster.downgrade(),
         };
         (
             Self {

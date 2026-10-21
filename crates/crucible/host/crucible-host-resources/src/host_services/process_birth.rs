@@ -18,8 +18,8 @@ pub use executor_purpose::{
     AuthenticatedNativeWorldClaim, AuthenticatedNativeWorldCleanupLoan,
     AuthenticatedNativeWorldControlLease, AuthenticatedSourceChild, AuthenticatedSourceHostPurpose,
     AuthenticatedTargetDispatcherPurpose, NativeNodeReservation, NativePoolRefusal,
-    NativePoolReturnError, NativeWorldIdentity, NativeWorldReturn, SourceHostControlLease,
-    SourceHostControlPayer,
+    NativePoolReturnError, NativeRosterAllocationFunding, NativeRosterUpgradeGate, NativeWorldIdentity,
+    NativeWorldReturn, SourceHostControlLease, SourceHostControlPayer,
 };
 
 use super::{

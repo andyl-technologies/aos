@@ -14,6 +14,9 @@ use super::*;
 mod retained_control;
 use retained_control::RetainedControl;
 
+mod roster_allocation;
+pub use roster_allocation::{NativeRosterAllocationFunding, NativeRosterUpgradeGate};
+
 /// Retains one Source launch's actual Main payer and descriptor window.
 ///
 /// Clones and control payers retain one shared charge through the allocation's

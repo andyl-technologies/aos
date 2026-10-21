@@ -9,7 +9,7 @@ use crucible_host_resources::host_services::process_birth::AuthenticatedTargetDi
 /// actual cgroup controls must corroborate its same pinned workload before
 /// publication; neither a path, guard class nor copied epoch issues a job.
 pub(crate) struct TargetWatcherOriginal {
-    roster: Weak<Mutex<NativeRoster>>,
+    roster: RosterWeak,
     index: usize,
     source_generation: u64,
     target_epoch: u64,
@@ -193,7 +193,7 @@ impl NativeAccountAttempt {
             .ok_or(OriginalActorAccountError::Unavailable)?;
         original.wait_slice()?;
         Ok(TargetWatcherOriginal {
-            roster: Weak::clone(&self.roster),
+            roster: RosterWeak::clone(&self.roster),
             index: self.index,
             source_generation: self.generation,
             target_epoch: epoch,
