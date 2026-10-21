@@ -1,8 +1,7 @@
-From 3781e9719d792930a5dfdf5803224fcf6db9ae30 Mon Sep 17 00:00:00 2001
+From 2db28e26f017864cb54b04c00047ec42ee72f45e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: bound interrupt catalogue with actual charged
- storage
+Subject: [PATCH] crucible: count realized ARM registers without allocation
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -304,6 +303,21 @@ Retain its actual GLib link dependency from configured QEMU provider metadata.
 Preserve every earlier assertion, resource ceiling, failed attempt and mandatory
 launched Source/Root lifecycle refusal; initial callback and lease hooks remain
 unexecuted.
+
+Count the actual realized AArch64 register registry without constructing a
+sorted key workspace. Share the existing eligibility predicate with the
+unchanged sorted-key path; preserve explicit exception, EL and SVE rules and
+saturate an unrepresentable count rather than wrapping. Geometry preflight is
+a storage fact, not a Source payer, accepted lease, live callback or operation.
+
+Compare literal count and sorted keys against the independently frozen prior
+eligibility rule across feature/exception variants and the over-limit registry.
+Rebuild allocating-count and eligibility-change controls to their intended
+assertions. Integrate the GPL-2.0-or-later component into the actual native
+driver with its real configured GLib dependency and guard exact source inputs.
+Preserve every original ceiling/refusal, prior failed attempt, unexecuted
+initial hook and mandatory launched Source/Root lifecycle refusal. Descriptor
+workspace, runtime/read and lifetime funding remain separate and unavailable.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -198691,7 +198705,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..340dd3e790d1b4adae7be717bcc778eb88d80800
+index 0000000000000000000000000000000000000000..499532fa28f38e96cf72506c926ee14c302cfa5a
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -198719,7 +198733,7 @@ index 0000000000000000000000000000000000000000..340dd3e790d1b4adae7be717bcc778eb
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
++        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -220240,10 +220254,10 @@ index 0000000000000000000000000000000000000000..611e1fe055c3d66c75646978a4e2d604
 +#endif
 diff --git a/target/arm/crucible-register.c b/target/arm/crucible-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c3371a31f185
+index 0000000000000000000000000000000000000000..b1d06c831bd54edfc3c911495adbfa9f658ff147
 --- /dev/null
 +++ b/target/arm/crucible-register.c
-@@ -0,0 +1,547 @@
+@@ -0,0 +1,565 @@
 +/*
 + * Crucible AArch64 architecture register fault targets
 + *
@@ -220410,6 +220424,13 @@ index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c337
 +    return left > right ? 1 : left < right ? -1 : 0;
 +}
 +
++static bool a64_crucible_sysreg_in_manifest(const ARMCPRegInfo *ri)
++{
++    return ri->state == ARM_CP_STATE_AA64 &&
++        !(ri->type & (ARM_CP_NO_RAW | ARM_CP_NO_GDB)) &&
++        !a64_crucible_is_explicit_exception_sysreg(ri);
++}
++
 +static GArray *a64_crucible_sysreg_keys(ARMCPU *cpu)
 +{
 +    GArray *keys = g_array_new(false, false, sizeof(uint32_t));
@@ -220422,9 +220443,7 @@ index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c337
 +        ARMCPRegInfo *ri = raw_value;
 +        uint32_t key = (uintptr_t)raw_key;
 +
-+        if (ri->state == ARM_CP_STATE_AA64 &&
-+            !(ri->type & (ARM_CP_NO_RAW | ARM_CP_NO_GDB)) &&
-+            !a64_crucible_is_explicit_exception_sysreg(ri)) {
++        if (a64_crucible_sysreg_in_manifest(ri)) {
 +            g_array_append_val(keys, key);
 +        }
 +    }
@@ -220471,9 +220490,22 @@ index 0000000000000000000000000000000000000000..30a7b924fa5470418c8db76b21f1c337
 +size_t aarch64_crucible_register_count(CPUState *cs)
 +{
 +    ARMCPU *cpu = ARM_CPU(cs);
-+    g_autoptr(GArray) keys = a64_crucible_sysreg_keys(cpu);
++    GHashTableIter iter;
++    gpointer raw_value;
++    size_t count = a64_crucible_fixed_count(cpu);
 +
-+    return a64_crucible_fixed_count(cpu) + keys->len;
++    /* Preflight observes the actual realized registry without constructing a
++     * sorted descriptor workspace. Description still owns its separate storage. */
++    g_hash_table_iter_init(&iter, cpu->cp_regs);
++    while (g_hash_table_iter_next(&iter, NULL, &raw_value)) {
++        if (a64_crucible_sysreg_in_manifest(raw_value)) {
++            if (count == SIZE_MAX) {
++                return SIZE_MAX;
++            }
++            count++;
++        }
++    }
++    return count;
 +}
 +
 +bool aarch64_crucible_register_describe(
@@ -243618,7 +243650,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..23272821ce2376982407a5227ad7282c8b1a0351
+index 0000000000000000000000000000000000000000..a8c2ed565d2d8fbd0749c7f52d8cea7d560edbea
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -243636,7 +243668,7 @@ index 0000000000000000000000000000000000000000..23272821ce2376982407a5227ad7282c
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
++        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
 +}
 +
 +FUNCTIONS = (
@@ -243724,7 +243756,7 @@ index 0000000000000000000000000000000000000000..23272821ce2376982407a5227ad7282c
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..24015b7839032eb513ec9e6a0edd46a1676645d5
+index 0000000000000000000000000000000000000000..5d203d6ab81ecbfea8491b19dca70684f1a6c995
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -243755,7 +243787,7 @@ index 0000000000000000000000000000000000000000..24015b7839032eb513ec9e6a0edd46a1
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
++        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
 +}
 +
 +FUNCTIONS = (
@@ -243971,7 +244003,7 @@ index 0000000000000000000000000000000000000000..24015b7839032eb513ec9e6a0edd46a1
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ec1f8caa2b0484437d9741b50b1013804bfb2d2d
+index 0000000000000000000000000000000000000000..b2ef419d38b27c5ae668a8b8a423e134ecb02815
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -243995,7 +244027,7 @@ index 0000000000000000000000000000000000000000..ec1f8caa2b0484437d9741b50b101380
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
++        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
 +}
 +
 +FUNCTIONS = (
@@ -244089,7 +244121,7 @@ index 0000000000000000000000000000000000000000..ec1f8caa2b0484437d9741b50b101380
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..01caf32e9afebdb3d9f69c8dd83087fc2679ad99
+index 0000000000000000000000000000000000000000..981d40faf491194b4710cc9df1249dbd6d8e3141
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -244130,15 +244162,15 @@ index 0000000000000000000000000000000000000000..01caf32e9afebdb3d9f69c8dd83087fc
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
++        '6483bd64d463b9219d7aa9454873b5c139e3e2b62fc3639d59f53c94aad4ff1f',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'cf314906b630780d4d287308bedd8dbf0be6a9df4aa8c136927e654d93c39d47',
++        '657336b9f0a3bafc3a3a43979b2f0f66c875417495a0bba568042e4e315bd0f6',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '478e87ef68154d99a2d5c14c0b0ef95bd67da2092723846e8bab2a2315f640b5',
++        'ddd29a0200ee0a2d51ebc1e18a56b75429f0949a6e752b86453ef502dbfebcb7',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -244268,10 +244300,10 @@ index 0000000000000000000000000000000000000000..01caf32e9afebdb3d9f69c8dd83087fc
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd5de28ad170ac19f95ba296759b16fd0cb89c72
+index 0000000000000000000000000000000000000000..e3e4cb27c0c56a7c3a9f23c5bf8f1c446d77e7a5
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1161 @@
+@@ -0,0 +1,1171 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -244281,6 +244313,16 @@ index 0000000000000000000000000000000000000000..cd5de28ad170ac19f95ba296759b16fd
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'tests/unit/test-crucible-arm-register-preflight.py':
++        '9b40ecc4589fa9873ecc04581f5b4abdc72b158c5d26753fa73b128758101a79',
++    'target/arm/crucible-register.c':
++        '2303a12773645ecb61b9eb4f158e0a1cf87e74809c444b19f72de149cd923ef8',
++    'target/arm/cpu.h':
++        '1169bb845eb9f7d003d4f3524f80e3e7304a6575cd8ada0899312801a7f923bf',
++    'target/arm/cpregs.h':
++        'fd2f7bad764b12ee83716f08571ced23d7549125e52b2574e3597eb8bf190724',
++    'target/arm/internals.h':
++        '69cc3e2a8102544edb2964d8f0f57bb8a60cfa4e43d4626c03e225b318706f03',
 +    'tests/unit/test-crucible-interrupt-catalogue.py':
 +        '09f520629493decdee77289e9ebc22bc2887a4e9dd4d646f0ba21606a53a1b83',
 +    'plugins/crucible-fault-hardware-error.c':
@@ -245532,7 +245574,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..10d277918864a6d8b4c98f8f397619626035a312 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..17b7da124d46d77f7049b35e30c73d338e6ddacf 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -245607,7 +245649,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..10d277918864a6d8b4c98f8f39761962
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1182 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1187 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -246425,6 +246467,11 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..10d277918864a6d8b4c98f8f39761962
 +                        '../../include/qemu/crucible-fault.h',
 +                        'test-crucible-hardware-catalogue.py',
 +                        'test-crucible-interrupt-catalogue.py',
++                        'test-crucible-arm-register-preflight.py',
++                        '../../target/arm/crucible-register.c',
++                        '../../target/arm/cpu.h',
++                        '../../target/arm/cpregs.h',
++                        '../../target/arm/internals.h',
 +                        'test-crucible-initial-manifest-refusal.py',
 +                        '../../plugins/crucible-publisher-subscription.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops-sim-shmem.c',
@@ -254605,6 +254652,212 @@ index 0000000000000000000000000000000000000000..a179578d777229ec817d8229ef360a40
 +                    test_projection_does_not_mutate);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-arm-register-preflight.py b/tests/unit/test-crucible-arm-register-preflight.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..71e81bb172b541ee81b0048ecdf43db9db80d37d
+--- /dev/null
++++ b/tests/unit/test-crucible-arm-register-preflight.py
+@@ -0,0 +1,200 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check literal AArch64 count preflight without descriptor allocation.
++
++The realized registry and feature fields are component inputs. No Source
++constructor, CPU callback, descriptor workspace or allocation payer is issued.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++INPUTS = r"""
++static ARMCPU input_cpu;
++static size_t key_workspace_births;
++
++static GArray *observed_key_workspace(gboolean zero_terminated,
++                                      gboolean clear, guint element_size)
++{
++    key_workspace_births++;
++    return g_array_new(zero_terminated, clear, element_size);
++}
++
++#undef ARM_CPU
++#define ARM_CPU(cpu) (&input_cpu)
++#define g_array_new observed_key_workspace
++"""
++
++CHECKS = r"""
++/* Frozen eligibility from the allocating count/keys implementation. Keep this
++ * oracle independent of the production shared predicate. */
++static bool old_eligibility(const ARMCPRegInfo *ri)
++{
++    bool explicit_exception = ri->name &&
++        (!strcmp(ri->name, "ELR_EL1") || !strcmp(ri->name, "SPSR_EL1") ||
++         !strcmp(ri->name, "ELR_EL2") || !strcmp(ri->name, "SPSR_EL2") ||
++         !strcmp(ri->name, "ELR_EL3") || !strcmp(ri->name, "SPSR_EL3"));
++
++    return ri->state == ARM_CP_STATE_AA64 &&
++        !(ri->type & (ARM_CP_NO_RAW | ARM_CP_NO_GDB)) && !explicit_exception;
++}
++
++static void check_registry(size_t expected_fixed)
++{
++    GHashTableIter iter;
++    gpointer raw_value;
++    size_t expected = expected_fixed;
++
++    g_hash_table_iter_init(&iter, input_cpu.cp_regs);
++    while (g_hash_table_iter_next(&iter, NULL, &raw_value)) {
++        expected += old_eligibility(raw_value);
++    }
++    GArray *keys = a64_crucible_sysreg_keys(&input_cpu);
++    assert(keys->len + expected_fixed == expected);
++    for (guint index = 1; index < keys->len; index++) {
++        assert(g_array_index(keys, uint32_t, index - 1) <
++               g_array_index(keys, uint32_t, index));
++    }
++    g_array_unref(keys);
++    key_workspace_births = 0;
++    assert(aarch64_crucible_register_count(NULL) == expected);
++    assert(key_workspace_births == 0);
++}
++
++int main(void)
++{
++    ARMCPRegInfo rows[] = {
++        { .name = "ordinary", .state = ARM_CP_STATE_AA64 },
++        { .name = "aarch32", .state = ARM_CP_STATE_AA32 },
++        { .name = "no-raw", .state = ARM_CP_STATE_AA64, .type = ARM_CP_NO_RAW },
++        { .name = "no-gdb", .state = ARM_CP_STATE_AA64, .type = ARM_CP_NO_GDB },
++        { .name = "ELR_EL1", .state = ARM_CP_STATE_AA64 },
++        { .name = "SPSR_EL1", .state = ARM_CP_STATE_AA64 },
++        { .name = "ELR_EL2", .state = ARM_CP_STATE_AA64 },
++        { .name = "SPSR_EL2", .state = ARM_CP_STATE_AA64 },
++        { .name = "ELR_EL3", .state = ARM_CP_STATE_AA64 },
++        { .name = "SPSR_EL3", .state = ARM_CP_STATE_AA64 },
++        { .name = "elr_el1", .state = ARM_CP_STATE_AA64 },
++        { .name = NULL, .state = ARM_CP_STATE_AA64 },
++    };
++    static ARMCPRegInfo large[4100];
++
++    input_cpu.cp_regs = g_hash_table_new(g_direct_hash, g_direct_equal);
++    check_registry(70);
++    for (size_t index = 0; index < G_N_ELEMENTS(rows); index++) {
++        g_hash_table_insert(input_cpu.cp_regs,
++                            GUINT_TO_POINTER(100 - index), &rows[index]);
++    }
++    check_registry(70);
++    for (unsigned features = 0; features < 4; features++) {
++        input_cpu.env.features =
++            (features & 1 ? UINT64_C(1) << ARM_FEATURE_EL2 : 0) |
++            (features & 2 ? UINT64_C(1) << ARM_FEATURE_EL3 : 0);
++        check_registry(70 + (features & 1 ? 2 : 0) + (features & 2 ? 2 : 0));
++    }
++    input_cpu.env.features = 0;
++    input_cpu.sve_max_vq = 1;
++    check_registry(70);
++    FIELD_DP64_IDREG(&input_cpu.isar, ID_AA64PFR0, SVE, 1);
++    input_cpu.sve_max_vq = 0;
++    check_registry(70);
++    input_cpu.sve_max_vq = 1;
++    check_registry(119);
++    input_cpu.sve_max_vq = 16;
++    check_registry(119);
++    input_cpu.sve_max_vq = 0;
++    FIELD_DP64_IDREG(&input_cpu.isar, ID_AA64PFR0, SVE, 0);
++    g_hash_table_remove_all(input_cpu.cp_regs);
++    input_cpu.env.features = 0;
++    for (size_t index = 0; index < G_N_ELEMENTS(large); index++) {
++        large[index] = (ARMCPRegInfo) {
++            .name = "same-name-counts-before-descriptor-validation",
++            .state = ARM_CP_STATE_AA64,
++        };
++        g_hash_table_insert(input_cpu.cp_regs, GUINT_TO_POINTER(index), &large[index]);
++    }
++    check_registry(70);
++    assert(aarch64_crucible_register_count(NULL) == 4170);
++    g_hash_table_unref(input_cpu.cp_regs);
++    puts("PASS literal AArch64 allocation-free count, old eligibility and realized registry edges; no constructor authority");
++    return 0;
++}
++"""
++
++
++ALLOCATING_COUNT = r"""
++size_t aarch64_crucible_register_count(CPUState *cs)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++    g_autoptr(GArray) keys = a64_crucible_sysreg_keys(cpu);
++
++    return a64_crucible_fixed_count(cpu) + keys->len;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    body = (source / "target/arm/crucible-register.c").read_text()
++    literal = body[body.index("enum {"):body.index("static void a64_crucible_masks(")]
++    for signature in (
++        "static bool a64_crucible_has_sve(",
++        "static size_t a64_crucible_exception_count(",
++        "static bool a64_crucible_is_explicit_exception_sysreg(",
++        "static gint a64_crucible_compare_key(",
++        "static bool a64_crucible_sysreg_in_manifest(",
++        "static GArray *a64_crucible_sysreg_keys(",
++        "static size_t a64_crucible_fixed_count(",
++    ):
++        literal += "\n\n" + extract["function"](body, signature)
++    count = extract["function"](body, "size_t aarch64_crucible_register_count(")
++    variants = {
++        "positive": literal + count,
++        "restore-key-allocation": literal + ALLOCATING_COUNT,
++        "include-no-raw-registers": (literal + count).replace(
++            "(ARM_CP_NO_RAW | ARM_CP_NO_GDB)", "ARM_CP_NO_GDB"),
++    }
++    proof = {}
++    for name, definitions in variants.items():
++        if name != "positive" and definitions == variants["positive"]:
++            raise ValueError(f"negative control did not change the literal count: {name}")
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n#include <assert.h>\n'
++                             '#define CPU_DEFS_H\n#include "target/arm/cpu.h"\n'
++                             '#include "target/arm/cpregs.h"\n'
++                             '#include "target/arm/internals.h"\n' + INPUTS + definitions + CHECKS)
++        binary = output / name
++        command = [*shlex.split(os.environ.get("CC", "cc")),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name} outcome: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS allocating-count and eligibility-change controls reached assertions")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-arm-timer-wide-clock.c b/tests/unit/test-crucible-arm-timer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..f36e51da6056a7fa343f3c951b2472dfd099a937
@@ -260960,10 +261213,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..24ac7764649c49d5e6e754429a7adf9ddc3a5e28
+index 0000000000000000000000000000000000000000..fc87fd1b69687d0835da44e00af46510826126f8
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2355 @@
+@@ -0,0 +1,2356 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -263308,6 +263561,7 @@ index 0000000000000000000000000000000000000000..24ac7764649c49d5e6e754429a7adf9d
 +    for script, directory in (
 +        ("test-crucible-hardware-catalogue.py", "hardware-catalogue"),
 +        ("test-crucible-interrupt-catalogue.py", "interrupt-catalogue"),
++        ("test-crucible-arm-register-preflight.py", "arm-register-preflight"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
 +    ):
 +        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
