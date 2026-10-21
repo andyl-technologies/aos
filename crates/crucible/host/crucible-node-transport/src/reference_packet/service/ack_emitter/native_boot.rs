@@ -39,6 +39,8 @@ pub(crate) use boot::{
 pub(in crate::reference_packet::service) use bootstrap_import18::controller_measurement_construction_data as original_import18_controller_measurement_construction_data;
 pub(in crate::reference_packet::service) use bootstrap_import18::raw_storage_floor as original_import18_raw_bootstrap_storage_data;
 pub(in crate::reference_packet::service) use bootstrap_import18::{
+    hello_envelope_construction_bound_data as original_import18_hello_envelope_construction_bound_data,
+    hello_envelope_counter_scratch_data as original_import18_hello_envelope_counter_scratch_data,
     hello_exchange_construction_data as original_import18_hello_exchange_construction_data,
     hello_exchange_counter_scratch_data as original_import18_hello_exchange_counter_scratch_data,
     hello_frames_construction_data as original_import18_hello_frames_construction_data,

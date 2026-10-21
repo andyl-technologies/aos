@@ -302,3 +302,16 @@ fn original_hello_result_retains_actual_entropy_and_every_terminal_owner() {
         flight(case);
     }
 }
+
+/// Builds the actual prerequisite result without substituting a fixture DTO.
+pub(super) fn construct_for_envelope(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_sdk_request::construct_for_result(owner);
+    let admission = Admission {
+        case: "initial_hello_result_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_hello_result_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}

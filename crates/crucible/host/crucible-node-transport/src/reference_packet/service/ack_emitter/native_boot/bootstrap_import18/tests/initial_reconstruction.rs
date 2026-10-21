@@ -37,6 +37,8 @@ mod hello_registrar;
 #[path = "initial_reconstruction/hello_sdk_request.rs"]
 mod hello_sdk_request;
 
+#[path = "initial_reconstruction/hello_envelope.rs"]
+mod hello_envelope;
 #[path = "initial_reconstruction/hello_result.rs"]
 mod hello_result;
 
@@ -123,6 +125,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_registrar_reactive"
             | "initial_hello_sdk_request_reactive"
             | "initial_hello_result_reactive"
+            | "initial_hello_envelope_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -130,6 +133,7 @@ fn operands(case: &str) -> [Value; 3] {
     if case.starts_with("initial_hello_registrar_")
         || case.starts_with("initial_hello_sdk_request_")
         || case.starts_with("initial_hello_result_")
+        || case.starts_with("initial_hello_envelope_")
     {
         hello_registrar::prepare_selected(case, &mut selected);
     }
@@ -390,6 +394,10 @@ pub(super) fn assert_child(
         selection::assert_child(case, &mut owner);
         return;
     }
+    if case.starts_with("initial_hello_envelope_") {
+        hello_envelope::assert_child(case, &mut owner);
+        return;
+    }
     if case.starts_with("initial_hello_result_") {
         hello_result::assert_child(case, &mut owner);
         return;
@@ -506,6 +514,20 @@ fn initial_reconstruction_requires_original_source_cut_and_custody() {
 
 #[test]
 fn strict_hello_population_is_funded_inside_the_original_independent_peak() {
+    for case in [
+        "initial_producer",
+        "initial_reactive",
+        "initial_hello_value_complete",
+    ] {
+        let row = required(&operands(case));
+        let limits = [83_886_080, 167_772_160, 4_194_304];
+        assert!(
+            row.iter()
+                .zip(limits)
+                .all(|(actual, limit)| *actual <= limit),
+            "all actual constructor axes must fit the original Prepare partition for {case}: {row:?}"
+        );
+    }
     let row = required(&operands("initial_hello_value_complete"));
     assert!(
         row[0] > 44_040_192,

@@ -1689,6 +1689,38 @@ Subsequent envelope construction is excluded from this qualification. This
 component does not perform live SDK authentication, publish Hello/ACK, construct
 Native18 policy, adopt a model or supply opaque Initial/Recipe authority.
 
+## Original SDK request envelope construction
+
+The original bootstrap now decodes the actual SDK request Envelope directly
+from the same checked strict Value, after the typed request, fresh registrar and
+real HelloResult. Physical attempt/output/error slots precede private receipt.
+Separate original admissions surround quote, decoder and terminal census. The
+complete actual output is retained before correspondence and validation; every
+header, body member and extension value must match the unchanged original tree.
+Immutable Copy-result loans repeat all original guards on either callback
+outcome. Refusal preserves output ownership and spends the occurrence.
+
+Both independent Initial projections include the new retained body and extension
+population. Compiler-bound field witnesses cover the entire closed initial
+selection grammar, including each semantic-version object. The pinned JSON Value
+visitor ignores sequence size hints; all five array populations include their
+actual minimum four-slot allocation and geometric growth. Full initial limits
+remain unchanged. Six lower controls and seventeen inherited-socket flights
+exercise the actual decoder, original-field correspondence, fresh backing,
+full 256-selection geometry, stale/substituted cuts, admissions, expiry and
+retained callback failures. A first broad run exposed six Prepare refusals: the
+new retained projection priced 256 selections even when their required literal
+fields could not fit the frame. The corrected future population uses a
+compiler-bound minimum encoded extent for all five objects, every field name,
+validated scalar leaves and both 64-character digests. Body array counts also
+include their required comma separators. All original program families now have
+an explicit regression checking each unchanged Prepare axis. All 83 bootstrap
+controls pass with zero failures and one existing ignored private child. Full
+qualification of this final source remains pending.
+
+This transition grants no live SDK connection, response publication, bootstrap
+ACK, Native18 policy, model or opaque Initial/Recipe authority.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

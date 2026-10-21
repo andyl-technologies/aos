@@ -124,6 +124,17 @@ impl OriginalImport18RawBootstrap {
         terminal
     }
 
+    /// Names completed result custody without repeating construction or entropy.
+    pub(in super::super) fn hello_result_loan_counter_scratch_data<R: Copy>() -> usize {
+        Self::sdk_hello_request_loan_counter_scratch_data::<()>()
+            + Attempt::counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&HelloResult>()
+            + size_of::<R>() * 2
+            + size_of::<Result<R, ProviderError>>() * 2
+            + size_of::<Result<(), ProviderError>>() * 3
+    }
+
     /// Lends the same completed result while every original input guard holds.
     ///
     /// The caller independently admits callback work. Copy output cannot move
