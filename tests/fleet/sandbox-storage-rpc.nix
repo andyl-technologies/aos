@@ -649,7 +649,7 @@ in {
     machine.succeed("systemctl stop aos-storaged.service")
     machine.succeed(f"test -d '{PIN_ROOT}'")
     machine.succeed(f"test -d '{pin}'")
-    start_storaged("inventory-live", "inventory-live", 2)
+    start_storaged("inventory-restarted", "inventory-live", 2)
     assert journal_hash() == repair_hash
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
@@ -698,7 +698,7 @@ in {
         f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
     ).strip() == stable_pin_identity
 
-    start_storaged("inventory-live", "inventory-live", 3)
+    start_storaged("inventory-restarted", "inventory-live", 3)
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
     ).strip() == stable_parent_identity
@@ -736,7 +736,7 @@ in {
         "${pkgs.coreutils}/bin/mv ${resolverPolicyDirectory} "
         "${resolverPolicyDirectory}.missing"
     )
-    start_storaged("inventory-live", "inventory-live", 4)
+    start_storaged("inventory-restarted", "inventory-live", 4)
     machine.wait_until_succeeds(
         "journalctl -u aos-storaged.service --no-pager "
         "| grep -F 'Storage Prepare disabled: resolver policy is invalid'",

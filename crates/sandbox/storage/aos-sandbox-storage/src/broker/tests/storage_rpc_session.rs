@@ -77,3 +77,31 @@ pub(super) fn reject_missing_authority(packet: &[u8]) {
         b"missing-authority-rejected-v1",
     );
 }
+
+/// Checks durable inventory equality independently of the broker incarnation.
+pub(super) fn assert_inventory_unchanged(previous: &[u8], current: &[u8], restarted: bool) {
+    use aos_sandbox_protocol::decode_storage_resource_inventory_response_with_model;
+
+    let (_, previous) = decode_storage_resource_inventory_response_with_model(
+        previous,
+        super::STORAGE_RPC_RESPONSE_BYTES,
+    )
+    .unwrap();
+    let (_, mut current) = decode_storage_resource_inventory_response_with_model(
+        current,
+        super::STORAGE_RPC_RESPONSE_BYTES,
+    )
+    .unwrap();
+
+    if restarted {
+        assert_ne!(current.broker_instance_id, previous.broker_instance_id);
+    } else {
+        assert_eq!(current.broker_instance_id, previous.broker_instance_id);
+    }
+
+    // Each signed response describes its actual emitting process. Restart
+    // replaces that process, while every workspace, publication, lifecycle
+    // record, repair receipt and durable catalog boundary must remain exact.
+    current.broker_instance_id = previous.broker_instance_id.clone();
+    assert_eq!(current, previous);
+}

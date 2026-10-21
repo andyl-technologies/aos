@@ -9454,7 +9454,7 @@ mod tests {
         let result_path = Path::new(STORAGE_RPC_CONTROL_DIRECTORY).join("result");
         let mut previous = String::new();
         let mut prepared_response = None;
-        let mut live_inventory_response = None;
+        let mut live_inventory_response: Option<Vec<u8>> = None;
 
         loop {
             let command = fs::read_to_string(&command_path).unwrap_or_default();
@@ -9481,14 +9481,17 @@ mod tests {
                     storage_rpc_repair(false);
                     "repair"
                 }
-                "inventory-live" => {
+                "inventory-live" | "inventory-restarted" => {
                     let inventory = storage_rpc_inventory(91);
                     assert_eq!(storage_rpc_inventory_count(&inventory), 1);
                     if let Some(expected) = &live_inventory_response {
-                        assert_eq!(&inventory, expected);
-                    } else {
-                        live_inventory_response = Some(inventory);
+                        storage_rpc_session::assert_inventory_unchanged(
+                            expected,
+                            &inventory,
+                            action == "inventory-restarted",
+                        );
                     }
+                    live_inventory_response = Some(inventory);
                     "inventory-live"
                 }
                 "retry" => {
