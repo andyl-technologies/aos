@@ -12,6 +12,12 @@ mod storage;
 mod wire;
 pub(super) use attempt::Attempt;
 pub(in super::super) use wire::Claims;
+pub(super) use wire::octets32 as original_octets32_data;
+
+/// Reuses the original claim decoder's actual bounded controls.
+pub(super) fn original_octets32_counter_scratch_data() -> usize {
+    wire::counter_scratch_data()
+}
 
 /// Admits request inspection separately from strict parsing and live negotiation.
 pub(in super::super) trait OriginalImport18HelloRequestAdmission {

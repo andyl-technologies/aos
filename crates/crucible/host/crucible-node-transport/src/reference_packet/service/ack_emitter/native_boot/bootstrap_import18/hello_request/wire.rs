@@ -242,7 +242,11 @@ fn versions(value: &Value, cut: OperationalDeadline) -> Result<(), ProviderError
     Ok(())
 }
 
-fn octets32(encoded: &str) -> Result<[u8; 32], ProviderError> {
+/// Decodes one canonical 32-byte claim into fixed caller-owned controls.
+///
+/// # Errors
+/// Refuses another spelling width, invalid base64 or another decoded extent.
+pub(in super::super) fn octets32(encoded: &str) -> Result<[u8; 32], ProviderError> {
     if encoded.len() != 43 {
         return Err(refused());
     }

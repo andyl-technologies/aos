@@ -25,7 +25,10 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_value_counter_scratch_data,
     original_import18_public_channel_construction_data,
     original_import18_public_channel_counter_scratch_data,
-    original_import18_raw_bootstrap_storage_data, original_import18_selection_construction_data,
+    original_import18_raw_bootstrap_storage_data,
+    original_import18_sdk_hello_request_construction_bound_data,
+    original_import18_sdk_hello_request_counter_scratch_data,
+    original_import18_selection_construction_data,
     original_import18_selection_counter_scratch_data,
 };
 
@@ -105,6 +108,9 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
             value: original_import18_hello_value_construction_bound_data(launch, maximum)?,
             request: original_import18_hello_request_construction_bound_data(launch, maximum)?,
             registrar: original_import18_hello_registrar_construction_data(launch, maximum)?,
+            sdk_request: original_import18_sdk_hello_request_construction_bound_data(
+                launch, maximum,
+            )?,
         },
         maximum,
     )
@@ -152,6 +158,9 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
             value: original_import18_hello_value_construction_bound_data(launch, maximum)?,
             request: original_import18_hello_request_construction_bound_data(launch, maximum)?,
             registrar: original_import18_hello_registrar_construction_data(launch, maximum)?,
+            sdk_request: original_import18_sdk_hello_request_construction_bound_data(
+                launch, maximum,
+            )?,
         },
         maximum,
     )
@@ -165,6 +174,7 @@ struct HelloConstructionData {
     value: [usize; 3],
     request: [usize; 3],
     registrar: [usize; 3],
+    sdk_request: [usize; 3],
 }
 
 fn combine(
@@ -182,6 +192,7 @@ fn combine(
         value: hello_value,
         request: hello_request,
         registrar: hello_registrar,
+        sdk_request: sdk_hello_request,
     } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
@@ -252,6 +263,11 @@ fn combine(
     row[0] = add(row[0], hello_registrar[0])?;
     row[1] = row[1].max(hello_registrar[1]);
     row[2] = row[2].max(add(raw[2], hello_registrar[2])?);
+    // The real typed SDK request retains its independently decoded fields
+    // beside the original strict Value, checked offer and fresh registrar.
+    row[0] = add(row[0], sdk_hello_request[0])?;
+    row[1] = row[1].max(sdk_hello_request[1]);
+    row[2] = row[2].max(add(raw[2], sdk_hello_request[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -291,7 +307,12 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
         + original_import18_hello_request_counter_scratch_data()
+        // Registrar and SDK request quotes return their fixed rows in turn.
+        // Their recursive quote controls never coexist; the enclosing result
+        // and row headers below remain separately represented.
         + original_import18_hello_registrar_counter_scratch_data()
+            .max(original_import18_sdk_hello_request_counter_scratch_data())
+        + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + original_import18_hello_value_counter_scratch_data()

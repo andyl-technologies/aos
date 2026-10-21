@@ -1597,6 +1597,39 @@ Daemon libraries remain qualified at `f2150ce5c7`. Full Native18 policy, live
 Hello authentication, reply/ACK and the remaining RFC acceptance exits remain
 unfinished.
 
+## Actual SDK request under original Hello custody
+
+The original bootstrap now decodes the real SDK `HelloRequest` directly from
+its checked strict body after the original claims and fresh registrar checks.
+The physical attempt exists before the first private read. Quote, constructor
+and terminal census require separate admissions; the original cut and complete
+input correspondence guard every outcome. A completed typed request remains in
+its actual slot when correspondence or terminal admission refuses. Decode
+failures retain their actual scalar serde coordinates, and retries stay spent.
+
+Every typed body field is checked against the original tree. Fixed-array
+base64 decoding compares the original nonce and token without re-encoding
+secrets. Unsorted unique offered versions, unknown optional features and larger
+advertised receiving limits remain intact; selected limits stay unchanged.
+Initial resume fields and body extensions remain unavailable. A Copy-only
+immutable loan checks original correspondence after error callbacks as well.
+
+Both independent initial projections include the actual SDK request row.
+Bounds cover the real derive partials, cautious Vec growth, decoded text,
+two Bytes decoders, diagnostics and complete comparison controls. Subsequent
+construction prices a completed registrar loan separately from the earlier
+configuration constructor. The enclosing calculation uses the maximum controls
+of the sequential registrar and request quotes while retaining their independent
+fixed rows. Earlier runs exposed that summed controls exceeded the unchanged
+1 MiB raw-only test policy; no policy or production ceiling is raised.
+
+All seventy bootstrap controls pass with zero failures and one existing ignored
+private child. Seven new controls include seventeen inherited-socket flights across
+both program families, admission refusals, expiry, substituted cuts, surviving
+allocation identity and spent retries. Full qualification of the corrected
+accounting remains pending. This transition issues no connection,
+reply, bootstrap ACK, native policy, model or opaque Initial/Recipe.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

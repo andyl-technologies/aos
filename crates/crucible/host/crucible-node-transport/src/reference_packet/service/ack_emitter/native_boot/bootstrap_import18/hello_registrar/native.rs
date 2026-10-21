@@ -136,6 +136,25 @@ impl OriginalImport18RawBootstrap {
         terminal?;
         Ok(output)
     }
+
+    /// Names the completed registrar loan and its original input guards.
+    ///
+    /// This loan does not repeat configuration cloning, validation or shared
+    /// allocation. Subsequent constructors fund their own operations separately.
+    pub(in super::super::super) fn hello_registrar_loan_counter_scratch_data<R: Copy>() -> usize {
+        super::super::hello_request::counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&super::Attempt>()
+            + size_of::<crate::protocol_snapshot::ProtocolCaptureOwner>()
+            + size_of::<crate::operational_time::OperationalDeadline>()
+            + size_of::<Option<crate::operational_time::OperationalDeadline>>()
+            + size_of::<&ExtensionHandshake>()
+            + size_of::<Option<&ExtensionHandshake>>()
+            + size_of::<Result<&ExtensionHandshake, ProviderError>>()
+            + size_of::<R>() * 2
+            + size_of::<Result<R, ProviderError>>() * 2
+            + size_of::<Result<(), ProviderError>>() * 3
+    }
 }
 
 /// Names only actual original input/loan guards and admission wrapper controls.

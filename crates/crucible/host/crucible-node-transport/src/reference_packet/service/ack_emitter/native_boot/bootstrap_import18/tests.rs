@@ -87,6 +87,7 @@ fn child(case: &str, wire: &[u8]) {
         || case.starts_with("initial_hello_value_")
         || case.starts_with("initial_hello_request_")
         || case.starts_with("initial_hello_registrar_")
+        || case.starts_with("initial_hello_sdk_request_")
     {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
@@ -99,6 +100,7 @@ fn child(case: &str, wire: &[u8]) {
     if let Some(peer) = &mut public_peer {
         if case.starts_with("initial_hello_request_")
             || case.starts_with("initial_hello_registrar_")
+            || case.starts_with("initial_hello_sdk_request_")
         {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
@@ -191,6 +193,7 @@ fn inherited_raw_bootstrap_child() {
         || case.starts_with("initial_hello_value_")
         || case.starts_with("initial_hello_request_")
         || case.starts_with("initial_hello_registrar_")
+        || case.starts_with("initial_hello_sdk_request_")
     {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }
