@@ -38,7 +38,7 @@ pub(super) struct RetainedFreshPreparation {
     directory: Option<QemuPreparedRunDirectory>,
     contract: Option<QemuChildProcessContract>,
     body: FreshPreparationBody,
-    receiver: std::sync::Weak<crucible_qemu_host::OriginalNativeFreshLaunchError>,
+    receiver: Option<crucible_qemu_host::QemuIssuedHelperReceiver>,
     helper_returned: bool,
     native: NativeLaunchProgress,
     directory_closing: bool,
@@ -80,14 +80,14 @@ impl RetainedFreshPreparation {
     pub(super) fn new(
         lease: QemuAttemptGenerationLease,
         directory: QemuPreparedRunDirectory,
-        receiver: std::sync::Weak<crucible_qemu_host::OriginalNativeFreshLaunchError>,
+        receiver: crucible_qemu_host::QemuIssuedHelperReceiver,
     ) -> Self {
         Self {
             lease: Some(lease),
             directory: Some(directory),
             contract: None,
             body: FreshPreparationBody::Empty,
-            receiver,
+            receiver: Some(receiver),
             helper_returned: false,
             native: NativeLaunchProgress::NotEntered,
             directory_closing: false,
@@ -116,9 +116,11 @@ impl RetainedFreshPreparation {
         if self.contract.is_some()
             || self.native != NativeLaunchProgress::NotEntered
             || self.directory_closing
-            || !contract
-                .issued_helper_receiver()
-                .is_some_and(|receiver| std::sync::Weak::ptr_eq(&self.receiver, &receiver))
+            || !contract.issued_helper_receiver().is_some_and(|receiver| {
+                self.receiver
+                    .as_ref()
+                    .is_some_and(|saved| saved.same_identity(&receiver))
+            })
         {
             return Err(LifecycleApiError::CleanupRetained);
         }
@@ -159,7 +161,10 @@ impl RetainedFreshPreparation {
         receiver: &Arc<crucible_qemu_host::OriginalNativeFreshLaunchError>,
     ) {
         let matches = self.native == NativeLaunchProgress::Returned
-            && std::sync::Weak::ptr_eq(&self.receiver, &Arc::downgrade(receiver));
+            && self
+                .receiver
+                .as_ref()
+                .is_some_and(|saved| saved.matches_controller(receiver));
         self.native = if matches {
             NativeLaunchProgress::AuthenticatedFailure
         } else {
@@ -224,9 +229,13 @@ impl RetainedFreshPreparation {
             ));
         }
         if self.native == NativeLaunchProgress::AuthenticatedFailure {
-            let receiver = self.receiver.upgrade().ok_or(CleanupError::Retained(
-                "fresh native receiver is unavailable",
-            ))?;
+            let receiver = self
+                .receiver
+                .as_ref()
+                .and_then(crucible_qemu_host::QemuIssuedHelperReceiver::upgrade)
+                .ok_or(CleanupError::Retained(
+                    "fresh native receiver is unavailable",
+                ))?;
             if !self
                 .native
                 .observe_physical_return(|| receiver.retry_physical_cleanup())
@@ -237,9 +246,13 @@ impl RetainedFreshPreparation {
             }
             self.helper_returned = true;
         } else if !self.helper_returned {
-            let receiver = self.receiver.upgrade().ok_or(CleanupError::Retained(
-                "pre-VM helper receiver is unavailable",
-            ))?;
+            let receiver = self
+                .receiver
+                .as_ref()
+                .and_then(crucible_qemu_host::QemuIssuedHelperReceiver::upgrade)
+                .ok_or(CleanupError::Retained(
+                    "pre-VM helper receiver is unavailable",
+                ))?;
             if !receiver.retry_retained_helper() {
                 return Err(CleanupError::Retained(
                     "pre-VM helper return remains pending",

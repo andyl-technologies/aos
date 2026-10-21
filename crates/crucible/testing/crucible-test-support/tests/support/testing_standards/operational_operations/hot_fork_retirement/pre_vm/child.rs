@@ -76,16 +76,24 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     let refused = || {
         crate::spawn::QemuGuardedImagePreparationError::issued(
             crate::spawn::helper_receiver::helper_custody_refusal(),
-            self,
+            receiver,
         )
     };
+    if !receiver
+        .controller()
+        .is_ok_and(|current| Arc::ptr_eq(self, &current))
+    {
+        return Err(crate::spawn::QemuGuardedImagePreparationError::local(
+            crate::spawn::helper_receiver::helper_custody_refusal(),
+        ));
+    }
     let mut slot = self.helper.try_lock().map_err(|_| refused())?;
     if let Some(first) = &slot.first {
         return Err(crate::spawn::QemuGuardedImagePreparationError::issued(
             crate::QemuSpawnError::HelperFailure {
                 first: first.clone(),
             },
-            self,
+            receiver,
         ));
     }
     if (T::CAPTURES_PROBE && slot.probe_prepared)
@@ -130,7 +138,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
             crate::QemuSpawnError::HelperFailure {
                 first: first.clone(),
             },
-            self,
+            receiver,
         ));
     }
     if slot.child.is_none() && slot.first_cleanup.is_none() {
@@ -146,7 +154,6 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     }
     Err(refused())
 }
-
 /// Funds buffers and process custody before either can become live.
 fn run_helper<T: HelperOutput>(
     &self,

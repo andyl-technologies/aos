@@ -175,6 +175,30 @@ source gate retains the same 21 unfinished paths. The hermetic supervision gate
 passes all thirteen exact cases. Coverage names 111 component cases, with 149
 uncovered and zero qualified requirements.
 
+The helper receiver cutover replaces weak original-error references with the
+existing Source lender's roster, slot, generation and incarnation identity.
+Every resolution revalidates the active, ready and sound Source, including the
+recorded process incarnation when one is bound. The helper entry point checks
+that this lender resolves to the same controller before locking its journal or
+performing effects. Cleanup revalidates the saved lender and actual Original;
+it no longer retains a weak original-error allocation header. Nominal identity
+comparison grants no helper, cleanup, funding or physical-return authority.
+
+The negative component control exercises cloned and foreign observers without
+issuing a Native Source. Missing custody cannot return either original service
+loan. The original-error controller's strong allocation, diagnostic payloads
+and weak roster allocation still require their own funded lifetime closure.
+
+The nominal receiver control and all three retained-preparation daemon controls
+pass, and the daemon library compiles with all features. Seventy specific
+source-policy controls pass, including the updated identity and Original
+omission mutations; the broad source gate retains its same 21 unfinished paths.
+Hygiene, rustdoc, ABI and license controls pass. The hermetic supervision gate
+passes all fourteen exact cases, and coverage names 112 component cases with
+149 uncovered and zero qualified requirements. The changed Nix file passes
+formatting; the whole-tree format check separately reports 405 unrelated files.
+
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

@@ -62,7 +62,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
                 1,
             ),
             (
-                "receiver: std::sync::Weak<crucible_qemu_host::OriginalNativeFreshLaunchError>, helper_returned: bool, native: NativeLaunchProgress, directory_closing: bool,",
+                "receiver: Option<crucible_qemu_host::QemuIssuedHelperReceiver>, helper_returned: bool, native: NativeLaunchProgress, directory_closing: bool,",
                 1,
             ),
             ("Self::Preparation(preparation) => preparation.finish(),", 1),

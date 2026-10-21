@@ -481,8 +481,8 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
         ),
         (
             "retained_node.rs",
-            "std::sync::Weak::ptr_eq(&self.receiver, &receiver)",
-            "std::sync::Weak::ptr_eq(&foreign_receiver, &receiver)",
+            "self.receiver.as_ref().is_some_and(|saved| saved.same_identity(&receiver))",
+            "foreign_receiver.as_ref().is_some_and(|saved| saved.same_identity(&receiver))",
             "contract clone differs from saved receiver",
         ),
         (
@@ -505,7 +505,7 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
         ),
         (
             "retained_node.rs",
-            "&& std::sync::Weak::ptr_eq(&self.receiver, &Arc::downgrade(receiver))",
+            "&& self.receiver.as_ref().is_some_and(|saved| saved.matches_controller(receiver))",
             "&& true",
             "foreign returned controller closes phase",
         ),

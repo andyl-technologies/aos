@@ -426,7 +426,7 @@ pub use shutdown::{
     send_control_quit_frame, send_qmp_quit_command, shutdown_qemu_child,
 };
 #[cfg(target_os = "linux")]
-pub use spawn::{QemuProcessStageBinding, QemuProcessStageIdentityError};
+pub use spawn::{QemuIssuedHelperReceiver, QemuProcessStageBinding, QemuProcessStageIdentityError};
 #[cfg(target_os = "linux")]
 pub(crate) use spawn::{
     spawn_prepared_qemu_child_with_fds_in_directory_guarded, spawn_prepared_qemu_child_with_preexec,

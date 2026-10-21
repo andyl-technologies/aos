@@ -964,7 +964,7 @@ struct ImageHelperCleanupDebt {
 }
 
 enum ImageHelperRecipient {
-    Issued(std::sync::Weak<crucible_qemu_host::OriginalNativeFreshLaunchError>),
+    Issued(crucible_qemu_host::QemuIssuedHelperReceiver),
     #[cfg(test)]
     Component(crucible_qemu_host::QemuNodeChild),
 }
@@ -1094,10 +1094,10 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
         ) {
             Ok(overlay) => Ok(overlay),
             Err(error) => {
-                if let Some(receiver) = error.retained_receiver() {
+                if let Some(receiver) = error.retained_receiver_identity() {
                     helper_debt.children.insert(
                         self.inner.identity().clone(),
-                        ImageHelperRecipient::Issued(Arc::downgrade(&receiver)),
+                        ImageHelperRecipient::Issued(receiver),
                     );
                 }
                 Err(launcher_message(format!(

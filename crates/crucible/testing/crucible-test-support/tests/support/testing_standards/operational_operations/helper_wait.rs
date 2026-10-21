@@ -215,6 +215,24 @@ if !host.belongs_to(normal) || slot.source_control_payer.is_none() {
             path: "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs",
             required: &[
                 (
+                    r#"pub(crate) fn issued(
+    source: QemuSpawnError,
+    receiver: &crate::linux_attempt_host::SourceCleanupLender,
+) -> Self {
+    Self {
+        source,
+        receiver: Some(QemuIssuedHelperReceiver::from_lender(receiver.clone())),
+    }
+}"#,
+                    1,
+                ),
+                (
+                    r#"pub fn retained_receiver_identity(&self) -> Option<QemuIssuedHelperReceiver> {
+    self.receiver.clone()
+}"#,
+                    1,
+                ),
+                (
                     r#"process_contract.with_spawned_helper(command, operation, |child, original, _output| {
     helper_receiver::wait_image_tool(child, original, operation)
 })"#,

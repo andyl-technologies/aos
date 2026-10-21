@@ -209,16 +209,51 @@ self.finish_launcher = Some(
 
 pub(super) const RECEIVER: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/spawn/helper_receiver.rs",
-    required: &[(
-        r#"pub fn issued_helper_receiver(
-    &self,
-) -> Option<std::sync::Weak<crate::OriginalNativeFreshLaunchError>> {
-    let lender = self.attempt_binding.helper_receiver.get()?;
-    let controller = lender.controller().ok()?;
-    Some(std::sync::Arc::downgrade(&controller))
+    required: &[
+        (
+            r#"pub fn issued_helper_receiver(&self) -> Option<QemuIssuedHelperReceiver> {
+        let lender = self.attempt_binding.helper_receiver.get()?;
+        lender.controller().ok()?;
+        Some(QemuIssuedHelperReceiver::from_lender(lender.clone()))
+    }"#,
+            1,
+        ),
+        (
+            r#"impl QemuIssuedHelperReceiver {
+    pub(crate) fn from_lender(lender: crate::linux_attempt_host::SourceCleanupLender) -> Self {
+        Self { lender }
+    }
+
+    /// Resolves the same recipient only while its original Source is current.
+    ///
+    /// Missing, contended or retired custody returns `None`; it never proves
+    /// that the helper or its diagnostic allocations have returned.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<std::sync::Arc<crate::OriginalNativeFreshLaunchError>> {
+        self.lender.controller().ok()
+    }
+
+    /// Compares existing lender identities without issuing or resolving custody.
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.lender.same_identity(&other.lender)
+    }
+
+    /// Checks a controller against this same live Source lender.
+    ///
+    /// This identity observation grants no helper effect or cleanup permission.
+    #[must_use]
+    pub fn matches_controller(
+        &self,
+        controller: &std::sync::Arc<crate::OriginalNativeFreshLaunchError>,
+    ) -> bool {
+        self.upgrade()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, controller))
+    }
 }"#,
-        1,
-    )],
+            1,
+        ),
+    ],
 };
 
 pub(super) const HELPER_RETURN: Companion = Companion {
@@ -295,6 +330,22 @@ pub(super) const LENDER: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose/source_cleanup.rs",
     required: &[
         (
+            r#"pub(crate) struct SourceCleanupOriginal {
+    lender: SourceCleanupLender,
+    original: Arc<HostOperationGuard>,
+}"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn same_identity(&self, other: &Self) -> bool {
+    Weak::ptr_eq(&self.roster, &other.roster)
+        && self.index == other.index
+        && self.generation == other.generation
+        && self.process_generation == other.process_generation
+}"#,
+            1,
+        ),
+        (
             r#"pub(in crate::linux_attempt_host) fn bound_source_cleanup_lender(
     &self,
     expected: &crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError,
@@ -361,7 +412,7 @@ pub(super) const LENDER: Companion = Companion {
         return Err(OriginalActorAccountError::Unavailable);
     }
     Ok(SourceCleanupOriginal {
-        lender: self, controller: Arc::downgrade(&controller), original,
+        lender: self, original,
     })
 }"#,
             1,
@@ -373,9 +424,8 @@ pub(super) const LENDER: Companion = Companion {
 {
     let unavailable =
         || crucible_host_resources::host_supervision::HostSupervisionError::Unavailable;
-    let controller = self.controller.upgrade().ok_or_else(unavailable)?;
     let current = self.lender.controller().map_err(|_| unavailable())?;
-    if Arc::ptr_eq(&controller, &current) && controller.cleanup_matches(&self.original) {
+    if current.cleanup_matches(&self.original) {
         Ok(&self.original)
     } else { Err(unavailable()) }
 }"#,

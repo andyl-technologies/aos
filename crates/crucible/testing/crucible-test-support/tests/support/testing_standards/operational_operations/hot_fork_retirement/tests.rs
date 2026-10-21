@@ -239,8 +239,8 @@ fn pre_vm_retirement_keeps_the_same_preborn_body_and_borrowed_abort()
     );
     source.reject_companion(
         "spawn/helper_receiver.rs",
-        "let controller = lender.controller().ok()?;",
-        "let controller = foreign_lender.controller().ok()?;",
+        "lender.controller().ok()?;",
+        "foreign_lender.controller().ok()?;",
     );
     source.reject_companion(
         "original_node/helper_receiver.rs",
@@ -288,8 +288,8 @@ fn pre_vm_retirement_keeps_the_same_preborn_body_and_borrowed_abort()
             "!Arc::ptr_eq(&controller, &current)",
         ),
         (
-            "Arc::ptr_eq(&controller, &current) && controller.cleanup_matches(&self.original)",
-            "Arc::ptr_eq(&controller, &current)",
+            "current.cleanup_matches(&self.original)",
+            "true",
         ),
     ] {
         source.reject_companion("process_purpose/source_cleanup.rs", before, after);

@@ -81,11 +81,17 @@ impl Fixture {
             &contract,
         )?;
         assert!(contract.issued_helper_receiver().is_none());
-        let mut preparation =
-            RetainedFreshPreparation::new(lease, prepared, std::sync::Weak::new());
-        // An adversarial nonissued input can only exercise refusal. No helper,
-        // Native admission or cleanup is invoked under this component contract.
-        preparation.contract = Some(contract);
+        // This negative fixture has no Source identity and cannot manufacture one.
+        let preparation = RetainedFreshPreparation {
+            lease: Some(lease),
+            directory: Some(prepared),
+            contract: Some(contract),
+            body: FreshPreparationBody::Empty,
+            receiver: None,
+            helper_returned: false,
+            native: NativeLaunchProgress::NotEntered,
+            directory_closing: false,
+        };
         Ok(Self {
             owner,
             preparation,

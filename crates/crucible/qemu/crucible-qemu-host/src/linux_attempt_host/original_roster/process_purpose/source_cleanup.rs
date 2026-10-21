@@ -17,7 +17,6 @@ pub(crate) struct SourceCleanupLender {
 /// Retains only a borrowed step identity for an already-issued Source Cleanup.
 pub(crate) struct SourceCleanupOriginal {
     lender: SourceCleanupLender,
-    controller: Weak<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
     original: Arc<HostOperationGuard>,
 }
 
@@ -103,7 +102,6 @@ impl SourceCleanupLender {
         }
         Ok(SourceCleanupOriginal {
             lender: self,
-            controller: Arc::downgrade(&controller),
             original,
         })
     }
@@ -120,9 +118,8 @@ impl SourceCleanupOriginal {
     {
         let unavailable =
             || crucible_host_resources::host_supervision::HostSupervisionError::Unavailable;
-        let controller = self.controller.upgrade().ok_or_else(unavailable)?;
         let current = self.lender.controller().map_err(|_| unavailable())?;
-        if Arc::ptr_eq(&controller, &current) && controller.cleanup_matches(&self.original) {
+        if current.cleanup_matches(&self.original) {
             Ok(&self.original)
         } else {
             Err(unavailable())
@@ -205,3 +202,6 @@ impl SourceCleanupLender {
             && self.process_generation == other.process_generation
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,25 +1,65 @@
 //! Routes helper births into their constructor-bound issued Source recipient.
 //!
-//! The contract keeps only weak nominal links. The source's existing fixed
+//! The contract retains the existing Source lender identity. Its fixed
 //! controller owns the child before any pipe validation or independent post.
 //! Polling borrows that same creation Original; a command limit cannot renew it.
 
 use super::*;
 
+/// Identifies the constructor-bound recipient of an already issued helper.
+///
+/// This observer keeps the existing Source lender's roster, generation and
+/// incarnation identity. It holds no weak controller allocation header and
+/// supplies no process, operation, funding, or physical-return authority.
+#[derive(Clone, Debug)]
+pub struct QemuIssuedHelperReceiver {
+    lender: crate::linux_attempt_host::SourceCleanupLender,
+}
+
+impl QemuIssuedHelperReceiver {
+    pub(crate) fn from_lender(lender: crate::linux_attempt_host::SourceCleanupLender) -> Self {
+        Self { lender }
+    }
+
+    /// Resolves the same recipient only while its original Source is current.
+    ///
+    /// Missing, contended or retired custody returns `None`; it never proves
+    /// that the helper or its diagnostic allocations have returned.
+    #[must_use]
+    pub fn upgrade(&self) -> Option<std::sync::Arc<crate::OriginalNativeFreshLaunchError>> {
+        self.lender.controller().ok()
+    }
+
+    /// Compares existing lender identities without issuing or resolving custody.
+    #[must_use]
+    pub fn same_identity(&self, other: &Self) -> bool {
+        self.lender.same_identity(&other.lender)
+    }
+
+    /// Checks a controller against this same live Source lender.
+    ///
+    /// This identity observation grants no helper effect or cleanup permission.
+    #[must_use]
+    pub fn matches_controller(
+        &self,
+        controller: &std::sync::Arc<crate::OriginalNativeFreshLaunchError>,
+    ) -> bool {
+        self.upgrade()
+            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, controller))
+    }
+}
+
 impl QemuChildProcessContract {
-    /// Projects an inert weak identity for this contract's genuine helper owner.
+    /// Projects the existing lender identity of this contract's helper owner.
     ///
     /// The actual first-bound Source lender validates its active incarnation
-    /// before this projection. The weak reference grants no helper effect,
-    /// Cleanup, return loan or funding; cleanup still uses that owner's saved
-    /// lender and Original. Missing or unavailable custody returns `None`.
+    /// before this projection. The identity grants no helper effect, Cleanup,
+    /// return loan or funding. Missing or unavailable custody returns `None`.
     #[must_use]
-    pub fn issued_helper_receiver(
-        &self,
-    ) -> Option<std::sync::Weak<crate::OriginalNativeFreshLaunchError>> {
+    pub fn issued_helper_receiver(&self) -> Option<QemuIssuedHelperReceiver> {
         let lender = self.attempt_binding.helper_receiver.get()?;
-        let controller = lender.controller().ok()?;
-        Some(std::sync::Arc::downgrade(&controller))
+        lender.controller().ok()?;
+        Some(QemuIssuedHelperReceiver::from_lender(lender.clone()))
     }
 
     #[cfg(target_os = "linux")]

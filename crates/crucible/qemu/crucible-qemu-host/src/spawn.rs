@@ -149,6 +149,7 @@ impl AttemptResourceBinding {
 
 mod child_privilege;
 pub(crate) mod helper_receiver;
+pub use helper_receiver::QemuIssuedHelperReceiver;
 mod process_stage_binding;
 pub(crate) use process_stage_binding::QemuProcessStageRetirement;
 pub use process_stage_binding::{QemuProcessStageBinding, QemuProcessStageIdentityError};
@@ -909,7 +910,7 @@ pub struct QemuSpawnedChild {
 pub struct QemuGuardedImagePreparationError {
     pub(super) source: QemuSpawnError,
     #[cfg(target_os = "linux")]
-    receiver: Option<std::sync::Weak<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    receiver: Option<QemuIssuedHelperReceiver>,
 }
 
 impl QemuGuardedImagePreparationError {
@@ -924,11 +925,11 @@ impl QemuGuardedImagePreparationError {
     #[cfg(target_os = "linux")]
     pub(crate) fn issued(
         source: QemuSpawnError,
-        receiver: &std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+        receiver: &crate::linux_attempt_host::SourceCleanupLender,
     ) -> Self {
         Self {
             source,
-            receiver: Some(std::sync::Arc::downgrade(receiver)),
+            receiver: Some(QemuIssuedHelperReceiver::from_lender(receiver.clone())),
         }
     }
 
@@ -941,6 +942,16 @@ impl QemuGuardedImagePreparationError {
         }
     }
 
+    /// Clones the saved nominal recipient without inferring current custody.
+    ///
+    /// An unavailable Source remains a retained cleanup obligation. Callers
+    /// must resolve this identity before attempting any recipient operation.
+    #[cfg(target_os = "linux")]
+    #[must_use]
+    pub fn retained_receiver_identity(&self) -> Option<QemuIssuedHelperReceiver> {
+        self.receiver.clone()
+    }
+
     /// Returns the existing issued recipient that retains helper disposition.
     ///
     /// This observer creates neither a process nor an operation or return loan.
@@ -949,7 +960,9 @@ impl QemuGuardedImagePreparationError {
     pub fn retained_receiver(
         &self,
     ) -> Option<std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>> {
-        self.receiver.as_ref().and_then(std::sync::Weak::upgrade)
+        self.receiver
+            .as_ref()
+            .and_then(QemuIssuedHelperReceiver::upgrade)
     }
 
     /// Projects the original helper's independent first, post and cleanup causes.
