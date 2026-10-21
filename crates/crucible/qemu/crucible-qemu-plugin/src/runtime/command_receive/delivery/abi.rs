@@ -18,6 +18,7 @@ pub(in crate::runtime::command_receive) struct Api {
     pub(super) transfer: extern "C" fn(u64, *mut *mut Owner, u64, *mut *mut Owner) -> i32,
     pub(super) current: extern "C" fn(u64, *mut Owner, u64) -> i32,
     pub(super) identity_return: extern "C" fn(u64, *mut *mut Owner, u64) -> i32,
+    pub(super) ready_return: extern "C" fn(u64, *mut Owner, u64, *mut u32) -> i32,
     pub(super) payload_claim: extern "C" fn(u64, *mut Owner, u64) -> i32,
     pub(super) payload_return: extern "C" fn(u64, *mut Owner, u64) -> i32,
 }
@@ -60,6 +61,10 @@ impl Api {
             identity_return: entry!(
                 c"qemu_plugin_crucible_startup_source_received_delivery_identity_return_v1",
                 extern "C" fn(u64, *mut *mut Owner, u64) -> i32
+            ),
+            ready_return: entry!(
+                c"qemu_plugin_crucible_startup_source_received_delivery_ready_return_v1",
+                extern "C" fn(u64, *mut Owner, u64, *mut u32) -> i32
             ),
             payload_claim: entry!(
                 c"qemu_plugin_crucible_startup_source_received_delivery_payload_claim_v1",

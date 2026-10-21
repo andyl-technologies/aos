@@ -26,6 +26,8 @@ pub(super) struct Delivery {
     returned: bool,
     first_status: i32,
     payload_return_status: i32,
+    ready_return_status: i32,
+    ready_returned: bool,
 }
 
 impl Delivery {
@@ -41,6 +43,8 @@ impl Delivery {
             returned: false,
             first_status: 0,
             payload_return_status: 0,
+            ready_return_status: 0,
+            ready_returned: false,
         }
     }
 
@@ -128,7 +132,8 @@ impl Delivery {
     ///
     /// The final pure Source entry consumes its field only on zero. Every negative
     /// retains the holder and dependencies, including live native borrowers.
-    /// A separate first-bound callback first attempts actual module payload
+    /// Ready handoff return records its physical consumption independently.
+    /// A separate first-bound callback then attempts actual module payload
     /// retirement. Pure lifetime return then independently checks Native's
     /// retained debt; a negative payload post cannot resurrect a consumed owner.
     /// This proves no Host publisher, peer or physical resource return.
@@ -143,6 +148,21 @@ impl Delivery {
         if self.projection.is_null() || self.serial == 0 {
             return Err(status_error(-libc::EPROTO));
         }
+        let mut ready_returned = 0;
+        let status = (api.ready_return)(id, self.projection, self.serial, &mut ready_returned);
+        // The factual output records consumption before independent Native post.
+        // It never grants permission: both later returns authenticate real debt.
+        self.ready_returned |= ready_returned == 1;
+        if self.ready_return_status == 0 {
+            self.ready_return_status = if status != 0 {
+                status
+            } else if ready_returned != 1 {
+                -libc::EPROTO
+            } else {
+                0
+            };
+        }
+        let ready = native_status(self.ready_return_status);
         let payload = if self.payload_attempted {
             let status = (api.payload_return)(id, self.projection, self.serial);
             if self.payload_return_status == 0 && status != 0 {
@@ -162,6 +182,7 @@ impl Delivery {
         if let Err(error) = lifetime {
             // Native alone decides whether the actual module payload and local
             // borrowers are closed. Preserve the initiating payload refusal.
+            ready?;
             payload?;
             return Err(error);
         }
@@ -175,7 +196,8 @@ impl Delivery {
         // receive. Only actual parent receive consumption permits a new keeper.
         self.returned = true;
         // Save real lifetime consumption before reporting an independent
-        // payload-return post failure. A later cleanup cannot reissue it.
+        // Ready or payload return post failure. A later cleanup cannot reissue it.
+        ready?;
         payload
     }
 }

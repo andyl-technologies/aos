@@ -22,6 +22,9 @@ struct Model {
     creation_field: usize,
     canonical_field: usize,
     returned_field: usize,
+    ready_returns: usize,
+    ready_status: i32,
+    ready_output: u32,
     payload_claims: usize,
     payload_returns: usize,
     payload_claim_status: i32,
@@ -31,6 +34,7 @@ struct Model {
 thread_local! {
     static MODEL: RefCell<Model> = RefCell::new(Model {
         transfer_consumes: true,
+        ready_output: 1,
         ..Model::default()
     });
 }
@@ -99,7 +103,17 @@ fn api() -> Api {
         identity_return,
         payload_claim,
         payload_return,
+        ready_return,
     }
+}
+
+extern "C" fn ready_return(_: u64, _: *mut Owner, _: u64, output: *mut u32) -> i32 {
+    MODEL.with_borrow_mut(|model| {
+        model.ready_returns += 1;
+        // SAFETY: the wrapper supplies one live aligned local u32 output cell.
+        unsafe { output.write(model.ready_output) };
+        model.ready_status
+    })
 }
 
 extern "C" fn payload_claim(_: u64, _: *mut Owner, _: u64) -> i32 {
@@ -129,6 +143,7 @@ fn reset(edit: impl FnOnce(&mut Model)) {
     MODEL.with_borrow_mut(|model| {
         *model = Model {
             transfer_consumes: true,
+            ready_output: 1,
             ..Model::default()
         };
         edit(model);
@@ -327,6 +342,83 @@ fn retained_payload_refusal_preserves_custody_and_initiating_error() {
     // SAFETY: the local model retains this actual pinned field; no Native
     // implementation or foreign canonical field is accessed by the test.
     assert_eq!(unsafe { delivery.holder.get().read() }, projection);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.payload_returns, 1);
+        assert_eq!(model.returns, 1);
+    });
+}
+
+#[test]
+fn ready_post_refusal_saves_consumption_and_still_attempts_both_actual_returns() {
+    reset(|model| model.ready_status = -libc::ECANCELED);
+    let mut delivery = Box::pin(Delivery::new());
+    retain(&mut delivery).unwrap();
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::ECANCELED);
+    assert!(delivery.ready_returned);
+    assert!(delivery.returned);
+    assert!(delivery.projection.is_null());
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.ready_returns, 1);
+        assert_eq!(model.payload_returns, 1);
+        assert_eq!(model.returns, 1);
+    });
+}
+
+#[test]
+fn refused_ready_return_preserves_first_error_through_real_lifetime_retry() {
+    reset(|model| {
+        model.ready_status = -libc::EBUSY;
+        model.ready_output = 0;
+        model.payload_return_status = -libc::ECANCELED;
+        model.return_status = -libc::EBUSY;
+    });
+    let mut delivery = Box::pin(Delivery::new());
+    retain(&mut delivery).unwrap();
+    let projection = delivery.projection;
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EBUSY);
+    assert!(!delivery.ready_returned);
+    assert!(!delivery.returned);
+    assert_eq!(delivery.projection, projection);
+    MODEL.with_borrow_mut(|model| {
+        model.ready_status = 0;
+        model.ready_output = 1;
+        model.payload_return_status = 0;
+        model.return_status = 0;
+    });
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EBUSY);
+    assert!(delivery.ready_returned);
+    assert!(delivery.returned);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.ready_returns, 2);
+        assert_eq!(model.payload_returns, 2);
+        assert_eq!(model.returns, 2);
+    });
+}
+
+#[test]
+fn copied_ready_output_never_substitutes_for_native_lifetime_consumption() {
+    reset(|model| model.return_status = -libc::EBUSY);
+    let mut delivery = Box::pin(Delivery::new());
+    retain(&mut delivery).unwrap();
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EBUSY);
+    assert!(delivery.ready_returned);
+    assert!(!delivery.returned);
+    assert!(!delivery.projection.is_null());
+}
+
+#[test]
+fn malformed_ready_success_reports_protocol_error_after_independent_returns() {
+    reset(|model| model.ready_output = 0);
+    let mut delivery = Box::pin(Delivery::new());
+    retain(&mut delivery).unwrap();
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EPROTO);
+    assert!(!delivery.ready_returned);
+    assert!(delivery.returned);
     MODEL.with_borrow(|model| {
         assert_eq!(model.payload_returns, 1);
         assert_eq!(model.returns, 1);

@@ -67,7 +67,7 @@ Passing historical results do not qualify the later ownership changes.
 | New RAM cleanup controls | All 22 cleanup controls, both registry controls and all eight whole-set teardown controls pass in the affected runtime run. The latter include actual descriptor destruction and a panicking node-field destructor that permanently refuses return. | Component success does not qualify complete native provider return, failure payload funding or lower physical peaks. |
 | Source policy | All 66 specific controls pass, including the imported replay terminal route. The broad gate reports 21 paths: fourteen daemon and seven host paths, one fewer than the preceding whole-node run. An obsolete baseline entry for the relocated RAM wait was removed without a replacement waiver. | Complete the owning caller cutovers. Scanner bounds, classification and assertions remain unchanged. |
 | Boundary and hygiene | All 65 unsafe/ABI/license controls pass against the current cleanup implementation. All five hygiene controls, 36 harness controls and both Rust documentation controls pass. Eight content-bound review records were refreshed after source review using the unchanged counter. | Keep original shape limits and recheck subsequent functional changes. |
-| Native build | Signed source `78ca20b4207d` completes all 3,863 C compile/link actions. Twenty-five of twenty-six standalone fixtures pass, including sixteen received-delivery lifetime and thirteen module-payload component scenarios. The latter use an explicitly modeled C module journal. The worker inventory retains the genuinely linked RCU registration and its actual task census. | The regeneration gate fails at the unchanged mandatory launched capture lifecycle refusal. Component passes do not establish Source activation, real read/post/rearm/ACK or physical-return qualification. |
+| Native build | Signed source `68dd4a6b902e` completes all 3,863 C compile/link actions. Twenty-five of twenty-six standalone fixtures pass, including sixteen received-delivery lifetime, thirteen module-payload and eight Ready handoff component scenarios. Their installation, standing, module journal and Main-loop entry inputs remain explicitly modeled. The final independent causal sweep timed out at the unchanged 60-second limit on Ready absence reissue; its failed stage is unresolved and later sweeps are diagnostic. The worker inventory retains the genuinely linked RCU registration and its actual task census. | The regeneration gate fails at the unchanged mandatory launched capture lifecycle refusal. Component passes do not establish Source activation, real read/post/rearm/ACK or physical-return qualification. |
 | Deferred control | The retained object has 124 private component definitions plus `main` and 28 genuine provider references. The owning runner resolves QOM support from the configured Meson build. All positive scenarios and both exact native assertion mutations pass. | Component linkage and runtime checks supply no Source activation or physical CPU-pin return evidence. |
 | Native cleanup | All four changed production C units pass syntax checks; the actual generated fixture compiles and links. Ten new controls, the replacement capacity control and four independently rebuilt causal mutations pass their exact checks. | Positive RCU grace, launched capture and resource/performance qualification remain required. |
 | Native Source unit | All 187 scenarios pass with matched compiled C layouts, actual worker backing charges, canonical Bridge/Child holders, RUN socket handoff, teardown semaphore entry, bounded join, control destruction and stack/storage return. The original 1 MiB budget remains an insufficient-budget negative. | Prepared-family and completion-binding enrollment remain explicitly modeled inputs. These component lifetimes qualify neither the production Rust module nor standing/Original/Source/CPU activation. Positive lifecycle qualification requires a paired normal-service flight. |
@@ -391,6 +391,31 @@ storage tests use explicit mechanism pairs and cannot authenticate a Main,
 Source, native process or action. Coverage names 153
 component cases and nineteen native cases; 149 requirements remain uncovered
 and none qualified.
+
+
+The actual Ready factual dispatch now nominates its receive at birth and retains
+that delivery's canonical module payload, child/member and standing lender in
+paid Source storage before independent post. Its genuine execution carrier
+retains that exact handoff across normal observation return and Ready exit;
+the Ready entered marker does not extend. Ready cleanup reports factual
+consumption independently of its signed post result and blocks uncertain or
+still-borrowed dependencies. Payload and pure lifetime returns each authenticate
+actual native debt independently; a copied output grants no permission.
+
+The Rust keeper requires this exact Native ABI. It saves factual Ready
+consumption before interpreting status, preserves the first cleanup refusal,
+and independently attempts both later returns. All 1,114 plugin unit cases and
+the integration targets pass, including nineteen receive/delivery controls.
+Three independently rebuilt Rust defects fail their intended assertions for
+lost negative-post consumption, skipped independent returns and overwritten
+first error. Native owning component coverage remains 187 cases; the 37
+lifetime/payload/Ready scenarios use explicit modeled entry inputs. Raw ABI,
+signed reconstruction and the license ledger pass. The native causal timeout
+and mandatory launched Source/Root lifecycle refusal remain unresolved; this
+is not full native qualification. Coverage names 157 component cases and
+nineteen native cases, with 149 requirements uncovered and none qualified.
+Actual Main borrowers, CPU-operation authority, entered action Originals,
+activation, ACK and physical peer return remain unfinished.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service
