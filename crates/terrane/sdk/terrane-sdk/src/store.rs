@@ -25,6 +25,10 @@ pub mod shared_dir;
 #[cfg(feature = "std")]
 pub mod read_only;
 
+/// Routes ordered content reads while retaining exactly one ref authority.
+#[cfg(feature = "std")]
+pub mod routed;
+
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
 

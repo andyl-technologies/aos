@@ -11627,3 +11627,26 @@ by the cache image. The corrected reviewer passes against the unchanged frozen
 images: 21 actual portable cases, five transport ELFs, and all 5195 transport
 and 5205 cache inputs. No selector is dropped or generalized. Full current-source
 requalification remains pending.
+
+
+#### Ordered routing component ahead of T3 task acceptance
+
+The public `Routed` combinator binds opened content children and exactly one
+actual ref authority. Reads preserve configured order with per-child and whole
+request deadlines, shared circuits and one scheduled probe. Membership queries
+retain duplicate positions, query only unresolved identities and refuse to turn
+failed or skipped children into absence. Exhausted reads preserve the shortest
+retry hint actually reported. Uploads and all five ref operations reach only the
+original authority, preserving its outcomes and watch stream; no cache write can
+acknowledge an authority failure or a pending upload. Every content child remains
+responsible for verification, and the trusted opener remains responsible for
+profile/domain compatibility. This raw adapter grants no policy or physical
+custody authority.
+
+All nine public-API controls pass with no ignored cases; strict native Clippy
+passes. The three owning routing/ref-forwarding gates share one actual Cargo
+integration artifact, exact discovery, original per-case logs and thirty-second
+selector bounds. Frozen gate, application-target and portable feature
+qualification remain pending. This component does not complete T-STORE-2:
+expression opening/validation, guard/cache/remote composition and the rest of
+T3 remain pending. T2 task acceptance still requires its full passing aggregate.
