@@ -69,7 +69,7 @@
         # without its activation links or external runtime credentials. The
         # reference target keeps the inactive unit loaded for PID1 readback;
         # ordering alone never starts it. The Nix owner remains uninstalled.
-        environment.etc."systemd/system/aos-sandboxd.service".source = controllerReference;
+        environment.etc."systemd/system/aos-sandboxd.service".source = "${controllerReference}";
         systemd.targets.aos-offline-controller-reference = {
           description = "Retain the installed inactive Controller unit for provisioning";
           wantedBy = ["multi-user.target"];
