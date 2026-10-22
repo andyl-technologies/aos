@@ -1886,6 +1886,7 @@ in
               # delivery's unchanged bounded runtime inventory starts.
               subprocess.run([
                   "${ninja}/bin/ninja", "-C", str(source_root / "build"),
+                  "-j", os.environ["NIX_BUILD_CORES"],
                   "tests/unit/crucible-execution-provider.json",
               ], env=environment, check=True)
               failed_fixtures = []

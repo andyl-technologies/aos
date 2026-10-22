@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `d1c072e984` imports conventional `a994efb547`, tree `79cdafee`. Independent review matches all 78,235 source entries, 24,232 evidence files, six literal evidence links and 36 sealed artifacts. The complete Source floor is 298,814 bytes; the cumulative ledger contains 428 created files. | Genuine configured fixture-provider dependencies close the previous extracted cleanup link failure. Final normal delivery passes within its unchanged 60-second bound; the complete publisher-access inventory passes within 600 seconds. Packaged reconstruction and license ledger pass; the Native gate passes all 36 components and its embedded 187 Source tests. ABI conformance passes. The separately registered Source gate and full packaged ordinary fixture delivery remain pending. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
+| Native integration | Signed atomic `d1c072e984` imports conventional `a994efb547`, tree `79cdafee`. Independent review matches all 78,235 source entries, 24,232 evidence files, six literal evidence links and 36 sealed artifacts. The complete Source floor is 298,814 bytes; the cumulative ledger contains 428 created files. | Genuine configured fixture-provider dependencies close the previous extracted cleanup link failure. Final normal delivery passes within its unchanged 60-second bound; the complete publisher-access inventory passes within 600 seconds. Packaged reconstruction and license ledger pass; the Native gate passes all 36 components and its embedded 187 Source tests. ABI conformance passes. The separately registered Source gate passes all 187 tests at `j6mj9gz7m0s0kzm0xd482imd73dgrpn7`; full packaged ordinary fixture delivery remains pending. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -94,8 +94,10 @@ The `d1c072e984` import reconstructs successfully at
 at `1mwdpdp466h28zxva03cwdysn20lz47f`, including all 36 separately bounded
 components and its embedded 187 actual Source tests. This closes the preceding
 extracted cleanup bridge's genuine-provider link failure without weakening its
-bounds. The separately registered Source gate and full packaged ordinary
-fixture delivery remain pending.
+bounds. The separately registered Source gate passes all 187 tests at
+`j6mj9gz7m0s0kzm0xd482imd73dgrpn7`. Full packaged ordinary fixture delivery
+remains pending; its explicit provider Ninja invocation now honors the
+requested `NIX_BUILD_CORES` instead of Ninja's unrestricted default.
 
 ABI conformance passes at `5bmw67dp0dxp493520gi2az5hrkf428l`. Engineering
 hygiene passes at `zcvijji792yblcv5r97p578pnwrl3izi`. The canonical
@@ -130,13 +132,41 @@ The sealed implementation's full build, bounded-thread controls and eleven
 ordinary regression targets pass. Its ABI invocation remains an overall
 failure: nineteen checks pass and the libc check reports the prefix-dependent
 `_nl_default_dirname` data-size difference. No ABI waiver is introduced.
-The new hermetic package build is pending. It runs the actual bounded and eleven
-ordinary targets using its built loader/libc and an explicit source-built
-unwinder. It checks every test runner's original exit status and PASS result,
-because the upstream single-test make target can return zero after a failure.
-Each process is limited to two GiB of address space. No QEMU loader change,
-caller application closure, nonwaiting creation/TLS/callback claim or stack
-profile admission follows from this package.
+The hermetic package passes at
+`hzmrki4bk0j2s3rymskfx5v2qs5px8j4-glibc-crucible-2.39`. All twelve actual
+bounded/ordinary targets pass with original exit status zero using its built
+loader/libc and an explicit source-built unwinder. The package requires each
+runner's original exit status and PASS result because the upstream single-test
+make target can return zero after a failure. Each process is limited to two GiB
+of address space. Independent installed-result and exported-symbol review is
+`cf7b82aa95187a0e66011718b0d5f7ed86baa19c8d84ebbd17c08b1a9e5dcbde`.
+
+`pkgs.crucible-cc` supplies an isolated C/C++ wrapper for that runtime. GCC's
+embedded specs otherwise select the construction libc before user library
+paths: the actual external consumer first failed to link the new API. The
+wrapper retargets those specs to the matching headers, static libraries and
+runtime before applying the existing compiler wrapper. Its first package build
+failed because copied store metadata was read-only; making only the new output
+writable fixes package finalization. Production compiler and libc identities
+remain unchanged.
+
+The installed compiler package passes at
+`nw1ci1ad50wkwdgqfnkz4pagj2c2kiq1-crucible-cc-16.2.0`. Its build compiles and
+executes an external public-header consumer, checks the embedded loader and
+actual libc resolution without environment overrides, and checks the C++17
+header ABI. The consumer exercises actual unused-arena return, absent
+registration and rejection of the prior incarnation after reuse. Its first
+manual run incorrectly expected `ESTALE` after removal; the actual registry
+returns `ESRCH` until reuse, when the old incarnation returns `ESTALE`. The
+failure is retained and the control is corrected. The independent external
+consumer proof is
+`58ade586db97cea2abfd340b535dce61f51f983e39a8b287541d99d2d21ca9f8`.
+Core evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`.
+
+No QEMU loader change, caller application closure, nonwaiting
+creation/TLS/callback claim or stack profile admission follows from these
+packages. The external consumer does not create a worker; actual bounded worker
+controls are exercised by the separate libc package qualification.
 
 #### Physical stack/member and genuine fixture-provider composition
 
