@@ -249,11 +249,19 @@ fn profile_plan_refuses_a_mutually_correlated_foreign_containing_assignment() {
 #[test]
 fn profile_plan_preserves_negative_probe_and_lost_launch_return_facts() {
     let (plan, process, publisher) = deferred_cleanup::parts();
-    for (flags, wait, errno) in [(53_u32, 9_u32, 0_u64), (55, 0, 127)] {
+    for (flags, wait, errno, missing_kernel) in [
+        (53_u32, 9_u32, 0_u64, false),
+        (55, 0, 127, false),
+        (55, 0, 0, true),
+        (63, 0, 0, false),
+    ] {
         let (mut report, manifest, mut transfer, runtime) = material();
         report[376..380].copy_from_slice(&flags.to_be_bytes());
         report[380..384].copy_from_slice(&wait.to_be_bytes());
         report[392..400].copy_from_slice(&errno.to_be_bytes());
+        if missing_kernel {
+            report[352..360].fill(0);
+        }
         transfer.paid_probe_sha256 = Sha256::digest(&report).into();
         let material = (report, manifest, transfer, runtime);
         let bytes = plan
@@ -266,6 +274,11 @@ fn profile_plan_preserves_negative_probe_and_lost_launch_return_facts() {
         assert_eq!(decoded.probe.facts().returned, flags & 2 != 0);
         assert_eq!(decoded.probe.facts().raw_wait_status, wait);
         assert_eq!(u64::from(decoded.probe.facts().first_errno), errno);
+        assert_eq!(decoded.probe.facts().birth_unknown, flags & 8 != 0);
+        assert_eq!(
+            decoded.probe.facts().kernel_handle_sequence == 0,
+            missing_kernel
+        );
         assert_eq!(decoded.probe.as_bytes(), material.0);
     }
 }

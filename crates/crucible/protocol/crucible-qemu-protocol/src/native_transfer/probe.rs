@@ -42,9 +42,9 @@ pub struct NativeProbeFacts {
     pub attempted: bool,
     /// Records observation of that birth operation's return.
     pub returned: bool,
-    /// Describes known birth with retained positive child witnesses.
+    /// Describes known birth independently of missing child-witness captures.
     pub born: bool,
-    /// Retains uncertainty about whether the attempted child was born.
+    /// Retains sticky birth uncertainty, including after a separate birth observation.
     pub birth_unknown: bool,
     /// Describes a separately observed process exit.
     pub exit_observed: bool,
@@ -56,9 +56,9 @@ pub struct NativeProbeFacts {
     pub settlement_consumed: bool,
     /// Identifies the birth attempt, including known no-birth refusals.
     pub birth_attempt_sequence: u64,
-    /// Retains a known kernel-child handle sequence, or zero when unknown.
+    /// Retains a known kernel-child handle sequence, or zero when unavailable.
     pub kernel_handle_sequence: u64,
-    /// Gives a positive Linux PID witness, or zero when unknown.
+    /// Gives a positive Linux PID witness, or zero when unavailable.
     pub pid_witness: u32,
     /// Identifies the actual factual event, or zero before an attempt.
     pub event_sequence: u64,
@@ -143,11 +143,15 @@ impl<'a> NativeProbeReport<'a> {
     /// This does not establish paid birth, matching reap, mechanically enforced
     /// bounds, complete post histories or outside-owner closure. A false result
     /// preserves the same borrowed report and every represented negative fact.
+    /// Missing child witnesses and sticky uncertainty always refuse completion.
     #[must_use]
     pub fn has_completed_result(&self) -> bool {
         let flags = read32(self.bytes, 376);
         flags & COMPLETED == COMPLETED
             && flags & BIRTH_UNKNOWN == 0
+            && [344, 352, 360, 368]
+                .into_iter()
+                .all(|offset| read64(self.bytes, offset) != 0)
             && read64(self.bytes, 392) == 0
             && read32(self.bytes, 380) == 0
     }
@@ -224,9 +228,11 @@ fn validate_facts(bytes: &[u8]) -> Result<(), NativeProbeDecodeError> {
     let pid = read64(bytes, 360);
     let event_sequence = read64(bytes, 368);
 
+    // Local custody can precede an attempt. Known birth does not replace a
+    // lost witness capture or erase sticky uncertainty; completion checks those
+    // independently instead of discarding the descriptive negative history.
     if flags & !255 != 0
-        || (flags != 0 && !attempted)
-        || (born && unknown)
+        || (flags & !LOCAL_CUSTODY_RETAINED != 0 && !attempted)
         || (exit && !born)
         || (reaped && !(born && exit))
         || (flags & SETTLEMENT_CONSUMED != 0 && !reaped)
@@ -236,7 +242,6 @@ fn validate_facts(bytes: &[u8]) -> Result<(), NativeProbeDecodeError> {
         || (attempted && (birth_sequence == 0 || event_sequence == 0))
         || (!attempted
             && (birth_sequence != 0 || kernel_sequence != 0 || pid != 0 || event_sequence != 0))
-        || (born && (kernel_sequence == 0 || pid == 0))
         || (!born && !unknown && (kernel_sequence != 0 || pid != 0))
         || (!reaped && read32(bytes, 380) != 0)
     {

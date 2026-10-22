@@ -610,8 +610,9 @@ matrix. C compilation and execution remain unqualified at this source checkpoint
 The refreshed inventory at `9c6xv6gc2b9skkwd163y3jiaaka0ra30` verifies 497
 bindings: 465 model, thirteen format and nineteen native, across 243 requirements.
 It leaves 148 requirements uncovered and grants no execution qualification.
-The mandatory application build for `5579c1d09b` is pending; independent comparison
-matches all 5,356 committed Rust/TOML files to immutable source
+The mandatory application build for `5579c1d09b` passes at
+`7n9c89am1ijypminch0q44p6klmkyd14`; independent comparison matches all 5,356
+committed Rust/TOML files to immutable source
 `l4dh43sfyz2vmqbbpjxcd6yk9y8n6vg5`, with zero mismatches. Its comparison record
 has SHA256 `479a7d43a32a3d466271d065a08aad941ae2bf570fa2260011a83dc411097428`.
 
@@ -654,11 +655,28 @@ does not authenticate sealed artifact contents, issue receiving custody or
 activate the unavailable profile. Refreshed inventory
 `l9dnzq26773nq6pkihy0xh1givxdcvhm` verifies 507 canonical bindings: 475 model,
 thirteen format and nineteen native, with 148 uncovered requirements and no
-execution qualification. The fresh ABI and mandatory application-target checks
-for this transport extension are pending. All 5,359 committed Rust/TOML inputs
+execution qualification. The fresh ABI gate passes at
+`l69dislqbcw37zq46mjmbwkw33a2ma0p`, including all 279 protocol cases and the
+host/guest compilation matrix. The mandatory application-target check remains
+pending. All 5,359 committed Rust/TOML inputs
 match immutable application-build source `ffjn61mkg8gknydx6r6p0r7k7v4nbr7z`;
 comparison record SHA256 is
 `89e513acc82e4c181b0aec4ce7e359cefb04c0556a80954d8685634fd9a5735d`.
+
+The later signed clarification `77f7f203899996ee65739ea8c7b6cde8aeffaa32`,
+tree `9eed56538d8c5522304d5b497bb1441609de5fe7`, broadens descriptive negative
+reports. All seven payloads and the signed document match manifest
+`90e44a08349a385eee282d3bd388564a92238e7337a2e9422e60549f8eed1833`.
+Known birth can coexist with missing kernel/PID captures or sticky birth
+uncertainty; retained local custody can precede a birth attempt. The reader now
+preserves those facts without inventing witnesses. Completion still requires
+all four positive coordinates, all completion flags, no birth uncertainty,
+zero errno and zero wait status. Two additional cases and expanded plan-fifteen
+round trips verify that partial reports never become completed results. All
+281 protocol tests and strict all-target Clippy pass. Refreshed inventory
+`1ka443fkc0ifwagp2pwqwrf8aidhy99r` verifies 509 canonical bindings: 477 model,
+thirteen format and nineteen native; 148 requirements remain uncovered, with
+no execution qualification. Real paid probe issuance remains unavailable.
 
 #### Initial loader storage component
 
@@ -689,8 +707,17 @@ A separately rebuilt, never-installed DTV-zeroing omission reaches the unchanged
 validator and exits 127 with EIO at cut ten; its retained receipt records the
 actual attempted/returned history and unreleased debt. Both full builds and
 every runner retain their original status and finite limits. These public
-component results do not replace the pending repository hermetic installed
-gate. Complete process admission, kernel/image/initial-stack funding,
+component results remain separate from repository hermetic qualification.
+
+The repository version-two package build now passes at
+`lk9kpcdiwjcgpil6bfjf9m995xhwfj1a`, retaining fourteen literal passing test
+results and a zero-status ABI check. The installed-loader gate passes at
+`1c2f91vvhnxaljav1vc93x7nwmwdmb42`, with twenty actual installed-child
+outcomes and zero compile, launcher, header and runner statuses. The standalone
+ABI gate passes at `2z0vmx98ixwml7pxpsfmkyiqmbwwwki6`. The actual installed
+GLib/formatter consumer passes at `n7yxz24yzb6xd1mmrm51dzw91is6vnfs`; the
+matching QEMU bounded-thread gate passes all eleven tests without skips at
+`2mkaasqmv1pkx29r92spil52c6ggyms9`. Complete process admission, kernel/image/initial-stack funding,
 helper and relocation closure remain unavailable; selected probes refuse before
 normal relocation and program entry, and `complete_profile` remains zero.
 

@@ -686,7 +686,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib native_transfer::manifest::tests:: \
                 -- --test-threads=1
-              require_test_set 7 protocol-native-paid-probe \
+              require_test_set 9 protocol-native-paid-probe \
                 native_transfer::probe::tests::probe_preserves_no_birth_unknown_birth_and_reap_after_lost_launch_return \
                 -p crucible-qemu-protocol --lib native_transfer::probe::tests::
               cargo test \

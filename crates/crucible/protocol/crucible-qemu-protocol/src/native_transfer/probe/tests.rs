@@ -183,8 +183,6 @@ fn probe_refuses_impossible_flags_witnesses_and_unreaped_wait_words() {
         32,
         64,
         128,
-        13,
-        15,
         17,
         33,
         37,
@@ -200,14 +198,7 @@ fn probe_refuses_impossible_flags_witnesses_and_unreaped_wait_words() {
             "flags {flags}"
         );
     }
-    for (offset, value) in [
-        (344, 0),
-        (352, 0),
-        (360, 0),
-        (368, 0),
-        (360, i32::MAX as u64 + 1),
-        (392, 4096),
-    ] {
+    for (offset, value) in [(344, 0), (368, 0), (360, i32::MAX as u64 + 1), (392, 4096)] {
         let mut changed = bytes.clone();
         put64(&mut changed, offset, value);
         assert!(
@@ -226,6 +217,67 @@ fn probe_refuses_impossible_flags_witnesses_and_unreaped_wait_words() {
             NativeProbeReport::decode(&changed).is_err(),
             "foreign witnesses {flags}"
         );
+    }
+}
+
+#[test]
+fn probe_preserves_missing_born_witnesses_and_sticky_unknown_without_completion() {
+    let (bytes, _, _, _) = material();
+    for flags in [5, 7, 21, 53, 55, 119, 183, 247] {
+        for (kernel, pid) in [(0, 0), (8, 0), (0, 123)] {
+            let mut changed = bytes.clone();
+            put32(&mut changed, 376, flags);
+            put64(&mut changed, 352, kernel);
+            put64(&mut changed, 360, pid);
+
+            let report = NativeProbeReport::decode(&changed).unwrap();
+            assert!(report.facts().born);
+            assert_eq!(report.facts().kernel_handle_sequence, kernel);
+            assert_eq!(u64::from(report.facts().pid_witness), pid);
+            assert!(!report.has_completed_result(), "missing witness: {flags}");
+            assert_eq!(report.as_bytes(), changed);
+        }
+    }
+
+    for flags in [13, 15, 61, 63, 127, 191, 255] {
+        let mut changed = bytes.clone();
+        put32(&mut changed, 376, flags);
+
+        let report = NativeProbeReport::decode(&changed).unwrap();
+        assert!(report.facts().born && report.facts().birth_unknown);
+        assert!(!report.has_completed_result(), "sticky unknown: {flags}");
+        assert_eq!(report.as_bytes(), changed);
+    }
+}
+
+#[test]
+fn probe_preserves_pre_attempt_custody_without_inventing_birth_witnesses() {
+    let (mut bytes, _, _, _) = material();
+    put32(&mut bytes, 376, 64);
+    for offset in [344, 352, 360, 368] {
+        put64(&mut bytes, offset, 0);
+    }
+
+    let report = NativeProbeReport::decode(&bytes).unwrap();
+    let facts = report.facts();
+    assert!(facts.local_custody_retained);
+    assert!(!facts.attempted && !facts.returned && !facts.born && !facts.birth_unknown);
+    assert!(!facts.exit_observed && !facts.reaped && !facts.settlement_consumed);
+    assert!(!report.has_completed_result());
+    assert_eq!(report.as_bytes(), bytes);
+
+    for offset in [344, 352, 360, 368] {
+        let mut changed = bytes.clone();
+        put64(&mut changed, offset, 1);
+        assert!(
+            NativeProbeReport::decode(&changed).is_err(),
+            "offset {offset}"
+        );
+    }
+    for flag in [2, 4, 8, 16, 32, 128] {
+        let mut changed = bytes.clone();
+        put32(&mut changed, 376, 64 | flag);
+        assert!(NativeProbeReport::decode(&changed).is_err(), "flag {flag}");
     }
 }
 
