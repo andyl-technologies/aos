@@ -9597,8 +9597,12 @@ all 144 checker regressions also pass. The repaired base policy passes its
 complete compiled-policy gate at
 `/nix/store/14b4q16sii6pqiplzbwpngr635j2ay0x-aos-selinux-production-policy-1`,
 including all narrow and broad-attribute negative policies. Core evaluation
-also passes after the startup repairs. Selected Host/online policy variants
-and enforcing installed-VM qualification remain pending. The other VM runs
+also passes after the startup repairs. The selected online, handoff and offline
+policy variants subsequently pass their complete compiled gates at
+`/nix/store/pd42nzrxn9a9nwivkd6z31bdd90ka11w-aos-selinux-production-policy-1`,
+`/nix/store/75kgvd7qpvjqfbj39wkbv5sr9vgsra31-aos-selinux-production-policy-1`, and
+`/nix/store/lp27dz5w79qx6bq1qqx4p4bj7ydr51bp-aos-selinux-production-policy-1`.
+Enforcing installed-VM qualification remains pending. The other VM runs
 embedding the same known-denied policy were interrupted before qualification
 and replaced with these repairs; interruption is not a test pass.
 
@@ -9874,3 +9878,21 @@ native-overlay policy repair has its own pending build and installed reruns.
 This is a startup composition check, not an installed Required-mode or public
 Create proof.
 The installed method-46 and public Create qualification gates remain closed.
+
+### QEMU/vTPM journal-floor transport (component qualified)
+
+`fleet.sandbox-method46-tpm-transport` passes at
+`/nix/store/9hdnxybdhmwa37h1k1w7nxiwzwjbq7hw-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+The actual AOS-built guest and TPM transport exercise both endpoint purposes,
+independent authentication, refusal to initialize twice, wrong-pin and wrong-auth
+rejection, and rejection of a stale cut. Recovery passes after an orderly reboot,
+an unclean guest reset and a power cut killing both QEMU and swtpm while retaining
+their actual disk and persistent TPM state. A second power cut interrupts the
+prepared operation before the stopped TPM can extend it; the authenticated
+predecessor remains readable without inventing completion or discarding pending
+work. Clearing the TPM rejects the old endpoint state.
+
+The probe has test-only hierarchy authority. This receipt qualifies its physical
+transport and crash behavior, not normal paid Controller startup, either
+installed method-46 journal hook, Nix runtime-floor publication, held Q04 or a
+public sandbox lifecycle. The corresponding production gates remain closed.
