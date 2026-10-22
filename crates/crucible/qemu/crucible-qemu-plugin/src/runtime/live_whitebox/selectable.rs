@@ -289,15 +289,16 @@ impl LiveSelectableState {
                 pending.request().sequence()
             )));
         }
-        let mut bytes = reply.encode().map_err(callback_error)?;
-        if bytes.len() > pending.reply_range().len() {
+        let reply_len = reply.encoded_len().map_err(callback_error)?;
+        if reply_len > pending.reply_range().len() {
             return Err(callback_error(format!(
                 "selectable reply has {} bytes but guest reserved {}",
-                bytes.len(),
+                reply_len,
                 pending.reply_range().len()
             )));
         }
-        bytes.resize(pending.reply_range().len(), 0);
+        let mut bytes = vec![0; pending.reply_range().len()];
+        reply.encode_into(&mut bytes).map_err(callback_error)?;
         writer
             .write_whitebox_input(current_icount, pending.reply_range(), &bytes)
             .map_err(|error| {

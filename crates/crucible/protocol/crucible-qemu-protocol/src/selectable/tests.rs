@@ -72,6 +72,12 @@ fn selection_reply_v1_binds_sequence_ids_status_and_value() -> Result<(), Select
     let selected_reply = selected_reply()?;
     let bytes = selected_reply.encode()?;
     assert_eq!(bytes.len(), 98);
+    assert_eq!(selected_reply.encoded_len()?, bytes.len());
+    let mut destination = [0xa5; 128];
+    let written = selected_reply.encode_into(&mut destination)?;
+    assert_eq!(written, bytes.len());
+    assert_eq!(&destination[..written], bytes);
+    assert_eq!(&destination[written..], &[0xa5; 30]);
     assert_eq!(
         &bytes[..20],
         &[1, 0, 3, 0, 96, 0, 0, 0, 98, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0]
@@ -88,6 +94,11 @@ fn selection_reply_v1_binds_sequence_ids_status_and_value() -> Result<(), Select
         [0; SELECTABLE_DIGEST_BYTES],
     )?;
     let rejected_bytes = rejected.encode()?;
+    assert_eq!(rejected.encoded_len()?, rejected_bytes.len());
+    let mut destination = [0xa5; 128];
+    let written = rejected.encode_into(&mut destination)?;
+    assert_eq!(&destination[..written], rejected_bytes);
+    assert_eq!(&destination[written..], &[0xa5; 32]);
     assert_eq!(rejected_bytes.len(), SELECTION_REPLY_HEADER_BYTES);
     assert_eq!(SelectionReply::decode(&rejected_bytes), Ok(rejected));
     Ok(())
@@ -285,6 +296,39 @@ fn selection_request_optional_domain_flag_and_capacity_are_exact()
 
 #[test]
 fn length_queries_keep_nested_message_capacity_refusals() -> Result<(), SelectableProtocolError> {
+    let mut reply = selected_reply()?;
+    let mut destination = [0xa5; 97];
+    assert_eq!(
+        reply.encode_into(&mut destination),
+        Err(SelectableProtocolError::ReplyCapacityTooSmall {
+            capacity: 97,
+            minimum: 98,
+        })
+    );
+    assert_eq!(destination, [0xa5; 97]);
+
+    reply.selected_value = None;
+    assert_eq!(
+        reply.encode_into(&mut destination),
+        Err(SelectableProtocolError::SelectedValueMissing)
+    );
+    assert_eq!(destination, [0xa5; 97]);
+    assert_eq!(
+        reply.encode().unwrap_err(),
+        reply.encoded_len().unwrap_err()
+    );
+
+    reply.selected_value = Some(vec![0; SELECTABLE_MESSAGE_MAX_BYTES]);
+    assert_eq!(
+        reply.encode().unwrap_err(),
+        reply.encoded_len().unwrap_err()
+    );
+    assert_eq!(
+        reply.encode_into(&mut destination).unwrap_err(),
+        reply.encoded_len().unwrap_err()
+    );
+    assert_eq!(destination, [0xa5; 97]);
+
     let mut request = request()?;
     request.reply_capacity = 48;
     let before = request.clone();

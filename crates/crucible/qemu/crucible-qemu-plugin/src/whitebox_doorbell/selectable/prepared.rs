@@ -103,15 +103,15 @@ impl PreparedSelectableTrap {
                         actual: reply.sequence(),
                     });
                 }
-                let reply_bytes = reply.encode()?;
-                if reply_bytes.len() > request.reply_capacity() {
+                let reply_len = reply.encoded_len()?;
+                if reply_len > request.reply_capacity() {
                     return Err(SelectableDoorbellError::ReplyExceedsReservation {
-                        reply_len: reply_bytes.len(),
+                        reply_len,
                         capacity: request.reply_capacity(),
                     });
                 }
                 let mut full_buffer = vec![0; request.reply_capacity()];
-                full_buffer[..reply_bytes.len()].copy_from_slice(&reply_bytes);
+                reply.encode_into(&mut full_buffer)?;
                 let input = WhiteboxGuestInput::new(
                     event.current_icount(),
                     event.payload_range(),

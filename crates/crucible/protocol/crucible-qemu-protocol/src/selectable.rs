@@ -669,26 +669,63 @@ impl SelectionReply {
     /// Returns [`SelectableProtocolError`] if the status/value combination is
     /// invalid or the message exceeds its aggregate byte bound.
     pub fn encode(&self) -> Result<Vec<u8>, SelectableProtocolError> {
+        let mut bytes = vec![0; self.encoded_len()?];
+        self.encode_into(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Returns the validated canonical reply length without allocating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableProtocolError`] for an invalid status/value shape
+    /// or a reply exceeding the aggregate protocol bound.
+    pub fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
         self.validate()?;
-        let total_len = SELECTION_REPLY_HEADER_BYTES
+        SELECTION_REPLY_HEADER_BYTES
             .checked_add(self.selected_value.as_ref().map_or(0, Vec::len))
-            .ok_or(SelectableProtocolError::LengthOverflow)?;
-        let mut bytes = vec![0; SELECTION_REPLY_HEADER_BYTES];
+            .ok_or(SelectableProtocolError::LengthOverflow)
+    }
+
+    /// Encodes the canonical reply into the start of caller-owned storage.
+    ///
+    /// Returns the number of written bytes and preserves the remaining suffix.
+    /// Validation and capacity checks precede every write, so refusal leaves
+    /// the entire destination unchanged. This method allocates no storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableProtocolError`] for an invalid reply or when the
+    /// destination cannot contain its canonical bytes.
+    pub fn encode_into(&self, destination: &mut [u8]) -> Result<usize, SelectableProtocolError> {
+        let total_len = self.encoded_len()?;
+        if destination.len() < total_len {
+            return Err(SelectableProtocolError::ReplyCapacityTooSmall {
+                capacity: destination.len(),
+                minimum: total_len,
+            });
+        }
+
+        let bytes = &mut destination[..total_len];
+        bytes.fill(0);
+        // Validated lengths fit the fixed header and u32 wire ranges before
+        // mutation. The shared writers cannot encounter a conversion refusal.
         write_header(
-            &mut bytes,
+            bytes,
             SelectableMessageKind::Reply,
             SELECTION_REPLY_HEADER_BYTES,
             total_len,
             0,
         )?;
-        write_u64(&mut bytes, 12, self.sequence);
-        write_u16(&mut bytes, 20, self.status.wire_value());
+        write_u64(bytes, 12, self.sequence);
+        write_u16(bytes, 20, self.status.wire_value());
         bytes[24..56].copy_from_slice(&self.opportunity_id);
         bytes[56..88].copy_from_slice(&self.domain_id);
         if let Some(selected) = &self.selected_value {
-            append_range(&mut bytes, 88, selected)?;
+            write_range(bytes, 88, SELECTION_REPLY_HEADER_BYTES, selected.len())?;
+            bytes[SELECTION_REPLY_HEADER_BYTES..].copy_from_slice(selected);
         }
-        Ok(bytes)
+        Ok(total_len)
     }
 
     /// Returns the exact request/reply sequence.
@@ -1266,7 +1303,7 @@ pub enum SelectableProtocolError {
     /// The reserved reply buffer contains nonzero bytes before delivery.
     #[error("selection request reply reservation is not zero-filled")]
     NonzeroReplyReservation,
-    /// The mutable reply buffer cannot contain the request and minimal reply.
+    /// The reply buffer cannot contain its required request or reply bytes.
     #[error("selection reply capacity {capacity} is smaller than required {minimum}")]
     ReplyCapacityTooSmall {
         /// Supplied buffer bytes.

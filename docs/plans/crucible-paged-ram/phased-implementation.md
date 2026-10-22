@@ -589,6 +589,37 @@ execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
 
+#### Selectable replies in caller-owned delivery storage
+
+Selectable reply encoding now validates its canonical length before allocating
+or writing. The public `encode_into` entry writes into a caller-owned prefix,
+returns the exact encoded length and preserves its suffix. Invalid replies and
+insufficient destinations leave all destination bytes unchanged. The explicit
+owned encoder allocates the final canonical length once and delegates to the
+same writer. Wire fields, edition and golden bytes remain unchanged.
+
+The live selectable service checks sequence and canonical length before
+allocating its complete zero-filled guest reservation, then encodes directly
+into that allocation. It removes the intermediate encoded reply and copy while
+retaining the same full-reservation guest write. Deferred resume delivery also
+validates length before allocating its final reservation once, removing its
+encode-then-resize growth. Existing selected/rejected
+codec controls check canonical prefixes and sentinel suffixes; existing length
+controls check capacity, missing-value and oversized-value refusals without
+mutation. Existing callback controls retain same-icount, padding and oversized
+reply expectations. The source-size review retains the cohesive selectable ABI
+module and updates its exact source digest and implementation count.
+
+All nine selectable codec controls, all 129 white-box controls, compilation of
+every protocol/plugin test target and engineering hygiene pass against the
+final source. Mandatory application compilation, ABI conformance and the
+unchanged 327-case supervision gate are being collected. The first hygiene snapshot preceded the
+required source-review digest update and retains that refusal. Earlier checks
+preceding the deferred delivery change remain separate from final-source checks.
+There are no new test bindings.
+The one delivery buffer, decoded fields, decision records, diagnostics and
+complete operation funding remain open. This creates no Native authority.
+
 #### Selectable decoding before pending service
 
 The selectable path now prepares the complete declaration or request from the
@@ -607,9 +638,14 @@ independent mode, exact-length and coordinate precedence expectations. The
 initial compile found a reference to another module's private error adapter;
 preparation now uses the existing selectable live adapter. All 129 white-box
 controls, compilation of every plugin test target and engineering hygiene pass.
-Mandatory application compilation, the unchanged 327-case supervision gate and
-ABI conformance are being collected. No new test bindings or Native authority
-are claimed.
+Mandatory application compilation passes at
+`9h62s6rhwp2snn03mzbqjwc8p3qrndzd`; ABI conformance passes at
+`g3xdq6rmnra1cddjajj9aqa4b09p97ms`. The unchanged 327-case supervision gate
+is being collected. All 5,313 committed Rust/TOML files at
+`218cbc19db0c1d5723662ec526de25bcec8418d4` match immutable application
+source `wrq3kpm2zmb8cpx85z8h92l5ixwm5vvn`; the comparison record has SHA-256
+`ee915a574cdf0bdcdba74b2c6d5bd2630376bfa67a03b886a7d1411e48ef2a0d`.
+No new test bindings or Native authority are claimed.
 
 Decoded request storage, reply encoding/padding, diagnostics, the initial native
 array, complete callback funding and genuine Module Quantum/cleanup issuance
@@ -633,7 +669,8 @@ snapshot entry against its independent typed-error and diagnostic oracle.
 All 129 white-box controls, compilation of every plugin test target and
 engineering hygiene pass. Mandatory application compilation passes at
 `1fk9f14swimw8wyx4a6w4mqpzjkw7l9s`. The unchanged 327-case supervision gate
-and ABI conformance are being collected. All 5,312 committed Rust/TOML files at
+is being collected. ABI conformance passes at
+`czflvr73w9gksavyhikfxjm0vn97qyxf`. All 5,312 committed Rust/TOML files at
 `b2ae976781cfe7043614e1790ee4aeedf6446602` match immutable application source
 `2mv8znji1i1h2n0kv91d2i74himbkg7v`; the comparison record has SHA-256
 `99394a17e530ccfd4c4dc1c0b89f757ccf9daa0c26f9359f92d1c045eecde540`.
@@ -664,8 +701,8 @@ all codec and golden-vector integration controls, compilation of every
 protocol/plugin test target and engineering hygiene pass against the corrected
 source. Mandatory application compilation passes at
 `k6dazcm1n34zb7fv1bqsdshkh2dbxna3`. ABI conformance passes at
-`z02p20m7asw8paqp7xh9n9w1sr1svzwm`. The unchanged 327-case supervision gate
-is being collected against that final source.
+`z02p20m7asw8paqp7xh9n9w1sr1svzwm`. All 327 exact supervision cases in nine
+groups pass at `v0n112bv03yskirav35f0bvnh9kplc3h` against that final source.
 All 5,312 committed Rust/TOML files at
 `3259e4797771b3a039a56459f28a3d13f6332015` match immutable application source
 `m4jih9wff12azk5vn4w9nrp9zj89ph6x`; the comparison record has SHA-256
