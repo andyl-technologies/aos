@@ -15120,3 +15120,27 @@ The owning host-cache gates and sealed wipe-on-release gate now consume the
 new native signed-wipe proof, so host configuration tests alone cannot qualify
 that requirement. Public Linux documentation also passes with warnings denied
 in 21.56 seconds.
+
+
+#### Native signed-wipe qualification and assertion correction
+
+The `724257451f` signed private zero-wipe refusal passes its independent native
+VM check in 431.660 seconds. Independent review matches all 8,068 immutable
+source files, 5,343 configured-SDK and 5,348 enrollment inputs, four actual Cargo
+ELFs and all fifteen original enrollment controls. Actual signed private
+`wipe=zero` refuses before snapshot or persistent content effects, despite host
+`wipe=none`. The original policy and persistent inode census remain unchanged.
+The maintained SDK regression also passes in 643.133 seconds with all original
+limits, nine namespace observations and three original-lock/SIGTERM controls;
+independent source and installed-artifact review passes.
+
+The owning surface gate fails in 230.931 seconds on the new regression's final
+assertion: it incorrectly expects signed metadata to dispatch through the
+complete content driver. All seven preceding configured-repository cases pass.
+The new case reaches all three signed-policy checks, observes zero body reads
+and creates no endpoint before that assertion. Signed metadata correctly stays
+on the original repository authority. The assertion now requires zero total
+content-driver calls, a stronger refusal boundary, while retaining the three
+actual policy checks and zero body-read assertions. This correction requires a
+new owning-gate run; the failed receipt remains retained. No trunk task is
+accepted by these component results.

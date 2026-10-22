@@ -814,7 +814,7 @@ async fn signed_storage_policy_refuses_before_body_reads_and_external_preparatio
     let config = Config::parse(&configuration(&fixture))?;
     let checks = Arc::new(AtomicUsize::new(0));
     let body_calls = Arc::new(AtomicUsize::new(0));
-    let metadata_calls = Arc::new(AtomicUsize::new(0));
+    let driver_calls = Arc::new(AtomicUsize::new(0));
     let repository = config
         .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
         .await?
@@ -823,7 +823,7 @@ async fn signed_storage_policy_refuses_before_body_reads_and_external_preparatio
         }))
         .with_read_driver(|original| OriginalDriver {
             original: original.clone(),
-            calls: Arc::clone(&metadata_calls),
+            calls: Arc::clone(&driver_calls),
             body_calls: Some(Arc::clone(&body_calls)),
             unavailable: false,
         });
@@ -857,7 +857,9 @@ async fn signed_storage_policy_refuses_before_body_reads_and_external_preparatio
             .is_err()
     );
     assert_eq!(checks.load(Ordering::Relaxed), 3);
-    assert!(metadata_calls.load(Ordering::Relaxed) > 0);
+    // Signed metadata stays on the original authority. Refusal precedes every
+    // dispatch through the complete content driver, not only plaintext reads.
+    assert_eq!(driver_calls.load(Ordering::Relaxed), 0);
     assert_eq!(body_calls.load(Ordering::Relaxed), 0);
     assert!(!fixture.parent.join("configured").exists());
     Ok(())
