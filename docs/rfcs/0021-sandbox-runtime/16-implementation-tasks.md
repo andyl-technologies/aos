@@ -9824,8 +9824,10 @@ validation, fixed route, written NV Name and eight journal limits to it.
 Neither decoded DATA nor the encoder creates an original startup, signer,
 physical journal or current floor. Three Protocol tests pass, including
 independent route/TPMS_NV_PUBLIC vectors and canonical rejection cases; both
-existing Security profile/sidecar geometry tests pass. The full Rust target
-compilation check is running. Runtime-floor publication remains required.
+existing Security profile/sidecar geometry tests pass. Full Rust target
+compilation passes at
+`/nix/store/7qvcxmdjf2dmw09rlh1i6dwpgwdy2qb0-aos-test-targets-0.1.0`.
+Runtime-floor publication remains required.
 
 The shared Protocol seed/genesis codec now constructs and verifies the complete
 canonical `AOSNXS02` and `AOSNXG02` DATA, including both independent signatures,
@@ -9839,6 +9841,16 @@ uses the real domain-3333 AOS Store-reader header; an ordinary Cargo shell
 without that generated header correctly fails compilation. The complete Rust
 target check is running. This codec publishes no credentials or journals,
 touches no TPM and grants no runtime currentness.
+
+The V6 approval-delivery and original hardware installed QEMU tests reach their
+test bodies under enforcing SELinux, then stop before candidate preparation:
+their `/etc`-only inactive Controller reference is absent from PID1's immutable
+manager inventory, so loading that fixed name fails its physical pin. The
+fixture now declares the same typed Controller launch through the canonical
+manager renderer, with activation links disabled in the reference system.
+Its complete rendered unit text must equal that reference's unit text. The
+hardware fixture build plan evaluates with this association. Installed reruns
+remain required; these failures perform no approved TPM initialization.
 
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.

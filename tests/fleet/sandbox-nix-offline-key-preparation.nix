@@ -5,14 +5,13 @@
   systems,
   ...
 }: let
-  runtimeSystem = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
+  runtimeSystem = (import ./_sandbox-funded-system.nix {inherit lib pkgs systems;}).extendModules {
+    modules = [{systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];}];
+  };
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
-  controllerReference = pkgs.writeTextFile {
-    name = "sandbox-nix-offline-controller-reference";
-    text = runtimeSystem.config.systemd.units."aos-sandboxd.service".text;
-  };
+  controllerReference = runtimeSystem.config.systemd.services.aos-sandboxd;
   publicInputs =
     pkgs.runCommand "sandbox-nix-offline-preparation-public-inputs" {
       buildDeps = [pkgs.python3];
@@ -69,7 +68,12 @@
         # without its activation links or external runtime credentials. The
         # reference target keeps the inactive unit loaded for PID1 readback;
         # ordering alone never starts it. The Nix owner remains uninstalled.
-        environment.etc."systemd/system/aos-sandboxd.service".source = "${controllerReference}";
+        # PID1 resolves this fixed name through the immutable manager inventory.
+        # An /etc-only fragment cannot supply that original image association.
+        systemd.services.aos-sandboxd = {
+          inherit (controllerReference) environment serviceConfig unitConfig jobScripts;
+          enableDefaultPath = false;
+        };
         systemd.targets.aos-offline-controller-reference = {
           description = "Retain the installed inactive Controller unit for provisioning";
           wantedBy = ["multi-user.target"];
@@ -94,7 +98,8 @@ in {
   timeout = 1200;
   bootTimeout = 300;
   machines.vm = {
-    inherit system;
+    system = assert system.config.systemd.units."aos-sandboxd.service".text
+    == runtimeSystem.config.systemd.units."aos-sandboxd.service".text; system;
     bootMode = "image";
     firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
     memoryMiB = 4096;
