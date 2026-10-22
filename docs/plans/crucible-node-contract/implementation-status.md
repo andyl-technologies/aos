@@ -2404,6 +2404,40 @@ This compilation gate does not execute tests. No new funded-Source VM result is
 claimed. Live Native18 policy/ACK and all five native phase consumers, genuine
 Source/Birth funding, opaque Initial/Recipe and full RFC acceptance remain open.
 
+## Model-absent policy DATA under original bootstrap custody
+
+Commit `8d0df4c5ee` retains a new immutable policy DATA owner after complete
+original launch validation, full three-definition selection, actual SDK admission
+and completed literal Hello publication. It shares the exact original decoded
+launch allocation and borrows its definitions, without copying the configuration
+or constructing a runtime model, Control, effect socket, physical Hold or old
+Native5Policy. The native identity geometry now names this new owner; it still
+has no issuer or dispatcher constructor.
+
+Its fixed attempt captures the pre-read cut and spends construction once.
+Failed terminal guards contain the actual SDK lease while retaining the policy
+and every original population. Completed Copy-only loans check original custody,
+current SDK/publication, exact recipe identity and cut before and after either
+callback outcome. Equal DTOs in a foreign allocation receive no shared-backing
+discount. Both independent initial formulas include the real additional shared
+owner and complete guard/constructor controls within unchanged production caps.
+
+The valid combined fixture preserves required baseline schemas and rebuilds its
+provider/binding/World identities before receipt. All fourteen inherited-socket
+policy cases pass, including both program families, missing prerequisites,
+refused construction/census, expiry, changed cut, contained lease and spent retry.
+Both complete Transport configurations pass 1,940 tests each with zero failures,
+no filtering and sixteen existing ignores. Affected all-feature/all-target
+checking, formatting and all six architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 285 owned Rust/Cargo inputs
+match the commit and exact captured application source. This gate executes no
+tests. No new funded-Source VM or configured Engine/Daemon runtime result is
+claimed. This DATA transition does not supply genuine Source/Birth funding,
+a live Native18 policy/ACK, opaque Initial/Recipe, native phase authority or full
+RFC acceptance; those obligations remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
