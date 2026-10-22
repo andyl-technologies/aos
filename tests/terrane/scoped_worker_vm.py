@@ -292,7 +292,9 @@ def main():
                 "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap",
                 "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"]
             if listener:
+                expected.insert(1, "PASS bounded maintenance runtime expires actual idle GC connection without changing owner policy")
                 expected.append("PASS protected GC listener preserves its original mode-0660 inode and refuses unsafe ancestors, existing names and wrong-role connections")
+                expected.append("PASS bounded maintenance runtime serves actual original-owner reconciliation and shuts down without replacing its protected listener")
             support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
                 "actual distinct-role GC maintenance failed")
             support.verify_image()

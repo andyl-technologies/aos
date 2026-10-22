@@ -9,12 +9,14 @@
 //! Configured role startup separately owns connection limits and deadlines.
 
 mod listener;
+mod runtime;
 mod socket;
 #[cfg(test)]
 mod tests;
 mod wire;
 
 pub use listener::MaintenanceListener;
+pub use runtime::MaintenanceLimits;
 
 use crate::host_cache::{NativeExposureReconciliation, NativeMetadataOwner};
 use socket::{Endpoint, Exchange};

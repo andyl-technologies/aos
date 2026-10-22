@@ -7127,6 +7127,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "futures-util",
  "libc",
  "prost",
  "rustix 1.1.4",

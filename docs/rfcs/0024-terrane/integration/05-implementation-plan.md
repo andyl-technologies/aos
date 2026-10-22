@@ -14828,3 +14828,33 @@ an arbitrary error nor a synthetic unsupported result can satisfy this control.
 Native fencing and final enrollment permissions are unchanged. Qualification
 of this negative control is pending; it grants no writable host Original or
 task acceptance.
+
+
+#### Bounded maintenance listener runtime
+
+The protected GC listener now serves authenticated connections through a finite
+reactor loop borrowing the original physical owner. Explicit limits cap active
+connections, successful requests per connection, whole connection lifetime and
+whole request wait. Each accepted connection starts its lifetime at acceptance.
+No detached task or replacement owner is created. Shutdown closes the accepted
+channels; work already queued at the original owner retains its native custody
+and funding. Peer refusals, malformed connections, deadlines and individual
+native errors do not terminate the protected listener or fabricate success.
+
+The existing native listener fixture now exercises this runtime. A genuine
+capability-free GC client first holds an idle connection; its actual send must
+fail with BrokenPipe after the runtime deadline, while original owner policy
+bytes remain unchanged. The same retained listener then handles the existing
+mapped-index, batch closure and unrelated-obligation controls and shuts down
+without changing the mode-0660 socket inode. Existing actor and VM bounds remain
+unchanged. Both strict compiler profiles, the fixture all-target check and
+integration-target compilation pass. Native and mandatory application
+qualification are pending. This is a bounded reconciliation service component,
+not configured role startup or host-local collection.
+
+The earlier `7c0559425b` full native cache and application checks pass in
+1,495.17 and 1,552.46 seconds, with complete source/artifact reviews, including
+all 128 native library cases, 92 selectors and 185 test executables across 59
+packages. The diagnostic `b8ad0c4c42` application build also passes in 680.17
+seconds with complete source review and 185 test executables. Those checkpoint
+results do not qualify this later runtime source or close any T2 task.

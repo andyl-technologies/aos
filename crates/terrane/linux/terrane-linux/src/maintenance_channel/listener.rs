@@ -6,7 +6,11 @@ use rustix::{
     fs::{Mode, OFlags},
     net::{self, AddressFamily, SocketFlags, SocketType},
 };
-use std::{io, os::fd::OwnedFd, path::Path};
+use std::{
+    io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    path::Path,
+};
 
 /// Owns a protected nonblocking GC listener as the configured serving identity.
 ///
@@ -22,6 +26,14 @@ pub struct MaintenanceListener {
 }
 
 impl MaintenanceListener {
+    pub(super) fn descriptor(&self) -> BorrowedFd<'_> {
+        self.socket.as_fd()
+    }
+
+    pub(super) fn check_current(&self) -> io::Result<()> {
+        self.roles.check(self.roles.serve_uid)
+    }
+
     /// Binds the configured path while retaining and checking its original inode.
     ///
     /// Reuses the publisher listener's audited ancestor and retained-inode mode

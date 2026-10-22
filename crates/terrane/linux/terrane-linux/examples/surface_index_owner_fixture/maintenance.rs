@@ -11,6 +11,7 @@ use rustix::{
 };
 use std::{
     fs::{self, File},
+    future::Future,
     io::{self, Read, Write},
     os::fd::AsFd,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -21,7 +22,8 @@ use std::{
 use terrane_linux::{
     host_cache::{NativeExposureReconciliation, NativeMetadataOwner},
     maintenance_channel::{
-        self, MaintenanceClient, MaintenanceListener, MaintenanceRoles, MaintenanceServer,
+        self, MaintenanceClient, MaintenanceLimits, MaintenanceListener, MaintenanceRoles,
+        MaintenanceServer,
     },
 };
 
@@ -36,6 +38,7 @@ pub(super) struct Launched {
     listener: Option<MaintenanceListener>,
     listener_path: Option<PathBuf>,
     listener_inode: Option<(u64, u64)>,
+    runtime_service: bool,
     control: File,
 }
 
@@ -104,6 +107,7 @@ pub(super) fn launch(listener: bool) -> Result<Launched> {
         listener,
         listener_path,
         listener_inode,
+        runtime_service: false,
         control: File::from(control),
     })
 }
@@ -116,7 +120,39 @@ pub(super) fn run(
     inputs: &config::Inputs,
 ) -> Result<()> {
     runtime.block_on(Box::pin(async {
-        exposure::verify_index_closure(owner, inputs, Some(launched)).await?;
+        if let Some(listener) = launched.listener.take() {
+            launched.runtime_service = true;
+            let policy = inputs.root.join("state/cache/records.toml");
+            let before = fs::read(&policy)?;
+            with_service(
+                &listener,
+                owner,
+                MaintenanceLimits {
+                    max_connections: 1,
+                    max_requests: 1,
+                    connection_timeout: Duration::from_secs(2),
+                    request_timeout: Duration::from_millis(100),
+                },
+                launched.expire_idle(),
+            ).await?;
+            if fs::read(&policy)? != before {
+                return Err("idle GC connection changed actual owner policy".into());
+            }
+            println!("PASS bounded maintenance runtime expires actual idle GC connection without changing owner policy");
+            with_service(
+                &listener,
+                owner,
+                MaintenanceLimits {
+                    max_connections: 1,
+                    max_requests: 64,
+                    connection_timeout: Duration::from_secs(30),
+                    request_timeout: Duration::from_secs(20),
+                },
+                exposure::verify_index_closure(owner, inputs, Some(launched)),
+            ).await?;
+        } else {
+            exposure::verify_index_closure(owner, inputs, Some(launched)).await?;
+        }
         launched.control.write_all(&[0])?;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -145,6 +181,9 @@ pub(super) fn run(
             println!(
                 "PASS protected GC listener preserves its original mode-0660 inode and refuses unsafe ancestors, existing names and wrong-role connections"
             );
+            println!(
+                "PASS bounded maintenance runtime serves actual original-owner reconciliation and shuts down without replacing its protected listener"
+            );
         }
         Ok(())
     }))
@@ -156,6 +195,9 @@ impl Launched {
         owner: &NativeMetadataOwner,
     ) -> Result<NativeExposureReconciliation> {
         self.control.write_all(&[1])?;
+        if self.runtime_service {
+            return self.receive_runtime_report().await;
+        }
         let report = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if self.server.is_none() {
@@ -192,6 +234,78 @@ impl Launched {
         }
         Ok(report)
     }
+
+    async fn receive_runtime_report(&self) -> Result<NativeExposureReconciliation> {
+        let packet = self.receive_packet::<24>().await?;
+        let mut counts = [0_usize; 3];
+        for (target, bytes) in counts.iter_mut().zip(packet.as_chunks::<8>().0) {
+            *target = usize::try_from(u64::from_le_bytes(*bytes))?;
+        }
+
+        // Counts are observations returned by the actual distinct GC client,
+        // not closure evidence. The existing exposure controls check each exact
+        // transition against native mappings and the original durable policy.
+        Ok(NativeExposureReconciliation {
+            checked: counts[0],
+            completed: counts[1],
+            blocked: counts[2],
+        })
+    }
+
+    async fn expire_idle(&mut self) -> Result<()> {
+        self.control.write_all(&[2])?;
+        if self.receive_packet::<1>().await? != [2] {
+            return Err("GC idle connection acknowledgment differs".into());
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        self.control.write_all(&[3])?;
+        if self.receive_packet::<1>().await? != [3] {
+            return Err("GC idle expiry acknowledgment differs".into());
+        }
+        Ok(())
+    }
+
+    async fn receive_packet<const N: usize>(&self) -> Result<[u8; N]> {
+        let mut packet = [0; N];
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match net::recv(&self.control, &mut packet, net::RecvFlags::DONTWAIT) {
+                    Ok((length, _)) if length == N => return Ok::<_, io::Error>(()),
+                    Ok(_) => return Err(io::Error::other("GC runtime report length differs")),
+                    Err(error) if error == rustix::io::Errno::WOULDBLOCK => {
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        })
+        .await??;
+        Ok(packet)
+    }
+}
+
+async fn with_service<T>(
+    listener: &MaintenanceListener,
+    owner: &NativeMetadataOwner,
+    limits: MaintenanceLimits,
+    controls: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let (shutdown, signal) = tokio::sync::oneshot::channel();
+    let controls = async {
+        let result = controls.await;
+        let _ = shutdown.send(());
+        result
+    };
+    let serving = async {
+        listener
+            .serve_until(owner, limits, async {
+                let _ = signal.await;
+            })
+            .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    let (result, ()) = tokio::try_join!(controls, serving)?;
+    Ok(result)
 }
 
 // This native-only deadline bounds transport waits and never enters policy state.
@@ -216,12 +330,27 @@ pub(super) fn child(listener: bool) -> Result<()> {
         Some(MaintenanceClient::bind(endpoint, ROLES)?)
     };
     let mut control = File::from(io::stderr().as_fd().try_clone_to_owned()?);
+    let mut idle = None;
     loop {
         wait_readable(&control, 25)?;
         let mut operation = [0];
         control.read_exact(&mut operation)?;
         if operation == [0] {
             return Ok(());
+        }
+        if listener && operation == [2] {
+            idle = Some(MaintenanceClient::connect(&listener_path()?, ROLES)?);
+            control.write_all(&[2])?;
+            continue;
+        }
+        if listener && operation == [3] {
+            let mut idle = idle.take().ok_or("GC idle connection absent")?;
+            if !matches!(idle.reconcile_draining(), Err(error) if error.kind() == io::ErrorKind::BrokenPipe)
+            {
+                return Err("actual idle GC connection survived its deadline".into());
+            }
+            control.write_all(&[3])?;
+            continue;
         }
         if operation != [1] {
             return Err("invalid fixture maintenance operation".into());

@@ -5,7 +5,7 @@ use rustix::net::{self, RecvAncillaryBuffer, RecvAncillaryMessage};
 use std::{
     io::{self, IoSliceMut},
     mem::MaybeUninit,
-    os::fd::OwnedFd,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
 };
 
 pub(super) fn pair() -> io::Result<(OwnedFd, OwnedFd)> {
@@ -30,6 +30,10 @@ pub(super) struct Endpoint {
 }
 
 impl Endpoint {
+    pub(super) fn descriptor(&self) -> BorrowedFd<'_> {
+        self.socket.as_fd()
+    }
+
     pub(super) fn new(socket: OwnedFd, peer_uid: u32) -> io::Result<Self> {
         if net::sockopt::socket_domain(&socket)? != net::AddressFamily::UNIX
             || net::sockopt::socket_type(&socket)? != net::SocketType::SEQPACKET

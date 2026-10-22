@@ -10,6 +10,7 @@ prost.workspace = true
 terrane-sdk = { workspace = true, features = ["std", "send"] }
 terrane-format.workspace = true
 async-trait.workspace = true
+futures-util.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["net", "process"] }
 tokio = { workspace = true, optional = true }
