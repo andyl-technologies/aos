@@ -1,0 +1,5322 @@
+{
+  "cpu_count": 512,
+  "distributions": {
+    "bazel:cold": {
+      "maximum": 26.811651110008825,
+      "median": 25.845534414998838,
+      "minimum": 25.71101796500443,
+      "samples": [
+        26.811651110008825,
+        25.845534414998838,
+        25.71101796500443
+      ]
+    },
+    "bazel:fresh-derivation": {
+      "maximum": 21.70213963999413,
+      "median": 20.3673626039963,
+      "minimum": 19.61078414900112,
+      "samples": [
+        21.70213963999413,
+        19.61078414900112,
+        20.3673626039963
+      ]
+    },
+    "bazel:implementation-edit": {
+      "maximum": 21.188842093004496,
+      "median": 20.90297054000257,
+      "minimum": 20.34587255999213,
+      "samples": [
+        20.34587255999213,
+        21.188842093004496,
+        20.90297054000257
+      ]
+    },
+    "bazel:public-api-edit": {
+      "maximum": 21.938139039993985,
+      "median": 21.267204498988576,
+      "minimum": 21.070385525003076,
+      "samples": [
+        21.070385525003076,
+        21.267204498988576,
+        21.938139039993985
+      ]
+    },
+    "bazel:second-worktree": {
+      "maximum": 13.64908226300031,
+      "median": 11.907525717993849,
+      "minimum": 11.15299000601226,
+      "samples": [
+        13.64908226300031,
+        11.15299000601226,
+        11.907525717993849
+      ]
+    },
+    "bazel:warm": {
+      "maximum": 13.017540658009239,
+      "median": 12.587396549992263,
+      "minimum": 11.688771117987926,
+      "samples": [
+        11.688771117987926,
+        13.017540658009239,
+        12.587396549992263
+      ]
+    },
+    "production:cold": {
+      "maximum": 2.5063630910008214,
+      "median": 2.1625381290068617,
+      "minimum": 2.0607925280055497,
+      "samples": [
+        2.0607925280055497,
+        2.5063630910008214,
+        2.1625381290068617
+      ]
+    },
+    "production:fresh-derivation": {
+      "maximum": 1.8242742180009373,
+      "median": 1.701832522987388,
+      "minimum": 1.6999414290039567,
+      "samples": [
+        1.6999414290039567,
+        1.701832522987388,
+        1.8242742180009373
+      ]
+    },
+    "production:implementation-edit": {
+      "maximum": 2.150519445014652,
+      "median": 2.03463338399888,
+      "minimum": 1.9328270539990626,
+      "samples": [
+        2.150519445014652,
+        2.03463338399888,
+        1.9328270539990626
+      ]
+    },
+    "production:public-api-edit": {
+      "maximum": 2.2223848840076244,
+      "median": 2.221434733000933,
+      "minimum": 2.044492393004475,
+      "samples": [
+        2.221434733000933,
+        2.044492393004475,
+        2.2223848840076244
+      ]
+    },
+    "production:second-worktree": {
+      "maximum": 1.0267061479971744,
+      "median": 1.021601827989798,
+      "minimum": 0.8620445560081862,
+      "samples": [
+        1.0267061479971744,
+        1.021601827989798,
+        0.8620445560081862
+      ]
+    },
+    "production:warm": {
+      "maximum": 0.8486554629926104,
+      "median": 0.8317822770040948,
+      "minimum": 0.7799540419946425,
+      "samples": [
+        0.8486554629926104,
+        0.8317822770040948,
+        0.7799540419946425
+      ]
+    }
+  },
+  "harness_sha256": {
+    "end_to_end.nix": "92c43b27b2090f57ec00a8dc4e9a7cd20430ff886ec77dd9a1374ebd3e635e69",
+    "measure_end_to_end.py": "7de959f232a494a4ab4511f57986e6acbf23d5caf7087ffe09de30cd16ce4ab0",
+    "measure_pilot.py": "f9ad2a70aae6cf8a93614fd35af7e7ea8b7cb69c7d8e5d6c0e17d0a4669c501d",
+    "pilot.nix": "6595231f4eb3a9101c6a977a35c369b23abadbea135da0afbd4c73e0b97975e5",
+    "record_builder.py": "5884492b24bc49e73bf8be1aeb30b5c097cd43a36e6da9367ed48d7ee48f5df6",
+    "test_measure_end_to_end.py": "103c7174c6f9c5595c99d232da0cbc79a14eebd397dc208044e684045976bff1",
+    "test_measure_pilot.py": "8a267391fb4af7ffa268456249170e2e6b8591b8892ad404dc4658e852909efb",
+    "test_record_builder.py": "d4d8ad7be0b0a1b2a12777f09eaf6d0c880e521e98b8d823868e05962f31f784"
+  },
+  "limitations": [
+    "Compiler and dependency preparation are warm; each cold source and action cache namespace is fresh.",
+    "The production baseline invokes rustc directly, not Cargo.",
+    "Recording wrapper and command-file preparation add benchmark overhead to both candidates.",
+    "JVM counters overlap the builder's adopted-child resources; cached timings are not fresh samples.",
+    "Source copy and post-build runtime/closure validation are outside the measured intervals.",
+    "Shared-host scheduling and filesystem page caches are uncontrolled."
+  ],
+  "nix_tools": "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin",
+  "platform": [
+    "Linux",
+    "onyx",
+    "6.18.57",
+    "#1-NixOS SMP PREEMPT_DYNAMIC Thu Oct 15 09:58:20 UTC 2026",
+    "x86_64"
+  ],
+  "samples": [
+    {
+      "derivation": "/nix/store/y1c36mcyggdnqa1qa1f1wry1pqpkjv1k-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61504,
+        "client_system_seconds": 0.115335,
+        "client_user_seconds": 0.451812,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          116.78857421875,
+          92.26318359375,
+          95.63916015625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9119382479984779
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 2224,
+          "block_outputs": 13373,
+          "peak_rss_kib": 144220,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.227631,
+          "user_seconds": 0.539739,
+          "waited_children": 1,
+          "wall_seconds": 0.7372351000085473
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/ay4vr5pcijw0pjln7p75195d91mqmd54-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.009311999999999999,
+        "client_user_seconds": 0.009356,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/y1c36mcyggdnqa1qa1f1wry1pqpkjv1k-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          116.78857421875,
+          92.26318359375,
+          95.63916015625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.1488542800070718
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/ay4vr5pcijw0pjln7p75195d91mqmd54-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 2.0607925280055497
+    },
+    {
+      "derivation": "/nix/store/y1c36mcyggdnqa1qa1f1wry1pqpkjv1k-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 69656,
+        "client_system_seconds": 0.127667,
+        "client_user_seconds": 0.436198,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7828252369945403
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/ay4vr5pcijw0pjln7p75195d91mqmd54-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.006913,
+        "client_user_seconds": 0.00991,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/y1c36mcyggdnqa1qa1f1wry1pqpkjv1k-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.06583022599807009
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/ay4vr5pcijw0pjln7p75195d91mqmd54-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 0.8486554629926104
+    },
+    {
+      "derivation": "/nix/store/vq35r3sm501k564d6g3ni6xs07ivn7hc-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61500,
+        "client_system_seconds": 0.106761,
+        "client_user_seconds": 0.437921,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7917836380074732
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13373,
+          "peak_rss_kib": 144220,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.271082,
+          "user_seconds": 0.5041169999999999,
+          "waited_children": 1,
+          "wall_seconds": 0.7575057570065837
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/4fcg43j9jgwgwaszxwrl550ra2qi6h4z-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.009788999999999999,
+        "client_user_seconds": 0.008784,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/vq35r3sm501k564d6g3ni6xs07ivn7hc-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.3587358070071787
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/4fcg43j9jgwgwaszxwrl550ra2qi6h4z-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 2.150519445014652
+    },
+    {
+      "derivation": "/nix/store/x5c086qxrxb7118dksdarnh658lj9h5y-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61520,
+        "client_system_seconds": 0.12260599999999999,
+        "client_user_seconds": 0.445936,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.8533621480019065
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13377,
+          "peak_rss_kib": 148332,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.229407,
+          "user_seconds": 0.554257,
+          "waited_children": 1,
+          "wall_seconds": 0.7817685250047361
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/flwkcwzjf3ayamihhfa3bgi6asb5l97m-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007671,
+        "client_user_seconds": 0.011476,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/x5c086qxrxb7118dksdarnh658lj9h5y-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          113.68212890625,
+          92.0263671875,
+          95.5439453125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.3680725849990267
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/flwkcwzjf3ayamihhfa3bgi6asb5l97m-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 2.221434733000933
+    },
+    {
+      "derivation": "/nix/store/x5c086qxrxb7118dksdarnh658lj9h5y-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61520,
+        "client_system_seconds": 0.129028,
+        "client_user_seconds": 0.44258899999999995,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          111.38525390625,
+          91.90966796875,
+          95.4873046875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9489817430003313
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/flwkcwzjf3ayamihhfa3bgi6asb5l97m-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.005314,
+        "client_user_seconds": 0.010624,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/x5c086qxrxb7118dksdarnh658lj9h5y-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          111.38525390625,
+          91.90966796875,
+          95.4873046875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.07772440499684308
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/flwkcwzjf3ayamihhfa3bgi6asb5l97m-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 1.0267061479971744
+    },
+    {
+      "derivation": "/nix/store/xc97w2jms6kyfs915vbga68s7d36db9c-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61496,
+        "client_system_seconds": 0.112768,
+        "client_user_seconds": 0.43301399999999995,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-757844f5bcd5b8e91b9936d6ec83a75a0c19a5de97b3c5c6ca8a568c1edbc625",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:0-production:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          111.38525390625,
+          91.90966796875,
+          95.4873046875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7879453100031242
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13377,
+          "peak_rss_kib": 140056,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.228901,
+          "user_seconds": 0.49504099999999995,
+          "waited_children": 1,
+          "wall_seconds": 0.7089664899976924
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/mslnlha18wxalgbmsw8xc8sa14l15bcl-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 3,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007998,
+        "client_user_seconds": 0.0070079999999999995,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/xc97w2jms6kyfs915vbga68s7d36db9c-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          107.43017578125,
+          91.4130859375,
+          95.30712890625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9119961190008326
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/mslnlha18wxalgbmsw8xc8sa14l15bcl-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 1.6999414290039567
+    },
+    {
+      "derivation": "/nix/store/74xyizvsx3za45j4q7cg41lr3x35h2s2-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 506388,
+        "client_system_seconds": 1.487936,
+        "client_user_seconds": 7.654119,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.46875,
+          90.02978515625,
+          94.8154296875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.496035489006317
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.89,
+              "children_user_seconds": 4.7,
+              "peak_rss_kib": 1017072,
+              "pid": 12,
+              "rss_kib": 1017072,
+              "system_seconds": 3.98,
+              "user_seconds": 26.21
+            },
+            "server_before": {
+              "children_system_seconds": 0.89,
+              "children_user_seconds": 4.7,
+              "peak_rss_kib": 929284,
+              "pid": 12,
+              "rss_kib": 929284,
+              "system_seconds": 3.62,
+              "user_seconds": 23.66
+            },
+            "system_seconds": 0.029317,
+            "user_seconds": 0.006742999999999999,
+            "wall_seconds": 0.4384988509991672
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.89,
+              "children_user_seconds": 4.7,
+              "peak_rss_kib": 774148,
+              "pid": 12,
+              "rss_kib": 418668,
+              "system_seconds": 4.27,
+              "user_seconds": 26.92
+            },
+            "server_before": {
+              "children_system_seconds": 0.89,
+              "children_user_seconds": 4.7,
+              "peak_rss_kib": 774148,
+              "pid": 12,
+              "rss_kib": 546624,
+              "system_seconds": 4.03,
+              "user_seconds": 26.43
+            },
+            "system_seconds": 0.025620999999999998,
+            "user_seconds": 0.006029,
+            "wall_seconds": 0.13001794900628738
+          },
+          "metrics": {
+            "peak_rss_kib": 135252,
+            "server_after": {
+              "children_system_seconds": 0.89,
+              "children_user_seconds": 4.7,
+              "peak_rss_kib": 926372,
+              "pid": 12,
+              "rss_kib": 926372,
+              "system_seconds": 3.61,
+              "user_seconds": 23.54
+            },
+            "server_before": null,
+            "system_seconds": 0.138163,
+            "user_seconds": 0.292567,
+            "wall_seconds": 8.109061818002374
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 4288,
+          "block_outputs": 276887,
+          "peak_rss_kib": 774148,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.637672,
+          "user_seconds": 32.481845,
+          "waited_children": 2,
+          "wall_seconds": 9.713370220008073
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 4.88,
+              "peak_rss_kib": 716804,
+              "pid": 12,
+              "rss_kib": 425832,
+              "system_seconds": 4.25,
+              "user_seconds": 29.75
+            },
+            "server_before": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 4.88,
+              "peak_rss_kib": 940580,
+              "pid": 12,
+              "rss_kib": 940580,
+              "system_seconds": 3.62,
+              "user_seconds": 27.51
+            },
+            "system_seconds": 0.027005,
+            "user_seconds": 0.009913,
+            "wall_seconds": 0.41311552000115626
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 4.88,
+              "peak_rss_kib": 716804,
+              "pid": 12,
+              "rss_kib": 442796,
+              "system_seconds": 4.55,
+              "user_seconds": 30.38
+            },
+            "server_before": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 4.88,
+              "peak_rss_kib": 716804,
+              "pid": 12,
+              "rss_kib": 425968,
+              "system_seconds": 4.25,
+              "user_seconds": 29.94
+            },
+            "system_seconds": 0.030787000000000002,
+            "user_seconds": 0.0021219999999999998,
+            "wall_seconds": 0.12739833499654196
+          },
+          "metrics": {
+            "peak_rss_kib": 135252,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 4.88,
+              "peak_rss_kib": 940488,
+              "pid": 12,
+              "rss_kib": 940488,
+              "system_seconds": 3.6,
+              "user_seconds": 27.32
+            },
+            "server_before": null,
+            "system_seconds": 0.139115,
+            "user_seconds": 0.299278,
+            "wall_seconds": 8.03577764298825
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 10134,
+          "block_outputs": 271502,
+          "peak_rss_kib": 716804,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.917383,
+          "user_seconds": 36.169007,
+          "waited_children": 2,
+          "wall_seconds": 9.60241634499107
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 416,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.035549,
+          "user_seconds": 0.044754999999999996,
+          "waited_children": 1,
+          "wall_seconds": 0.11284599300415721
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/86p2wnc96v5vn5zp6a254g31r8s9f861-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 22,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.01474,
+        "client_user_seconds": 0.011011,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/74xyizvsx3za45j4q7cg41lr3x35h2s2-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          95.43212890625,
+          89.7421875,
+          94.642578125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 15.315615621002507
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/86p2wnc96v5vn5zp6a254g31r8s9f861-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 26.811651110008825
+    },
+    {
+      "derivation": "/nix/store/74xyizvsx3za45j4q7cg41lr3x35h2s2-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 548312,
+        "client_system_seconds": 1.567295,
+        "client_user_seconds": 7.736605,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          91.255859375,
+          89.04833984375,
+          94.333984375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.48266180799692
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/86p2wnc96v5vn5zp6a254g31r8s9f861-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007793,
+        "client_user_seconds": 0.007774,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/74xyizvsx3za45j4q7cg41lr3x35h2s2-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          91.255859375,
+          89.04833984375,
+          94.333984375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.20610930999100674
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/86p2wnc96v5vn5zp6a254g31r8s9f861-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 11.688771117987926
+    },
+    {
+      "derivation": "/nix/store/xjasf5cwd0fram7l01a4aqxk7hk3ks4y-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 559456,
+        "client_system_seconds": 1.650884,
+        "client_user_seconds": 7.714598,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          88.4326171875,
+          88.53173828125,
+          94.10986328125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.691123761993367
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.18,
+              "children_user_seconds": 0.11,
+              "peak_rss_kib": 964032,
+              "pid": 12,
+              "rss_kib": 964032,
+              "system_seconds": 3.6,
+              "user_seconds": 26.76
+            },
+            "server_before": {
+              "children_system_seconds": 0.18,
+              "children_user_seconds": 0.11,
+              "peak_rss_kib": 912916,
+              "pid": 12,
+              "rss_kib": 912916,
+              "system_seconds": 3.28,
+              "user_seconds": 24.34
+            },
+            "system_seconds": 0.037055,
+            "user_seconds": 0.0030999999999999995,
+            "wall_seconds": 0.4398625079920748
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.18,
+              "children_user_seconds": 0.11,
+              "peak_rss_kib": 753880,
+              "pid": 12,
+              "rss_kib": 419776,
+              "system_seconds": 3.93,
+              "user_seconds": 27.25
+            },
+            "server_before": {
+              "children_system_seconds": 0.18,
+              "children_user_seconds": 0.11,
+              "peak_rss_kib": 753880,
+              "pid": 12,
+              "rss_kib": 398716,
+              "system_seconds": 3.67,
+              "user_seconds": 26.77
+            },
+            "system_seconds": 0.029570999999999997,
+            "user_seconds": 0.004359,
+            "wall_seconds": 0.13392659700184595
+          },
+          "metrics": {
+            "peak_rss_kib": 139288,
+            "server_after": {
+              "children_system_seconds": 0.18,
+              "children_user_seconds": 0.11,
+              "peak_rss_kib": 911504,
+              "pid": 12,
+              "rss_kib": 911504,
+              "system_seconds": 3.28,
+              "user_seconds": 24.22
+            },
+            "server_before": null,
+            "system_seconds": 0.13158,
+            "user_seconds": 0.30420299999999995,
+            "wall_seconds": 5.402924750000238
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 2240,
+          "block_outputs": 268013,
+          "peak_rss_kib": 753880,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.592669,
+          "user_seconds": 28.245693,
+          "waited_children": 2,
+          "wall_seconds": 7.0659554510057205
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 711168,
+              "pid": 12,
+              "rss_kib": 389928,
+              "system_seconds": 3.92,
+              "user_seconds": 30.62
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 880680,
+              "pid": 12,
+              "rss_kib": 880680,
+              "system_seconds": 3.48,
+              "user_seconds": 28.11
+            },
+            "system_seconds": 0.036717,
+            "user_seconds": 0.0054,
+            "wall_seconds": 0.5039526990003651
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12320,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 711168,
+              "pid": 12,
+              "rss_kib": 413644,
+              "system_seconds": 4.12,
+              "user_seconds": 31.03
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 711168,
+              "pid": 12,
+              "rss_kib": 389936,
+              "system_seconds": 3.92,
+              "user_seconds": 30.63
+            },
+            "system_seconds": 0.032938999999999996,
+            "user_seconds": 0.0022050000000000004,
+            "wall_seconds": 0.12331189399992581
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 880480,
+              "pid": 12,
+              "rss_kib": 880480,
+              "system_seconds": 3.48,
+              "user_seconds": 27.99
+            },
+            "server_before": null,
+            "system_seconds": 0.15156999999999998,
+            "user_seconds": 0.284878,
+            "wall_seconds": 5.09262890998798
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 128,
+          "block_outputs": 257944,
+          "peak_rss_kib": 711168,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.674634,
+          "user_seconds": 31.908195,
+          "waited_children": 2,
+          "wall_seconds": 7.050536260998342
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 16,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.038044999999999995,
+          "user_seconds": 0.039483,
+          "waited_children": 1,
+          "wall_seconds": 0.19319527100014966
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/8b9y3f6rv4brdahrgx3218hq3ndinlrd-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.013472,
+        "client_user_seconds": 0.008306,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/xjasf5cwd0fram7l01a4aqxk7hk3ks4y-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          82.923828125,
+          87.34521484375,
+          93.66357421875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 8.654748797998764
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/8b9y3f6rv4brdahrgx3218hq3ndinlrd-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 20.34587255999213
+    },
+    {
+      "derivation": "/nix/store/kf5hvcij51fkhqisfpapnnvm61y2s87r-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 547772,
+        "client_system_seconds": 1.431824,
+        "client_user_seconds": 7.744938,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          79.1650390625,
+          86.39501953125,
+          93.2861328125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.497150697003235
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.33,
+              "peak_rss_kib": 1010372,
+              "pid": 12,
+              "rss_kib": 1010372,
+              "system_seconds": 3.57,
+              "user_seconds": 27.48
+            },
+            "server_before": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.33,
+              "peak_rss_kib": 930916,
+              "pid": 12,
+              "rss_kib": 930916,
+              "system_seconds": 3.15,
+              "user_seconds": 24.9
+            },
+            "system_seconds": 0.036433,
+            "user_seconds": 0.009996999999999999,
+            "wall_seconds": 0.4866557810019003
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 4120,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.33,
+              "peak_rss_kib": 665584,
+              "pid": 12,
+              "rss_kib": 427728,
+              "system_seconds": 3.92,
+              "user_seconds": 28.08
+            },
+            "server_before": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.33,
+              "peak_rss_kib": 665584,
+              "pid": 12,
+              "rss_kib": 490900,
+              "system_seconds": 3.62,
+              "user_seconds": 27.67
+            },
+            "system_seconds": 0.038374,
+            "user_seconds": 0.002553,
+            "wall_seconds": 0.12593002599896863
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.33,
+              "peak_rss_kib": 926308,
+              "pid": 12,
+              "rss_kib": 926308,
+              "system_seconds": 3.15,
+              "user_seconds": 24.76
+            },
+            "server_before": null,
+            "system_seconds": 0.154697,
+            "user_seconds": 0.30712999999999996,
+            "wall_seconds": 6.531863030002569
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 128,
+          "block_outputs": 271159,
+          "peak_rss_kib": 665584,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.767045,
+          "user_seconds": 29.229556,
+          "waited_children": 2,
+          "wall_seconds": 8.18659595400095
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.31,
+              "children_user_seconds": 0.32,
+              "peak_rss_kib": 692728,
+              "pid": 12,
+              "rss_kib": 495196,
+              "system_seconds": 7.06,
+              "user_seconds": 27.85
+            },
+            "server_before": {
+              "children_system_seconds": 0.31,
+              "children_user_seconds": 0.32,
+              "peak_rss_kib": 692728,
+              "pid": 12,
+              "rss_kib": 505896,
+              "system_seconds": 3.51,
+              "user_seconds": 25.35
+            },
+            "system_seconds": 0.034029,
+            "user_seconds": 0.011349,
+            "wall_seconds": 0.48912156000733376
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.31,
+              "children_user_seconds": 0.32,
+              "peak_rss_kib": 692728,
+              "pid": 12,
+              "rss_kib": 513620,
+              "system_seconds": 7.36,
+              "user_seconds": 28.68
+            },
+            "server_before": {
+              "children_system_seconds": 0.31,
+              "children_user_seconds": 0.32,
+              "peak_rss_kib": 692728,
+              "pid": 12,
+              "rss_kib": 495408,
+              "system_seconds": 7.06,
+              "user_seconds": 28.18
+            },
+            "system_seconds": 0.04028399999999999,
+            "user_seconds": 0.0043549999999999995,
+            "wall_seconds": 0.15513546401052736
+          },
+          "metrics": {
+            "peak_rss_kib": 131156,
+            "server_after": {
+              "children_system_seconds": 0.31,
+              "children_user_seconds": 0.32,
+              "peak_rss_kib": 828380,
+              "pid": 12,
+              "rss_kib": 828380,
+              "system_seconds": 3.47,
+              "user_seconds": 25.22
+            },
+            "server_before": null,
+            "system_seconds": 0.166901,
+            "user_seconds": 0.29897199999999996,
+            "wall_seconds": 6.296078101993771
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 1024,
+          "block_outputs": 263575,
+          "peak_rss_kib": 692728,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 8.267574999999999,
+          "user_seconds": 29.858667999999998,
+          "waited_children": 2,
+          "wall_seconds": 8.143648889003089
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 128,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.053298,
+          "user_seconds": 0.046534,
+          "waited_children": 1,
+          "wall_seconds": 0.18215861800126731
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/c1j3nz4m5l9pw6hf5zycnyxzvvxms0sf-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.013529,
+        "client_user_seconds": 0.012615999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/kf5hvcij51fkhqisfpapnnvm61y2s87r-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          108.462890625,
+          92.47900390625,
+          95.1943359375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 9.57323482799984
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/c1j3nz4m5l9pw6hf5zycnyxzvvxms0sf-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 21.070385525003076
+    },
+    {
+      "derivation": "/nix/store/kf5hvcij51fkhqisfpapnnvm61y2s87r-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 568828,
+        "client_system_seconds": 1.549859,
+        "client_user_seconds": 7.875712,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          102.13916015625,
+          91.8662109375,
+          94.94970703125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.502542264002841
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/c1j3nz4m5l9pw6hf5zycnyxzvvxms0sf-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.009436,
+        "client_user_seconds": 0.008399,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/kf5hvcij51fkhqisfpapnnvm61y2s87r-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          102.13916015625,
+          91.8662109375,
+          94.94970703125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.1465399989974685
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/c1j3nz4m5l9pw6hf5zycnyxzvvxms0sf-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 13.64908226300031
+    },
+    {
+      "derivation": "/nix/store/03gqb8vvnn8d2797q0h6skpv4gasl6y7-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 585504,
+        "client_system_seconds": 1.60115,
+        "client_user_seconds": 7.822136,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/0-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-9e37a9c6e69a9123b977e391080ce42d7f2d735a90680644faf499bb7661d6e4",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:0-bazel:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          94.9453125,
+          90.751953125,
+          94.53369140625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.879911936994176
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 8240,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 972980,
+              "pid": 12,
+              "rss_kib": 972980,
+              "system_seconds": 3.49,
+              "user_seconds": 26.61
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 899920,
+              "pid": 12,
+              "rss_kib": 899920,
+              "system_seconds": 3.12,
+              "user_seconds": 24.01
+            },
+            "system_seconds": 0.07122999999999999,
+            "user_seconds": 0.013477,
+            "wall_seconds": 0.5078347060043598
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 712592,
+              "pid": 12,
+              "rss_kib": 379836,
+              "system_seconds": 3.98,
+              "user_seconds": 27.48
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 852316,
+              "pid": 12,
+              "rss_kib": 852316,
+              "system_seconds": 3.51,
+              "user_seconds": 26.86
+            },
+            "system_seconds": 0.036989,
+            "user_seconds": 0.0039039999999999995,
+            "wall_seconds": 0.20451786799822003
+          },
+          "metrics": {
+            "peak_rss_kib": 139348,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 896556,
+              "pid": 12,
+              "rss_kib": 896556,
+              "system_seconds": 3.12,
+              "user_seconds": 23.86
+            },
+            "server_before": null,
+            "system_seconds": 0.222402,
+            "user_seconds": 0.288321,
+            "wall_seconds": 5.454738422005903
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 265236,
+          "peak_rss_kib": 712592,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.647870999999999,
+          "user_seconds": 28.365947,
+          "waited_children": 2,
+          "wall_seconds": 7.188204759004293
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 602104,
+              "pid": 12,
+              "rss_kib": 391676,
+              "system_seconds": 3.62,
+              "user_seconds": 30.04
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 883044,
+              "pid": 12,
+              "rss_kib": 883044,
+              "system_seconds": 2.99,
+              "user_seconds": 26.86
+            },
+            "system_seconds": 0.037576,
+            "user_seconds": 0.006459,
+            "wall_seconds": 0.5945356529991841
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 602104,
+              "pid": 12,
+              "rss_kib": 410004,
+              "system_seconds": 3.89,
+              "user_seconds": 30.76
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 602104,
+              "pid": 12,
+              "rss_kib": 391872,
+              "system_seconds": 3.62,
+              "user_seconds": 30.25
+            },
+            "system_seconds": 0.037211,
+            "user_seconds": 0.008001000000000001,
+            "wall_seconds": 0.1488843280094443
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 882952,
+              "pid": 12,
+              "rss_kib": 882952,
+              "system_seconds": 2.99,
+              "user_seconds": 26.73
+            },
+            "server_before": null,
+            "system_seconds": 0.226482,
+            "user_seconds": 0.28866800000000004,
+            "wall_seconds": 5.404436629003612
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 250,
+          "block_outputs": 257945,
+          "peak_rss_kib": 602104,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.498291,
+          "user_seconds": 31.772058,
+          "waited_children": 2,
+          "wall_seconds": 7.210070718996576
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 9,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.052940999999999995,
+          "user_seconds": 0.038772,
+          "waited_children": 1,
+          "wall_seconds": 0.1561297040025238
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/vjsy8j924iwwml63lgmrk4v7nrp1k725-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 15,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.012537999999999999,
+        "client_user_seconds": 0.01461,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/03gqb8vvnn8d2797q0h6skpv4gasl6y7-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          91.26611328125,
+          90.1142578125,
+          94.2861328125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 8.822227702999953
+      },
+      "repetition": 0,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/vjsy8j924iwwml63lgmrk4v7nrp1k725-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 21.70213963999413
+    },
+    {
+      "derivation": "/nix/store/0a28bwgky8dinv6fvyc539y12mw82h72-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 565036,
+        "client_system_seconds": 1.551267,
+        "client_user_seconds": 7.921318,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          90.4541015625,
+          89.994140625,
+          94.1796875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.945887376001338
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.66,
+              "children_user_seconds": 5.04,
+              "peak_rss_kib": 956780,
+              "pid": 12,
+              "rss_kib": 956780,
+              "system_seconds": 4.03,
+              "user_seconds": 27.74
+            },
+            "server_before": {
+              "children_system_seconds": 0.66,
+              "children_user_seconds": 5.04,
+              "peak_rss_kib": 928144,
+              "pid": 12,
+              "rss_kib": 928144,
+              "system_seconds": 3.67,
+              "user_seconds": 25.67
+            },
+            "system_seconds": 0.043986,
+            "user_seconds": 0.010147,
+            "wall_seconds": 0.47960560698993504
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.66,
+              "children_user_seconds": 5.04,
+              "peak_rss_kib": 1014612,
+              "pid": 12,
+              "rss_kib": 1014612,
+              "system_seconds": 4.37,
+              "user_seconds": 28.55
+            },
+            "server_before": {
+              "children_system_seconds": 0.66,
+              "children_user_seconds": 5.04,
+              "peak_rss_kib": 956888,
+              "pid": 12,
+              "rss_kib": 956888,
+              "system_seconds": 4.03,
+              "user_seconds": 27.84
+            },
+            "system_seconds": 0.03915,
+            "user_seconds": 0.005168,
+            "wall_seconds": 0.2392398179945303
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.66,
+              "children_user_seconds": 5.04,
+              "peak_rss_kib": 922520,
+              "pid": 12,
+              "rss_kib": 922520,
+              "system_seconds": 3.67,
+              "user_seconds": 25.34
+            },
+            "server_before": null,
+            "system_seconds": 0.17407599999999998,
+            "user_seconds": 0.30947699999999995,
+            "wall_seconds": 8.774069876992144
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 1088,
+          "block_outputs": 274218,
+          "peak_rss_kib": 699164,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.834690999999999,
+          "user_seconds": 34.453207,
+          "waited_children": 2,
+          "wall_seconds": 10.866381056999671
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 8240,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 5.17,
+              "peak_rss_kib": 655884,
+              "pid": 12,
+              "rss_kib": 438196,
+              "system_seconds": 4.58,
+              "user_seconds": 28.89
+            },
+            "server_before": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 5.17,
+              "peak_rss_kib": 962988,
+              "pid": 12,
+              "rss_kib": 962988,
+              "system_seconds": 3.98,
+              "user_seconds": 26.46
+            },
+            "system_seconds": 0.039023,
+            "user_seconds": 0.011097999999999998,
+            "wall_seconds": 0.5902682160085533
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 5.17,
+              "peak_rss_kib": 655884,
+              "pid": 12,
+              "rss_kib": 456424,
+              "system_seconds": 4.86,
+              "user_seconds": 29.81
+            },
+            "server_before": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 5.17,
+              "peak_rss_kib": 655884,
+              "pid": 12,
+              "rss_kib": 438356,
+              "system_seconds": 4.58,
+              "user_seconds": 29.15
+            },
+            "system_seconds": 0.032075,
+            "user_seconds": 0.003906,
+            "wall_seconds": 0.13428869399649557
+          },
+          "metrics": {
+            "peak_rss_kib": 135252,
+            "server_after": {
+              "children_system_seconds": 0.88,
+              "children_user_seconds": 5.17,
+              "peak_rss_kib": 957660,
+              "pid": 12,
+              "rss_kib": 957660,
+              "system_seconds": 3.98,
+              "user_seconds": 26.29
+            },
+            "server_before": null,
+            "system_seconds": 0.17890499999999998,
+            "user_seconds": 0.30782899999999996,
+            "wall_seconds": 8.974821978990803
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 1024,
+          "block_outputs": 272335,
+          "peak_rss_kib": 655884,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 6.335872,
+          "user_seconds": 35.777951,
+          "waited_children": 2,
+          "wall_seconds": 11.024445590010146
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.049783,
+          "user_seconds": 0.035092,
+          "waited_children": 1,
+          "wall_seconds": 0.20752634899690747
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/k2qivz2ld4x8vshfhpgchz5inzcgqpik-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 19,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.01608,
+        "client_user_seconds": 0.009465999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/0a28bwgky8dinv6fvyc539y12mw82h72-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          95.4072265625,
+          91.05322265625,
+          94.47900390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.8996470389975
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/k2qivz2ld4x8vshfhpgchz5inzcgqpik-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 25.845534414998838
+    },
+    {
+      "derivation": "/nix/store/0a28bwgky8dinv6fvyc539y12mw82h72-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 159,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 491368,
+        "client_system_seconds": 1.670364,
+        "client_user_seconds": 8.096688,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          94.21044921875,
+          91.0283203125,
+          94.4169921875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.717440816006274
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/k2qivz2ld4x8vshfhpgchz5inzcgqpik-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.00818,
+        "client_user_seconds": 0.008187999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/0a28bwgky8dinv6fvyc539y12mw82h72-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          94.21044921875,
+          91.0283203125,
+          94.4169921875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.3000998420029646
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/k2qivz2ld4x8vshfhpgchz5inzcgqpik-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 13.017540658009239
+    },
+    {
+      "derivation": "/nix/store/62wsvb3j8clby8db1nwbvwxnkixzaz1j-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 610088,
+        "client_system_seconds": 1.800209,
+        "client_user_seconds": 7.822415,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          95.38037109375,
+          91.46337890625,
+          94.50634765625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.537837463998585
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.36,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 709704,
+              "pid": 12,
+              "rss_kib": 402320,
+              "system_seconds": 3.95,
+              "user_seconds": 27.82
+            },
+            "server_before": {
+              "children_system_seconds": 0.36,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 907888,
+              "pid": 12,
+              "rss_kib": 907888,
+              "system_seconds": 3.51,
+              "user_seconds": 25.36
+            },
+            "system_seconds": 0.040473,
+            "user_seconds": 0.005569,
+            "wall_seconds": 0.47036170099454466
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.36,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 709704,
+              "pid": 12,
+              "rss_kib": 421176,
+              "system_seconds": 4.22,
+              "user_seconds": 28.33
+            },
+            "server_before": {
+              "children_system_seconds": 0.36,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 709704,
+              "pid": 12,
+              "rss_kib": 402296,
+              "system_seconds": 3.96,
+              "user_seconds": 27.83
+            },
+            "system_seconds": 0.030733,
+            "user_seconds": 0.006859,
+            "wall_seconds": 0.1366716019983869
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.36,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 906980,
+              "pid": 12,
+              "rss_kib": 906980,
+              "system_seconds": 3.51,
+              "user_seconds": 25.24
+            },
+            "server_before": null,
+            "system_seconds": 0.131848,
+            "user_seconds": 0.305982,
+            "wall_seconds": 5.721561223996105
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 2129,
+          "block_outputs": 268015,
+          "peak_rss_kib": 709704,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.157468000000001,
+          "user_seconds": 29.362225000000002,
+          "waited_children": 2,
+          "wall_seconds": 7.408476520999102
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.08,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659420,
+              "pid": 12,
+              "rss_kib": 451176,
+              "system_seconds": 4.19,
+              "user_seconds": 26.78
+            },
+            "server_before": {
+              "children_system_seconds": 0.08,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 888508,
+              "pid": 12,
+              "rss_kib": 888508,
+              "system_seconds": 3.67,
+              "user_seconds": 24.36
+            },
+            "system_seconds": 0.029459,
+            "user_seconds": 0.005071,
+            "wall_seconds": 0.5050670290074777
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.08,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659420,
+              "pid": 12,
+              "rss_kib": 472408,
+              "system_seconds": 4.46,
+              "user_seconds": 27.29
+            },
+            "server_before": {
+              "children_system_seconds": 0.08,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659420,
+              "pid": 12,
+              "rss_kib": 451236,
+              "system_seconds": 4.19,
+              "user_seconds": 26.85
+            },
+            "system_seconds": 0.031479,
+            "user_seconds": 0.0034879999999999998,
+            "wall_seconds": 0.13448835800227243
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.08,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 888392,
+              "pid": 12,
+              "rss_kib": 888392,
+              "system_seconds": 3.67,
+              "user_seconds": 24.24
+            },
+            "server_before": null,
+            "system_seconds": 0.131643,
+            "user_seconds": 0.28739499999999996,
+            "wall_seconds": 5.376924135009176
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 1245,
+          "block_outputs": 257945,
+          "peak_rss_kib": 659420,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.026634,
+          "user_seconds": 28.194185,
+          "waited_children": 2,
+          "wall_seconds": 7.094222102998174
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.043955999999999995,
+          "user_seconds": 0.045404,
+          "waited_children": 1,
+          "wall_seconds": 0.13882966501114424
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/i7ahzfdvjvqpvn1mnxi9y4d8898kwpk8-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.013165999999999999,
+        "client_user_seconds": 0.008464,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/62wsvb3j8clby8db1nwbvwxnkixzaz1j-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          93.587890625,
+          91.15673828125,
+          94.390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 8.65100462900591
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/i7ahzfdvjvqpvn1mnxi9y4d8898kwpk8-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 21.188842093004496
+    },
+    {
+      "derivation": "/nix/store/351n2gxg1ssyj4v52dqg4halcbd9nv4c-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 544364,
+        "client_system_seconds": 1.720841,
+        "client_user_seconds": 7.933275,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          109.35693359375,
+          94.8642578125,
+          95.55810546875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.34937312299735
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.32,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 715292,
+              "pid": 12,
+              "rss_kib": 626444,
+              "system_seconds": 3.93,
+              "user_seconds": 27.69
+            },
+            "server_before": {
+              "children_system_seconds": 0.32,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 909328,
+              "pid": 12,
+              "rss_kib": 909328,
+              "system_seconds": 3.5,
+              "user_seconds": 25.35
+            },
+            "system_seconds": 0.030429,
+            "user_seconds": 0.007842,
+            "wall_seconds": 0.43644395799492486
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.32,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 715292,
+              "pid": 12,
+              "rss_kib": 423956,
+              "system_seconds": 4.15,
+              "user_seconds": 28.2
+            },
+            "server_before": {
+              "children_system_seconds": 0.32,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 715292,
+              "pid": 12,
+              "rss_kib": 403592,
+              "system_seconds": 3.96,
+              "user_seconds": 27.83
+            },
+            "system_seconds": 0.032756999999999994,
+            "user_seconds": 0.002215,
+            "wall_seconds": 0.12325339199742302
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.32,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 908144,
+              "pid": 12,
+              "rss_kib": 908144,
+              "system_seconds": 3.5,
+              "user_seconds": 25.23
+            },
+            "server_before": null,
+            "system_seconds": 0.165428,
+            "user_seconds": 0.289216,
+            "wall_seconds": 6.038970171997789
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 3136,
+          "block_outputs": 271111,
+          "peak_rss_kib": 715292,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.9869900000000005,
+          "user_seconds": 29.286763,
+          "waited_children": 2,
+          "wall_seconds": 7.686948183007189
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 684032,
+              "pid": 12,
+              "rss_kib": 423068,
+              "system_seconds": 4.05,
+              "user_seconds": 26.05
+            },
+            "server_before": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 938096,
+              "pid": 12,
+              "rss_kib": 938096,
+              "system_seconds": 3.49,
+              "user_seconds": 24.25
+            },
+            "system_seconds": 0.029734999999999998,
+            "user_seconds": 0.009234,
+            "wall_seconds": 0.39206916399416514
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 8240,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 684032,
+              "pid": 12,
+              "rss_kib": 443220,
+              "system_seconds": 4.28,
+              "user_seconds": 26.71
+            },
+            "server_before": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 684032,
+              "pid": 12,
+              "rss_kib": 424796,
+              "system_seconds": 4.06,
+              "user_seconds": 26.31
+            },
+            "system_seconds": 0.033116,
+            "user_seconds": 0.002076,
+            "wall_seconds": 0.12423079099971801
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.29,
+              "children_user_seconds": 0.31,
+              "peak_rss_kib": 934108,
+              "pid": 12,
+              "rss_kib": 934108,
+              "system_seconds": 3.49,
+              "user_seconds": 24.1
+            },
+            "server_before": null,
+            "system_seconds": 0.154445,
+            "user_seconds": 0.302016,
+            "wall_seconds": 5.741077313999995
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 5056,
+          "block_outputs": 263572,
+          "peak_rss_kib": 684032,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.073149,
+          "user_seconds": 27.921663,
+          "waited_children": 2,
+          "wall_seconds": 7.408221171004698
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.045294999999999995,
+          "user_seconds": 0.040373,
+          "waited_children": 1,
+          "wall_seconds": 0.2110540290013887
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/mdxahmi52y5y8aw0pw0y68mbp9j1xjzi-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.008440999999999999,
+        "client_user_seconds": 0.012159,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/351n2gxg1ssyj4v52dqg4halcbd9nv4c-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          121.54150390625,
+          97.8427734375,
+          96.513671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 8.917831375991227
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/mdxahmi52y5y8aw0pw0y68mbp9j1xjzi-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 21.267204498988576
+    },
+    {
+      "derivation": "/nix/store/351n2gxg1ssyj4v52dqg4halcbd9nv4c-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 750,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 589596,
+        "client_system_seconds": 1.467249,
+        "client_user_seconds": 7.554465,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          112.6689453125,
+          96.72705078125,
+          96.1650390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 10.969178456012742
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/mdxahmi52y5y8aw0pw0y68mbp9j1xjzi-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.006999,
+        "client_user_seconds": 0.004366,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/351n2gxg1ssyj4v52dqg4halcbd9nv4c-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          112.6689453125,
+          96.72705078125,
+          96.1650390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.18381154999951832
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/mdxahmi52y5y8aw0pw0y68mbp9j1xjzi-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 11.15299000601226
+    },
+    {
+      "derivation": "/nix/store/zcyqdg10rv8s2ya8590zs73y51dcf9ab-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 646936,
+        "client_system_seconds": 1.500837,
+        "client_user_seconds": 7.493275,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-5e11e10730bb6039b6b605a63fe5aa40aed1d8101073882b4c6a9ddbe7d0a6b7",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:1-bazel:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          109.5234375,
+          96.767578125,
+          96.1845703125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.768884222998167
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 968572,
+              "pid": 12,
+              "rss_kib": 968572,
+              "system_seconds": 3.19,
+              "user_seconds": 25.11
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 899044,
+              "pid": 12,
+              "rss_kib": 899044,
+              "system_seconds": 2.83,
+              "user_seconds": 22.54
+            },
+            "system_seconds": 0.032652,
+            "user_seconds": 0.007892,
+            "wall_seconds": 0.45266443300351966
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 674320,
+              "pid": 12,
+              "rss_kib": 382556,
+              "system_seconds": 3.64,
+              "user_seconds": 25.64
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 870808,
+              "pid": 12,
+              "rss_kib": 870808,
+              "system_seconds": 3.21,
+              "user_seconds": 25.19
+            },
+            "system_seconds": 0.025863999999999998,
+            "user_seconds": 0.005382,
+            "wall_seconds": 0.1806908279977506
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 896996,
+              "pid": 12,
+              "rss_kib": 896996,
+              "system_seconds": 2.82,
+              "user_seconds": 22.41
+            },
+            "server_before": null,
+            "system_seconds": 0.13871,
+            "user_seconds": 0.319148,
+            "wall_seconds": 4.980594058011775
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 320,
+          "block_outputs": 265235,
+          "peak_rss_kib": 674320,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.266608,
+          "user_seconds": 26.462226,
+          "waited_children": 2,
+          "wall_seconds": 6.712353823997546
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 8240,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 692324,
+              "pid": 12,
+              "rss_kib": 391128,
+              "system_seconds": 3.66,
+              "user_seconds": 29.15
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 881868,
+              "pid": 12,
+              "rss_kib": 881868,
+              "system_seconds": 3.21,
+              "user_seconds": 26.6
+            },
+            "system_seconds": 0.033214999999999995,
+            "user_seconds": 0.004856,
+            "wall_seconds": 0.5211241919896565
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 8240,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 692324,
+              "pid": 12,
+              "rss_kib": 411664,
+              "system_seconds": 3.89,
+              "user_seconds": 29.61
+            },
+            "server_before": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 692324,
+              "pid": 12,
+              "rss_kib": 391132,
+              "system_seconds": 3.66,
+              "user_seconds": 29.15
+            },
+            "system_seconds": 0.035435999999999995,
+            "user_seconds": 0.005632,
+            "wall_seconds": 0.12684810400241986
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.04,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 880376,
+              "pid": 12,
+              "rss_kib": 880376,
+              "system_seconds": 3.21,
+              "user_seconds": 26.47
+            },
+            "server_before": null,
+            "system_seconds": 0.13100399999999998,
+            "user_seconds": 0.29006299999999996,
+            "wall_seconds": 4.935327366009005
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 448,
+          "block_outputs": 257945,
+          "peak_rss_kib": 692324,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.567047,
+          "user_seconds": 30.516173000000002,
+          "waited_children": 2,
+          "wall_seconds": 6.747217626005295
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.03442,
+          "user_seconds": 0.037968,
+          "waited_children": 1,
+          "wall_seconds": 0.13325878299656324
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/p14qzdbaxbcpapycdv635gd95nvdsay8-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 15,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.014227,
+        "client_user_seconds": 0.006214,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/zcyqdg10rv8s2ya8590zs73y51dcf9ab-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          106.5986328125,
+          96.37255859375,
+          96.0595703125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 7.841899926002952
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/p14qzdbaxbcpapycdv635gd95nvdsay8-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 19.61078414900112
+    },
+    {
+      "derivation": "/nix/store/q2nk26c0x1blrwrmd3p8kv6py671xci4-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 69704,
+        "client_system_seconds": 0.12354499999999999,
+        "client_user_seconds": 0.453113,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          102.86669921875,
+          95.7685546875,
+          95.86572265625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.102663890007534
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 232,
+          "block_outputs": 13373,
+          "peak_rss_kib": 148332,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.24378699999999998,
+          "user_seconds": 0.546818,
+          "waited_children": 1,
+          "wall_seconds": 0.8928215260093566
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/5vp541l9pz7zr7a2h9fnzbp890aifn5k-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.021341,
+        "client_user_seconds": 0.010097,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/q2nk26c0x1blrwrmd3p8kv6py671xci4-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          102.86669921875,
+          95.7685546875,
+          95.86572265625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.4036992009932874
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/5vp541l9pz7zr7a2h9fnzbp890aifn5k-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 2.5063630910008214
+    },
+    {
+      "derivation": "/nix/store/q2nk26c0x1blrwrmd3p8kv6py671xci4-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 86092,
+        "client_system_seconds": 0.114669,
+        "client_user_seconds": 0.406066,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7562425560026895
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/5vp541l9pz7zr7a2h9fnzbp890aifn5k-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.0068839999999999995,
+        "client_user_seconds": 0.007866,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/q2nk26c0x1blrwrmd3p8kv6py671xci4-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.07553972100140527
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/5vp541l9pz7zr7a2h9fnzbp890aifn5k-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 0.8317822770040948
+    },
+    {
+      "derivation": "/nix/store/l2qhk301li53bhiff3svbic7xiy72lax-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 57440,
+        "client_system_seconds": 0.128413,
+        "client_user_seconds": 0.413106,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7887202499987325
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13373,
+          "peak_rss_kib": 144220,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.318828,
+          "user_seconds": 0.511902,
+          "waited_children": 1,
+          "wall_seconds": 0.8713423629960744
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/v7al9ffm9zlr7nyvkhr1qwlk4gacwwbm-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007266,
+        "client_user_seconds": 0.010471999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/l2qhk301li53bhiff3svbic7xiy72lax-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.2459131340001477
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/v7al9ffm9zlr7nyvkhr1qwlk4gacwwbm-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 2.03463338399888
+    },
+    {
+      "derivation": "/nix/store/2k4a605g7dxlv2nim9xmn8zga6qk3b01-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 65600,
+        "client_system_seconds": 0.11150199999999999,
+        "client_user_seconds": 0.42184299999999997,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7886968090024311
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 87,
+          "block_outputs": 13377,
+          "peak_rss_kib": 148188,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.225987,
+          "user_seconds": 0.5728759999999999,
+          "waited_children": 1,
+          "wall_seconds": 0.7249367149925092
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/wdkzjgkhprni8v3rsxkcri9xs6dd8d65-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007417,
+        "client_user_seconds": 0.009524,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/2k4a605g7dxlv2nim9xmn8zga6qk3b01-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          103.35791015625,
+          95.98828125,
+          95.9365234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.255795584002044
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/wdkzjgkhprni8v3rsxkcri9xs6dd8d65-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 2.044492393004475
+    },
+    {
+      "derivation": "/nix/store/2k4a605g7dxlv2nim9xmn8zga6qk3b01-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61540,
+        "client_system_seconds": 0.116578,
+        "client_user_seconds": 0.43444299999999997,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.3662109375,
+          95.490234375,
+          95.775390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9352345889928984
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/wdkzjgkhprni8v3rsxkcri9xs6dd8d65-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.008678,
+        "client_user_seconds": 0.004797,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/2k4a605g7dxlv2nim9xmn8zga6qk3b01-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.3662109375,
+          95.490234375,
+          95.775390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.08636723899689969
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/wdkzjgkhprni8v3rsxkcri9xs6dd8d65-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 1.021601827989798
+    },
+    {
+      "derivation": "/nix/store/sksi43sw01c32788ssx17h1wsggif47z-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 61532,
+        "client_system_seconds": 0.09722,
+        "client_user_seconds": 0.416772,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/1-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-ceeeafff23db63346337d55a4ae8d0fd36191feb5b199282c12211381be68a45",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:1-production:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.3662109375,
+          95.490234375,
+          95.775390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7376497009972809
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13377,
+          "peak_rss_kib": 144208,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.282676,
+          "user_seconds": 0.524892,
+          "waited_children": 1,
+          "wall_seconds": 0.7378959760098951
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/mi6ppqj3n3s6paw7mfwr2wdm1fv7lfrs-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 3,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.006023,
+        "client_user_seconds": 0.010062999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/sksi43sw01c32788ssx17h1wsggif47z-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.3662109375,
+          95.490234375,
+          95.775390625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9641828219901072
+      },
+      "repetition": 1,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/mi6ppqj3n3s6paw7mfwr2wdm1fv7lfrs-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 1.701832522987388
+    },
+    {
+      "derivation": "/nix/store/x3f71f8xd221wvs3958f9g563hpjgn4a-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 81980,
+        "client_system_seconds": 0.11477899999999999,
+        "client_user_seconds": 0.40557,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.8173828125,
+          95.6650390625,
+          95.83056640625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.835498781001661
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13373,
+          "peak_rss_kib": 148332,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.385781,
+          "user_seconds": 0.541118,
+          "waited_children": 1,
+          "wall_seconds": 0.9094614810019266
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/9dzm052dmpyvs98mk17hadiq7rr8ppf5-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007617,
+        "client_user_seconds": 0.009791,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/x3f71f8xd221wvs3958f9g563hpjgn4a-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.8173828125,
+          95.6650390625,
+          95.83056640625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.3270393480052007
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/9dzm052dmpyvs98mk17hadiq7rr8ppf5-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 2.1625381290068617
+    },
+    {
+      "derivation": "/nix/store/x3f71f8xd221wvs3958f9g563hpjgn4a-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 77896,
+        "client_system_seconds": 0.11372,
+        "client_user_seconds": 0.399715,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          100.8173828125,
+          95.6650390625,
+          95.83056640625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.703627986003994
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/9dzm052dmpyvs98mk17hadiq7rr8ppf5-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.007181,
+        "client_user_seconds": 0.005121,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/x3f71f8xd221wvs3958f9g563hpjgn4a-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.50927734375,
+          95.27197265625,
+          95.7021484375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.07632605599064846
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/9dzm052dmpyvs98mk17hadiq7rr8ppf5-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 0.7799540419946425
+    },
+    {
+      "derivation": "/nix/store/r2l5hr24d6mhlg1glznr2ihjfsl8gzc3-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 69664,
+        "client_system_seconds": 0.126417,
+        "client_user_seconds": 0.406944,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.50927734375,
+          95.27197265625,
+          95.7021484375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7843237509950995
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13373,
+          "peak_rss_kib": 144192,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.255368,
+          "user_seconds": 0.489456,
+          "waited_children": 1,
+          "wall_seconds": 0.7519779900030699
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/6rsyz1yihz53i2p62qzfypd1pp5d1d5g-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.008945999999999999,
+        "client_user_seconds": 0.006241,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/r2l5hr24d6mhlg1glznr2ihjfsl8gzc3-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.50927734375,
+          95.27197265625,
+          95.7021484375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.148503303003963
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/6rsyz1yihz53i2p62qzfypd1pp5d1d5g-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 1.9328270539990626
+    },
+    {
+      "derivation": "/nix/store/83px4995z6fj9yqz9rq5kz0qz7w2blwh-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 65648,
+        "client_system_seconds": 0.115216,
+        "client_user_seconds": 0.42059799999999997,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/first-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.50927734375,
+          95.27197265625,
+          95.7021484375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7917531910061371
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 13377,
+          "peak_rss_kib": 144220,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.27830699999999997,
+          "user_seconds": 0.511347,
+          "waited_children": 1,
+          "wall_seconds": 0.7921486880077282
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/b65gwxqkpjvribzynzv1n9k4bj4v8a88-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 4,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.006794,
+        "client_user_seconds": 0.006788,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/83px4995z6fj9yqz9rq5kz0qz7w2blwh-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          98.50927734375,
+          95.27197265625,
+          95.7021484375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 1.4306316930014873
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/b65gwxqkpjvribzynzv1n9k4bj4v8a88-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 2.2223848840076244
+    },
+    {
+      "derivation": "/nix/store/83px4995z6fj9yqz9rq5kz0qz7w2blwh-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 57432,
+        "client_system_seconds": 0.11397199999999999,
+        "client_user_seconds": 0.442108,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          97.82763671875,
+          95.18408203125,
+          95.67138671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.7763920610013884
+      },
+      "fresh_builder_resources": {},
+      "mode": "production",
+      "nix_output_reused": true,
+      "output": "/nix/store/b65gwxqkpjvribzynzv1n9k4bj4v8a88-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.008279,
+        "client_user_seconds": 0.006208,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/83px4995z6fj9yqz9rq5kz0qz7w2blwh-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          97.82763671875,
+          95.18408203125,
+          95.67138671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.08565249500679784
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/b65gwxqkpjvribzynzv1n9k4bj4v8a88-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 0.8620445560081862
+    },
+    {
+      "derivation": "/nix/store/nvhz1vmlpaphz4aaym2dwk8vrs8l2vdl-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 73800,
+        "client_system_seconds": 0.130826,
+        "client_user_seconds": 0.43282099999999996,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-production/second-worktree",
+          "--argstr",
+          "mode",
+          "production",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-4bfe0e2f83cdbc9f5dab2e26bf16cae9c5fd2ca1a2ffb0e8571fd45199337496",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:2-production:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          97.82763671875,
+          95.18408203125,
+          95.67138671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.8628701620036736
+      },
+      "fresh_builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 16,
+          "block_outputs": 13377,
+          "peak_rss_kib": 131792,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.24364,
+          "user_seconds": 0.57005,
+          "waited_children": 1,
+          "wall_seconds": 0.7367387729900656
+        }
+      },
+      "mode": "production",
+      "nix_output_reused": false,
+      "output": "/nix/store/pin9bji3cwhyzdrnm2fsk0ciqq2cp35p-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 3,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.010922,
+        "client_user_seconds": 0.006375,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/nvhz1vmlpaphz4aaym2dwk8vrs8l2vdl-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          97.82763671875,
+          95.18408203125,
+          95.67138671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.9614040559972636
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/pin9bji3cwhyzdrnm2fsk0ciqq2cp35p-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 1.8242742180009373
+    },
+    {
+      "derivation": "/nix/store/9a02dv8a80p1w8vy4bal8mbn7a66p51v-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 495352,
+        "client_system_seconds": 1.658947,
+        "client_user_seconds": 8.563477,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          118.79052734375,
+          100.13232421875,
+          97.2890625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 13.628936505003367
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.75,
+              "children_user_seconds": 4.98,
+              "peak_rss_kib": 1005712,
+              "pid": 12,
+              "rss_kib": 1005712,
+              "system_seconds": 3.87,
+              "user_seconds": 27.87
+            },
+            "server_before": {
+              "children_system_seconds": 0.75,
+              "children_user_seconds": 4.98,
+              "peak_rss_kib": 930096,
+              "pid": 12,
+              "rss_kib": 930096,
+              "system_seconds": 3.53,
+              "user_seconds": 25.64
+            },
+            "system_seconds": 0.028957999999999994,
+            "user_seconds": 0.008091999999999998,
+            "wall_seconds": 0.48362777700822335
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.75,
+              "children_user_seconds": 4.98,
+              "peak_rss_kib": 735744,
+              "pid": 12,
+              "rss_kib": 409956,
+              "system_seconds": 4.34,
+              "user_seconds": 28.54
+            },
+            "server_before": {
+              "children_system_seconds": 0.75,
+              "children_user_seconds": 4.98,
+              "peak_rss_kib": 856588,
+              "pid": 12,
+              "rss_kib": 856588,
+              "system_seconds": 3.89,
+              "user_seconds": 27.99
+            },
+            "system_seconds": 0.033983,
+            "user_seconds": 0.004299,
+            "wall_seconds": 0.18415447800362017
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.75,
+              "children_user_seconds": 4.98,
+              "peak_rss_kib": 927844,
+              "pid": 12,
+              "rss_kib": 927844,
+              "system_seconds": 3.53,
+              "user_seconds": 25.5
+            },
+            "server_before": null,
+            "system_seconds": 0.287408,
+            "user_seconds": 0.295462,
+            "wall_seconds": 8.638699977003853
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 674722,
+          "block_outputs": 274222,
+          "peak_rss_kib": 735744,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.766281,
+          "user_seconds": 34.301379000000004,
+          "waited_children": 2,
+          "wall_seconds": 10.58842226798879
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.67,
+              "children_user_seconds": 5.13,
+              "peak_rss_kib": 750524,
+              "pid": 12,
+              "rss_kib": 441492,
+              "system_seconds": 4.93,
+              "user_seconds": 35.03
+            },
+            "server_before": {
+              "children_system_seconds": 0.67,
+              "children_user_seconds": 5.13,
+              "peak_rss_kib": 1009092,
+              "pid": 12,
+              "rss_kib": 1009092,
+              "system_seconds": 4.1,
+              "user_seconds": 32.75
+            },
+            "system_seconds": 0.03511499999999999,
+            "user_seconds": 0.010341,
+            "wall_seconds": 0.575619949013344
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.67,
+              "children_user_seconds": 5.13,
+              "peak_rss_kib": 750524,
+              "pid": 12,
+              "rss_kib": 458516,
+              "system_seconds": 5.17,
+              "user_seconds": 35.61
+            },
+            "server_before": {
+              "children_system_seconds": 0.67,
+              "children_user_seconds": 5.13,
+              "peak_rss_kib": 750524,
+              "pid": 12,
+              "rss_kib": 441588,
+              "system_seconds": 4.93,
+              "user_seconds": 35.16
+            },
+            "system_seconds": 0.031014999999999997,
+            "user_seconds": 0.004,
+            "wall_seconds": 0.13774853300128598
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.67,
+              "children_user_seconds": 5.13,
+              "peak_rss_kib": 1002556,
+              "pid": 12,
+              "rss_kib": 1002556,
+              "system_seconds": 4.09,
+              "user_seconds": 32.52
+            },
+            "server_before": null,
+            "system_seconds": 0.13701899999999997,
+            "user_seconds": 0.29986399999999996,
+            "wall_seconds": 8.576020944994525
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 371258,
+          "block_outputs": 272328,
+          "peak_rss_kib": 750524,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 6.377927,
+          "user_seconds": 41.524158,
+          "waited_children": 2,
+          "wall_seconds": 10.621813061006833
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.053021,
+          "user_seconds": 0.041299999999999996,
+          "waited_children": 1,
+          "wall_seconds": 0.09412458501174115
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/vsh4wzs8lzgmazan9lkjqakmdrvjwvzk-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 19,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.015297999999999999,
+        "client_user_seconds": 0.011188,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/9a02dv8a80p1w8vy4bal8mbn7a66p51v-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          130.78369140625,
+          103.2685546875,
+          98.33740234375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.082081460001064
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/vsh4wzs8lzgmazan9lkjqakmdrvjwvzk-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "cold",
+      "wall_seconds": 25.71101796500443
+    },
+    {
+      "derivation": "/nix/store/9a02dv8a80p1w8vy4bal8mbn7a66p51v-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 580344,
+        "client_system_seconds": 1.532085,
+        "client_user_seconds": 8.11712,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          156.369140625,
+          110.06787109375,
+          100.63037109375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.384949683997547
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/vsh4wzs8lzgmazan9lkjqakmdrvjwvzk-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.00954,
+        "client_user_seconds": 0.007424999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/9a02dv8a80p1w8vy4bal8mbn7a66p51v-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          156.369140625,
+          110.06787109375,
+          100.63037109375
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.20244686599471606
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/vsh4wzs8lzgmazan9lkjqakmdrvjwvzk-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "warm",
+      "wall_seconds": 12.587396549992263
+    },
+    {
+      "derivation": "/nix/store/qxysaqpaydpwnjbdf2ji129r056k7wpm-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 596756,
+        "client_system_seconds": 1.649639,
+        "client_user_seconds": 7.771617,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          150.93115234375,
+          110.4013671875,
+          100.8388671875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.184604537003906
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.16,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 700692,
+              "pid": 12,
+              "rss_kib": 456284,
+              "system_seconds": 3.61,
+              "user_seconds": 26.06
+            },
+            "server_before": {
+              "children_system_seconds": 0.16,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 925940,
+              "pid": 12,
+              "rss_kib": 925940,
+              "system_seconds": 3.12,
+              "user_seconds": 23.75
+            },
+            "system_seconds": 0.035996999999999994,
+            "user_seconds": 0.0077659999999999995,
+            "wall_seconds": 0.5229876390076242
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.16,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 700692,
+              "pid": 12,
+              "rss_kib": 475976,
+              "system_seconds": 3.96,
+              "user_seconds": 26.62
+            },
+            "server_before": {
+              "children_system_seconds": 0.16,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 700692,
+              "pid": 12,
+              "rss_kib": 456380,
+              "system_seconds": 3.61,
+              "user_seconds": 26.18
+            },
+            "system_seconds": 0.026975,
+            "user_seconds": 0.009024,
+            "wall_seconds": 0.12726258199836593
+          },
+          "metrics": {
+            "peak_rss_kib": 135252,
+            "server_after": {
+              "children_system_seconds": 0.16,
+              "children_user_seconds": 0.13,
+              "peak_rss_kib": 913100,
+              "pid": 12,
+              "rss_kib": 913100,
+              "system_seconds": 3.12,
+              "user_seconds": 23.61
+            },
+            "server_before": null,
+            "system_seconds": 0.261527,
+            "user_seconds": 0.290082,
+            "wall_seconds": 5.923364456000854
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 1728,
+          "block_outputs": 268013,
+          "peak_rss_kib": 700692,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.709035,
+          "user_seconds": 27.639232,
+          "waited_children": 2,
+          "wall_seconds": 7.573731721000513
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659464,
+              "pid": 12,
+              "rss_kib": 393884,
+              "system_seconds": 3.56,
+              "user_seconds": 29.68
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 920452,
+              "pid": 12,
+              "rss_kib": 920452,
+              "system_seconds": 3.12,
+              "user_seconds": 27.24
+            },
+            "system_seconds": 0.03221,
+            "user_seconds": 0.009029,
+            "wall_seconds": 0.5032682820019545
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659464,
+              "pid": 12,
+              "rss_kib": 412088,
+              "system_seconds": 3.81,
+              "user_seconds": 30.35
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 659464,
+              "pid": 12,
+              "rss_kib": 394036,
+              "system_seconds": 3.56,
+              "user_seconds": 29.9
+            },
+            "system_seconds": 0.03207,
+            "user_seconds": 0.00489,
+            "wall_seconds": 0.13354769900615793
+          },
+          "metrics": {
+            "peak_rss_kib": 135192,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 919720,
+              "pid": 12,
+              "rss_kib": 919720,
+              "system_seconds": 3.12,
+              "user_seconds": 27.09
+            },
+            "server_before": null,
+            "system_seconds": 0.290678,
+            "user_seconds": 0.280885,
+            "wall_seconds": 5.439048455999
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 13090,
+          "block_outputs": 257942,
+          "peak_rss_kib": 659464,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 4.4898,
+          "user_seconds": 31.240331,
+          "waited_children": 2,
+          "wall_seconds": 7.157967701001326
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.051865999999999995,
+          "user_seconds": 0.045667,
+          "waited_children": 1,
+          "wall_seconds": 0.15201539000554476
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/j7a3w8793h0c1id9rwagnydsyd5h454l-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.016391,
+        "client_user_seconds": 0.007627999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/qxysaqpaydpwnjbdf2ji129r056k7wpm-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          142.25146484375,
+          109.87744140625,
+          100.7705078125
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 8.718366002998664
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/j7a3w8793h0c1id9rwagnydsyd5h454l-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "implementation-edit",
+      "wall_seconds": 20.90297054000257
+    },
+    {
+      "derivation": "/nix/store/7dikwmvxgysylm6r85a2806v1ksgwsy6-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 601884,
+        "client_system_seconds": 1.640422,
+        "client_user_seconds": 8.073404,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/first-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          138.73388671875,
+          110.20654296875,
+          100.9765625
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.650670324001112
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.25,
+              "children_user_seconds": 0.3,
+              "peak_rss_kib": 715252,
+              "pid": 12,
+              "rss_kib": 401800,
+              "system_seconds": 4.88,
+              "user_seconds": 28.05
+            },
+            "server_before": {
+              "children_system_seconds": 0.25,
+              "children_user_seconds": 0.3,
+              "peak_rss_kib": 904820,
+              "pid": 12,
+              "rss_kib": 904820,
+              "system_seconds": 4.4,
+              "user_seconds": 25.58
+            },
+            "system_seconds": 0.035997999999999995,
+            "user_seconds": 0.006777999999999999,
+            "wall_seconds": 0.4901887180021731
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.25,
+              "children_user_seconds": 0.3,
+              "peak_rss_kib": 715252,
+              "pid": 12,
+              "rss_kib": 421976,
+              "system_seconds": 5.13,
+              "user_seconds": 28.62
+            },
+            "server_before": {
+              "children_system_seconds": 0.25,
+              "children_user_seconds": 0.3,
+              "peak_rss_kib": 715252,
+              "pid": 12,
+              "rss_kib": 398732,
+              "system_seconds": 4.88,
+              "user_seconds": 28.18
+            },
+            "system_seconds": 0.026541,
+            "user_seconds": 0.004568,
+            "wall_seconds": 0.13484698499087244
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.25,
+              "children_user_seconds": 0.3,
+              "peak_rss_kib": 900320,
+              "pid": 12,
+              "rss_kib": 900320,
+              "system_seconds": 4.4,
+              "user_seconds": 25.45
+            },
+            "server_before": null,
+            "system_seconds": 0.127401,
+            "user_seconds": 0.30965699999999996,
+            "wall_seconds": 6.240125740994699
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 11712,
+          "block_outputs": 271113,
+          "peak_rss_kib": 715252,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.942061,
+          "user_seconds": 29.819516,
+          "waited_children": 2,
+          "wall_seconds": 8.055785140997614
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.24,
+              "children_user_seconds": 0.34,
+              "peak_rss_kib": 712592,
+              "pid": 12,
+              "rss_kib": 434948,
+              "system_seconds": 4.29,
+              "user_seconds": 31.84
+            },
+            "server_before": {
+              "children_system_seconds": 0.24,
+              "children_user_seconds": 0.34,
+              "peak_rss_kib": 948972,
+              "pid": 12,
+              "rss_kib": 948972,
+              "system_seconds": 3.66,
+              "user_seconds": 29.53
+            },
+            "system_seconds": 0.038074,
+            "user_seconds": 0.00633,
+            "wall_seconds": 0.5185931400046684
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.24,
+              "children_user_seconds": 0.34,
+              "peak_rss_kib": 712592,
+              "pid": 12,
+              "rss_kib": 454528,
+              "system_seconds": 7.2,
+              "user_seconds": 32.67
+            },
+            "server_before": {
+              "children_system_seconds": 0.24,
+              "children_user_seconds": 0.34,
+              "peak_rss_kib": 712592,
+              "pid": 12,
+              "rss_kib": 435072,
+              "system_seconds": 4.29,
+              "user_seconds": 31.99
+            },
+            "system_seconds": 0.031416,
+            "user_seconds": 0.0022459999999999997,
+            "wall_seconds": 0.29496879799989983
+          },
+          "metrics": {
+            "peak_rss_kib": 143444,
+            "server_after": {
+              "children_system_seconds": 0.24,
+              "children_user_seconds": 0.34,
+              "peak_rss_kib": 944972,
+              "pid": 12,
+              "rss_kib": 944972,
+              "system_seconds": 3.64,
+              "user_seconds": 29.33
+            },
+            "server_before": null,
+            "system_seconds": 0.17300000000000001,
+            "user_seconds": 0.28890099999999996,
+            "wall_seconds": 6.062681239010999
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 2304,
+          "block_outputs": 263574,
+          "peak_rss_kib": 712592,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 7.966376,
+          "user_seconds": 33.9272,
+          "waited_children": 2,
+          "wall_seconds": 8.012466479005525
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.055443,
+          "user_seconds": 0.039251,
+          "waited_children": 1,
+          "wall_seconds": 0.12775894199148752
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/01swgscpq1cnj5w80jlidwc1h29k61cv-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 16,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.020883,
+        "client_user_seconds": 0.008791,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/7dikwmvxgysylm6r85a2806v1ksgwsy6-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          141.9814453125,
+          111.7529296875,
+          101.57373046875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 9.287468715992873
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/01swgscpq1cnj5w80jlidwc1h29k61cv-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "public-api-edit",
+      "wall_seconds": 21.938139039993985
+    },
+    {
+      "derivation": "/nix/store/7dikwmvxgysylm6r85a2806v1ksgwsy6-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 601928,
+        "client_system_seconds": 1.3443990000000001,
+        "client_user_seconds": 7.7825109999999995,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          142.24365234375,
+          113.1806640625,
+          102.1982421875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 11.68725676399481
+      },
+      "fresh_builder_resources": {},
+      "mode": "bazel",
+      "nix_output_reused": true,
+      "output": "/nix/store/01swgscpq1cnj5w80jlidwc1h29k61cv-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.010999,
+        "client_user_seconds": 0.005007999999999999,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/7dikwmvxgysylm6r85a2806v1ksgwsy6-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          142.24365234375,
+          113.1806640625,
+          102.1982421875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 0.22026895399903879
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/01swgscpq1cnj5w80jlidwc1h29k61cv-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "second-worktree",
+      "wall_seconds": 11.907525717993849
+    },
+    {
+      "derivation": "/nix/store/lcji8x46p6rc26nwidw1mwj9fpi3is5d-aos-boot-identity-0.1.0.drv",
+      "evaluation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 0,
+        "client_peak_rss_kib": 588412,
+        "client_system_seconds": 1.5871149999999998,
+        "client_user_seconds": 8.058467,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/harness/end_to_end.nix",
+          "--argstr",
+          "root",
+          "/tmp/aos-bazel-722/end-to-end-scratch-d/2-bazel/second-worktree",
+          "--argstr",
+          "mode",
+          "bazel",
+          "--argstr",
+          "cacheNamespace",
+          "end-to-end-e12b8bb2b75dccafa62289fdf801ec3518091aa801c19b7b336819a7b38f7c3c",
+          "--argstr",
+          "invocationNonce",
+          "boot-nix-e2e-20261022-d:2-bazel:fresh",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          146.21875,
+          115.47705078125,
+          103.12451171875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 12.682427553998423
+      },
+      "fresh_builder_resources": {
+        "bazel-build-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 977760,
+              "pid": 12,
+              "rss_kib": 977760,
+              "system_seconds": 5.13,
+              "user_seconds": 26.55
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 899536,
+              "pid": 12,
+              "rss_kib": 899536,
+              "system_seconds": 4.86,
+              "user_seconds": 24.53
+            },
+            "system_seconds": 0.029782999999999997,
+            "user_seconds": 0.0078,
+            "wall_seconds": 0.4277511010004673
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 715792,
+              "pid": 12,
+              "rss_kib": 400656,
+              "system_seconds": 5.41,
+              "user_seconds": 27.0
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 715792,
+              "pid": 12,
+              "rss_kib": 402064,
+              "system_seconds": 5.17,
+              "user_seconds": 26.55
+            },
+            "system_seconds": 0.0254,
+            "user_seconds": 0.006055999999999999,
+            "wall_seconds": 0.1307075210061157
+          },
+          "metrics": {
+            "peak_rss_kib": 139348,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 899492,
+              "pid": 12,
+              "rss_kib": 899492,
+              "system_seconds": 4.86,
+              "user_seconds": 24.4
+            },
+            "server_before": null,
+            "system_seconds": 0.12317599999999998,
+            "user_seconds": 0.30175799999999997,
+            "wall_seconds": 5.215931838989491
+          }
+        },
+        "bazel-build-resources.json": {
+          "block_inputs": 177733,
+          "block_outputs": 265232,
+          "peak_rss_kib": 715792,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.899635,
+          "user_seconds": 27.912532,
+          "waited_children": 2,
+          "wall_seconds": 6.752509760000976
+        },
+        "bazel-test-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 695284,
+              "pid": 12,
+              "rss_kib": 389472,
+              "system_seconds": 3.21,
+              "user_seconds": 26.36
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 881712,
+              "pid": 12,
+              "rss_kib": 881712,
+              "system_seconds": 2.86,
+              "user_seconds": 23.95
+            },
+            "system_seconds": 0.028083,
+            "user_seconds": 0.009392999999999999,
+            "wall_seconds": 0.468145883991383
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 12336,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 695284,
+              "pid": 12,
+              "rss_kib": 407756,
+              "system_seconds": 3.46,
+              "user_seconds": 27.13
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 695284,
+              "pid": 12,
+              "rss_kib": 389664,
+              "system_seconds": 3.21,
+              "user_seconds": 26.59
+            },
+            "system_seconds": 0.03499699999999999,
+            "user_seconds": 0.003423,
+            "wall_seconds": 0.1425740699924063
+          },
+          "metrics": {
+            "peak_rss_kib": 135252,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.04,
+              "peak_rss_kib": 881628,
+              "pid": 12,
+              "rss_kib": 881628,
+              "system_seconds": 2.86,
+              "user_seconds": 23.83
+            },
+            "server_before": null,
+            "system_seconds": 0.188192,
+            "user_seconds": 0.29416200000000003,
+            "wall_seconds": 5.318029504007427
+          }
+        },
+        "bazel-test-resources.json": {
+          "block_inputs": 25098,
+          "block_outputs": 257945,
+          "peak_rss_kib": 695284,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 3.984331,
+          "user_seconds": 28.043429,
+          "waited_children": 2,
+          "wall_seconds": 6.88957513999776
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 3773,
+          "peak_rss_kib": 8240,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.032539,
+          "user_seconds": 0.042705,
+          "waited_children": 1,
+          "wall_seconds": 0.10310415500134695
+        }
+      },
+      "mode": "bazel",
+      "nix_output_reused": false,
+      "output": "/nix/store/rd9n6l7nc0xr2bcy51kdrjg06802ylbl-aos-boot-identity-0.1.0",
+      "realisation": {
+        "client_block_inputs": 0,
+        "client_block_outputs": 15,
+        "client_peak_rss_kib": 16432,
+        "client_system_seconds": 0.014088999999999999,
+        "client_user_seconds": 0.0086,
+        "command": [
+          "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store",
+          "--realise",
+          "/nix/store/lcji8x46p6rc26nwidw1mwj9fpi3is5d-aos-boot-identity-0.1.0.drv",
+          "--max-jobs",
+          "4",
+          "--cores",
+          "4",
+          "--option",
+          "substitute",
+          "false",
+          "--option",
+          "extra-sandbox-paths",
+          "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel"
+        ],
+        "load_average": [
+          141.31640625,
+          114.970703125,
+          103.02685546875
+        ],
+        "resource_scope": "Nix client and its waited descendants; daemon builders recorded separately",
+        "wall_seconds": 7.6849350499978755
+      },
+      "repetition": 2,
+      "runtime_closure": [
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6",
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+        "/nix/store/rd9n6l7nc0xr2bcy51kdrjg06802ylbl-aos-boot-identity-0.1.0"
+      ],
+      "scenario": "fresh-derivation",
+      "wall_seconds": 20.3673626039963
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Nix evaluation plus realisation of installed boot identity and library unit tests",
+  "trial": "boot-nix-e2e-20261022-d"
+}

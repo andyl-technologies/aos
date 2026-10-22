@@ -559,3 +559,49 @@ builders, and a second 90-sample measurement. It also records actual developer
 build reuse and release-directory cleanup. The initial concurrent attempt was
 rejected because scheduling did not overlap its participants; a fresh isolated
 trial passed the unchanged verifier.
+
+## Installed boot package measurements
+
+`bench/measure_end_to_end.py` compares the production boot-identity recipe with
+a benchmark-only Bazel candidate. Invoke it with the AOS-built Python and Nix:
+
+```sh
+"$AOS_BENCH_PYTHON" tools/bazel/bench/measure_end_to_end.py \
+  --root "$PWD" --scratch /tmp/aos-boot-benchmark-source \
+  --output /tmp/aos-boot-benchmark-results \
+  --cache-root /var/tmp/aos-dev-cache-1000/bazel \
+  --nix-tools "$AOS_BENCH_NIX_BIN" --trial UNIQUE-TRIAL
+```
+
+Both scratch and output paths must be new. Keep the repository unchanged during
+the experiment: each mode and repetition copies the source before applying the
+same trial-specific edits. Three repetitions rotate the candidate order. Each
+records evaluation and realisation separately, verifies valid and invalid CLI
+behavior, and checks the installed runtime closure. The production recipe uses
+`rustc` directly; the Cargo compile-loop baseline above is a separate workload.
+The candidate preserves the production install and fixup phases and checks the
+same library-unit-test scope. Neither candidate changes production selection.
+
+`native-linux-boot-end-to-end-baseline.json` retains all 36 raw samples, exact
+commands, builder/JVM resources, runtime closures, and harness hashes. Median
+evaluation-plus-realisation times in seconds are:
+
+| Mode | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh derivation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Production | 2.163 | 0.832 | 2.035 | 2.221 | 1.022 | 1.702 |
+| Bazel candidate | 25.846 | 12.587 | 20.903 | 21.267 | 11.908 | 20.367 |
+
+Warm and second-worktree samples reuse the Nix output in both modes. The Bazel
+warm delay is overwhelmingly evaluation, before action-cache lookup or compiler
+execution. This baseline fails the useful end-to-end improvement requirement;
+it does not authorize a family cutover. Source selection and evaluation need
+profiling before larger-family measurements establish acceptance budgets.
+
+Compiler dependencies are already prepared, filesystem page caches and host
+contention are uncontrolled, and snapshot/runtime checks are outside the timed
+intervals. The recorder adds overhead to both modes. Its daemon-builder CPU and
+maximum process RSS include adopted JVM children; the separate JVM counters
+overlap that accounting and must not be added again. Existing-output samples
+contain no fresh builder resources. The installed Bazel candidate adds the
+declared GCC runtime library closure; it retains no compiler or JDK paths in
+its numeric measurement files.
