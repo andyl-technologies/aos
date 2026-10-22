@@ -161,6 +161,10 @@ impl Admission for Model<'_> {
         step: Option<Step>,
         actual: usize,
     ) -> Result<(), ProviderError> {
+        println!(
+            "bootstrap fixture codec observe {step:?} before census: remaining={:?}",
+            original.cut.remaining()
+        );
         let call = self.calls.get();
         self.calls.set(call + 1);
         self.census(original, normalizations, literal, parsed);
@@ -190,6 +194,10 @@ impl Admission for Model<'_> {
                 "proof"
             }
         };
+        println!(
+            "bootstrap fixture codec observe {step:?} after census: remaining={:?}",
+            original.cut.remaining()
+        );
         self.action(original, label)
     }
 }
@@ -463,8 +471,16 @@ fn closed_maximum_covers_actual_nullable_ids_maps_and_three_decoded_banks() {
 pub(in super::super::super) fn complete_for_correlation(
     original: &mut OriginalImport18RawBootstrap,
 ) -> (Normalizations, Literal, Parsed, Attempt) {
+    println!(
+        "bootstrap fixture codec inputs begin: remaining={:?}",
+        original.cut.remaining()
+    );
     let (normalizations, literal, parsed) =
         super::super::bootstrap_value::tests::complete_for_codec(original);
+    println!(
+        "bootstrap fixture codec inputs complete: remaining={:?}",
+        original.cut.remaining()
+    );
     let mut attempt = Attempt::empty_data();
     let model = Model {
         suffix: "complete",

@@ -424,6 +424,10 @@ impl Admission for Preparation {
 
 /// Retains genuine normalization outputs for a downstream operation's fixture.
 pub(in super::super) fn complete_for_host(original: &mut OriginalImport18RawBootstrap) -> Attempt {
+    println!(
+        "bootstrap fixture normalizations begin: remaining={:?}",
+        original.cut.remaining()
+    );
     let model = Preparation(Model {
         case: "initial_policy_kernel_normalizations_complete",
         original_retained: original.retained_requested_bytes().unwrap(),
@@ -436,6 +440,10 @@ pub(in super::super) fn complete_for_host(original: &mut OriginalImport18RawBoot
     original
         .construct_bootstrap_normalizations_data(&mut attempt, &model)
         .unwrap();
+    println!(
+        "bootstrap fixture normalizations complete: remaining={:?}",
+        original.cut.remaining()
+    );
     assert_eq!(model.0.entered.get(), 31);
     assert_eq!(model.0.observed.get(), 31);
     assert_eq!(attempt.digests, model.0.digests.get());

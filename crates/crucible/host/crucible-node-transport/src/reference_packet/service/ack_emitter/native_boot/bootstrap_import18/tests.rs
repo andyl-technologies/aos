@@ -244,6 +244,13 @@ fn child(case: &str, wire: &[u8]) {
             .unwrap();
     }
     let output = process.wait_with_output().unwrap();
+    // The child's stderr is its public protocol socket. Timing diagnostics use
+    // stdout and stay attached to their exact inherited flight in this parent.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some((_, timing)) = line.split_once("bootstrap fixture ") {
+            println!("{case}: bootstrap fixture {timing}");
+        }
+    }
     let mut diagnostics = match proof_publication {
         Ok(frame) => frame,
         Err(error) => panic!(
