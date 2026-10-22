@@ -1882,6 +1882,12 @@ in
                       raise RuntimeError(f"missing native component result: {marker}")
                   (Path(os.environ["out"]) / "share/aos/crucible" / f"{result_name}.result").write_text(result_text)
 
+              # Build the authenticated production-provider closure before
+              # delivery's unchanged bounded runtime inventory starts.
+              subprocess.run([
+                  "${ninja}/bin/ninja", "-C", str(source_root / "build"),
+                  "tests/unit/crucible-execution-provider.json",
+              ], env=environment, check=True)
               failed_fixtures = []
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
@@ -1910,6 +1916,14 @@ in
                           str(source_root / f"tests/unit/test-crucible-{name}.py"),
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ]
+                      if name == "control-delivery":
+                          fixture_command += [
+                              "--compile-database", str(source_root / "build/compile_commands.json"),
+                              "--build-dir", str(source_root / "build"),
+                              "--qemu-util", str(source_root / "build/libqemuutil.a"),
+                              "--objcopy", "${buildBinutils}/bin/objcopy",
+                              "--provider-manifest", str(source_root / "build/tests/unit/crucible-execution-provider.json"),
+                          ]
                       if name == "ram-worker-inventory":
                           fixture_command += ["--build-dir", entry["directory"]]
                       if name in ("settle-prepark", "control-deferred"):

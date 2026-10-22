@@ -55,6 +55,9 @@ QOM_LINK = {
     "flatview-custody", "memory-discard-custody", "memory-region-custody",
     "ram-mapping-journal",
 }
+SOURCE_PROVIDER_COMPONENTS = {
+    "executor-cleanup-bridge", "executor-cleanup", "quantum-execution",
+}
 TARGET_FLAGS = {"apic-timer-storage", "clock-storage-return"}
 
 
@@ -219,6 +222,10 @@ def main():
     if not qom or any(not Path(path).is_file() for path in qom):
         raise ValueError("actual configured QOM support is incomplete")
 
+    objcopy = shutil.which("objcopy")
+    if objcopy is None or not Path(objcopy).is_absolute():
+        raise ValueError("configured provider requires the actual objcopy executable")
+
     initial_source = base["source_manifest"](source)
     records = []
     for name in COMPONENTS:
@@ -242,6 +249,13 @@ def main():
             argv.extend(("--qemu-util", str(build / "libqemuutil.a")))
             for path in qom:
                 argv.extend(("--qom-object", path))
+        if name in SOURCE_PROVIDER_COMPONENTS:
+            argv.extend((
+                "--compile-database", str(build / "compile_commands.json"),
+                "--build-dir", str(build),
+                "--qemu-util", str(build / "libqemuutil.a"),
+                "--objcopy", objcopy,
+            ))
         base["write_json"](case_output / "environment.json", {
             key: settings[key] for key in ("CC", "CFLAGS", "LDFLAGS")})
         result = run_component(argv, build, settings, cases, case_output, base["write_json"])

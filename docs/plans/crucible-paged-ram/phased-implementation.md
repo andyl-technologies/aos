@@ -63,15 +63,75 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `ec33e02897` imports conventional `45e353b75a`, tree `12361245`. Independent review matches all 78,233 tracked source entries, 26,862 evidence files, twelve literal evidence links and 34 sealed artifacts. The complete Source floor is 298,798 bytes; the cumulative ledger contains 426 created files. | Ordinary-fork quiescence, nonwaiting physical custody, Setup7 parsing, Original registration posts and physical service5 compose with genuine configured links. Packaged atomic reconstruction, the cumulative license ledger, all 187 Source cases and ABI conformance pass for this committed import. Native custody passes 28 components, including the former discard deadlock control, then fails linking the cleanup bridge because two genuine Source dependencies are absent from its extracted fixture. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
+| Native integration | Signed atomic `d1c072e984` imports conventional `a994efb547`, tree `79cdafee`. Independent review matches all 78,235 source entries, 24,232 evidence files, six literal evidence links and 36 sealed artifacts. The complete Source floor is 298,814 bytes; the cumulative ledger contains 428 created files. | Genuine configured fixture-provider dependencies close the previous extracted cleanup link failure. Final normal delivery passes within its unchanged 60-second bound; the complete publisher-access inventory passes within 600 seconds. Packaged reconstruction, ledger, Source and Native custody checks for this import are pending. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Physical stack/member and genuine fixture-provider composition
+
+The signed atomic patch selects `d1c072e9848e2c06f8d25272e1ae063b65deca61`,
+conventional source `a994efb547b925f7c8b0457a2204a04cb10c73e0`, tree
+`79cdafeec4443b7315848ca393601a2f8d6b4250`. Its sole atomic parent remains
+the pinned upstream source. This checkpoint composes physical stack-recipient
+and matched-member storage with the prior physical service and Original bank;
+it supplies no selected semantic execution owner. Later role-reservation,
+matched-constructor, stack-lender and Core drafts remain excluded.
+
+The fixture correction links the actual 27-translation-unit production provider
+instead of omitting the Source dependencies of cleanup. Standalone cleanup,
+bridge and Quantum controls receive the actual compile database, build directory,
+utility archive and objcopy. Packaged delivery first builds the authenticated
+configured provider manifest, then passes it to its unchanged bounded runtime
+inventory. The manifest binds actual compiler/tool, source/generated dependency,
+object, archive and projected environment bytes; unsupported overrides refuse.
+Neither an accepting Source replacement nor a copied authority receipt is used.
+
+The final normal entry passes in 55.961503199 seconds under its original
+60-second limit. The separate configured provider prerequisite takes
+51.899642279/180 seconds. The full 33-case publisher-access inventory passes in
+352.103757387/600 seconds. Standalone bridge, cleanup and Quantum inventories
+pass within their original 180-second limits. All 99 preexec variants have
+compiled, with the final generated bodies and classifiers byte-exact to that
+qualified sweep. The final helper scheduling change reorders the same nine
+independent commands within the existing two-worker pool; all join before the
+architecture-only checks. All 106 generated cases and 128 emitted commands
+match the prior timed-out entry after exact coordinate normalization. No
+runtime case moves outside the 60-second body.
+
+Earlier missing-dependency failures, a compiler-query failure, a genuine
+60.014-second normal timeout and an input-mutation authentication refusal remain
+separately indexed. The final stable runs start only after all earlier writers
+finish. The changed configured cohort compiles 720 fresh outputs and
+independently authenticates 2,446 retained outputs, then links eighteen genuine
+owning targets and both system binaries. It does not claim a fresh whole-build
+sweep. The SDK has 449 declarations and 448 definitions; the previously missing
+`advance_outcome_observe_v1` producer remains undefined and uncounted.
+
+The actual Source is 254,040 bytes. Its 31 genuine static getters contribute
+44,774 bytes, giving the complete 298,814-byte floor. Embedded bank, Native RR,
+Main-finish and Core terms are not charged again. Both architectures measure
+preexec 215,160, storage 27,992, session 17,288, recipient 3,432 and role 80 bytes.
+Two new GPL-compatible files bring the cumulative created-file ledger to 428,
+with no deletions. These are measured physical geometry, not funded stack or
+semantic operation grants.
+
+Independent read-only verification matches all 78,235 signed/working source
+entries, 24,232 regular evidence files, six literal evidence links, 36 sealed
+artifacts and the complete source archive's 78,163 regular files and 72 literal
+links. Both commit signatures, the raw signed atomic object and detached
+manifest signature verify. The manifest SHA-256 is
+`2414415907723dd5cee88495de5a40cc36b7a1cf4c8a1866faec318405195f1e`;
+the independent proof SHA-256 is
+`83fa36cc8b52fbddaf052086b2c4d7380d00238dfb1eb7376b15ca3c04beb11d`.
+The checker's first evidence-base-directory error is retained and corrected
+without changing source or evidence. Packaged qualification remains pending
+at this import checkpoint. CPU admission still refuses with `ENOTSUP`.
+
 #### Ordinary-fork and nonwaiting physical composition
 
-The signed atomic native patch now selects `ec33e02897fe424523e1dc755ae0f3f651fdb22c`
+The preceding signed atomic native patch selects `ec33e02897fe424523e1dc755ae0f3f651fdb22c`
 with conventional source `45e353b75af24644b9cefc014cfc75323a8705bd`, tree
 `12361245265446cff084677143e44d3394f6b8c5`. It composes the ordinary-fork RCU
 registry ordering fix, nonwaiting Source/Native terminal metadata, the inline
@@ -400,10 +460,16 @@ purpose. The first three controls fail against the extracted prior no-op copy.
 All 21 process-envelope controls and the four existing Main stack controls pass,
 including the actual child soft/hard limit readback with an unchanged parent.
 Every all-feature Host target compiles and engineering hygiene passes. The ABI
-gate requires the four-case fork-stack set and its canonical inheritance case. Final application,
-ABI and strict-boundary qualification are still running at this checkpoint;
-this physical control does not qualify Native stack/profile admission or a
-complete launched Source/Target family.
+gate requires the four-case fork-stack set and its canonical inheritance case.
+Mandatory application compilation passes at
+`j212xqx0icb6ny6xaybmph6npm1svnpd`; all 5,332 committed Rust/TOML inputs
+match its frozen source (proof SHA-256
+`d4f32253ebba27d67c7ef156a912ff57a3ad999a4a91c1180b4f907f8a15b7df`).
+ABI conformance passes at `hss3in2yzj8qb0x1yr3smimyg56la8gd`.
+The strict license-boundary gate refuses
+at 908 Host library and 962 test Clippy errors; its boundary assertions did
+not run. This physical control does not qualify Native stack/profile admission
+or a complete launched Source/Target family.
 
 #### Sticky terminal decisions from actual lender collection
 

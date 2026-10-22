@@ -10,6 +10,8 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-quantum-stack-lender-proposal.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-stack-proposal-geometry.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-core-quantum-bank.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-core-quantum-owner-dependencies.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-quantum-installing-service.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
