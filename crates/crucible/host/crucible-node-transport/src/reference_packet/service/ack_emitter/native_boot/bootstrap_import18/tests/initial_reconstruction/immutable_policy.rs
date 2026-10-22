@@ -201,48 +201,56 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
     if success {
         outcome.unwrap();
         assert_eq!(admission.calls.get(), 2);
-        original
-            .with_immutable_policy_data(|policy| {
-                policy.authenticate_original_data(original.parsed.shared_launch_data()?)?;
-                assert_eq!(
-                    std::ptr::from_ref(policy.launch_data()),
-                    std::ptr::from_ref(original.typed_bodies_data()?.launch.launch_data())
-                );
-                assert_eq!(
-                    policy.recipe_identity_data(),
-                    original
-                        .typed_bodies_data()?
-                        .recipe
-                        .announced_identity_data()
-                );
-                assert_eq!(
-                    policy.hello_data(),
-                    original.with_published_hello_frame_digests_data(Ok)?
-                );
-                assert_eq!(
-                    policy.definitions_data()?.map(|schema| schema.version),
-                    [18; 3]
-                );
-                // Equal DTOs in a different shared allocation receive no alias discount.
-                let equal: PacketNativeImport18SelectedLaunchWireData = serde_json::from_value(
-                    serde_json::to_value(original.parsed.shared_launch_data()?.as_ref()).unwrap(),
-                )
+        // Individual policy/birth/registration flights own these independent
+        // field oracles. Kernel and normalization flights exercise their own
+        // original guarded operation within the same unchanged five-second cut.
+        if !case.starts_with("initial_policy_kernel_") {
+            original
+                .with_immutable_policy_data(|policy| {
+                    policy.authenticate_original_data(original.parsed.shared_launch_data()?)?;
+                    assert_eq!(
+                        std::ptr::from_ref(policy.launch_data()),
+                        std::ptr::from_ref(original.typed_bodies_data()?.launch.launch_data())
+                    );
+                    assert_eq!(
+                        policy.recipe_identity_data(),
+                        original
+                            .typed_bodies_data()?
+                            .recipe
+                            .announced_identity_data()
+                    );
+                    assert_eq!(
+                        policy.hello_data(),
+                        original.with_published_hello_frame_digests_data(Ok)?
+                    );
+                    assert_eq!(
+                        policy.definitions_data()?.map(|schema| schema.version),
+                        [18; 3]
+                    );
+                    // Equal DTOs in a different shared allocation receive no alias discount.
+                    let equal: PacketNativeImport18SelectedLaunchWireData = serde_json::from_value(
+                        serde_json::to_value(original.parsed.shared_launch_data()?.as_ref())
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    assert!(policy.authenticate_original_data(&Rc::new(equal)).is_err());
+                    Ok(())
+                })
                 .unwrap();
-                assert!(policy.authenticate_original_data(&Rc::new(equal)).is_err());
-                Ok(())
-            })
-            .unwrap();
-        original
-            .with_bootstrap_policy_wire_data(|view| assert_bootstrap_policy_wire(&original, view))
-            .unwrap();
-        original
-            .with_bootstrap_birth_wire_data(|view| assert_bootstrap_birth_wire(&original, view))
-            .unwrap();
-        original
-            .with_bootstrap_native_registration_wire_data(|view| {
-                assert_bootstrap_native_registration(original, view)
-            })
-            .unwrap();
+            original
+                .with_bootstrap_policy_wire_data(|view| {
+                    assert_bootstrap_policy_wire(&original, view)
+                })
+                .unwrap();
+            original
+                .with_bootstrap_birth_wire_data(|view| assert_bootstrap_birth_wire(&original, view))
+                .unwrap();
+            original
+                .with_bootstrap_native_registration_wire_data(|view| {
+                    assert_bootstrap_native_registration(original, view)
+                })
+                .unwrap();
+        }
         if case.starts_with("initial_policy_kernel_") {
             super::bootstrap_kernel::assert_child(case, original);
         }

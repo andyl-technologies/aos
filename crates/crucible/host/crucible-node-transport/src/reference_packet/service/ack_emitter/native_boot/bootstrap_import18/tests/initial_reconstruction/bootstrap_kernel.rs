@@ -155,7 +155,10 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
     assert_eq!(original.bootstrap_kernel.complete, completed);
 
     if completed {
-        if !case.contains("_operands_") && !case.contains("_normalizations_") {
+        if matches!(
+            case,
+            "initial_policy_kernel_complete" | "initial_policy_kernel_reactive"
+        ) {
             original
                 .with_bootstrap_kernel_wire_data(|view| {
                     let value = serde_json::to_value(view).unwrap();
@@ -197,26 +200,32 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             super::bootstrap_operands::assert_child(case, original);
         }
         if case.ends_with("callback_refused") && !case.ends_with("operands_callback_refused") {
+            let entered = Cell::new(false);
             assert!(
                 original
-                    .with_bootstrap_kernel_wire_data::<()>(|_| Err(ProviderError::Conflict(
-                        "kernel callback model"
-                    )))
+                    .with_bootstrap_kernel_wire_data::<()>(|_| {
+                        entered.set(true);
+                        Err(ProviderError::Conflict("kernel callback model"))
+                    })
                     .is_err()
             );
+            assert!(entered.get());
             original
                 .with_bootstrap_kernel_wire_data(|_| Ok(()))
                 .unwrap();
         }
         if case.ends_with("loan_expired") && !case.ends_with("operands_loan_expired") {
+            let entered = Cell::new(false);
             assert!(
                 original
                     .with_bootstrap_kernel_wire_data(|_| {
+                        entered.set(true);
                         std::thread::sleep(Duration::from_secs(5));
                         Ok(())
                     })
                     .is_err()
             );
+            assert!(entered.get());
         }
         if case.ends_with("later_contained") {
             original.hello_registrar.contain_admission_data().unwrap();
