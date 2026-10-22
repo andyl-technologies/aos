@@ -3612,6 +3612,38 @@ control passes. Both suites run against unchanged committed source and stable
 test executables after all compilation jobs finish.
 These results establish no configured runtime, VM or full RFC qualification.
 
+## Borrow endings and Bootstrap phase timing
+
+Commit `ebc9a8dfb7` removes explicit drops of six borrowed views/closures and
+returns the Bootstrap preflight result directly. Nonlexical lifetimes end those
+borrows. Actual RefCell guards and the observation producer that owns an Rc
+retain their explicit release points. No allocation, row or authority changes.
+The endpoint responsibility review is refreshed in `ffd8ecb284` after reading
+the complete module; its existing scope rationale and thresholds are unchanged.
+
+Commit `1ba5a34df1` adds test-only remaining-time reports around normalization,
+codec input preparation and codec census callbacks. Reports use the original
+cut. Child output travels through stdout because stderr is the public protocol
+socket. Parent diagnostics retain each actual case name. There are no retries,
+new deadlines, filters or completion grants in the fixture.
+
+All 96 focused endpoint and observation17 tests pass across standard and raw
+JSON. Raw-JSON test compilation, Transport/Engine/Daemon all-feature/all-target
+checking, owned-file formatting and the six architecture gates pass. Strict
+Transport library Clippy decreases from 81 to 74 errors, with 1,727 warnings;
+no allowance changes. The required application gate compiles 180 test executables
+across 58 packages, including 71 integration targets. All 442 owned Rust/Cargo
+inputs match committed `1ba5a34df1` and its actual captured source. The subsequent
+responsibility-ledger update changes no compiled Rust input.
+
+The focused raw-JSON reply test passes its inherited subprocess cases in 385.06
+seconds, with 2,097 other tests filtered. Timing shows roughly 0.23 seconds in
+normalization and tens of microseconds in each codec census, while literal and
+Value preparation together take about 1.14 seconds. Shared codec preparation
+leaves approximately 0.85 to 0.92 seconds on the original five-second cut.
+This focused pass does not resolve the previous unfiltered raw-JSON failure.
+No new full-library, configured runtime, VM or full RFC qualification follows.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
