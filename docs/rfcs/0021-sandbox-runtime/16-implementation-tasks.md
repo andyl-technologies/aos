@@ -9598,6 +9598,14 @@ compiled-policy and enforcing installed-VM qualification. The other VM runs
 embedding the same known-denied policy were interrupted before qualification
 and will be replaced with these repairs; interruption is not a test pass.
 
+The phase-0 target also explicitly requires and follows the selected manager's
+`systemd-nsresourced.socket`. The packaged unit is on that manager's compiled
+unit search path, but its preset does not establish an active socket in this
+image. Upstream 261.2's actual managed-allocation client connects directly to
+`/run/systemd/io.systemd.NamespaceResource` and cannot allocate without it.
+This dependency activates the unchanged packaged socket and service for the
+existing shifted-userns probe; it creates no replacement namespace allocator.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the
