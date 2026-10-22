@@ -8,6 +8,19 @@ use crate::store::{
 use terrane_format::bucket::{BucketCapabilities, BucketKey};
 use terrane_format::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<F, C, V> crate::store::RefInventory for FileBucket<F, C, V>
+where
+    F: LocalFs + BucketBinding,
+    C: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
+        FileBucket::ref_names(self).await
+    }
+}
+
 fn ref_key(name: &str, version: u64) -> Result<BucketKey, StoreFailure> {
     if !name.starts_with("refs/") {
         return Err(files::malformed());

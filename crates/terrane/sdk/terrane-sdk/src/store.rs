@@ -3,6 +3,10 @@
 //! Backends and combinators implement the interfaces in specification 11.
 //! Runtime bindings are selected through features (CRATE-6 to CRATE-8).
 
+mod ref_inventory;
+
+pub use ref_inventory::RefInventory;
+
 // An I/O consumer selects one binding. Library-only builds may select none.
 #[cfg(all(feature = "tokio", feature = "wasm"))]
 compile_error!("CRATE-8: tokio and wasm are mutually exclusive I/O bindings");

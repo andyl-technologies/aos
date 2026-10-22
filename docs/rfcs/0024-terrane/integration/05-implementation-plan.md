@@ -12266,3 +12266,46 @@ no application runtime claim. The original `c86390959e` 4,096-entry diagnostic
 terminates with actual timeout exit 124 at its unchanged 1,800-second bound;
 its final unchanged-body verification was still running after writer-budget
 assertions passed. The new grouped-read population qualification is pending.
+
+
+#### Guarded complete reference enumeration
+
+The SDK now exposes optional `RefInventory` separately from ordinary point
+reads. The local bucket implements it through its actual complete capabilities
+inventory; it does not infer names from directories. `Guard::list_refs` validates
+canonical unique candidate names, applies the existing byte-glob language,
+authenticates even empty matches, and checks current Read through the ordinary
+whole-ref and historical-policy path. It omits absent and denied candidates,
+orders results by canonical name, and reauthorizes every selected whole record
+before return. Epoch, home, policy and candidate-selector changes cannot hide
+behind an equal commit digest. `Repository::list_refs` exposes only this guarded
+result and metadata accessors, with no raw inventory or signing authority.
+
+Candidate verification can fail before current authority is established. Those
+failures return an opaque unavailable result with no candidate name or diagnostic
+source; a later revocation reports only the caller's supplied pattern. No partial
+result escapes on failure. The materialized API promises neither an atomic
+multi-ref snapshot nor bounded streaming, and the deployed ListRefs/WatchRefs
+service remains separate work.
+
+Five genuine native repository cases pass under the existing thirty-second
+selector bound: canonical component matching and lexical order with full heads
+across reopen; attenuation hiding another published branch together with a
+genuinely signed principal denied by the actual root ACL; invalid or expired
+credentials despite empty matches; malformed patterns; and loss of a published
+private fork's exact protected original association without leaking its name or
+an already gathered result. Strict SDK/Linux/CLI all-target Clippy, Rust/Nix
+formatting, native `std,wasm`, actual WebAssembly-target checking and check
+evaluation pass. Frozen `integration.ref-listing` and required application-target
+qualification remain pending. No task acceptance changes.
+
+The native authentication change at `b537097ad5` passes frozen qualification in
+155.52 seconds and independent review of all eleven actual cases, 7,928 immutable
+source files, 5,233 crate inputs and its retained executed ELF. Its required
+application-target compilation is still running. The grouped-read change at
+`a9b9cdb9f5` now passes independent frozen review of all fifty verified-read cases
+and required application-target compilation: 7,926 immutable files and 184 actual
+executables across 59 packages, compilation only. Its local 4,096-entry ordinary
+diagnostic passes in 1,226.61 seconds under the unchanged 1,800-second bound,
+including the final independent byte checks. The adversarial diagnostic and
+source-bound six-population qualification remain pending.

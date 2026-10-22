@@ -19,6 +19,7 @@ mod error;
 mod history;
 #[cfg(feature = "std")]
 mod import;
+mod listing;
 #[cfg(all(feature = "std", unix))]
 mod local;
 #[cfg(all(feature = "std", unix))]
@@ -33,6 +34,7 @@ pub(crate) mod read;
 pub(crate) mod schema;
 mod validator;
 
+pub use crate::guard::ListedRef;
 #[cfg(unix)]
 pub use audit::RegisteredDomainAudit;
 pub use diff::Difference;

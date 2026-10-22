@@ -61,6 +61,14 @@ does not promise a cross-object snapshot: a backend may execute scalar reads
 or split the input into bounded groups, each with its own fresh observation.
 It adds no ref operation or authorization bypass and is not another wire RPC.
 
+The optional SDK `RefInventory` interface supplies complete registered candidate
+names from a reference authority. Point reads and directory listings cannot
+establish that completeness. Names may survive deletion or a losing first write;
+each live result still requires an independent guarded read. The local bucket
+uses its existing authoritative capabilities inventory and refuses an unmigrated
+legacy inventory. This helper grants no read authority and supplies no atomic
+snapshot across refs.
+
 - **[STORE-32]** `ContentStore` and `RefStore` MUST be distinct interfaces.
   A backend or combinator MUST declare which it implements, and a caller
   MUST be able to hold a `ContentStore` without any ref operation being

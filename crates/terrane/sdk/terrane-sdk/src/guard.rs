@@ -35,6 +35,10 @@ mod existing;
 #[cfg(all(feature = "std", feature = "tokio", unix))]
 pub(crate) mod held_history;
 mod history;
+mod inventory;
+
+pub use inventory::ListedRef;
+
 #[cfg(all(feature = "std", feature = "tokio", unix))]
 pub(crate) mod overlay_history;
 #[cfg(all(feature = "tokio", unix))]
