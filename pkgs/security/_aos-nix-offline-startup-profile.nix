@@ -35,7 +35,6 @@ in
       if hardware
       then "${aos-nix-offline-tpm-helper}/libexec/aos-nix-offline-tpm-helper"
       else "";
-    passAsFile = ["unitContract"];
     exportReferencesGraph.offlinePrepareRuntimeClosure =
       [aos-sandboxd]
       ++ (
@@ -72,7 +71,7 @@ in
             ${systemd}/lib/systemd/systemd \
             ${aos-selinux-kernel-policy-readback}/policy.33 \
             "$out/source-policy.33" "$out/effective-policy.tsv" \
-            "$unitContractPath" ${buildPackages.patchelf}/bin/patchelf \
+            ${buildPackages.patchelf}/bin/patchelf \
             ${buildPackages.binutils}/bin/readelf "$out/profile.json" <<'PY'
           import hashlib
           import importlib.util
@@ -82,7 +81,7 @@ in
           from pathlib import Path
 
           (source, helper_path, attrs, executable, pid1, canonical, source_policy,
-           matrix, unit_path, patchelf, readelf, output) = map(Path, sys.argv[1:])
+           matrix, patchelf, readelf, output) = map(Path, sys.argv[1:])
           spec = importlib.util.spec_from_file_location("aos_original_image_primitives", source)
           if spec is None or spec.loader is None:
               raise ValueError("original image primitives cannot be imported")
@@ -134,7 +133,9 @@ in
           if matrix.stat().st_size == 0:
               raise ValueError("actual effective-policy comparison is empty")
 
-          unit = unit_path.read_bytes()
+          # Structured derivations retain the public unit contract in the
+          # canonical attributes file, as the online profile producer does.
+          unit = json.loads(attrs.read_text())["unitContract"].encode("utf-8")
           placeholder = b"OpenFile=@AOS_NIX_OFFLINE_PREPARE_PROFILE@:aos-nix-offline-prepare-profile:read-only\n"
           if len(unit) > 65536 or unit.splitlines(keepends=True).count(placeholder) != 1:
               raise ValueError("selected unit must contain exactly its closed profile role")
