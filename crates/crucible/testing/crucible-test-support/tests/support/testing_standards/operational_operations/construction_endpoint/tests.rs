@@ -588,27 +588,33 @@ fn every_actual_candidate_refusal_keeps_its_negative_result()
     )?;
     let code = crate::scrub_comments_and_strings(&source);
     let companions = read_companions(contract)?;
-    let obligation = source_pattern(controls::REFUSAL_ASSERTION);
-    let occurrences = expression_offsets(&code, &obligation);
-    assert_eq!(occurrences.len(), 5);
     let offsets = code
         .char_indices()
         .filter_map(|(offset, character)| (!character.is_whitespace()).then_some(offset))
         .collect::<Vec<_>>();
-    for start in occurrences {
-        let end = start + obligation.len() - 1;
-        let mut changed = code.clone();
-        changed.replace_range(
-            offsets[start]..offsets[end] + 1,
-            "assert!(lifecycle.retry_retained_debug_construction().is_ok());",
-        );
-        assert_ne!(changed, code);
-        assert_eq!(mask_contract(contract, &changed, &companions), changed);
-        assert!(
-            crate::flaky_escape_failures("unreviewed", "unreviewed", &changed)
-                .iter()
-                .any(|finding| finding.contains("`retry`"))
-        );
+    for (assertion, expected_count) in [
+        (controls::REFUSAL_ASSERTION, 4),
+        (controls::POISON_ASSERTION, 1),
+    ] {
+        let obligation = source_pattern(assertion);
+        let occurrences = expression_offsets(&code, &obligation);
+        assert_eq!(occurrences.len(), expected_count);
+
+        for start in occurrences {
+            let end = start + obligation.len() - 1;
+            let mut changed = code.clone();
+            changed.replace_range(
+                offsets[start]..offsets[end] + 1,
+                "assert!(lifecycle.retry_retained_debug_construction().is_ok());",
+            );
+            assert_ne!(changed, code);
+            assert_eq!(mask_contract(contract, &changed, &companions), changed);
+            assert!(
+                crate::flaky_escape_failures("unreviewed", "unreviewed", &changed)
+                    .iter()
+                    .any(|finding| finding.contains("`retry`"))
+            );
+        }
     }
     Ok(())
 }

@@ -6,6 +6,10 @@ use super::super::Companion;
 // The successful move includes both probes and the final once-only refusal.
 pub(super) const REFUSAL_ASSERTION: &str =
     "assert!(lifecycle.retry_retained_debug_construction().is_err());";
+pub(super) const POISON_ASSERTION: &str = r#"assert!(matches!(
+        lifecycle.retry_retained_debug_construction(),
+        Err(ProductionVmConstructionCleanupError::Poisoned)
+    ));"#;
 pub(super) const BODY_OBSERVATIONS: &str = r#"for _ in 0..2 {
         assert!(lifecycle.retry_retained_debug_construction().is_err());
         let retained = lifecycle.retained_debug_construction.get_mut().unwrap();
@@ -60,13 +64,7 @@ pub(super) const OCCUPIED_SUCCESS: &str = r#"let occupied_body = destination.tak
 
 pub(super) const CASES: &[(&str, usize)] = &[
     (REFUSAL_ASSERTION, 4),
-    (
-        r#"assert!(matches!(
-        lifecycle.retry_retained_debug_construction(),
-        Err(ProductionVmConstructionCleanupError::Poisoned)
-    ));"#,
-        1,
-    ),
+    (POISON_ASSERTION, 1),
     (BODY_OBSERVATIONS, 1),
     (PAIR_OBSERVATIONS, 1),
     (RECEIPT_OBSERVATIONS, 1),
