@@ -15,7 +15,8 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
-                        s.created_at, s.last_seen_at
+                        s.created_at, s.last_seen_at, s.authentication_method,
+                        s.authentication_provider
                  FROM sessions s JOIN users u ON u.id = s.user_id
                  WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
                 &vals![hash],
@@ -23,11 +24,14 @@ impl Database {
             .await
             .context("loading session by hash")?
             .map(|row| -> Result<(SessionAuth, i64, i64)> {
+                let method: String = row.get(6)?;
+                let provider: Option<String> = row.get(7)?;
                 let auth = SessionAuth {
                     user_id: row.get(0)?,
                     auth_level: row.get(1)?,
                     last_authenticated_at: row.get(2)?,
                     expires_at: row.get(3)?,
+                    authentication: SessionAuthentication::from_database(&method, provider)?,
                 };
                 let created_at: i64 = row.get(4)?;
                 let last_seen_at: i64 = row.get(5)?;

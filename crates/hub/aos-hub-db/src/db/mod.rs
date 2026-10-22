@@ -534,6 +534,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// | 9 | `migration-0009-session-authentication.sql` | Browser-session authentication evidence. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -543,6 +544,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
+    include_str!("migration-0009-session-authentication.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.

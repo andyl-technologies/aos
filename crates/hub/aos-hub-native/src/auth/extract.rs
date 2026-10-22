@@ -316,6 +316,7 @@ mod tests {
             auth_level: 0,
             last_authenticated_at: 0,
             expires_at: i64::MAX,
+            authentication: aos_hub_db::db::SessionAuthentication::LegacyLocal,
         };
         assert!(session_allows(
             &db,

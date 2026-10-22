@@ -421,6 +421,33 @@ async fn sessions_create_validate_expire_and_revoke() {
 }
 
 #[tokio::test]
+async fn sessions_retain_authentication_evidence() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("evidence@acme.com", None).await.unwrap();
+    let secret = db
+        .create_session_with_authentication(
+            user,
+            3_600,
+            1,
+            &SessionAuthentication::Oidc("https://idp.example".into()),
+        )
+        .await
+        .unwrap();
+
+    let session = db.validate_session(&secret).await.unwrap().unwrap();
+    assert_eq!(
+        session.authentication,
+        SessionAuthentication::Oidc("https://idp.example".into())
+    );
+
+    db.elevate_session_with_authentication(&secret, &SessionAuthentication::Password)
+        .await
+        .unwrap();
+    let session = db.validate_session(&secret).await.unwrap().unwrap();
+    assert_eq!(session.authentication, SessionAuthentication::Password);
+}
+
+#[tokio::test]
 async fn repeated_session_validation_preserves_liveness_without_identical_writes() {
     let db = Database::open_in_memory().await.unwrap();
     let user = db

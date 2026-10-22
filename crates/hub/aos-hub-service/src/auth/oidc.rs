@@ -184,6 +184,8 @@ pub struct AuthRedirect {
 pub struct OidcLogin {
     /// The resolved (linked or provisioned) hub user id.
     pub user_id: i64,
+    /// Issuer that authenticated the completed login.
+    pub issuer: String,
     /// The user's email as asserted by the IdP, if any.
     pub email: Option<String>,
     /// Whether a brand-new user was provisioned (vs. linked/existing).
@@ -474,6 +476,7 @@ pub async fn complete_login(
 
     Ok(OidcLogin {
         user_id,
+        issuer: config.issuer,
         email,
         provisioned: matches!(link, aos_hub_db::db::IdentityLink::Created(_)),
         redirect_after: flow.redirect_after.clone(),
