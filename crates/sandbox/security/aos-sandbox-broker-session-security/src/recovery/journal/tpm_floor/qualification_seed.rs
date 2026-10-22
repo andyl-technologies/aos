@@ -98,13 +98,15 @@ fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
             fixed.journal_root,
             PROTECTED_SESSION_JOURNAL,
             protected_session_journal_limits(),
-        )?,
+        )
+        .map_err(|cause| format!("offline client journal open failed: {cause:?}"))?,
         FloorEndpointV1::StorageBroker => ProtectedBrokerSessionJournalV1::open_broker(
             ProtectedBrokerSessionBrokerV1::load(fixed.custody_root)?,
             fixed.journal_root,
             PROTECTED_SESSION_JOURNAL,
             protected_session_journal_limits(),
-        )?,
+        )
+        .map_err(|cause| format!("offline broker journal open failed: {cause:?}"))?,
     };
     let (protocol, node) = owner.endpoint.protected_protocol_and_node();
     if protocol != BrokerSessionProtocolV1::Storage {
@@ -114,10 +116,14 @@ fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
         role,
         node,
         epoch,
-        owner.stable_endpoint_identity(protocol)?,
+        owner
+            .stable_endpoint_identity(protocol)
+            .map_err(|cause| format!("offline endpoint identity failed: {cause:?}"))?,
         Sha256::digest(salt_name).into(),
     )?;
-    let (cut, prospective) = owner.tpm_floor_cuts(profile, None)?;
+    let (cut, prospective) = owner
+        .tpm_floor_cuts(profile, None)
+        .map_err(|cause| format!("offline main journal cut failed: {cause:?}"))?;
     if prospective.is_some() || cut.sequence() <= 1 {
         return Err("offline floor requires a nonempty complete main journal cut".into());
     }
