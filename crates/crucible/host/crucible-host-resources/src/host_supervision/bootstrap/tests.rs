@@ -179,6 +179,7 @@ fn twelve_record_split_peak_matches_actual_leaf_and_root_requests() {
                 Operation {
                     class: HostOperationClass::Preparation,
                     control: false,
+                    deferred_cleanup_reserved: false,
                     started: Duration::ZERO,
                     last_progress: Duration::ZERO,
                     started_revision: 0,

@@ -21,11 +21,13 @@ fn fixture(class: HostOperationClass) -> SupervisionState {
         cap_allowance: Some(Duration::from_secs(10)),
         cap_state: HostOperationState::Running,
         next_operation: 1,
+        reserved_controls: 0,
         operations: BTreeMap::from([(
             1,
             Operation {
                 class,
                 control: class == HostOperationClass::Cleanup,
+                deferred_cleanup_reserved: false,
                 started: Duration::from_secs(2),
                 last_progress: Duration::from_secs(4),
                 started_revision: 3,

@@ -24,6 +24,9 @@ mod bootstrap;
 mod deadline;
 mod deadline_sources;
 pub use deadline_sources::HostDeadlineSources;
+mod deferred_cleanup;
+pub use deferred_cleanup::HostDeferredCleanupControl;
+mod entry;
 mod prepared_start;
 mod worker_admission;
 mod quiescence;
@@ -367,6 +370,8 @@ pub enum HostSupervisionError {
 struct Operation {
     class: HostOperationClass,
     control: bool,
+    // An occupied deferred assignment is never replaced for this same Work.
+    deferred_cleanup_reserved: bool,
     started: Duration,
     last_progress: Duration,
     started_revision: u64,
@@ -387,6 +392,8 @@ struct SupervisionState {
     cap_allowance: Option<Duration>,
     cap_state: HostOperationState,
     next_operation: u64,
+    // Pending nominal holders share the same bounded inventory as live guards.
+    reserved_controls: usize,
     operations: BTreeMap<u64, Operation>,
 }
 
@@ -473,6 +480,7 @@ impl HostOperationSupervisor {
                     cap_allowance: outer,
                     cap_state: HostOperationState::Running,
                     next_operation: 0,
+                    reserved_controls: 0,
                     operations: BTreeMap::new(),
                 }),
                 changed: Arc::clone(&changed),
@@ -669,6 +677,7 @@ impl HostOperationSupervisor {
                 cap_allowance: outer.allowance,
                 cap_state: outer.state,
                 next_operation: 0,
+                reserved_controls: 0,
                 operations: BTreeMap::new(),
             }),
             changed: Arc::new(Condvar::new()),
@@ -774,131 +783,6 @@ impl HostOperationSupervisor {
         // Cleanup deliberately keeps ordinary class provenance. Its wait still
         // cannot overrun this enclosing authenticated original invocation.
         Ok(slice.min(remaining))
-    }
-
-    /// Begins one bounded operation under the current live class policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for terminal execution, an unbounded infrastructure
-    /// phase, exhausted operation capacity, or uncertain synchronization.
-    pub fn begin(
-        &self,
-        class: HostOperationClass,
-    ) -> Result<HostOperationGuard, HostSupervisionError> {
-        self.begin_work(class, 1)
-    }
-
-    /// Begins one operation with an explicit required-work inventory.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same ownership, finite-bound, and capacity errors as
-    /// [`Self::begin`], and refuses an empty work inventory.
-    pub fn begin_work(
-        &self,
-        class: HostOperationClass,
-        required_work_units: u64,
-    ) -> Result<HostOperationGuard, HostSupervisionError> {
-        self.begin_admitted(
-            class,
-            required_work_units,
-            class == HostOperationClass::Cleanup,
-        )
-    }
-
-    /// Begins an independent control exchange using reserved operation records.
-    ///
-    /// Setup retains its live class budget and original outer cap. Cleanup
-    /// retains its finite class budget, including after outer-cap expiry.
-    /// Work saturation cannot consume the two reserved control records.
-    ///
-    /// # Errors
-    ///
-    /// Refuses classes other than setup and cleanup, a terminal setup owner,
-    /// exhausted control records, invalid bounds, or uncertain synchronization.
-    pub fn begin_control(
-        &self,
-        class: HostOperationClass,
-    ) -> Result<HostOperationGuard, HostSupervisionError> {
-        if !matches!(
-            class,
-            HostOperationClass::Setup | HostOperationClass::Cleanup
-        ) {
-            return Err(HostSupervisionError::InvalidBudget);
-        }
-        self.begin_admitted(class, 1, true)
-    }
-
-    fn begin_admitted(
-        &self,
-        class: HostOperationClass,
-        required_work_units: u64,
-        control: bool,
-    ) -> Result<HostOperationGuard, HostSupervisionError> {
-        if required_work_units == 0 {
-            return Err(HostSupervisionError::InvalidBudget);
-        }
-        let mut state = self.lock()?;
-        let elapsed = self.elapsed();
-        refresh_cap(&mut state, elapsed);
-        #[cfg(feature = "private-measurement-domain")]
-        if self
-            .shared
-            .measurement_clock
-            .is_some_and(|clock| elapsed >= clock.span())
-        {
-            return Err(HostSupervisionError::Terminal {
-                state: state.cap_state,
-            });
-        }
-        if class != HostOperationClass::Cleanup && state.cap_state != HostOperationState::Running {
-            return Err(HostSupervisionError::Terminal {
-                state: state.cap_state,
-            });
-        }
-        state
-            .budgets
-            .get(class)
-            .validate(class, state.cap_allowance.is_some())?;
-        let work_operations = state
-            .operations
-            .values()
-            .filter(|operation| !operation.control)
-            .count();
-        if state.operations.len() >= MAX_HOST_OPERATIONS
-            || (!control && work_operations >= MAX_HOST_WORK_OPERATIONS)
-        {
-            return Err(HostSupervisionError::CapacityExhausted);
-        }
-        let id = state
-            .next_operation
-            .checked_add(1)
-            .ok_or(HostSupervisionError::IdentityExhausted)?;
-        let revision = state.policy_revision;
-        state.next_operation = id;
-        state.operations.insert(
-            id,
-            Operation {
-                class,
-                control,
-                started: elapsed,
-                last_progress: elapsed,
-                started_revision: revision,
-                completed: 0,
-                required: required_work_units,
-                state: HostOperationState::Running,
-                startup_cancellation: None,
-                guard_live: true,
-                action_subscribers: None,
-            },
-        );
-        Ok(HostOperationGuard {
-            supervisor: self.clone(),
-            id,
-            #[cfg(feature = "private-measurement-domain")]
-            original_preparation: None,
-        })
     }
 
     /// Returns this supervisor's exact nonreused operational cap identity.

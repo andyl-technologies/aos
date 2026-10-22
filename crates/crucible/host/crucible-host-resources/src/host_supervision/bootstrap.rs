@@ -64,6 +64,7 @@ impl HostSupervisionBootstrap {
             cap_allowance: outer,
             cap_state: HostOperationState::Running,
             next_operation: 0,
+            reserved_controls: 0,
             operations: BTreeMap::new(),
         };
 
@@ -94,6 +95,7 @@ impl HostSupervisionBootstrap {
             preparation: Operation {
                 class: HostOperationClass::Preparation,
                 control: false,
+                deferred_cleanup_reserved: false,
                 started: elapsed,
                 last_progress: elapsed,
                 started_revision: 0,
@@ -146,11 +148,13 @@ impl HostSupervisionBootstrap {
                 cap_allowance: Some(clock.span()),
                 cap_state: HostOperationState::Running,
                 next_operation: 1,
+                reserved_controls: 0,
                 operations: BTreeMap::new(),
             },
             preparation: Operation {
                 class: HostOperationClass::Preparation,
                 control: false,
+                deferred_cleanup_reserved: false,
                 // Admission and loader time belong to this original phase too.
                 started: Duration::ZERO,
                 last_progress: Duration::ZERO,

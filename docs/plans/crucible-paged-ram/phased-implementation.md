@@ -69,6 +69,45 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Reserved Host Cleanup with separate actual entry
+
+An actual current Quantum can now reserve one deferred Cleanup control holder
+in a prepaid canonical output before guest Work effects. The same supervisor
+retains the nonreused operation identity and accounts for that pending record
+against its existing twelve-record inventory. Reservation allocates nothing
+and enters no Cleanup interval. The holder retains the actual supervisor;
+entry starts its one finite Cleanup interval later without querying Work,
+including after the original Work record is physically retired. The existing
+authenticated containing invocation still applies. Ordinary and reserved entry
+share one focused policy/capacity/identity implementation. The root's reviewed
+implementation shrinks from 1,824 to 1,708 lines; no size allowance increases.
+
+The holder saves actual born operation custody before its independent post.
+Negative and interrupted posts preserve the guard and cannot authorize Current,
+repeat entry or restart time. An unentered holder returns only its unspent
+record reservation on Drop; an entered guard retains ordinary borrower-aware
+cancellation and physical debt semantics. Dropping the reservation cannot issue
+a replacement for that same Work. The actual Shared and operation layouts feed
+the existing structural recipes; the holder exposes its exact inline extent
+for its containing owner's admission.
+
+Eight component controls pass, covering zero allocation, real Work record
+retirement and canceled outer cap before entry, full record saturation, wrong
+class/occupied output/second assignment, a negative Work post, born-negative
+Cleanup expiry followed by policy extension, real lock poisoning, interruption
+between birth and post, and identity exhaustion. All Host resource targets
+pass (333 reported cases), as does strict all-target/all-feature Clippy.
+The first all-feature compile exposed a missing private bootstrap initializer;
+that constructor was corrected before final qualification. The ABI gate
+registers the exact eight controls. Required package checks are pending.
+
+This is genuine local operation-record custody, not a native deferred-entry
+contract, stack loan or Module/Core authority. Actual Source ownership,
+endpoint-bound publication and independently current native entry/return
+producers still require their separately versioned paired implementation.
+The existing schema-two already-entered Cleanup profile is unchanged and does
+not impose a hidden wall-time bound on otherwise unbounded Work.
+
 #### Explicit Main/RR stack carrier codecs
 
 The separate pure stack namespace now encodes Setup8 (tag `0x18` with a
@@ -94,7 +133,12 @@ The ABI registration names and counts each focused group; the older nine
 Quantum controls remain registered separately from the new stack child.
 The initial strict check refused an unused import and the manual divisibility
 predicate; both were corrected without lint suppression. Final expanded
-transport controls and required package checks are running.
+transport controls pass. Mandatory application compilation passes at
+`00r152p2sfc6v479vdnk70fgsp5p0x20`; all 5,329 committed Rust/TOML inputs match
+the frozen source (proof SHA-256
+`9130890e3c6f95f9faf5cc4c9032a78584df0bb88e01d5e368939b298e56195a`).
+Hygiene passes. ABI is running; strict boundary qualification still stops at
+controller Clippy (909 library and 963 test errors), before boundary assertions.
 
 These are syntax and transport controls only. Unknown concrete profiles still
 require refusal at actual adoption. No decoded inventory, profile digest,
@@ -132,8 +176,13 @@ the guarded installation refuses at the intended inherited-limit mismatch
 (exit 101), so an unconfigured exec cannot satisfy the positive control.
 The ABI gate registers the exact count and canonical child-probe name.
 Hygiene passes; all-target, all-feature QEMU Host compilation also passes for
-the signed `19d2851e02` checkpoint. Mandatory application compilation, ABI
-and strict boundary checks are running.
+the signed `19d2851e02` checkpoint. Mandatory application compilation passes
+at `hq7arfj2qcj8rf800z24jjm744pgvqj4`; all 5,325 committed Rust/TOML inputs match
+the frozen source (proof SHA-256
+`0ecebe055caa6e6ec99e05177b1749dab5d6467be184ed418632671bf8ca65da`).
+ABI conformance passes at `d33s40wyhlzi1zm716cd059hppgih7dl`. Strict boundary
+qualification stops at controller Clippy (909 library and 963 test errors);
+its boundary assertions did not execute.
 
 #### Sticky terminal decisions from actual lender collection
 
