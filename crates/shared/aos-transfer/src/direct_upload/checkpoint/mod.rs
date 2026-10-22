@@ -5,7 +5,9 @@
 //! selectors before the publication exists; it grants no provider authority.
 //! It contains immutable logical descriptors and receipts, never bearer URLs,
 //! provider UploadIds or file bodies. Each dispatched wave is committed with
-//! SQLite synchronous EXTRA before the caller receives its reservation.
+//! SQLite synchronous EXTRA before the caller receives its reservation. Bounded
+//! concurrent waves can share one commit, with a savepoint for each wave; none
+//! receives success before the entire group is durably committed.
 //!
 //! The existing parent must be owner-private (0700), and the file owner-private
 //! (0600), singly linked and ordinary. SQLite uses an absolute pathname after
@@ -18,12 +20,13 @@ mod operations;
 mod publication;
 pub use publication::{DirectPublicationAdmission, DirectPublicationHeader};
 mod sqlite;
+mod waves;
 
 use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, Transaction};
 
 use super::DirectClientError;
 use filesystem::PrivateFile;
@@ -35,6 +38,7 @@ struct State {
     connection: Mutex<Connection>,
     budget: Arc<tokio::sync::Semaphore>,
     run_id: String,
+    waves: Mutex<waves::Queue>,
 }
 
 /// Retains direct-upload retries in one private, bounded SQLite journal.
@@ -107,8 +111,9 @@ impl SqliteDirectCheckpoints {
                 state: Arc::new(State {
                     file,
                     connection: Mutex::new(connection),
-                    budget: Arc::new(tokio::sync::Semaphore::new(1)),
+                    budget: Arc::new(tokio::sync::Semaphore::new(waves::MAX_PENDING_WAVES)),
                     run_id,
+                    waves: Mutex::new(waves::Queue::default()),
                 }),
             })
         })
@@ -139,27 +144,7 @@ impl SqliteDirectCheckpoints {
         reservation: tokio::sync::OwnedSemaphorePermit,
         work: impl FnOnce(&Transaction<'_>) -> Result<T, DirectClientError> + Send + 'static,
     ) -> Result<T, DirectClientError> {
-        let state = self.state.clone();
-        tokio::task::spawn_blocking(move || {
-            let _reservation = reservation;
-            state.file.verify()?;
-            let mut connection = state
-                .connection
-                .lock()
-                .map_err(|_| DirectClientError::Checkpoint)?;
-            let transaction = connection
-                .transaction_with_behavior(TransactionBehavior::Immediate)
-                .map_err(|_| DirectClientError::Checkpoint)?;
-            let result = work(&transaction)?;
-            state.file.verify()?;
-            transaction
-                .commit()
-                .map_err(|_| DirectClientError::Checkpoint)?;
-            state.file.verify()?;
-            Ok(result)
-        })
-        .await
-        .map_err(|_| DirectClientError::Checkpoint)?
+        waves::submit(self.state.clone(), reservation, work).await
     }
 }
 
