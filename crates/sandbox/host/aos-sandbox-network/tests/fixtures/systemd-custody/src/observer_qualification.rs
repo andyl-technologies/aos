@@ -760,6 +760,17 @@ fn commit_or_recover(
         .context("type observed namespace")?;
     let boot_id = KernelBootId::current()?.into_bytes();
     let identity = namespace.identity();
+    // The observer can commit only the exact namespace already recorded by
+    // the preparation's READY handoff, including its boot and kernel plan.
+    coordinator.bind_effect_namespace_custody(
+        REQUEST_ID,
+        effect_digest,
+        *resolution.reserved_network_handle(),
+        boot_id,
+        identity.device,
+        identity.inode,
+        kernel_plan_digest,
+    )?;
     let verified = VerifiedNetworkResultV1::verify_preparation(
         REQUEST_ID,
         ObjectDigest::from_bytes(Sha256::digest(request).into()),
