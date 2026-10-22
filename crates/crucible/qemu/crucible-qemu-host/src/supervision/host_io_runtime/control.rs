@@ -152,10 +152,12 @@ impl QemuLiveHostIoRuntime {
                         source,
                     )
                 }
-                ControlBoundaryPublicationError::Slot(source) => QemuAsyncDriverRuntimeError::new(
-                    "request plugin control boundary",
-                    source.to_string(),
-                ),
+                ControlBoundaryPublicationError::Slot(source) => {
+                    QemuAsyncDriverRuntimeError::node_slot(
+                        "request plugin control boundary",
+                        source,
+                    )
+                }
             })?;
         if let Some(source) = &mut self.source_supervision {
             source.control_publication_returned().map_err(|source| {
@@ -328,10 +330,7 @@ impl QemuLiveHostIoRuntime {
             .publish_scheduler_advance(ceiling, crucible_qemu_shmem::AdvanceStopCondition::Ceiling)
             .map(|_| ())
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new(
-                    "publish completed-quantum ceiling",
-                    source.to_string(),
-                )
+                QemuAsyncDriverRuntimeError::node_slot("publish completed-quantum ceiling", source)
             })?;
 
         // The futex publication revokes TCG dispatch, but QEMU's main loop can

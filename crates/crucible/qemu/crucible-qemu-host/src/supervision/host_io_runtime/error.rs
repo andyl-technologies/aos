@@ -48,6 +48,103 @@ mod tests {
     use crucible_host_resources::test_support::TestAllocationObserver;
     use std::io::Write;
     use std::os::fd::AsFd;
+    use std::os::unix::fs::FileExt;
+
+    #[test]
+    fn actual_publication_exhaustion_retains_typed_causes_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for fingerprint_exhausted in [false, true] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let (offset, generation) = if fingerprint_exhausted {
+                (
+                    usize::try_from(layout.fingerprint_sample_off)?
+                        + crucible_qemu_shmem::FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
+                    u32::MAX - 1,
+                )
+            } else {
+                (
+                    usize::try_from(layout.node_slots_off)?
+                        + crucible_qemu_shmem::NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+                    u32::MAX,
+                )
+            };
+            // The fixture seeds a terminal wire generation, not an issuer or
+            // a completed command. The real mapped publication must refuse it.
+            bytes[offset..offset + 4].copy_from_slice(&generation.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe publication exhaustion",
+            )?;
+            supervisor.cancel()?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let result = if fingerprint_exhausted {
+                    runtime
+                        .capture_execution_fingerprint(&deadline, std::time::Duration::from_secs(1))
+                } else {
+                    runtime.signal_wake(None).map(|_| ())
+                };
+                result
+                    .expect_err("actual mapped generation has no successor")
+                    .with_operational_supervision_post(
+                        original
+                            .wait_slice()
+                            .expect_err("same Original is canceled"),
+                    )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(
+                error.operational_supervision_post(),
+                Some(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled")
+                ),
+            );
+            let cause = std::error::Error::source(&error).ok_or("typed cause is absent")?;
+            if fingerprint_exhausted {
+                let expected =
+                    crucible_qemu_shmem::FingerprintSampleError::CaptureGenerationExhausted {
+                        acknowledged_generation: generation,
+                    };
+                assert_eq!(error.fingerprint_sample_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            } else {
+                let expected =
+                    crucible_qemu_shmem::NodeSlotError::ControlBoundaryGenerationExhausted {
+                        acknowledged: generation,
+                    };
+                assert_eq!(error.node_slot_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            }
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
 
     #[test]
     fn actual_mapped_refusal_retains_typed_cause_and_independent_post_without_allocation()

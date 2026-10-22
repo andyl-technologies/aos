@@ -11,7 +11,7 @@ pub struct QemuAsyncDriverRuntimeError {
     pub operation: &'static str,
     /// Authored text, borrowed for static diagnostics; typed refusals keep this empty.
     ///
-    /// Formatting renders a retained supervision cause directly unless a later
+    /// Formatting renders a retained typed cause directly unless a later
     /// combined diagnostic was explicitly saved here.
     pub message: Cow<'static, str>,
     detail: QemuAsyncDriverRuntimeErrorDetail,
@@ -27,6 +27,14 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
             QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source)
+                if self.message.is_empty() =>
+            {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) if self.message.is_empty() => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source)
                 if self.message.is_empty() =>
             {
                 write!(formatter, "{} failed: {source}", self.operation)
@@ -48,6 +56,8 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source) => Some(source),
             _ => self.supervision_post.as_ref().map(|source| source as _),
         }
     }
@@ -57,6 +67,8 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
 enum QemuAsyncDriverRuntimeErrorDetail {
     HostSupervision(crucible_host_resources::host_supervision::HostSupervisionError),
     MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
+    NodeSlot(crucible_qemu_shmem::NodeSlotError),
+    FingerprintSample(crucible_qemu_shmem::FingerprintSampleError),
     #[default]
     Message,
     FaultResultStorage(u32, u32),
@@ -69,6 +81,51 @@ impl QemuAsyncDriverRuntimeError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Retains a node publication refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn node_slot(operation: &'static str, source: crucible_qemu_shmem::NodeSlotError) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the node publication cause independently of a later Original post.
+    #[must_use]
+    pub const fn node_slot_source(&self) -> Option<&crucible_qemu_shmem::NodeSlotError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains a fingerprint refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn fingerprint_sample(
+        operation: &'static str,
+        source: crucible_qemu_shmem::FingerprintSampleError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the fingerprint cause independently of a later Original post.
+    #[must_use]
+    pub const fn fingerprint_sample_source(
+        &self,
+    ) -> Option<&crucible_qemu_shmem::FingerprintSampleError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source) => Some(source),
+            _ => None,
+        }
     }
 
     /// Retains a mapped-region refusal without formatting another diagnostic.

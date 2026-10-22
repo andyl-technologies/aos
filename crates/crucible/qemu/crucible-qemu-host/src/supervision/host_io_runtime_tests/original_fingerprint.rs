@@ -14,8 +14,9 @@ use std::os::unix::net::UnixStream;
 fn closed_original_refuses_capture_without_using_live_ambient_owner()
 -> Result<(), Box<dyn std::error::Error>> {
     for cancelled in [false, true] {
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
         let layout = allocation.layout();
         let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
         shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -70,8 +71,9 @@ fn closed_original_refuses_capture_without_using_live_ambient_owner()
 #[test]
 fn old_pending_capture_refuses_fresh_original_request_before_any_wake()
 -> Result<(), Box<dyn std::error::Error>> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -92,7 +94,15 @@ fn old_pending_capture_refuses_fresh_original_request_before_any_wake()
         .publish_current_execution_fingerprint_under_original(&original)
         .expect_err("fresh request cannot adopt an old in-flight capture");
 
-    assert!(error.message.contains("already pending"));
+    assert_eq!(
+        error.fingerprint_sample_source(),
+        Some(
+            &crucible_qemu_shmem::FingerprintSampleError::CaptureAlreadyPending {
+                request: old_request,
+            }
+        ),
+    );
+    assert!(error.to_string().contains("already pending"));
     assert_eq!(
         plugin.fingerprint_sample(0)?.capture_request_generation(),
         old_request
@@ -138,7 +148,19 @@ fn exhausted_capture_refuses_before_source_admission_or_any_mapped_effect()
         .publish_current_execution_fingerprint_under_original(&original)
         .expect_err("exhaustion precedes unavailable Source admission");
 
-    assert!(error.message.contains("generation 4294967294 is exhausted"));
+    assert_eq!(
+        error.fingerprint_sample_source(),
+        Some(
+            &crucible_qemu_shmem::FingerprintSampleError::CaptureGenerationExhausted {
+                acknowledged_generation: u32::MAX - 1,
+            }
+        ),
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("generation 4294967294 is exhausted")
+    );
     assert_eq!(
         plugin.fingerprint_sample(0)?.capture_request_generation(),
         u32::MAX - 1,
@@ -202,8 +224,9 @@ fn exhausted_control_refuses_capture_before_source_admission_or_sample_mutation(
 fn absent_source_refuses_before_capture_generation_or_control_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     for borrowed in [false, true] {
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
         let layout = allocation.layout();
         let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
         shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -319,8 +342,9 @@ impl CapturePair {
 fn paired_fingerprint_revoked_owner_refuses_before_request_or_wake()
 -> Result<(), Box<dyn std::error::Error>> {
     for revoke_actor in [false, true] {
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
         let layout = allocation.layout();
         let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
         shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -373,8 +397,9 @@ fn paired_fingerprint_revoked_owner_refuses_before_request_or_wake()
 #[test]
 fn paired_fingerprint_old_pending_request_refuses_before_wake()
 -> Result<(), Box<dyn std::error::Error>> {
-    let allocation =
-        crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
     let layout = allocation.layout();
     let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
     shmem.write_all(&allocation.setup_region_bytes()?)?;
@@ -391,7 +416,11 @@ fn paired_fingerprint_old_pending_request_refuses_before_wake()
         .publish_current_execution_fingerprint_under_originals(&pair.actor, &pair.family)
         .expect_err("a paired fresh capture cannot coalesce an older request");
 
-    assert!(error.message.contains("already pending"));
+    assert_eq!(
+        error.fingerprint_sample_source(),
+        Some(&crucible_qemu_shmem::FingerprintSampleError::CaptureAlreadyPending { request }),
+    );
+    assert!(error.to_string().contains("already pending"));
     assert_eq!(
         plugin.fingerprint_sample(0)?.capture_request_generation(),
         request
@@ -413,8 +442,9 @@ fn paired_fingerprint_revocation_after_publication_retains_pending_without_doorb
     use crate::supervision::host_io_runtime::operational_wait::OperationPollBudget;
 
     for revoke_actor in [false, true] {
-        let allocation =
-            crucible_qemu_shmem::RegionAllocation::new_model(crucible_qemu_shmem::RegionConfig::new(1, 2))?;
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 2),
+        )?;
         let layout = allocation.layout();
         let mut shmem = File::from(crate::spawn::memfd_region(layout.region_size)?);
         shmem.write_all(&allocation.setup_region_bytes()?)?;

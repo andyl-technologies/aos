@@ -227,7 +227,7 @@ impl QemuLiveHostIoRuntime {
         ) {
             return self.fail_checkpoint_pause_under_budget(
                 deadline,
-                QemuAsyncDriverRuntimeError::new("publish checkpoint ceiling", source.to_string()),
+                QemuAsyncDriverRuntimeError::node_slot("publish checkpoint ceiling", source),
             );
         }
         let device_servicers_attached =

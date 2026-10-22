@@ -52,7 +52,7 @@ impl QemuLiveHostIoRuntime {
             crucible_qemu_shmem::FingerprintSampleSlot::checked_fresh_capture_successor_v1(
                 observed,
             )
-            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+            .map_err(|source| QemuAsyncDriverRuntimeError::fingerprint_sample(operation, source))?;
         // Check the independent control generation before the sampler or the
         // actual Source acquires any publication debt. The real publication
         // still validates the same tuple at its own mutation cut.
@@ -94,7 +94,7 @@ impl QemuLiveHostIoRuntime {
             .fingerprint_sample(self.vm_slot)
             .map_err(map_slot_error)?
             .request_fresh_capture_from_v1(observed)
-            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+            .map_err(|source| QemuAsyncDriverRuntimeError::fingerprint_sample(operation, source))?;
         let fingerprint_acknowledgement = fingerprint_request + 1;
         let request = self.signal_fingerprint_capture(deadline, fingerprint_request)?;
         actions.validate(request)?;
