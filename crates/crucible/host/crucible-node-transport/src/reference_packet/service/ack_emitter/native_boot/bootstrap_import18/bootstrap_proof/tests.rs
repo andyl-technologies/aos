@@ -95,7 +95,8 @@ impl Admission for Model<'_> {
         attempt: &Attempt,
         step: Step,
     ) -> Result<(), ProviderError> {
-        self.census(inputs);
+        // Construction and each preceding observation already census these
+        // immutable predecessors. Each newly retained output is still observed.
         let (index, label) = match step {
             Step::Assigned => (1, "assignment"),
             Step::Context => (3, "context"),
@@ -244,7 +245,12 @@ pub(in super::super::super) fn assert_child(
             }
             Ok(())
         });
-        assert_eq!(result.is_ok(), matches!(suffix, "complete" | "reactive"));
+        assert_eq!(
+            result.is_ok(),
+            matches!(suffix, "complete" | "reactive"),
+            "{case}: completed context inspection {result:?}; expired={}",
+            original.cut.is_expired(),
+        );
     } else {
         assert!(
             attempt

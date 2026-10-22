@@ -61,6 +61,41 @@ impl BootstrapAckOperands<'_> {
         self.authority.ensure_live()
     }
 
+    /// Reads actual negotiated framing from the same live original SDK.
+    ///
+    /// These finite ceilings restrict preparation; they are not constructor
+    /// demand or Source allowance, and cannot select a different connection.
+    ///
+    /// # Errors
+    /// Refuses stale authority, invalid framing or checked integer conversion.
+    pub(super) fn current_framing_limits_data(&self) -> Result<[usize; 2], ProviderError> {
+        self.authority.ensure_live()?;
+        let limits = self.authority.limits();
+        let frame = usize::try_from(limits.frame_bytes.get()).map_err(|_| refused())?;
+        let nesting = usize::try_from(limits.nesting.get()).map_err(|_| refused())?;
+        if frame == 0
+            || frame > crate::transport::MAX_FRAME_BYTES
+            || nesting == 0
+            || nesting > crate::transport::MAX_NESTING
+        {
+            return Err(refused());
+        }
+        self.authority.ensure_live()?;
+        Ok([frame, nesting])
+    }
+
+    /// Names the actual live-SDK framing query and checked-result controls.
+    pub(super) fn framing_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&ConnectionAuthority>()
+            + size_of::<crate::handshake::Limits>()
+            + size_of::<usize>() * 2
+            + size_of::<Result<usize, std::num::TryFromIntError>>() * 2
+            + size_of::<Result<(), ProviderError>>() * 2
+            + size_of::<[usize; 2]>()
+            + size_of::<Result<[usize; 2], ProviderError>>()
+    }
+
     /// Compares bootstrap target DATA with the actual current SDK registration.
     ///
     /// This comparison neither assigns a request nor authenticates its proof.

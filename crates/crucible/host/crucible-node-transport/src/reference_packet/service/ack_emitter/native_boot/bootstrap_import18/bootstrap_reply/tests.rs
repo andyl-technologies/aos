@@ -132,6 +132,10 @@ impl Admission for Model<'_> {
             Step::Assigned => (5, "assignment"),
             Step::Receipt => (7, "receipt"),
             Step::Seal => (9, "seal"),
+            Step::ReserveLiteral => (11, "literal_reservation"),
+            Step::SerializeLiteral => (13, "literal_value"),
+            Step::MeasureLiteral => (15, "literal_measurement"),
+            Step::EncodeLiteral => (17, "literal_encoding"),
         };
         assert_eq!(self.calls.replace(index + 1), index);
         assert_eq!(attempt.result.is_some(), index >= 3);
@@ -171,6 +175,10 @@ impl Admission for Model<'_> {
             Step::Assigned => (6, "assigned"),
             Step::Receipt => (8, "receipt_built"),
             Step::Seal => (10, "sealed"),
+            Step::ReserveLiteral => (12, "literal_reserved"),
+            Step::SerializeLiteral => (14, "literal_serialized"),
+            Step::MeasureLiteral => (16, "literal_measured"),
+            Step::EncodeLiteral => (18, "literal_encoded"),
         };
         assert_eq!(self.calls.replace(index + 1), index);
         assert!(attempt.result.is_some());
@@ -222,6 +230,11 @@ impl Admission for Model<'_> {
                 &attempt.assigned.unwrap(),
                 receipt,
             );
+        }
+        if step == Step::EncodeLiteral {
+            attempt
+                .literal
+                .assert_prepared_data(attempt.envelope.as_ref().unwrap());
         }
         self.action(inputs, label)
     }
@@ -319,7 +332,7 @@ pub(in super::super::super) fn assert_child(
         launch
     );
     if success {
-        assert_eq!(model.calls.get(), 11);
+        assert_eq!(model.calls.get(), 19);
     } else {
         assert!(
             correlation
@@ -573,6 +586,19 @@ fn reply_closed_population_covers_maximal_actual_outputs_and_serializer_trees() 
     let selected: PacketNativeImport18SelectedLaunchWireData = serde_json::from_value(
         crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::initial_selected_launch(false)).unwrap();
     let row = construction_data(selected.launch_data(), usize::MAX).unwrap();
+    assert!(storage::retained_data(&attempt).unwrap() <= row[0]);
+
+    attempt
+        .literal
+        .reserve_data(extent.maximum_canonical_encoded_bytes)
+        .unwrap();
+    attempt.literal.serialize_data(reply).unwrap();
+    attempt.literal.measure_data(maximum, 64).unwrap();
+    attempt
+        .literal
+        .encode_data(reply.request_id.0.as_ref().unwrap())
+        .unwrap();
+    attempt.literal.assert_prepared_data(reply);
     assert!(storage::retained_data(&attempt).unwrap() <= row[0]);
 
     guard.register_outgoing(reply.clone()).unwrap();

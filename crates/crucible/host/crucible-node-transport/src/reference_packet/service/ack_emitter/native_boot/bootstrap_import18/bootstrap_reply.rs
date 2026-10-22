@@ -1,6 +1,8 @@
 //! Constructs the original bootstrap-only reply inside the verified SDK loan.
 //!
 //! Each output survives refusal and remains charged to the original occurrence.
+//! The sealed reply also retains its separately reserved canonical frame proposal;
+//! encoding records no transfer and cannot complete a physical publication.
 //! Construction reserves no outgoing SDK record and publishes no ACK. A signed
 //! receipt is DATA; opaque Source funding and native permission remain separate.
 //!
@@ -34,6 +36,8 @@ use crate::reference_packet::service::complete_restore::import18::{
 use crucible_node_format::Bytes;
 use std::rc::{Rc, Weak};
 
+#[path = "bootstrap_reply/literal.rs"]
+mod literal;
 #[path = "bootstrap_reply/response.rs"]
 mod response;
 #[path = "bootstrap_reply/storage.rs"]
@@ -61,6 +65,14 @@ pub(in super::super) enum Step {
     Receipt,
     /// Inserts the sole receipt18 extension into the retained response.
     Seal,
+    /// Retains the distinct closed-shape response journal before allocation.
+    ReserveLiteral,
+    /// Retains the actual sealed response serializer tree.
+    SerializeLiteral,
+    /// Retains the actual canonical count under negotiated framing.
+    MeasureLiteral,
+    /// Retains the original framed proposal with no physical transfer.
+    EncodeLiteral,
 }
 
 /// Admits each output and observes its actual surviving allocation census.
@@ -115,6 +127,7 @@ pub(in super::super) struct Attempt {
     envelope: Option<Envelope>,
     assigned: Option<[u8; 32]>,
     receipt: Option<Receipt>,
+    literal: literal::Literal,
 }
 
 impl Attempt {
@@ -132,6 +145,7 @@ impl Attempt {
             envelope: None,
             assigned: None,
             receipt: None,
+            literal: literal::Literal::empty_data(),
         }
     }
 
@@ -344,8 +358,12 @@ fn construct_under_verified_data(
     // The same immutable decoded owners stay borrowed until the full
     // enclosing correlation/SDK loan has checked both aggregate outcomes.
     let bodies = original.typed_bodies_data()?;
-    let maximum_frame = usize::try_from(bodies.launch.launch_data().limits.frame_bytes.get())
-        .map_err(|_| exhausted())?;
+    let [maximum_frame, maximum_nesting] = operands.current_framing_limits_data()?;
+    if maximum_frame as u64 > bodies.launch.launch_data().limits.frame_bytes.get()
+        || maximum_nesting as u64 > bodies.launch.launch_data().limits.nesting.get()
+    {
+        return Err(refused());
+    }
     let row = construction_data(bodies.launch.launch_data(), original.bounds.requested_peak)?;
     attempt.row = Some(row);
     let retained = inputs
@@ -371,6 +389,10 @@ fn construct_under_verified_data(
         Step::Assigned,
         Step::Receipt,
         Step::Seal,
+        Step::ReserveLiteral,
+        Step::SerializeLiteral,
+        Step::MeasureLiteral,
+        Step::EncodeLiteral,
     ] {
         admission.step_data(inputs, attempt, step)?;
         attempt.authenticate(inputs, operands)?;
@@ -378,6 +400,7 @@ fn construct_under_verified_data(
         let outcome = construct_step(
             bodies.boot,
             maximum_frame,
+            maximum_nesting,
             attempt,
             context,
             envelope,
@@ -410,6 +433,7 @@ fn construct_under_verified_data(
 fn construct_step(
     boot: &BootData,
     maximum_frame: usize,
+    maximum_nesting: usize,
     attempt: &mut Attempt,
     context: &Context,
     envelope: &Envelope,
@@ -471,6 +495,18 @@ fn construct_step(
             reply.validate()?;
             envelope.matches_response(reply)?;
         }
+        Step::ReserveLiteral => attempt
+            .literal
+            .reserve_data(storage::extent_data()?.maximum_canonical_encoded_bytes)?,
+        Step::SerializeLiteral => attempt
+            .literal
+            .serialize_data(attempt.envelope.as_ref().ok_or_else(refused)?)?,
+        Step::MeasureLiteral => attempt
+            .literal
+            .measure_data(maximum_frame, maximum_nesting)?,
+        Step::EncodeLiteral => attempt
+            .literal
+            .encode_data(envelope.request_id.0.as_ref().ok_or_else(refused)?)?,
     }
     Ok(())
 }
@@ -507,8 +543,9 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 26] = [
+    let fields: [usize; 27] = [
         storage::counter_scratch_data(),
+        BootstrapAckOperands::framing_counter_scratch_data(),
         combined_counter_scratch_data(),
         size_of::<Inputs<'static>>() * 6,
         size_of::<&Attempt>(),
@@ -523,17 +560,17 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<&BootData>(),
         size_of::<Result<usize, std::num::TryFromIntError>>(),
         size_of::<&crate::session::CorrelationGuard>(),
-        size_of::<[Step; 5]>(),
-        size_of::<std::array::IntoIter<Step, 5>>(),
+        size_of::<[Step; 9]>(),
+        size_of::<std::array::IntoIter<Step, 9>>(),
         size_of::<Step>() * 4,
         size_of::<[usize; 3]>() * 3,
         size_of::<Result<[usize; 3], ProviderError>>(),
         size_of::<Result<(), ProviderError>>() * 9,
         size_of::<Weak<PacketNativeImport18SelectedLaunchWireData>>(),
-        size_of::<usize>() * 6,
+        size_of::<usize>() * 7,
         size_of::<Option<usize>>(),
-        size_of::<[usize; 26]>(),
-        size_of::<std::array::IntoIter<usize, 26>>(),
+        size_of::<[usize; 27]>(),
+        size_of::<std::array::IntoIter<usize, 27>>(),
     ];
     fields.into_iter().try_fold(
         Proof::verified_loan_counter_scratch_data::<()>()?,

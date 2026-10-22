@@ -19,6 +19,10 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
     native_import18_bootstrap_ack_assigned_request_digest,
     native_import18_bootstrap_ack_context_digest_data,
 };
+use crate::reference_packet::service::complete_restore::import18::{
+    OriginalImport18DecodedBodyLoans as BodyLoans,
+    PacketNativeImport18PrivateBootWireData as BootData,
+};
 use crucible_node_format::Bytes;
 use std::rc::{Rc, Weak};
 
@@ -375,10 +379,15 @@ pub(super) fn verify_current_with_data<R: Copy>(
                     .ok_or_else(refused)?
                     .row,
             )?;
-            let row = construction_data(
-                original.typed_bodies_data()?.launch.launch_data(),
-                original.bounds.requested_peak,
-            )?;
+            // The complete immutable decoded owners remain inside this actual
+            // correlation loan until its terminal guards. Borrow them once for
+            // all four steps instead of re-opening the raw-body loan per field.
+            let bodies = original.typed_bodies_data()?;
+            let maximum_frame =
+                usize::try_from(bodies.launch.launch_data().limits.frame_bytes.get())
+                    .map_err(|_| exhausted())?;
+            let row =
+                construction_data(bodies.launch.launch_data(), original.bounds.requested_peak)?;
             attempt.row = Some(row);
             let retained = inputs
                 .prior
@@ -399,7 +408,16 @@ pub(super) fn verify_current_with_data<R: Copy>(
                 attempt.authenticate(inputs, operands)?;
                 attempt.step = Some(step);
                 let outcome = construct_step(
-                    inputs, attempt, operands, envelope, request, proof, digests, step,
+                    inputs,
+                    attempt,
+                    operands,
+                    envelope,
+                    request,
+                    proof,
+                    digests,
+                    bodies.boot,
+                    maximum_frame,
+                    step,
                 );
                 observe_step(inputs, attempt, admission, operands, step, outcome)?;
             }
@@ -423,23 +441,16 @@ fn construct_step(
     request: &Request,
     proof: &Proof,
     digests: Digests,
+    boot: &BootData,
+    maximum_frame: usize,
     step: Step,
 ) -> Result<(), ProviderError> {
     let original = inputs.prior.original;
     match step {
         Step::Assigned => {
-            let maximum = usize::try_from(
-                original
-                    .typed_bodies_data()?
-                    .launch
-                    .launch_data()
-                    .limits
-                    .frame_bytes
-                    .get(),
-            )
-            .map_err(|_| exhausted())?;
             attempt.assigned = Some(native_import18_bootstrap_ack_assigned_request_digest(
-                envelope, maximum,
+                envelope,
+                maximum_frame,
             )?);
         }
         Step::Context => {
@@ -470,13 +481,10 @@ fn construct_step(
             )?);
         }
         Step::Verify => {
-            original
-                .typed_bodies_data()?
-                .boot
-                .verify_bootstrap_ack_proof_data(
-                    attempt.context.as_ref().ok_or_else(refused)?,
-                    proof,
-                )?;
+            boot.verify_bootstrap_ack_proof_data(
+                attempt.context.as_ref().ok_or_else(refused)?,
+                proof,
+            )?;
             attempt.verified = true;
         }
     }
@@ -563,8 +571,12 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Weak<PacketNativeImport18SelectedLaunchWireData>>(),
         size_of::<usize>() * 6,
         size_of::<Option<usize>>(),
-        size_of::<[usize; 21]>(),
-        size_of::<std::array::IntoIter<usize, 21>>(),
+        size_of::<BodyLoans<'static>>(),
+        size_of::<Result<BodyLoans<'static>, ProviderError>>(),
+        size_of::<&BootData>(),
+        size_of::<Result<usize, std::num::TryFromIntError>>(),
+        size_of::<[usize; 25]>(),
+        size_of::<std::array::IntoIter<usize, 25>>(),
     ];
     fields.into_iter().try_fold(
         Attempt::verified_loan_counter_scratch_data::<()>()?,

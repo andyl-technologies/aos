@@ -946,6 +946,14 @@ fn original_bootstrap_reply_retains_each_output_and_uses_the_actual_sdk_sequence
         "receipt_built",
         "seal",
         "sealed",
+        "literal_reservation",
+        "literal_reserved",
+        "literal_value",
+        "literal_serialized",
+        "literal_measurement",
+        "literal_measured",
+        "literal_encoding",
+        "literal_encoded",
     ] {
         for action in ["reject", "expire", "revoke"] {
             flight(&format!("{prefix}{action}_{boundary}"));

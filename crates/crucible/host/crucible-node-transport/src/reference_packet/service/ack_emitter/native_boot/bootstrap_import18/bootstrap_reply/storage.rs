@@ -102,6 +102,7 @@ pub(super) fn construction_data(
     maximum: usize,
 ) -> Result<[usize; 3], ProviderError> {
     let extent = extent_data()?;
+    let literal = super::literal::backing_construction_data(extent)?;
     let incoming = super::super::bootstrap_proof::construction_data(launch, maximum)?;
     let projection = native_import18_bootstrap_ack_projection_data(maximum)?;
     let context = projection.serialization_requested_bytes_data()[0];
@@ -118,11 +119,12 @@ pub(super) fn construction_data(
         PACKET_COMPLETE_RESTORE_ALGORITHM.len(),
         3 * 32,
     ])?;
-    let retained = sum(&[size_of::<Attempt>(), envelope, result, receipt])?;
+    let retained = sum(&[size_of::<Attempt>(), envelope, result, receipt, literal[0]])?;
     // Assignment holds the reply DOM while bounded canonicalization builds its
     // second DOM and JCS bank. The incoming request's independent typed decode
     // and both DTO serialization/constructor partials remain separate windows.
     let transient = sum(&[
+        literal[1],
         envelope,
         result,
         receipt,
@@ -152,6 +154,7 @@ pub(super) fn construction_data(
         size_of::<Result<Attempt, ProviderError>>(),
     ])?;
     let scratch = sum(&[
+        literal[2],
         incoming[2],
         extent.declared_counter_scratch_bytes,
         native_import18_bootstrap_ack_counter_scratch_data(),
@@ -201,7 +204,10 @@ pub(super) fn retained_data(attempt: &Attempt) -> Result<usize, ProviderError> {
     }
     add(
         size_of::<Attempt>(),
-        crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?,
+        add(
+            crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?,
+            attempt.literal.retained_backing_data()?,
+        )?,
     )
 }
 
@@ -216,9 +222,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<crate::retained_metadata::MetadataObserver>()
         + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
         + size_of::<[usize; 3]>() * 5
-        + size_of::<[usize; 24]>()
+        + size_of::<[usize; 25]>()
         + size_of::<[usize; 11]>()
-        + size_of::<[usize; 4]>() * 3
+        + size_of::<[usize; 5]>() * 3
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<&[usize]>()
         + size_of::<[&str; 13]>()
