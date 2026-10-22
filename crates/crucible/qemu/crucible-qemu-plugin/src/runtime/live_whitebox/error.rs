@@ -223,6 +223,15 @@ pub enum LiveWhiteboxError {
         /// Original capability, range, coordinate or guest-write failure.
         source: crate::WhiteboxDoorbellError,
     },
+    /// A host reply arrived without a catalog-owned request.
+    #[error("safe white-box callback failed: selectable reply arrived without a pending request")]
+    SelectableReplyWithoutPending,
+    /// The retained selectable request failed sequence or completion accounting.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableCatalog {
+        /// Original catalog refusal without diagnostic replacement.
+        source: crate::SelectableCatalogError,
+    },
     /// A remaining safe doorbell service rejected the live event.
     #[error("safe white-box callback failed: {message}")]
     Callback {

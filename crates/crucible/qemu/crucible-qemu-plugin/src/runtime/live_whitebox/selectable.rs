@@ -243,82 +243,91 @@ impl LiveSelectableState {
                 entry.kind()
             )));
         }
-        let pending =
-            self.catalog.pending_request().cloned().ok_or_else(|| {
-                callback_error("selectable reply arrived without a pending request")
-            })?;
-        let trap_coordinate = pending.coordinate();
-        let stopped_tick_ps = trap_coordinate
-            .tick_ps()
-            .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
-            .ok_or_else(|| callback_error("selectable stopped-boundary tick overflowed"))?;
-        // The host binds its reply to the stopped request boundary. QEMU's
-        // resume callback may report a later raw reservation boundary even
-        // though no subsequent guest TB has executed, so the memory write can
-        // occur later while the authenticated catalog token remains sealed
-        // against the stop derived from its retained trap coordinate.
-        if entry.current_icount() != stopped_tick_ps
-            || entry.vcpu_index() != trap_coordinate.vcpu_index()
-        {
-            return Err(callback_error(format!(
-                "selectable reply coordinate ({}, {}) differs from pending request stopped tick ({stopped_tick_ps}, {})",
-                entry.current_icount(),
-                entry.vcpu_index(),
-                trap_coordinate.vcpu_index()
-            )));
-        }
-        if vcpu_index != trap_coordinate.vcpu_index() {
-            return Ok(None);
-        }
-        if current_icount < stopped_tick_ps {
-            return Err(callback_error(format!(
-                "selectable reply resume tick {current_icount} precedes stopped request boundary {stopped_tick_ps}"
-            )));
-        }
-        let consumed = self.reply_input.dequeue()?.ok_or_else(|| {
-            callback_error("selectable reply disappeared between peek and consume")
-        })?;
-        if consumed != entry {
-            return Err(callback_error(
-                "selectable reply changed between peek and consume",
-            ));
-        }
-        let reply = SelectionReply::decode(entry.payload()).map_err(callback_error)?;
-        if reply.sequence() != pending.request().sequence() {
-            return Err(callback_error(format!(
-                "selectable reply sequence {} differs from pending request {}",
-                reply.sequence(),
-                pending.request().sequence()
-            )));
-        }
-        let reply_len = reply.encoded_len().map_err(callback_error)?;
-        if reply_len > pending.reply_range().len() {
-            return Err(callback_error(format!(
-                "selectable reply has {} bytes but guest reserved {}",
-                reply_len,
-                pending.reply_range().len()
-            )));
-        }
-        let bytes = reply_buffer
-            .get_mut(..pending.reply_range().len())
-            .ok_or_else(|| {
-                callback_error("selectable reservation exceeds its fixed reply workspace")
-            })?;
-        bytes.fill(0);
-        reply.encode_into(bytes).map_err(callback_error)?;
-        writer
-            .write_whitebox_input(current_icount, pending.reply_range(), bytes)
-            .map_err(|error| {
-                callback_error(format!(
-                    "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
-                    trap_coordinate.raw_icount(),
-                    trap_coordinate.vcpu_index(),
-                ))
-            })?;
-        self.catalog
-            .complete_request(&pending, &reply)
-            .map_err(callback_error)?;
-        Ok(Some(reply))
+        let reply_input = &mut self.reply_input;
+        let disposition = self.catalog.resolve_pending_with(
+            |pending| {
+                let trap_coordinate = pending.coordinate();
+                let stopped_tick_ps = trap_coordinate
+                    .tick_ps()
+                    .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
+                    .ok_or_else(|| callback_error("selectable stopped-boundary tick overflowed"))?;
+                // The host binds its reply to the stopped request boundary. QEMU's
+                // resume callback may report a later raw reservation boundary even
+                // though no subsequent guest TB has executed, so the memory write can
+                // occur later while the authenticated catalog token remains sealed
+                // against the stop derived from its retained trap coordinate.
+                if entry.current_icount() != stopped_tick_ps
+                    || entry.vcpu_index() != trap_coordinate.vcpu_index()
+                {
+                    return Err(callback_error(format!(
+                        "selectable reply coordinate ({}, {}) differs from pending request stopped tick ({stopped_tick_ps}, {})",
+                        entry.current_icount(),
+                        entry.vcpu_index(),
+                        trap_coordinate.vcpu_index()
+                    )));
+                }
+                if vcpu_index != trap_coordinate.vcpu_index() {
+                    return Ok(SelectableReplyDisposition::Pending);
+                }
+                if current_icount < stopped_tick_ps {
+                    return Err(callback_error(format!(
+                        "selectable reply resume tick {current_icount} precedes stopped request boundary {stopped_tick_ps}"
+                    )));
+                }
+                let consumed = reply_input.dequeue()?.ok_or_else(|| {
+                    callback_error("selectable reply disappeared between peek and consume")
+                })?;
+                if consumed != entry {
+                    return Err(callback_error(
+                        "selectable reply changed between peek and consume",
+                    ));
+                }
+                let reply = SelectionReply::decode(entry.payload()).map_err(callback_error)?;
+                if reply.sequence() != pending.request().sequence() {
+                    return Err(callback_error(format!(
+                        "selectable reply sequence {} differs from pending request {}",
+                        reply.sequence(),
+                        pending.request().sequence()
+                    )));
+                }
+                let reply_len = reply.encoded_len().map_err(callback_error)?;
+                if reply_len > pending.reply_range().len() {
+                    return Err(callback_error(format!(
+                        "selectable reply has {} bytes but guest reserved {}",
+                        reply_len,
+                        pending.reply_range().len()
+                    )));
+                }
+                let bytes = reply_buffer
+                    .get_mut(..pending.reply_range().len())
+                    .ok_or_else(|| {
+                        callback_error("selectable reservation exceeds its fixed reply workspace")
+                    })?;
+                bytes.fill(0);
+                reply.encode_into(bytes).map_err(callback_error)?;
+                writer
+                    .write_whitebox_input(current_icount, pending.reply_range(), bytes)
+                    .map_err(|error| {
+                        callback_error(format!(
+                            "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
+                            trap_coordinate.raw_icount(),
+                            trap_coordinate.vcpu_index(),
+                        ))
+                    })?;
+                Ok(SelectableReplyDisposition::Reply(reply))
+            },
+            |source| match source {
+                SelectableCatalogError::NoPendingRequest => {
+                    LiveWhiteboxError::SelectableReplyWithoutPending
+                }
+                source => LiveWhiteboxError::SelectableCatalog { source },
+            },
+        )?;
+
+        Ok(match disposition {
+            SelectableReplyDisposition::Reply(reply) => Some(reply),
+            SelectableReplyDisposition::Pending => None,
+        })
     }
 
     /// Dispatches one selectable message through the shared safe callback core.

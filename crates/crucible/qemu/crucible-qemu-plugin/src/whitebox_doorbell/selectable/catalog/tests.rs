@@ -76,6 +76,7 @@ fn reply(sequence: u64) -> Result<SelectionReply, SelectableProtocolError> {
 
 struct FlakyAuthority {
     attempts: usize,
+    retained_request: Option<*const SelectionRequest>,
 }
 
 impl SelectableDecisionAuthority for FlakyAuthority {
@@ -83,6 +84,9 @@ impl SelectableDecisionAuthority for FlakyAuthority {
         &mut self,
         pending: &SelectablePendingRequest,
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
+        if let Some(retained) = self.retained_request {
+            assert_eq!(std::ptr::from_ref(pending.request()), retained);
+        }
         self.attempts += 1;
         if self.attempts == 1 {
             Err(SelectableDoorbellServiceError::new(
@@ -290,10 +294,102 @@ fn request_is_frozen_catalog_bound_and_retained_until_exact_reply()
     );
     assert_eq!(catalog.pending_request(), Some(&pending));
 
-    catalog.complete_request(&pending, &reply(7)?)?;
+    let retained = catalog.pending_request().unwrap();
+    let request_address = std::ptr::from_ref(retained.request());
+    let declaration_address = std::ptr::from_ref(retained.declaration());
+    let assert_retained_storage = |actual: &SelectablePendingRequest| {
+        assert_eq!(std::ptr::from_ref(actual.request()), request_address);
+        assert_eq!(
+            std::ptr::from_ref(actual.declaration()),
+            declaration_address
+        );
+    };
+
+    let deferred = catalog.resolve_pending_with(
+        |actual| {
+            assert_retained_storage(actual);
+            Ok(SelectableReplyDisposition::Pending)
+        },
+        std::convert::identity,
+    )?;
+    assert_eq!(deferred, SelectableReplyDisposition::Pending);
+    assert_eq!(catalog.pending_request(), Some(&pending));
+    assert_eq!(catalog.total_completed_requests(), 0);
+
+    let refused = catalog.resolve_pending_with(
+        |actual| {
+            assert_retained_storage(actual);
+            Err(SelectableCatalogError::PendingRequestMismatch)
+        },
+        std::convert::identity,
+    );
+    assert_eq!(refused, Err(SelectableCatalogError::PendingRequestMismatch));
+    assert_eq!(catalog.pending_request(), Some(&pending));
+
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        catalog.resolve_pending_with::<SelectableCatalogError>(
+            |actual| {
+                assert_retained_storage(actual);
+                panic!("injected resolver unwind")
+            },
+            std::convert::identity,
+        )
+    }));
+    assert!(unwind.is_err());
+    assert_eq!(catalog.pending_request(), Some(&pending));
+    assert_eq!(catalog.total_completed_requests(), 0);
+
+    let wrong_sequence = catalog.resolve_pending_with(
+        |actual| {
+            assert_retained_storage(actual);
+            Ok(SelectableReplyDisposition::Reply(reply(8).unwrap()))
+        },
+        std::convert::identity,
+    );
+    assert_eq!(
+        wrong_sequence,
+        Err(SelectableCatalogError::ReplySequenceMismatch {
+            expected: 7,
+            actual: 8,
+        })
+    );
+    assert_eq!(catalog.pending_request(), Some(&pending));
+
+    let resolved = catalog.resolve_pending_with(
+        |actual| {
+            assert_retained_storage(actual);
+            Ok(SelectableReplyDisposition::Reply(reply(7).unwrap()))
+        },
+        std::convert::identity,
+    )?;
+    assert_eq!(resolved, SelectableReplyDisposition::Reply(reply(7)?));
     assert_eq!(catalog.pending_request(), None);
     assert_eq!(catalog.total_completed_requests(), 1);
     assert_eq!(catalog.completed_requests_for("network.policy"), 1);
+
+    let counter_key_address = catalog
+        .completed_request_counts()
+        .keys()
+        .next()
+        .unwrap()
+        .as_ptr();
+    let next = catalog.begin_request(
+        &request(8, "network.policy")?,
+        coordinate(101),
+        reply_range(),
+    )?;
+    catalog.complete_request(&next, &reply(8)?)?;
+
+    assert_eq!(catalog.completed_requests_for("network.policy"), 2);
+    assert_eq!(
+        catalog
+            .completed_request_counts()
+            .keys()
+            .next()
+            .unwrap()
+            .as_ptr(),
+        counter_key_address,
+    );
     Ok(())
 }
 
@@ -407,7 +503,13 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
         )?],
         limits,
     )?;
-    let mut service = CatalogedSelectableService::new(catalog, FlakyAuthority { attempts: 0 });
+    let mut service = CatalogedSelectableService::new(
+        catalog,
+        FlakyAuthority {
+            attempts: 0,
+            retained_request: None,
+        },
+    );
     service.register_selectable(&registration(1, "network.policy", &[1])?, coordinate(1))?;
     service.freeze()?;
     let request = request(7, "network.policy")?;
@@ -429,6 +531,9 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
     );
     assert_eq!(service.catalog().total_completed_requests(), 0);
 
+    service.authority.retained_request = Some(std::ptr::from_ref(
+        service.catalog().pending_request().unwrap().request(),
+    ));
     let resolved = service.resolve_pending()?;
     assert_eq!(resolved, SelectableReplyDisposition::Reply(reply(7)?),);
     assert_eq!(service.catalog().pending_request(), None);

@@ -899,28 +899,69 @@ impl SelectableCatalog {
         if retained != pending {
             return Err(SelectableCatalogError::PendingRequestMismatch);
         }
+
+        self.complete_retained_reply(reply)
+    }
+
+    /// Resolves the actual catalog-owned token without copying its payload.
+    ///
+    /// The callback borrows the retained token while this catalog is exclusively
+    /// borrowed. Pending decisions, failures and unwinds leave it in place;
+    /// only a validated reply commits accounting and clears the token.
+    ///
+    /// # Errors
+    /// Preserves the resolver's cause or maps absent-request, reply-sequence and
+    /// accounting refusals through `catalog_error`. Refusal retains the token.
+    pub(crate) fn resolve_pending_with<E>(
+        &mut self,
+        resolve: impl FnOnce(&SelectablePendingRequest) -> Result<SelectableReplyDisposition, E>,
+        catalog_error: impl FnOnce(SelectableCatalogError) -> E,
+    ) -> Result<SelectableReplyDisposition, E> {
+        let Some(pending) = self.pending.as_ref() else {
+            return Err(catalog_error(SelectableCatalogError::NoPendingRequest));
+        };
+        let disposition = resolve(pending)?;
+
+        if let SelectableReplyDisposition::Reply(reply) = &disposition {
+            self.complete_retained_reply(reply).map_err(catalog_error)?;
+        }
+        Ok(disposition)
+    }
+
+    fn complete_retained_reply(
+        &mut self,
+        reply: &SelectionReply,
+    ) -> Result<(), SelectableCatalogError> {
+        let retained = self
+            .pending
+            .as_ref()
+            .ok_or(SelectableCatalogError::NoPendingRequest)?;
         if reply.sequence() != retained.request.sequence() {
             return Err(SelectableCatalogError::ReplySequenceMismatch {
                 expected: retained.request.sequence(),
                 actual: reply.sequence(),
             });
         }
-        let selectable_id = retained.request.selectable_id().to_owned();
+        let selectable_id = retained.request.selectable_id();
         let next_total = self
             .total_completed_requests
             .checked_add(1)
             .ok_or(SelectableCatalogError::RequestCountOverflow)?;
         let next_selectable = self
             .completed_requests
-            .get(&selectable_id)
+            .get(selectable_id)
             .copied()
             .unwrap_or(0)
             .checked_add(1)
             .ok_or(SelectableCatalogError::RequestCountOverflow)?;
 
+        if let Some(completed) = self.completed_requests.get_mut(selectable_id) {
+            *completed = next_selectable;
+        } else {
+            self.completed_requests
+                .insert(selectable_id.to_owned(), next_selectable);
+        }
         self.total_completed_requests = next_total;
-        self.completed_requests
-            .insert(selectable_id, next_selectable);
         self.last_completed_request_sequence = Some(reply.sequence());
         self.pending = None;
         self.pending_boundary_sealed = false;
@@ -1006,18 +1047,11 @@ impl<A> CatalogedSelectableService<A> {
     where
         A: SelectableDecisionAuthority,
     {
-        let pending = self.catalog.pending_request().cloned().ok_or_else(|| {
-            SelectableDoorbellServiceError::new(
-                SelectableCatalogError::NoPendingRequest.to_string(),
-            )
-        })?;
-        let disposition = self.authority.decide_selection(&pending)?;
-        if let SelectableReplyDisposition::Reply(reply) = &disposition {
-            self.catalog
-                .complete_request(&pending, reply)
-                .map_err(catalog_service_error)?;
-        }
-        Ok(disposition)
+        let authority = &mut self.authority;
+        self.catalog.resolve_pending_with(
+            |pending| authority.decide_selection(pending),
+            catalog_service_error,
+        )
     }
 }
 

@@ -69,6 +69,32 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Borrowed selectable resolution
+
+The decision service and actual resumed guest-reply path now borrow the same
+catalog-owned pending token through resolution and delivery. They no longer
+clone its request strings, domain/tag vectors and declaration merely to clear
+the token after a reply. The exclusive catalog borrow prevents replacement
+during the resolver; Pending, callback refusal, wrong sequence and unwind keep
+the original token in place. Existing public token completion still checks the
+catalog incarnation and exact token. Repeated completions update the existing
+counter entry without allocating another identifier String.
+
+The existing retained-request control checks actual request/declaration addresses
+inside resolution, Pending and negative dispositions, unwind, wrong-sequence
+refusal and stable counter-key storage across two completions. The actual
+combined-service control also requires its resolver to borrow the retained
+request address. All 1,177 plugin tests and compilation of every plugin test
+target pass. The first focused run passed 48 controls and failed the original
+unsolicited-reply diagnostic check; retaining its exact text as a typed static
+refusal corrects that regression. No assertion is removed or renamed.
+
+Decoded messages, initial counter-map insertion, admission-time pending copies
+and remaining diagnostic payloads still allocate. This removes repeated copies;
+it does not qualify complete funding, a Core Quantum issuer or CPU admission.
+Mandatory application, engineering hygiene and ABI checks are being collected.
+No test binding or source-policy exception is added.
+
 #### Selectable catalog deltas in the retained workspace
 
 Registration, request and pending-transport encoding now accept caller-owned
@@ -95,8 +121,14 @@ also publishes each of the three real delta kinds through an actual SPSC ring,
 checking its exact coordinate and bytes against the canonical owned encoder.
 Engineering hygiene and compilation of all protocol/plugin test targets pass.
 All 73 focused source-policy controls pass. Mandatory application compilation
-passes at `bml9j24nc1jgkya364678pv6lk04a47f`. ABI and exact supervision
-results are being collected. No test binding is added.
+passes at `bml9j24nc1jgkya364678pv6lk04a47f`. All 5,313 committed Rust/TOML
+files at `f765fe354e1ce5c2e2e23ba210d65b32e57d4086` match immutable source
+`qsxggcjh567dgaw25nakp115kbxp9cia`, with comparison record SHA-256
+`1dd54536105d789fb29ea0d92032d316e4a8895f6f909f046c06696693cfbc76`.
+ABI conformance passes at `d9dcfc7i0h6a2jczh9znkldxjg6fyps2`.
+Exact supervision results are being collected. The fresh strict license check
+fails before its boundary assertions with 909 host-library and 963 host-test
+Clippy errors. No test binding is added.
 
 #### Typed debugger-custody poison refusal
 
