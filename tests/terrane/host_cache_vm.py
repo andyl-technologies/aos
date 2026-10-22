@@ -1513,16 +1513,20 @@ def main():
                 "whole-file consumers lack their two actual immutable publisher-owned inodes")
         # This isolated domain has no dependency on the other component cases.
         cold_consumer_helper["run"](sys.modules[__name__], uuid, cold_consumer_originals)
-        # Reopen the completed warm domain instead of expanding the global
-        # administrative scaffold beyond its fixed 1,024-directory ceiling.
+        # The cold domain has completed actual recovery without the warm
+        # producer's pending source retirements. Reuse its real custody while
+        # preserving the fixed administrative scaffold and runtime limits.
+        scoped_prior_files = list((root("sealed-consumer-cold") / "sealed").glob("*/*"))
+        require(len(scoped_prior_files) == 3,
+                "scoped recovery lacks the three original cold whole files")
         scoped_originals = {path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
-                            for path in sealed_files}
-        scoped_file = actor("sealed-consumer", "scoped-file", uuid)
+                            for path in scoped_prior_files}
+        scoped_file = actor("sealed-consumer-cold", "scoped-file", uuid)
         require("PASS actual signed scoped file returns original sealed inode; changed policy denies disclosure, foreign domain leaves physical policy unchanged, retained descriptor survives release" in scoped_file,
                 "missing actual SDK-authorized native file backing witness")
         scoped_inodes = [line for line in scoped_file.splitlines()
                          if line.startswith("SCOPED_FILE_INODE ")]
-        scoped_files = [path for path in (root("sealed-consumer") / "sealed").glob("*/*")
+        scoped_files = [path for path in (root("sealed-consumer-cold") / "sealed").glob("*/*")
                         if path not in scoped_originals]
         require(len(scoped_files) == len(scoped_inodes) == 1,
                 "scoped file lacks one independently observed original inode")
