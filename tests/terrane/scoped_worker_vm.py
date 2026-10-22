@@ -319,6 +319,7 @@ def main():
         print(result.stderr, end="", flush=True)
         expected = [
             "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS bounded worker receipt times out and cancels abandoned handoffs without changing original exposure policy or retaining live socket aliases",
             "PASS original owner queue refuses Send ordered after Drain despite completed scoped Read",
             "PASS actual scoped owner Send grants original signed-root index and sealed file to the original worker; draining denies new grants while retained descriptors and mapping remain readable"]
         if network:

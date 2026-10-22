@@ -321,6 +321,14 @@ async fn verify(
             .ok_or("missing original child identity")?,
         lease.clone(),
     )?;
+    for timeout in [Duration::ZERO, Duration::from_secs(301)] {
+        if !matches!(channel.receive_bounded(timeout).await,
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput)
+        {
+            return Err("invalid worker deadline reached native request consumption".into());
+        }
+    }
+    receive_cancellation(inputs, &mut launched, &lease).await?;
 
     // This separate private fixture control socket carries public context only.
     // The worker still authenticates the actual serve UID on every data reply.
@@ -329,7 +337,7 @@ async fn verify(
     bootstrap.extend_from_slice(&served.key().root());
     bootstrap.extend_from_slice(identity.digest());
     launched.control.write_all(&bootstrap)?;
-    readable(&channel)?;
+    let pending = channel.receive_bounded(Duration::from_secs(10)).await?;
     let selection = fixture
         .repository
         .prepare_root_read(
@@ -339,13 +347,10 @@ async fn verify(
             exposure::limits(),
         )
         .await?;
-    channel
-        .receive()?
-        .grant_index(owner, &served, selection)
-        .await?;
+    pending.grant_index(owner, &served, selection).await?;
     eprintln!("SCOPED_WORKER_STAGE granted-index");
 
-    readable(&channel)?;
+    let pending = channel.receive_bounded(Duration::from_secs(10)).await?;
     let selection = fixture
         .repository
         .prepare_file_read(
@@ -355,8 +360,7 @@ async fn verify(
             "sdk",
         )
         .await?;
-    channel
-        .receive()?
+    pending
         .grant_file(owner, &served, selection, deadline)
         .await?;
     publication.complete_cache_handoff(owner).await?;
@@ -364,7 +368,7 @@ async fn verify(
 
     // The third grant finishes its genuine closing Read while still active.
     // Queue actual draining before its final Send through the original owner.
-    readable(&channel)?;
+    let pending = channel.receive_bounded(Duration::from_secs(10)).await?;
     let selection = fixture
         .repository
         .prepare_root_read(
@@ -375,10 +379,7 @@ async fn verify(
         )
         .await?;
     worker_channel::native_fixture::scoped::require_queued_drain_refusal(
-        channel.receive()?,
-        owner,
-        &served,
-        selection,
+        pending, owner, &served, selection,
     )
     .await?;
     eprintln!("SCOPED_WORKER_STAGE queued-drain-refused-send");
@@ -442,6 +443,63 @@ async fn verify(
             "PASS original worker retains checked FUSE descriptor and kernel-enforced Unix-only network boundary through actual scoped grants and draining"
         );
     }
+    Ok(())
+}
+
+/// Checks abandoned channel handoffs against the original child and real lease.
+async fn receive_cancellation(
+    inputs: &config::Inputs,
+    launched: &mut Launched,
+    lease: &NativeExposureLease,
+) -> Result<()> {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+
+    let policy_path = inputs.root.join("state/cache/records.toml");
+    let before = fs::read(&policy_path)?;
+    for cancel in [false, true] {
+        // These unused endpoints model a launcher abandoning its handoff. No
+        // request or peer credentials are synthesized; the child and lease are real.
+        let (server, peer) = worker_channel::channel_pair()?;
+        let identity = WorkerIdentity::from_child(&mut launched.child, 848)?;
+        let mut channel = WorkerChannel::bind(server, identity, lease.clone())?;
+        let alias = channel.as_fd().try_clone_to_owned()?;
+        let timeout = if cancel {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(20)
+        };
+        let mut receiving = Box::pin(channel.receive_bounded(timeout));
+
+        if cancel {
+            let mut context = Context::from_waker(Waker::noop());
+            if !matches!(receiving.as_mut().poll(&mut context), Poll::Pending) {
+                return Err("idle worker receipt completed before cancellation".into());
+            }
+        } else if !matches!(receiving.as_mut().await,
+            Err(error) if error.kind() == io::ErrorKind::TimedOut)
+        {
+            return Err("idle worker receipt failed without its exact deadline".into());
+        }
+        drop(receiving);
+
+        if !matches!(channel.receive(), Err(error) if error.kind() == io::ErrorKind::BrokenPipe) {
+            return Err("cancelled worker receipt retained a usable channel".into());
+        }
+        let mut bytes = [0; 1];
+        if net::recv(&peer, &mut bytes, net::RecvFlags::DONTWAIT)?.0 != 0 {
+            return Err("cancelled worker receipt retained a live descriptor alias".into());
+        }
+        drop(alias);
+    }
+    if fs::read(&policy_path)? != before {
+        return Err("idle worker receipt changed original exposure obligations".into());
+    }
+    println!(
+        "PASS bounded worker receipt times out and cancels abandoned handoffs without changing original exposure policy or retaining live socket aliases"
+    );
     Ok(())
 }
 

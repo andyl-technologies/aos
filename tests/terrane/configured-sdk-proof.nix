@@ -61,7 +61,7 @@
     # Verification consumes the final image, including every retained launcher,
     # runtime library and identity byte. No result is inherited from discovery.
     python3 ${helper} unit ${image} "$src"
-    printf '%s\n' 'PASS: all 11 actual configured SDK unit cases' > "$out/result"
+    printf '%s\n' 'PASS: all 12 actual configured SDK unit cases' > "$out/result"
   '';
   # This separate derivation consumes the completed image, so verification is
   # after its fixups and before the VM rootfs or guest can use its launchers.

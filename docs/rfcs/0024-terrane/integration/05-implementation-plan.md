@@ -15016,3 +15016,44 @@ selected deadline source and final exit status for every actor, including failed
 actors. This diagnostic changes no actor, assertion, role behavior, two-second
 lifetime control or time bound. A new source-bound run is required; the failed
 run remains retained as a failure.
+
+
+#### Authenticated worker receipt and feature-scoped inventory
+
+The `5ffde17420` native worker transport check passes in 220.250 seconds.
+Independent review matches all 8,066 immutable source files, 5,341 crate inputs,
+the exact installed Cargo ELF and every original credential, incarnation,
+sealed-descriptor and malformed-reply witness. Its scoped regression fails in
+484.193 seconds before guest execution: source declaration counting includes
+three new worker socket cases although the actual base image omits FUSE. The
+failed image build is retained. No native scoped success is inferred.
+
+The base image checker now verifies the worker module's actual combined Tokio
+and FUSE feature gate before excluding its source declarations, matching the
+existing maintenance-channel rule. All 128 actual base cases remain mandatory;
+none is removed, ignored or relabeled. The new three-case socket controls run
+in their matching feature profile. Direct source-inventory review passes.
+The configured SDK gate's static label is corrected from 11 to its existing
+12 required and actually executed cases.
+
+The serving worker channel now receives authenticated requests under a bounded
+kernel-readiness deadline before repository selection. Its original exclusive
+pending-request guard takes custody without a suspension gap. Cancellation,
+timeout and post-registration failure disconnect retained aliases while all
+original exposure obligations remain owned. The real scoped fixture uses this
+path for index and file grants and its queued-Drain refusal. Additional native
+controls use the original child incarnation and real exposure lease to abandon
+unused channel handoffs: exact timeout and cancellation must disconnect aliases
+without changing original policy bytes. Invalid limits must refuse before
+request consumption. These controls grant no successful peer authentication
+or physical closure from an idle endpoint.
+
+Strict all-feature Linux lint, public documentation with warnings denied and
+the final fixture build pass. Python syntax and complete base source inventory
+also pass. Native scoped/network qualification and the required application
+compilation remain pending on the resulting source. The earlier `d8a250bc4b`
+application build passes in 1,592.833 seconds; independent review matches all
+8,062 immutable source files and 185 test executables across 59 packages.
+The `d1f9088224` passing listener check is also independently reviewed against
+all 8,064 source files, 5,355 base and 5,339 surface inputs and the installed
+Cargo ELFs. No new trunk task or complete deployed role is accepted.

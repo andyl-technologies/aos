@@ -216,6 +216,14 @@ def source_unit_inventory(workspace):
     shared.require((root / "maintenance_channel.rs").is_file(),
         "maintenance channel feature module missing")
     gated.append(("maintenance_channel", "lib.rs", "pub mod maintenance_channel;"))
+    # Worker transport also requires FUSE custody. Its socket tests are absent
+    # from this image's actual no-FUSE compilation, just like maintenance tests.
+    shared.require('#[cfg(all(feature = "surface-fuse", feature = "tokio"))]\n'
+        'pub mod worker_channel;' in (root / "lib.rs").read_text(),
+        "worker channel lost its explicit runtime/surface feature gate")
+    shared.require((root / "worker_channel/mod.rs").is_file(),
+        "worker channel feature module missing")
+    gated.append(("worker_channel", "lib.rs", "pub mod worker_channel;"))
     declared = []
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
