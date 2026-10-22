@@ -13,6 +13,64 @@ import tempfile
 from urllib.parse import unquote, urlparse
 
 
+def compiler_file_lines(path):
+    """Decodes the pinned process wrapper's newline and backslash format."""
+    result = []
+    pending = ""
+    lines = path.read_bytes().decode().split("\n")
+    for index, line in enumerate(lines):
+        if index < len(lines) - 1:
+            line = line.removesuffix("\r")
+        if not line:
+            continue
+        trailing = len(line) - len(line.rstrip("\\"))
+        pending += line.rstrip("\\") + "\\" * (trailing // 2)
+        if trailing % 2:
+            pending += "\n"
+        else:
+            result.append(pending)
+            pending = ""
+    if pending:
+        raise ValueError(f"unterminated compiler metadata line: {path}")
+    return result
+
+
+def compiler_metadata(original, replacements):
+    """Adds cfgs and environment from the same files consumed by rustc."""
+    spec = copy.deepcopy(original)
+
+    def metadata_path(value):
+        for marker, directory in replacements.items():
+            if value.startswith(marker):
+                return Path(directory) / value.removeprefix(marker)
+        raise ValueError(f"unresolved compiler metadata path: {value}")
+
+    out_dir = spec.pop("aos_out_dir", None)
+    for filename in spec.pop("aos_rustc_env_files", []):
+        for line in compiler_file_lines(metadata_path(filename)):
+            key, separator, value = line.partition("=")
+            if not separator or not key:
+                raise ValueError("invalid compiler environment metadata")
+            # Environment files override the action environment, in order.
+            # OUT_DIR is then set explicitly by the process wrapper.
+            spec["env"][key] = value.replace("${out_dir}", out_dir or "${out_dir}")
+    if out_dir is not None:
+        spec["env"]["OUT_DIR"] = out_dir
+    flags_file = spec.pop("aos_build_script_flags", None)
+    if flags_file:
+        flags = iter(compiler_file_lines(metadata_path(flags_file)))
+        for flag in flags:
+            if flag.startswith("--cfg="):
+                spec["cfg"].append(flag.removeprefix("--cfg="))
+            elif flag == "--cfg":
+                value = next(flags, None)
+                if value is None:
+                    raise ValueError("missing compiler cfg value")
+                spec["cfg"].append(value)
+    spec["cfg"] = sorted(set(spec["cfg"]))
+    return spec
+
+
 def current_specs(events):
     """Returns local spec files reachable from successful aspect output groups."""
     named_sets = {}
@@ -61,7 +119,7 @@ def assemble(specs, replacements, toolchain):
     """Resolves configured crate specs, rejecting ambiguous feature variants."""
     crates = {}
     for original in specs:
-        spec = copy.deepcopy(original)
+        spec = compiler_metadata(original, replacements)
         identifier = spec["crate_id"]
         if identifier not in crates:
             crates[identifier] = spec
@@ -147,7 +205,13 @@ def assemble(specs, replacements, toolchain):
             crate["proc_macro_dylib_path"] = spec["proc_macro_dylib_path"]
         # Editor runnables are deliberately omitted: builds and tests must go
         # through aos-dev, whose launcher enforces the offline toolchain policy.
-        result.append(expand(crate))
+        crate = expand(crate)
+        # An explicit empty source list disables child-module discovery in
+        # rust-analyzer. The pinned aspect emits that list for ordinary roots;
+        # preserve rust-analyzer's default root-directory discovery instead.
+        if not crate["source"]["include_dirs"]:
+            crate["source"]["include_dirs"] = [str(Path(crate["root_module"]).parent)]
+        result.append(crate)
     return {
         "sysroot": str(toolchain),
         "sysroot_src": str(toolchain / "developer/rust-src/library"),

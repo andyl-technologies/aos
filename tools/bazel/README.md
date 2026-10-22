@@ -316,7 +316,7 @@ item-qualified compile-only doctest, and all feature/example comparisons. It
 also records 58 policy tests, fresh cross-derivation restoration, nine cache
 invalidation cases, and 11 seconds of overlap between independent cache writers.
 These are native Linux conversion checks. Production cutover, full-family
-editor/foreign-target workflows, and larger-family performance acceptance remain
+foreign-target workflows, and larger-family performance acceptance remain
 open; the whole-workspace ABI and license gates are recorded separately.
 
 `checks.build.bazel.dependencies.all` exercises this path with Crucible's
@@ -435,10 +435,13 @@ The Bazel shell puts the AOS developer binaries on PATH. Point the editor at
 that `rust-analyzer` and the generated `rust-project.json`, following the
 [rust-analyzer project format](https://rust-analyzer.github.io/book/non_cargo_based_projects.html).
 Builds and tests continue through `aos-dev`; the exporter does not install
-editor configuration or enable an ambient Cargo check command. The analyzer
-may probe Cargo metadata for the upstream standard library and fall back to its
-source model when the toolchain's Cargo stub rejects that probe. It does not
-use Cargo to discover or compile first-party crates.
+editor configuration or enable an ambient Cargo check command. The toolchain
+prepares upstream standard-library metadata offline from its installed vendored
+Rust sources. Its `cargo` adapter serves those immutable records for the exact
+library manifest and supported target; it executes no Cargo process. Arbitrary
+manifests, compilation and changed feature requests are rejected.
+`checks.build.bazel.sysroot-metadata` checks the records and rejection boundary.
+First-party discovery and compilation stay in Bazel.
 
 `checks.build.bazel.editor` type-checks the fixture's library/test view,
 generated source, and real procedural macro with the source-built analyzer;
@@ -449,11 +452,19 @@ it requires zero unknown expression/pattern types and no analyzer panics.
 `checks.build.bazel.device.editor` exports the connected device family,
 including its libraries, unit tests, integration tests and ABI-header example.
 It compares every first-party root and feature set with the compiled inventory,
-checks procedural-macro artifacts, and runs the source-built analyzer with
-Cargo disabled. `graph.json` records inference counts as well as graph parity.
-The initial full-family run has no analyzer panics but has unknown and partial
-types; this is a graph and analyzer smoke check, not complete semantic editor
-qualification. That remaining gap must be resolved before a production cutover.
+checks procedural-macro artifacts, and runs the source-built analyzer without
+a Cargo driver. The exporter preserves child-module discovery, generated
+directories, and the build-script cfg/environment files actually consumed by
+rustc. `graph.json` records inference counts as well as graph parity.
+`device.editor-parity` compares all inference counts and normalized diagnostic
+locations/types with a temporary offline Cargo editor oracle. This preserves
+pre-existing analyzer limitations while rejecting missing modules or newly
+unknown types. The initial incomplete smoke result remains historical evidence
+in `tests/evidence/native-linux-device-editor.json`. The corrected gate analyzes
+270,504 expressions and 46,719 patterns, with the same 20 unknown expressions
+and zero partial types or panics in both editors.
+`tests/evidence/native-linux-device-editor-parity.json` retains the exact
+diagnostics, three prepared standard-library graphs, checks and fingerprints.
 
 Passing native Linux outputs and configuration fingerprints are retained in
 `tests/evidence/native-linux-developer-tools.json`.

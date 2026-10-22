@@ -1,9 +1,26 @@
 """Checks a connected family's editor roots against its compiled feature graph."""
 
 import argparse
+import csv
 import json
 from pathlib import Path
 import re
+
+
+def diagnostics(path):
+    """Normalizes analyzer locations while preserving every diagnostic and type."""
+    result = []
+    with path.open(newline="") as stream:
+        for row in csv.reader(stream):
+            if len(row) < 5:
+                raise ValueError(f"invalid analyzer diagnostic: {row}")
+            if row[0] != "synthetic":
+                _, separator, relative = row[0].partition("/crates/")
+                if not separator:
+                    raise ValueError(f"analyzer diagnostic outside first-party sources: {row[0]}")
+                row[0] = "crates/" + relative
+            result.append(row)
+    return sorted(result)
 
 
 def analysis_statistics(log):
@@ -88,6 +105,7 @@ def main():
     for name in ["project", "inventory", "packages", "workspace", "output"]:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--analysis-log", type=Path)
+    parser.add_argument("--diagnostics", type=Path)
     options = parser.parse_args()
     report = verify(
         json.loads(options.project.read_text()), json.loads(options.inventory.read_text()),
@@ -95,6 +113,8 @@ def main():
     )
     if options.analysis_log:
         report["analysis"] = analysis_statistics(options.analysis_log.read_text())
+    if options.diagnostics:
+        report["diagnostics"] = diagnostics(options.diagnostics)
     options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
 
 

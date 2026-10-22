@@ -3,10 +3,11 @@
 import copy
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "metadata"))
-from export_rust_project import assemble, current_specs
+from export_rust_project import assemble, compiler_file_lines, current_specs
 
 
 def spec(name, **overrides):
@@ -67,6 +68,52 @@ class RustProjectTests(unittest.TestCase):
     def test_compiler_environment_paths_use_the_declared_execution_root(self):
         project = self.assemble([spec("lib", env={"CARGO_MANIFEST_DIR": "${pwd}/package"})])
         self.assertEqual(project["crates"][0]["env"]["CARGO_MANIFEST_DIR"], "/exec/package")
+
+    def test_ordinary_crate_roots_include_their_child_module_directory(self):
+        project = self.assemble([spec("nested")])
+        self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/nested"])
+
+    def test_generated_source_directories_are_preserved(self):
+        project = self.assemble([spec("generated", source={
+            "include_dirs": ["__WORKSPACE__/source", "__EXEC_ROOT__/generated"], "exclude_dirs": [],
+        })])
+        self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/source", "/exec/generated"])
+
+    def test_build_script_cfg_and_environment_match_compiler_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "flags").write_text('--cfg=generated_api\n--cfg=feature="generated"\n-lnative\n')
+            (root / "first.env").write_text("VALUE=first\nPATH=${pwd}/input\n")
+            (root / "second.env").write_text("VALUE=second=with-equals\nGENERATED=${out_dir}/api.rs\nOUT_DIR=ignored\n")
+            crate = spec("lib", aos_build_script_flags="__EXEC_ROOT__/flags",
+                         aos_rustc_env_files=["__EXEC_ROOT__/first.env", "__EXEC_ROOT__/second.env"],
+                         aos_out_dir="__EXEC_ROOT__/generated", env={"VALUE": "action"})
+
+            project = assemble([crate], {"__EXEC_ROOT__/": root, "__WORKSPACE__/": root}, Path("/tools"))
+
+        library = project["crates"][0]
+        self.assertIn("generated_api", library["cfg"])
+        self.assertIn('feature="generated"', library["cfg"])
+        self.assertEqual(library["env"]["VALUE"], "second=with-equals")
+        self.assertEqual(library["env"]["PATH"], str(root / "input"))
+        self.assertEqual(library["env"]["OUT_DIR"], str(root / "generated"))
+        self.assertEqual(library["env"]["GENERATED"], str(root / "generated/api.rs"))
+
+    def test_compiler_files_preserve_newline_and_backslash_escaping(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "env"
+            path.write_text("TEXT=first\\\nsecond\nTRAIL=slash\\\\\n\n")
+            self.assertEqual(compiler_file_lines(path), ["TEXT=first\nsecond", "TRAIL=slash\\"])
+
+    def test_compiler_files_preserve_non_newline_control_characters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "env"
+            path.write_bytes(b"TEXT=first\x0bsecond\r\nFINAL=trailing\r")
+            self.assertEqual(compiler_file_lines(path), ["TEXT=first\x0bsecond", "FINAL=trailing\r"])
+
+    def test_unavailable_build_script_metadata_fails_export(self):
+        with self.assertRaises(FileNotFoundError):
+            self.assemble([spec("lib", aos_build_script_flags="__EXEC_ROOT__/missing")])
 
     def test_completed_build_ignores_unreachable_previous_specs(self):
         events = [

@@ -85,6 +85,28 @@
               if not source.startswith(original) or source.count(original) != 1:
                   raise ValueError("rules_rust bootstrap interpreter patch no longer applies")
               bootstrap.write_text("#!" + sys.argv[1] + "\n" + source[len(original):])
+
+              # The pinned analyzer aspect exposes OUT_DIR but omits build
+              # script cfgs and rustc environment files. Export their declared
+              # action outputs so the editor adapter can read the compiler's
+              # actual inputs after the successful build.
+              analyzer = Path("rust/private/rust_analyzer.bzl")
+              source = analyzer.read_text()
+              original = '    crate["cfg"] = info.cfgs\n'
+              replacement = original + "\n".join([
+                  '    crate["aos_rustc_env_files"] = [_EXEC_ROOT_TEMPLATE + file.path for file in info.crate.rustc_env_files]',
+                  '    if info.build_info != None:',
+                  '        if info.build_info.out_dir != None:',
+                  '            crate["aos_out_dir"] = _EXEC_ROOT_TEMPLATE + info.build_info.out_dir.path',
+                  '        if info.build_info.flags != None:',
+                  '            crate["aos_build_script_flags"] = _EXEC_ROOT_TEMPLATE + info.build_info.flags.path',
+                  '        if info.build_info.rustc_env != None:',
+                  '            crate["aos_rustc_env_files"].append(_EXEC_ROOT_TEMPLATE + info.build_info.rustc_env.path)',
+                  "",
+              ])
+              if source.count(original) != 1:
+                  raise ValueError("rules_rust analyzer build metadata patch no longer applies")
+              analyzer.write_text(source.replace(original, replacement))
               PY
             ''}
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/source_only.py} "$out"

@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from verify_family_editor import analysis_statistics, verify
+from verify_family_editor import analysis_statistics, diagnostics, verify
 
 
 class FamilyEditorTests(unittest.TestCase):
@@ -68,6 +68,17 @@ class FamilyEditorTests(unittest.TestCase):
                 "exprs: 10, ??ty: 0 (0%), ?ty: 0 (0%)\n"
                 "pats: 10, ??ty: 0 (0%), ?ty: 0 (0%)\n  panics: 1\n"
             )
+
+    def test_diagnostics_preserve_locations_types_and_multiplicity_across_worktrees(self):
+        first = self.root / "first.csv"
+        second = self.root / "second.csv"
+        first.write_text('/build/bazel/crates/device/src/lib.rs,1:2,1:4,type,"{unknown}"\n' * 2)
+        second.write_text('/build/cargo/crates/device/src/lib.rs,1:2,1:4,type,"{unknown}"\n' * 2)
+        self.assertEqual(diagnostics(first), diagnostics(second))
+        self.assertEqual(len(diagnostics(first)), 2)
+
+        second.write_text('/build/cargo/crates/device/src/lib.rs,2:2,2:4,type,"{unknown}"\n')
+        self.assertNotEqual(diagnostics(first), diagnostics(second))
 
 
 if __name__ == "__main__":

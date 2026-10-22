@@ -5,6 +5,7 @@
 }: {
   rust ? pkgs.rust,
   rustDeveloperTools ? pkgs.rust.dev,
+  metadataCargo ? "${pkgs.rust}/bin/cargo",
   cc ? pkgs.cc,
   gcc ? pkgs.gccUnwrapped,
   binutils ? pkgs.binutils,
@@ -66,12 +67,28 @@ in
             mkdir -p "$out/bin" "$out/developer/bin"
             ln -s ${rust}/bin/rustc.unwrapped "$out/bin/rustc"
             ln -s ${rust}/bin/rustdoc.unwrapped "$out/bin/rustdoc"
-            # Third-party build scripts may inspect CARGO, but compilation must
-            # stay in the Bazel action graph. Only the explicit updater gets Cargo.
-            cat > "$out/bin/cargo" <<'CARGO'
+            ln -s ${rustDeveloperTools}/lib/rustlib/src/rust "$out/developer/rust-src"
+            # Prepare only the unmodified toolchain's upstream library graph.
+            # Installed rust-src includes its vendored dependencies. The editor
+            # receives immutable metadata; it never runs Cargo to resolve or
+            # compile first-party packages, or to fetch standard-library sources.
+            mkdir -p "$out/developer/sysroot-metadata" "$TMPDIR/sysroot-cargo"
+            for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu wasm32-unknown-unknown; do
+              CARGO_HOME="$TMPDIR/sysroot-cargo" \
+                RUSTC=${rust}/bin/rustc.unwrapped \
+                __CARGO_TEST_CHANNEL_OVERRIDE_DO_NOT_USE_THIS=nightly \
+                ${metadataCargo} metadata --offline --locked --format-version 1 \
+                  --config 'source.crates-io.replace-with="aos-rust-library-vendor"' \
+                  --config "source.aos-rust-library-vendor.directory=\"$out/developer/rust-src/library/vendor\"" \
+                  --manifest-path "$out/developer/rust-src/library/Cargo.toml" \
+                  --filter-platform "$target" \
+                  > "$out/developer/sysroot-metadata/$target.json"
+            done
+            cat > "$out/bin/cargo" <<CARGO
             #!${pkgs.bash}/bin/bash
-            printf '%s\n' 'Cargo execution is disabled in first-party Bazel builds; declare Rust actions in BUILD.bazel.' >&2
-            exit 1
+            exec ${pkgs.python3}/bin/python3 ${../../../tools/bazel/toolchains/sysroot_cargo.py} \
+              --metadata-directory "$out/developer/sysroot-metadata" \
+              --library ${rustDeveloperTools}/lib/rustlib/src/rust/library "\$@"
             CARGO
             chmod +x "$out/bin/cargo"
             ln -s ${rust}/lib "$out/lib"
@@ -82,7 +99,6 @@ in
             ln -s ${rustDeveloperTools}/bin/rustfmt.unwrapped "$out/developer/bin/rustfmt"
             ln -s ${rustDeveloperTools}/bin/rust-analyzer.unwrapped "$out/developer/bin/rust-analyzer"
             ln -s ${rust}/libexec/rust-analyzer-proc-macro-srv "$out/developer/bin/proc-macro-srv"
-            ln -s ${rustDeveloperTools}/lib/rustlib/src/rust "$out/developer/rust-src"
             ln -s ${cc}/bin/cc "$out/bin/cc"
             ln -s ${binutils}/bin/ar "$out/bin/ar"
             ln -s ${pkgs.python3}/bin/python3 "$out/bin/python3"
