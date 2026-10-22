@@ -2,6 +2,15 @@ load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "
 load("//tools/bazel/rules:compile.bzl", "rust_library")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+
+RUST_PACKAGE = aos_rust_package(
+    edition = "2024",
+    name = "crucible-qemu-protocol",
+    version = "0.1.0",
+    license_expression = "MIT OR Apache-2.0",
+    license_domain = "permissive-protocol",
+)
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
@@ -15,22 +24,20 @@ DEPENDENCIES = [
 
 rust_library(
     name = "lib",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_qemu_protocol",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     compile_data = ["src/control_protocol_version.in"],
     deps = DEPENDENCIES,
-    edition = "2024",
-    license_domain = "permissive-protocol",
 )
 
 aos_rust_test(
     name = "unit",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
-    package_name = "crucible-qemu-protocol",
     crate = ":lib",
-    license_domain = "permissive-protocol",
 )
 
 # Each Cargo integration root remains a separate libtest artifact; its support
@@ -39,13 +46,11 @@ aos_rust_test(
     aos_rust_test(
         name = source.removeprefix("tests/").removesuffix(".rs"),
         lint_config = "//tools/bazel/rules:workspace_lints",
-        package_name = "crucible-qemu-protocol",
+        package = RUST_PACKAGE,
         crate_root = source,
         srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
         deps = [":lib"] + DEPENDENCIES,
         compile_data = ["//docs/rfcs/0020-crucible-campaigns:schema-registry.tsv"] if source == "tests/gate_abi_conformance.rs" else [],
-        edition = "2024",
-        license_domain = "permissive-protocol",
     )
     for source in glob(["tests/*.rs"])
 ]

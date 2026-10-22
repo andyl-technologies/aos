@@ -47,6 +47,7 @@ def _inventory_impl(target, ctx):
         "features": getattr(ctx.rule.attr, "crate_features", []),
         "edition": getattr(ctx.rule.attr, "edition", ""),
         "crate_name": getattr(ctx.rule.attr, "crate_name", ""),
+        "version": getattr(ctx.rule.attr, "version", ""),
         "rustc_flags": getattr(ctx.rule.attr, "rustc_flags", []),
         "rustc_env": getattr(ctx.rule.attr, "rustc_env", {}),
         "copts": getattr(ctx.rule.attr, "copts", []),

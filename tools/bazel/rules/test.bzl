@@ -3,6 +3,7 @@
 load("@aos_tools//:paths.bzl", "AOS_TOOLS")
 load("@rules_rust//rust:defs.bzl", "rust_test")
 load(":license.bzl", "license_tags")
+load(":rust_package.bzl", "rust_package_attributes")
 
 def _runfile(ctx, file):
     path = file.short_path
@@ -56,13 +57,23 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name, jobs = 4, license_domain = "apache-host", tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
     """Preserves Rust compilation/runfiles while replacing only test scheduling."""
     if kwargs.get("env_inherit", []):
         fail("declare test environment through env; ambient inheritance is not supported")
+    if package != None:
+        if package_name != None and package_name != package.name:
+            fail("Rust test conflicts with package name: " + package.name)
+        if license_domain != None and license_domain != package.license_domain:
+            fail("Rust test conflicts with package license domain: " + package.name)
+        package_name = package.name
+        license_domain = package.license_domain
+        kwargs = rust_package_attributes(package, kwargs)
+    if not package_name:
+        fail("Rust test requires a package identity")
     rust_test(
         name = name + "_binary",
-        tags = license_tags(tags, license_domain) + ["manual", "aos-libtest-artifact"],
+        tags = license_tags(tags, license_domain or "apache-host") + ["manual", "aos-libtest-artifact"],
         **kwargs
     )
     test_attributes = {}

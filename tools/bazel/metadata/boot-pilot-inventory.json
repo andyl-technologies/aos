@@ -32,7 +32,22 @@
       },
       "kind": "rust_binary",
       "label": "//crates/aos/boot/aos-boot-identity:aos-boot-identity",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Normal and recovery boot identity parsing and UKI inspection",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-boot-identity",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -41,7 +56,8 @@
       "tags": [
         "aos-license:apache-host"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -70,7 +86,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -104,7 +121,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -131,7 +149,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -168,7 +187,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -198,7 +218,22 @@
       "generated_inputs": {},
       "kind": "rust_library",
       "label": "//crates/aos/boot/aos-boot-identity:lib",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Normal and recovery boot identity parsing and UKI inspection",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-boot-identity",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -208,7 +243,8 @@
       "tags": [
         "aos-license:apache-host"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -224,14 +260,15 @@
       "generated_inputs": {
         "crates/aos/boot/aos-boot-identity/aos-boot-identity": "//crates/aos/boot/aos-boot-identity:aos-boot-identity"
       },
-      "kind": "aos_package",
+      "kind": "_aos_package",
       "label": "//crates/aos/boot/aos-boot-identity:package",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -269,7 +306,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -314,7 +352,21 @@
       "kind": "rust_test",
       "label": "//crates/aos/boot/aos-boot-identity:uki_cli_binary",
       "rustc_env": {
-        "CARGO_BIN_EXE_aos-boot-identity": "$(rootpath :aos-boot-identity)"
+        "CARGO_BIN_EXE_aos-boot-identity": "$(rootpath :aos-boot-identity)",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Normal and recovery boot identity parsing and UKI inspection",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-boot-identity",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
       },
       "rustc_flags": [],
       "schema_version": 1,
@@ -326,7 +378,8 @@
         "aos-license:apache-host",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -364,7 +417,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
@@ -397,7 +451,7 @@
         "@@rules_rust+//util/collect_coverage:collect_coverage",
         "@@rules_rust+//util/process_wrapper:process_wrapper"
       ],
-      "edition": "",
+      "edition": "2024",
       "external": false,
       "features": [],
       "generated_inputs": {
@@ -405,7 +459,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/aos/boot/aos-boot-identity:unit_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Normal and recovery boot identity parsing and UKI inspection",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-boot-identity",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
@@ -414,7 +483,8 @@
         "aos-license:apache-host",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -450,7 +520,22 @@
       },
       "kind": "rust_binary",
       "label": "//crates/aos/boot/aos-recovery:aos-recovery",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Recovery boot validation and emergency recovery runtime",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-recovery",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -459,7 +544,8 @@
       "tags": [
         "aos-license:apache-host"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -486,7 +572,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -520,7 +607,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -547,7 +635,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -582,7 +671,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -620,7 +710,22 @@
       },
       "kind": "rust_library",
       "label": "//crates/aos/boot/aos-recovery:lib",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Recovery boot validation and emergency recovery runtime",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-recovery",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -635,7 +740,8 @@
       "tags": [
         "aos-license:apache-host"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -651,14 +757,15 @@
       "generated_inputs": {
         "crates/aos/boot/aos-recovery/aos-recovery": "//crates/aos/boot/aos-recovery:aos-recovery"
       },
-      "kind": "aos_package",
+      "kind": "_aos_package",
       "label": "//crates/aos/boot/aos-recovery:package",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -674,14 +781,15 @@
       "generated_inputs": {
         "crates/aos/boot/aos-recovery/unit_binary": "//crates/aos/boot/aos-recovery:unit_binary"
       },
-      "kind": "aos_package",
+      "kind": "_aos_package",
       "label": "//crates/aos/boot/aos-recovery:test_artifacts",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -719,7 +827,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
@@ -752,7 +861,7 @@
         "@@rules_rust+//util/collect_coverage:collect_coverage",
         "@@rules_rust+//util/process_wrapper:process_wrapper"
       ],
-      "edition": "",
+      "edition": "2024",
       "external": false,
       "features": [],
       "generated_inputs": {
@@ -760,7 +869,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/aos/boot/aos-recovery:unit_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "Recovery boot validation and emergency recovery runtime",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "aos-recovery",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
@@ -769,7 +893,8 @@
         "aos-license:apache-host",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -808,7 +933,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "ffi/rs/BUILD.bazel",
@@ -827,7 +953,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/private/rustdoc/dir_zipper/BUILD.bazel",
@@ -863,7 +990,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -899,7 +1027,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -936,7 +1065,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -973,7 +1103,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/runfiles/BUILD.bazel",
@@ -1007,7 +1138,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1026,7 +1158,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1045,7 +1178,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1064,7 +1198,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1083,7 +1218,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1102,7 +1238,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1121,7 +1258,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1140,7 +1278,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -1159,7 +1298,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/toolchain/BUILD.bazel",
@@ -1178,7 +1318,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "tools/rustfmt/BUILD.bazel",
@@ -1220,7 +1361,8 @@
         "tools/bazel/rules/rustfmt.toml"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "tools/rustfmt/BUILD.bazel",
@@ -1258,7 +1400,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "util/collect_coverage/BUILD.bazel",
@@ -1296,7 +1439,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "util/process_wrapper/BUILD.bazel",
@@ -1339,25 +1483,27 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     }
   ],
   "contracts": {
     "MODULE.bazel": "5cd049baeba287f632f5f91a415223489cbbbb3b960f236f540fd065e1d6f265",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/aos/boot/aos-boot-identity/BUILD.bazel": "f9a725719318417482f98db7e83bf31403aa22e4210f4355589a231776c8bc5f",
-    "crates/aos/boot/aos-recovery/BUILD.bazel": "320d393318c55f267712d36986934ff4b442c4da284dc2b6247821e8d8d8ccb4",
+    "crates/aos/boot/aos-boot-identity/BUILD.bazel": "9d80558dea7d2e50bf4eed0e61facf9bcb7ef4bce2d2b85aa33cd20b5b0067ca",
+    "crates/aos/boot/aos-recovery/BUILD.bazel": "79923ee2243b27a4179be3ceb05b053448d53cffe0dbe9171d3d3f973f7535c4",
     "third_party/rust/BUILD.bazel": "cda5289c878083c432cf61edf5d6a6aa521c38f02c29a04cc65417a2246c11b6",
     "third_party/rust/core/repositories.MODULE.bazel": "f76c41a67c0dec92eb711baaada47a413e7f5b9181533f03a5fa77e2bf3350d2",
     "tools/bazel/metadata/BUILD.bazel": "b3cec49d66d2a7f94057aa15cc7d0fe39a4862a9f8f6777eb5dbb419ae1b792b",
-    "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
-    "tools/bazel/rules/BUILD.bazel": "6e909fc14afef949132077bf450ce64645f80a0dd58c2d415ea23c31fae5f805",
-    "tools/bazel/rules/compile.bzl": "fd30a8c87ba7e0c645071241ac576c593ebfd44bf916a575b47ed4a624bff307",
+    "tools/bazel/metadata/inventory.bzl": "f7c915f770175fc96df55110424285698b49cddb8227273634d22f88b48515e0",
+    "tools/bazel/rules/BUILD.bazel": "23aedf33ed01a80f763c889226a5ef8aadd6de423f4a4ecdc2fcdf2c03497885",
+    "tools/bazel/rules/compile.bzl": "6e039728946c19d23b019151a0391a5ca64035796e7d672bfcc3003cb362c300",
     "tools/bazel/rules/crates.bzl": "0eff6e5095ca37e5e49dc683fa1c352624ad5994219cd07f2eb9ff4a2b1de5d8",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/license.bzl": "1d08a716508fa32131599fb3309affb804c3347aaf77591f82dca8577cd9c302",
-    "tools/bazel/rules/package.bzl": "bfad9728e63c5f5c6adfc08eb320481830558588152cdd1a9f373d9dadb8ef0a",
-    "tools/bazel/rules/test.bzl": "125a4a7be953ed764b0eff31e908397c74f76fd4c6fb8e71a5d39f08d95b8957",
+    "tools/bazel/rules/package.bzl": "8570e95108db7958ff8995206ba477dfa32c5860ba3bf0f9fe1eea809e4180e9",
+    "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
+    "tools/bazel/rules/test.bzl": "96d07d4d0a44690820128d18c49fc5643bd6b47a6b758d3456bfa90c42f677ce",
     "tools/bazel/testing/BUILD.bazel": "07d3ea2b5f8d5eb65646d8b6ddd2480dfd88440b2288467be5ba66b2c534e6bc",
     "tools/bazel/toolchains/BUILD.bazel": "6ee0fc19651767ca4c64f434f1da544ec4812d40ac8f52b535f25051ef62fb3d",
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "bac3cce83e252e76b4469b843bab156335ab9fcc8039bba656f2b91fed6e3780",

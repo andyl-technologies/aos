@@ -7,6 +7,26 @@
     root = ../..;
     sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
   };
+  # Only the temporary parity check reads these manifests. They never enter
+  # the Bazel workspace or its compilation inputs.
+  metadataOracle = builtins.path {
+    path = ../..;
+    name = "aos-bazel-package-metadata-oracle";
+    filter = path: _type: let
+      relative = pkgs.lib.removePrefix "${toString ../..}/" (toString path);
+      manifests = [
+        "crates/Cargo.toml"
+        "crates/aos/boot/aos-boot-identity/Cargo.toml"
+        "crates/aos/boot/aos-recovery/Cargo.toml"
+        "crates/crucible/engine/crucible-determinism/Cargo.toml"
+        "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml"
+        "crates/crucible/protocol/crucible-qemu-shmem/Cargo.toml"
+      ];
+    in
+      toString path
+      == toString ../..
+      || builtins.any (name: relative == name || pkgs.lib.hasPrefix "${relative}/" name) manifests;
+  };
 in
   rec {
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
@@ -40,7 +60,7 @@ in
     };
     package = pkgs.mkAosBazelPackage {
       pname = "aos-bazel-fixture";
-      version = "1";
+      version = "1.2.3-rc.4+local.5";
       build = fixtures;
       packageLabel = "//tools/bazel/tests/fixture:package";
       runtimeDeps = [pkgs.gcc-libs];
@@ -161,6 +181,22 @@ in
       grep -F 'host monotonic time must not enter Crucible state paths' "$out/host_clock.log"
       grep -E 'clippy::unwrap[_-]used' "$out/unwrap.log"
     '';
+    metadata-policy = pkgs.runCommand "aos-bazel-package-metadata-policy" {buildDeps = [pkgs.python3];} ''
+      mkdir workspace
+      cp -a ${workspace.source}/. workspace/
+      chmod -R u+w workspace
+      cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
+      ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_metadata_rejections.py} \
+        --workspace "$PWD/workspace" --launcher ${../../tools/bazel/launcher.py} \
+        --config ${workspace.configuration} --output-base "$TMPDIR/metadata/bazel" --output "$out"
+    '';
+    metadata-parity = pkgs.runCommand "aos-bazel-package-metadata-parity" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_package_metadata.py} \
+        --root ${metadataOracle} --inventory ${pilot.build}/inventory.json \
+        --inventory ${pilot.unit}/inventory.json --inventory ${protocol.tests}/inventory.json \
+        --inventory ${dependencies.core}/inventory.json --output "$out/parity.json"
+    '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
       ${pkgs.python3}/bin/python3 - ${unit}/evidence/tests <<'PY'
       import json
@@ -172,7 +208,7 @@ in
       results = json.loads((root / "index.json").read_text())["results"]
       assert len(results) == 1 and results[0]["status"] == "PASSED", results
       cases = ET.parse(root / results[0]["outputs"]["test.xml"]).findall("testcase")
-      assert len(cases) == 3, [case.attrib for case in cases]
+      assert len(cases) == 4, [case.attrib for case in cases]
       assert not any(case.find("failure") is not None for case in cases)
       PY
       mkdir -p "$out"
@@ -199,7 +235,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

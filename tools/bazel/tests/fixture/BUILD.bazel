@@ -3,6 +3,17 @@ load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary"
 load("//tools/bazel/rules:generated.bzl", "aos_python_generator")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-bazel-fixture",
+    version = "1.2.3-rc.4+local.5",
+    license_expression = "Apache-2.0",
+    description = "Hermetic Bazel qualification fixture",
+    authors = ["Fixture One", "Fixture Two"],
+    homepage = "https://example.invalid/fixture",
+    repository = "https://example.invalid/fixture/source",
+)
 
 aos_python_generator(
     name = "generated",
@@ -14,6 +25,7 @@ aos_python_generator(
 
 rust_library(
     name = "generated_library",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "fixture_generated",
     crate_root = "generated.rs",
@@ -23,6 +35,7 @@ rust_library(
 
 rust_proc_macro(
     name = "fixture_macro",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["macro.rs"],
     edition = "2024",
@@ -30,9 +43,9 @@ rust_proc_macro(
 
 rust_library(
     name = "rust_library",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "fixture_library",
-    rustc_env = {"CARGO_PKG_NAME": "aos-bazel-fixture"},
     srcs = ["lib.rs"],
     deps = [":generated_library"],
     edition = "2024",
@@ -40,6 +53,7 @@ rust_library(
 
 rust_binary(
     name = "rust_app",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["main.rs"],
     edition = "2024",
@@ -49,6 +63,7 @@ rust_binary(
 
 rust_binary(
     name = "native_app",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["native.rs"],
     edition = "2024",
@@ -58,8 +73,8 @@ rust_binary(
 
 aos_rust_test(
     name = "rust_test",
+    package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
-    package_name = "aos-bazel-fixture",
     crate = ":rust_library",
 )
 
@@ -77,10 +92,7 @@ cc_binary(
 
 aos_package(
     name = "package",
-    package_name = "aos-bazel-fixture",
-    version = "1",
-    license_expression = "Apache-2.0",
-    license_domain = "apache-host",
+    package = RUST_PACKAGE,
     artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture", ":native_app": "bin/native-fixture"},
     executables = ["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"],
 )

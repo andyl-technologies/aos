@@ -43,7 +43,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -81,7 +82,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -129,7 +131,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:codec_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -140,7 +157,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -178,7 +196,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -226,7 +245,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:codec_fuzz_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -237,7 +271,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -275,7 +310,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -323,7 +359,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:descriptor_handover_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -334,7 +385,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -368,7 +420,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -395,7 +448,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -448,7 +502,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -486,7 +541,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -534,7 +590,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:frame_format_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -545,7 +616,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -583,7 +655,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -632,7 +705,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:gate_abi_conformance_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -644,7 +732,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -682,7 +771,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -730,7 +820,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:gate_layer1_injection_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -741,7 +846,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -779,7 +885,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -827,7 +934,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:golden_vectors_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -838,7 +960,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -876,7 +999,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -924,7 +1048,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:handshake_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -935,7 +1074,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -991,7 +1131,22 @@
       "generated_inputs": {},
       "kind": "rust_library",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:lib",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -1021,7 +1176,8 @@
       "tags": [
         "aos-license:permissive-protocol"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1066,7 +1222,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1104,7 +1261,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1152,7 +1310,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:lifecycle_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -1163,7 +1336,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1201,7 +1375,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1249,7 +1424,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:setup_completion_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -1260,7 +1450,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1298,7 +1489,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel",
@@ -1332,7 +1524,7 @@
         "@@rules_rust+//util/collect_coverage:collect_coverage",
         "@@rules_rust+//util/process_wrapper:process_wrapper"
       ],
-      "edition": "",
+      "edition": "2024",
       "external": false,
       "features": [],
       "generated_inputs": {
@@ -1340,7 +1532,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-protocol:unit_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-protocol",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
@@ -1349,7 +1556,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -1387,7 +1595,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -1537,7 +1746,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:advance_ceiling_handoff_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -1647,7 +1871,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -1696,7 +1921,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -1734,7 +1960,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -1883,7 +2110,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:control_flags_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -1992,7 +2234,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2027,7 +2270,22 @@
       },
       "kind": "rust_binary",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:crucible-shmem-abi-header",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -2036,7 +2294,8 @@
       "tags": [
         "aos-license:permissive-protocol"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2070,7 +2329,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2097,7 +2357,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2154,7 +2415,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2192,7 +2454,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2348,7 +2611,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:gate_abi_conformance_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -2464,7 +2742,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2502,7 +2781,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2652,7 +2932,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:gate_layer1_injection_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -2762,7 +3057,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2800,7 +3096,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -2949,7 +3246,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:generated_abi_header_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -3058,7 +3370,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3096,7 +3409,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3245,7 +3559,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:icount_stamped_injection_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -3354,7 +3683,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3488,7 +3818,22 @@
       },
       "kind": "rust_library",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:lib",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -3592,7 +3937,8 @@
       "tags": [
         "aos-license:permissive-protocol"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3643,7 +3989,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3681,7 +4028,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3830,7 +4178,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:lookahead_gate_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -3939,7 +4302,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -3977,7 +4341,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4126,7 +4491,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:multi_vcpu_node_slot_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -4235,7 +4615,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4273,7 +4654,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4422,7 +4804,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:preemption_mailbox_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -4531,7 +4928,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4569,7 +4967,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4719,7 +5118,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:region_layout_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -4829,7 +5243,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -4867,7 +5282,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -5017,7 +5433,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:setup_validation_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -5127,7 +5558,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -5165,7 +5597,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -5314,7 +5747,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:snapshot_restore_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -5423,7 +5871,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -5461,7 +5910,8 @@
         "tools/bazel/testing/runner.py"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel",
@@ -5497,7 +5947,7 @@
         "@@rules_rust+//util/collect_coverage:collect_coverage",
         "@@rules_rust+//util/process_wrapper:process_wrapper"
       ],
-      "edition": "",
+      "edition": "2024",
       "external": false,
       "features": [],
       "generated_inputs": {
@@ -5505,7 +5955,22 @@
       },
       "kind": "rust_test",
       "label": "//crates/crucible/protocol/crucible-qemu-shmem:unit_binary",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_LICENSE": "MIT OR Apache-2.0",
+        "CARGO_PKG_LICENSE_FILE": "",
+        "CARGO_PKG_NAME": "crucible-qemu-shmem",
+        "CARGO_PKG_README": "",
+        "CARGO_PKG_REPOSITORY": "",
+        "CARGO_PKG_RUST_VERSION": "",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "1",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": ""
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -5517,7 +5982,8 @@
         "aos-license:permissive-protocol",
         "manual"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "tools/bazel/rules/BUILD.bazel",
@@ -5536,7 +6002,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "BUILD.bazel",
@@ -5595,7 +6062,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.3.9"
     },
     {
       "build_file": "BUILD.bazel",
@@ -5663,7 +6131,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.7"
     },
     {
       "build_file": "BUILD.bazel",
@@ -5798,7 +6267,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -5933,7 +6403,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.8.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -5990,7 +6461,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.10.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6065,7 +6537,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.2.65"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6125,7 +6598,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6197,7 +6671,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.4.2"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6259,7 +6734,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.2.17"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6321,7 +6797,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.3.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6380,7 +6857,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.7"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6455,7 +6933,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.10.7"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6519,7 +6998,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.9"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6589,7 +7069,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6655,7 +7136,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.14.7"
     },
     {
       "build_file": "BUILD.bazel",
@@ -6715,7 +7197,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.18"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7129,7 +7612,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7539,7 +8023,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.2.186"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7647,7 +8132,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.8.2"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7734,7 +8220,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7818,7 +8305,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.106"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7907,7 +8395,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -7993,7 +8482,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.46"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8083,7 +8573,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8171,7 +8662,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8253,7 +8745,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8331,7 +8824,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8418,7 +8912,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8561,7 +9056,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8704,7 +9200,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.150"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8788,7 +9285,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.10.9"
     },
     {
       "build_file": "BUILD.bazel",
@@ -8850,7 +9348,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.0.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9011,7 +9510,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.0.118"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9170,7 +9670,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9326,7 +9827,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.0.18"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9392,7 +9894,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.0.18"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9469,7 +9972,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.11.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9523,7 +10027,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9595,7 +10100,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.20.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9667,7 +10173,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.24"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9742,7 +10249,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.25"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9801,7 +10309,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.9.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9870,7 +10379,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9935,7 +10445,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.21"
     },
     {
       "build_file": "BUILD.bazel",
@@ -9974,7 +10485,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10042,7 +10554,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10107,7 +10620,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.3.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10193,7 +10707,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.2.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10245,7 +10760,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10318,7 +10834,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.4.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10372,7 +10889,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.2.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10464,7 +10982,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.16.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10588,7 +11107,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10701,7 +11221,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10778,7 +11299,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10837,7 +11359,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10931,7 +11454,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -10989,7 +11513,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11062,7 +11587,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11235,7 +11761,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11315,7 +11842,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11369,7 +11897,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.5.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11440,7 +11969,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.3"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11496,7 +12026,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.2.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11588,7 +12119,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.13.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11657,7 +12189,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11738,7 +12271,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11814,7 +12348,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.2.19"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11873,7 +12408,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.10.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11923,7 +12459,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -11976,7 +12513,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.3.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12056,7 +12594,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12133,7 +12672,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.93"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12215,7 +12755,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.38"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12295,7 +12836,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12372,7 +12914,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.25"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12460,7 +13003,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12546,7 +13090,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12610,7 +13155,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.6"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12666,7 +13212,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12746,7 +13293,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12822,7 +13370,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12907,7 +13456,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.228"
     },
     {
       "build_file": "BUILD.bazel",
@@ -12962,7 +13512,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.6.8"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13026,7 +13577,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.13.2"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13080,7 +13632,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.2.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13241,7 +13794,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.0.98"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13298,7 +13852,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.13.1"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13438,7 +13993,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13575,7 +14131,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.69"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13637,7 +14194,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.69"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13707,7 +14265,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.6"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13795,7 +14354,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.8.20"
     },
     {
       "build_file": "BUILD.bazel",
@@ -13850,7 +14410,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.6.8"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14345,7 +14906,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.22.24"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14405,7 +14967,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14461,7 +15024,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.2"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14531,7 +15095,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.16"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14590,7 +15155,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.2.6"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14658,7 +15224,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "2.5.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14713,7 +15280,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14768,7 +15336,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14921,7 +15490,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.15"
     },
     {
       "build_file": "BUILD.bazel",
@@ -14976,7 +15546,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "1.0.0"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15038,7 +15609,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.5.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15107,7 +15679,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15164,7 +15737,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.7.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15220,7 +15794,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15277,7 +15852,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.1.5"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15390,7 +15966,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.10.4"
     },
     {
       "build_file": "BUILD.bazel",
@@ -15452,7 +16029,8 @@
         "noclippy",
         "norustfmt"
       ],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.10.3"
     },
     {
       "build_file": "cargo/private/cargo_build_script_runner/BUILD.bazel",
@@ -15487,7 +16065,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "cargo/private/cargo_build_script_runner/BUILD.bazel",
@@ -15524,7 +16103,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "cargo/private/cargo_toml_variable_extractor/BUILD.bazel",
@@ -15564,7 +16144,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "cargo/private/BUILD.bazel",
@@ -15600,7 +16181,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "ffi/rs/BUILD.bazel",
@@ -15619,7 +16201,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/private/rustdoc/dir_zipper/BUILD.bazel",
@@ -15655,7 +16238,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -15691,7 +16275,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -15728,7 +16313,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/private/rustdoc/BUILD.bazel",
@@ -15765,7 +16351,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/runfiles/BUILD.bazel",
@@ -15799,7 +16386,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15818,7 +16406,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15837,7 +16426,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15856,7 +16446,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15875,7 +16466,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15894,7 +16486,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15913,7 +16506,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15932,7 +16526,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/settings/BUILD.bazel",
@@ -15951,7 +16546,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "rust/toolchain/BUILD.bazel",
@@ -15970,7 +16566,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": ""
     },
     {
       "build_file": "tools/rustfmt/BUILD.bazel",
@@ -16012,7 +16609,8 @@
         "tools/bazel/rules/rustfmt.toml"
       ],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "tools/rustfmt/BUILD.bazel",
@@ -16050,7 +16648,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "util/collect_coverage/BUILD.bazel",
@@ -16088,7 +16687,8 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     },
     {
       "build_file": "util/process_wrapper/BUILD.bazel",
@@ -16131,27 +16731,29 @@
       "schema_version": 1,
       "sources": [],
       "tags": [],
-      "target_cpu": "x86_64"
+      "target_cpu": "x86_64",
+      "version": "0.0.0"
     }
   ],
   "contracts": {
     "MODULE.bazel": "5cd049baeba287f632f5f91a415223489cbbbb3b960f236f540fd065e1d6f265",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel": "907279ded64370a3cd2c4e9a8d43bce28de7df5857a8032f7731a9e46435a08d",
-    "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel": "b025b87a8397c29b3dedf142a4ee69a8434ba0c6da85f3e296e5e5a03adfaeb2",
+    "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel": "64760e4fc77d2a8b698035f7577767ef20cf1a2558b8f25dea1e7726f93f068e",
+    "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel": "8aa374fd4a1d4a57287905042e167c63b43b4f287477fb5abd6eda12ea7be6cd",
     "docs/rfcs/0020-crucible-campaigns/BUILD.bazel": "a34a90e4b274d18f7129de7d146392f6400ef193564adb691f780005092ff341",
     "third_party/rust/BUILD.bazel": "cda5289c878083c432cf61edf5d6a6aa521c38f02c29a04cc65417a2246c11b6",
     "third_party/rust/core/aliases.bzl": "8bb0926b003f94ab536dd484e3140474dc6e2074f3375eedac6c1528a368f280",
     "third_party/rust/core/repositories.MODULE.bazel": "f76c41a67c0dec92eb711baaada47a413e7f5b9181533f03a5fa77e2bf3350d2",
     "tools/bazel/metadata/BUILD.bazel": "b3cec49d66d2a7f94057aa15cc7d0fe39a4862a9f8f6777eb5dbb419ae1b792b",
-    "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
-    "tools/bazel/rules/BUILD.bazel": "6e909fc14afef949132077bf450ce64645f80a0dd58c2d415ea23c31fae5f805",
-    "tools/bazel/rules/compile.bzl": "fd30a8c87ba7e0c645071241ac576c593ebfd44bf916a575b47ed4a624bff307",
+    "tools/bazel/metadata/inventory.bzl": "f7c915f770175fc96df55110424285698b49cddb8227273634d22f88b48515e0",
+    "tools/bazel/rules/BUILD.bazel": "23aedf33ed01a80f763c889226a5ef8aadd6de423f4a4ecdc2fcdf2c03497885",
+    "tools/bazel/rules/compile.bzl": "6e039728946c19d23b019151a0391a5ca64035796e7d672bfcc3003cb362c300",
     "tools/bazel/rules/crates.bzl": "0eff6e5095ca37e5e49dc683fa1c352624ad5994219cd07f2eb9ff4a2b1de5d8",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/license.bzl": "1d08a716508fa32131599fb3309affb804c3347aaf77591f82dca8577cd9c302",
-    "tools/bazel/rules/package.bzl": "bfad9728e63c5f5c6adfc08eb320481830558588152cdd1a9f373d9dadb8ef0a",
-    "tools/bazel/rules/test.bzl": "125a4a7be953ed764b0eff31e908397c74f76fd4c6fb8e71a5d39f08d95b8957",
+    "tools/bazel/rules/package.bzl": "8570e95108db7958ff8995206ba477dfa32c5860ba3bf0f9fe1eea809e4180e9",
+    "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
+    "tools/bazel/rules/test.bzl": "96d07d4d0a44690820128d18c49fc5643bd6b47a6b758d3456bfa90c42f677ce",
     "tools/bazel/testing/BUILD.bazel": "07d3ea2b5f8d5eb65646d8b6ddd2480dfd88440b2288467be5ba66b2c534e6bc",
     "tools/bazel/toolchains/BUILD.bazel": "6ee0fc19651767ca4c64f434f1da544ec4812d40ac8f52b535f25051ef62fb3d",
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "bac3cce83e252e76b4469b843bab156335ab9fcc8039bba656f2b91fed6e3780",

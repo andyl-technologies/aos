@@ -58,7 +58,7 @@ def _package_impl(ctx):
 def _artifact_destination(entry):
     return entry["destination"]
 
-aos_package = rule(
+_aos_package = rule(
     implementation = _package_impl,
     attrs = {
         "artifacts": attr.label_keyed_string_dict(mandatory = True, allow_files = True, aspects = [aos_license_aspect]),
@@ -69,3 +69,17 @@ aos_package = rule(
         "license_domain": attr.string(mandatory = True, values = ["apache-host", "permissive-protocol", "gpl-qemu"]),
     },
 )
+
+def aos_package(name, package = None, **kwargs):
+    """Exports artifacts with the same identity as their declared Rust package."""
+    if package != None:
+        for key, value in {
+            "package_name": package.name,
+            "version": package.version,
+            "license_expression": package.license_expression,
+            "license_domain": package.license_domain,
+        }.items():
+            if key in kwargs and kwargs[key] != value:
+                fail("installed package conflicts with Rust package " + key)
+            kwargs[key] = value
+    _aos_package(name = name, **kwargs)

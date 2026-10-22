@@ -50,6 +50,29 @@ Production consumers retain their Cargo or direct-rustc recipes. These fixtures 
 production feature parity, cross-platform support, or completion of the RFC. The remaining platform/invalidation checks and
 family-specific performance budgets remain required before production cutover.
 
+## Rust package identity
+
+Each migrated Rust package declares `aos_rust_package` in its BUILD file. The
+declaration owns the package name, SemVer version, edition, license expression
+and domain, authors, description, and optional project URLs. Its libraries,
+binaries, procedural macros, and tests receive the same `package` value.
+`aos_package` uses that declaration for the installed artifact manifest too.
+Per-target overrides of package identity fail before compilation.
+
+The wrapper supplies the compatible `CARGO_PKG_*` compiler environment directly
+from the declaration, including separate version components and prerelease
+identifiers. No Cargo manifest is an input to these builds. Target-specific
+environment entries such as integration-test executable paths remain explicit.
+
+`build.bazel.metadata-parity` compares the configured package environments of
+the boot, determinism, protocol, and shared-memory targets against a separate
+temporary Cargo manifest oracle. `build.bazel.metadata-policy` exercises eleven
+rejected declarations and overrides with actual Bazel analysis. The synthetic
+fixture checks package identity in its binary, unit tests, and doctest,
+including a version with both prerelease and build metadata.
+`tests/evidence/native-linux-package-metadata.json` records the passing combined
+suite, 36 configured Rust targets across five packages, and the rejected cases.
+
 ## Local cache evidence
 
 `tests/evidence/native-linux-cache.json` records the first passing native Linux

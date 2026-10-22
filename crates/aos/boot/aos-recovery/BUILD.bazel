@@ -2,28 +2,38 @@ load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+
+RUST_PACKAGE = aos_rust_package(
+    edition = "2024",
+    name = "aos-recovery",
+    version = "0.1.0",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    description = "Recovery boot validation and emergency recovery runtime",
+)
 
 # Production installation and platform qualification remain in the Nix recipe.
 rust_library(
     name = "lib",
+    package = RUST_PACKAGE,
     crate_name = "aos_recovery",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
     deps = ["//crates/aos/boot/aos-boot-identity:lib"],
-    edition = "2024",
 )
 
 rust_binary(
     name = "aos-recovery",
+    package = RUST_PACKAGE,
     crate_name = "aos_recovery",
     srcs = ["src/main.rs"],
     deps = [":lib", "//crates/aos/boot/aos-boot-identity:lib"],
-    edition = "2024",
 )
 
 aos_rust_test(
     name = "unit",
-    package_name = "aos-recovery",
+    package = RUST_PACKAGE,
     crate = ":lib",
 )
 
@@ -34,10 +44,7 @@ rust_doc_test(
 
 aos_package(
     name = "package",
-    package_name = "aos-recovery",
-    version = "0.1.0",
-    license_expression = "Apache-2.0",
-    license_domain = "apache-host",
+    package = RUST_PACKAGE,
     artifacts = {":aos-recovery": "bin/aos-recovery"},
     executables = ["bin/aos-recovery"],
 )
@@ -47,9 +54,9 @@ aos_package(
     name = "test_artifacts",
     testonly = True,
     package_name = "aos-recovery-tests",
-    version = "0.1.0",
-    license_expression = "Apache-2.0",
-    license_domain = "apache-host",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
     artifacts = {":unit_binary": "bin/aos-recovery-tests"},
     executables = ["bin/aos-recovery-tests"],
 )

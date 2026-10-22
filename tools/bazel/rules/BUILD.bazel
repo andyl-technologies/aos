@@ -1,6 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
 
-exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "test.bzl", "generated.bzl"])
+exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "test.bzl", "generated.bzl"])
 
 exports_files(["clippy.toml", "rustfmt.toml"])
 
