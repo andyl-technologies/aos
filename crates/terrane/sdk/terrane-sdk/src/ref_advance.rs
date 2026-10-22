@@ -10,6 +10,7 @@ mod phase_trace;
 #[cfg(test)]
 pub(crate) use phase_trace::{NativeTrace, PhaseTrace};
 
+pub(crate) mod committed_history;
 mod coordinator;
 mod disclosure;
 #[cfg(unix)]

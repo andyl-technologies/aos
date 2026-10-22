@@ -8,7 +8,7 @@ use terrane_format::auth::{Attenuation, Token};
 
 use crate::{
     ref_advance::tests::{fixture, request, request_file_acl, secret, token},
-    store::{Clock, StoreErrorKind, TokioClock},
+    store::{Clock, RefStore, StoreErrorKind, TokioClock},
 };
 
 const REFERENCE: &str = "refs/heads/_/main";
@@ -118,6 +118,71 @@ async fn expiry_after_log_read_refuses_pending_event_without_advancing_cursor() 
 
     assert!(matches!(error.kind(), StoreErrorKind::Denied { .. }));
     assert_eq!(watch.next_sequence, cursor);
+    tokio::fs::remove_dir_all(coordinator.store().root())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn backlog_requires_complete_ordered_whole_record_suffix_before_delivery() {
+    let coordinator = fixture().await;
+    let mut session = coordinator.begin(REFERENCE, &token(), "sdk").await.unwrap();
+    let first = coordinator
+        .advance(&mut session, request(Vec::new()))
+        .await
+        .unwrap();
+    let mut watch = coordinator.watch(REFERENCE, &token(), "sdk").await.unwrap();
+    let second = coordinator
+        .advance(&mut session, request(vec![first.commit]))
+        .await
+        .unwrap();
+    let third = coordinator
+        .advance(&mut session, request(vec![second.commit]))
+        .await
+        .unwrap();
+    let records = coordinator
+        .store()
+        .ref_log_read(REFERENCE, first.seq)
+        .await
+        .unwrap();
+    assert_eq!(records.len(), 3);
+    let cursor = watch.next_sequence;
+
+    // Mutate only untrusted response records, retaining the actual published
+    // head and authority. Equal commit IDs do not excuse a different candidate
+    // selector, and a valid first event does not excuse missing later history.
+    let mut changed_selector = records.clone();
+    changed_selector[0].record.candidate_id = Some([42; 32]);
+    let mut changed_predecessor = records.clone();
+    let mut unrelated = first.clone();
+    unrelated.candidate_id = Some([42; 32]);
+    changed_predecessor[1].expected_previous = Some(Some(unrelated));
+    for altered in [
+        vec![records[0].clone()],
+        vec![records[0].clone(), records[2].clone()],
+        vec![
+            records[0].clone(),
+            records[1].clone(),
+            records[1].clone(),
+            records[2].clone(),
+        ],
+        vec![records[1].clone(), records[0].clone(), records[2].clone()],
+        changed_selector,
+        changed_predecessor,
+    ] {
+        let error = watch
+            .pending_from_records(&third, first.seq, altered)
+            .err()
+            .unwrap();
+        assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
+        assert_eq!(watch.next_sequence, cursor);
+    }
+
+    assert_eq!(watch.next().await.unwrap().unwrap().record, first);
+    assert_eq!(watch.next().await.unwrap().unwrap().record, second);
+    assert_eq!(watch.next().await.unwrap().unwrap().record, third);
+    watch.close();
+    assert!(watch.next().await.unwrap().is_none());
     tokio::fs::remove_dir_all(coordinator.store().root())
         .await
         .unwrap();

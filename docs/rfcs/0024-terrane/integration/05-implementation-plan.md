@@ -12424,3 +12424,48 @@ the actual retained SDK executable. This includes current-first delivery,
 changed-horizon and revoked/expired authority refusal before cursor advance,
 and missing or mismatched committed log records. Neither focused pass accepts
 a T2–T6 task or establishes complete multi-reference watch/resume behavior.
+
+
+#### Exact committed watch backlog validation
+
+Watch delivery now checks its entire returned committed suffix against the
+exact current whole-record horizon before selecting the next event. A matching
+sequence and home alone no longer suffice: missing, duplicated or reordered
+entries, inconsistent whole candidate predecessors and a mismatching final
+record refuse the attempt without advancing the cursor. Append-first candidates
+beyond the observed head remain excluded. The existing repository-history
+checker moved into the ref coordinator layer and is shared by both read paths;
+its six invariant selectors and history API behavior remain unchanged. Closing
+current authorization and whole-head checks still run after log IO and validation.
+This does not add bounded pagination, multi-reference watch or resume semantics.
+
+The new native witness publishes three actual commits, captures their real
+committed log, and presents malformed untrusted response variants to the exact
+production suffix-selection helper while retaining the genuine published head.
+Each refusal preserves the cursor, then the ordinary guarded watch delivers all
+three actual committed records. It supplies no replacement backend authority.
+The owning ref-watch gate includes this seventh native case.
+
+All seven native watch cases, all six shared history invariants and all four
+actual repository-history integration cases pass locally. The native unit cases
+retain their existing local 240-second diagnostic bound; the invariant and
+public history selectors retain thirty seconds each. These local diagnostics do
+not introduce new owning-gate timers. Strict SDK/Linux/CLI all-target Clippy,
+native portable and actual WebAssembly checking, Rust/Nix formatting and gate
+evaluation pass. Frozen ref-watch, ref-history and required application-target
+qualification remain pending. No task acceptance changes.
+
+Frozen bundle reception at `2a3c545c58` passes all nine cases in 134.43 seconds;
+independent review matches 7,943 immutable source files and 5,242 bound inputs.
+Required application-target compilation at `a4fbca79e1` passes in 1,603.34
+seconds, matching 7,939 immutable source files and 184 compiler artifact records
+across 59 packages. These application records retain compilation metadata rather
+than executable bytes.
+
+The older aggregate at `147d56388a` has now terminated: 2,238 tests ran, with
+2,236 passes, two timeouts and eighteen skips. The timeouts were exactly the
+known overlay-collection case at 180.009 seconds and ordinary 4,096-item index
+case at 1,800.074 seconds. Later targeted-retirement and grouped-read focused
+runs pass those cases within their unchanged bounds. That does not replace the
+required full aggregate on the current implementation; its qualification remains
+open. The older failure and retained diagnostics remain recorded.

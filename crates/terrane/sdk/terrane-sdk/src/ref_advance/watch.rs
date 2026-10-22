@@ -5,7 +5,7 @@ use std::time::Duration;
 use terrane_format::auth::Verb;
 use terrane_format::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
-use super::{AdvanceError, Coordinator};
+use super::{AdvanceError, Coordinator, committed_history::checked_suffix};
 use crate::store::{Clock, CorruptSubject, RefWatch, Store, StoreErrorKind, StoreFailure};
 
 /// Requires shared clock access only when asynchronous operations must be sendable.
@@ -82,10 +82,11 @@ impl<S: Store, C: WatchClock, F> GuardedWatch<'_, S, C, F> {
     ///
     /// # Errors
     /// Returns denial after token expiry or ACL revocation, corruption for a
-    /// committed sequence gap, and storage or clock errors without closing an
-    /// otherwise live subscription. Authorization is checked again after log
-    /// I/O. A changed whole head returns `Unavailable`; a refused attempt never
-    /// advances the delivery cursor, so callers may retry the same sequence.
+    /// committed sequence gap or inconsistent whole-record chain, and storage or
+    /// clock errors without closing an otherwise live subscription. Authorization
+    /// is checked again after log I/O. A changed whole head returns `Unavailable`;
+    /// a refused attempt never advances the delivery cursor, so callers may retry
+    /// the same sequence.
     pub async fn next(&mut self) -> Result<Option<RefLogRecord>, StoreFailure> {
         loop {
             if self.closed {
@@ -129,18 +130,27 @@ impl<S: Store, C: WatchClock, F> GuardedWatch<'_, S, C, F> {
             .store()
             .ref_log_read(&self.reference, sequence)
             .await?;
-        let record = records
-            .into_iter()
-            .find(|record| record.record.seq == sequence)
-            .ok_or_else(|| self.corrupt())?;
-        if record.record.home != head.home || (sequence == head.seq && record.record != *head) {
-            return Err(self.corrupt());
-        }
+        self.pending_from_records(head, sequence, records).map(Some)
+    }
 
-        Ok(Some(PendingEvent {
+    fn pending_from_records(
+        &self,
+        head: &RefRecord,
+        sequence: u64,
+        records: Vec<RefLogRecord>,
+    ) -> Result<PendingEvent, StoreFailure> {
+        // A matching sequence alone cannot identify a committed event. Bind
+        // every intervening whole predecessor through the exact current head,
+        // excluding append-first candidates that have not reached that head.
+        let record = checked_suffix(&self.reference, sequence, head, records)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| self.corrupt())?;
+
+        Ok(PendingEvent {
             record,
             horizon: head.clone(),
-        }))
+        })
     }
 
     async fn emit(&mut self, pending: PendingEvent) -> Result<RefLogRecord, StoreFailure> {
