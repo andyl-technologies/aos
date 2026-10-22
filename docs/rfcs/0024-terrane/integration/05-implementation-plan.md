@@ -15752,3 +15752,25 @@ all-target Clippy, strict enrollment-fixture Clippy, actual enrollment-fixture
 compilation, public Linux documentation, Python syntax and `git diff --check`.
 No native fixture is executed on the host. Fresh native and mandatory
 application qualification remain pending for the committed increment.
+
+
+#### Cold active exposure closure
+
+Cold recovery now permits omission of an old active exposure only after the
+existing authenticated project census proves every recorded original backing
+inode closed. The old phase does not replace that proof. Named files, retained
+descriptors and mappings still refuse recovery before any policy write, and
+empty or foreign native bindings remain unresolved. The ordinary funded recovery
+bootstrap persists the resulting policy before Resume; no old exposure resumes.
+
+A separate native fixture injects actual loss of the recorded active index name
+without writing a drain record. It verifies the original device/inode and durable
+active binding, retains the genuine mapping across owner restart, requires
+byte-identical policy and readable old mapping while recovery refuses, then
+requires authenticated closure and completed recovery only after final unmap.
+The existing draining scenario and all per-actor and whole-VM bounds remain.
+Strict Linux all-feature/all-target Clippy, the actual surface-FUSE fixture
+compilation, Rust formatting, supervisor syntax and diff checks pass. Fresh native
+surface-owner and mandatory application qualification remain required for this
+increment. This does not complete recovery while original backing names
+or kernel references remain, production worker recovery, or any whole T2 task.

@@ -1,11 +1,11 @@
-//! Restarts after checked unlink while a genuine old index mapping survives.
+//! Restarts after native retirement or injected namespace loss with a live mapping.
 
 use super::{Result, config, limits, now, snapshot};
 use crate::{
     repository_fixture::{MAIN, RepositoryFixture},
     restart,
 };
-use std::{fs::File, io, os::fd::AsFd, sync::Arc, time::Duration};
+use std::{fs::File, io, os::fd::AsFd, os::unix::fs::MetadataExt, sync::Arc, time::Duration};
 use terrane_format::surface::ViewTarget;
 use terrane_linux::{
     host_cache::{NativeMetadataOwner, SurfaceIndexPolicy},
@@ -19,6 +19,7 @@ pub(crate) fn verify(
     inputs: &config::Inputs,
     policy: SurfaceIndexPolicy,
     confinement: Arc<Installed>,
+    active: bool,
 ) -> Result<()> {
     let fixture = runtime.block_on(RepositoryFixture::new(&inputs.domain))?;
     runtime.block_on(fixture.commit(b"cold retired original exposure source"))?;
@@ -45,11 +46,49 @@ pub(crate) fn verify(
     let seal = terrane_linux::verity::measure(&file)?;
     let maximum = usize::try_from(file.metadata()?.len())?;
     let mapping = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
-    runtime.block_on(owner.drain_surface_exposure(&lease))?;
+    if active {
+        // Inject namespace loss without inventing a durable drain. The original
+        // active record and real mapped inode must survive the owner restart.
+        let path = crate::canonical_path(inputs, key.root());
+        let backing = File::from(grant.as_fd().try_clone_to_owned()?);
+        let original = backing.metadata()?;
+        let named = std::fs::metadata(&path)?;
+        let recorded = runtime.block_on(snapshot(inputs))?;
+        let exposure = recorded
+            .exposures
+            .iter()
+            .find(|row| row.id == id)
+            .ok_or("active exposure disappeared before namespace loss")?;
+        if exposure.phase != terrane_sdk::host::cache::ExposurePhase::Active
+            || original.dev() != named.dev()
+            || original.ino() != named.ino()
+            || original.nlink() != 1
+            || !exposure
+                .backings
+                .iter()
+                .any(|row| row.device == original.dev() && row.inode == original.ino())
+        {
+            return Err(
+                "namespace loss did not select the recorded original active backing".into(),
+            );
+        }
+
+        std::fs::remove_file(&path)?;
+        File::open(path.parent().ok_or("index has no parent")?)?.sync_all()?;
+        let unlinked = backing.metadata()?;
+        if unlinked.dev() != original.dev()
+            || unlinked.ino() != original.ino()
+            || unlinked.nlink() != 0
+        {
+            return Err("namespace loss changed or retained the original inode name".into());
+        }
+    } else {
+        runtime.block_on(owner.drain_surface_exposure(&lease))?;
+    }
     drop(grant);
     drop(admitted);
     drop(lease);
-    if !runtime.block_on(owner.retire_draining_surface_index(key))? {
+    if !active && !runtime.block_on(owner.retire_draining_surface_index(key))? {
         return Err("cold closure fixture lost original index retirement".into());
     }
     drop(owner);
@@ -93,8 +132,14 @@ pub(crate) fn verify(
             "funded cold closure did not discharge only its actual retired exposure".into(),
         );
     }
-    println!(
-        "PASS cold draining exposure preserves policy while the actual retired mapping survives; final unmap permits authenticated closure in funded recovery before Resume"
-    );
+    if active {
+        println!(
+            "PASS cold active exposure preserves policy through actual namespace loss and retained mapping; final unmap alone permits authenticated closure in funded recovery before Resume"
+        );
+    } else {
+        println!(
+            "PASS cold draining exposure preserves policy while the actual retired mapping survives; final unmap permits authenticated closure in funded recovery before Resume"
+        );
+    }
     Ok(())
 }

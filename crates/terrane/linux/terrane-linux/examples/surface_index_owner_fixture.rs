@@ -153,6 +153,7 @@ fn main() -> Result<()> {
             | "exposure"
             | "file-closure"
             | "cold-closure"
+            | "cold-active-closure"
             | "index-closure"
             | "worker-send"
             | "worker-network"
@@ -205,8 +206,15 @@ fn main() -> Result<()> {
         }
         return scoped_worker::run(launched, &runtime, &owner, &inputs);
     }
-    if mode == "cold-closure" {
-        return exposure::cold_closure::verify(owner, &runtime, &inputs, policy, confinement);
+    if matches!(mode.as_str(), "cold-closure" | "cold-active-closure") {
+        return exposure::cold_closure::verify(
+            owner,
+            &runtime,
+            &inputs,
+            policy,
+            confinement,
+            mode == "cold-active-closure",
+        );
     }
     if mode == "file-closure" {
         return runtime.block_on(exposure::file_closure::verify(&owner, &inputs));

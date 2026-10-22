@@ -9,7 +9,6 @@ use crate::{
     host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode},
 };
 use std::{collections::BTreeSet, io};
-use terrane_sdk::host::cache::ExposurePhase;
 
 /// Returns checked recovery candidates without changing any physical policy.
 pub(in crate::host_cache::owner) fn capture(owner: &mut Custody) -> io::Result<ColdPolicy> {
@@ -25,9 +24,9 @@ pub(in crate::host_cache::owner) fn capture(owner: &mut Custody) -> io::Result<C
     let mut excluded = BTreeSet::new();
     let mut pin_owners = BTreeSet::new();
     for row in &owner.state.exposures {
-        if row.phase != ExposurePhase::Draining || row.backings.is_empty() {
+        if row.backings.is_empty() {
             return Err(unresolved(
-                "cold exposure has no reconciled draining native context",
+                "cold exposure has no original native closure bindings",
             ));
         }
         pin_owners.insert(row.pin_owner());
@@ -55,8 +54,10 @@ pub(in crate::host_cache::owner) fn capture(owner: &mut Custody) -> io::Result<C
         ));
     }
 
-    // Closure is monotonic. These candidates can enter the ordinary funded
-    // bootstrap; no snapshot is changed until that real physical write begins.
+    // Closure is monotonic, independently of the old phase. A crashed owner
+    // may leave an Active record after its original backing has disappeared.
+    // Only this complete native proof permits omission; neither phase nor
+    // expiry establishes closure. The ordinary funded bootstrap persists it.
     let mut next = owner.state.clone();
     next.exposures.clear();
     next.pins.retain(|pin| !pin_owners.contains(&pin.owner));
