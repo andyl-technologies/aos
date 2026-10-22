@@ -1530,9 +1530,6 @@ def main():
                 "scoped recovery lacks the three original cold whole files")
         scoped_originals = {path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
                             for path in scoped_prior_files}
-        # The manifest actor only pins existing recovery backing. Run it before
-        # the inline actor publishes new content with its own retirement state.
-        scoped_manifest = actor("sealed-consumer-cold", "scoped-manifest", uuid)
         scoped_file = actor("sealed-consumer-cold", "scoped-file", uuid)
         require("PASS actual signed scoped file returns original sealed inode; changed policy denies disclosure, foreign domain leaves physical policy unchanged, retained descriptor survives release" in scoped_file,
                 "missing actual SDK-authorized native file backing witness")
@@ -1553,9 +1550,9 @@ def main():
                     for path, original in scoped_originals.items()),
                 "scoped backing reopen replaced or changed an earlier whole-file inode")
         print("PASS independent observer matches SDK-authorized backing to the original immutable publisher inode", flush=True)
-        require("PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release" in scoped_manifest,
+        require("PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release" in scoped_file,
                 "missing actual SDK-authorized whole manifest witness")
-        manifest_inodes = [line for line in scoped_manifest.splitlines()
+        manifest_inodes = [line for line in scoped_file.splitlines()
                            if line.startswith("SCOPED_MANIFEST_INODE ")]
         original_manifests = [path for path in scoped_originals
                               if path.read_bytes() == bytes([0x5a]) * 262145]

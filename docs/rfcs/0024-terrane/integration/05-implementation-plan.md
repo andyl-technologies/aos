@@ -13160,3 +13160,27 @@ final teardown. The initial VM run passes with the same original charge and
 zero final charge; its new structured witness requires committed qualification
 and independent source review. It does not substitute for production exposure
 or kernel-reference custody.
+
+The full native run at `99dcc2f24a` fails in 565.30 seconds with all frozen
+source unchanged. All 128 native units and the original whole-file controls
+pass; the independent signed scoped manifest actor also passes and reports
+the original recovered manifest inode 1169 with its exact canonical identity
+and 262,145-byte size. The next inline actor refuses Resume with `store
+capacity exceeded`. No complete scoped or full native pass is inferred, and
+no bootstrap hold or configured capacity is increased or discarded.
+
+Both scoped cases now share one actual native owner and recovery lifecycle,
+preserving the original 30-second actor bound and 92-selector inventory. The
+manifest case creates its own fresh, genuinely signed SDK repository instead
+of adding another commit to the inline case's advanced policy history. This
+keeps independent SDK authorities while avoiding an extra native startup with
+its retained funding. Both original-inode observers, changed-policy refusal,
+foreign-domain no-effect check and phase diagnostics remain mandatory. Strict
+native all-target Clippy passes; frozen runtime and application qualification
+remain required for this correction.
+
+Frozen review at `3f78f929ed` confirms the mapping-without-consumer-descriptor
+witness against the installed probe, source-built ELF, kernel and rootfs. The
+committed check reuses the exact earlier passing VM output in 1.34 seconds;
+this is source-bound cache reuse, not a second execution. Retained project
+charges remain 3,330,048 bytes and one inode, and final charges are both zero.

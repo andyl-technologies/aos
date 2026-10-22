@@ -31,7 +31,6 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "sealed-consumer"
             | "sealed-consumer-cold"
             | "scoped-file"
-            | "scoped-manifest"
             | "empty"
             | "refuse"
             | "late-refuse"
@@ -198,9 +197,6 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "scoped-file" => {
             super::scoped_file::run(&owner, &runtime, &inputs, original)?;
-        }
-        "scoped-manifest" => {
-            super::scoped_file::run_manifest(&owner, &runtime, &inputs, original)?;
         }
         "publish-manifest"
         | "publish-manifest-cancel"

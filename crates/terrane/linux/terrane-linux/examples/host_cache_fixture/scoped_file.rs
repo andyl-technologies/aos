@@ -51,22 +51,6 @@ pub(super) fn run(
         .map_err(|error| io::Error::other(error.to_string()))
 }
 
-/// Runs an independent scoped manifest actor within the same bounded lifecycle.
-///
-/// # Errors
-/// Refuses absent original custody, invalid SDK selection, changed backing or
-/// failed durable pin release.
-pub(super) fn run_manifest(
-    owner: &NativeMetadataOwner,
-    runtime: &tokio::runtime::Runtime,
-    inputs: &Inputs,
-    original: Option<Vec<u8>>,
-) -> io::Result<()> {
-    runtime
-        .block_on(run_manifest_async(owner, inputs, original))
-        .map_err(|error| io::Error::other(error.to_string()))
-}
-
 fn progress(stage: &str) -> io::Result<()> {
     println!("SCOPED_STAGE {stage}");
     io::stdout().flush()
@@ -102,6 +86,11 @@ async fn run_async(
     original: Option<Vec<u8>>,
 ) -> FixtureResult<()> {
     recover(owner, inputs, original).await?;
+    run_inline_async(owner, inputs).await?;
+    run_manifest_async(owner, inputs).await
+}
+
+async fn run_inline_async(owner: &NativeMetadataOwner, inputs: &Inputs) -> FixtureResult<()> {
     let identity = TERRANE_V1.calculate(IdentityKind::Chunk, BYTES)?;
     let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, BYTES)?;
     let published = owner
@@ -169,14 +158,11 @@ async fn run_async(
     Ok(())
 }
 
-async fn run_manifest_async(
-    owner: &NativeMetadataOwner,
-    inputs: &Inputs,
-    original: Option<Vec<u8>>,
-) -> FixtureResult<()> {
-    recover(owner, inputs, original).await?;
+async fn run_manifest_async(owner: &NativeMetadataOwner, inputs: &Inputs) -> FixtureResult<()> {
     let expires = deadline()?;
     progress("manifest-repository")?;
+    // Keep one actual native owner and its retained bootstrap funding. A fresh
+    // signed SDK repository isolates this case from the inline policy advances.
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
     let view = View::parse(MAIN)?;
 
