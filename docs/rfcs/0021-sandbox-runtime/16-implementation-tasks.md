@@ -10628,3 +10628,16 @@ checks at `/nix/store/p0zn8xlvnp5v283ps3wz58przvbha25k-aos-selinux-production-po
 The retained native-manager Rust changes pass complete test-target compilation at
 `/nix/store/5y220avf5hr39vq045bdp2h65jyraazz-aos-test-targets-0.1.0`.
 The new read-only recovery change has its own complete compilation retry running.
+
+The installed Root startup fixture now also requires the credential-independent
+history listener to reach accept in its separate recovery domain, with no
+effective capabilities, NoNewPrivileges and a read-only compiler-state mount.
+The same listener must survive normal Root restart and rejection of a changed
+external pin; reboot must establish the confined listener before normal Root
+credentials are supplied again. These are pending installed assertions, not
+packet-history or native financial-family recovery qualification.
+
+The current effect-module checks pass at
+`/nix/store/4917w2597wh6426x00lg1ixcn977f8rz-aos-effect-module-checks-0`.
+Core evaluation passes at
+`/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
