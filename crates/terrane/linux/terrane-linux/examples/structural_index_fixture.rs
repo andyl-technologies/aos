@@ -3,6 +3,7 @@
 //! This component witness runs without capabilities. It establishes no cache
 //! lease, authenticated descriptor exchange, worker sandbox or mount readiness.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -11,8 +12,10 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use rustix::fs::{Mode, OFlags};
-use terrane_format::tree_format::ContentRef;
-use terrane_linux::structural_index::{Kind, MappedIndex, MappingError, Record, compile};
+use terrane_format::identity::Digest;
+use terrane_format::tree_builder::Tree;
+use terrane_format::tree_format::{ContentRef, Entry, EntryKind, LeafItem, TreeUse};
+use terrane_linux::structural_index::{Kind, MappedIndex, MappingError, compile_nodes};
 use terrane_sdk::host::publication::VerityBinding;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -38,32 +41,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("missing ext4 scratch directory")?;
     let root = Path::new(&root);
     let path = root.join("index");
-    let records = [
-        Record {
-            path: b"dir",
-            kind: Kind::Directory {
-                governing_root: None,
-            },
-        },
-        Record {
-            path: b"dir/file",
-            kind: Kind::File {
-                content: ContentRef::Inline([3; 32]),
-                size: 7,
-            },
-        },
-        Record {
-            path: b"other",
-            kind: Kind::Directory {
-                governing_root: Some([9; 32]),
-            },
-        },
-        Record {
-            path: b"other/link",
-            kind: Kind::Symlink(b"../dir/file"),
-        },
-    ];
-    let bytes = compile([7; 32], &records, 32, 65536)?;
+    let CompiledFixture {
+        root: tree_root,
+        graft: graft_root,
+        bytes,
+    } = compile_fixture()?;
+    let mut wrong_root = tree_root;
+    wrong_root[0] ^= 1;
     let mut writer = OpenOptions::new()
         .write(true)
         .read(true)
@@ -77,20 +61,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     assert!(matches!(
-        MappedIndex::open(writer.try_clone()?.into(), [7; 32], &dummy, 65536),
+        MappedIndex::open(writer.try_clone()?.into(), tree_root, &dummy, 65536),
         Err(MappingError::Descriptor)
     ));
     let path_fd = rustix::fs::open(&path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty())?;
     assert!(matches!(
-        MappedIndex::open(path_fd, [7; 32], &dummy, 65536),
+        MappedIndex::open(path_fd, tree_root, &dummy, 65536),
         Err(MappingError::Descriptor)
     ));
     assert!(matches!(
-        MappedIndex::open(File::open(root)?.into(), [7; 32], &dummy, 65536),
+        MappedIndex::open(File::open(root)?.into(), tree_root, &dummy, 65536),
         Err(MappingError::Descriptor)
     ));
     assert!(matches!(
-        MappedIndex::open(File::open(&path)?.into(), [7; 32], &dummy, 65536),
+        MappedIndex::open(File::open(&path)?.into(), tree_root, &dummy, 65536),
         Err(MappingError::Io(_))
     ));
     drop(writer);
@@ -103,33 +87,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     let device = metadata.dev();
     let read_fd = || -> std::io::Result<OwnedFd> { Ok(file.try_clone()?.into()) };
     assert!(matches!(
-        MappedIndex::open(read_fd()?, [7; 32], &binding, bytes.len() - 1),
+        MappedIndex::open(read_fd()?, tree_root, &binding, bytes.len() - 1),
         Err(MappingError::Limit)
     ));
     assert!(matches!(
-        MappedIndex::open(read_fd()?, [8; 32], &binding, 65536),
+        MappedIndex::open(read_fd()?, wrong_root, &binding, 65536),
         Err(MappingError::Root)
     ));
     assert!(matches!(
-        MappedIndex::open(read_fd()?, [7; 32], &dummy, 65536),
+        MappedIndex::open(read_fd()?, tree_root, &dummy, 65536),
         Err(MappingError::Verity)
     ));
 
     let before = mappings(inode, device)?;
-    let mapped = MappedIndex::open(read_fd()?, [7; 32], &binding, bytes.len())?;
+    let mapped = MappedIndex::open(read_fd()?, tree_root, &binding, bytes.len())?;
     assert_eq!(mappings(inode, device)?, before + 1);
     let index = mapped.index();
     assert_eq!(index.len(), 5);
     assert_eq!(
         index.lookup(b"dir/file").ok_or("file missing")?.kind(),
-        records[1].kind
+        Kind::File {
+            content: ContentRef::Inline([3; 32]),
+            size: 7,
+        }
     );
     assert_eq!(
         index
             .lookup(b"other/link")
             .ok_or("link missing")?
             .governing_root()?,
-        [9; 32]
+        graft_root
     );
     assert_eq!(
         index
@@ -148,10 +135,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::remove_file(&path)?;
     std::fs::write(&path, b"different unsealed incarnation")?;
     assert_ne!(std::fs::metadata(&path)?.ino(), inode);
-    assert_eq!(mapped.index().root_hash(), [7; 32]);
+    assert_eq!(mapped.index().root_hash(), tree_root);
     assert!(mapped.index().lookup(b"dir/file").is_some());
     assert!(matches!(
-        MappedIndex::open(File::open(&path)?.into(), [7; 32], &binding, 65536),
+        MappedIndex::open(File::open(&path)?.into(), tree_root, &binding, 65536),
         Err(MappingError::Io(_))
     ));
     drop(mapped);
@@ -162,13 +149,82 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bad = File::open(&bad_path)?;
     let bad_binding = terrane_linux::verity::enable(&bad)?;
     assert!(matches!(
-        MappedIndex::open(bad.into(), [7; 32], &bad_binding, 65536),
+        MappedIndex::open(bad.into(), tree_root, &bad_binding, 65536),
         Err(MappingError::Index(_))
     ));
     println!(
         "PASS: actual sealed structural mapping, descriptor refusals, replacement custody and unmap"
     );
     Ok(())
+}
+
+struct CompiledFixture {
+    root: Digest,
+    graft: Digest,
+    bytes: Vec<u8>,
+}
+
+fn compile_fixture() -> Result<CompiledFixture, Box<dyn Error>> {
+    let graft = Tree::build(
+        vec![item(
+            b"link",
+            EntryKind::Symlink {
+                target: b"../dir/file",
+            },
+        )],
+        None,
+        4096,
+        TreeUse::Ordinary,
+    )?;
+    let root = Tree::build(
+        vec![
+            item(b"dir", EntryKind::Directory { mode: 0o555 }),
+            item(
+                b"dir/file",
+                EntryKind::File {
+                    mode: 0o444,
+                    size: 7,
+                    content: ContentRef::Inline([3; 32]),
+                    link_id: None,
+                },
+            ),
+            item(
+                b"other",
+                EntryKind::Tree {
+                    root: graft.root_identity(),
+                    props: None,
+                },
+            ),
+        ],
+        None,
+        4096,
+        TreeUse::Ordinary,
+    )?;
+    let nodes: BTreeMap<_, _> = root
+        .nodes()
+        .chain(graft.nodes())
+        .map(|node| (node.identity(), node.encoded().to_vec()))
+        .collect();
+    let bytes = compile_nodes(root.root_identity(), &nodes, 4096, 32, 65536, 65536)?;
+    Ok(CompiledFixture {
+        root: root.root_identity(),
+        graft: graft.root_identity(),
+        bytes,
+    })
+}
+
+fn item(path: &[u8], kind: EntryKind<'static>) -> LeafItem<'static> {
+    LeafItem {
+        key: path.to_vec(),
+        entry: Entry {
+            kind,
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        },
+    }
 }
 
 fn mappings(inode: u64, device: u64) -> Result<usize, Box<dyn Error>> {

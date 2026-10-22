@@ -12691,3 +12691,22 @@ all-target Clippy with Tokio and FUSE features and Rust formatting pass. Frozen
 owning qualification and required application compilation remain pending.
 Root authentication, authorization of metadata disclosure, host index custody,
 live exposure pinning and the actual worker remain open; no task is accepted.
+
+The native mapping fixture now builds a genuine ordinary root and graft,
+extracts their addressed Node inventory and compiles it without supplying file
+content. Its real ext4 VM run passes canonical compilation, permanent sealing,
+measurement, read-only mapping, typed lookup and graft governance, wrong-root
+refusal, pathname replacement and unmap as unprivileged UID 840. Independent
+review binds the retained fixture ELF to 7,973 source files and 5,259 crate
+inputs. Strict Linux all-target Clippy passes for the updated fixture.
+
+Frozen canonical compiler qualification at `4bb71edaca` passes all fifteen
+cases in 76.95 seconds, independently matching 7,970 immutable source files and
+5,259 inputs. Frozen mapping qualification at `192fa2a700` also passes; its
+retained native ELF and seven codec cases match 7,967 source files and 5,256
+inputs. The accompanying cache image compiles all four artifacts and discovers
+its exact 128-case native unit inventory and 88 fixture selectors with its
+intended feature set. This image-only result does not claim cache VM execution.
+Required application-target compilation at `3360441f00` passes in 1,618.88
+seconds, independently matching 7,963 source files and 184 compiler artifact
+records across 59 packages. Task acceptance remains unchanged.
