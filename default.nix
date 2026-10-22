@@ -1817,7 +1817,10 @@ in rec {
         pkgs = buildPackages;
       };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
-      bazel = import ./tests/build/bazel.nix {pkgs = buildPackages;};
+      bazel = lib.optionalAttrs (buildPlatform.isLinux && buildPlatform.is64bit) (import ./tests/build/bazel.nix {
+        pkgs = buildPackages;
+        inherit sharedBazelCacheDir;
+      });
       aos-cloud-vm = import ./tests/build/aos-cloud-vm.nix {inherit pkgs;};
       accache = import ./tests/build/accache.nix {
         inherit lib;
@@ -1996,6 +1999,7 @@ in rec {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
+            ++ lib.optional (bazel ? all) bazel.all
             ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe

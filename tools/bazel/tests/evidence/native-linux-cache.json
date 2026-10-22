@@ -1,0 +1,104 @@
+{
+  "actions": {
+    "cpp_app": {
+      "consumer": {
+        "cache_hit": false,
+        "fingerprint": "eb1e84a2585d2a3ee6e20fa9b09b277b4c6d26918e72aaf4b482a32b7b047e4c",
+        "runner": "linux-sandbox"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "390313b23b202582419d6175089e27de7be4a8ce6ac01f17223ba2d5c5a32ae7",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "eb1e84a2585d2a3ee6e20fa9b09b277b4c6d26918e72aaf4b482a32b7b047e4c",
+        "runner": "linux-sandbox"
+      }
+    },
+    "cpp_library": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "runner": "linux-sandbox"
+      }
+    },
+    "rust_app": {
+      "consumer": {
+        "cache_hit": false,
+        "fingerprint": "90c99d1e8e45265d3d121110f5c812034619d0258aa437c994b81631f650d5b8",
+        "runner": "linux-sandbox"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "057994d0216dc0c9ea252faf6be9d70226288c605fd741925b6d42dd5322ab2f",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "90c99d1e8e45265d3d121110f5c812034619d0258aa437c994b81631f650d5b8",
+        "runner": "linux-sandbox"
+      }
+    },
+    "rust_library": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "runner": "linux-sandbox"
+      }
+    }
+  },
+  "artifacts": {
+    "bin/cpp-fixture": "db9eaa5ef9c840f7f5ea5a49963a1b447d31536977a9a49434f892b70d3f6041",
+    "bin/rust-fixture": "20f75b40a7da86eab364e203f33ddfe8e0530a64f22704a59a25610146a19034"
+  },
+  "builds": {
+    "consumer": "/nix/store/mxmbzds5kyi3smp3srlvnlwyafp38r69-aos-bazel-cache-consumer-1",
+    "producer": "/nix/store/valrd6082w2zrj0z1fygr4f45ay8az4r-aos-bazel-cache-producer-1",
+    "uncached": "/nix/store/ky6havdd9pc251c1p0d1d1n2d2j08l5x-aos-bazel-cache-uncached-1"
+  },
+  "schema_version": 1,
+  "summary": {
+    "consumer": {
+      "CppArchive:disk cache hit": 1,
+      "CppCompile:disk cache hit": 1,
+      "CppCompile:linux-sandbox": 1,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:disk cache hit": 3,
+      "Rustc:linux-sandbox": 1
+    },
+    "producer": {
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 4
+    },
+    "uncached": {
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 4
+    }
+  }
+}

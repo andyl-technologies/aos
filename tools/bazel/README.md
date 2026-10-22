@@ -52,6 +52,35 @@ feature parity, cross-platform support, the final test-runner contract, or
 completion of the RFC. Cross-derivation cache and invalidation evidence must
 pass before production cutover.
 
+## Local cache evidence
+
+`tests/evidence/native-linux-cache.json` records the first passing native Linux
+cross-derivation trial. An original snapshot executed four Rust compiler
+actions and two C++ compiler actions. In a fresh Nix execution, an
+application-only edit restored three Rust actions and the unchanged C++ library
+compile/archive from disk; the edited Rust and C++ applications rebuilt. The
+edited cached and uncached executables matched byte for byte and both returned
+`answer=43` (the original returned `answer=42`). Each build had an independent
+output base. Event fingerprints cover declared arguments, environment, and
+input content hashes; they are not advertised as Bazel's remote Action digest.
+
+Use an empty dedicated cache to repeat the registered qualification:
+
+```sh
+AOS_DEV_CACHE_DIR=/var/tmp/aos-bazel-trial aos-dev cache init
+AOS_DEV_CACHE_DIR=/var/tmp/aos-bazel-trial aos-dev \
+  --no-go-cache --no-rust-target-cache --no-rust-incremental --no-accache \
+  build check build.bazel.cache.verify --no-out-link
+```
+
+The cache-specific checks are exposed only when a shared Bazel cache is
+selected; release `allChecks` includes the uncached infrastructure suite.
+`tests/cache-proof.nix` also accepts a unique `trial` and sandbox `cacheDir`
+for new measurements without substituting a completed qualification output.
+The first proof covers application edits and uncached parity. The broader
+invalidation/concurrency matrix and production performance budgets remain
+required before migrating application families.
+
 ## Updating rule dependencies
 
 Updates are explicit network operations with the AOS-built Bazel and Python.
