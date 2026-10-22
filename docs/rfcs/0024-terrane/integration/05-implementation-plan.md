@@ -13801,3 +13801,28 @@ The census component passes final formatting and strict Linux all-target Clippy
 in all-feature, surface-only and ordinary Tokio-only profiles. Nix formatting,
 component-installer syntax and the complete ordinary native declaration
 inventory also pass. These checks establish no native census runtime result.
+
+The frozen census VM at `c2453b236a` passes in 164.92 seconds. Independent
+review matches all 8,019 immutable source files, 5,298 bound crate inputs and
+the actual installed Cargo ELF. All alias, bounds, sealed-mapping, incomplete
+coverage and zero-byte inode controls pass. The structural-mapping VM at the
+same commit passes in 165.80 seconds; review matches the same complete source
+and its actual separate Cargo ELF, preserving the unprivileged mapping and
+allocation witnesses with the installer's original defaults. These results
+qualify native components, not authenticated helper transport or release.
+
+The full native host-cache VM at `b00b4aa118` also passes in 1,492.07
+seconds, executing all 128 native library cases and 92 fixture selectors.
+Review matches all 8,014 immutable files, 5,311 bound inputs and all four
+actual installed Cargo ELFs. The source-only image's inventory is not
+substituted for those actual guest executions.
+
+The exposure VM at `23189c4246` fails in 690.94 seconds: its original `run`
+actor exceeds the unchanged 30-second bound before the exposure actor starts.
+The supervisor's timeout exception omits captured actor diagnostics, so that
+run cannot establish where progress stopped. The failed image and build
+directory remain retained. The supervisor now prints captured stdout/stderr
+before propagating a timeout, and the actor reports startup/Resume stages on
+stderr. Every success witness, refusal assertion, capacity, actor timeout and
+guest timeout remains unchanged. This diagnostic increment does not itself
+fix or dismiss the timeout; new frozen execution remains required.

@@ -46,6 +46,7 @@ fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
     require_empty_capabilities()?;
     let confinement = std::sync::Arc::new(quota_confinement::install()?);
+    eprintln!("SURFACE_STAGE mode={mode} phase=native-inspection");
     let inputs = config::Inputs::load()?;
     let mut settings = inputs.owner_config()?;
     let mut policy = SurfaceIndexPolicy {
@@ -75,6 +76,7 @@ fn main() -> Result<()> {
     if !matches!(mode.as_str(), "run" | "cap" | "refuse-cold" | "exposure") {
         return Err("unknown surface-owner selector".into());
     }
+    eprintln!("SURFACE_STAGE mode={mode} phase=owner-start");
     let owner = NativeMetadataOwner::start(preparation)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -84,6 +86,7 @@ fn main() -> Result<()> {
     }
     let (root, nodes) = tree()?;
     let before = snapshot(&inputs)?;
+    eprintln!("SURFACE_STAGE mode={mode} phase=pre-resume-refusal");
     if runtime
         .block_on(owner.cache_surface_index(root, nodes.clone()))
         .is_ok()
@@ -91,7 +94,9 @@ fn main() -> Result<()> {
     {
         return Err("surface admission before actual Resume changed state".into());
     }
+    eprintln!("SURFACE_STAGE mode={mode} phase=recovery");
     let completed = runtime.block_on(owner.recover())?;
+    eprintln!("SURFACE_STAGE mode={mode} phase=resume");
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
     if mode == "exposure" {
@@ -166,6 +171,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    eprintln!("SURFACE_STAGE mode={mode} phase=cancelled-admission");
     let stall = runtime.block_on(owner.stall_policy_for_fixture())?;
     let mut abandoned = Box::pin(owner.cache_surface_index(root, nodes.clone()));
     let mut context = Context::from_waker(Waker::noop());

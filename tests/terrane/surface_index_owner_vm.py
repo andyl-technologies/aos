@@ -106,6 +106,24 @@ def main():
             stdout=logs[1], stderr=subprocess.STDOUT, preexec_fn=support.native_descriptor_budget)
         children.append(publisher)
         executable = image / "bin/surface-index-owner-fixture"
+
+        def actor(case, mode):
+            """Preserves actual actor output on failure under the original bound."""
+            try:
+                result = subprocess.run(support.role_command(840, [executable, mode]),
+                    env=environment(case), text=True, capture_output=True, timeout=30)
+            except subprocess.TimeoutExpired as error:
+                # TimeoutExpired retains bytes even when text=True. Publish
+                # those captured diagnostics before the unchanged failure.
+                for stream in [error.stdout, error.stderr]:
+                    if stream:
+                        print(stream.decode(errors="replace") if isinstance(stream, bytes)
+                              else stream, end="", flush=True)
+                raise
+            print(result.stdout, end="", flush=True)
+            print(result.stderr, end="", flush=True)
+            return result
+
         deadline = time.monotonic() + 15
         while True:
             result = subprocess.run(support.role_command(840, [executable, "prepare"]),
@@ -136,10 +154,7 @@ def main():
             ],
         }
         for case, mode in [("empty", "run"), ("pin", "cap")]:
-            result = subprocess.run(support.role_command(840, [executable, mode]),
-                env=environment(case), text=True, capture_output=True, timeout=30)
-            print(result.stdout, end="", flush=True)
-            print(result.stderr, end="", flush=True)
+            result = actor(case, mode)
             require(result.returncode == 0 and result.stdout.splitlines() == expected[mode],
                     "actual surface-owner actor failed: " + mode)
             require(not list((support.root(case) / "chunks").iterdir()),
@@ -164,10 +179,7 @@ def main():
         malformed = objects / ".terrane-surface-tmp:bad"
         malformed.write_bytes(b"untrusted malformed cold index name")
         support.metadata(malformed, 840, 845, 0o600)
-        result = subprocess.run(support.role_command(840, [executable, "refuse-cold"]),
-            env=environment("empty"), text=True, capture_output=True, timeout=30)
-        print(result.stdout, end="", flush=True)
-        print(result.stderr, end="", flush=True)
+        result = actor("empty", "refuse-cold")
         require(result.returncode == 0 and result.stdout.splitlines() == [
             "PASS malformed cold surface namespace preserves original copy holds and refuses recovery"],
             "malformed cold surface namespace did not refuse recovery")
@@ -178,10 +190,7 @@ def main():
                 and malformed.read_bytes() == b"untrusted malformed cold index name",
                 "cold refusal deleted or changed original candidate inodes")
         malformed.unlink()
-        result = subprocess.run(support.role_command(840, [executable, "exposure"]),
-            env=environment("empty"), text=True, capture_output=True, timeout=30)
-        print(result.stdout, end="", flush=True)
-        print(result.stderr, end="", flush=True)
+        result = actor("empty", "exposure")
         require(result.returncode == 0 and result.stdout.splitlines() == [
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS scoped exposure root grants the original read-only index; changed policy and draining deny new grants while retained metadata remains readable",
