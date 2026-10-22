@@ -2117,7 +2117,14 @@ only success backing. The original Prepare and escrow limits are unchanged. The
 102 focused bootstrap controls pass before the final quote-specific test addition;
 the new short-credit, zero and overflowing-frame controls then pass separately.
 The real SDK census-growth control now also checks the complete row for both
-program families and spare-capacity variants. Full qualification is pending.
+program families and spare-capacity variants. Commit `0740d92532` passes both
+complete Transport configurations: 1,912 tests each, zero failures, no filtering
+and sixteen existing ignores. Affected all-feature/all-target checking, scoped
+formatting and all six architecture checks pass. The required application gate
+compiles 180 test executables across 58 packages, including 71 integration targets;
+it executes no tests. All 254 owned Rust/Cargo inputs match that committed tree
+and the exact captured application source. No new VM or configured Engine/Daemon
+runtime run is claimed for this constructor component.
 
 The original root still does not invoke SDK admission. A pre-read physical phase,
 separately admitted complete original guards/census and its genuine enclosing
