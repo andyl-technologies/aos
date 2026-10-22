@@ -35,8 +35,8 @@
 //! [`FrameDeliveryKey`] so the modeled order matches the transport.
 //!
 //! The probabilistic transforms consume RNG draws; [`NetLink::emit_from_rng`]
-//! draws them from the seeded per-device RNG ([`crate::fault::DeviceRng`]) forked
-//! by name-hash in their fixed order ([IO-21]), and [`NetLink::emit`] accepts
+//! draws them from the seeded per-device RNG ([`crate::fault::DeviceRng`]) keyed
+//! by name in their fixed order ([IO-21]), and [`NetLink::emit`] accepts
 //! injected draws for unit testing.
 
 use crucible_shmem::{FrameDeliveryKey, SLOT_NET_ROUTER};

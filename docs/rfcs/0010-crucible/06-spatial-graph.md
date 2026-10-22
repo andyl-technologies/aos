@@ -417,7 +417,7 @@ makes the `ScenarioDef` no longer a fixed value reduced under a schedule; it mak
 the world a function of decision-time, which (a) breaks `bake` (you cannot boot a
 node "once per `World`" if the `World` grows mid-run), (b) perturbs unrelated RNG
 streams (a new participant shifts stream allocation unless every stream is
-name-hashed *and* the new node's stream is defined a priori — at which point the
+keyed by name *and* the new node's stream is defined a priori — at which point the
 node was effectively in the `World` all along), and (c) makes the lookahead graph
 time-varying, complicating the conservative PDES safety argument. The static-world
 + fault-modeled-membership design keeps the `ScenarioDef` a fixed value, keeps the
@@ -531,18 +531,18 @@ pub struct Properties {
 ### 5.3 `Seed` — the root entropy
 
 The `Seed` is the single root of all deterministic randomness in the run: a
-256-bit root key from which every per-entity decision-RNG stream is forked by
-name-hash, defined in [`04-determinism-contract.md`](04-determinism-contract.md).
+256-bit root key from which every per-entity decision-RNG stream is keyed by
+domain and name, defined in [`04-determinism-contract.md`](04-determinism-contract.md).
 It is part of the `ScenarioDef`'s identity (a different seed is a different
 scenario), and it is the parameter a `ScenarioFamily` (§6) varies most often.
-Forking streams by name-hash (rather than by allocation order) is what lets
+Keying streams by name (rather than by allocation order) is what lets
 adding or renaming an unrelated node leave other streams' draws unchanged
 ([EXEC-9]) — a property the static-world rule (§4) and the stable `NodeId` (§3.1)
 together guarantee.
 
 ```rust,illustrative
 /// The root entropy for all deterministic randomness (04). A 256-bit root key;
-/// every per-entity RNG stream is forked from it by name-hash so unrelated
+/// every per-entity RNG stream is keyed from it by name so unrelated
 /// `World` edits don't perturb other streams ([EXEC-9]). Part of identity.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Seed(pub [u8; 32]);
@@ -552,7 +552,7 @@ pub struct Seed(pub [u8; 32]);
   streams are derived, as defined in
   [`04-determinism-contract.md`](04-determinism-contract.md). It MUST be part of
   the `ScenarioDef`'s identity (a different seed is a different scenario). Per-entity
-  streams MUST be forked from the seed by name-hash (not allocation order), so the
+  streams MUST be keyed from the seed by name (not allocation order), so the
   seed plus a stable `NodeId` (§3.1) plus the static-world rule (§4) together
   guarantee that unrelated `World` edits do not perturb other streams' draws
   ([EXEC-9]). *Gate:* `gate:e2e-determinism`. *Spec:* §5.3; forward-ref 04.
@@ -1132,7 +1132,7 @@ authority for its shape. The contract those files may rely on:
     predicate nodes. `checks.crucible.phase1.spatialPropertiesComponent` gates
     the task.
 - [x] **T-SPAT-14** Carry `Seed` as the root entropy (04), part of identity, with
-  name-hashed per-entity stream forking so unrelated `World` edits don't perturb
+  name-keyed per-entity streams so unrelated `World` edits don't perturb
   other streams. — satisfies [SPAT-22]; spec §5.3.
   - Completed in `crates/crucible/src/model.rs`: `Seed` now carries the 256-bit
     root entropy component, participates directly in `ScenarioDef` identity via

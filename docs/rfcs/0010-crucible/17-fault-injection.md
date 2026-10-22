@@ -275,14 +275,15 @@ when RESOLVE processes the due cross-node events in `(virtual_time, consumer
 node_id, producer node_id, sequence)` order, it draws for each fault decision in
 that same order, so the *sequence* of draws is itself a pure function of the
 total order, never of host scheduling. Per-device and per-link RNG streams are
-forked by name-hash ([IO-21], [EXEC-9]) so adding or renaming an unrelated node
-or link does not perturb another stream's draw sequence.
+keyed by name ([IO-21], [EXEC-9]), and each link frame's draws are addressed by
+its direction and producer sequence ([SCHED-50]), so adding or renaming an
+unrelated node or link does not perturb another stream's draw sequence.
 
 - **[FAULT-11]** All probabilistic fault decisions MUST be drawn from the single
   seeded decision RNG in the scheduler's total order ([SCHED-15], [SCHED-30]): the
   draw sequence MUST be a pure function of `(ScenarioDef, Seed, Schedule)` and the
   total order, never of host scheduling or wall-clock. The per-link / per-device
-  RNG stream MUST be forked by name-hash so an unrelated `World` edit does not
+  RNG stream MUST be keyed by name so an unrelated `World` edit does not
   shift another stream's draws ([EXEC-9], [IO-21]). *Gate:*
   `gate:harness-lint`, `gate:e2e-determinism`. *Spec:* §17.3.1; cross-ref 04, 08
   §8.6, §8.9.4.

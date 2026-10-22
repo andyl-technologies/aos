@@ -366,7 +366,7 @@ in
             max_width_bytes=8
             golden_vectors=random-request-kind-5,random-request
             decision=BackendRngEvidence
-            decision_source=engine-seeded-name-hash-stream
+            decision_source=engine-seeded-keyed-stream
             request_stream=RngStreamId::from_name(node-stream_tag-composite)
             reply=trap-icount-host-to-guest-injection
             malformed=decode-diagnostic-and-drop

@@ -28,7 +28,7 @@
 //!
 //! Every probabilistic decision is a pure function of an **injected draw value**
 //! (a `u64`) supplied by the seeded per-device RNG ([`crate::fault::DeviceRng`]),
-//! forked by name-hash from the scenario seed ([IO-21]). The link consumes its
+//! keyed by name from the scenario seed ([IO-21]). The link consumes its
 //! draws in the fixed order documented above; the shared [`Probability`] and the
 //! transform functions are owned by [`crate::fault`] and re-exported here so the
 //! block, 9p, and network sub-nodes apply one taxonomy ([IO-25], [IO-26]).

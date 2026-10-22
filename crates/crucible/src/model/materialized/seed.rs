@@ -121,6 +121,6 @@ impl Seed {
 pub struct SeededRngStream {
     /// The declared per-entity stream id.
     pub stream: RngStreamId,
-    /// The deterministic stream seed derived from [`Seed`] and stream name-hash.
+    /// The deterministic stream seed derived from [`Seed`] and the keyed stream name.
     pub seed: u64,
 }

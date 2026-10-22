@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
 DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:009856bfacca3be3`
+Checklist sync digest: `rfc0010-checklist-v1:f40a54e1557a188d`
 
 ### Current completion audit
 
@@ -769,8 +769,8 @@ acceptance gate.
 
 **Tasks.**
 - Multi-host horizons (per-consumer log streams and their canonical merge,
-  cross-host guarantee transport, counter-keyed link randomness, and cut-based
-  checkpoints and hot forks): `T-SCHED-32 … T-SCHED-35` ([`08`](08-scheduling.md)).
+  cross-host guarantee transport, event-keyed link randomness, and cut-based
+  checkpoints and hot forks; `T-SCHED-34` is complete): `T-SCHED-32 … T-SCHED-35` ([`08`](08-scheduling.md)).
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
 - Debugger packaging and live acceptance: `T-DBG-13 … T-DBG-14`

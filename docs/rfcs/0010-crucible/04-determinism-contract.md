@@ -390,32 +390,57 @@ in the entire system.
   iteration on an ordering-significant path ([INV-9]). *Gate:*
   `gate:harness-lint`, `gate:replay-oracle`. *Spec:* §4.7.
 
-- **[DET-25]** Per-entity randomness MUST be drawn from a stream forked by
-  name-hash: `entity_seed = seed XOR stable_hash(entity_name)`. Forking by
-  name-hash (rather than by sequential draw from the root) ensures that adding or
-  removing an entity does NOT perturb any other entity's stream, and that the
-  same entity name yields the same stream regardless of construction order.
-  *Gate:* `gate:replay-oracle`. *Spec:* §4.7.
+- **[DET-25]** Per-entity randomness MUST be drawn from a stream keyed by the
+  entity's stream domain and name, never by sequential draw from the root. The
+  derivation is the versioned algorithm `keyed-blake3-v2`. With `lp(x)` the
+  little-endian `u64` length of `x` followed by `x`, the root seed derives a
+  32-byte world key
+  `BLAKE3.derive_key("crucible decision-rng keyed-blake3-v2 world-key", u64le(seed))`,
+  each stream key is `BLAKE3.keyed_hash(world_key, lp("stream") || lp(domain) || lp(name))`,
+  and each 64-bit draw is the little-endian value of the first eight bytes of a
+  keyed hash under the stream key over the draw's canonical address. A
+  single-owner stream, whose draws follow one node's, device's or app-random
+  stream's own deterministic execution, addresses its `n`th draw as
+  `lp("counter") || u64le(n)`. A stream shared by independently scheduled
+  producers addresses each draw by event identity as
+  `lp("event") || lp(event) || u64le(i)`, where `event` is the event's canonical
+  encoding and `i` is the draw's role index within that event. Adding or
+  removing an entity, constructing streams in another order, or consuming
+  another stream or event first therefore does NOT change any draw. *Gate:*
+  `gate:replay-oracle`. *Spec:* §4.7.
 
-- **[DET-26]** The decision RNG and its forks MUST be consumed in a deterministic
-  order — the order is the scheduler's total order ([INV-3], [INV-8]) — and the
-  hash used for forking MUST be a fixed, stable, cross-platform hash (not the
-  language's default randomized hasher). *Gate:* `gate:harness-lint`. *Spec:*
-  §4.7.
+- **[DET-26]** Each counter-addressed stream MUST be consumed in its owner's
+  deterministic order, which the scheduler's total order fixes ([INV-3],
+  [INV-8]); an event-addressed draw MUST depend only on its address. The
+  derivation MUST be a fixed, cross-platform keyed hash, never the language's
+  default randomized hasher. A change to the derivation MUST change its
+  algorithm identifier, and the identifier MUST be part of the scenario seed
+  material, so a scenario, schedule or recorded draw made under an earlier
+  derivation is refused by identity rather than silently re-valued. *Gate:*
+  `gate:harness-lint`. *Spec:* §4.7.
 
 ```rust
 // Illustrative sketch (CONV-1, 00): the only randomness in the system.
-// Forking by name-hash makes streams order- and topology-stable.
+// Keyed derivation makes every draw a pure function of its address.
 struct DecisionRng {
-    seed: u64,
-    root: ChaCha20Rng, // a fixed, cross-platform PRNG, not a host RNG
+    world_key: [u8; 32], // derive_key(context, u64le(seed))
 }
 
 impl DecisionRng {
-    fn fork(&self, entity_name: &str) -> ChaCha20Rng {
-        // stable_hash: a fixed algorithm, NOT the default randomized hasher.
-        let s = self.seed ^ stable_hash(entity_name);
-        ChaCha20Rng::seed_from_u64(s)
+    fn stream_key(&self, domain: &str, name: &str) -> [u8; 32] {
+        keyed_hash(&self.world_key, &[lp(b"stream"), lp(domain), lp(name)])
+    }
+
+    // Single-owner stream: the owner's own execution fixes `n`.
+    fn counter_draw(&self, domain: &str, name: &str, n: u64) -> u64 {
+        let key = self.stream_key(domain, name);
+        low_u64(keyed_hash(&key, &[lp(b"counter"), u64le(n)]))
+    }
+
+    // Shared stream: the event identity, not commit order, fixes the draw.
+    fn event_draw(&self, domain: &str, name: &str, event: &[u8], i: u64) -> u64 {
+        let key = self.stream_key(domain, name);
+        low_u64(keyed_hash(&key, &[lp(b"event"), lp(event), u64le(i)]))
     }
 }
 ```
@@ -445,8 +470,8 @@ conflated:
 
 - **[DET-44]** Optional app-requested randomness MUST be served from the SINGLE
   seeded decision source of §4.7 (it MUST NOT introduce a new entropy source).
-  Each app-requested stream MUST be forked per `(node, stream-name)` by name-hash
-  ([DET-25]), each draw MUST be recorded as a `Decision` in the `Schedule`
+  Each app-requested stream MUST be a counter-addressed stream keyed per
+  `(node, stream-name)` ([DET-25]), each draw MUST be recorded as a `Decision` in the `Schedule`
   ([DET-27]), and each draw MUST be delivered to the guest under the injection
   contract (4.4) at a deterministic delivery icount. The guest opts in through
   the white-box channel (16); the capability MUST be distinguishable from ambient
@@ -721,9 +746,10 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   asserting each delivery's consumer icount is identical under artificially
   skewed producer timing. — satisfies [DET-6], [DET-7], [DET-34]; spec §4.2.2,
   §4.4, §4.11.
-- [x] **T-DET-15** Implement the single seeded decision RNG with name-hash
-  forking (`seed XOR stable_hash(name)`) using a fixed cross-platform PRNG and a
-  fixed stable hash. — satisfies [DET-24], [DET-25], [DET-26]; spec §4.7.
+- [x] **T-DET-15** Implement the single seeded decision RNG with keyed
+  `keyed-blake3-v2` stream derivation, counter-addressed single-owner streams,
+  event-addressed shared streams, and refusal of earlier derivations through the
+  scenario seed identity. — satisfies [DET-24], [DET-25], [DET-26]; spec §4.7.
 - [x] **T-DET-16** Route every probabilistic decision through a decision stream
   and record it as a `Decision` in the `Schedule`; assert no other randomness
   exists in the engine. — satisfies [DET-24], [DET-27]; spec §4.7.
@@ -884,7 +910,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
     `qemu_plugin_inject_preemption` and rejects an out-of-window coordinate.
 - [x] **T-DET-31** Implement app-requested randomness served from the single
   seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
-  name-hash fork, each draw a recorded `Decision` delivered under the injection
+  keyed stream, each draw a recorded `Decision` delivered under the injection
   contract; assert the contract holds byte-identically with zero app-random
   requests and distinguish it from opaque ambient `fw_cfg` entropy. — satisfies
   [DET-44]; spec §4.7.
@@ -903,7 +929,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   - Live closure is provided by
     `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: a real guest issues one
     kind-5 request, the production plugin derives its synchronous conjecture
-    from the scenario's frozen decision-RNG root and per-node/tag name-hashed
+    from the scenario's frozen decision-RNG root and per-node/tag keyed
     stream, writes the reply at the trap icount, and sends the typed causal
     record through shmem. The host independently reconstructs the value with
     `DecisionRecorder`, rejects any mismatch, and records the authoritative

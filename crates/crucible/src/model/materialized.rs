@@ -16,7 +16,7 @@ pub struct RngStreamId {
 }
 
 impl RngStreamId {
-    /// Builds a stream id in the default decision-RNG name-hash domain.
+    /// Builds a stream id in the default decision-RNG name domain.
     #[must_use]
     pub fn from_name(name: impl Into<String>) -> Self {
         Self::new(DECISION_RNG_NAME_HASH_DOMAIN, name)
@@ -43,7 +43,7 @@ impl RngStreamId {
     /// Builds a device-scoped stream id ([IO-21]).
     ///
     /// Devices (block / 9p / network sub-nodes) fork their probabilistic-fault
-    /// RNG from this domain by name-hash, keeping device streams independent of
+    /// RNG from this domain by name, keeping device streams independent of
     /// same-named node and link streams ([DET-25]).
     #[must_use]
     pub fn for_device(name: impl Into<String>) -> Self {

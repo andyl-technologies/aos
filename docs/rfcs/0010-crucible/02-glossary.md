@@ -65,8 +65,8 @@ formal model, the defining file is named.
 - **Divergence bisection** — automatically localizing the first differing
   decision/instruction between two runs. (24)
 - **Decision RNG** — the seeded RNG that resolves probabilistic Decisions;
-  per-entity streams are forked by name-hash so adding a node doesn't perturb
-  others. (04, 08)
+  per-entity streams are keyed by domain and name so adding a node doesn't
+  perturb others. (04, 08)
 
 ## Time and scheduling
 

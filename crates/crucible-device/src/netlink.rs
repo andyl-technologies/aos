@@ -37,7 +37,7 @@
 //! Every probabilistic transform (jitter magnitude, reorder shift, loss
 //! decisions, duplicate timing, corruption decision, and corruption selectors)
 //! is a pure function of draw values carried in [`FrameDraws`]. The seeded
-//! per-device RNG ([`crate::fault::DeviceRng`]) forked by name-hash produces
+//! per-device RNG ([`crate::fault::DeviceRng`]) keyed by name produces
 //! those draws in their fixed consumption order via
 //! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`] ([IO-21]);
 //! the snapshot captures the RNG cursor so a fork resumes the same sequence

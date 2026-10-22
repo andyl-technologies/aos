@@ -849,10 +849,16 @@ not need a shared memory or a global frontier.
   fail the attempt closed. *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1;
   routes [INV-3], [INV-8].
 
-- **[SCHED-50]** Each link's random draws MUST be consumed in canonical commit
-  order. A derivation keyed by `(link, direction, producer sequence)`, which needs
-  no global commit order, replaces it only through a versioned RNG derivation
-  change. *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1; routes [DET-6].
+- **[SCHED-50]** Each link's random draws MUST be event-addressed draws of the
+  link's stream ([DET-25]) keyed by the frame's direction and producer
+  sequence: the event encodes the direction as one byte (0 from the canonical
+  first endpoint to the second, 1 in reverse) followed by the producer sequence
+  as `u64le`, and the role index orders the frame's draws. A frame's draws
+  therefore need no global commit order and are independent of worker count,
+  host placement and the interleaving of the link's two directions. The
+  scheduling opportunity for a link frame MUST be identified by the same link,
+  direction and producer sequence, never by a cursor shared across frames.
+  *Gate:* `gate:e2e-determinism`. *Spec:* §8.12.1; routes [DET-6], [DET-25].
 
 ## 8.13 Worked example: two VMs across a 1 ms link
 
@@ -1478,8 +1484,18 @@ application of explorer-supplied preemption decisions
   agents behind a transport interface, refuse superseded topology epochs, and
   fail the attempt closed on host or stream loss. — satisfies [SCHED-48],
   [SCHED-49]; spec §8.12.1.
-- [ ] **T-SCHED-34** Derive each link's random draws from `(link, direction,
+- [x] **T-SCHED-34** Derive each link's random draws from `(link, direction,
   producer sequence)` behind a versioned RNG derivation change. — satisfies
   [SCHED-50]; spec §8.12.1.
+  - The `keyed-blake3-v2` derivation opens each frame's draws with
+    `DeviceRng::for_event` over its `LinkFrameDrawKey`, and the live-world
+    network opportunity key names the link, direction and frame without the
+    shared draw cursor. The frequency-independence suite drives a jittery,
+    lossy graph through both directions of each link under serialized, two-worker,
+    parallel and wall-delayed execution and several ceiling schedules, and
+    requires bit-identical guest traces, delivery decisions and event logs. A
+    second test silences one direction of a link and requires the other
+    direction's loss and jitter to stay frame-for-frame identical, which a
+    cursor shared across directions fails.
 - [ ] **T-SCHED-35** Take checkpoints and hot forks at a [SCHED-40] cut without
   stopping every node at once. — satisfies [SCHED-49]; spec §8.12.1.

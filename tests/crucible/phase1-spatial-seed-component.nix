@@ -223,7 +223,7 @@ in
             spatial_graph_task=seed-root-entropy
             component=seed
             scenario_identity=world-ref-plus-plan-ref-plus-properties-ref-plus-seed
-            stream_forking=name-hash
+            stream_forking=keyed-name
             unrelated_world_edits_perturb_existing_streams=false
             RESULT
           '';

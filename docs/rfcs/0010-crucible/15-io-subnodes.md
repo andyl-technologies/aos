@@ -46,7 +46,7 @@ guest instructions. Each I/O sub-node has:
 - a **deterministic completion model** that, given a request emitted at the
   requester's exact logical tick `t`, computes the *exact* tick
   `t + latency_ticks` at which the response becomes visible;
-- a **seeded per-device RNG** (forked by name-hash, [`04-determinism-contract.md`](04-determinism-contract.md))
+- a **seeded per-device RNG** (keyed by name, [`04-determinism-contract.md`](04-determinism-contract.md))
   for any probabilistic behavior, whose position is part of `MaterializedState`
   ([TEMP-7]).
 
@@ -593,7 +593,7 @@ seeded RNG draws)`, and every piece of device state that could influence a futur
 response is part of the checkpoint's `MaterializedState`.
 
 - **[IO-21]** Each I/O sub-node MUST own a **seeded per-device RNG** for any
-  probabilistic behavior, with its stream **forked by name-hash** from the root
+  probabilistic behavior, with its stream **keyed by name** from the root
   seed ([`04-determinism-contract.md`](04-determinism-contract.md)), so adding or
   renaming an unrelated device does not perturb another device's draw sequence.
   Every probabilistic device choice MUST be a draw from this RNG, consumed in a
@@ -766,7 +766,7 @@ net link: latency/jitter/loss/reorder/dup/corrupt/bandwidth as deterministic
         perturbations of delivery icount / payload, seeded (IO-20)
         link = the ONE conservative-uncertainty source; supplies lookahead;
         latency floor + recompute on change; reorder stays in the future (IO-33,34)
-determinism: seeded per-device RNG forked by name-hash; RNG state in
+determinism: seeded per-device RNG keyed by name; RNG state in
         MaterializedState; all times pure fns of request icount + latency (IO-21..24)
 faults: I/O faults are UNIFORM with network faults — perturb the modeled
         completion/response, never host I/O (IO-25,26)
@@ -921,7 +921,7 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   Summary: latency, jitter, reorder, bandwidth, loss, duplicate, and corruption
   are pure modeled perturbations of delivery icount and payload, with no host
   timing, filesystem, or scheduling input.
-- [x] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
+- [x] **T-IO-10** Implement per-device seeded RNG keyed by name, with every
   probabilistic device choice drawn from it in deterministic order and recorded
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
   default hasher on response paths). — satisfies [IO-21], [IO-24]; spec §15.5;
@@ -931,9 +931,9 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   `cargo test --manifest-path crates/Cargo.toml -p crucible`, and
   the focused `crucible-harness` `harness_lint`
   `reduction_path_sources_have_no_banned_nondeterminism` subtest.
-  `device_rng` forks the per-device stream through the same name-hashed
-  `RngStreamId::for_device` and SplitMix64 cursor convention as the engine
-  decision RNG, `DeviceSchedulingSubNode` records block/9p raw draws followed by
+  `device_rng` opens the per-device stream through the same name-keyed
+  `RngStreamId::for_device` and `keyed-blake3-v2` draw-ordinal convention as
+  the engine decision RNG, `DeviceSchedulingSubNode` records block/9p raw draws followed by
   loss/duplicate/corrupt `FaultFires` decisions, and
   `emit_link_frame_with_recorded_faults` records the network-link jitter,
   reorder, loss, duplicate, corrupt, and corrupt-bit draws consumed by the real

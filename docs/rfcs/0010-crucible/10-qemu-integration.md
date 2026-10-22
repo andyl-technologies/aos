@@ -165,7 +165,7 @@ the requirements):
   random-seed entry, E8/[DET-22]) and a deterministic virtio-rng source whose
   draws come from QEMU's seeded internal PRNG (E9/[DET-21]), so the guest CSPRNG
   is never seeded from host entropy. The per-node entropy is derived from the
-  decision RNG by name-hash ([DET-25]) so adding a node does not perturb another
+  decision RNG by name ([DET-25]) so adding a node does not perturb another
   node's seed. *Gate:* `gate:layer0-determinism`. *Spec:* §10.2; satisfies
   [DET-22], [DET-21], references [DET-25].
 

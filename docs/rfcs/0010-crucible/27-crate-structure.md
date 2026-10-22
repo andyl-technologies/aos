@@ -223,7 +223,7 @@ entry states the crate's responsibility and, critically, its *anti-scope*.
 ### L0 — deterministic core
 
 **`crucible-sim`** owns the determinism substrate: the seeded **decision RNG**
-(per-entity streams forked by name-hash so adding a node does not perturb
+(per-entity streams keyed by name so adding a node does not perturb
 others, [`04-determinism-contract.md`](04-determinism-contract.md)), ordered
 collections (a `DetMap`/`DetSet` whose iteration order is content-defined, never
 hash-random), a **deterministic `select`** over ready inputs (fixed tie-break,
