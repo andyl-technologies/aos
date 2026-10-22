@@ -2497,6 +2497,35 @@ tests. No new VM or configured Engine/Daemon runtime result is claimed. Full
 phase funding, actual paired issuers/adopters, opaque Initial/Recipe production
 and full RFC acceptance remain unfinished.
 
+## Complete authenticated Stage17 exchanges and predecessor joins
+
+Commit `145c3874c7` checks complete borrowed Arm, World and first-Observe
+exchanges. Authentication binds the original assigned request, full target,
+carried proof, terminal body, carried receipt and both complete Envelope
+references. A valid MAC does not replace baseline semantics: Arm requires its
+staged gate and owner, World requires its gate and owner, and first Observe
+requires exactly the initial empty staged batch with the assigned identities.
+
+World authenticates its actual Arm predecessor. Observe authenticates both
+predecessors and checks that World's own Arm pair is the same pair. Complete
+import, Source/Birth, Runtime, Scope, transaction, Prepare/Commit receipts and
+physical Hold joins must agree. This DATA verifier allocates no native phase,
+issues no Source permission and publishes no World or observation.
+
+All sixteen focused stage controls pass, including re-signed baseline and
+common-join mutations, replacement carried authenticators and predecessor
+substitution. Both complete Transport configurations pass 1,956 tests each,
+with no failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, changed-file formatting and all six
+architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 295 owned Rust/Cargo inputs
+match the commit and its exact captured application source. This gate executes
+no tests. No new VM or configured Engine/Daemon runtime result is claimed.
+Actual paired issuers and native adopters, full phase funding, genuine opaque
+Initial/Recipe production and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
