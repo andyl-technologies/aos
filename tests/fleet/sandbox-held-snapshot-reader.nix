@@ -164,8 +164,10 @@ in {
             "TasksMax", "ExecStart", "ExecStartPre", "FragmentPath", "DropInPaths",
         )
         arguments = " ".join(f"-p {name}" for name in properties)
+        # Effective manager properties belong to a concrete instance. Loading
+        # this inactive instance observes the template without starting it.
         return dict(line.split("=", 1) for line in vm.succeed(
-            f"systemctl show 'aos-sandbox-held-snapshot-reader@.service' {arguments}"
+            f"systemctl show 'aos-sandbox-held-snapshot-reader@qualification.service' {arguments}"
         ).splitlines())
 
     def run_case(variant, pool_guid, root_guid, dataset_guid, snapshot_guid):
