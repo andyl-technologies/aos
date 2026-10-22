@@ -25,8 +25,11 @@ fn limits() -> RootNodeLimits {
 }
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
+    eprintln!("SURFACE_SCOPED_STAGE source-initialize");
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
+    eprintln!("SURFACE_SCOPED_STAGE source-commit");
     fixture.commit(b"signed surface source").await?;
+    eprintln!("SURFACE_SCOPED_STAGE root-read");
     let target = ViewTarget::Ref(MAIN.parse()?);
     let selection = fixture
         .repository
@@ -35,6 +38,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     let root = selection.metadata().root();
     let commit = selection.metadata().commit();
 
+    eprintln!("SURFACE_SCOPED_STAGE index-admission");
     let admitted = owner.prepare_surface_index(selection).await?;
     admitted.check_native_backing()?;
     if admitted.key().root() != root {
@@ -45,6 +49,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    eprintln!("SURFACE_SCOPED_STAGE index-mapping");
     let mapped = owner.prepare_surface_mapping(selection).await?;
     mapped.check_native_backing()?;
     if mapped.commit() != commit
@@ -67,6 +72,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let view = View::parse(MAIN)?;
+    eprintln!("SURFACE_SCOPED_STAGE file-admission");
     let backing = files::admit(owner, &mapped, &fixture, &view, None).await?;
     let file_selection = fixture
         .repository
@@ -76,6 +82,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    eprintln!("SURFACE_SCOPED_STAGE policy-change");
     fixture.commit(b"actual later policy head").await?;
     if !matches!(owner.prepare_surface_index(selection).await,
         Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. }))
@@ -108,6 +115,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("another served commit reached physical surface pin effects".into());
     }
     files::check(&backing)?;
+    eprintln!("SURFACE_SCOPED_STAGE file-release");
     owner.release_sealed_object_lease(backing.lease()).await?;
     files::check(&backing)?;
     drop(backing);
@@ -122,6 +130,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("live mapped root failed to retain original cache receipt".into());
     }
+    eprintln!("SURFACE_SCOPED_STAGE index-retirement");
     drop(mapped);
     if !owner.evict_surface_index(first_key).await? {
         return Err("signed original index absent from actual cache".into());
@@ -132,6 +141,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    eprintln!("SURFACE_SCOPED_STAGE latest-mapping");
     let latest = owner.prepare_surface_mapping(selection).await?;
     let latest_key = latest.key();
     drop(latest);
@@ -139,6 +149,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("signed latest index absent from actual cache".into());
     }
 
+    eprintln!("SURFACE_SCOPED_STAGE foreign-source");
     let foreign = RepositoryFixture::new("tenant:foreign-surface").await?;
     foreign.commit(b"signed surface source").await?;
     let selection = foreign

@@ -118,9 +118,11 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
         .enable_all()
         .build()?;
     let result = runtime.block_on(async {
+        eprintln!("SDK_OFFLINE_STAGE repository-open");
         let original = config
             .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
             .await?;
+        eprintln!("SDK_OFFLINE_STAGE cache-recovery");
         let mut caches = plan.open(Arc::clone(&installed)).await?;
         let cache = caches
             .remove(&trusted.domain)
@@ -144,6 +146,7 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
             driver = Some(actual.clone());
             actual
         });
+        eprintln!("SDK_OFFLINE_STAGE resident-file");
         for _ in 0..2 {
             let actual = repository
                 .read_file(&View::parse(MAIN)?, b"file", &token, "sdk")
@@ -156,6 +159,7 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
                 );
             }
         }
+        eprintln!("SDK_OFFLINE_STAGE resident-chunk");
         let driver = driver.ok_or("missing actual shared native driver")?;
         let encoded = driver.get(&resident, None).await?;
         if chunk_calls.load(Ordering::Relaxed) != 0 {
@@ -174,6 +178,7 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
             IdentityKind::Chunk,
             b"independent native lower deadline and circuit miss",
         )?;
+        eprintln!("SDK_OFFLINE_STAGE lower-deadline");
         stall_next_chunk.store(true, Ordering::Relaxed);
         let started = tokio::time::Instant::now();
         let failed = tokio::time::timeout(

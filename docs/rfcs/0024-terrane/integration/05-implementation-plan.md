@@ -14769,3 +14769,15 @@ so the last cancelled-admission stderr marker does not locate the subsequent
 stall; scoped signed-root steps need further diagnosis. The SDK qualification
 at that checkpoint fails the always-offline actor's existing output bound after
 earlier cases succeed. Both failures remain retained.
+
+
+The signed-root surface control now reports stage boundaries for source setup,
+commit, root selection, index admission/mapping, file admission, policy changes
+and retirement. The configured offline SDK actor similarly reports repository
+open, actual native recovery, resident reads and the lower deadline control.
+These stderr diagnostics preserve operations, expected stdout and existing
+actor/guest bounds; they identify the actual stalled step on another native
+failure. Strict lint of both fixture examples and Rust formatting pass.
+Checkpoint `7ecbc490ca` mandatory application compilation succeeds in 1,084.86
+seconds, correcting the earlier missing-field build failure; native runtime
+failures remain independent and unresolved.
