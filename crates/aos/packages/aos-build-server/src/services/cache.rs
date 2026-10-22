@@ -23,7 +23,7 @@ use tokio::sync::Semaphore;
 
 use aos_build_api::aos::cache::v1::*;
 use aos_nar::info as core_narinfo;
-use aos_nix::aos_nix_env;
+use aos_nix::{aos_nix_env, StoreHash};
 
 use crate::access;
 use crate::compress::{self, Compression};
@@ -31,6 +31,7 @@ use crate::narinfo;
 use crate::pack;
 use crate::routes::AppState;
 use crate::services;
+#[cfg(test)]
 use crate::views::ViewManager;
 
 /// Boxed server-streaming response used by the generated service traits.
@@ -211,7 +212,12 @@ impl CacheService for CacheServiceImpl {
         req: ServiceRequest<'_, GetNarInfoRequest>,
     ) -> ServiceResult<impl Encodable<NarInfo> + Send + use<'a>> {
         let view: &str = req.view;
-        let store_hash: &str = req.store_hash;
+        let store_hash: StoreHash = req.store_hash.parse().map_err(|error| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                format!("invalid store hash: {error}"),
+            )
+        })?;
 
         let view_config = self
             .state
@@ -223,7 +229,7 @@ impl CacheService for CacheServiceImpl {
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -235,7 +241,7 @@ impl CacheService for CacheServiceImpl {
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in store"))?;
 
         // Update access metadata (best-effort).
-        let _ = access::update_access(&self.state.views, view, store_hash);
+        let _ = access::update_access(&self.state.views, view, &store_hash);
 
         let narinfo_text = narinfo::format_narinfo(
             &info,
@@ -355,20 +361,12 @@ impl CacheService for CacheServiceImpl {
             ));
         };
 
-        let store_hash = match name.split('-').next() {
-            Some(h) if !h.is_empty() => h,
-            _ => {
-                return Err(ConnectError::new(
-                    ErrorCode::InvalidArgument,
-                    "invalid NAR filename",
-                ));
-            }
-        };
+        let store_hash = parse_nar_filename(name)?;
 
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -534,8 +532,11 @@ async fn receive_nar_upload(
     let imported = import_nar_file(&spool.path).await.map_err(|error| {
         ConnectError::new(ErrorCode::Internal, format!("import failed: {error}"))
     })?;
-    if let Some(hash) = ViewManager::store_path_hash(&imported) {
-        let _ = service.state.views.create_tmp_root(&view, hash, &imported);
+    if let Ok(hash) = StoreHash::from_store_path(&imported) {
+        let _ = service
+            .state
+            .views
+            .create_tmp_root(&view, &hash, &imported);
     }
 
     Ok(UploadResponse {
@@ -608,8 +609,8 @@ async fn receive_pack_upload(
         ConnectError::new(ErrorCode::Internal, format!("pack import failed: {error}"))
     })?;
     for path in &paths {
-        if let Some(hash) = ViewManager::store_path_hash(path) {
-            let _ = service.state.views.create_tmp_root(&view, hash, path);
+        if let Ok(hash) = StoreHash::from_store_path(path) {
+            let _ = service.state.views.create_tmp_root(&view, &hash, path);
         }
     }
 
@@ -618,6 +619,28 @@ async fn receive_pack_upload(
         rejected: 0,
         paths,
         ..Default::default()
+    })
+}
+
+fn parse_nar_filename(name: &str) -> Result<StoreHash, ConnectError> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "invalid NAR filename",
+        ));
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    hash.parse().map_err(|error| {
+        ConnectError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid NAR filename: {error}"),
+        )
     })
 }
 
@@ -690,7 +713,7 @@ async fn import_nar_file(path: &Path) -> Result<String, String> {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use axum::http::{HeaderMap, HeaderValue, header};
+    use axum::http::{header, HeaderMap, HeaderValue};
     use connectrpc::{RequestContext, StreamMessage};
     use futures_util::stream;
 
@@ -727,7 +750,7 @@ mod tests {
         let access_token = auth::create_access_token(&[42; 32], &record, 3600).unwrap();
         let state = Arc::new(AppState {
             store: NixStore::open(&database).unwrap(),
-            views: ViewManager::new(root.clone(), config.views.clone()),
+            views: ViewManager::new(root.clone(), config.views.clone()).unwrap(),
             config,
             store_dir: root.join("store").display().to_string(),
             jwt_secret: vec![42; 32],
@@ -1019,6 +1042,28 @@ mod tests {
 
         assert_eq!(error.code, ErrorCode::InvalidArgument);
         assert!(error.to_string().contains("view changed"), "{error}");
+    }
+
+    #[test]
+    fn rpc_nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
     }
 
     #[test]

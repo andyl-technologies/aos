@@ -53,10 +53,10 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use aos_nar::cache::nix_cache_info;
-use aos_nix::aos_nix_env;
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
-use crate::auth::{self, AuthClaims, AuthResult};
+use crate::auth::{self, AuthClaims, AuthResult, ViewAccessError};
 use crate::build::BuildManager;
 use crate::compress::{self, Compression};
 use crate::config::ServerConfig;
@@ -76,16 +76,34 @@ use tracing;
 /// `meta/`, so names containing path traversal sequences (`..`), directory
 /// separators, or null bytes are rejected with `400 Bad Request`.
 fn validate_view_name(name: &str) -> Result<(), Response> {
-    if name.is_empty()
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    if crate::views::validate_view_name(name).is_err() {
         tracing::warn!(view = %name, "rejected invalid view name");
         return Err((StatusCode::BAD_REQUEST, "invalid view name").into_response());
     }
     Ok(())
+}
+
+/// Parses a canonical store hash from an HTTP path component.
+fn parse_store_hash(value: &str) -> Result<StoreHash, Response> {
+    value.parse().map_err(|error| {
+        tracing::warn!(hash = %value, %error, "rejected invalid store hash");
+        (StatusCode::BAD_REQUEST, "invalid store hash").into_response()
+    })
+}
+
+/// Parses a NAR filename and returns its canonical store identity.
+fn parse_nar_filename(name: &str) -> Result<StoreHash, Response> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid NAR filename").into_response());
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    parse_store_hash(hash)
 }
 
 // ConnectRPC service extension traits for registration
@@ -184,6 +202,26 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
 // Read-only endpoints (respect anonymous_read)
 // ---------------------------------------------------------------------------
 
+fn require_rest_read_access(
+    auth: &AuthResult,
+    view: &str,
+    allow_anonymous: bool,
+) -> Result<(), Response> {
+    auth::require_view_permission(auth.claims(), view, "read", allow_anonymous).map_err(|error| {
+        match error {
+            ViewAccessError::AuthenticationRequired => {
+                (StatusCode::UNAUTHORIZED, "authentication required").into_response()
+            }
+            ViewAccessError::ViewNotAuthorized => {
+                (StatusCode::FORBIDDEN, "view not authorized").into_response()
+            }
+            ViewAccessError::PermissionRequired => {
+                (StatusCode::FORBIDDEN, "read permission required").into_response()
+            }
+        }
+    })
+}
+
 /// `GET /{view}/nix-cache-info` — Nix binary cache metadata.
 ///
 /// Anonymous when the view has `anonymous_read = true`, otherwise requires
@@ -203,12 +241,9 @@ async fn cache_info_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    // Enforce auth unless anonymous_read is enabled.
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, "auth required for cache-info");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, "cache-info read access denied");
+        return response;
     }
 
     let mut body = nix_cache_info(&state.store_dir, 30);
@@ -237,19 +272,21 @@ async fn narinfo_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, hash = %hash_narinfo, "narinfo read access denied");
+        return response;
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
         Some(h) => h,
         None => return (StatusCode::BAD_REQUEST, "expected .narinfo suffix").into_response(),
     };
+    let hash = match parse_store_hash(hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
-    let store_path = match state.views.check_visibility(&view, hash) {
+    let store_path = match state.views.check_visibility(&view, &hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -276,7 +313,7 @@ async fn narinfo_handler(
     };
 
     // Update access metadata (best-effort, don't fail the request).
-    let _ = access::update_access(&state.views, &view, hash);
+    let _ = access::update_access(&state.views, &view, &hash);
 
     let body = match narinfo::format_narinfo(
         &info,
@@ -327,11 +364,9 @@ async fn nar_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, filename = %filename, "NAR read access denied");
+        return response;
     }
 
     let zstd_level = state.config.compression.level;
@@ -349,12 +384,12 @@ async fn nar_handler(
             .into_response();
     };
 
-    let store_hash = match name.split('-').next() {
-        Some(h) if !h.is_empty() => h,
-        _ => return (StatusCode::BAD_REQUEST, "invalid NAR filename").into_response(),
+    let store_hash = match parse_nar_filename(name) {
+        Ok(hash) => hash,
+        Err(response) => return response,
     };
 
-    let store_path = match state.views.check_visibility(&view, store_hash) {
+    let store_path = match state.views.check_visibility(&view, &store_hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -562,7 +597,7 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 
 /// Returns the path to the partial upload file for a given hash
 /// (`{aos_root}/uploads/{hash}.partial`).
-fn partial_upload_path(hash: &str) -> std::path::PathBuf {
+fn partial_upload_path(hash: &StoreHash) -> std::path::PathBuf {
     crate::aos_root()
         .join("uploads")
         .join(format!("{hash}.partial"))
@@ -598,6 +633,10 @@ async fn upload_path_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     if !claims.has_view(&view) {
         tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for upload");
@@ -798,9 +837,14 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
     };
 
     // Create a temporary GC root to protect the path until its build creates bin/ roots.
-    if let Some(hash) = ViewManager::store_path_hash(&imported) {
-        if let Err(e) = views.create_tmp_root(view, hash, &imported) {
-            tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+    match StoreHash::from_store_path(&imported) {
+        Ok(hash) => {
+            if let Err(e) = views.create_tmp_root(view, &hash, &imported) {
+                tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(path = %imported, %error, "import returned an invalid store path");
         }
     }
 
@@ -809,14 +853,14 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
 
 /// `HEAD /{view}/store/{hash}` — queries the progress of a partial upload.
 ///
-/// Requires a valid JWT (any views/permissions). Returns the current size
+/// Requires a valid JWT with read access to the view. Returns the current size
 /// of the partial upload file in `Content-Length` so a client can resume a
 /// chunked upload from the right offset, or `404` if no partial upload
 /// exists for the given hash.
 async fn upload_progress_handler(
     Path((view, hash)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
-    AuthClaims(_claims): AuthClaims,
+    auth: AuthResult,
 ) -> Response {
     if let Err(resp) = validate_view_name(&view) {
         return resp;
@@ -824,6 +868,14 @@ async fn upload_progress_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    if let Err(response) = require_rest_read_access(&auth, &view, false) {
+        tracing::warn!(view = %view, hash = %hash, "upload progress read access denied");
+        return response;
+    }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     let partial_path = partial_upload_path(&hash);
 
@@ -1188,8 +1240,8 @@ async fn upload_pack_handler(
         Ok(paths) => {
             // Create temporary GC roots for all imported paths.
             for path in &paths {
-                if let Some(hash) = ViewManager::store_path_hash(path) {
-                    if let Err(e) = state.views.create_tmp_root(&view, hash, path) {
+                if let Ok(hash) = StoreHash::from_store_path(path) {
+                    if let Err(e) = state.views.create_tmp_root(&view, &hash, path) {
                         tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
                     }
                 }
@@ -1377,7 +1429,7 @@ async fn gc_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_build_closure_sse_event, parse_range_header};
+    use super::{format_build_closure_sse_event, parse_nar_filename, parse_range_header};
     use crate::build::{BuildEvent, BuildEventKind};
 
     #[test]
@@ -1417,5 +1469,28 @@ mod tests {
         assert_eq!(parse_range_header("bytes=0-1,3-4", 4096), None);
         assert_eq!(parse_range_header("bytes=-0", 4096), None);
         assert_eq!(parse_range_header("bytes=0-0", 0), None);
+    }
+
+    #[test]
+    fn nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+            "00000000000000000000000000000000.payload",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
     }
 }

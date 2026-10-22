@@ -22,7 +22,7 @@
 use axum::http::header;
 use connectrpc::{ConnectError, ErrorCode, RequestContext};
 
-use crate::auth::{Claims, claims_from_bearer_header};
+use crate::auth::{Claims, ViewAccessError, claims_from_bearer_header, require_view_permission};
 use crate::routes::AppState;
 
 pub mod auth;
@@ -69,12 +69,7 @@ pub(crate) fn require_rpc_view(
     view: &str,
 ) -> Result<Claims, ConnectError> {
     let claims = require_rpc_claims(ctx, state)?;
-    if !claims.has_view(view) {
-        return Err(ConnectError::new(
-            ErrorCode::PermissionDenied,
-            "view not authorized",
-        ));
-    }
+    require_view_permission(Some(&claims), view, "", false).map_err(map_view_access_error)?;
     Ok(claims)
 }
 
@@ -90,21 +85,15 @@ pub(crate) fn require_rpc_permission(
     view: &str,
     permission: &str,
 ) -> Result<(), ConnectError> {
-    let claims = require_rpc_view(ctx, state, view)?;
-    if !claims.has_permission(permission) {
-        return Err(ConnectError::new(
-            ErrorCode::PermissionDenied,
-            format!("{permission} permission required"),
-        ));
-    }
-    Ok(())
+    let claims = require_rpc_claims(ctx, state)?;
+    require_view_permission(Some(&claims), view, permission, false)
+        .map_err(|error| map_view_permission_error(error, permission))
 }
 
 /// Requires read access unless the view is configured for anonymous reads.
 ///
 /// When `anonymous_read` is `true` this is a no-op; otherwise the JWT must
-/// cover the view and include the `read` permission. Note this is stricter
-/// than the REST extractors, which accept any valid JWT for reads.
+/// cover the view and include the `read` permission.
 ///
 /// # Errors
 ///
@@ -120,12 +109,31 @@ pub(crate) fn require_rpc_read_access(
         return Ok(());
     }
 
-    let claims = require_rpc_view(ctx, state, view)?;
-    if !claims.has_permission("read") {
-        return Err(ConnectError::new(
-            ErrorCode::PermissionDenied,
-            "read permission required",
-        ));
+    let claims = require_rpc_claims(ctx, state)?;
+    require_view_permission(Some(&claims), view, "read", false)
+        .map_err(|error| map_view_permission_error(error, "read"))
+}
+
+fn map_view_access_error(error: ViewAccessError) -> ConnectError {
+    match error {
+        ViewAccessError::AuthenticationRequired => {
+            ConnectError::new(ErrorCode::Unauthenticated, "authentication required")
+        }
+        ViewAccessError::ViewNotAuthorized => {
+            ConnectError::new(ErrorCode::PermissionDenied, "view not authorized")
+        }
+        ViewAccessError::PermissionRequired => {
+            ConnectError::new(ErrorCode::PermissionDenied, "permission required")
+        }
     }
-    Ok(())
+}
+
+fn map_view_permission_error(error: ViewAccessError, permission: &str) -> ConnectError {
+    match error {
+        ViewAccessError::PermissionRequired => ConnectError::new(
+            ErrorCode::PermissionDenied,
+            format!("{permission} permission required"),
+        ),
+        other => map_view_access_error(other),
+    }
 }
