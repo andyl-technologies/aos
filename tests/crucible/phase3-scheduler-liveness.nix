@@ -19,6 +19,10 @@ in
     gate = "gate:scheduler-liveness";
     executionFamily = "qemu-runtime";
     name = "production-scheduler-liveness";
+    authoritySerialFrame = {
+      begin = "PRODUCTION_PLUGIN_RESULT_BEGIN";
+      end = "PRODUCTION_PLUGIN_RESULT_END";
+    };
     requiredEvidence = [
       "gate=gate:production-rust-plugin-flight"
       "diskless_multiboot_runs=2"
