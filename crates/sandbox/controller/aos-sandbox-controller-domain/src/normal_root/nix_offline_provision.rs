@@ -6,7 +6,8 @@
 //! use one resident lower DATA owner. Hardware startup also parks the returned
 //! initial hierarchy/self-cgroup candidates through the shared lower validators.
 //! Raw open/clone pre-return gaps and later consuming membership observations
-//! remain functional dependencies; ordinary prepare/inspection is unchanged.
+//! remain functional dependencies. Every mode retains the same PID1 stopped or
+//! exact uninstalled-owner observations and native cgroup originals.
 //! A genuine borrow exists only after selected image,
 //! PID1 delivery, confinement, stopped-runtime and credential comparisons.
 //! SecureBits=12 is a selected manager/unit configuration comparison, not a
@@ -128,6 +129,9 @@ pub enum OfflineNixPrepareStartupErrorV3 {
     /// An actual manager cause remains in the selected absence observation.
     #[error("offline hardware runtime observation failed")]
     HardwareRuntime,
+    /// An actual stopped-runtime cause remains on the resident observation.
+    #[error("offline stopped-runtime observation failed")]
+    StoppedRuntime,
 }
 
 impl From<rustix::io::Errno> for OfflineNixPrepareStartupErrorV3 {
@@ -158,6 +162,14 @@ impl OfflinePrepareModeV3 {
 
     const fn hardware(self) -> bool {
         matches!(self, Self::Initialize | Self::Recover)
+    }
+
+    fn stopped_runtime_refusal(self) -> Error {
+        if self.hardware() {
+            Error::HardwareRuntime
+        } else {
+            Error::StoppedRuntime
+        }
     }
 
     const fn observations(self) -> usize {
@@ -280,6 +292,14 @@ impl Profile {
     }
 }
 
+#[derive(Default)]
+struct StoppedRuntimeOriginalsV5 {
+    observations: Vec<aos_systemd_client::NixOfflineAbsenceObservationV5>,
+    cgroups: Vec<[aos_sandbox_linux::cgroup::NixOfflineStoppedCgroupReadbackV5; 2]>,
+    thread_failure: Option<io::Error>,
+    unwind: Option<Box<dyn std::any::Any + Send>>,
+}
+
 struct HardwareStartupV5 {
     helper: PendingImmutableFileV1,
     loader: PendingImmutableFileV1,
@@ -288,10 +308,6 @@ struct HardwareStartupV5 {
     boot_original: Option<[u8; 16]>,
     boot_identity: Option<(u64, u64, MountId)>,
     first_cut: Option<(u64, u64)>,
-    stopped: Vec<aos_systemd_client::NixOfflineAbsenceObservationV5>,
-    cgroup_observations: Vec<[aos_sandbox_linux::cgroup::NixOfflineStoppedCgroupReadbackV5; 2]>,
-    thread_failure: Option<io::Error>,
-    unwind: Option<Box<dyn std::any::Any + Send>>,
     initial_cgroup: aos_sandbox_linux::cgroup::NixOfflineInitialCgroupReadbackV5,
 }
 
@@ -305,10 +321,6 @@ impl HardwareStartupV5 {
             boot_original: None,
             boot_identity: None,
             first_cut: None,
-            stopped: Vec::new(),
-            cgroup_observations: Vec::new(),
-            thread_failure: None,
-            unwind: None,
             initial_cgroup: aos_sandbox_linux::cgroup::NixOfflineInitialCgroupReadbackV5::new(),
         }
     }
@@ -340,11 +352,10 @@ pub struct OfflineNixPrepareStartupV3 {
     cgroup_root: Option<CgroupV2Root>,
     cgroup_mount: Option<MountId>,
     cgroup_file_index: Option<usize>,
-    runtime_anchors: Vec<RetainedCgroupAnchor>,
     fragment: Option<RetainedImmutableFileV1>,
     observed: Option<service::ServiceObservationV1>,
     flights: Vec<(Vec<OwnedValue>, Vec<OwnedValue>)>,
-    stopped: Vec<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]>,
+    stopped: StoppedRuntimeOriginalsV5,
     credentials: OfflinePrepareCredentialsV3,
     hardware: Option<HardwareStartupV5>,
 }
@@ -374,11 +385,10 @@ impl OfflineNixPrepareStartupV3 {
             cgroup_root: None,
             cgroup_mount: None,
             cgroup_file_index: None,
-            runtime_anchors: Vec::new(),
             fragment: None,
             observed: None,
             flights: Vec::new(),
-            stopped: Vec::new(),
+            stopped: StoppedRuntimeOriginalsV5::default(),
             credentials: OfflinePrepareCredentialsV3::new(),
             hardware: None,
         }
@@ -561,16 +571,12 @@ impl OfflineNixPrepareStartupV3 {
         self.flights
             .try_reserve_exact(observations)
             .map_err(io::Error::other)?;
-        self.stopped
-            .try_reserve_exact(if mode.hardware() { 0 } else { MAXIMUM_OBSERVATIONS })
+        self.stopped.observations
+            .try_reserve_exact(observations)
             .map_err(io::Error::other)?;
-        self.runtime_anchors
-            .try_reserve_exact(observations * 2)
+        self.stopped.cgroups
+            .try_reserve_exact(observations)
             .map_err(io::Error::other)?;
-        if let Some(hardware) = &mut self.hardware {
-            hardware.stopped.try_reserve_exact(observations).map_err(io::Error::other)?;
-            hardware.cgroup_observations.try_reserve_exact(observations).map_err(io::Error::other)?;
-        }
 
         self.initial.observe().map_err(|_| Error::InitialActivation)?;
         let names = startup::names(2)?;
@@ -958,122 +964,22 @@ impl OfflineNixPrepareStartupV3 {
     }
 
     fn require_stopped(&mut self) -> Result<(), Error> {
-        if self.mode.is_some_and(OfflinePrepareModeV3::hardware) {
-            return self.require_hardware_stopped();
-        }
-        if self.stopped.len() == MAXIMUM_OBSERVATIONS {
+        let mode = self.mode.ok_or(Error::Rejected)?;
+        let maximum = mode.observations();
+        let stopped = &mut self.stopped;
+        if stopped.observations.len() == maximum {
             return Err(Error::Rejected);
         }
-        let observed = std::thread::Builder::new()
-            .name("nix-offline-stopped-readback".to_owned())
-            .spawn(|| {
-                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-                runtime.block_on(async {
-                    tokio::time::timeout(Duration::from_secs(5), async {
-                        SystemdClient::connect().await?
-                            .observe_fixed_stopped_nix_units_v3().await
-                    })
-                    .await
-                    .map_err(io::Error::other)?
-                    .map_err(io::Error::other)
-                })
-            })?
-            .join()
-            .map_err(|_| Error::Rejected)??;
-        self.stopped.push(observed);
-        if self.stopped.first() != self.stopped.last() {
-            return Err(Error::Rejected);
-        }
-        for ((values, unit), relative) in self.stopped.last().ok_or(Error::Rejected)?
-            .iter().zip(RUNTIME_CGROUPS)
-        {
-            let [cgroup, _, pre, post] = values.as_slice() else {
-                return Err(Error::Rejected);
-            };
-            let actual = <&str>::try_from(cgroup).map_err(|_| Error::Rejected)?;
-            if !actual.is_empty() && actual != format!("/{relative}") {
-                return Err(Error::Rejected);
-            }
-            for empty in [pre, post] {
-                if !matches!(&**empty, Value::Array(commands) if commands.is_empty()) {
-                    return Err(Error::Rejected);
-                }
-            }
-            let [fragment, drop_ins, transient, _] = unit.as_slice() else {
-                return Err(Error::Rejected);
-            };
-            if !matches!(&**drop_ins, Value::Array(paths) if paths.is_empty())
-                || bool::try_from(transient).ok() != Some(false)
-            {
-                return Err(Error::Rejected);
-            }
-            let fragment = <&str>::try_from(fragment).map_err(|_| Error::Rejected)?;
-            let path = std::fs::canonicalize(fragment)?;
-            super::profile::require_store_path(path.to_str().ok_or(Error::Rejected)?)?;
-            self.raw.push(File::from(rustix::fs::open(
-                path.as_path(),
-                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
-                Mode::empty(),
-            )?));
-            self.evidence.push(RetainedImmutableFileV1::retain_with_profile(
-                path,
-                self.raw.last().ok_or(Error::Rejected)?.try_clone()?,
-                None,
-                64 * 1024,
-                false,
-            ).map_err(|_| NormalRootStartupErrorV1::Image)?);
-        }
-        let root_index = self.cgroup_file_index.ok_or(Error::Rejected)?;
-        if Some(MountId::from_fd(self.raw.get(root_index).ok_or(Error::Rejected)?.as_fd())?)
-            != self.cgroup_mount
-        {
-            return Err(Error::Rejected);
-        }
-        for relative in RUNTIME_CGROUPS {
-            match rustix::fs::openat2(
-                self.raw.get(root_index).ok_or(Error::Rejected)?,
-                relative,
-                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-                rustix::fs::ResolveFlags::BENEATH | rustix::fs::ResolveFlags::NO_SYMLINKS
-                    | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-            ) {
-                Err(rustix::io::Errno::NOENT) => {}
-                Err(error) => return Err(error.into()),
-                Ok(file) => {
-                    self.raw.push(File::from(file));
-                    self.runtime_anchors.push(
-                        self.cgroup_root.as_ref().ok_or(Error::Rejected)?.resolve(Path::new(relative))?,
-                    );
-                    let anchor = self.runtime_anchors.last().ok_or(Error::Rejected)?;
-                    if anchor.population_monitor()?.state()? != CgroupPopulationState::Empty {
-                        return Err(Error::Rejected);
-                    }
-                    anchor.validate_active()?;
-                }
-            }
-        }
-        let root_file = self.raw.get(root_index).ok_or(Error::Rejected)?;
-        if Some(MountId::from_fd(root_file.as_fd())?) != self.cgroup_mount {
-            return Err(Error::Rejected);
-        }
-        Ok(())
-    }
-
-    fn require_hardware_stopped(&mut self) -> Result<(), Error> {
-        let maximum = self.mode.ok_or(Error::Rejected)?.observations();
-        let hardware = self.hardware.as_mut().ok_or(Error::Rejected)?;
-        if hardware.stopped.len() == maximum {
-            return Err(Error::Rejected);
-        }
-        hardware.stopped.push(aos_systemd_client::NixOfflineAbsenceObservationV5::new());
-        let observation = hardware.stopped.last_mut().ok_or(Error::Rejected)?;
+        stopped
+            .observations
+            .push(aos_systemd_client::NixOfflineAbsenceObservationV5::new());
+        let observation = stopped.observations.last_mut().ok_or(Error::Rejected)?;
 
         // The thread borrows resident slots. Neither an actual reader error nor
         // an unwind can destroy already-returned property or absence originals.
         let observed = std::thread::scope(|scope| {
             std::thread::Builder::new()
-                .name("nix-offline-hardware-stopped".to_owned())
+                .name("nix-offline-stopped-readback".to_owned())
                 .spawn_scoped(scope, || -> Result<bool, io::Error> {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -1095,19 +1001,37 @@ impl OfflineNixPrepareStartupV3 {
         });
         match observed {
             Ok(Ok(Ok(true))) => {}
-            Ok(Ok(Ok(false))) => return Err(Error::HardwareRuntime),
+            Ok(Ok(Ok(false))) => return Err(mode.stopped_runtime_refusal()),
             Ok(Ok(Err(error))) | Err(error) => {
-                hardware.thread_failure = Some(error);
-                return Err(Error::HardwareRuntime);
+                stopped.thread_failure = Some(error);
+                return Err(mode.stopped_runtime_refusal());
             }
             Ok(Err(payload)) => {
-                hardware.unwind = Some(payload);
-                return Err(Error::HardwareRuntime);
+                stopped.unwind = Some(payload);
+                return Err(mode.stopped_runtime_refusal());
             }
         }
-        let observation = hardware.stopped.last().ok_or(Error::Rejected)?;
-        let (controller, owner) = observation.properties().map_err(|_| Error::HardwareRuntime)?;
-        for (observed, relative) in [(Some(controller), RUNTIME_CGROUPS[0]), (owner, RUNTIME_CGROUPS[1])] {
+        if !mode.hardware() {
+            // Preparation keeps its original whole-readback stability rule.
+            // An absent owner is accepted only with both genuine PID1 errors
+            // on every read; a later loaded or installed owner cannot replace it.
+            let first = stopped.observations.first().ok_or(Error::Rejected)?;
+            let last = stopped.observations.last().ok_or(Error::Rejected)?;
+            if first.properties().map_err(|_| mode.stopped_runtime_refusal())?
+                != last.properties().map_err(|_| mode.stopped_runtime_refusal())?
+            {
+                return Err(Error::Rejected);
+            }
+        }
+
+        let observation = stopped.observations.last().ok_or(Error::Rejected)?;
+        let (controller, owner) = observation
+            .properties()
+            .map_err(|_| mode.stopped_runtime_refusal())?;
+        for (observed, relative) in [
+            (Some(controller), RUNTIME_CGROUPS[0]),
+            (owner, RUNTIME_CGROUPS[1]),
+        ] {
             let Some((values, unit)) = observed else {
                 continue;
             };
@@ -1139,13 +1063,16 @@ impl OfflineNixPrepareStartupV3 {
                 OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
                 Mode::empty(),
             )?));
-            self.evidence.push(RetainedImmutableFileV1::retain_with_profile(
-                path,
-                self.raw.last().ok_or(Error::Rejected)?.try_clone()?,
-                None,
-                64 * 1024,
-                false,
-            ).map_err(|_| NormalRootStartupErrorV1::Image)?);
+            self.evidence.push(
+                RetainedImmutableFileV1::retain_with_profile(
+                    path,
+                    self.raw.last().ok_or(Error::Rejected)?.try_clone()?,
+                    None,
+                    64 * 1024,
+                    false,
+                )
+                .map_err(|_| NormalRootStartupErrorV1::Image)?,
+            );
         }
 
         let root_index = self.cgroup_file_index.ok_or(Error::Rejected)?;
@@ -1153,11 +1080,17 @@ impl OfflineNixPrepareStartupV3 {
         if Some(MountId::from_fd(root_file.as_fd())?) != self.cgroup_mount {
             return Err(Error::Rejected);
         }
-        hardware.cgroup_observations.push(std::array::from_fn(|_| Default::default()));
-        let pair = hardware.cgroup_observations.last_mut().ok_or(Error::Rejected)?;
+        stopped
+            .cgroups
+            .push(std::array::from_fn(|_| Default::default()));
+        let pair = stopped.cgroups.last_mut().ok_or(Error::Rejected)?;
         let root = self.cgroup_root.as_ref().ok_or(Error::Rejected)?;
-        pair[0].capture_controller(root).map_err(|_| Error::HardwareRuntime)?;
-        pair[1].capture_nix_owner(root).map_err(|_| Error::HardwareRuntime)?;
+        pair[0]
+            .capture_controller(root)
+            .map_err(|_| mode.stopped_runtime_refusal())?;
+        pair[1]
+            .capture_nix_owner(root)
+            .map_err(|_| mode.stopped_runtime_refusal())?;
         for observed in pair {
             if observed.population() != Some(CgroupPopulationState::Empty)
                 && observed.absence().is_none()

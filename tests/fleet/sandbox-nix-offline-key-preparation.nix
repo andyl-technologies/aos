@@ -5,6 +5,7 @@
   systems,
   ...
 }: let
+  runtimeSystem = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
@@ -48,17 +49,28 @@
         });
         aos.image = {
           erofsCompressionLevel = 1;
+          rootPartitionMiB = 2048;
           budgets = {
-            maxRuntimeClosureMiB = lib.mkForce 2048;
-            maxRootMiB = 1024;
-            maxDownloadMiB = 1536;
-            maxConvertedDownloadMiB = 1920;
+            maxRuntimeClosureMiB = lib.mkForce 8192;
+            maxRootMiB = 1536;
+            maxDownloadMiB = 2048;
+            maxConvertedDownloadMiB = 2048;
             maxInitrdMiB = 256;
             maxBootExecutableMiB = 288;
             maxFirmwarePartitionMiB = 832;
           };
         };
         aos.sandbox.nixOfflinePrepare.enable = true;
+        # Install the genuine target-image Controller fragment unchanged,
+        # without its activation links or external runtime credentials. The
+        # reference target keeps the inactive unit loaded for PID1 readback;
+        # ordering alone never starts it. The Nix owner remains uninstalled.
+        systemd.units."aos-sandboxd.service".text = runtimeSystem.config.systemd.units."aos-sandboxd.service".text;
+        systemd.targets.aos-offline-controller-reference = {
+          description = "Retain the installed inactive Controller unit for provisioning";
+          wantedBy = ["multi-user.target"];
+          after = ["aos-sandboxd.service"];
+        };
         environment.systemPackages = [pkgs.coreutils pkgs.python3 pkgs.systemd];
         environment.etc = {
           "credstore/node-id" = {
@@ -151,10 +163,37 @@ in {
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
     assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
+    vm.wait_for_unit("aos-offline-controller-reference.target")
+    assert vm.succeed("systemctl show aos-sandboxd.service --property=LoadState --value").strip() == "loaded"
+    assert vm.succeed("systemctl show aos-sandboxd.service --property=ActiveState --value").strip() == "inactive"
 
     # The selected preparation image has no automatic candidate activation.
     vm.fail(f"systemctl is-active --quiet {unit}")
     vm.succeed(f"test ! -e {root}")
+
+    # A real live unit with the fixed owner name must close preparation,
+    # before any candidate directory exists. The actor grants no runtime
+    # authority and is collected before the positive uninstalled-owner case.
+    vm.succeed(
+        "systemd-run --unit=aos-sandbox-nixd.service --collect "
+        "--slice=aos-control.slice ${pkgs.coreutils}/bin/sleep infinity"
+    )
+    vm.execute(f"systemctl start {unit}")
+    vm.wait_until_succeeds(
+        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1; "
+        f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
+        timeout=120,
+    )
+    vm.succeed(f"test ! -e {root}")
+    vm.succeed("systemctl stop aos-sandbox-nixd.service")
+    vm.wait_until_succeeds(
+        "! ${pkgs.systemd}/bin/busctl call org.freedesktop.systemd1 "
+        "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager "
+        "GetUnit s aos-sandbox-nixd.service",
+        timeout=30,
+    )
+
+    vm.succeed(f"systemctl reset-failed {unit}")
     vm.succeed(f"systemctl start {unit}")
     vm.wait_until_succeeds(
         f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0; "
@@ -168,6 +207,7 @@ in {
     # the attempt. The public delivery remains present in the same image.
     vm.reboot()
     vm.wait_for_unit("multi-user.target", timeout=300)
+    vm.wait_for_unit("aos-offline-controller-reference.target")
     assert candidate_snapshot() == original
     vm.fail(f"systemctl is-active --quiet {unit}")
     reject_repeated_preparation(original)
