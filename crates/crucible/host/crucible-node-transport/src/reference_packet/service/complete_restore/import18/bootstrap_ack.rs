@@ -15,7 +15,18 @@ use super::*;
 use crate::envelope::{MessageKind, Method};
 use crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
 
+mod assignment;
+mod reservation;
+pub use reservation::PacketNativeImport18BootstrapReservationRowData;
 mod envelope_projection;
+pub use assignment::{
+    PacketNativeImport18BootstrapAssignmentData,
+    PacketNativeImport18BootstrapAssignmentHistoryData,
+    PacketNativeImport18BootstrapAssignmentRowData, PacketNativeImport18BootstrapAssignmentStep,
+    native_import18_bootstrap_assignment_counter_scratch_data,
+    native_import18_bootstrap_assignment_into_data,
+    native_import18_bootstrap_assignment_quote_data,
+};
 mod projection;
 pub use envelope_projection::{
     PacketNativeImport18BootstrapEnvelopeProjectionData,

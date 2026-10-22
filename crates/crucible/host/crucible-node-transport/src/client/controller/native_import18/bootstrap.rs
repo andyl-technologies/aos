@@ -1,9 +1,9 @@
 //! Retains one distinct Bootstrap18 constructor without issuing a request.
 //!
-//! A genuine caller must keep this owner and row beside its immutable recipe and
-//! Initial result. This constructor moves fixed typed inputs only; it creates no
-//! Value, Envelope, original slot, deadline, proof, receipt or completion witness.
-//! Safe receive and the actual Source signer remain separate prerequisites.
+//! A genuine caller keeps this owner and row beside its immutable recipe and
+//! Initial result. Construction moves fixed typed inputs. Separately admitted
+//! unsigned assignment retains each closed Value and Envelope under the original
+//! Hello cut. SDK reservation, signing and receive remain separate prerequisites.
 //!
 //! ```text
 //! empty -> retaining (failed until checked) -> retained
@@ -17,15 +17,20 @@ use crate::client::OriginalHelloJournal;
 use crate::hello_frames::OriginalHelloFrameDigests;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
     NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF, NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT,
-    NATIVE_IMPORT18_BOOTSTRAP_FEATURE, PacketNativeImport18BootstrapRequest,
+    NATIVE_IMPORT18_BOOTSTRAP_FEATURE, PacketNativeImport18BootstrapAssignmentData,
+    PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapReservationRowData,
 };
 use crate::retained_metadata::{
     aliases::MetadataSharedKind, requested_metadata_backing_storage_data,
 };
 use std::mem::size_of;
 
+#[path = "bootstrap/assignment.rs"]
+mod assignment;
 #[path = "bootstrap/history.rs"]
 mod history;
+#[path = "bootstrap/reservation.rs"]
+mod reservation;
 #[path = "bootstrap/storage.rs"]
 mod storage;
 
@@ -43,6 +48,12 @@ pub struct OriginalNativeImport18Bootstrap {
     row: OriginalNativeImport18BootstrapConstructionData,
     request_id: Option<Id>,
     request: Option<PacketNativeImport18BootstrapRequest>,
+    assignment: Option<PacketNativeImport18BootstrapAssignmentData>,
+    cut: Option<OperationalDeadline>,
+    reservation_row: Option<PacketNativeImport18BootstrapReservationRowData>,
+    reservation_started: bool,
+    literal_slot: Option<usize>,
+    reserved: bool,
     retained: bool,
     failed: bool,
 }
@@ -77,6 +88,12 @@ impl CnpController {
             row: row.retaining_data(),
             request_id: request_id.take(),
             request: request.take(),
+            assignment: None,
+            cut: None,
+            reservation_row: None,
+            reservation_started: false,
+            literal_slot: None,
+            reserved: false,
             retained: false,
             failed: true,
         });
@@ -113,7 +130,7 @@ impl OriginalNativeImport18Bootstrap {
     ///
     /// The enclosing Source separately counts the inline owner header and its
     /// Controller/Hello owners. Equal shared payloads receive no alias discount.
-    /// This owner contains only fixed-depth typed fields, with no raw Value tree.
+    /// Assignment adds only its closed fixed-depth Value fields, with no raw tree.
     ///
     /// # Errors
     /// Refuses a foreign creator or checked metadata traversal exhaustion.
@@ -122,6 +139,12 @@ impl OriginalNativeImport18Bootstrap {
             row,
             request_id,
             request,
+            assignment,
+            cut: _,
+            reservation_row: _,
+            reservation_started: _,
+            literal_slot: _,
+            reserved: _,
             retained: _,
             failed: _,
         } = self;
@@ -132,6 +155,9 @@ impl OriginalNativeImport18Bootstrap {
         if let Some(request) = request {
             storage::observe_request_data(request, &mut observer)?;
         }
+        if let Some(assignment) = assignment {
+            assignment.observe_retained_into_data(&mut observer)?;
+        }
         Ok(observer.finish())
     }
 
@@ -141,7 +167,13 @@ impl OriginalNativeImport18Bootstrap {
     /// Refuses a foreign creator process or thread.
     pub fn retained_metadata_counter_scratch_data(&self) -> Result<usize, ProviderError> {
         self.row.controller.ensure_current()?;
-        Ok(CnpController::original_native_import18_bootstrap_counter_scratch_data())
+        Ok(if self.reservation_started {
+            CnpController::original_native_import18_bootstrap_reservation_counter_scratch_data()
+        } else if self.assignment.is_some() {
+            CnpController::original_native_import18_bootstrap_assignment_counter_scratch_data()
+        } else {
+            CnpController::original_native_import18_bootstrap_counter_scratch_data()
+        })
     }
 }
 

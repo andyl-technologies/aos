@@ -78,6 +78,108 @@ fn scope() -> (Handshake, Connection<UnixStream>, UnixStream) {
     scope_with_declaration_fault(None)
 }
 
+#[test]
+fn projected_assignment_reserves_the_real_slot_without_using_the_negotiated_ceiling_as_demand() {
+    let (_lease, mut connection, mut peer) = scope();
+    let (_, request, proof) = proposal(&connection);
+    let row = native_import18_bootstrap_assignment_quote_data(usize::MAX).unwrap();
+    let request_id = id("projected-bootstrap");
+    let mut assignment = None;
+    native_import18_bootstrap_assignment_into_data(
+        [
+            connection.authority.session_id(),
+            connection.authority.incarnation_id(),
+            &request_id,
+        ],
+        &request,
+        &row,
+        usize::MAX,
+        &mut assignment,
+    )
+    .unwrap();
+    let original = assignment
+        .as_ref()
+        .unwrap()
+        .borrowed_history_data()
+        .original
+        .unwrap();
+    let payload = native_import18_bootstrap_envelope_projection_data(usize::MAX)
+        .unwrap()
+        .maximum_encoded_bytes_data()[0];
+    assert!(payload < connection.authority.limits().frame_bytes.get() as usize);
+    let before = connection.original_bootstrap_model_storage_data();
+    let mut slot = None;
+
+    connection
+        .reserve_original_bootstrap_data(original, &request, payload, &mut slot)
+        .unwrap();
+
+    assert!(slot.is_some());
+    assert!(connection.guard.unused());
+    let after = connection.original_bootstrap_model_storage_data();
+    assert_eq!(after.byte_capacity, before.byte_capacity);
+    assert_eq!(after.descriptor_capacity, before.descriptor_capacity);
+    assert_eq!(after.retained_bytes, before.retained_bytes);
+    assert_eq!(after.outgoing_frames, before.outgoing_frames + 1);
+    assert!(!after.all_io_complete);
+    let mut sealed = original.clone();
+    sealed.extensions.insert(
+        NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF.into(),
+        serde_json::to_value(proof).unwrap(),
+    );
+    let bytes = canonical::canonical_json(&serde_json::to_value(sealed).unwrap()).unwrap();
+    assert!(bytes.len() <= payload);
+    peer.set_nonblocking(true).unwrap();
+    assert_eq!(
+        peer.read(&mut [0; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn reservation_quote_covers_actual_empty_frontier_failure_incident() {
+    struct Recording(std::cell::RefCell<Option<ConnectionIncident>>);
+    impl ConnectionSupervisor for Recording {
+        fn quarantine(&self, incident: ConnectionIncident) {
+            *self.0.borrow_mut() = Some(incident);
+        }
+    }
+    let (_lease, mut connection, _peer) = scope();
+    let recorder = Rc::new(Recording(std::cell::RefCell::new(None)));
+    connection.supervisor = recorder.clone();
+    let row =
+        Connection::<UnixStream>::original_bootstrap_reservation_construction_data(usize::MAX)
+            .unwrap();
+    let exact = row.into_iter().sum();
+    assert_eq!(
+        Connection::<UnixStream>::original_bootstrap_reservation_construction_data(exact).unwrap(),
+        row
+    );
+    assert!(
+        Connection::<UnixStream>::original_bootstrap_reservation_construction_data(exact - 1)
+            .is_err()
+    );
+    assert!(connection.guard.unused());
+
+    connection.contain_original_bootstrap_data();
+
+    let saved = recorder.0.borrow();
+    let incident = saved.as_ref().unwrap();
+    assert!(incident.outgoing.is_empty());
+    assert!(incident.incoming.is_empty());
+    assert_eq!(incident.outgoing.capacity(), 0);
+    assert_eq!(incident.incoming.capacity(), 0);
+    let mut observer = crate::retained_metadata::MetadataObserver::new();
+    observer.observe(&incident.session).unwrap();
+    observer.observe(&incident.incarnation).unwrap();
+    observer.observe(&incident.connection).unwrap();
+    let actual = std::mem::size_of::<ConnectionIncident>()
+        + crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())
+            .unwrap();
+    assert!(actual <= row[0]);
+    assert!(connection.fenced);
+}
+
 fn scope_with_declaration_fault(
     fault: Option<usize>,
 ) -> (Handshake, Connection<UnixStream>, UnixStream) {

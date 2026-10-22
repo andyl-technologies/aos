@@ -23,6 +23,8 @@ pub struct PacketNativeImport18BootstrapEnvelopeProjectionData {
 
 impl PacketNativeImport18BootstrapEnvelopeProjectionData {
     /// Returns sealed-request and completed-response encoded bounds, in that order.
+    ///
+    /// These bound closed serialized outputs, not arbitrary incoming JSON spelling.
     pub fn maximum_encoded_bytes_data(&self) -> [usize; 2] {
         [
             self.request.maximum_encoded_bytes,

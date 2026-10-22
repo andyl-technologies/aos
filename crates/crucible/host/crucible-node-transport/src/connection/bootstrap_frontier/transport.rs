@@ -17,6 +17,8 @@ use crate::reference_packet::service::complete_restore::import18::{
 };
 use crate::transport::{RetainedFrame, original_frames::FrameDirection};
 
+#[path = "transport/storage.rs"]
+mod storage;
 #[path = "transport/wire.rs"]
 mod wire;
 

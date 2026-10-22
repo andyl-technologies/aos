@@ -17,7 +17,7 @@ impl ClientSession {
     ///
     /// # Errors
     /// Refuses a replaced/expired cut, foreign endpoint, response loss or sequence.
-    fn authenticate_original_bootstrap_effect_cut_data(
+    pub(in crate::client) fn authenticate_original_bootstrap_effect_cut_data(
         &self,
         cut: OperationalDeadline,
         sequence: u64,

@@ -33,6 +33,18 @@ pub struct OriginalNativeImport18BootstrapHistoryData<'a> {
     pub request_id: Option<&'a Id>,
     /// Borrows the moved closed request, even when its validation failed.
     pub request: Option<&'a PacketNativeImport18BootstrapRequest>,
+    /// Borrows all actual unsigned assignment prefixes after either outcome.
+    pub assignment: Option<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapAssignmentHistoryData<'a>>,
+    /// Reports whether the original operational cut has been retained.
+    pub original_cut_retained: bool,
+    /// Borrows the exact saved reservation component row, including after refusal.
+    pub reservation_row: Option<&'a PacketNativeImport18BootstrapReservationRowData>,
+    /// Reports spent reservation entry independently of successful slot creation.
+    pub reservation_started: bool,
+    /// Preserves an initialized literal slot even when later checks failed.
+    pub literal_slot: Option<usize>,
+    /// Reports successful reservation without claiming publication or completion.
+    pub reserved: bool,
     /// Reports only successful typed-owner retention, never bootstrap completion.
     pub retained: bool,
     /// Preserves a spent/refused constructor independently of retained inputs.
@@ -93,6 +105,15 @@ impl OriginalNativeImport18Bootstrap {
             row: row_history_data(&self.row, Some(self)),
             request_id: self.request_id.as_ref(),
             request: self.request.as_ref(),
+            assignment: self
+                .assignment
+                .as_ref()
+                .map(PacketNativeImport18BootstrapAssignmentData::borrowed_history_data),
+            original_cut_retained: self.cut.is_some(),
+            reservation_row: self.reservation_row.as_ref(),
+            reservation_started: self.reservation_started,
+            literal_slot: self.literal_slot,
+            reserved: self.reserved,
             retained: self.retained,
             failed: self.failed,
         });
