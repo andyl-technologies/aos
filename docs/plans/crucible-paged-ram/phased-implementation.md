@@ -426,9 +426,13 @@ bounded prefix directly instead of relying on an unchecked pop.
 Two focused controls cover typed refusal after QMP poison and real locally held
 event-alias cleanup after observation poison. These peers issue no Native Source,
 checkpoint receiver or Stop authority. All six focused retirement controls and
-content-bound engineering hygiene pass. Verification of the final test names,
-all host targets, mandatory application compilation and exact supervision remain
-pending.
+content-bound engineering hygiene pass, including the final exact test names.
+Every host target compiles. Mandatory application compilation passes at
+`01rri19z94sjr70b9ms3l2zb2hdfs0d0`; all 5,300 committed Rust/TOML inputs at
+`c8c8014091309a994d7d14722d157b8ef8e68da4` match immutable source
+`s5namavg5f88s77p5cs10gx399qxqxjb`. The comparison record has SHA-256
+`e34c8f2329f1fb97b36fbdbf5bcc2cc33db9cbb5f1e5157bb7de1ba1061ca51d`.
+All 302 exact supervision cases remain pending.
 
 #### Complete lazy resource-refusal diagnostics
 
@@ -444,7 +448,7 @@ application compilation passes at `iddpfyqs5iqsn100mjjbjnmsn7vzgfpi`; all 5,300
 committed Rust/TOML inputs at `db25f7eebcef8ee45b3d9e625de7d8eab8f08228`
 match immutable source `z97lx5ybn7qhhyhyl44xwx725fs269w4`. The comparison record
 has SHA-256 `4bbcf3a1026273d291263d73e404f89d048f6efaeb8f5920818f58fd5b78004f`.
-Exact supervision remains pending.
+All 300 exact supervision cases pass at `1mr3nqmlak3fc4453ijsdlxgdl3par93`.
 This does not supply complete stderr or output-buffer funding.
 
 #### Compact typed parent-Park QMP context
@@ -463,8 +467,9 @@ retained. Mandatory application compilation passes at
 `f4bb9a10f6c67f7412f2ef269a34b2d5190f64fb` match immutable source
 `xj9vcv8alwpwvh20im90zp3dyvp798xs`. The comparison record has SHA-256
 `052934c30fdce24d93e6540bc904dda73cf85ada9e9387091f58caeb2bc2a664`.
-Exact supervision remains pending. The fresh canonical license check stops at
-strict controller Clippy with 923 host-library and 977 host-test errors, down
+All 299 exact supervision cases pass at `81vimp7hqy94l6j816xd98xnrlh2arfy`.
+The fresh canonical license check stops at strict controller Clippy with
+923 host-library and 977 host-test errors, down
 from 1,184 and 1,255 in the earlier reader checkpoint. Its boundary assertions
 did not run. This representation change supplies no new operation or custody.
 
