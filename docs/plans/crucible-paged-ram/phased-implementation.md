@@ -96,8 +96,16 @@ components and its embedded 187 actual Source tests. This closes the preceding
 extracted cleanup bridge's genuine-provider link failure without weakening its
 bounds. The separately registered Source gate passes all 187 tests at
 `j6mj9gz7m0s0kzm0xd482imd73dgrpn7`. Full packaged ordinary fixture delivery
-remains pending; its explicit provider Ninja invocation now honors the
-requested `NIX_BUILD_CORES` instead of Ninja's unrestricted default.
+fails at `rwgq0y6r0l23mz5ghcxd9a9r4m2v99m6`: twenty of 26 fixtures pass.
+`control-deferred`, `stopped-control-rearm` and `template-control-drain`
+refuse the outdated identity of `accel/tcg/tcg-accel-ops-rr.c`;
+`ram-worker-inventory` and `settle-prepark` extract functions without the real
+`native_quantum_rr` canonical declaration. `dirty-iterator` refuses missing
+genuine launched Source/Root ownership, read/post/rearm/ACK and physical-return
+coverage. This last refusal is a substantive lifecycle gap, not an obsolete
+fixture dependency. The full package remains unqualified; all failures are
+retained. Its explicit provider Ninja invocation honors the requested
+`NIX_BUILD_CORES` instead of Ninja's unrestricted default.
 
 ABI conformance passes at `5bmw67dp0dxp493520gi2az5hrkf428l`. Engineering
 hygiene passes at `zcvijji792yblcv5r97p578pnwrl3izi`. The canonical
