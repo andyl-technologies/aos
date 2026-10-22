@@ -69,6 +69,43 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Explicit Quantum transport and plan negotiation
+
+The separate Quantum namespace now encodes and decodes Setup7, Purpose2 and
+plan ten. The exact tuple is tag `0x17`, mapping `CRUCPLM2`/schema two, sealed
+`CRUCPSP2`/schema two/224 bytes and `CRUCSU10`/schema ten/48-byte header.
+Purpose2 explicitly selects role-map edition one, Quantum-only variant one
+and terminal contract one. Its physical storage cleanup generation remains one
+and is independent of the publication's actual Cleanup loan and entry identity.
+
+The shared body parser selects an exact outer and nested purpose edition
+before interpreting sections. Original Startup, process, workspace and family
+relationships retain their validators. Plan ten keeps the existing aggregate
+cap and body ordering. Earlier carriers continue requiring their original
+magic, schema and reserved zero bytes; there is no fallback to them. The new
+observational correspondence check compares every shared lender, Source,
+file and event identity across the decoded tuple. Actual sealed-file,
+endpoint, mapping and nominal-lender authentication remain the constructors'
+responsibility.
+
+The separate Setup7 sender transfers the exact eight or nine borrowed aliases.
+Real Unix socket controls verify received alias order, kernel identities and
+independent data flow with and without a workspace. Wrong counts, negative
+descriptors, malformed and mixed-edition frames refuse before any peer byte.
+All fourteen protocol targets pass 283 cases and strict protocol Clippy passes.
+Existing Setup6 controls still run unchanged in name and cover the same route;
+their shared test helpers also exercise the new route. Three negotiation,
+three plan and two new socket controls extend the prior six Quantum controls.
+The canonical ABI gate now requires and runs these fourteen cases in three
+explicit groups, checking registration count and canonical names before each
+execution. Engineering hygiene and Nix formatting pass; final application,
+ABI and canonical license-boundary checks are running.
+
+These public codecs and the sender do not select the live launch route, install
+a recipient or enter Cleanup. Genuine producer/recipient construction, complete
+execution-stack and Core admission, independent role Current and final physical
+closure remain open. The active Setup6/plan-nine selection is unchanged.
+
 #### Separate schema-two Quantum and Cleanup codecs
 
 The permissive protocol crate now has a separate `publisher_subscription::quantum`
@@ -94,8 +131,10 @@ and partial consumed-negative journals. Strict protocol Clippy passes without
 exemptions. The first lint run found a single-match test expression, corrected
 to `if let`. An added legacy-refusal fixture initially used an invalid two-primary
 schema-one cohort; its corrected genuine schema-one fixture passes. Both failed
-attempts remain separately retained. Required application compilation, ABI,
-engineering hygiene and the canonical license-boundary check are running.
+attempts remain separately retained. Engineering hygiene passes. Required
+application compilation and ABI are running; the canonical license-boundary
+build still fails at the existing 909 Host-library and 963 Host-test Clippy
+errors, before boundary assertions run.
 Actual independently entered Cleanup lending, complete resource admission,
 paired Native role projections and terminal closure remain implementation gaps.
 

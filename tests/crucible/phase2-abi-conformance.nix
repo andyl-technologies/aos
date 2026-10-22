@@ -515,6 +515,39 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
+              require_test_set 9 protocol-quantum-cleanup \
+                publisher_subscription::quantum::tests::paired_publication_matches_independent_role_bytes_and_refuses_legacy_decoding \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-plan \
+                plugin_setup_plan::preexec::tests::quantum::quantum_plan_matches_literal_header_and_round_trips_through_public_api \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::quantum:: \
+                -- --test-threads=1
+              require_test_set 2 protocol-quantum-transport \
+                publisher_subscription::tests::setup::transport::quantum_setup_sends_exact_eight_and_nine_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::quantum_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::quantum_setup \
+                -- --test-threads=1
               require_test_set 3 protocol-doorbell \
                 doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
                 -p crucible-qemu-protocol doorbell_abi

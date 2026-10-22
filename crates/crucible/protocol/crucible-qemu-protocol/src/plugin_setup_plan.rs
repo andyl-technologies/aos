@@ -27,6 +27,7 @@ use thiserror::Error;
 
 mod preexec;
 mod publisher;
+mod quantum;
 mod startup_operation;
 
 /// Fixed byte length of the current issued workspace record.

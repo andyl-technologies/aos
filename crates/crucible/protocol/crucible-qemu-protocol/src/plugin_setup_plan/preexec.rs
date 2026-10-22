@@ -34,6 +34,40 @@ pub(super) fn decode_profile(
     bytes: &[u8],
     publisher: bool,
 ) -> Result<(AppRandomBranchPlan, SelectableCatalogPlan), PluginSetupPlanError> {
+    decode_edition(
+        bytes,
+        if publisher {
+            Edition::Publisher
+        } else {
+            Edition::Source
+        },
+    )
+}
+
+/// Keeps each selected outer and subscription edition exact before body reads.
+pub(super) enum Edition {
+    /// Requires the original plan-eight process purpose.
+    Source,
+    /// Requires plan nine and schema-one publisher purpose.
+    Publisher,
+    /// Requires plan ten and the separate Quantum-only schema-two purpose.
+    Quantum,
+}
+
+/// Parses the exact requested carrier and its corresponding purpose edition.
+///
+/// # Errors
+/// Refuses mixed editions, malformed framing, mismatched containing identities,
+/// oversized sections or invalid nested plans.
+pub(super) fn decode_edition(
+    bytes: &[u8],
+    edition: Edition,
+) -> Result<(AppRandomBranchPlan, SelectableCatalogPlan), PluginSetupPlanError> {
+    let (magic, version, publisher) = match edition {
+        Edition::Source => (b"CRUCSUP8", 8, false),
+        Edition::Publisher => (b"CRUCSUP9", 9, true),
+        Edition::Quantum => (b"CRUCSU10", 10, true),
+    };
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
     let header = if publisher { 48 } else { HEADER };
     let tail = if publisher {
@@ -48,8 +82,8 @@ pub(super) fn decode_profile(
         });
     }
     if bytes.len() < header
-        || bytes[..8] != *(if publisher { b"CRUCSUP9" } else { b"CRUCSUP8" })
-        || read_u32(bytes, 8)? != if publisher { 9 } else { 8 }
+        || bytes[..8] != *magic
+        || read_u32(bytes, 8)? != version
         || read_u32(bytes, 12)? != header as u32
     {
         return Err(invalid("outer"));
@@ -93,9 +127,16 @@ pub(super) fn decode_profile(
     )?;
 
     if publisher {
-        let subscription =
-            crate::publisher_subscription::PublisherPurpose::decode(&bytes[purpose_end..])
-                .map_err(|_| invalid("publisher purpose"))?;
+        let subscription = match edition {
+            Edition::Quantum => {
+                crate::publisher_subscription::quantum::QuantumPublisherPurpose::decode(
+                    &bytes[purpose_end..],
+                )
+                .map(|purpose| purpose.session)
+            }
+            _ => crate::publisher_subscription::PublisherPurpose::decode(&bytes[purpose_end..]),
+        }
+        .map_err(|_| invalid("publisher purpose"))?;
         super::publisher::validate_binding(&subscription, &bytes[startup_end..purpose_end])?;
     }
 

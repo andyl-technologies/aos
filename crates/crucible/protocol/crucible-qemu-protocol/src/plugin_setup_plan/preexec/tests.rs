@@ -4,6 +4,7 @@ use super::*;
 
 mod family;
 mod publisher;
+mod quantum;
 
 use crate::selectable_catalog_plan::{SelectablePlanContinuation, SelectablePlanLimits};
 

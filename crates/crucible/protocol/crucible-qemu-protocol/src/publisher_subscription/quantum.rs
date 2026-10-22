@@ -24,6 +24,11 @@ use crate::boundary_action::{ACTION_BYTES, ActionObservation};
 mod records;
 pub use records::{QuantumPublisherReturn, QuantumPublisherTerminal};
 
+mod negotiation;
+pub use negotiation::{QuantumPublisherPurpose, QuantumPublisherSetup};
+#[cfg(unix)]
+pub use negotiation::send_quantum_publisher_setup_frame_with_descriptors;
+
 /// Describes an explicitly negotiated schema-two Quantum region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuantumPublisherHeader {
