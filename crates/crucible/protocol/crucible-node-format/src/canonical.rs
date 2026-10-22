@@ -98,6 +98,12 @@ pub fn canonical_json_to_writer(
     write_canonical(value, output, 0)
 }
 
+#[path = "canonical/borrowed_object.rs"]
+mod borrowed_object;
+pub use borrowed_object::{
+    canonical_json_btree_object_to_writer_at_depth, canonical_json_object_to_writer_at_depth,
+};
+
 fn write_canonical(
     value: &Value,
     output: &mut impl std::io::Write,
@@ -139,25 +145,7 @@ fn write_canonical(
             output.write_all(b"]").map_err(serde_json::Error::io)?;
         }
         Value::Object(values) => {
-            if depth >= 64 {
-                return Err(invalid("json_depth", "nesting exceeds 64 containers"));
-            }
-            let ordered: BTreeMap<Vec<u16>, (&str, &Value)> = values
-                .iter()
-                .map(|(key, value)| (key.encode_utf16().collect(), (key.as_str(), value)))
-                .collect();
-            output.write_all(b"{").map_err(serde_json::Error::io)?;
-            for (index, (key, value)) in ordered.values().enumerate() {
-                if index != 0 {
-                    output.write_all(b",").map_err(serde_json::Error::io)?;
-                }
-                output
-                    .write_all(serde_json::to_string(key)?.as_bytes())
-                    .map_err(serde_json::Error::io)?;
-                output.write_all(b":").map_err(serde_json::Error::io)?;
-                write_canonical(value, output, depth + 1)?;
-            }
-            output.write_all(b"}").map_err(serde_json::Error::io)?;
+            canonical_json_object_to_writer_at_depth(values, output, depth)?;
         }
     }
     Ok(())

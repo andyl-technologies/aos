@@ -34,6 +34,9 @@ pub(crate) use retained_exchange::RetainedOriginalNativeHelloExchange;
 mod literal_publication;
 pub(crate) use literal_publication::OriginalNativeHelloPublication;
 
+#[path = "native_hello/canonical_response.rs"]
+mod canonical_response;
+
 const MAXIMUM_HELLO_BYTES: usize = 1024 * 1024;
 
 /// Owns one precharged native Hello attempt, including partial failed traffic.

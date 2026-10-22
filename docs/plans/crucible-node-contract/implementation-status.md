@@ -2195,6 +2195,28 @@ publication custody, complete funding, lease containment on terminal refusal and
 the genuine enclosing producer still need to join this primitive before the
 Native18 route can publish. All full RFC acceptance exits remain open.
 
+## Borrowed canonical Hello response writing
+
+The authoritative JCS object implementation now accepts both original JSON map
+and extension BTreeMap borrows at their actual enclosing container depth. The
+existing Value writer uses that same object implementation. UTF-16 key ordering,
+number formatting, escaping and the 64-container limit remain unchanged. New
+collection-adapter controls join the original counter; no Source limits change.
+
+A closed borrowed Envelope writer emits its exhaustive thirteen-field roster in
+canonical order and lends its body/extension maps directly. Header serializers
+handle only the original typed strings, nullable IDs, unit variants and U64;
+numeric JSON leaves stay in the authoritative JCS writer. No second whole Value
+or request reconstruction supplies the response. Two focused Transport byte
+comparisons pass, and the complete Format suite passes 67 tests with one existing
+ignore, including three new integration controls for both collection types,
+Unicode ordering, depth/array limits and every refused output prefix.
+
+Full qualification is pending. The bounded retained output owner, prospective
+complete construction row, original-root publication/containment transition and
+genuine enclosing Source/Birth funding remain to be connected. This codec grants
+no SDK, Source, policy, Initial/Recipe, ACK or native readiness.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
