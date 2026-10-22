@@ -16,6 +16,7 @@
   autoconf,
   automake,
   libtool,
+  libselinux,
   m4,
   bash,
   gcc-libs,
@@ -127,9 +128,10 @@ in
       xz
       zlib
       zstd
+      libselinux
     ];
-    runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd];
-    propagatedDeps = [util-linux lz4 xz zlib zstd];
+    runtimeDeps = [bash gcc-libs util-linux lz4 xz zlib zstd libselinux];
+    propagatedDeps = [util-linux lz4 xz zlib zstd libselinux];
 
     phases = [
       {
@@ -176,7 +178,7 @@ in
           lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
             # Compression tools are also build inputs. Prefer the declared
             # target libraries over their native pkg-config metadata.
-            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [util-linux lz4 xz zlib zstd]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export PKG_CONFIG_PATH="${lib.makeSearchPath "lib/pkgconfig" [util-linux lz4 xz zlib zstd libselinux]}''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
           ''
           + ''
             ./configure \
@@ -186,6 +188,7 @@ in
               --enable-lzma \
               --with-zlib=yes \
               --with-libzstd=yes \
+              --with-selinux \
               --enable-multithreading
           '';
       }
@@ -242,6 +245,24 @@ in
           cmp \
             "$TMPDIR/erofs-smoke/root/payload" \
             "$TMPDIR/erofs-smoke/extracted/payload"
+
+          # Native /etc generations need labels for their runtime mount path,
+          # independently of the temporary source-tree location and host MAC.
+          printf '/etc(/.*)? system_u:object_r:etc_t\n/etc/payload -- system_u:object_r:systemd_unit_t\n' \
+            > "$TMPDIR/erofs-smoke/file-contexts"
+          chmod 0444 "$TMPDIR/erofs-smoke/root/payload"
+          env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+            --mount-point=/etc \
+            --file-contexts "$TMPDIR/erofs-smoke/file-contexts" \
+            "$TMPDIR/erofs-smoke/labeled.erofs" \
+            "$TMPDIR/erofs-smoke/root"
+          context_hex=$(printf '%s' 'system_u:object_r:systemd_unit_t' | od -An -tx1 | tr -d ' \n')
+          printf 'EROFS_XATTR_V1\tmode=0100444\tstatus=present\tvalue=%s\n' "$context_hex" \
+            > "$TMPDIR/erofs-smoke/expected-label"
+          "$out/bin/dump.erofs" --path=/payload --get-xattr=security.selinux \
+            "$TMPDIR/erofs-smoke/labeled.erofs" \
+            | grep '^EROFS_XATTR_V1' > "$TMPDIR/erofs-smoke/observed-label"
+          cmp "$TMPDIR/erofs-smoke/expected-label" "$TMPDIR/erofs-smoke/observed-label"
 
           # This incompressible PNG reaches compressed-to-raw fallback. Check
           # the published bytes, since structural fsck accepts a shifted tail.
