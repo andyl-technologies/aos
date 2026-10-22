@@ -31,6 +31,7 @@ use crate::{
 
 mod api;
 mod app_random;
+mod diagnostic;
 mod error;
 mod guest_introspection;
 mod location;
@@ -51,7 +52,6 @@ use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_qemu_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 use crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan;
 pub use error::LiveWhiteboxError;
-use error::write_stderr;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
@@ -754,9 +754,9 @@ impl LiveWhiteboxState {
     }
 
     fn fail_loud(&self, error: &LiveWhiteboxError) {
-        let message = format!("crucible-qemu-plugin: live white-box callback failed: {error}\n");
-        let _written = write_stderr(message.as_bytes());
-        (self.request_shutdown)(1);
+        let _written = diagnostic::report_failure(error, diagnostic::write_stderr, || {
+            (self.request_shutdown)(1);
+        });
     }
 }
 

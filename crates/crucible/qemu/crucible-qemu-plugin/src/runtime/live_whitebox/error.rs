@@ -2,25 +2,6 @@
 
 use thiserror::Error;
 
-pub(super) fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
-    // SAFETY: `bytes` is a valid readable slice for the duration of the call.
-    // The fixed descriptor is stderr, and no ownership is transferred.
-    let written = unsafe { libc::write(libc::STDERR_FILENO, bytes.as_ptr().cast(), bytes.len()) };
-    if written < 0 {
-        Err(std::io::Error::last_os_error())
-    } else if written as usize != bytes.len() {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::WriteZero,
-            format!(
-                "short live white-box diagnostic write: wrote {written} of {} bytes",
-                bytes.len()
-            ),
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 /// Reports a failure at the live QEMU white-box ABI boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveWhiteboxError {
