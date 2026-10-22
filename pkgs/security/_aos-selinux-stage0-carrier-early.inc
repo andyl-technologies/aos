@@ -151,6 +151,7 @@ static dev_t activate_carrier_mapper(const char *data_loop, const char *hash_loo
     int parameter_size;
     int descriptor;
     dev_t device;
+    const dev_t expected_device = makedev(252, 21);
 
     ensure_directory("/dev/mapper", 0755);
     ensure_carrier_device_node("/dev/mapper/control", S_IFCHR, makedev(10, 236));
@@ -159,9 +160,15 @@ static dev_t activate_carrier_mapper(const char *data_loop, const char *hash_loo
         fail_closed("open Mount carrier mapper control: %s", strerror(errno));
     }
     initialize_carrier_dm_request(control, sizeof(*control));
-    control->flags = DM_READONLY_FLAG;
+    // The signed kernel command line reserves the major. Requesting the minor
+    // atomically rejects a collision; never adopt an existing mapper by name.
+    control->flags = DM_READONLY_FLAG | DM_PERSISTENT_DEV_FLAG;
+    control->dev = expected_device;
     if (ioctl(descriptor, DM_DEV_CREATE, control) < 0) {
         fail_closed("create read-only Mount carrier mapper: %s", strerror(errno));
+    }
+    if (control->dev != (uint64_t)expected_device) {
+        fail_closed("Mount carrier mapper differs from reserved device 252:21");
     }
 
     initialize_carrier_dm_request(control, sizeof(request));
@@ -200,7 +207,7 @@ static dev_t activate_carrier_mapper(const char *data_loop, const char *hash_loo
     if (ioctl(descriptor, DM_DEV_STATUS, control) < 0 ||
         (control->flags & (DM_ACTIVE_PRESENT_FLAG | DM_READONLY_FLAG)) !=
             (DM_ACTIVE_PRESENT_FLAG | DM_READONLY_FLAG) ||
-        control->target_count != 1) {
+        control->target_count != 1 || control->dev != (uint64_t)expected_device) {
         fail_closed("Mount carrier mapper did not become active and read-only");
     }
     device = control->dev;

@@ -10046,6 +10046,25 @@ root-handoff fixture already does. The production service contracts and
 permissions are unchanged. The corrected installed QEMU run remains pending;
 neither component receipt admits `AOSMMCAP1` or public Create.
 
+The selected carrier input now appends the signed `dm_mod.major=252`
+parameter. Its module rejects a removed parameter, a conflicting value and
+the kernel's equivalent hyphenated spelling. The static first launcher
+atomically requests mapper minor 21 with `DM_PERSISTENT_DEV_FLAG`, verifies
+the returned device is exactly `252:21` before loading a table, and repeats
+that identity comparison after activation. An occupied minor or wrong major
+fails the boot; no existing mapper is adopted. The fixed dm-verity table,
+signed root hash, actual read-only mount, file seals and executable checks
+remain independently required.
+
+The expanded source-provider activation contract passes at
+`/nix/store/nfyb2vr2kkkz0ijlai33dax87h38rpfy-sandbox-source-provider-activation-contract-0`,
+including the normal image's absent-carrier case and all three parameter
+rejections. Core evaluation passes. The signed-initrd QEMU test now requires
+the exact raw device and inode pairs of both the running launcher and Mount
+daemon to survive a full reboot, in addition to service restart and PID 1
+reexec. The selected stage0 build and that updated installed run remain
+pending. These source checks do not qualify production startup capture.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state

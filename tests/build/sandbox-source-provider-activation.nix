@@ -32,15 +32,16 @@
       type = lib.types.nullOr lib.types.package;
       default = null;
     };
-    options.boot.initrd.systemd.mountExecutableCarrier = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
+    options.aos.boot.kernelParams = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
     };
   };
   mount = lib.evalModules {
     specialArgs = {inherit pkgs;};
     modules = [
       systemdOptions
+      ../../modules/systemd/initrd.nix
       ../../modules/sandbox/mount-broker.nix
       ../../modules/sandbox/source-provider.nix
       {aos.sandbox.mountBroker.enable = true;}
@@ -96,11 +97,28 @@
   wrongDaemonConfiguration = carrierConfiguration.extendModules {
     modules = [{aos.sandbox.mountBroker.package = lib.mkForce pkgs.coreutils;}];
   };
+  wrongMapperMajor = carrierConfiguration.extendModules {
+    modules = [{aos.boot.kernelParams = ["dm_mod.major=253"];}];
+  };
+  aliasedMapperMajor = carrierConfiguration.extendModules {
+    modules = [{aos.boot.kernelParams = ["dm-mod.major=253"];}];
+  };
+  missingMapperMajor = carrierConfiguration.extendModules {
+    modules = [{aos.boot.kernelParams = lib.mkForce [];}];
+  };
+  mapperAssertion = check:
+    lib.hasPrefix "The signed Mount executable carrier reserves device-mapper major 252;" check.message;
   connectorAssertion = check:
     check.message == "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
   carrierAssertion = check:
     check.message == "aos.sandbox.mountBroker.useExecutableCarrier requires a matching signed first-launcher stage0 carrier whose daemon is mountBroker.package";
 in
+  assert mount.config.aos.boot.kernelParams == [];
+  assert carrierConfiguration.config.aos.boot.kernelParams == ["dm_mod.major=252"];
+  assert lib.all (check: check.assertion) (lib.filter mapperAssertion carrierConfiguration.config.assertions);
+  assert lib.any (check: !check.assertion) (lib.filter mapperAssertion wrongMapperMajor.config.assertions);
+  assert lib.any (check: !check.assertion) (lib.filter mapperAssertion aliasedMapperMajor.config.assertions);
+  assert lib.any (check: !check.assertion) (lib.filter mapperAssertion missingMapperMajor.config.assertions);
   assert !(lib.elem "aos-source-providerd.socket" inactive.requires);
   assert !(lib.elem "aos-source-providerd.socket" inactive.after);
   assert !lib.hasInfix " --source-provider" inactive.serviceConfig.ExecStart;

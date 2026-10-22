@@ -79,6 +79,7 @@
       && builtins.elem "selinux=1" cfg.aos.boot.kernelParams
       && builtins.elem "enforcing=1" cfg.aos.boot.kernelParams
       && builtins.elem "aos.selinux.root_handoff=1" cfg.aos.boot.kernelParams
+      && builtins.elem "dm_mod.major=252" cfg.aos.boot.kernelParams
     then system
     else throw "Mount first-launcher fixture lost its stage0, signed carrier, bounded image budgets, or enforcing kernel parameters";
 in {
@@ -103,6 +104,7 @@ in {
   };
 
   testScript = ''
+    import os
     import time
     from pathlib import Path
 
@@ -193,6 +195,7 @@ in {
         assert "systemd=${carrierRoot}/launcher" in marker, marker
 
         launcher = retained.succeed("stat -c '%d:%i' ${carrierRoot}/launcher").strip()
+        assert launcher.split(":", 1)[0] == str(os.makedev(252, 21)), launcher
         pid_one = retained.succeed("stat -Lc '%d:%i' /proc/1/exe").strip()
         assert launcher == pid_one, (launcher, pid_one)
         retained.succeed("test $(${pkgs.attr}/bin/getfattr --only-values -n security.selinux ${carrierRoot}) = system_u:object_r:root_t")
@@ -231,6 +234,10 @@ in {
     assert first_boot_artifact == second_boot_artifact, (
         first_boot_artifact, second_boot_artifact
     )
+    assert first_boot_device_inode == second_boot_device_inode, (
+        first_boot_device_inode, second_boot_device_inode
+    )
+    assert first_mount_inode == second_mount_inode, (first_mount_inode, second_mount_inode)
 
     deadline = time.monotonic() + 180
     serial_path = Path(wrongHash.serial_log_path)
