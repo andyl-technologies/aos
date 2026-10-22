@@ -54,7 +54,7 @@ pub use object::ObjectPresentation;
 #[cfg(all(feature = "std", unix))]
 pub use overlay::PublishedOverlayLayer;
 pub use prepared::PreparedTree;
-pub use root_nodes::{RootNodeLimits, RootNodes};
+pub use root_nodes::{PreparedRootRead, RootNodeLimits, RootNodes};
 pub use validator::MetadataValidator;
 
 use terrane_format::{chunking::ChunkProfile, identity::Digest, refs::RefRecord};

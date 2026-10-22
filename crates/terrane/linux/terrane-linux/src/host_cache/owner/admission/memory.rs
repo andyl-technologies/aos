@@ -6,7 +6,7 @@
 //! explicit errors. Arc clones do not duplicate their encoded payloads.
 
 use super::{
-    super::NativeCacheOwnerConfig,
+    super::{NativeCacheOwnerConfig, SurfaceIndexPolicy},
     backing::AdmissionJob,
     io::{DirectoryProgress, PendingFile},
 };
@@ -27,7 +27,7 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
     let total = check_parts(
         config.state.records,
         config.queued_commands,
-        config.reads.max_allocation_bytes,
+        input_window(config.reads.max_allocation_bytes, config.surface_index)?,
         config.location.chunk_profile().maximum(),
         config.state.bytes,
     )?;
@@ -103,6 +103,21 @@ pub(super) fn check(config: &NativeCacheOwnerConfig) -> io::Result<()> {
         .ok_or_else(overflow)?;
     source_slots.checked_mul(4).ok_or_else(overflow)?;
     Ok(())
+}
+
+/// Includes a scoped domain beside Node input and retained compiled index bytes.
+fn input_window(read: usize, surface: Option<SurfaceIndexPolicy>) -> io::Result<usize> {
+    let Some(surface) = surface else {
+        return Ok(read);
+    };
+    // Reuse the conservative schema/collection expansion envelope for the larger
+    // surface window. A queued root owns Nodes and a bounded domain together;
+    // completed jobs retain compiled bytes instead of that input inventory.
+    surface
+        .max_node_bytes
+        .checked_add(read)
+        .map(|bytes| bytes.max(surface.max_index_bytes))
+        .ok_or_else(overflow)
 }
 
 fn check_parts(
@@ -258,10 +273,10 @@ fn overflow() -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::check_parts;
+    use super::{SurfaceIndexPolicy, check_parts, input_window};
 
     #[test]
-    fn simultaneous_active_copies_and_state_headers_are_checked() {
+    fn simultaneous_active_copies_and_state_headers_are_checked() -> std::io::Result<()> {
         assert!(check_parts(64, 4, 4096, 8192, 4096).is_ok());
         // The old input-only product fits; active schema expansion does not.
         let window = usize::MAX / 16;
@@ -269,5 +284,24 @@ mod tests {
         assert!(check_parts(1, 1, window, 1, 1).is_err());
         assert!(check_parts(usize::MAX, 1, 1, 1, 1).is_err());
         assert!(check_parts(1, 1, 1, 1, usize::MAX / 4).is_err());
+
+        let mut surface = SurfaceIndexPolicy {
+            max_entries: 16,
+            max_node_bytes: 65536,
+            max_index_bytes: 131072,
+            capacity_bytes: 262144,
+            future_hold_bytes: 262144,
+        };
+        assert_eq!(input_window(4096, None)?, 4096);
+        let window = input_window(4096, Some(surface))?;
+        assert!(check_parts(64, 4, window, 8192, 4096).is_ok());
+
+        surface.max_node_bytes = usize::MAX;
+        assert!(input_window(4096, Some(surface)).is_err());
+        surface.max_node_bytes = 65536;
+        surface.max_index_bytes = usize::MAX / 16;
+        let window = input_window(4096, Some(surface))?;
+        assert!(check_parts(1, 1, window, 1, 1).is_err());
+        Ok(())
     }
 }

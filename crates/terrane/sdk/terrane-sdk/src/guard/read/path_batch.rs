@@ -24,6 +24,15 @@ pub(crate) struct SnapshotPathHead {
 }
 
 impl<'a, S: Store, C: Clock> SnapshotPathBatch<'a, S, C> {
+    /// Copies the exact comparison record for a later ordinary closing check.
+    ///
+    /// This grants no authority and does not replace this batch's finish.
+    pub(crate) fn retained_head(&self) -> SnapshotPathHead {
+        SnapshotPathHead {
+            record: self.head.record.clone(),
+        }
+    }
+
     /// Captures the actual complete policy head after a fresh scoped root check.
     pub(crate) async fn begin(
         guard: &'a Guard<S, C>,

@@ -9,7 +9,7 @@ use terrane_format::{
 };
 
 use crate::{
-    guard::{AuthorizedSnapshot, SnapshotPathBatch},
+    guard::{AuthorizedSnapshot, Guard, SnapshotPathBatch, SnapshotPathHead},
     store::{Clock, LocalFs, Store},
 };
 
@@ -65,6 +65,54 @@ impl RootNodes {
     }
 }
 
+/// Retains a full-root Read across private external index preparation.
+///
+/// Construction discloses metadata only after every expanded path passes
+/// ordinary Read under one complete live policy reference. A trusted realizer
+/// may prepare native resources, then must call [`Self::finish`] before
+/// disclosing them. Immutable Node bytes supply no enduring authorization.
+#[must_use = "Prepared native resources must remain private until finish succeeds."]
+pub struct PreparedRootRead<'repository, S, C> {
+    guard: &'repository Guard<S, C>,
+    snapshot: AuthorizedSnapshot,
+    head: SnapshotPathHead,
+    paths: Vec<Vec<u8>>,
+    metadata: RootNodes,
+}
+
+impl<S: Store, C: Clock> PreparedRootRead<'_, S, C> {
+    /// Borrows the complete canonical metadata disclosed by the initial Read.
+    pub fn metadata(&self) -> &RootNodes {
+        &self.metadata
+    }
+
+    /// Borrows the effective physical domain checked for the complete root.
+    pub fn storage_domain(&self) -> &str {
+        &self.snapshot.storage_domain
+    }
+
+    /// Rechecks every expanded path before private prepared resources are disclosed.
+    ///
+    /// Each fresh check must observe the same complete policy reference as the
+    /// original preparation. Selecting a historical commit does not exempt it
+    /// from current policy. Success grants no lease or enduring Read.
+    ///
+    /// # Errors
+    /// Refuses changed policy references, revoked or expired credentials,
+    /// unavailable current authority, domain changes or lost descendant trust.
+    pub async fn finish(self) -> Result<(), Error> {
+        for path in &self.paths {
+            self.head
+                .authorize_path(self.guard, &self.snapshot, path)
+                .await?;
+        }
+        self.head
+            .authorize_path(self.guard, &self.snapshot, b"/")
+            .await?;
+        Ok(())
+    }
+}
+
 impl<S, C, F> Repository<S, C, F>
 where
     S: Store + Sync,
@@ -98,6 +146,30 @@ where
         surface: &str,
         limits: RootNodeLimits,
     ) -> Result<RootNodes, Error> {
+        Ok(self
+            .prepare_root_read(target, token, surface, limits)
+            .await?
+            .metadata)
+    }
+
+    /// Prepares complete root metadata for an externally realized index.
+    ///
+    /// This performs the same bounded full-root Read as [`Self::read_root_nodes`]
+    /// without fetching content bodies. The returned value retains the exact
+    /// private authorization context for a fresh closing check after native
+    /// preparation. A denied descendant refuses the entire preparation.
+    ///
+    /// # Errors
+    /// Preserves full-root metadata limits, signed history, provenance, domain
+    /// and current Read failures. Refuses any complete policy-head change during
+    /// preparation; no partially authorized metadata is returned.
+    pub async fn prepare_root_read(
+        &self,
+        target: &ViewTarget,
+        token: &[u8],
+        surface: &str,
+        limits: RootNodeLimits,
+    ) -> Result<PreparedRootRead<'_, S, C>, Error> {
         if limits.max_entries == 0 || limits.max_metadata_bytes == 0 || limits.max_path_bytes == 0 {
             return Err(tree_format::Error::Limit.into());
         }
@@ -129,8 +201,15 @@ where
         };
         // Allocation and the empty-root case still precede a fresh authority
         // check. Retained immutable bytes do not keep a former Read alive.
+        let head = authorization.retained_head();
         authorization.finish().await?;
-        Ok(result)
+        Ok(PreparedRootRead {
+            guard,
+            snapshot,
+            head,
+            paths,
+            metadata: result,
+        })
     }
 }
 

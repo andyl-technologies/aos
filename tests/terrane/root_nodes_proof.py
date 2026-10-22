@@ -10,6 +10,8 @@ from sdk_contract_proof import captured, require, run_sdk_contract
 
 
 CASES = [
+    "root_preparation_and_closing_check_request_no_content_bodies",
+    "root_closing_refuses_a_policy_advance_and_fresh_historical_preparation_succeeds",
     "canonical_nodes_preserve_the_signed_target_without_any_content_read",
     "reopened_and_pinned_reads_preserve_the_selected_immutable_root",
     "exact_inventory_entry_and_path_limits_pass_and_each_underflow_refuses",

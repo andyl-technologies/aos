@@ -54,6 +54,65 @@ fn attenuated(
 }
 
 #[tokio::test]
+async fn root_preparation_and_closing_check_request_no_content_bodies() -> TestResult {
+    let fixture = Fixture::new().await?;
+    let commit = fixture.commit_bytes(OLD).await?;
+    let bodies = Arc::new(AtomicUsize::new(0));
+    let repository = fixture
+        .repository
+        .with_read_driver(|original| MetadataOnly {
+            original: original.clone(),
+            bodies: Arc::clone(&bodies),
+        });
+
+    let prepared = repository
+        .prepare_root_read(&target()?, fixture.authority.token(), "sdk", limits())
+        .await?;
+    assert_eq!(prepared.metadata().commit(), commit);
+    assert!(
+        prepared
+            .metadata()
+            .nodes()
+            .contains_key(&prepared.metadata().root())
+    );
+    assert!(!prepared.storage_domain().is_empty());
+    prepared.finish().await?;
+
+    assert_eq!(bodies.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn root_closing_refuses_a_policy_advance_and_fresh_historical_preparation_succeeds()
+-> TestResult {
+    let fixture = Fixture::new().await?;
+    let first = fixture.commit_bytes(OLD).await?;
+    let prepared = fixture
+        .repository
+        .prepare_root_read(&target()?, fixture.authority.token(), "sdk", limits())
+        .await?;
+    let root = prepared.metadata().root();
+
+    fixture.commit_bytes(NEW).await?;
+    assert!(matches!(prepared.finish().await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. })));
+
+    let historical = fixture
+        .repository
+        .prepare_root_read(
+            &ViewTarget::Commit(first),
+            fixture.authority.token(),
+            "sdk",
+            limits(),
+        )
+        .await?;
+    assert_eq!(historical.metadata().commit(), first);
+    assert_eq!(historical.metadata().root(), root);
+    historical.finish().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn canonical_nodes_preserve_the_signed_target_without_any_content_read() -> TestResult {
     let fixture = Fixture::new().await?;
     let commit = fixture.commit_bytes(OLD).await?;

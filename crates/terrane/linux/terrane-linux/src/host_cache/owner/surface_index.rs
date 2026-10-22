@@ -13,6 +13,7 @@
 
 pub(super) mod eviction;
 pub(super) mod recovery;
+mod scoped;
 
 use super::{
     consumer::state,
@@ -120,6 +121,43 @@ impl NativeMetadataOwner {
         root: Digest,
         nodes: BTreeMap<Digest, Vec<u8>>,
     ) -> io::Result<NativeSurfaceIndex> {
+        self.submit_surface_index(root, nodes, None).await
+    }
+
+    async fn submit_surface_index(
+        &self,
+        root: Digest,
+        nodes: BTreeMap<Digest, Vec<u8>>,
+        domain: Option<String>,
+    ) -> io::Result<NativeSurfaceIndex> {
+        self.check_surface_input(&nodes)?;
+        if let Some(domain) = &domain {
+            self.admission_bounds.check(domain.len(), 0)?;
+        }
+        let (response, receive) = oneshot::channel();
+        self.commands
+            .as_ref()
+            .ok_or_else(|| invalid("native owner stopped"))?
+            .try_send(Command::CacheSurfaceIndex {
+                root,
+                nodes,
+                domain,
+                response,
+            })
+            .map_err(|error| match error {
+                mpsc::TrySendError::Full(_) => {
+                    io::Error::new(io::ErrorKind::WouldBlock, "native owner queue full")
+                }
+                mpsc::TrySendError::Disconnected(_) => {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "native owner stopped")
+                }
+            })?;
+        receive
+            .await
+            .map_err(|_| invalid("native owner stopped before surface completion"))?
+    }
+
+    fn check_surface_input(&self, nodes: &BTreeMap<Digest, Vec<u8>>) -> io::Result<()> {
         let policy = self.surface_policy.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -138,26 +176,7 @@ impl NativeMetadataOwner {
                 "surface node input exceeds configured bound",
             ));
         }
-        let (response, receive) = oneshot::channel();
-        self.commands
-            .as_ref()
-            .ok_or_else(|| invalid("native owner stopped"))?
-            .try_send(Command::CacheSurfaceIndex {
-                root,
-                nodes,
-                response,
-            })
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => {
-                    io::Error::new(io::ErrorKind::WouldBlock, "native owner queue full")
-                }
-                mpsc::TrySendError::Disconnected(_) => {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "native owner stopped")
-                }
-            })?;
-        receive
-            .await
-            .map_err(|_| invalid("native owner stopped before surface completion"))?
+        Ok(())
     }
 }
 
@@ -166,6 +185,7 @@ pub(super) async fn admit(
     executor: &NativeOwnerExecutor,
     root: Digest,
     nodes: BTreeMap<Digest, Vec<u8>>,
+    domain: Option<&str>,
 ) -> io::Result<NativeSurfaceIndex> {
     let running = executor.admission_context()?;
     let custody = Arc::clone(executor.custody());
@@ -174,6 +194,12 @@ pub(super) async fn admit(
             .lock()
             .map_err(|_| invalid("surface custody poisoned"))?;
         state::check_ready(executor, &owner)?;
+        if domain.is_some_and(|domain| domain != owner.preparation.config.location.domain()) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "surface root belongs to another physical domain",
+            ));
+        }
         let policy = owner
             .preparation
             .config

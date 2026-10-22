@@ -89,6 +89,7 @@ pub(super) enum Command {
     CacheSurfaceIndex {
         root: terrane_format::identity::Digest,
         nodes: BTreeMap<terrane_format::identity::Digest, Vec<u8>>,
+        domain: Option<String>,
         response: oneshot::Sender<io::Result<super::NativeSurfaceIndex>>,
     },
     /// Selects and retires original cached allocations using measured project pressure.
@@ -395,10 +396,15 @@ impl NativeMetadataOwner {
                         Command::CacheSurfaceIndex {
                             root,
                             nodes,
+                            domain,
                             response,
                         } => {
-                            let result = runtime
-                                .block_on(super::surface_index::admit(&executor, root, nodes));
+                            let result = runtime.block_on(super::surface_index::admit(
+                                &executor,
+                                root,
+                                nodes,
+                                domain.as_deref(),
+                            ));
                             let _ = response.send(result);
                         }
                         Command::EvictCache { incoming, response } => {

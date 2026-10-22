@@ -10,6 +10,12 @@ mod config;
 #[path = "surface_index_owner_fixture/eviction.rs"]
 mod eviction;
 
+#[path = "host_cache_fixture/repository_fixture.rs"]
+mod repository_fixture;
+
+#[path = "surface_index_owner_fixture/scoped.rs"]
+mod scoped;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -277,6 +283,7 @@ fn main() -> Result<()> {
         "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge"
     );
     eviction::verify(&runtime, &restarted, &inputs, replacement)?;
+    runtime.block_on(scoped::verify(&restarted, &inputs))?;
     require_empty_capabilities()?;
     Ok(())
 }

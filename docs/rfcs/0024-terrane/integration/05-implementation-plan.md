@@ -13441,3 +13441,71 @@ Strict all-feature/all-target Clippy and Rust formatting pass locally. The
 first local compile exposed an overly narrow helper visibility; it is corrected
 without weakening checks. Frozen native runtime and required application-target
 qualification remain pending. No task acceptance changes.
+
+Frozen native surface-index qualification passes at `fa870aa997` in 667.20
+seconds with all 9,328 tracked files unchanged. The real ext4 VM executes
+admission after acknowledged Resume, cancelled-waiter custody, kernel
+immutability, unchanged warm reuse, exact canonical compilation, cold retirement
+with a still-readable mapping, distinct replacement allocation, exact final
+unmap quota release, cap-failure recovery and malformed-namespace refusal.
+Independent review matches all 8,002 immutable source files, 5,299 original
+image inputs and 5,283 surface inputs, the four original native Cargo ELF
+artifacts and the actual fifth surface-owner ELF, installed supervisor and every
+required guest witness. The base image's 128-case library inventory is verified
+as an artifact; this VM does not execute those 128 cases. Exposure pins, mounted
+workers and milestone acceptance remain unqualified.
+
+Required application-target compilation at `bc4ca6ebbd` passes in 1,519.90
+seconds with all 9,325 tracked files unchanged. Independent review matches all
+7,999 immutable source files and 184 compiler records across 59 packages.
+This compilation-only result does not qualify the later recovery or eviction
+checkpoints.
+
+Frozen warm surface-retirement qualification passes at `ed957e3933` in 667.89
+seconds with all 9,330 tracked files unchanged. The actual native VM adds
+receipt-and-clone refusal without policy mutation, checked warm unlink, retained
+mapped reads, exact final-unmap block and inode release, and fresh canonical
+admission. Independent review matches all 8,004 immutable source files,
+5,301 base inputs, 5,285 surface inputs and the five actual Cargo ELF artifacts.
+The original admission, cold recovery, cap and malformed-name controls also
+pass. This still does not supply an automatic eviction policy, durable exposure
+lease, worker transport or mounted surface acceptance.
+
+Full-root preparation now retains the actual private SDK snapshot and complete
+policy reference across external native work. Every expanded path passes the
+initial ordinary Read before its metadata is returned and must pass again when
+the same preparation finishes. Ordinary metadata reads preserve their original
+batch checks. The native bridge accepts only this original SDK preparation,
+checks immutable chunk geometry and the selected physical domain before cache
+effects, and closes the full-root Read before returning a native admission
+receipt. Failure leaves physical cache work with its original funded owner;
+no descriptor, lease or enduring Read is granted.
+
+Queued Node input, its independently bounded domain and retained compiled bytes
+now enter the owner's checked simultaneous-storage envelope. The existing
+overlap test also refuses overflowing surface windows. The actual native
+fixture uses genuine signed repositories to check admission, a later real policy
+advance, foreign-domain refusal without state effects and explicit cleanup.
+It shares the existing scoped-file repository constructor without changing its
+publication behavior. The first local all-target check caught Cargo treating a
+new root-level helper as an executable example; the helper moved under the
+existing fixture directory, without a dummy entry point or target exclusion.
+The dedicated root owning proof now requires both new preparation cases.
+
+A local SDK `--all-features` attempt is not a valid supported feature selection:
+CRATE-7/8 deliberately reject `wasm` combined with `send` or `tokio`. The unchanged
+`ed957e3933` baseline also rejects that command, including its conflicting wasm
+clock signature. Native Tokio, portable std and wasm qualification use their
+separate feature selections; no all-feature SDK pass is claimed.
+
+Local verification of the signed-root bridge passes all nine root metadata
+cases, the extended simultaneous-storage case, strict native SDK all-target
+Clippy, strict all-feature Linux all-target Clippy and portable std compilation.
+The separate local wasm attempt stops because the Cargo shell does not provide
+`clang`; no wasm result is claimed from it. Frozen qualification must use the
+existing owning wasm derivation, which supplies AOS-built LLVM explicitly.
+Source comparison confirms the extracted signed repository constructor and
+publication bodies are unchanged. Python syntax and the complete native
+source-declaration inventory pass. Native signed-root VM execution, the owning
+root proof and required application-target compilation remain pending for this
+increment; no exposure or trunk task is closed.
