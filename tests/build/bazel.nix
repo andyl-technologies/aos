@@ -5,7 +5,7 @@
 }: let
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/tests/fixture"];
+    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
   };
 in
   rec {
@@ -51,6 +51,23 @@ in
       inherit workspace;
       targets = ["//tools/bazel/tests/fixture:rust_test"];
     };
+    runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
+      ${pkgs.python3}/bin/python3 - ${unit}/evidence/tests <<'PY'
+      import json
+      from pathlib import Path
+      import sys
+      import xml.etree.ElementTree as ET
+
+      root = Path(sys.argv[1])
+      results = json.loads((root / "index.json").read_text())["results"]
+      assert len(results) == 1 and results[0]["status"] == "PASSED", results
+      cases = ET.parse(root / results[0]["outputs"]["test.xml"]).findall("testcase")
+      assert len(cases) == 3, [case.attrib for case in cases]
+      assert not any(case.find("failure") is not None for case in cases)
+      PY
+      mkdir -p "$out"
+      cp -r ${unit}/evidence/tests "$out/tests"
+    '';
     policy =
       pkgs.runCommand "aos-bazel-policy-checks" {
         buildDeps = [pkgs.python3];
@@ -64,12 +81,15 @@ in
             || pkgs.lib.hasSuffix ".py" (baseNameOf path);
         };
       } ''
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/metadata/test_policy.py} \
+          --oracle ${../../crates/.config/nextest.toml} \
+          --output ${../../tools/bazel/testing/policy.json} --check
         PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 -m unittest discover \
           -s "$src/tests" -p 'test_*.py'
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime unit policy source-selection precision-parity];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

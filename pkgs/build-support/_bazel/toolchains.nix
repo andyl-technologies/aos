@@ -54,7 +54,7 @@ in
       sharedBuildCache = false;
       buildDeps = [pkgs.jq];
       outputChecks.out = {};
-      exportReferencesGraph.compilers = [rust cc gcc binutils glibc.dev gccRuntime pkgs.bash];
+      exportReferencesGraph.compilers = [rust cc gcc binutils glibc.dev gccRuntime pkgs.bash pkgs.python3];
       dontStrip = true;
       dontPatchELF = true;
       dontNukeRefs = true;
@@ -69,11 +69,19 @@ in
             ln -s ${rust}/lib "$out/lib"
             ln -s ${cc}/bin/cc "$out/bin/cc"
             ln -s ${binutils}/bin/ar "$out/bin/ar"
+            ln -s ${pkgs.python3}/bin/python3 "$out/bin/python3"
+            ln -s ${pkgs.bash}/bin/bash "$out/bin/bash"
             ln -s ${gcc} "$out/gcc"
             ln -s ${binutils} "$out/binutils"
             ln -s ${glibc} "$out/sysroot"
             ln -s ${glibc.dev} "$out/sysroot-dev"
             ln -s ${gccRuntime} "$out/gcc-runtime"
+            cat > "$out/paths.bzl" <<'TOOLS'
+            AOS_TOOLS = struct(
+                bash = "${pkgs.bash}/bin/bash",
+                python = "${pkgs.python3}/bin/python3",
+            )
+            TOOLS
             jq -cS --arg identity ${lib.escapeShellArg identity} \
               '{schema: 1, identity: $identity, closure: [.compilers[] | {path, narHash}] | sort_by(.path)}' \
               "$NIX_ATTRS_JSON_FILE" > "$out/closure.json"

@@ -4,6 +4,11 @@ load("@rules_rust//rust:toolchain.bzl", "rust_stdlib_filegroup", "rust_toolchain
 
 package(default_visibility = ["//visibility:public"])
 
+exports_files(["paths.bzl", "closure.json"])
+
+filegroup(name = "python", srcs = ["bin/python3"])
+filegroup(name = "bash", srcs = ["bin/bash"])
+
 # The manifest fingerprints the realized Nix reference closure, including
 # support libraries reached through absolute immutable store references.
 filegroup(

@@ -46,11 +46,10 @@ lock covering setup and execution per output base. Only the disk action cache
 is shared across independent builds. Release mode uses a temporary output base
 and requests no shared cache.
 
-Production consumers still use Cargo. These fixtures use conservative source
-directory selections and ordinary libtest; they do not establish production
-feature parity, cross-platform support, the final test-runner contract, or
-completion of the RFC. Cross-derivation cache and invalidation evidence must
-pass before production cutover.
+Production consumers still use Cargo. These fixtures do not establish
+production feature parity, cross-platform support, editor integration, or
+completion of the RFC. The full cache invalidation/concurrency matrix and
+family-specific performance budgets remain required before production cutover.
 
 ## Local cache evidence
 
@@ -122,6 +121,36 @@ selection. `source-selection` checks documentation exclusion, new-file
 inclusion, and stale-graph rejection without evaluation-time builds. The
 fixture inventory is an infrastructure contract; production families still
 need their own selected configurations and parity checks.
+
+## Isolated Rust tests
+
+`rules/test.bzl` compiles ordinary `rules_rust` libtest artifacts and runs each
+selected case in a fresh process through `testing/runner.py`. Compilation and
+execution use AOS tools; the runner never invokes Cargo. Test runfiles and the
+declared Rust test environment are retained, and ambient environment inheritance
+is rejected. Interpreter files and their Nix closure identity are declared test
+inputs.
+
+`testing/policy.json` preserves the current nextest oracle's timeout periods,
+termination grace, slow-case overrides, and exclusive cases. Its update tool
+rejects unsupported filter or scheduling changes. The policy check compares it
+with `crates/.config/nextest.toml` during migration; ordinary test actions consume
+only the JSON policy. Regenerate explicitly with:
+
+```sh
+python3 tools/bazel/metadata/test_policy.py \
+  --oracle crates/.config/nextest.toml --output tools/bazel/testing/policy.json
+```
+
+The runner supports exact/substring selection, ignored tests, stable Bazel
+shards, bounded concurrency, exclusive execution, cancellation, and process-group
+cleanup. Zero matches fail. Failures, crashes, and timeouts remain failures;
+JUnit records each invocation, and Nix retains the test log/XML as evidence.
+Policy tests exercise these cases, including forced termination of a test that
+ignores SIGTERM. The real Rust fixture includes two cases which fail when they
+share a process, plus an ignored failure that must remain unselected by default.
+Doctests, platform/resource checks, and family-specific integration inventories
+remain separate migration obligations.
 
 ## Migration oracle
 
