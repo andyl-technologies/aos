@@ -2019,6 +2019,8 @@ identities, private token, complete implementation and launch receipt must match
 the same launch. Contract selection requires the original result/feature objects,
 exact native roster, empty initial schema policy and complete binding guarantees.
 The enclosing root still owes its complete original input guards and funding.
+These field loans do not establish enclosing Source/Birth provenance; the
+genuine native producer must supply that grant independently of launch claims.
 
 Callback state is spent before fallible work. Authentication precedes contract
 selection; failures, repeats, resumption and replacement fencing refuse. The
@@ -2031,7 +2033,25 @@ spent retries, foreign process/thread, a substituted socket, changed/expired cut
 and a different full controller image reference. Original census is unchanged,
 all banks and response remain retained, and SDK authority stays absent. All 101
 bootstrap controls pass, with zero failures and the existing private child ignored.
-Complete qualification remains pending.
+
+The committed callback component (`bc505d677a`) passes all 1,910 Transport
+library tests in both ordinary and RawValue configurations, with zero failures,
+no filtering and sixteen existing ignores. All-feature/all-target checking,
+changed-file formatting and all six architecture checks pass. The production
+application-target gate compiles 180 test executables across 58 package IDs,
+including 71 integration targets. All 245 owned Rust/Cargo inputs match that
+commit and the registered application source capture; this gate runs no tests.
+
+The complete configured runtime refresh passes 1,837 Daemon tests (248.34
+seconds) and 2,055 Engine tests (7.99 seconds), with 166 and 34 existing ignores.
+Daemon compilation uses the installed AOS gem5 closed-profile manifest; both
+libraries use the source-built reference-device fixture. The first Engine run
+has five fixture setup failures because its installed packet-provider variable
+is absent. The unfiltered retry passes using the same compiled Engine executable
+and the matching source-built packet provider. The runtime build also includes
+the separately preserved arm-root working-tree changes; it is not an exact
+committed-source qualification of those unrelated edits. The earlier complete
+borrowed-ordering VM remains scoped to `966aba7b3a`; no callback VM is claimed.
 
 This is a callback component. The original root has not invoked SDK admission
 with it: the complete separately admitted SDK constructor and callback rows are
