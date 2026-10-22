@@ -1,0 +1,44 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+
+rust_library(
+    name = "rust_library",
+    crate_name = "fixture_library",
+    srcs = ["lib.rs"],
+    edition = "2024",
+)
+
+rust_binary(
+    name = "rust_app",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [":rust_library"],
+)
+
+rust_test(
+    name = "rust_test",
+    crate = ":rust_library",
+)
+
+cc_library(
+    name = "cpp_library",
+    srcs = ["library.cc"],
+    hdrs = ["library.h"],
+)
+
+cc_binary(
+    name = "cpp_app",
+    srcs = ["main.cc"],
+    deps = [":cpp_library"],
+)
+
+aos_package(
+    name = "package",
+    package_name = "aos-bazel-fixture",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture"},
+    executables = ["bin/rust-fixture", "bin/cpp-fixture"],
+)

@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "repositories": {
+    "rules_rust++i+rules_rust_tinyjson": {
+      "url": "https://static.crates.io/crates/tinyjson/tinyjson-2.5.1.crate",
+      "sha256": "9ab95735ea2c8fd51154d01e39cf13912a78071c2d89abc49a7ef102a7dd725a",
+      "strip_prefix": "tinyjson-2.5.1",
+      "build_module": "rules_rust",
+      "build_file": "util/process_wrapper/BUILD.tinyjson.bazel"
+    }
+  }
+}

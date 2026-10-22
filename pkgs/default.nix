@@ -1826,6 +1826,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
     else package;
 
+  bazelSupport = import ./build-support/_bazel {
+    inherit lib sharedBazelCacheDir;
+    pkgs = self;
+  };
+
   self =
     {
       # --- Plumbing ---
@@ -1833,6 +1838,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
+      inherit (bazelSupport) mkAosBazelToolchains aosBazelModules aosBazelToolchains;
+      inherit (bazelSupport) mkAosBazelWorkspace mkAosBazelBuild;
+      inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
+      inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       # Downstream flakes use the same package argument resolution as discovery.

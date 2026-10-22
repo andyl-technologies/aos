@@ -1,0 +1,10 @@
+# The AOS launcher supplies immutable repositories, toolchains, and cache paths.
+common --enable_bzlmod
+common --repository_disable_download
+common --lockfile_mode=error
+build --incompatible_strict_action_env
+build --stamp=false
+build --curses=no
+build --verbose_failures
+build --spawn_strategy=sandboxed
+test --test_output=errors

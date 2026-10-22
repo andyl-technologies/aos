@@ -49,6 +49,7 @@ case " $* " in
     ;;
   *' -A pkgs.aos '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aos.apm '*|*' -A pkgs.aos.apr '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
 esac
 MOCK
@@ -89,6 +90,14 @@ chmod +x "$scratch/bin/nix-build" "$scratch/bin/nix" "$scratch/bin/setfacl" "$sc
 cp "$scratch/cli/bin/aos" "$scratch/cli/bin/apm"
 cp "$scratch/cli/bin/aos" "$scratch/cli/bin/apr"
 
+cat > "$scratch/cli/bin/aos-bazel" <<'MOCK'
+#!@BASH@
+printf '%s\n' "$AOS_DEV_ROOT" "$AOS_BAZEL_OUTPUT_BASE" > "$AOS_DEV_TEST_BAZEL_ENV_LOG"
+printf '<%s>' "$@" > "$AOS_DEV_TEST_BAZEL_ARGS_LOG"
+MOCK
+sed -i "s|@BASH@|$BASH|" "$scratch/cli/bin/aos-bazel"
+chmod +x "$scratch/cli/bin/aos-bazel"
+
 export PATH="$scratch/bin:$PATH"
 # Keep build-command tests independent of the sandbox's placeholder HOME.
 export AOS_DEV_CACHE_DIR="$scratch/default-cache"
@@ -98,9 +107,24 @@ export AOS_DEV_TEST_RELEASE_LOG="$scratch/release.log"
 export AOS_DEV_TEST_TOOL_LOG="$scratch/tools.log"
 export AOS_DEV_TEST_TOOL_ARGS_LOG="$scratch/tool-args.log"
 export AOS_DEV_TEST_NIX_CONFIG_LOG="$scratch/nix-config.log"
+export AOS_DEV_TEST_BAZEL_ENV_LOG="$scratch/bazel-env.log"
+export AOS_DEV_TEST_BAZEL_ARGS_LOG="$scratch/bazel-args.log"
 
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
+bash "$root/tools/dev/aos-dev" bazel build //example:app
+grep -Fxq "$root" "$AOS_DEV_TEST_BAZEL_ENV_LOG"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--cache><$AOS_DEV_CACHE_DIR/bazel><--><build><//example:app>"
+if grep -F 'pkgs.aosBazelLauncher' "$AOS_DEV_TEST_LOG" | grep -Eq -- 'shared|sandbox-paths'; then
+  echo 'Bazel launcher construction enabled development caches' >&2
+  exit 1
+fi
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel query //example:all
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><query><//example:all>'
+bash "$root/tools/dev/aos-dev" --release bazel test //example:tests
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><test><//example:tests>'
+qualification_output=$(tail -n 1 "$AOS_DEV_TEST_BAZEL_ENV_LOG")
+test ! -e "${qualification_output%/output}"
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'
