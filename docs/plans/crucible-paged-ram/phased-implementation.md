@@ -310,6 +310,27 @@ launched Source authority or a full QEMU-package pass. Canonical atomic
 reconstruction, engineering hygiene, core evaluation and the unchanged 433-file
 license ledger pass.
 
+#### Dormant Cleanup protocol observations
+
+The permissive process-protocol crate now independently implements the proposed
+384-byte dormant capability, 128-byte termination request and 1,024-byte actual
+entry report. The capability retains future duration and unit limits without
+an origin, start or endpoint: reserving Cleanup does not start its clock during
+Work. Six positive, overflow-checked funding constituents must sum to the exact
+physical child extent. Request and entry correlation preserve the original
+reservation, recipient, command and ticket incarnations.
+
+Entry facts retain negative born outputs, interrupted factory-return capture,
+captured output without a known interval, and dirty Cleanup/Preparation cohorts.
+None authenticates no-entry, grants Current or permits retrying an uncertain
+entry. Nine new controls pass, the complete protocol suite passes 209 tests,
+strict protocol Clippy passes, and all host, plugin and protocol targets compile.
+Protocol documentation checks pass. The separately proposed Setup 9, plan 12,
+service 7 and publisher schema 3 constants do not enable negotiation. Genuine
+delegated local entry authority, complete same-parent physical funding,
+installation and end-to-end entry/return remain required. The current entered
+schema-two Cleanup row cannot substitute for this dormant capability.
+
 #### Installed bounded-pthread QEMU consumer
 
 The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,

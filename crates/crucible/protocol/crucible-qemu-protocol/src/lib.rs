@@ -29,6 +29,8 @@
 //! its fuzz target and corpus.
 //! `publisher_subscription` owns pure codecs for the proposed retained command
 //! region; those observations do not enable its unimplemented capability.
+//! `deferred_cleanup` separates dormant reservations, termination requests and
+//! actual entry reports without granting local entry authority.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -56,6 +58,7 @@ mod choice;
 mod codec_fuzz;
 mod control_lifecycle;
 pub mod debug_gateway;
+pub mod deferred_cleanup;
 mod device_digest_workspace;
 mod device_group_opportunity;
 mod doorbell_abi;
