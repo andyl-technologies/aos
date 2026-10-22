@@ -10,16 +10,16 @@
   campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  scheduler = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop.rs;
-  lifecycle = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
-  lifecycleConfig = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/config.rs;
-  nodeSet = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node_set.rs;
-  concurrentNodeSet = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node_set/concurrent.rs;
+  scheduler = builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop.rs;
+  lifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  lifecycleConfig = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/config.rs;
+  nodeSet = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_set.rs;
+  concurrentNodeSet = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_set/concurrent.rs;
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
 
   failures =
-    failuresFor "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop.rs" scheduler [
       {
         label = "speculative scheduler preparation";
         needle = ".prepare_concurrent_quantum(request)?";
@@ -37,13 +37,13 @@
         needle = "self.network_output_interceptor = staged_interceptor;";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" lifecycle [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" lifecycle [
       {
         label = "production lifecycle concurrent dispatch";
         needle = "crucible_session::drive_engine_concurrent_quantum(";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle/config.rs" lifecycleConfig [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/vm_lifecycle/config.rs" lifecycleConfig [
       {
         label = "operational host dispatch ceiling";
         needle = "pub const fn maximum_host_workers";
@@ -57,14 +57,14 @@
         needle = "pub const fn with_maximum_host_workers";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node_set/concurrent.rs" concurrentNodeSet [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node_set/concurrent.rs" concurrentNodeSet [
       {
         label = "production QEMU backend concurrency";
         needle = "impl ConcurrentSimulationBackend for QemuNodeSet";
       }
     ]
     ++ lib.optionals (hasInfix "host_worker_pool" nodeSet) [
-      "crates/crucible/qemu/crucible-qemu-host/src/node_set.rs: superseded facade remains reachable"
+      "crates/crucible/crucible-qemu-host/src/node_set.rs: superseded facade remains reachable"
     ];
   liveLog =
     if campaignComposition == null

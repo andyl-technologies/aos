@@ -197,7 +197,7 @@ in
 
       doorbell_instruction_abi_version=$(sed -n \
         's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
-        crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs)
+        crucible/crucible-qemu-protocol/src/doorbell_abi.rs)
       test -n "$doorbell_instruction_abi_version"
 
       mkdir -p "$out/nix-support"

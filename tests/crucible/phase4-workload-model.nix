@@ -8,11 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
-  engineBackend = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend.rs;
-  engineDevice = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/device.rs;
+  engineBackend = builtins.readFile ../../crates/crucible/crucible-engine/src/backend.rs;
+  engineDevice = builtins.readFile ../../crates/crucible/crucible-engine/src/device.rs;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  workloadTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_model.rs;
+  engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_model.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -50,7 +50,7 @@
         needle = "application-traffic origination path exists in the engine";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "workload scenario parameter";
         needle = "pub const WORKLOAD_SCENARIO_PARAMETER: &str = \"crucible.workload\";";
@@ -116,7 +116,7 @@
         needle = "fn validate_world_node_workload";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend.rs" engineBackend [
+    ++ failuresFor "crates/crucible/crucible-engine/src/backend.rs" engineBackend [
       {
         label = "backend input not workload generator";
         needle = "not a host-side workload generator";
@@ -130,7 +130,7 @@
         needle = "already-scheduled model events";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/device.rs" engineDevice [
+    ++ failuresFor "crates/crucible/crucible-engine/src/device.rs" engineDevice [
       {
         label = "device frame already emitted";
         needle = "already emitted by a modeled guest/device endpoint";
@@ -144,7 +144,7 @@
         needle = "generator and MUST NOT be used to originate application traffic";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "workload enum re-export";
         needle = "GuestWorkloadBinary";
@@ -158,7 +158,7 @@
         needle = "WORKLOAD_SCENARIO_PARAMETER";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_model.rs" workloadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_model.rs" workloadTest [
       {
         label = "supported binaries test";
         needle = "workload_model_declares_supported_in_guest_binaries";
@@ -196,28 +196,28 @@
         needle = "fs::read_dir";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/backend.rs" engineBackend (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/backend.rs" engineBackend (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/device.rs" engineDevice (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/device.rs" engineDevice (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;
       })
       forbiddenOriginationApis
     )
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/lib.rs" engineLib (
       builtins.map (needle: {
         label = "host-side workload origination API";
         inherit needle;

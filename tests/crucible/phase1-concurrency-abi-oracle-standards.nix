@@ -4,8 +4,8 @@
 }: let
   inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  standardsRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs;
-  standardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/concurrency_abi_oracle_standards.rs;
+  standardsRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/concurrency_abi_oracle_standards.rs;
+  standardsSupport = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/concurrency_abi_oracle_standards.rs;
   standardsCode = standardsRust + "\n" + standardsSupport;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -305,7 +305,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required standardsCode)) [
-          "crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
+          "crates/crucible/crucible-test-support/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
         ]
     )
     requiredRustText;

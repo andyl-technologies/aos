@@ -4,8 +4,8 @@
 }: let
   inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  crateUnsafeFenceRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs;
-  crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/crate_unsafe_fence.rs;
+  crateUnsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
+  crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/crate_unsafe_fence.rs;
   crateUnsafeFenceHarness = crateUnsafeFenceRust + "\n" + crateUnsafeFenceSupport;
   safeFence = "#![forbid(unsafe_code)]";
   unsafeFence = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -522,7 +522,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required crateUnsafeFenceHarness)) [
-          "crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
+          "crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
         ]
     )
     requiredRustText;

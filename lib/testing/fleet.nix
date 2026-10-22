@@ -166,7 +166,7 @@
         '';
       }
       // lib.optionalAttrs (m.packages != []) {
-        "aos/packages.d/fleet-seed".text =
+        "packages.d/fleet-seed".text =
           lib.concatMapStrings (package: "${package}\n") m.packages;
       }
       // lib.optionalAttrs (sshAuthorizedKey != null) {

@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  schedulerActorTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_actor.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  schedulerActorTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_actor.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerActor`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler actor";
         needle = "pub struct SchedulerActor";
@@ -89,7 +89,7 @@
         needle = "scheduler lock spans node advance";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "scheduler actor export";
         needle = "SchedulerActor";
@@ -99,7 +99,7 @@
         needle = "SchedulerActorStateSnapshot";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_actor.rs" schedulerActorTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_actor.rs" schedulerActorTest [
       {
         label = "control inbox boundary test";
         needle = "scheduler_actor_drains_message_control_inbox_at_quantum_boundary";

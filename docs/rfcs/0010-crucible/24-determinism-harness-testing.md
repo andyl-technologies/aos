@@ -1188,7 +1188,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   — satisfies [HARN-24], [HARN-26]; spec §7.
   - Defect (audit 2026-07-28): needles silently rot when code moves. After the
     white-box doorbell tests moved from
-    `crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs` to
+    `crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs` to
     `whitebox_doorbell/tests.rs`, eighteen needles in
     `phase4-guest-host-channel-determinism.nix` and
     `phase4-guest-host-app-random-doorbell.nix` kept naming the parent file;

@@ -12,13 +12,13 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   bindingRuntime = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs
-    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/runtime_api.rs
-    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/search_helpers.rs
+    ../../crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime.rs
+    ../../crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime/runtime_api.rs
+    ../../crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime/search_helpers.rs
   ]);
-  bindingRuntimeTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime_test.rs;
-  modelCanonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
-  stateSpaceGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs;
+  bindingRuntimeTest = builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime_test.rs;
+  modelCanonical = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
+  stateSpaceGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_state_space_search.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -85,7 +85,7 @@
         needle = "Completed by `checks.crucible.phase6.stateSpaceSearch`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "search API";
         needle = "pub fn search(";
@@ -151,13 +151,13 @@
         needle = "pub const fn with_budget";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "materialized scheduler pending frames";
         needle = "state.pending_frames = pending_frames_from_scheduled_events(&self.pending_events);";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs" bindingRuntime [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime.rs" bindingRuntime [
       {
         label = "typed binding policy dispatch";
         needle = "fn apply_search_policy(";
@@ -187,13 +187,13 @@
         needle = "pub fn verify_search_overrides_consumed";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime_test.rs" bindingRuntimeTest [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/fault_signal/binding_runtime_test.rs" bindingRuntimeTest [
       {
         label = "typed finite choice replay test";
         needle = "finite_binding_search_choices_replay_once_and_reject_unused_overrides";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" modelCanonical [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/canonical.rs" modelCanonical [
       {
         label = "canonical scheduler search frontier count";
         needle = "hasher.write_u64(state.search_frontier.choices().len() as u64);";
@@ -203,7 +203,7 @@
         needle = "for choice in state.search_frontier.choices()";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
       {
         label = "frontier dedup gate";
         needle = "gate_state_space_search_expands_genuine_decisions_and_dedups_by_content_address";
@@ -301,19 +301,19 @@
         needle = "child.already_recorded";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "pending frames as search branches";
         needle = "fn delivery_tie_decisions_from_pending_frames";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs SearchFrontierChoices impl" searchFrontierChoicesBlock [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/src/model.rs SearchFrontierChoices impl" searchFrontierChoicesBlock [
       {
         label = "removed raw-decision frontier constructor";
         needle = "pub fn from_decisions";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
       {
         label = "removed raw-decision frontier constructor use";
         needle = "SearchFrontierChoices::from_decisions";

@@ -128,11 +128,11 @@ the Nix protocol cannot ignore — that is the **strict superset**.
 **What is implemented today.** The narinfo **format / sign / FileHash logic**
 has been extracted into reusable code:
 
-- `crates/shared/aos-nar/src/info.rs` defines the shared `NarInfo` type and its
+- `crates/artifacts/aos-nar/src/info.rs` defines the shared `NarInfo` type and its
   `parse` / `format` helpers.
-- `crates/shared/aos-nar/src/cache.rs` defines `render_static_narinfo`,
+- `crates/artifacts/aos-nar/src/cache.rs` defines `render_static_narinfo`,
   `nix_cache_info`, `nar_url`, and `NarInfoSigner`.
-- `crates/aos/registry/aos-registry-authoring/src/registry/nixcache.rs` implements `apr cache generate`:
+- `crates/registry/aos-registry-authoring/src/registry/nixcache.rs` implements `apr cache generate`:
   it walks registry store paths, dumps/compresses NARs, computes `FileHash` /
   `FileSize`, writes signed `.narinfo` files and `nix-cache-info`, optionally
   uploads them to one or more repeatable `--upload-url` destinations, and can
@@ -143,7 +143,7 @@ time — it does **not** run `aos-build-server`'s request handlers
 (`routes.rs` `cache_info_handler` / `narinfo_handler` / `nar_handler`), which
 serve a live host's own store dynamically and are a **different use case the
 registry never runs**. The `aos-nix-cache` backends
-(`crates/aos/packages/aos-nix-cache/src/backend/{s3,sftp,http,fs}.rs`,
+(`crates/packages/aos-nix-cache/src/backend/{s3,sftp,http,fs}.rs`,
 `has_narinfo` / `get_narinfo` / `put_narinfo`, `backend/mod.rs:16-23`) are a
 related building block — object-store I/O that reads/writes the same static
 surface. A stock `nix` consumes the resulting static files unchanged; so can
@@ -184,7 +184,7 @@ pointers and carry no structured payload — there is no tag-message TOML, no
 `[meta]`, no `[[caches]]` *in the tag*. Instead the cache list lives in the
 **committed git-repo-root `registry.toml`** `[[caches]]` table — a tree file
 authenticated transitively by the signed tag (tag → commit → tree → file), the
-existing `RegistryRootConfig` (`crates/aos/packages/aos-package-manager/src/types.rs:564-570`). See
+existing `RegistryRootConfig` (`crates/packages/aos-package-manager/src/types.rs:564-570`). See
 [`repo-layout.md`](repo-layout.md) §2 for the full tree shape.
 
 The substituter location therefore comes from:
@@ -231,7 +231,7 @@ static `nix-cache-info` / `<storehash>.narinfo` / `nar/` files and uploads them
 to the CDN — see §11. The registry runs **no server**; nothing dynamically serves
 these files.
 
-**Shared narinfo type (CURRENT — reusable).** `crates/shared/aos-nar/src/info.rs`
+**Shared narinfo type (CURRENT — reusable).** `crates/artifacts/aos-nar/src/info.rs`
 defines the `NarInfo` struct (`info.rs:5`) — `{ store_path, url, compression,
 file_hash, file_size, nar_hash, nar_size, references, deriver, signatures }` —
 plus `parse()` (`info.rs:19`), `format()` (`info.rs:81`), `from_path_info()`
@@ -255,8 +255,8 @@ configured, baking the signature into each static narinfo at publish.
 
 **Object-store I/O (CURRENT — reusable upload path, `aos-nix-cache`).** The backend
 trait declares `has_narinfo` / `get_narinfo` / `put_narinfo` /
-`put_cache_info` (`crates/aos/packages/aos-nix-cache/src/backend/mod.rs`), implemented for `s3`,
-`sftp`, `http`, and `fs` (`crates/aos/packages/aos-nix-cache/src/backend/`). The
+`put_cache_info` (`crates/packages/aos-nix-cache/src/backend/mod.rs`), implemented for `s3`,
+`sftp`, `http`, and `fs` (`crates/packages/aos-nix-cache/src/backend/`). The
 push-to-object-store backends can upload the producer-generated
 `nix-cache-info` body exactly, preserving the generator's `Priority` value; the
 pull-side `http` backend GETs narinfo + NAR from any standard static cache. The
@@ -275,15 +275,15 @@ already left `registry.toml`; trust rotation/revocation lives in `keys.toml` (se
 below is reusable as-is.
 
 - `CacheEntry { url, priority }` with `default_cache_priority() == 100`
-  (`crates/aos/packages/aos-package-manager/src/types.rs:582-590`), nested under `RegistryRootConfig`
+  (`crates/packages/aos-package-manager/src/types.rs:582-590`), nested under `RegistryRootConfig`
   (`types.rs:564-570`).
 - `resolve_mirrors` reads the caches and sorts them **descending by priority**
   (higher first), returning `Vec<CacheEntry>`
-  (`crates/aos/registry/aos-registry-client/src/registry/mirrors.rs:405-414`).
+  (`crates/registry/aos-registry-client/src/registry/mirrors.rs:405-414`).
 - `resolve_mirror` picks the first (highest-priority) cache, else falls back to
-  the registry URL itself (`crates/aos/packages/aos-package-manager/src/download.rs:85-97`).
+  the registry URL itself (`crates/packages/aos-package-manager/src/download.rs:85-97`).
 
-**Consumer is narinfo-driven and DONE (CURRENT, `aos/packages/aos-package-manager/src/download.rs`).**
+**Consumer is narinfo-driven and DONE (CURRENT, `packages/aos-package-manager/src/download.rs`).**
 This is the half that is genuinely complete and consumes a **dumb static narinfo
 cache as-is** — no server required on the origin. Since
 commit `7149acf6`, `apm` resolves NARs **from the narinfo**, not from package
@@ -355,10 +355,10 @@ has no meaning for a static CDN cache.
 
 A narinfo is line-oriented `Key: value` text. The table below **describes the
 fields the producer writes into each static `.narinfo`**, using
-`render_static_narinfo` in `crates/shared/aos-nar/src/cache.rs`. That function
+`render_static_narinfo` in `crates/artifacts/aos-nar/src/cache.rs`. That function
 projects plain `StaticNarInfoInput` into the shared `NarInfo` shape in
-`crates/shared/aos-nar/src/info.rs`. The consumer parses the same static text back
-into `NarInfo` and reads exactly these fields (`crates/aos/packages/aos-package-manager/src/download.rs`).
+`crates/artifacts/aos-nar/src/info.rs`. The consumer parses the same static text back
+into `NarInfo` and reads exactly these fields (`crates/packages/aos-package-manager/src/download.rs`).
 
 | narinfo field | Source in `render_static_narinfo` / `registry::nixcache` | Notes |
 |---|---|---|
@@ -445,7 +445,7 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 > **Note for the git-metadata layer:** the *git registry* stores
 > dependency edges as **bare store-path hashes** in the `store/` realisation
 > graph (`ia:sha256:<store-hash>` lines, RFC-0005;
-> `crates/aos/registry/aos-registry-client/src/registry/store.rs`). That bare-hash form lives in the
+> `crates/registry/aos-registry-client/src/registry/store.rs`). That bare-hash form lives in the
 > git tree and is consumed by `apm`'s closure walk; it is **independent** of the
 > narinfo-layer `References`, which the producer writes as basenames from the
 > store DB into the static narinfo. The two layers are decoupled (§1) — no
@@ -460,7 +460,7 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 ## 8. Signing: a separate cache role
 
 The narinfo-signing logic is implemented by `NarInfoSigner` in
-`crates/shared/aos-nar/src/cache.rs`. `fingerprint(store_path, nar_hash, nar_size,
+`crates/artifacts/aos-nar/src/cache.rs`. `fingerprint(store_path, nar_hash, nar_size,
 refs)` produces the standard Nix narinfo fingerprint
 `1;{store_path};{nar_hash};{nar_size};{refs}`; `sign(fingerprint)` signs it with
 the Ed25519 secret and returns `name:base64sig`; and
@@ -517,7 +517,7 @@ and consumer already agree on it:
    remains unchanged.
 2. **Consumer resolution (CURRENT).** `apm` downloads from the cache base joined
    with the narinfo-supplied `URL:` — `join_cache_url(mirror_url, narinfo.url)`
-   (`crates/aos/packages/aos-package-manager/src/download.rs:65-71`, applied at `download.rs:184`). It
+   (`crates/packages/aos-package-manager/src/download.rs:65-71`, applied at `download.rs:184`). It
    does not synthesize the key; it trusts the `URL:` the narinfo carries.
 3. **Cache placement (committed `[[caches]]`, optionally overridden).** The cache
    may be co-located with the git repo on one origin (a relative `[[caches]]` url

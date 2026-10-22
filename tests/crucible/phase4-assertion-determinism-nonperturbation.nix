@@ -8,10 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  triggerAssertions = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/trigger/assertions.rs;
+  triggerAssertions = builtins.readFile ../../crates/crucible/crucible-engine/src/trigger/assertions.rs;
   determinismTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/tests/assertion_determinism_nonperturbation.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs;
   };
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -33,7 +33,7 @@
         needle = "Completed by `checks.crucible.phase4.assertionDeterminismNonPerturbation`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "read-only observed-state slices";
         needle = "observable_events: &'log [ObservableEvent]";
@@ -103,7 +103,7 @@
         needle = "pub struct HostAssertionHarnessLintError";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_determinism_nonperturbation.rs" determinismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs" determinismTest [
       {
         label = "online offline determinism test";
         needle = "merged_host_and_guest_outcomes_are_bit_identical_online_offline_and_repeated";
@@ -215,7 +215,7 @@
         needle = "attrPath = \"checks.crucible.phase4.assertionDeterminismNonPerturbation\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" assertionEngineBlock [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" assertionEngineBlock [
       {
         label = "unordered HashMap";
         needle = "HashMap";
@@ -321,7 +321,7 @@
         needle = "unsafe";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "raw closure host assertion oracle";
         needle = "impl<F> HostAssertionOracle for F";
@@ -335,7 +335,7 @@
         needle = "pub fn new(oracle";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_determinism_nonperturbation.rs" determinismTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs" determinismTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

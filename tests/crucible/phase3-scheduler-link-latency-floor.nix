@@ -41,7 +41,7 @@
         needle = "a link MUST have a strictly positive latency";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "minimum latency constant";
         needle = "pub const MIN_LINK_LATENCY: SimDuration";
@@ -103,7 +103,7 @@
         needle = "LinkDef::with_transport(\n        NodeId";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "minimum latency exported";
         needle = "MIN_LINK_LATENCY";

@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  canonicalRust = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
-  decisionRust = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/decision.rs;
+  canonicalRust = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
+  decisionRust = builtins.readFile ../../crates/crucible/crucible-engine/src/decision.rs;
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
@@ -31,7 +31,7 @@
         needle = "`checks.crucible.phase1.spatialSeedComponent`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "seed type";
         needle = "pub struct Seed";
@@ -102,16 +102,16 @@
       }
     ]
     ++ lib.optionals (hasInfix "pub id: ContentHash,\n    /// The root entropy carried by this scenario definition." model) [
-      "crates/crucible/engine/crucible-engine/src/model.rs: ScenarioDef id field must stay private"
+      "crates/crucible/crucible-engine/src/model.rs: ScenarioDef id field must stay private"
     ]
     # Scoped to the ScenarioDef seed field via its unique doc comment. The bare
     # `pub seed: Seed,\n}` form matched four OTHER structs that legitimately carry a
     # public seed as their last field; the doc-comment anchor pins the check to
     # ScenarioDef's own field. Rescoped 2026-07-09.
     ++ lib.optionals (hasInfix "/// The root entropy carried by this scenario definition.\n    pub seed: Seed," model) [
-      "crates/crucible/engine/crucible-engine/src/model.rs: ScenarioDef seed field must stay private"
+      "crates/crucible/crucible-engine/src/model.rs: ScenarioDef seed field must stay private"
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" canonicalRust [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model/canonical.rs" canonicalRust [
       {
         label = "configuration identity includes scenario seed";
         needle = "write_seed(&mut hasher, configuration.def.seed());";
@@ -121,13 +121,13 @@
         needle = "write_seed(&mut hasher, def.seed());";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/decision.rs" decisionRust [
+    ++ failuresFor "crates/crucible/crucible-engine/src/decision.rs" decisionRust [
       {
         label = "decision recorder roots RNG in scenario seed";
         needle = "let rng = configuration.def.seed().decision_rng();";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "seed content-address test";
         needle = "seed_is_scenario_identity_and_name_hashed_stream_root";

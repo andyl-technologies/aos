@@ -11,7 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliCargo = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
+  cliCargo = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   cruciblePkg = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   pluginPkg = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -33,7 +33,7 @@
         needle = "`T-CLI-5` is green through `checks.crucible.phase5.cliHermeticDiscovery`";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "QEMU env constant";
         needle = "const CRUCIBLE_QEMU_ENV: &str = \"CRUCIBLE_QEMU\";";
@@ -183,7 +183,7 @@
         needle = "cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliCargo [
+    ++ failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliCargo [
       {
         label = "CLI depends on the API-owned guest-host protocol surface";
         needle = "crucible-control-api = { path = \"../crucible-control-api\" }";
@@ -214,7 +214,7 @@
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
       {
         label = "plugin build-info reads shmem source";
-        needle = "done < crucible/protocol/crucible-qemu-shmem/src/lib.rs";
+        needle = "done < crucible/crucible-qemu-shmem/src/lib.rs";
       }
       {
         label = "plugin build-info ABI prefix";
@@ -231,7 +231,7 @@
         needle = "cliHermeticDiscovery = import ./phase5-cli-hermetic-discovery.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "host PATH QEMU discovery";
         needle = "std::env::var(\"PATH\")";

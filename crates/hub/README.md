@@ -1,32 +1,49 @@
-# AOS Hub crates
+# AOS Hub
 
-Hub package names carry project ownership independently of their directory.
-The workspace keeps one lockfile; these directories group source for readers.
-Installed executable and protocol names remain stable.
+Hub hosts package registries and binary caches, manages access and credentials,
+and coordinates artifact publication and delivery. It runs as a native service
+or a Cloudflare Worker. Both deployments use the same application code and
+database schema; the browser console calls the Hub API.
 
-| Package | Responsibility | Dependency boundary |
-| --- | --- | --- |
-| `aos-hub-model` | Tenancy/IAM values, credential primitives, endpoint and delivery policy, webhook event taxonomy, cache metadata | Portable domain library; no persistence, HTTP server, or application dependencies |
-| `aos-hub-db` | Schema migrations, typed capability queries, SQL translation and values, backend abstraction | Depends on domain/shared formats; SQLx drivers compile only on native targets |
-| `aos-hub-service` | Authorization and application orchestration, indexing/storage controllers, OAuth/WebAuthn flows, Connect handlers and rendered pages | Consumes model and persistence through runtime ports; no client implementation dependency |
-| `aos-hub-api` | Generated Hub messages, ProtoJSON codecs and Connect descriptors | Generates from canonical `api/proto` source; browser/API inventory parity is tested separately |
-| `aos-hub-client` | Hub Connect-JSON requests and OAuth login/device/refresh flows | Native client without build-server client or Hub service implementation dependencies |
-| `aos-hub-ui` | Portable navigation, route advertisement and presentation values | Shared console presentation vocabulary |
-| `aos-hub-native` | Native runtime adapters and the installed `aos-hub` executable | Native database, network and filesystem deployment |
-| `aos-hub-worker` | Cloudflare Worker adapters and colocated Durable Object SQL bridge | WebAssembly deployment of the shared application |
-| `aos-hub-console` | Browser console | WebAssembly UI consuming API/UI values |
+## Crates
 
-Persistence never imports application orchestration. Native and Worker adapters
-import the model and database packages directly where they use their APIs;
-`aos-hub-service` is not a compatibility facade for those libraries.
+| Crate | Responsibility |
+| --- | --- |
+| [`aos-hub-model`](aos-hub-model/) | Domain types for tenancy, access control, credentials, delivery policy, webhook events, and cache metadata |
+| [`aos-hub-db`](aos-hub-db/) | Schema migrations, typed database queries, and native SQLx backends |
+| [`aos-hub-service`](aos-hub-service/) | Authorization, publication and indexing, authentication flows, API handlers, and server-rendered pages |
+| [`aos-hub-api`](aos-hub-api/) | Generated messages, ProtoJSON codecs, and Connect descriptors from the canonical [`api/proto`](../../api/proto/) schemas |
+| [`aos-hub-client`](aos-hub-client/) | Native API client and OAuth login, device authorization, and token refresh |
+| [`aos-hub-ui`](aos-hub-ui/) | Navigation, routes, and presentation types shared by the console and service |
+| [`aos-hub-native`](aos-hub-native/) | The `aos-hub` executable and native database, network, and filesystem adapters |
+| [`aos-hub-worker`](aos-hub-worker/) | Cloudflare Worker deployment, Durable Object database bridge, and platform adapters |
+| [`aos-hub-console`](aos-hub-console/) | WebAssembly browser console |
 
-Service operations and persistence queries are grouped by capability. Their
-regression suites share focused fixtures, while orchestration tests stay with
-the service. Raw SQL fault injection is available only under `test-fixtures`;
-production callers use typed database mutations.
+## How the pieces fit together
 
-Retained-control contracts and their hard-cut inventory gate belong to the
-model source tree. These modules currently compile only through integration
-fixtures and are not part of the public model library. The planned control-plane
-cutover will enable their production adapters. The inventory gate
-scans the complete production source tree, including canonical API schemas.
+The model defines domain values without a database or HTTP server. The database
+crate implements persistence using those values. The service coordinates
+application operations through database and runtime interfaces. Native and
+Worker adapters supply the platform-specific implementations.
+
+The database does not depend on the service. The service does not depend on the
+client. Native database drivers compile only for native targets, keeping the
+model and shared application code available to the Worker deployment.
+
+Database queries and service operations are organized by capability. Their tests
+live with the crate that owns the behavior. Database fault-injection helpers
+require the `test-fixtures` feature; production code uses typed mutations.
+
+## Development
+
+From the repository root, use the Cargo development shell for native tests:
+
+```sh
+nix develop --file cargo-shell.nix -c aos-dev cargo test \
+  --manifest-path crates/Cargo.toml \
+  -p aos-hub-model -p aos-hub-db -p aos-hub-service
+```
+
+The [Worker README](aos-hub-worker/README.md) describes its platform adapters and
+deployment setup. The user guides cover [native deployment](../../docs/users/aos-hub/native.md)
+and [Cloudflare deployment](../../docs/users/aos-hub/cloudflare.md).

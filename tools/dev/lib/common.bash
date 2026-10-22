@@ -71,7 +71,7 @@ Incremental actions pass through unchanged; use --no-rust-incremental to cache
 application Rust actions as well as dependencies. AOS_DEV_ACCACHE_DIR and
 AOS_DEV_ACCACHE_STATE_DIR select separate sandbox data and metadata paths.
 Stats, explanations, provenance, C/C++ opt-in, and coverage are documented in
-tools/accache/README.md. No daemon starts. Release mode disables this too.
+crates/accache/accache/README.md. No daemon starts. Release mode disables this too.
 
 Go, Bazel, and Cargo builders use these cache settings. Opted-in CMake application
 recipes also use accache; generic C/C++ builds and language toolchains keep

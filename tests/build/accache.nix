@@ -48,25 +48,25 @@ in
       {
         name = "check";
         script = ''
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_tables.py} \
-            ${sccacheOracle.passthru.upstreamSource} ${../../tools/accache/frontend}
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/integration.py} \
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_tables.py} \
+            ${sccacheOracle.passthru.upstreamSource} ${../../crates/accache/accache-frontend}
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/cmake_integration.py} \
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/cmake_integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.cc}/bin/g++ ${pkgs.cmake}/bin/cmake ${pkgs.ninja}/bin/ninja
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_integration.py} \
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
           mkdir -p "$out"
           ACCACHE_ORACLE_REPORT="$out/oracle.json" \
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/oracle.py} \
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/oracle.py} \
             ${pkgs.accache}/bin/accache ${sccacheOracle}/bin/sccache \
             ${pkgs.cc}/bin/gcc ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
             ${pkgs.gccUnwrapped}/bin/gcc
-          ${pkgs.python3}/bin/python3 ${../../tools/accache/tests/frontend_runtime_coverage.py} \
-            ${../../tools/accache/frontend} "$out/oracle.json"
+          ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/frontend_runtime_coverage.py} \
+            ${../../crates/accache/accache-frontend} "$out/oracle.json"
           mkdir -p "$out"
           printf 'passed\n' > "$out/result"
         '';

@@ -5,13 +5,13 @@
   lib,
 }: let
   src = builtins.path {
-    path = ../../tools/accache;
+    path = ../../crates/accache;
     name = "accache-source";
     # Integration fixtures and documentation are consumed outside the Cargo
     # package. Edits there should not rebuild the compiler wrapper itself.
     filter = path: type:
       !(builtins.elem (baseNameOf path) ["target" "__pycache__" "README.md" "UPSTREAM.md"])
-      && !(lib.hasPrefix (toString ../../tools/accache + "/tests/") path);
+      && !(lib.hasPrefix (toString ../../crates/accache/accache + "/tests/") path);
   };
 in
   mkCargoPackage {
