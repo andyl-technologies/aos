@@ -3128,6 +3128,38 @@ funding, genuine opaque Initial/Recipe production and remaining full RFC work
 remain incomplete. No new full Transport library, configured runtime or VM
 qualification is claimed by this component checkpoint.
 
+## Dedicated Source bootstrap Connection transport
+
+Commit `a67e995b43` adds a separate Bootstrap18 transport path beneath the actual
+immutable Controller policy. It reserves the original literal slot before
+signing, checks the closed request and proof against the exact proposed bytes,
+retains the actual SDK request before publication, and preserves write progress
+in the original frame bank. The receiver saves the bounded strict raw frame
+before closed DTO decoding and moves the actual pending SDK request only after
+the decoded owner has retained every successful construction prefix.
+
+The path requires the complete baseline policy, all three exact Native18 schema
+definitions and the negotiated Bootstrap proof/receipt positions. It rejects
+native routing and intervening SDK traffic. Generic send and receive continue
+to refuse Bootstrap. Failed writes, partial reads and failed result correspondence
+fence the same connection and retain actual original custody; no fallback or
+retransmission is introduced. Occupied outputs refuse before effects.
+
+All eleven new Unix transport controls pass beside the prior frontier test.
+The complete affected connection namespace passes 207 tests in standard mode;
+all twelve frontier tests pass in raw-JSON mode. Transport/Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass. The required
+application compilation gate emits 180 test executables across 58 package IDs,
+including 71 integration targets. All 369 owned Rust/Cargo inputs match committed
+`a67e995b43` and its actual captured Nix source. That gate executes no tests.
+
+These private transport primitives verify no Source MAC and issue no Source
+completion, model, native phase or common Ready. The defining caller must retain
+and independently admit the whole Source/SDK holder, raw parser and every
+constructor and containment window. Controller transaction ownership, genuine
+Initial/Recipe production and the remaining full RFC work are still incomplete.
+No new full-library, configured runtime or VM qualification is claimed here.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
