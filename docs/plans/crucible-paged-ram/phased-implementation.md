@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 405 committed bindings: 386 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 406 committed bindings: 387 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -347,6 +347,24 @@ first normal pass (48.462 of 60 seconds) and interrupted subsequent sweep belong
 snapshot. Neither layout tests nor that earlier normal pass qualify genuine
 installed Module reads, selected activation or physical Source return.
 
+`31fe9199e9` corrects registration-return history after an earlier close
+refusal. Physical cleanup can finish, but its saved first close status remains
+visible on every later return. Known-consumed replay runs before any API
+lookup, completion query or destructor. The return and completion methods take
+only their existing plugin identity rather than an unrelated enclosing Owner.
+A component regression calls the actual return method twice with retained
+known-consumed history and no Source API; it preserves the close error, null
+canonical fields and separate successful physical return/post facts. That local
+journal supplies no Native owner or physical return authority.
+
+All sixteen Original controls and all 31 fingerprint controls pass; all plugin
+test targets compile. Engineering hygiene passes. Mandatory application
+compilation passes at `aff9nd5z7nn1vny4xjf8hlhifb4kmyqh`. All 289 exact
+supervision cases remain in progress. All 5,298 committed Rust/TOML files match
+immutable application source
+`5ya73iji71gv4lpc8mbmgf59cjyv60ga`; the comparison record has SHA-256
+`c306fd48b5f8c9e24a75d082b9fbed593435ffb2296473fd179b34df6cb74ec6`.
+
 #### Typed network stop refusals
 
 `27659ae233` retains the actual network ring error or inline frame/stop
@@ -498,6 +516,27 @@ All 5,290 committed Rust/TOML files match immutable source
 All 275 exact supervision cases pass in nine groups at
 `8303673rvih1c3mljhhplfpicidrw5fk`. Physical terminal
 consumption, actual borrower return, Closed and reuse remain unimplemented.
+
+Signed `15a7a00279`, tree `facf7b3a`, adds factual Core Current/returned
+queries over the existing CPU-local normal, longjmp and atomic cleanup frames.
+It authenticates the actual current CPU and retained RR parent before nominated
+frame payload. Returned observes irreversible local consumption and its cleared
+holder independently of a saved negative first, while the genuine CPU/QOM pin
+remains required. No new Original, cleanup guard, Source owner or permission is
+issued. Source/fixed floor remain 242,520/286,598 with no added record storage;
+individual function stack estimates (48/80 bytes) are not a complete stack payer.
+
+All 36 configured objects, three extractors, two preexec extractions, architecture
+probes and complete floor measurements pass. The bridge's 22 independently
+rebuilt omissions and retained journal/atomic/execution/Main controls pass under
+their original bounds. Some inherited inner calls lack a separate timeout; the
+legacy 180-second outer bound remains explicit. Independent verification matches
+eleven signed sources, 1,373 regular evidence files, 72 literal source links and
+four artifact hashes, with record SHA-256
+`7b34bc086530376830304411d0b9be9d45b625a64c5e6c78ae1a891a323f305f`.
+The agent's 78,174-blob/mode archive reconstruction was not independently
+repeated. Actual QOM/RR/Module enrollment, cleanup Prepare/Enter, semantic Outcome
+and selected execution remain unexecuted. This cut is staged, not imported.
 
 #### Native pending lender and offer composition
 
