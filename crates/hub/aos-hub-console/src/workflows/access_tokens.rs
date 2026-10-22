@@ -156,7 +156,7 @@ fn AccessTokenSettings(client: ApiClient, scope: String) -> impl IntoView {
                                 Ok(tokens) if tokens.is_empty() => view! {
                                     <EmptyState
                                         title="No access tokens".to_string()
-                                        detail="Issue a short-lived credential for a user or service account."
+                                        detail="Issue a short-lived credential for yourself or a service account."
                                             .to_string()
                                         action_label=None
                                         action=None
@@ -255,6 +255,7 @@ fn AccessTokenCard(client: ApiClient, token: aos_hub_api::TokenInfo) -> impl Int
 #[component]
 fn IssueAccessToken(client: ApiClient, scope: String, default_owner: String) -> impl IntoView {
     let can_choose_owner = client.allows("tokens.manage");
+    let authenticated_owner = default_owner.clone();
     let owner = RwSignal::new(default_owner);
     let permissions = RwSignal::new("read".to_string());
     let ttl_seconds = RwSignal::new("3600".to_string());
@@ -286,6 +287,12 @@ fn IssueAccessToken(client: ApiClient, scope: String, default_owner: String) -> 
         if !owner.starts_with("user:") && !owner.starts_with("service_account:") {
             error.set(Some(
                 "Owner must be user:EMAIL or service_account:ORG/NAME".to_string(),
+            ));
+            return;
+        }
+        if owner.starts_with("user:") && owner != authenticated_owner {
+            error.set(Some(
+                "Human access tokens can only be issued for your own account".to_string(),
             ));
             return;
         }
