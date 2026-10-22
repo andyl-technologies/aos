@@ -36,13 +36,12 @@ impl LiveWhiteboxState {
             .as_mut()
             .ok_or(LiveWhiteboxError::AppRandomNotConfigured)?;
         let mut writer = LiveGuestMemoryWriter::new(self.apis.write_memory_vaddr, raw_icount);
-        let node_name = app_random.decisions.node_name().to_owned();
         let outcome = handle_whitebox_app_random_payload(
             &self.doorbell,
             &app_random.capability,
             &mut app_random.decisions,
             &mut writer,
-            &node_name,
+            &app_random.node_name,
             event,
             payload,
         )
@@ -131,6 +130,9 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
 }
 
 pub(super) struct LiveAppRandomState {
+    // Identity belongs to the service, so callbacks borrow it independently of
+    // the mutable draw state and logical restore retains the same allocation.
+    node_name: String,
     capability: WhiteboxGuestInputCapability,
     decisions: LiveBackendRngEvidenceSource,
     restore_decisions: Option<LiveBackendRngEvidenceSource>,
@@ -143,6 +145,7 @@ impl LiveAppRandomState {
         capability: WhiteboxGuestInputCapability,
     ) -> Self {
         Self {
+            node_name: config.node_name().to_owned(),
             capability,
             decisions: LiveBackendRngEvidenceSource::new(config, branch_plan),
             // Restore launches execute a throwaway boot-barrier quantum before
@@ -183,7 +186,6 @@ fn restore_app_random_decisions(
 struct LiveBackendRngEvidenceSource {
     root_seed: u64,
     streams: BTreeMap<String, PluginDecisionStream>,
-    node_name: String,
     draw_cap: u64,
     draws: u64,
     branch_reseeds: Vec<(u64, u64)>,
@@ -209,7 +211,6 @@ impl LiveBackendRngEvidenceSource {
         Self {
             root_seed: config.root_seed(),
             streams,
-            node_name: config.node_name().to_owned(),
             draw_cap: config.draw_cap(),
             draws: config.draw_offset(),
             branch_reseeds: config.branch_reseeds().to_vec(),
@@ -217,10 +218,6 @@ impl LiveBackendRngEvidenceSource {
             branch_plan: branch_plan.clone(),
             next_branch_plan_entry,
         }
-    }
-
-    fn node_name(&self) -> &str {
-        &self.node_name
     }
 
     fn apply_branch_reseed_if_due(&mut self) {

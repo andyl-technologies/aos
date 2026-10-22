@@ -69,6 +69,24 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Borrowed app-random service identity
+
+The live app-random service now owns its immutable node name independently of
+its mutable decision state. Each callback borrows that same name while serving
+the request. It no longer clones a temporary String before decoding, and the
+preallocated logical-restore decision source no longer owns another copy.
+Logical restore replaces only the mutable draw state; the service identity
+retains the same allocation. Request/evidence objects and stream creation still
+allocate and require complete operational funding.
+
+All 1,177 plugin unit tests, compilation of every plugin target and engineering
+hygiene pass. Existing draw, reseed, branch, continuation and live routing
+controls retain their behavior; no case or binding is added. The actual layout
+control now measures the containing Runtime at 18,912 bytes, alignment eight,
+and inline white-box state at 9,528 bytes, each 24 bytes smaller. This is a
+specific ownership/layout change, not a physical-residency or performance
+qualification. Required application test-target compilation is running.
+
 #### Retained Native RR actor and sticky pre-exec refusal
 
 Atomic signed DCO checkpoint `5b7be4763f681e1e0237b61b24708654a510225f`
