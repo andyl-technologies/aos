@@ -11,7 +11,7 @@ use crate::{
         wire::Operation,
     },
 };
-use std::{io, sync::Arc};
+use std::{io, os::unix::fs::MetadataExt, sync::Arc};
 use terrane_sdk::host::cache::HostDomainLocation;
 
 /// Selects one actual cache transition; pending variants retain original replies.
@@ -75,6 +75,22 @@ impl<'unit> CachePermit<'unit> {
             {
                 return Err(invalid(
                     "cache permit differs from original cached allocation",
+                ));
+            }
+        }
+        if unit.members.is_empty() && unit.recovered_inline.is_empty() {
+            return Err(invalid("cache unit has no original native registry"));
+        }
+        for body in &unit.recovered_inline {
+            graph::check_recovered_inline(executor, &owner, body)?;
+            let actual = body.handle().metadata()?;
+            let original = unit.body.handle().metadata()?;
+            if (actual.dev(), actual.ino()) != (original.dev(), original.ino())
+                || body.claim().descriptor() != unit.body.claim().descriptor()
+                || body.incarnation() != unit.body.incarnation()
+            {
+                return Err(invalid(
+                    "cache permit changed original recovered inline allocation",
                 ));
             }
         }

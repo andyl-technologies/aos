@@ -574,6 +574,7 @@ async fn finish(executor: &mut NativeOwnerExecutor, key: &str) -> io::Result<boo
     finish_policy(executor, &original, &completion).await?;
     release_members(executor, &original, &receipt, &completion)?;
     executor.unregister_retired_publications(&original.members, &receipt, &completion)?;
+    executor.unregister_retired_inline(&original.recovered_inline, &receipt, &completion)?;
     executor
         .cache
         .pending

@@ -81,9 +81,19 @@ impl SealedObjectSource {
                 break;
             }
         }
-        if let Some((_, descriptor)) = &selected {
-            eviction::restore_publication(executor, descriptor).await?;
-        }
+        let descriptor = match &selected {
+            Some((_, descriptor)) => descriptor.clone(),
+            None => {
+                let owner = executor
+                    .custody()
+                    .lock()
+                    .map_err(|_| invalid("recovered restoration custody poisoned"))?;
+                let recovered =
+                    RecoveredOrigin::select(executor, &owner, &identity, Arc::clone(&running))?;
+                recovered.body().claim().descriptor().clone()
+            }
+        };
+        eviction::restore_publication(executor, &descriptor).await?;
 
         let source = {
             let owner = executor

@@ -15217,3 +15217,48 @@ requires the exact original public inode to survive and the private inode to
 disappear. This is an unqualified regression for the still-open cold retirement
 implementation; it is not yet an owning-gate prerequisite or acceptance claim.
 No additional trunk task is accepted by this increment.
+
+
+#### Original recovered inline retirement
+
+Private inline bodies adopted during genuine cold recovery now join the native
+retirement graph through their original physical registry, separately from live
+publication jobs. Selection requires the actual acknowledged Running owner,
+bootstrap and synchronized snapshot. The transition permit rechecks registry
+pointer identity, original layout, descriptor, incarnation and device/inode;
+no cold row can construct a publication job or retirement capability. Historical
+FIFO age is not inferred: these private units use lifetime-driven retirement,
+while public cold units remain outside this new selection path.
+
+Recovered manifests contribute their actual chunk dependency edges, so shared
+residences still require original extraction before retirement. All durable
+producer, consumer and unknown pin protection remains effective. Final cleanup
+checks the typed native removal acknowledgment against each actual inline alias
+before dropping its original registry descriptor. Existing consumer backing
+continues retaining the inode and physical charge until real closure. A new
+whole-file pin restores original pending backing before creating the new grant,
+including recovered sources. Manifest-backed cold-body retirement and its old
+metadata-custody cleanup remain open.
+
+The scheduling candidate `08c22e6f76` is pushed. Its expanded existing policy
+regression passes with one selected, non-ignored case; Linux all-feature strict
+lint and integration-example strict lint pass in 14.38 and 12.02 seconds. Native
+release and required application compilation are running on immutable source.
+The final recovered-inline strict profiles pass in 4.05 and 2.98 seconds.
+The `20036ecf3c` application-target build passes in 1,557.243 seconds; independent
+review matches all 8,070 immutable source files and 185 compiler test targets
+across 59 packages. This is compilation, not application test execution. The native cold-release regression and the
+current recovered-inline implementation still require exact-source qualification.
+No additional task is accepted.
+
+
+The `08c22e6f76` actual native private-release proof passes in 238.964 seconds
+with unchanged bounds. Both genuine second-consumer controls, public retention,
+private unlink without pressure, retained backing and the actual project-charge
+decrease after final closure pass. This resolves the observed warm-publication
+failure at the corrected source; the original failed receipt remains retained.
+Independent review matches all 8,070 immutable source files, 5,350 bound
+inputs, the actual installed Cargo ELF and all original enrollment and release
+witnesses. The final recovered-inline explicit-import lint also passes in 5.02
+seconds. Cold-native
+qualification, cold manifest retirement and broader trunk obligations remain open.

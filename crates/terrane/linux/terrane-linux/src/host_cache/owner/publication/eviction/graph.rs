@@ -1,4 +1,4 @@
-//! Derives allocation units only from original completed native publications.
+//! Derives allocation units from original publications and recovered inline custody.
 //!
 //! Canonical metadata supplies actual dependency edges. Policy rows can protect
 //! an already verified unit but cannot create one, select an inode or supply a
@@ -23,12 +23,14 @@ use std::{
 };
 use terrane_sdk::host::cache::HostDomainLocation;
 
+mod recovered_inline;
+
 /// Retains one actual native allocation and all original publication jobs.
 ///
 /// This inventory grants no retirement authority. Producer-funded jobs remain
 /// protected; physical transitions require the separate actual cache permit.
 pub(super) struct Unit {
-    /// Earliest actual admission among original aliases of this allocation.
+    /// Earliest live admission; recovered private units have no reconstructed FIFO age.
     pub(super) order: u64,
     /// Process-local allocation identity, never a durable object or namespace key.
     pub(super) key: String,
@@ -36,6 +38,8 @@ pub(super) struct Unit {
     pub(super) body: Arc<PeerPublishedObject<HostDomainLocation>>,
     /// Original complete jobs whose body descriptions must close after deletion.
     pub(super) members: Vec<Arc<Mutex<PublicationJob>>>,
+    /// Original adopted inline receipts retained by the actual recovery registry.
+    pub(super) recovered_inline: Vec<Arc<PeerPublishedObject<HostDomainLocation>>>,
     /// Exact synchronized allocated blocks of this inode alone.
     pub(super) allocated: u64,
     /// Durable content promises other than this unit's own reconstruction pins.
@@ -88,6 +92,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
                     key: format!("{}:{}", inode.0, inode.1),
                     body: Arc::clone(body),
                     members: Vec::new(),
+                    recovered_inline: Vec::new(),
                     allocated: 0,
                     protected: false,
                     shared_chunks: BTreeSet::new(),
@@ -131,6 +136,26 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
                 ));
             }
         }
+        recovered_inline::extend(executor, &owner, &mut units, &mut by_inode)?;
+        // Recovered manifests also depend on chunk residences. Their actual
+        // registered metadata must remain protected during inline retirement.
+        for manifest in executor.verified_manifests() {
+            manifest
+                .body()
+                .retained()
+                .backing()
+                .check_recovery_registration(&owner)?;
+            if let Some(claim) = manifest.claim().manifest() {
+                references.push((
+                    state::hex(manifest.claim().descriptor().digest()),
+                    claim
+                        .chunks
+                        .iter()
+                        .map(|chunk| state::hex(&chunk.digest))
+                        .collect(),
+                ));
+            }
+        }
         for unit in &mut units {
             let hash = state::hex(unit.body.claim().descriptor().digest());
             unit.protected = protected(&owner, unit)?;
@@ -153,6 +178,8 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
     running.check_current().map_err(io::Error::other)?;
     Ok(units)
 }
+
+pub(super) use recovered_inline::check as check_recovered_inline;
 
 /// Rechecks live promises while allowing exact draining-body namespace retirement.
 pub(super) fn protected(owner: &Custody, unit: &Unit) -> io::Result<bool> {

@@ -18,6 +18,34 @@ pub(crate) struct PublisherCacheRetirementTurn<'turn> {
 }
 
 impl NativeOwnerExecutor {
+    /// Closes original adopted inline registry entries after acknowledged removal.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing original receipts or an unrelated reply.
+    pub(in crate::host_cache::owner) fn unregister_retired_inline(
+        &mut self,
+        bodies: &[Arc<PeerPublishedObject<HostDomainLocation>>],
+        pending: &Arc<PendingCacheBody>,
+        completion: &Arc<crate::publisher_local::client::CacheBodyCompletion>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        completion.check_removed(pending)?;
+        let running = self.admission_context()?;
+        for body in bodies {
+            if !self
+                .adopted_inline
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, body))
+            {
+                return Err(io::Error::other("retired inline lost original registry"));
+            }
+            pending.check_alias(running.publisher_session(), body)?;
+        }
+        self.adopted_inline
+            .retain(|registered| !bodies.iter().any(|body| Arc::ptr_eq(registered, body)));
+        Ok(())
+    }
+
     /// Removes original publication registry slots after final native removal.
     ///
     /// # Errors
