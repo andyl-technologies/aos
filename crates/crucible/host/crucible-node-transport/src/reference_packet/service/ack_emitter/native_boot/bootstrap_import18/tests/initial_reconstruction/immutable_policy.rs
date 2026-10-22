@@ -148,6 +148,11 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         .retained_authority_fixture_data()
         .map(std::ptr::from_ref);
     assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
+    assert!(
+        original
+            .with_bootstrap_policy_wire_data(|_| Ok(()))
+            .is_err()
+    );
     if case == "initial_policy_selection_revoked" {
         original.selection_authenticated = false;
     }
@@ -206,10 +211,13 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 Ok(())
             })
             .unwrap();
+        original
+            .with_bootstrap_policy_wire_data(|view| assert_bootstrap_policy_wire(&original, view))
+            .unwrap();
         if case == "initial_policy_callback_refused" {
             assert!(
                 original
-                    .with_immutable_policy_data::<()>(|_| Err(ProviderError::Conflict(
+                    .with_bootstrap_policy_wire_data::<()>(|_| Err(ProviderError::Conflict(
                         "policy inspection refused"
                     )))
                     .is_err()
@@ -219,14 +227,18 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         if case == "initial_policy_substituted_cut" {
             let prior = original.cut;
             original.cut = OperationalDeadline::after(Duration::from_secs(3)).unwrap();
-            assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
+            assert!(
+                original
+                    .with_bootstrap_policy_wire_data(|_| Ok(()))
+                    .is_err()
+            );
             original.cut = prior;
             original.with_immutable_policy_data(|_| Ok(())).unwrap();
         }
         if case == "initial_policy_loan_expired" {
             assert!(
                 original
-                    .with_immutable_policy_data(|_| {
+                    .with_bootstrap_policy_wire_data(|_| {
                         std::thread::sleep(Duration::from_secs(5));
                         Ok(())
                     })
@@ -236,10 +248,19 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         }
         if case == "initial_policy_later_contained" {
             original.hello_registrar.contain_admission_data().unwrap();
-            assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
+            assert!(
+                original
+                    .with_bootstrap_policy_wire_data(|_| Ok(()))
+                    .is_err()
+            );
         }
     } else {
         assert!(outcome.is_err(), "{case}");
+        assert!(
+            original
+                .with_bootstrap_policy_wire_data(|_| Ok(()))
+                .is_err()
+        );
         assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
         assert!(
             original
@@ -301,4 +322,128 @@ fn model_absent_policy_keeps_actual_launch_hello_lease_and_every_terminal_owner(
     ] {
         flight(case);
     }
+}
+
+/// Checks the borrowed policy against its independent wire and allocation oracles.
+fn assert_bootstrap_policy_wire(
+    original: &OriginalImport18RawBootstrap,
+    view: &crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapTypedPolicyView<'_>,
+) -> Result<(), ProviderError> {
+    use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::native_import18_bootstrap_policy_wire_data;
+    use crate::retained_metadata::MetadataObserver;
+    use crate::retained_metadata::serialization_storage::actual_serialization_storage_data;
+
+    let bodies = original.typed_bodies_data()?;
+    let source_binding = bodies.boot.source_binding_data();
+    let source_birth = source_binding.declaration_data().source_birth_data();
+    assert!(std::ptr::eq(view.source_binding_data(), source_binding));
+    let projected = view.serialization_data(usize::MAX).unwrap();
+    let policy_value = serde_json::to_value(view).unwrap();
+    let source_value = serde_json::to_value(source_binding).unwrap();
+    let recipe = Bytes::new(bodies.recipe.announced_identity_data().to_vec());
+    original.with_immutable_policy_data(|policy| {
+        original.with_hello_authority_data(|lease| {
+            let [import, stage, record] = policy.definitions_data()?;
+            let expected = native_import18_bootstrap_policy_wire_data(
+                &source_value,
+                &recipe,
+                import,
+                stage,
+                record,
+                lease,
+            )?;
+            assert_eq!(policy_value, serde_json::to_value(expected).unwrap());
+            Ok(())
+        })
+    })?;
+
+    // These are the actual two Bytes leaves of the typed policy. Other
+    // fields contain closed scalars, string-backed refs and Id rosters.
+    let mut observer = MetadataObserver::new();
+    observer.observe(source_birth).unwrap();
+    observer.observe(&recipe).unwrap();
+    let actual = actual_serialization_storage_data(view, observer.finish(), usize::MAX).unwrap();
+    assert_eq!(
+        projected.maximum_encoded_bytes,
+        actual.maximum_encoded_bytes
+    );
+    assert_eq!(
+        projected.serialized_value_nodes,
+        actual.serialized_value_nodes
+    );
+    assert_eq!(
+        projected.serialized_capacity_records,
+        actual.serialized_capacity_records
+    );
+    assert_eq!(
+        projected.retained_value_backing_bytes,
+        actual.retained_value_backing_bytes
+    );
+    assert_eq!(
+        projected.dom_and_canonical_scratch_bytes,
+        actual.dom_and_canonical_scratch_bytes
+    );
+    assert_eq!(
+        projected.projected_parser_requested_bytes,
+        actual.projected_parser_requested_bytes
+    );
+    assert_eq!(
+        projected.canonical_output_requested_bytes,
+        actual.canonical_output_requested_bytes
+    );
+    assert_eq!(
+        projected.serializer_temporary_requested_bytes,
+        Bytes::borrowed_serialization_temporary_bytes_data(source_birth.as_slice())
+            .unwrap()
+            .max(43)
+    );
+    let peak = projected.requested_total().unwrap();
+    assert_eq!(
+        policy_shape_fields(&view.serialization_data(peak).unwrap()),
+        policy_shape_fields(&projected)
+    );
+    assert!(view.serialization_data(peak - 1).is_err());
+    assert_eq!(
+        policy_shape_fields(&view.serialization_data(peak + 4096).unwrap()),
+        policy_shape_fields(&projected)
+    );
+    assert!(view.serialization_data(1).is_err());
+    assert!(
+        OriginalImport18RawBootstrap::bootstrap_policy_loan_counter_scratch_data::<()>().unwrap()
+            > OriginalImport18RawBootstrap::immutable_policy_loan_counter_scratch_data::<()>()
+                .unwrap()
+    );
+    Ok(())
+}
+
+/// Compares every shape field without adding production traits for test assertions.
+fn policy_shape_fields(
+    shape: &crate::retained_metadata::serialization_storage::OriginalSerializationStorageData,
+) -> [usize; 11] {
+    let crate::retained_metadata::serialization_storage::OriginalSerializationStorageData {
+        dom_and_canonical_scratch_bytes,
+        retained_value_backing_bytes,
+        projected_parser_requested_bytes,
+        canonical_output_requested_bytes,
+        serializer_temporary_requested_bytes,
+        declared_counter_scratch_bytes,
+        maximum_encoded_bytes,
+        sequence_elements,
+        sequence_containers,
+        serialized_value_nodes,
+        serialized_capacity_records,
+    } = shape;
+    [
+        *dom_and_canonical_scratch_bytes,
+        *retained_value_backing_bytes,
+        *projected_parser_requested_bytes,
+        *canonical_output_requested_bytes,
+        *serializer_temporary_requested_bytes,
+        *declared_counter_scratch_bytes,
+        *maximum_encoded_bytes,
+        *sequence_elements,
+        *sequence_containers,
+        *serialized_value_nodes,
+        *serialized_capacity_records,
+    ]
 }

@@ -60,6 +60,9 @@ pub(in crate::reference_packet::service) use launch_validation::{
     counter_scratch_data as launch_validation_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/bootstrap_policy.rs"]
+mod bootstrap_policy;
+
 #[path = "bootstrap_import18/immutable_policy.rs"]
 mod immutable_policy;
 pub(in crate::reference_packet::service) use immutable_policy::{

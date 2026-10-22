@@ -105,6 +105,14 @@ pub(in crate::reference_packet) use retained::{
     private_body_owner_counter_scratch_data,
 };
 
+#[path = "startup_wire/policy_projection.rs"]
+mod policy_projection;
+pub(in crate::reference_packet) use policy_projection::{
+    native_import18_source_binding_wire_formatter_requested_data,
+    native_import18_source_binding_wire_projection_counter_scratch_data,
+    native_import18_source_binding_wire_projection_data,
+};
+
 #[path = "startup_wire/source_declaration.rs"]
 mod source_declaration;
 

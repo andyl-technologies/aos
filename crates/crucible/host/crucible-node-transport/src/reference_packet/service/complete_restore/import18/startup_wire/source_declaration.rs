@@ -185,6 +185,25 @@ impl PacketNativeImport18SourceDeclarationWireData {
         observer.observe(source_birth)
     }
 
+    /// Borrows the defining serializer view without copying the original bank.
+    ///
+    /// This preserves the decoded nullable selection and fixed schema. It does
+    /// not authenticate the Source, launch or enclosing private birth.
+    pub(in crate::reference_packet) fn borrowed_wire_data(
+        &self,
+    ) -> PacketNativeImport18SourceDeclarationView<'_> {
+        let Self {
+            schema: DeclarationSchema::Import18,
+            source_birth,
+            fresh_restore_allocation_selection,
+        } = self;
+        PacketNativeImport18SourceDeclarationView {
+            schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
+            source_birth: source_birth.as_slice(),
+            fresh_restore_allocation_selection: *fresh_restore_allocation_selection,
+        }
+    }
+
     /// Borrows the exact original canonical pre-report Source birth bytes.
     pub fn source_birth_data(&self) -> &Bytes {
         &self.source_birth

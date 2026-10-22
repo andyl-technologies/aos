@@ -11,6 +11,12 @@ use crucible_node_format::IdSet;
 use std::collections::BTreeSet;
 use std::mem::size_of;
 
+#[path = "operands/typed_policy.rs"]
+mod typed_policy;
+pub(in crate::reference_packet) use typed_policy::{
+    PacketNativeImport18BootstrapTypedPolicyView, native_import18_bootstrap_typed_policy_wire_data,
+};
+
 #[path = "operands/prospective.rs"]
 mod prospective;
 
