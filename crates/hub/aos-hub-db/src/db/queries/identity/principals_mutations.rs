@@ -243,13 +243,13 @@ impl Database {
             .await
     }
 
-    /// Reconcile an OIDC identity to a hub user, JIT-provisioning if allowed.
+    /// Reconciles a verifier-bound OIDC identity to a hub user.
     ///
-    /// Identities are keyed on `(issuer, subject)` — never bare email — so an
+    /// Identities are keyed on `(verifier_id, subject)` — never bare email — so an
     /// IdP that recycles an email address can never silently take over another
     /// user's account. Resolution, in order:
     ///
-    /// 1. An existing `(issuer, subject)` identity resolves to its user
+    /// 1. An existing `(verifier_id, subject)` identity resolves to its user
     ///    ([`IdentityLink::Existing`]); its `email`/`last_login` are refreshed.
     /// 2. Otherwise, when `email` is IdP-*verified* and its domain is captured
     ///    by `org_id`, the identity links to the existing user with that email
@@ -271,6 +271,7 @@ impl Database {
     /// maps the error to a denied login.
     pub async fn link_or_create_identity(
         &self,
+        verifier_id: &str,
         issuer: &str,
         subject: &str,
         email: Option<&str>,
@@ -279,16 +280,28 @@ impl Database {
         allow_jit: bool,
     ) -> Result<Option<IdentityLink>> {
         let now = unix_now();
-        // 1. Existing identity.
-        if let Some(user_id) = self.identity_user(issuer, subject).await? {
+        // 1. Existing verifier-bound identity.
+        if let Some(user_id) = self.identity_user(verifier_id, subject).await? {
             self.backend
                 .execute(
-                    "UPDATE user_identities SET email = ?3, last_login = ?4
-                 WHERE issuer = ?1 AND subject = ?2",
-                    &vals![issuer, subject, email, now],
+                    "UPDATE oidc_identities SET email = ?3, last_login = ?4
+                     WHERE verifier_id = ?1 AND subject = ?2",
+                    &vals![verifier_id, subject, email, now],
                 )
                 .await?;
             return Ok(Some(IdentityLink::Existing(user_id)));
+        }
+
+        // Earlier releases keyed identities only by issuer. Adopt one of those
+        // rows only when every current configuration for that issuer resolves
+        // to this verifier, so an ambiguous legacy row never crosses verifier
+        // namespaces.
+        if self.issuer_has_single_verifier(issuer, verifier_id).await? {
+            if let Some(user_id) = self.legacy_identity_user(issuer, subject).await? {
+                self.insert_oidc_identity(verifier_id, issuer, subject, user_id, email, now)
+                    .await?;
+                return Ok(Some(IdentityLink::Existing(user_id)));
+            }
         }
         // 2. Auto-link a verified email on a captured domain to an existing user.
         if email_verified {
@@ -300,8 +313,15 @@ impl Database {
                 };
                 if captured {
                     if let Some(user_id) = self.user_by_email(addr).await? {
-                        self.insert_identity(issuer, subject, user_id, email, now)
-                            .await?;
+                        self.insert_oidc_identity(
+                            verifier_id,
+                            issuer,
+                            subject,
+                            user_id,
+                            email,
+                            now,
+                        )
+                        .await?;
                         return Ok(Some(IdentityLink::Linked(user_id)));
                     }
                 }
@@ -332,24 +352,37 @@ impl Database {
             );
         }
         let user_id = self.create_user(&user_email, None).await?;
-        self.insert_identity(issuer, subject, user_id, email, now)
+        self.insert_oidc_identity(verifier_id, issuer, subject, user_id, email, now)
             .await?;
         Ok(Some(IdentityLink::Created(user_id)))
     }
 
-    /// The user id linked to an `(issuer, subject)` identity, if any.
+    /// Returns the user linked to a verifier and OIDC subject, if any.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn identity_user(&self, issuer: &str, subject: &str) -> Result<Option<i64>> {
+    pub async fn identity_user(&self, verifier_id: &str, subject: &str) -> Result<Option<i64>> {
+        self.backend
+            .query_opt(
+                "SELECT user_id FROM oidc_identities
+                 WHERE verifier_id = ?1 AND subject = ?2",
+                &vals![verifier_id, subject],
+            )
+            .await
+            .context("loading identity user")?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
+    async fn legacy_identity_user(&self, issuer: &str, subject: &str) -> Result<Option<i64>> {
         self.backend
             .query_opt(
                 "SELECT user_id FROM user_identities WHERE issuer = ?1 AND subject = ?2",
                 &vals![issuer, subject],
             )
             .await
-            .context("loading identity user")?
+            .context("loading legacy identity user")?
             .map(|row| row.get(0))
             .transpose()
     }
