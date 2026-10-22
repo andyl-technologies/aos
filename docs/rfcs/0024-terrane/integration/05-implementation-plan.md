@@ -12946,3 +12946,24 @@ both earlier whole-file inodes and their bytes to remain unchanged. The helper's
 production bound, global domain inventory, project assignments and runtime
 limits remain unchanged. The failed provisioning run is retained; corrected
 committed-source runtime qualification remains pending.
+
+Frozen scoped SDK metadata qualification at `da56eb46f2` now passes in
+1,605.73 seconds. Independent review matches all 7,983 immutable source files,
+5,269 bound crate inputs and the three actual Cargo test artifacts: five file
+preparation cases, seven root-node cases and three current-policy-head cases.
+The same commit's required application-target compilation passes in 1,747.01
+seconds; independent review matches the same immutable source and 184 compiler
+records across 59 packages. These checks retain artifact identity records
+without executable bytes. They qualify the SDK component, with no native
+backing runtime result, exposure conformance or task acceptance inferred.
+
+The corrected scoped native run at `a3282f1e9b` remains failed after 634.88
+seconds, with unchanged frozen source. All 128 native library cases, both warm
+whole-file witnesses, and the cold three-inode checks pass before reopening the
+warm domain refuses a cold residence mismatch. The preceding manifest fixture
+had dropped its producer without closing resident reads, finishing actual source
+retirement and acknowledging cache handoff. It now completes those original
+native operations before a later process reopens the domain. No cold policy row,
+verified-source check, namespace bound or runtime deadline is removed or relaxed.
+The failed run is retained; the handoff correction still requires native runtime
+and application-target qualification.

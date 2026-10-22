@@ -206,6 +206,13 @@ pub(super) fn run(
     drop(cached);
     runtime.block_on(owner.release_consumer_lease(&alias))?;
     runtime.block_on(owner.release_consumer_lease(&metadata))?;
+    // Finish the producer transition before a later process reopens this
+    // domain. Dropping the publication does not acknowledge source retirement.
+    runtime.block_on(assembled.close_resident_reads(owner))?;
+    runtime.block_on(assembled.finish_retired_sources(owner))?;
+    runtime
+        .block_on(assembled.into_cache(owner))
+        .map_err(io::Error::other)?;
     emit(
         "PASS actual whole manifest inode, metadata/range refusal, expiry and retained delegated descriptor lifetime",
     )
