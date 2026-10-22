@@ -678,6 +678,27 @@ round trips verify that partial reports never become completed results. All
 thirteen format and nineteen native; 148 requirements remain uncovered, with
 no execution qualification. Real paid probe issuance remains unavailable.
 
+Independent manifest/probe public data now follows signed
+`4c436f5b9557df0af17c831642e05f55c6715f1b` and compact-data revision
+`e5d7f1fdfcde0018bc37d8b2d47a6a2e3b7e4820`. Independent review verifies all
+fifty source-packet payloads and thirteen compact-packet payloads, both detached
+signatures and both signed commits. The explicit MIT data license permits the
+byte examples and bounded recipes; no GPL generator or decoder is imported.
+The independently transformed 958,244-byte TSV reconstructs all 8,678 original
+vectors exactly, checks every full-wire SHA256, and pins its own SHA256
+`ac90eed8eb97dd424aa462d994b9f09f6e1756113a350f523783b5f34ae77f78`.
+All 4,461 manifest vectors agree with Rust syntax, including eight accepted
+descriptions. All 4,217 probe vectors agree independently on syntax and
+completion: twenty-three accepted reports include six completed descriptions.
+Every accepted report preserves its original bytes, including partial facts.
+The complete 283-test protocol suite and strict all-target Clippy pass; the
+initial test-helper Clippy refusal remains preserved. Both cases join counted
+ABI groups and requirement bindings. Inventory
+`61b28h5yxkvcib8zifyh4kjq2mgf7yzv` verifies 511 canonical bindings: 479 model,
+thirteen format and nineteen native, with 148 requirements uncovered and no
+execution qualification. Independent C execution, actual receiving custody and
+paid probe issuance remain unavailable.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
