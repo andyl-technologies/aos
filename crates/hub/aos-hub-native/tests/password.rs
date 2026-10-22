@@ -15,7 +15,7 @@ use aos_hub_native::auth::extract::{mint_csrf_token, AuthState};
 use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::auth::password::{hash_password, verify_password};
 use aos_hub_native::auth::session::COOKIE_NAME;
-use aos_hub_native::db::{Database, IdpConfigRecord};
+use aos_hub_native::db::{Database, IdpConfigRecord, SessionAuthentication};
 use aos_hub_native::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -462,13 +462,22 @@ async fn password_change_requires_sudo() {
 /// id. The config is otherwise a minimal dev stub (it is never actually called
 /// in these tests — the redirect target is what we assert on).
 async fn seed_sso_org(db: &Database, slug: &str, enforce_sso: bool) -> i64 {
+    seed_sso_org_with_issuer(db, slug, enforce_sso, "https://idp.example").await
+}
+
+async fn seed_sso_org_with_issuer(
+    db: &Database,
+    slug: &str,
+    enforce_sso: bool,
+    issuer: &str,
+) -> i64 {
     let org_id = db.create_org(slug, slug).await.unwrap();
     db.upsert_idp_config(&IdpConfigRecord {
         org_id,
-        issuer: "https://idp.example".into(),
-        authorization_endpoint: "https://idp.example/authorize".into(),
-        token_endpoint: "https://idp.example/token".into(),
-        jwks_uri: "https://idp.example/jwks".into(),
+        issuer: issuer.into(),
+        authorization_endpoint: format!("{issuer}/authorize"),
+        token_endpoint: format!("{issuer}/token"),
+        jwks_uri: format!("{issuer}/jwks"),
         client_id: "hub-client".into(),
         client_secret_enc: None,
         scopes: "openid email profile".into(),
@@ -604,27 +613,22 @@ async fn unenforced_user_password_login_still_works() {
 #[tokio::test]
 async fn enforced_user_cannot_set_password() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let app = router(app_state(Arc::clone(&db)).await).await;
-
     let org_id = seed_sso_org(&db, "acme", true).await;
     db.add_org_domain(org_id, "acme.com").await.unwrap();
     db.verify_org_domain("acme.com").await.unwrap();
 
-    // Sign in via magic link (fresh = sudo-capable, satisfying the sudo gate).
-    let secret = db.create_magic_link("dev@acme.com").await.unwrap();
-    let resp = send(
-        &app,
-        "GET",
-        &format!("/auth/magic?token={secret}"),
-        None,
-        None,
-    )
-    .await;
-    let cookie = format!(
-        "{COOKIE_NAME}={}",
-        cookie_value(&resp.set_cookie.expect("magic sets cookie"))
-    );
-    let user = db.user_by_email("dev@acme.com").await.unwrap().unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
+    let secret = db
+        .create_session_with_authentication(
+            user,
+            3_600,
+            1,
+            &SessionAuthentication::Oidc("https://idp.example".into()),
+        )
+        .await
+        .unwrap();
+    let cookie = format!("{COOKIE_NAME}={}", secret,);
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
     let resp = send(
@@ -648,26 +652,22 @@ async fn enforced_user_cannot_set_password() {
 #[tokio::test]
 async fn enforced_user_cannot_enroll_passkey() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let app = router(app_state(Arc::clone(&db)).await).await;
-
     let org_id = seed_sso_org(&db, "acme", true).await;
     db.add_org_domain(org_id, "acme.com").await.unwrap();
     db.verify_org_domain("acme.com").await.unwrap();
 
-    let secret = db.create_magic_link("dev@acme.com").await.unwrap();
-    let resp = send(
-        &app,
-        "GET",
-        &format!("/auth/magic?token={secret}"),
-        None,
-        None,
-    )
-    .await;
-    let cookie = format!(
-        "{COOKIE_NAME}={}",
-        cookie_value(&resp.set_cookie.expect("magic sets cookie"))
-    );
-    let user = db.user_by_email("dev@acme.com").await.unwrap().unwrap();
+    let user = db.create_user("dev@acme.com", None).await.unwrap();
+    let secret = db
+        .create_session_with_authentication(
+            user,
+            3_600,
+            1,
+            &SessionAuthentication::Oidc("https://idp.example".into()),
+        )
+        .await
+        .unwrap();
+    let cookie = format!("{COOKIE_NAME}={}", secret,);
+    let app = router(app_state(Arc::clone(&db)).await).await;
 
     // The finish handler refuses before parsing the WebAuthn payload, so a
     // minimal JSON body (just a valid CSRF) suffices to prove the gate.
@@ -692,4 +692,266 @@ async fn enforced_user_cannot_enroll_passkey() {
         db.list_user_credentials(user).await.unwrap().is_empty(),
         "no passkey persisted for an SSO-enforced user"
     );
+}
+
+#[tokio::test]
+async fn external_member_magic_link_request_redirects_to_sso() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    let user = db
+        .create_user("contractor@outside.example", None)
+        .await
+        .unwrap();
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        "viewer",
+    )
+    .await
+    .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "POST",
+        "/login",
+        None,
+        Some("email=contractor%40outside.example"),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    assert_eq!(
+        response.location.as_deref(),
+        Some("/auth/oidc/start?org=acme")
+    );
+    assert!(response.set_cookie.is_none());
+    assert_eq!(org_id, db.org_by_slug("acme").await.unwrap().unwrap().id);
+}
+
+#[tokio::test]
+async fn child_scope_member_magic_link_request_redirects_to_sso() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    db.create_project(org_id, "infra", "Infrastructure")
+        .await
+        .unwrap();
+    let project = db.project_by_path(org_id, "infra").await.unwrap().unwrap();
+    let user = db.create_user("child@outside.example", None).await.unwrap();
+    db.grant_membership("user", user, &project.scope_key, "viewer")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "POST",
+        "/login",
+        None,
+        Some("email=child%40outside.example"),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    assert_eq!(
+        response.location.as_deref(),
+        Some("/auth/oidc/start?org=acme")
+    );
+    assert!(response.set_cookie.is_none());
+}
+
+#[tokio::test]
+async fn magic_link_rechecks_policy_when_consumed() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db
+        .create_user("member@outside.example", None)
+        .await
+        .unwrap();
+    let secret = db
+        .create_magic_link("member@outside.example")
+        .await
+        .unwrap();
+
+    seed_sso_org(&db, "acme", true).await;
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        "viewer",
+    )
+    .await
+    .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "GET",
+        &format!("/auth/magic?token={secret}"),
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    assert_eq!(
+        response.location.as_deref(),
+        Some("/auth/oidc/start?org=acme")
+    );
+    assert!(response.set_cookie.is_none());
+}
+
+#[tokio::test]
+async fn policy_change_revokes_existing_local_session() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db
+        .create_user("member@outside.example", None)
+        .await
+        .unwrap();
+    let secret = db
+        .create_session_with_authentication(user, 3_600, 1, &SessionAuthentication::MagicLink)
+        .await
+        .unwrap();
+
+    seed_sso_org(&db, "acme", true).await;
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        "viewer",
+    )
+    .await
+    .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = format!("{COOKIE_NAME}={secret}");
+
+    let response = send(&app, "GET", "/-/account", Some(&cookie), None).await;
+
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    assert_eq!(
+        response.location.as_deref(),
+        Some("/auth/oidc/start?org=acme")
+    );
+    assert!(db.validate_session(&secret).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn one_oidc_issuer_satisfies_multiple_organizations() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    seed_sso_org(&db, "acme", true).await;
+    seed_sso_org(&db, "widgets", true).await;
+    let user = db
+        .create_user("member@outside.example", None)
+        .await
+        .unwrap();
+    for slug in ["acme", "widgets"] {
+        db.grant_membership("user", user, &common::org_scope(&db, slug).await, "viewer")
+            .await
+            .unwrap();
+    }
+    let secret = db
+        .create_session_with_authentication(
+            user,
+            3_600,
+            1,
+            &SessionAuthentication::Oidc("https://idp.example".into()),
+        )
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = format!("{COOKIE_NAME}={secret}");
+
+    let response = send(&app, "GET", "/-/account", Some(&cookie), None).await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.body);
+}
+
+#[tokio::test]
+async fn different_oidc_issuers_refuse_one_global_session() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    seed_sso_org_with_issuer(&db, "acme", true, "https://idp-a.example").await;
+    seed_sso_org_with_issuer(&db, "widgets", true, "https://idp-b.example").await;
+    let user = db
+        .create_user("member@outside.example", None)
+        .await
+        .unwrap();
+    db.set_user_password(user, &hash_password("hunter2").unwrap())
+        .await
+        .unwrap();
+    for slug in ["acme", "widgets"] {
+        db.grant_membership("user", user, &common::org_scope(&db, slug).await, "viewer")
+            .await
+            .unwrap();
+    }
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=member%40outside.example&password=hunter2"),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.body);
+    assert!(response.body.contains("incompatible sign-in policies"));
+    assert!(response.set_cookie.is_none());
+}
+
+#[tokio::test]
+async fn instance_owner_password_remains_available_for_recovery() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let (email, user) = db
+        .bootstrap_root("root@acme.com", "recovery-pass")
+        .await
+        .unwrap();
+    let org_id = seed_sso_org(&db, "acme", true).await;
+    db.add_org_domain(org_id, "acme.com").await.unwrap();
+    db.verify_org_domain("acme.com").await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "POST",
+        "/login/password",
+        None,
+        Some("email=root%40acme.com&password=recovery-pass"),
+    )
+    .await;
+
+    assert_eq!(email, "root@acme.com");
+    assert!(db.user_is_instance_owner(user).await.unwrap());
+    assert_eq!(response.status, StatusCode::SEE_OTHER, "{}", response.body);
+    assert!(response.set_cookie.is_some());
+}
+
+#[tokio::test]
+async fn policy_lookup_failure_does_not_issue_magic_link() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_user("member@outside.example", None)
+        .await
+        .unwrap();
+    db.fixture_backend()
+        .execute("DROP TABLE org_idp_configs", &[])
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let response = send(
+        &app,
+        "POST",
+        "/login",
+        None,
+        Some("email=member%40outside.example"),
+    )
+    .await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        response.body
+    );
+    assert!(response.set_cookie.is_none());
 }
