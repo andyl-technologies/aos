@@ -31,7 +31,7 @@ pub(super) extern "C" fn completed(
         }
         owner
             .reader
-            .corroborate_completion(owner)
+            .corroborate_completion(owner.plugin_id)
             .map_err(|_| -libc::EIO)?;
         // SAFETY: Source authenticated this exact initialized callback argument
         // and its retained delivery phase above. The copy carries facts only.

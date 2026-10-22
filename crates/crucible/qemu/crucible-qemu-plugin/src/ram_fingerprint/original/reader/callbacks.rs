@@ -104,7 +104,7 @@ fn read(
     clean((api.child_identity)(source, epoch))?;
     owner
         .reader
-        .corroborate_completion(owner)
+        .corroborate_completion(owner.plugin_id)
         .map_err(|_| -libc::EIO)?;
     let selector = owner.selector();
     let mut state = owner.reader.state.try_lock().map_err(|_| -libc::EBUSY)?;

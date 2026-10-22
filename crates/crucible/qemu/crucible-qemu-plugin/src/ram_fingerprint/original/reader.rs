@@ -201,7 +201,7 @@ impl Reader {
     ///
     /// # Errors
     /// Refuses failed observations, changed receipts or retained delivery debt.
-    pub(super) fn corroborate_completion(&self, owner: &Owner) -> Result<(), RamError> {
+    pub(super) fn corroborate_completion(&self, plugin_id: u64) -> Result<(), RamError> {
         let Some(api) = self.api else {
             return Ok(());
         };
@@ -214,7 +214,7 @@ impl Reader {
         }
         let mut final_source = Completion::default();
         let status = (api.observe_completion)(
-            owner.plugin_id,
+            plugin_id,
             self.holder.as_ptr(),
             self.epoch.as_ptr(),
             owner_epoch,
@@ -256,10 +256,7 @@ impl Reader {
     /// # Errors
     /// Preserves active children, uncertain returns and independent negative
     /// statuses. Known physical consumption is recorded before error projection.
-    pub(super) fn return_registration(&self, owner: &Owner) -> Result<(), RamError> {
-        let Some(api) = self.api else {
-            return Ok(());
-        };
+    pub(super) fn return_registration(&self, plugin_id: u64) -> Result<(), RamError> {
         {
             let state = self.state.try_lock().map_err(|_| busy())?;
             if state.returned {
@@ -269,7 +266,10 @@ impl Reader {
                 return Ok(());
             }
         }
-        self.corroborate_completion(owner)?;
+        let Some(api) = self.api else {
+            return Ok(());
+        };
+        self.corroborate_completion(plugin_id)?;
         let (attempted, returned, closed, return_attempted, epoch) = {
             let state = self.state.try_lock().map_err(|_| busy())?;
             if state.completion_pending
@@ -303,7 +303,7 @@ impl Reader {
         }
         if !closed {
             self.state.try_lock().map_err(|_| busy())?.close_attempted = true;
-            let status = (api.close)(owner.plugin_id, self.holder.load(Ordering::Acquire), epoch);
+            let status = (api.close)(plugin_id, self.holder.load(Ordering::Acquire), epoch);
             let mut state = self.state.try_lock().map_err(|_| busy())?;
             state.close_status.get_or_insert(status);
             drop(state);
@@ -311,11 +311,11 @@ impl Reader {
             self.state.try_lock().map_err(|_| busy())?.closed = true;
         }
         self.state.try_lock().map_err(|_| busy())?.return_attempted = true;
-        let first = (api.return_owner)(owner.plugin_id, self.holder.as_ptr(), self.epoch.as_ptr());
+        let first = (api.return_owner)(plugin_id, self.holder.as_ptr(), self.epoch.as_ptr());
         self.state.try_lock().map_err(|_| busy())?.return_first = Some(first);
         let mut observation = abi::RegistrationReturn::default();
         let post = (api.observe_return)(
-            owner.plugin_id,
+            plugin_id,
             self.holder.as_ptr(),
             self.epoch.as_ptr(),
             epoch,
@@ -357,6 +357,12 @@ fn returned_result(state: &ReaderState) -> Result<(), RamError> {
             "RAM reader registration return history absent",
         ));
     };
+    // Physical cleanup can finish after an earlier close refusal. Preserve
+    // that first failure without retrying the already consumed registration.
+    let close = state.close_status.ok_or(RamError::Invariant(
+        "RAM reader registration close history absent",
+    ))?;
+    native(close, "close RAM reader admission")?;
     native(first, "return RAM reader registration")?;
     native(post, "observe RAM reader registration return")?;
     native(
@@ -383,4 +389,58 @@ fn native(status: c_int, operation: &'static str) -> Result<(), RamError> {
 
 pub(super) fn active_owner() -> Option<&'static Owner> {
     OBSERVER.get()?.original.map(OwnerRef::owner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn consumed_registration_replays_close_refusal_without_source_calls() {
+        // This local journal supplies no Source owner or Native return. The
+        // absent API proves replay cannot call another destructor or observer.
+        let reader = Reader {
+            api: None,
+            holder: AtomicPtr::new(std::ptr::null_mut()),
+            epoch: AtomicU64::new(0),
+            state: Mutex::new(ReaderState {
+                attempted: true,
+                close_attempted: true,
+                close_status: Some(-libc::EBUSY),
+                closed: true,
+                return_attempted: true,
+                returned: true,
+                return_first: Some(0),
+                return_post: Some(0),
+                return_observation: Some(abi::RegistrationReturn {
+                    owner_epoch: 7,
+                    attempted: 1,
+                    returned: 1,
+                    consumed: 1,
+                    ..abi::RegistrationReturn::default()
+                }),
+                ..ReaderState::default()
+            }),
+        };
+
+        for _ in 0..2 {
+            let error = reader.return_registration(23).unwrap_err();
+            assert!(matches!(
+                error,
+                RamError::Native {
+                    operation: "close RAM reader admission",
+                    status,
+                } if status == -libc::EBUSY
+            ));
+        }
+
+        let state = reader.state.try_lock().unwrap();
+        assert!(state.returned);
+        assert_eq!(state.close_status, Some(-libc::EBUSY));
+        assert_eq!(state.return_first, Some(0));
+        assert_eq!(state.return_post, Some(0));
+        assert_eq!(state.return_observation.unwrap().consumed, 1);
+        assert!(reader.holder.load(Ordering::Acquire).is_null());
+        assert_eq!(reader.epoch.load(Ordering::Acquire), 0);
+    }
 }

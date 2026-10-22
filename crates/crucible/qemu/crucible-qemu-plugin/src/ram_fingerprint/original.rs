@@ -181,7 +181,7 @@ impl Owner {
     /// # Errors
     /// Retains the allocation if a read, delivery or physical return is unsettled.
     pub(crate) fn return_reader_registration(&self) -> Result<(), RamError> {
-        self.reader.return_registration(self)
+        self.reader.return_registration(self.plugin_id)
     }
 
     /// Initializes the inline paid owner before its stable fields are enrolled.
@@ -375,7 +375,7 @@ impl Owner {
 
     /// Returns only the module view, independently of Original post and end.
     fn return_view(&self) -> Result<(), RamError> {
-        self.reader.corroborate_completion(self)?;
+        self.reader.corroborate_completion(self.plugin_id)?;
         let selector = self
             .selector()
             .map_err(ObservationOperationError::into_io)?;
