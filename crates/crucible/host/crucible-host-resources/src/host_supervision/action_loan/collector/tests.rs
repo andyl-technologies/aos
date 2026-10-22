@@ -439,3 +439,54 @@ fn another_actual_operation_class_cannot_be_reclassified_as_cleanup() {
     );
     assert!(roster.publisher.observed.lock().unwrap().is_none());
 }
+
+fn check_collected_expiry_stays_terminal(projection: Projection) {
+    let owner = owner();
+    let cleanup = owner.begin_control(HostOperationClass::Cleanup).unwrap();
+    let mut guards = [None; 4];
+    guards[projection.first()] = Some(&cleanup);
+    let roster = ComponentRoster::new(guards, [0, 0]);
+    let mask = 1 << projection.first();
+    let original = {
+        let state = owner.shared.state.lock().unwrap();
+        state.operations.get(&cleanup.id).unwrap().started
+    };
+    let elapsed_since_entry = owner.elapsed().checked_sub(original).unwrap();
+    assert!(!elapsed_since_entry.is_zero());
+
+    // The authored bound is already elapsed from this actual operation's
+    // original start. No sleep, synthetic clock or status poll causes expiry.
+    let mut shortened = HostOperationBudgets::default();
+    let budget = &mut shortened.classes[HostOperationClass::Cleanup as usize];
+    budget.total_timeout = Some(elapsed_since_entry);
+    budget.progress_timeout = None;
+    owner.update_budgets(0, shortened).unwrap();
+    HostActionLoan::refresh_selected(roster.selected(mask), projection).unwrap();
+    let expired = roster.observed();
+    assert_eq!(expired.parents[projection.first()].state, 2);
+
+    owner
+        .update_budgets(1, HostOperationBudgets::default())
+        .unwrap();
+    HostActionLoan::refresh_selected(roster.selected(mask), projection).unwrap();
+    let amended = roster.observed();
+    assert_eq!(amended.parents[projection.first()].state, 2);
+    assert_eq!(
+        amended.parents[projection.first()].started_ns,
+        expired.parents[projection.first()].started_ns
+    );
+    assert_eq!(
+        amended.parents[projection.first()].progress_ns,
+        expired.parents[projection.first()].progress_ns
+    );
+}
+
+#[test]
+fn collected_role_expiry_remains_terminal_after_a_later_policy_extension() {
+    check_collected_expiry_stays_terminal(Projection::QuantumRole(HostQuantumActionRole::Cleanup));
+}
+
+#[test]
+fn collected_cohort_expiry_remains_terminal_after_a_later_policy_extension() {
+    check_collected_expiry_stays_terminal(Projection::Cohort(1));
+}

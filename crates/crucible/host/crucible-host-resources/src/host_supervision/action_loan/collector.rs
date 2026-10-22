@@ -266,13 +266,21 @@ impl HostActionLoan {
             if !outer_subscriber.publisher.same_owner(&subscriber.publisher) {
                 return Err(HostSupervisionError::Unavailable);
             }
-            parents[index] = parent_snapshot(
+            let (parent, disposition) = parent_snapshot_with_state(
                 &loan.supervisor.shared,
                 state,
                 loan.operation,
                 subscriber.preparation,
                 subscriber.role,
             )?;
+            // Preserve the actual typed decision before publication can fail.
+            // A later policy extension cannot reopen an observed terminal loan.
+            state
+                .operations
+                .get_mut(&loan.operation)
+                .ok_or(HostSupervisionError::Unavailable)?
+                .state = disposition;
+            parents[index] = parent;
         }
         let first_owner = owners[..owner_count]
             .iter()

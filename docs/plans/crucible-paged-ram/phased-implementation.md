@@ -69,6 +69,32 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Sticky terminal decisions from actual lender collection
+
+The collector now saves the actual typed operation disposition under the same
+lender lock and at the same observation cut as its parent snapshot, before any
+publisher callback can refuse. Both full-cohort and selected-role collection
+retain observed expiry in the genuine operation record. Later budget extensions
+cannot reopen that operation. The observation helper returns the typed decision
+beside the wire projection; no decoded state byte becomes lender authority.
+The fixed prebirth scratch recipe prices this complete returned pair.
+
+Two causal controls first reproduced the defect independently: an authored
+Cleanup bound already elapsed from its real original entry, collection observed
+Expired, and a subsequent budget extension exposed Running again. Both failed
+at that exact terminal-state assertion. Their unchanged controls now pass for
+the full cohort and selected Cleanup. They use no synthetic clock, sleep or
+intervening operation-status poll; original start and progress coordinates stay
+unchanged. Every Host resource target passes (324 reported cases), as does
+strict all-target, all-feature Clippy. The canonical ABI registration includes
+both regressions, bringing the selected collector group to eight plus the
+separate unsupported-publisher refusal. Mandatory application compilation,
+ABI, exact supervision and hygiene checks are running.
+
+This fixes actual Host lender state and does not create a Source or Native
+owner. Complete paired publication, deferred independent Cleanup entry for
+unbounded Work, actual execution-stack lenders and physical closure remain open.
+
 #### Independent Host Quantum-role collection
 
 The action collector now selects either the complete cohort or one actual
@@ -98,8 +124,9 @@ publishers and wrong actual classes are covered. These are component-funded
 mechanism fixtures with real entered Host operations and directly seeded
 memberships; they create no authenticated Source purpose or Native borrower.
 The ABI gate registers the seven controls with exact counts and canonical
-names. Required application compilation, all QEMU Host target compilation,
-ABI and license-boundary checks are running. The first hygiene evaluation
+names. Every QEMU Host target compiles with all features. Required application
+compilation, ABI and license-boundary checks are running. The corrected hygiene
+check passes. The first hygiene evaluation
 correctly refused the stale review digest for the parent module's changed
 reexport; its unchanged 1,824-line responsibility and focused child boundary
 were reviewed and the exact digest refreshed, without adding a waiver.

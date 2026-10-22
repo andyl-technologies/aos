@@ -548,7 +548,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::quantum_setup \
                 -- --test-threads=1
-              require_test_set 6 host-quantum-role \
+              require_test_set 8 host-quantum-role \
                 host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
                 -p crucible-host-resources --features private-measurement-domain \
                 --lib host_supervision::action_loan::collector::tests::

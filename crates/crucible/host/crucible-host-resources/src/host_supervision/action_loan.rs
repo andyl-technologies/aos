@@ -207,7 +207,7 @@ impl HostActionLoan {
             + std::mem::size_of::<HostParentParkReturnReceipt>()
             + std::mem::size_of::<ActionReturn>()
             + std::mem::size_of::<ParentParkReturn>()
-            + std::mem::size_of::<ActionParent>()
+            + std::mem::size_of::<(ActionParent, HostOperationState)>()
             + std::mem::size_of::<HostOuterCapBinding>()) as u64
     }
 
@@ -673,6 +673,17 @@ fn parent_snapshot(
     preparation: u32,
     role: u32,
 ) -> Result<ActionParent, HostSupervisionError> {
+    parent_snapshot_with_state(shared, state, id, preparation, role).map(|(parent, _)| parent)
+}
+
+/// Keeps the typed lender decision beside its wire observation at one cut.
+fn parent_snapshot_with_state(
+    shared: &Arc<Shared>,
+    state: &SupervisionState,
+    id: u64,
+    preparation: u32,
+    role: u32,
+) -> Result<(ActionParent, HostOperationState), HostSupervisionError> {
     let operation = state
         .operations
         .get(&id)
@@ -725,38 +736,41 @@ fn parent_snapshot(
             0
         }
     };
-    Ok(ActionParent {
-        cap: shared.cap_id,
-        budget_owner: shared.budget_owner,
-        operation: id,
-        class: operation.class as u32,
-        state: match disposition {
-            HostOperationState::Running => 0,
-            HostOperationState::Completed => 1,
-            HostOperationState::Expired => 2,
-            HostOperationState::Canceled => 3,
+    Ok((
+        ActionParent {
+            cap: shared.cap_id,
+            budget_owner: shared.budget_owner,
+            operation: id,
+            class: operation.class as u32,
+            state: match disposition {
+                HostOperationState::Running => 0,
+                HostOperationState::Completed => 1,
+                HostOperationState::Expired => 2,
+                HostOperationState::Canceled => 3,
+            },
+            started_revision: operation.started_revision,
+            policy_revision: state.policy_revision,
+            outer_revision: state.cap_revision,
+            origin_ns: origin,
+            started_ns: coordinate(operation.started)?,
+            progress_ns: coordinate(operation.last_progress)?,
+            total_end_ns: end(operation.started, budget.total_timeout)?,
+            progress_end_ns: end(operation.last_progress, budget.progress_timeout)?,
+            outer_end_ns: if operation.class == HostOperationClass::Cleanup {
+                0
+            } else {
+                end(Duration::ZERO, state.cap_allowance)?
+            },
+            private_end_ns,
+            poll_ns: u64::try_from(budget.poll_interval.as_nanos())
+                .map_err(|_| HostSupervisionError::InvalidBudget)?,
+            completed: operation.completed,
+            required: operation.required,
+            preparation,
+            role,
         },
-        started_revision: operation.started_revision,
-        policy_revision: state.policy_revision,
-        outer_revision: state.cap_revision,
-        origin_ns: origin,
-        started_ns: coordinate(operation.started)?,
-        progress_ns: coordinate(operation.last_progress)?,
-        total_end_ns: end(operation.started, budget.total_timeout)?,
-        progress_end_ns: end(operation.last_progress, budget.progress_timeout)?,
-        outer_end_ns: if operation.class == HostOperationClass::Cleanup {
-            0
-        } else {
-            end(Duration::ZERO, state.cap_allowance)?
-        },
-        private_end_ns,
-        poll_ns: u64::try_from(budget.poll_interval.as_nanos())
-            .map_err(|_| HostSupervisionError::InvalidBudget)?,
-        completed: operation.completed,
-        required: operation.required,
-        preparation,
-        role,
-    })
+        disposition,
+    ))
 }
 
 fn has_operation(
