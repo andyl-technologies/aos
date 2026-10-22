@@ -56,7 +56,7 @@ use aos_nar::cache::nix_cache_info;
 use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
-use crate::auth::{self, AuthClaims, AuthResult};
+use crate::auth::{self, AuthClaims, AuthResult, ViewAccessError};
 use crate::build::BuildManager;
 use crate::compress::{self, Compression};
 use crate::config::ServerConfig;
@@ -179,9 +179,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Builds the ConnectRPC service router with all four RPC services
 /// (cache, build, gc, auth) registered against the shared state.
 fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
-    let cache_svc = Arc::new(services::cache::CacheServiceImpl {
-        state: Arc::clone(&state),
-    });
+    let cache_svc = Arc::new(services::cache::CacheServiceImpl::new(Arc::clone(&state)));
     let build_svc = Arc::new(services::build::BuildServiceImpl {
         state: Arc::clone(&state),
     });
@@ -205,6 +203,26 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
 // Read-only endpoints (respect anonymous_read)
 // ---------------------------------------------------------------------------
 
+fn require_rest_read_access(
+    auth: &AuthResult,
+    view: &str,
+    allow_anonymous: bool,
+) -> Result<(), Response> {
+    auth::require_view_permission(auth.claims(), view, "read", allow_anonymous).map_err(|error| {
+        match error {
+            ViewAccessError::AuthenticationRequired => {
+                (StatusCode::UNAUTHORIZED, "authentication required").into_response()
+            }
+            ViewAccessError::ViewNotAuthorized => {
+                (StatusCode::FORBIDDEN, "view not authorized").into_response()
+            }
+            ViewAccessError::PermissionRequired => {
+                (StatusCode::FORBIDDEN, "read permission required").into_response()
+            }
+        }
+    })
+}
+
 /// `GET /{view}/nix-cache-info` — Nix binary cache metadata.
 ///
 /// Anonymous when the view has `anonymous_read = true`, otherwise requires
@@ -224,12 +242,9 @@ async fn cache_info_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    // Enforce auth unless anonymous_read is enabled.
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, "auth required for cache-info");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, "cache-info read access denied");
+        return response;
     }
 
     let mut body = nix_cache_info(&state.store_dir, 30);
@@ -258,11 +273,9 @@ async fn narinfo_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, hash = %hash_narinfo, "narinfo read access denied");
+        return response;
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
@@ -352,11 +365,9 @@ async fn nar_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, filename = %filename, "NAR read access denied");
+        return response;
     }
 
     let zstd_level = state.config.compression.level;
@@ -788,7 +799,7 @@ where
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    if let Err(reason) = pack::validate_imported_path(&imported) {
+    if let Err(reason) = pack::validate_imported_path(&imported).await {
         tracing::warn!(path = %imported, reason = %reason, "imported path rejected");
         return Err((StatusCode::BAD_REQUEST, reason).into_response());
     }
@@ -878,13 +889,13 @@ async fn upload_progress_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    if !claims.has_view(&view) || !claims.has_permission("build") {
+        return (StatusCode::FORBIDDEN, "build permission required").into_response();
+    }
     let hash = match parse_store_hash(&hash) {
         Ok(hash) => hash,
         Err(response) => return response,
     };
-    if !claims.has_view(&view) || !claims.has_permission("build") {
-        return (StatusCode::FORBIDDEN, "build permission required").into_response();
-    }
 
     match upload_session::progress(state.views.root(), &view, &claims.sub, &hash).await {
         Ok((received, total)) => (
