@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 497 bindings: 478 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 505 bindings: 486 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -539,8 +539,11 @@ iteration with the compiler's fixed-array views. The initial Clippy refusal is
 retained. Counted ABI registration and exact component bindings are added;
 the hermetic ABI gate passes at `k8q7cjm0v2sz5fg52lsmdxgskn1n8x2g`. All
 5,350 committed Rust/TOML inputs match that checkpoint's final application-test
-source, but its full application compilation remains pending. Later manifest,
-plan-fourteen and probe additions require their own fresh hermetic gates.
+source. Its mandatory application unit/integration target compilation now passes
+at `9b61z4xrwvyy541fi0wlq8cd0a7bhz9a`; the exact source-comparison record has
+SHA256 `209d6bc048f867e30ab262bf2705da3687bea9643eb89ab3d27692cbe640a852`.
+Later manifest, plan-fourteen and probe additions require their own fresh
+hermetic gates.
 
 The borrowed complete manifest reader additionally checks the public clarification
 at signed `86ed25302e7778b2ca24fe18f705645371d54cec`, tree
@@ -626,8 +629,13 @@ including negative wait/errno and reap observations without a launch return.
 Seven framing/correlation cases and one extent case join the counted ABI groups
 and requirement bindings. The complete 277-test protocol suite and strict
 all-target Clippy pass. Mutually consistent foreign tails still refuse the
-original containing Source identity. Fresh hermetic ABI, coverage inventory and
-application-target checks are pending. This codec issues no paid landing,
+original containing Source identity. Refreshed inventory
+`c42yjzg3319bsgwgwym8j0lc13si6smv` verifies 505 canonical bindings: 473 model,
+thirteen format and nineteen native, with 148 uncovered requirements and none
+fully qualified. Fresh hermetic ABI and application-target checks are pending.
+All 5,358 committed Rust/TOML inputs match the latter's immutable source
+`6dzf80a82r1894dj4pdfbx2mhs5sh5xg`; comparison record SHA256 is
+`c965bfe66696331a34445f7e2f228324d1747158fb9bd0e112b60270639541d6`. This codec issues no paid landing,
 receiving alias, containing loan, producer qualification or reap authority;
 Setup twelve and full process admission remain unavailable.
 
