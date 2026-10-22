@@ -10066,8 +10066,13 @@ first-launcher fixture initially fails evaluation because it omits the server
 test package admission, leaving enabled chrony without its lifecycle contract.
 Both carrier fleet fixtures now import that existing admission module, as the
 root-handoff fixture already does. The production service contracts and
-permissions are unchanged. The corrected installed QEMU run remains pending;
-neither component receipt admits `AOSMMCAP1` or public Create.
+permissions are unchanged. Both corrected first-launcher runs then stop before
+boot at the image closure audit: the selected enforcing carrier runtime measures
+1,154,603,480 bytes, above the fixtures' former 1 GiB allowance. Both carrier
+fleet fixtures now declare and assert a bounded 1,152 MiB runtime closure,
+with no change to production image limits or Controller funding. Installed
+QEMU reruns remain pending; neither component receipt admits `AOSMMCAP1` or
+public Create.
 
 The selected carrier input now appends the signed `dm_mod.major=252`
 parameter. Its module rejects a removed parameter, a conflicting value and

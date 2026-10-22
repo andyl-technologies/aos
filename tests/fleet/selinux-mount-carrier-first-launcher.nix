@@ -40,7 +40,9 @@
           aos.image.budgets.maxInitrdMiB = 256;
           aos.image.budgets.maxBootExecutableMiB = 288;
           aos.image.budgets.maxDownloadMiB = 1536;
-          aos.image.budgets.maxRuntimeClosureMiB = 1024;
+          # The selected enforcing server/carrier closure measures 1,101.2 MiB.
+          # Keep fixture-only headroom without changing production image limits.
+          aos.image.budgets.maxRuntimeClosureMiB = 1152;
           boot.initrd.systemd.mountExecutableCarrier = carrier;
           aos.sandbox.mountBroker = lib.mkIf enableMountUnit {
             enable = true;
@@ -74,7 +76,7 @@
       && cfg.aos.image.budgets.maxInitrdMiB == 256
       && cfg.aos.image.budgets.maxBootExecutableMiB == 288
       && cfg.aos.image.budgets.maxDownloadMiB == 1536
-      && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1024
+      && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1152
       && (!enableMountUnit || cfg.aos.sandbox.mountBroker.useExecutableCarrier)
       && builtins.elem "selinux=1" cfg.aos.boot.kernelParams
       && builtins.elem "enforcing=1" cfg.aos.boot.kernelParams

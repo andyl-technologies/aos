@@ -37,7 +37,9 @@
     aos.image.budgets.maxInitrdMiB = 256;
     aos.image.budgets.maxBootExecutableMiB = 288;
     aos.image.budgets.maxDownloadMiB = 1536;
-    aos.image.budgets.maxRuntimeClosureMiB = 1024;
+    # The enforcing server/carrier closure exceeds the old 1 GiB bound.
+    # Match the measured first-launcher fixture's bounded test-only allowance.
+    aos.image.budgets.maxRuntimeClosureMiB = 1152;
     aos.boot.initrd.extraPackages = [
       pkgs.attr
       pkgs.coreutils
@@ -127,7 +129,7 @@
       && cfg.aos.image.budgets.maxInitrdMiB == 256
       && cfg.aos.image.budgets.maxBootExecutableMiB == 288
       && cfg.aos.image.budgets.maxDownloadMiB == 1536
-      && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1024
+      && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1152
       && builtins.elem "selinux=1" cfg.aos.boot.kernelParams
       && builtins.elem "enforcing=1" cfg.aos.boot.kernelParams
       && builtins.elem "aos.selinux.root_handoff=1" cfg.aos.boot.kernelParams
