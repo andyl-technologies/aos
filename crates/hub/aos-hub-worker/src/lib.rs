@@ -1609,6 +1609,11 @@ mod entry {
             .map_err(|error| {
                 worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
             })?;
+        db.prune_expired_oidc_flows(now, 1_000)
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("prune expired OIDC flows: {error:#}"))
+            })?;
         let (_, newly_materialized_delivery_ids) = db
             .materialize_topology_events_with_delivery_ids()
             .await

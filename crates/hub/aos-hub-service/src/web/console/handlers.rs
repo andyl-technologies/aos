@@ -1373,7 +1373,8 @@ fn sso_start_path(org_slug: &str, next: Option<&str>) -> String {
 /// Accept only an absolute path on this origin as a post-authentication target.
 fn safe_return_path(next: Option<&str>) -> Option<&str> {
     next.map(str::trim).filter(|path| {
-        path.starts_with('/')
+        path.len() <= 2_048
+            && path.starts_with('/')
             && !path.starts_with("//")
             && !path.contains('\\')
             && !path.chars().any(char::is_control)
@@ -1405,11 +1406,13 @@ pub(crate) struct SsoForm {
 /// `/auth/oidc/start?org=…`.
 pub(crate) async fn login_sso(
     deps: ConsoleDeps,
+    headers: HeaderMap,
     RequestStart(started): RequestStart,
     Form(form): Form<SsoForm>,
 ) -> Response {
     begin_oidc(
         &deps,
+        &headers,
         &form.org,
         safe_return_path(form.next.as_deref()),
         started,
@@ -1432,15 +1435,17 @@ pub(crate) struct OidcStartQuery {
 /// org or an org without an IdP renders a clean error page (no stack trace).
 pub(crate) async fn oidc_start(
     deps: ConsoleDeps,
+    headers: HeaderMap,
     RequestStart(started): RequestStart,
     Query(query): Query<OidcStartQuery>,
 ) -> Response {
-    begin_oidc(&deps, &query.org, query.next.as_deref(), started).await
+    begin_oidc(&deps, &headers, &query.org, query.next.as_deref(), started).await
 }
 
 /// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
 async fn begin_oidc(
     deps: &ConsoleDeps,
+    headers: &HeaderMap,
     org_slug: &str,
     next: Option<&str>,
     started: Instant,
@@ -1451,9 +1456,22 @@ async fn begin_oidc(
         Ok(None) => return sso_error("That organization does not exist.", started),
         Err(err) => return internal(err),
     };
+    let rate_key = format!("{}:{}", org.id, resolved_client_ip(headers));
+    if let crate::ratelimit::RateDecision::Limited { retry_after } = deps
+        .ratelimit
+        .check(
+            crate::ratelimit::RateClass::OidcLogin,
+            &rate_key,
+            aos_hub_model::clock::now_unix_secs(),
+        )
+        .await
+    {
+        return too_many_requests(retry_after);
+    }
     match crate::auth::oidc::begin_login(&deps.db, &deps.external_url, org.id, next).await {
         Ok(redirect) => {
-            let cookie_name = match crate::auth::oidc::browser_binding_cookie_name(&redirect.state) {
+            let cookie_name = match crate::auth::oidc::browser_binding_cookie_name(&redirect.state)
+            {
                 Ok(name) => name,
                 Err(err) => return internal(err),
             };
@@ -2539,6 +2557,13 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn return_paths_are_same_origin_and_bounded() {
+        assert_eq!(safe_return_path(Some(" /settings ")), Some("/settings"));
+        assert!(safe_return_path(Some("//other.example/path")).is_none());
+        assert!(safe_return_path(Some(&format!("/{}", "a".repeat(2_048)))).is_none());
+    }
 
     #[test]
     fn oidc_flow_cookies_are_independent_and_host_only() {
