@@ -12,6 +12,7 @@ mod principals_mutations;
 mod principals_plans;
 mod principals_reads;
 mod sessions_reads;
+mod tokens_helpers;
 mod tokens_mutations;
 mod tokens_plans;
 mod tokens_reads;

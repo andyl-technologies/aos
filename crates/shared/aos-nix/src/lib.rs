@@ -13,6 +13,7 @@
 //! - [`store`] -- [`NixCli`], a thinner per-path wrapper around
 //!   `nix-store` queries, realisation, dump/export/import, plus the
 //!   [`PathInfo`] metadata record.
+//! - [`store_hash`] -- canonical parsing for Nix store-path hash identities.
 //! - [`identity`] -- bounded streaming NAR identities for admitted store tools.
 //! - [`error`] -- typed process/discovery failures without CLI exit policy.
 //! - [`executable`] -- checked executable paths inside immutable store roots.
@@ -27,7 +28,9 @@ pub mod executable;
 pub mod identity;
 pub mod runner;
 pub mod store;
+pub mod store_hash;
 
 pub use env::{aos_management_nix_env, aos_nix_env, configure_aos_nix_store};
 pub use runner::{CheckFailure, CheckReport, NixRunner};
 pub use store::{NixCli, PathInfo};
+pub use store_hash::{StoreHash, StoreHashError};

@@ -47,16 +47,16 @@ use axum::{
     routing::{get, head, post, put},
 };
 use serde::Deserialize;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncSeekExt};
 use tokio::process::Command;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use aos_nar::cache::nix_cache_info;
-use aos_nix::aos_nix_env;
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
-use crate::auth::{self, AuthClaims, AuthResult};
+use crate::auth::{self, AuthClaims, AuthResult, ViewAccessError};
 use crate::build::BuildManager;
 use crate::compress::{self, Compression};
 use crate::config::ServerConfig;
@@ -66,6 +66,7 @@ use crate::pack;
 use crate::sign::NarInfoSigner;
 use crate::store::NixStore;
 use crate::tokens::TokenStore;
+use crate::upload_session::{self, SessionError, UploadRange};
 use crate::views::ViewManager;
 
 use tracing;
@@ -76,16 +77,34 @@ use tracing;
 /// `meta/`, so names containing path traversal sequences (`..`), directory
 /// separators, or null bytes are rejected with `400 Bad Request`.
 fn validate_view_name(name: &str) -> Result<(), Response> {
-    if name.is_empty()
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    if crate::views::validate_view_name(name).is_err() {
         tracing::warn!(view = %name, "rejected invalid view name");
         return Err((StatusCode::BAD_REQUEST, "invalid view name").into_response());
     }
     Ok(())
+}
+
+/// Parses a canonical store hash from an HTTP path component.
+fn parse_store_hash(value: &str) -> Result<StoreHash, Response> {
+    value.parse().map_err(|error| {
+        tracing::warn!(hash = %value, %error, "rejected invalid store hash");
+        (StatusCode::BAD_REQUEST, "invalid store hash").into_response()
+    })
+}
+
+/// Parses a NAR filename and returns its canonical store identity.
+fn parse_nar_filename(name: &str) -> Result<StoreHash, Response> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid NAR filename").into_response());
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    parse_store_hash(hash)
 }
 
 // ConnectRPC service extension traits for registration
@@ -160,9 +179,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Builds the ConnectRPC service router with all four RPC services
 /// (cache, build, gc, auth) registered against the shared state.
 fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
-    let cache_svc = Arc::new(services::cache::CacheServiceImpl {
-        state: Arc::clone(&state),
-    });
+    let cache_svc = Arc::new(services::cache::CacheServiceImpl::new(Arc::clone(&state)));
     let build_svc = Arc::new(services::build::BuildServiceImpl {
         state: Arc::clone(&state),
     });
@@ -186,6 +203,26 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
 // Read-only endpoints (respect anonymous_read)
 // ---------------------------------------------------------------------------
 
+fn require_rest_read_access(
+    auth: &AuthResult,
+    view: &str,
+    allow_anonymous: bool,
+) -> Result<(), Response> {
+    auth::require_view_permission(auth.claims(), view, "read", allow_anonymous).map_err(|error| {
+        match error {
+            ViewAccessError::AuthenticationRequired => {
+                (StatusCode::UNAUTHORIZED, "authentication required").into_response()
+            }
+            ViewAccessError::ViewNotAuthorized => {
+                (StatusCode::FORBIDDEN, "view not authorized").into_response()
+            }
+            ViewAccessError::PermissionRequired => {
+                (StatusCode::FORBIDDEN, "read permission required").into_response()
+            }
+        }
+    })
+}
+
 /// `GET /{view}/nix-cache-info` — Nix binary cache metadata.
 ///
 /// Anonymous when the view has `anonymous_read = true`, otherwise requires
@@ -205,12 +242,9 @@ async fn cache_info_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    // Enforce auth unless anonymous_read is enabled.
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, "auth required for cache-info");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, "cache-info read access denied");
+        return response;
     }
 
     let mut body = nix_cache_info(&state.store_dir, 30);
@@ -239,19 +273,21 @@ async fn narinfo_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, hash = %hash_narinfo, "narinfo read access denied");
+        return response;
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
         Some(h) => h,
         None => return (StatusCode::BAD_REQUEST, "expected .narinfo suffix").into_response(),
     };
+    let hash = match parse_store_hash(hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
-    let store_path = match state.views.check_visibility(&view, hash) {
+    let store_path = match state.views.check_visibility(&view, &hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -278,7 +314,7 @@ async fn narinfo_handler(
     };
 
     // Update access metadata (best-effort, don't fail the request).
-    let _ = access::update_access(&state.views, &view, hash);
+    let _ = access::update_access(&state.views, &view, &hash);
 
     let body = match narinfo::format_narinfo(
         &info,
@@ -329,11 +365,9 @@ async fn nar_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, filename = %filename, "NAR read access denied");
+        return response;
     }
 
     let zstd_level = state.config.compression.level;
@@ -351,12 +385,12 @@ async fn nar_handler(
             .into_response();
     };
 
-    let store_hash = match name.split('-').next() {
-        Some(h) if !h.is_empty() => h,
-        _ => return (StatusCode::BAD_REQUEST, "invalid NAR filename").into_response(),
+    let store_hash = match parse_nar_filename(name) {
+        Ok(hash) => hash,
+        Err(response) => return response,
     };
 
-    let store_path = match state.views.check_visibility(&view, store_hash) {
+    let store_path = match state.views.check_visibility(&view, &store_hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -544,30 +578,22 @@ async fn query_missing_handler(
     Json(serde_json::json!({ "missing": missing })).into_response()
 }
 
-/// Parses a `Content-Range: bytes start-end/total` header value (as sent
-/// by chunked uploads), returning `(start, end, total)` on success.
-///
-/// Returns `None` for malformed values or inconsistent ranges
-/// (`start > end` or `end >= total`).
-fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
-    let rest = value.strip_prefix("bytes ")?;
-    let (range, total_str) = rest.split_once('/')?;
-    let (start_str, end_str) = range.split_once('-')?;
-    let start: u64 = start_str.parse().ok()?;
-    let end: u64 = end_str.parse().ok()?;
-    let total: u64 = total_str.parse().ok()?;
-    if start > end || end >= total {
-        return None;
-    }
-    Some((start, end, total))
-}
+const MAX_RESUMABLE_UPLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
-/// Returns the path to the partial upload file for a given hash
-/// (`{aos_root}/uploads/{hash}.partial`).
-fn partial_upload_path(hash: &str) -> std::path::PathBuf {
-    crate::aos_root()
-        .join("uploads")
-        .join(format!("{hash}.partial"))
+fn upload_session_error(error: SessionError) -> Response {
+    let status = match error {
+        SessionError::MalformedRange | SessionError::LengthMismatch { .. } => {
+            StatusCode::BAD_REQUEST
+        }
+        SessionError::LimitExceeded { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        SessionError::Busy
+        | SessionError::Missing
+        | SessionError::OffsetMismatch { .. }
+        | SessionError::TotalChanged { .. }
+        | SessionError::InvalidState => StatusCode::CONFLICT,
+        SessionError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (status, error.to_string()).into_response()
 }
 
 /// `PUT /{view}/store/{hash}` — upload a NAR-exported store path.
@@ -581,9 +607,9 @@ fn partial_upload_path(hash: &str) -> std::path::PathBuf {
 ///   `nix-store --export` output; it is imported immediately and the
 ///   imported path returned as `{"path": ...}`.
 /// - **Chunked/resumable** (`Content-Range: bytes start-end/total`): each
-///   chunk is written at its offset into a partial file; intermediate
+///   chunk extends a private session at its exact next offset; intermediate
 ///   chunks get `202 Accepted` with progress JSON, and the final chunk
-///   triggers assembly and import.
+///   triggers a streamed import.
 ///
 /// Imported paths must pass the `.drv`-or-content-addressed safety check
 /// and receive a temporary `tmp/` GC root until a build promotes them.
@@ -600,6 +626,10 @@ async fn upload_path_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     if !claims.has_view(&view) {
         tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for upload");
@@ -631,99 +661,51 @@ async fn upload_path_handler(
         }
     }
 
-    // Check for Content-Range header for chunked/resumable uploads.
-    let content_range = headers
-        .get(header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_content_range);
-
-    if let Some((start, end, total)) = content_range {
-        // Chunked upload: write chunk to partial file.
-        let upload_dir = crate::aos_root().join("uploads");
-        if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-            tracing::error!(view = %view, hash = %hash, error = %e, "failed to create upload dir");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("creating upload dir: {e}"),
-            )
-                .into_response();
-        }
-
-        let partial_path = partial_upload_path(&hash);
-
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(&partial_path)
-            .await;
-
-        let mut file = match file {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::error!(view = %view, hash = %hash, error = %e, "failed to open partial file");
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("opening partial file: {e}"),
-                )
-                    .into_response();
-            }
+    if let Some(content_range) = headers.get(header::CONTENT_RANGE) {
+        let content_range = match content_range.to_str() {
+            Ok(value) => value,
+            Err(_) => return upload_session_error(SessionError::MalformedRange),
+        };
+        let range = match UploadRange::parse(content_range) {
+            Ok(range) => range,
+            Err(error) => return upload_session_error(error),
+        };
+        let progress = match upload_session::append(
+            state.views.root(),
+            &view,
+            &claims.sub,
+            &hash,
+            range,
+            &body,
+            MAX_RESUMABLE_UPLOAD_BYTES,
+        )
+        .await
+        {
+            Ok(progress) => progress,
+            Err(error) => return upload_session_error(error),
         };
 
-        if let Err(e) = file.seek(std::io::SeekFrom::Start(start)).await {
-            tracing::error!(view = %view, hash = %hash, error = %e, "failed to seek in partial file");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("seeking in partial file: {e}"),
-            )
-                .into_response();
+        if progress.is_complete() {
+            tracing::info!(view = %view, hash = %hash, total_bytes = progress.total, "chunked upload complete, importing");
+            let response =
+                import_nar_file_with_tmp_root(&progress.path, &state.views, &view, &hash).await;
+            upload_session::remove(&progress.path).await;
+            return response;
         }
 
-        if let Err(e) = file.write_all(&body).await {
-            tracing::error!(view = %view, hash = %hash, error = %e, "failed to write chunk");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("writing chunk to partial file: {e}"),
-            )
-                .into_response();
-        }
-
-        drop(file);
-
-        let received = end + 1;
-
-        // If this is the final chunk, import the assembled file.
-        if received == total {
-            tracing::info!(view = %view, hash = %hash, total_bytes = total, "chunked upload complete, importing");
-            let full_data = match tokio::fs::read(&partial_path).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::error!(view = %view, hash = %hash, error = %e, "failed to read assembled file");
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("reading assembled file: {e}"),
-                    )
-                        .into_response();
-                }
-            };
-
-            // Clean up the partial file.
-            let _ = tokio::fs::remove_file(&partial_path).await;
-
-            return import_nar_with_tmp_root(&full_data, &state.views, &view).await;
-        }
-
-        // Not the final chunk — return 202 Accepted.
         return (
             StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "received": received, "total": total })),
+            Json(serde_json::json!({
+                "received": progress.received,
+                "total": progress.total,
+            })),
         )
             .into_response();
     }
 
     // No Content-Range — import the full body directly (original behavior).
     tracing::info!(view = %view, hash = %hash, bytes = body.len(), "upload received, importing");
-    import_nar_with_tmp_root(&body, &state.views, &view).await
+    import_nar_with_tmp_root(&body, &state.views, &view, &hash).await
 }
 
 /// Imports NAR data via `nix-store --import` and returns the imported
@@ -732,12 +714,48 @@ async fn upload_path_handler(
 /// error responses (`500` for process errors, `400` for import or
 /// validation rejections).
 async fn import_nar(data: &[u8]) -> Result<String, Response> {
+    let mut reader = std::io::Cursor::new(data);
+    import_nar_reader(&mut reader).await
+}
+
+async fn import_nar_file(path: &std::path::Path) -> Result<String, Response> {
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "failed to open completed upload");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("opening completed upload: {error}"),
+            )
+                .into_response()
+        })?;
+    file.seek(std::io::SeekFrom::Start(upload_session::HEADER_LENGTH))
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "failed to read completed upload header");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("reading completed upload header: {error}"),
+            )
+                .into_response()
+        })?;
+    import_nar_reader(&mut file).await
+}
+
+async fn import_nar_reader<R>(reader: &mut R) -> Result<String, Response>
+where
+    R: AsyncRead + Unpin,
+{
     let mut child = Command::new("nix-store")
         .envs(aos_nix_env())
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| {
             tracing::error!(error = %e, "failed to spawn nix-store --import");
@@ -749,7 +767,7 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(data).await.map_err(|e| {
+        tokio::io::copy(reader, &mut stdin).await.map_err(|e| {
             tracing::error!(error = %e, "failed to write NAR to nix-store");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -781,7 +799,7 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    if let Err(reason) = pack::validate_imported_path(&imported) {
+    if let Err(reason) = pack::validate_imported_path(&imported).await {
         tracing::warn!(path = %imported, reason = %reason, "imported path rejected");
         return Err((StatusCode::BAD_REQUEST, reason).into_response());
     }
@@ -793,17 +811,63 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
 /// Imports NAR data and creates a temporary GC root in the given view,
 /// returning the `{"path": ...}` JSON response (or the import's error
 /// response). A failure to create the tmp root is logged but not fatal.
-async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) -> Response {
+async fn import_nar_with_tmp_root(
+    data: &[u8],
+    views: &ViewManager,
+    view: &str,
+    expected_hash: &StoreHash,
+) -> Response {
     let imported = match import_nar(data).await {
         Ok(path) => path,
         Err(resp) => return resp,
     };
 
-    // Create a temporary GC root to protect the path until its build creates bin/ roots.
-    if let Some(hash) = ViewManager::store_path_hash(&imported) {
-        if let Err(e) = views.create_tmp_root(view, hash, &imported) {
-            tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+    finish_import(imported, views, view, expected_hash)
+}
+
+async fn import_nar_file_with_tmp_root(
+    path: &std::path::Path,
+    views: &ViewManager,
+    view: &str,
+    expected_hash: &StoreHash,
+) -> Response {
+    let imported = match import_nar_file(path).await {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+
+    finish_import(imported, views, view, expected_hash)
+}
+
+fn finish_import(
+    imported: String,
+    views: &ViewManager,
+    view: &str,
+    expected_hash: &StoreHash,
+) -> Response {
+    let imported_hash = match StoreHash::from_store_path(&imported) {
+        Ok(hash) => hash,
+        Err(error) => {
+            tracing::warn!(path = %imported, %error, "import returned an invalid store path");
+            return (
+                StatusCode::BAD_REQUEST,
+                "import returned an invalid store path",
+            )
+                .into_response();
         }
+    };
+    if &imported_hash != expected_hash {
+        tracing::warn!(path = %imported, expected = %expected_hash, actual = %imported_hash, "import returned a different store identity");
+        return (
+            StatusCode::BAD_REQUEST,
+            "imported store identity does not match request",
+        )
+            .into_response();
+    }
+
+    // Create a temporary GC root to protect the path until its build creates bin/ roots.
+    if let Err(e) = views.create_tmp_root(view, &imported_hash, &imported) {
+        tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
     }
 
     Json(serde_json::json!({ "path": imported })).into_response()
@@ -811,14 +875,13 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
 
 /// `HEAD /{view}/store/{hash}` — queries the progress of a partial upload.
 ///
-/// Requires a valid JWT (any views/permissions). Returns the current size
-/// of the partial upload file in `Content-Length` so a client can resume a
-/// chunked upload from the right offset, or `404` if no partial upload
-/// exists for the given hash.
+/// Requires `build` permission for the requested view. Returns the current
+/// payload size in `Content-Length` so the same principal can resume at the
+/// next offset, or `404` if that principal has no matching session.
 async fn upload_progress_handler(
     Path((view, hash)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
-    AuthClaims(_claims): AuthClaims,
+    AuthClaims(claims): AuthClaims,
 ) -> Response {
     if let Err(resp) = validate_view_name(&view) {
         return resp;
@@ -826,15 +889,28 @@ async fn upload_progress_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    if !claims.has_view(&view) || !claims.has_permission("build") {
+        return (StatusCode::FORBIDDEN, "build permission required").into_response();
+    }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
-    let partial_path = partial_upload_path(&hash);
-
-    match tokio::fs::metadata(&partial_path).await {
-        Ok(meta) => {
-            let size = meta.len();
-            (StatusCode::OK, [(header::CONTENT_LENGTH, size.to_string())]).into_response()
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    match upload_session::progress(state.views.root(), &view, &claims.sub, &hash).await {
+        Ok((received, total)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_LENGTH, received.to_string()),
+                (
+                    header::HeaderName::from_static("upload-length"),
+                    total.to_string(),
+                ),
+            ],
+        )
+            .into_response(),
+        Err(SessionError::Missing) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => upload_session_error(error),
     }
 }
 
@@ -1190,8 +1266,8 @@ async fn upload_pack_handler(
         Ok(paths) => {
             // Create temporary GC roots for all imported paths.
             for path in &paths {
-                if let Some(hash) = ViewManager::store_path_hash(path) {
-                    if let Err(e) = state.views.create_tmp_root(&view, hash, path) {
+                if let Ok(hash) = StoreHash::from_store_path(path) {
+                    if let Err(e) = state.views.create_tmp_root(&view, &hash, path) {
                         tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
                     }
                 }
@@ -1379,7 +1455,7 @@ async fn gc_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_build_closure_sse_event, parse_range_header};
+    use super::{format_build_closure_sse_event, parse_nar_filename, parse_range_header};
     use crate::build::{BuildEvent, BuildEventKind};
 
     #[test]
@@ -1419,5 +1495,28 @@ mod tests {
         assert_eq!(parse_range_header("bytes=0-1,3-4", 4096), None);
         assert_eq!(parse_range_header("bytes=-0", 4096), None);
         assert_eq!(parse_range_header("bytes=0-0", 0), None);
+    }
+
+    #[test]
+    fn nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+            "00000000000000000000000000000000.payload",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
     }
 }

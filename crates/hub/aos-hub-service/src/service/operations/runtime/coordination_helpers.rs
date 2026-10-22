@@ -484,6 +484,7 @@ impl RpcService {
     pub(in crate::service) fn streamed_surface_response(
         path: &str,
         read: crate::fetch::StreamedRead,
+        publicly_cacheable: bool,
     ) -> Result<axum::response::Response, RpcError> {
         use axum::http::{header, StatusCode};
         let ct = keymap::content_type(path);
@@ -515,7 +516,26 @@ impl RpcService {
                 .body(read.body),
         }
         .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
-        Ok(resp)
+        Ok(Self::apply_machine_cache_policy(resp, publicly_cacheable))
+    }
+
+    /// Applies the effective resource visibility to a machine response.
+    pub(in crate::service) fn apply_machine_cache_policy(
+        mut response: axum::response::Response,
+        publicly_cacheable: bool,
+    ) -> axum::response::Response {
+        if !publicly_cacheable {
+            response.headers_mut().insert(
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("private, no-store"),
+            );
+            response.headers_mut().insert(
+                axum::http::header::VARY,
+                axum::http::HeaderValue::from_static("Authorization, Cookie"),
+            );
+        }
+
+        response
     }
 
     pub(in crate::service) async fn replayed_control_result<T: serde::de::DeserializeOwned>(

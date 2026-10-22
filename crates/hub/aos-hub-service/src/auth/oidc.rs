@@ -3,7 +3,7 @@
 //! This module implements RFC-0004's "Per-org OIDC SSO": each org may
 //! configure one OpenID Connect identity provider; an email-first login on a
 //! captured domain routes to that IdP, and a successful round-trip provisions
-//! or links a hub user keyed on `(issuer, subject)` — never bare email.
+//! or links a hub user keyed on the token verifier and subject.
 //!
 //! # Runtime-neutral by construction (RFC-0004 Phase 5, console-dedup stage F)
 //!
@@ -125,7 +125,7 @@ pub struct IdpConfig {
     pub groups_claim: Option<String>,
     /// The parsed `group -> role` mapping applied on every login.
     pub role_map: BTreeMap<String, Role>,
-    /// Whether an unknown `(iss, sub)` may be JIT-provisioned.
+    /// Whether an unknown verifier and subject may be JIT-provisioned.
     pub allow_jit: bool,
     /// Whether the org forces members through SSO.
     pub enforce_sso: bool,
@@ -251,6 +251,7 @@ pub async fn begin_login(
         .await?
         .with_context(|| format!("org {org_id} has no OIDC identity provider configured"))?;
     validate_idp_config_record(&record)?;
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&record);
     let config = IdpConfig::from_record(record);
 
     let verifier = new_code_verifier();
@@ -261,6 +262,7 @@ pub async fn begin_login(
     db.create_oidc_flow(
         &state,
         org_id,
+        &verifier_id,
         &nonce,
         &verifier,
         redirect_after,
@@ -372,14 +374,14 @@ struct IdTokenClaims {
 /// 4. Check `nonce == flow.nonce` (replay defense).
 /// 5. Extract `sub`, `email`/`email_verified`, and the configured groups
 ///    claim; reconcile the user via [`Database::link_or_create_identity`]
-///    (keyed on `(iss, sub)`), then map groups → roles and grant the
+///    (keyed on the verifier and subject), then map groups → roles and grant the
 ///    memberships at the org scope.
 ///
 /// # Errors
 ///
 /// Returns an error when the flow is unknown/expired, the token exchange or
 /// JWKS fetch fails, the id_token fails verification (signature, `iss`, `aud`,
-/// `exp`, or `nonce`), or — when `allow_jit` is false and the `(iss, sub)`
+/// `exp`, or `nonce`), or — when `allow_jit` is false and the verifier-subject
 /// identity is unknown — the login is not permitted.
 pub async fn complete_login(
     db: &Database,
@@ -400,6 +402,11 @@ pub async fn complete_login(
         .await?
         .with_context(|| format!("org {} has no OIDC identity provider", flow.org_id))?;
     validate_idp_config_record(&record)?;
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&record);
+    anyhow::ensure!(
+        verifier_id == flow.verifier_id,
+        "OIDC verifier changed after login began"
+    );
     let config = IdpConfig::from_record(record);
 
     // 2. Exchange the authorization code (with PKCE proof) for tokens. The
@@ -450,11 +457,12 @@ pub async fn complete_login(
     // 3/4. Verify the id_token against the JWKS and the flow's nonce.
     let claims = verify_id_token(http, &config, &token.id_token, &flow.nonce).await?;
 
-    // 5. Reconcile the user, keyed on (iss, sub).
+    // 5. Reconcile the user within the current verifier namespace.
     let email = claims.email.clone();
     let email_verified = claims.email_verified.unwrap_or(false);
     let link = db
         .link_or_create_identity(
+            &verifier_id,
             &config.issuer,
             &claims.sub,
             email.as_deref(),
@@ -472,7 +480,7 @@ pub async fn complete_login(
     // on every login; full deprovisioning/sync (revoking SSO-granted roles no
     // longer mapped) is a later phase — here we ensure the mapped roles are
     // granted, plus the default role so a JIT user is never left with nothing.
-    grant_mapped_roles(db, &config, &claims).await?;
+    grant_mapped_roles(db, &config, &verifier_id, &claims).await?;
 
     Ok(OidcLogin {
         user_id,
@@ -709,6 +717,7 @@ fn validate_jwt_components(token: &str) -> Result<()> {
 async fn grant_mapped_roles(
     db: &Database,
     config: &IdpConfig,
+    verifier_id: &str,
     claims: &IdTokenClaims,
 ) -> Result<()> {
     let org = db
@@ -717,7 +726,7 @@ async fn grant_mapped_roles(
         .with_context(|| format!("org {} vanished mid-login", config.org_id))?;
     let scope = Scope::parse(&org.stable_id);
     let user_id = db
-        .identity_user(&config.issuer, &claims.sub)
+        .identity_user(verifier_id, &claims.sub)
         .await?
         .with_context(|| "identity vanished mid-login")?;
     let principal = Principal::user(user_id);
