@@ -7,6 +7,7 @@
 
 use super::*;
 use crate::handshake::ConnectionAuthority;
+use crate::reference_packet::service::PacketNative5SourceLaunch;
 use crate::reference_packet::service::complete_restore::import18::OriginalImport18DecodedBodyLoans;
 use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18BootstrapTypedBirthView;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
@@ -39,6 +40,31 @@ impl BootstrapAckOperands<'_> {
     /// Refuses revocation or containment of the original connection.
     pub(super) fn ensure_current_authority_data(&self) -> Result<(), ProviderError> {
         self.authority.ensure_live()
+    }
+
+    /// Checks the original Host plan against the same borrowed native authority.
+    ///
+    /// No controller authority or connection is constructed by this comparison.
+    ///
+    /// # Errors
+    /// Refuses an incomplete plan, changed target/roster/limits or stale SDK.
+    pub(super) fn authenticate_host_plan_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+        declaration: &PacketNativeImport18HelloDeclarationData,
+        planned: &serde_json::Value,
+    ) -> Result<(), ProviderError> {
+        use crate::reference_packet::service::complete_restore::import18::hello::{
+            PacketNativeImport18RegistrationSideData,
+            authenticate_native_import18_current_host_registration_data,
+        };
+        authenticate_native_import18_current_host_registration_data(
+            launch,
+            declaration,
+            planned,
+            self.authority,
+            PacketNativeImport18RegistrationSideData::Native,
+        )
     }
 
     /// Projects every preimage before any allocating normalization serializer runs.

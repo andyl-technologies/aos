@@ -27,6 +27,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
             | "initial_policy_kernel_reactive"
             | "initial_policy_kernel_operands_reactive"
             | "initial_policy_kernel_normalizations_reactive"
+            | "initial_policy_kernel_normalizations_host_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -722,5 +723,35 @@ fn original_normalizations_keep_complete_and_refused_output_owners() {
         "initial_policy_kernel_normalizations_revoke_native",
     ] {
         flight(case);
+    }
+}
+
+#[test]
+fn completed_hash_loans_check_the_actual_host_plan_and_original_live_sdk() {
+    for suffix in [
+        "complete",
+        "reactive",
+        "callback_refused",
+        "loan_expired",
+        "error_expired",
+        "revoked",
+        "contained",
+        "changed_cut",
+        "incomplete",
+        "bad_schema",
+        "bad_role",
+        "bad_connection",
+        "bad_session",
+        "bad_incarnation",
+        "bad_limits",
+        "bad_features",
+        "bad_extensions",
+        "bad_keys",
+        "extra_field",
+        "missing_field",
+    ] {
+        flight(&format!(
+            "initial_policy_kernel_normalizations_host_{suffix}"
+        ));
     }
 }

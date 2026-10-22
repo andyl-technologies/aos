@@ -193,13 +193,15 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 });
         }
         assert_eq!(admission.calls.get(), 2);
-        if case.contains("_normalizations_") {
+        if case.contains("_normalizations_host_") {
+            super::super::super::bootstrap_normalizations::host_tests::assert_child(case, original);
+        } else if case.contains("_normalizations_") {
             super::super::super::bootstrap_normalizations::tests::assert_child(case, original);
         }
         if case.contains("_operands_") {
             super::bootstrap_operands::assert_child(case, original);
         }
-        if case.ends_with("callback_refused") && !case.ends_with("operands_callback_refused") {
+        if case == "initial_policy_kernel_callback_refused" {
             let entered = Cell::new(false);
             assert!(
                 original
@@ -214,7 +216,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .with_bootstrap_kernel_wire_data(|_| Ok(()))
                 .unwrap();
         }
-        if case.ends_with("loan_expired") && !case.ends_with("operands_loan_expired") {
+        if case == "initial_policy_kernel_loan_expired" {
             let entered = Cell::new(false);
             assert!(
                 original

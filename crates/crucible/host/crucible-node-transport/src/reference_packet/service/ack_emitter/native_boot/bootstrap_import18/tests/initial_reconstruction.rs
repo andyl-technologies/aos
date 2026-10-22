@@ -217,6 +217,13 @@ fn operands(case: &str) -> [Value; 3] {
         serde_json::from_value(selected.clone()).unwrap();
     let source = inert_bootstrap_fixtures::source_birth(launch.launch_data());
     let mut boot = inert_bootstrap_fixtures::boot(1, json!({"actual": "host DATA"}));
+    if case.contains("_normalizations_host_") {
+        super::bootstrap_normalizations::host_tests::prepare_boot(
+            case,
+            launch.launch_data(),
+            &mut boot,
+        );
+    }
     let private_launch: Id = serde_json::from_value(boot["private_launch"].clone()).unwrap();
     let actual_identity = derive_native_import18_launch_identity_data(
         launch.launch_data(),

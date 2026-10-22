@@ -8,6 +8,9 @@
 
 use super::bootstrap_operands::BootstrapAckOperands;
 use super::*;
+use crate::reference_packet::service::PacketNative5SourceLaunch;
+use crate::reference_packet::service::complete_restore::import18::OriginalImport18DecodedBodyLoans;
+use crate::reference_packet::service::complete_restore::import18::hello::native_import18_registration_counter_scratch_data;
 
 #[path = "bootstrap_normalizations/hash_sink.rs"]
 mod hash_sink;
@@ -249,6 +252,14 @@ impl Attempt {
         &self,
         original: &OriginalImport18RawBootstrap,
     ) -> Result<Digests, ProviderError> {
+        self.with_completed_digests_data(original, |_, digests| Ok(digests))
+    }
+
+    fn with_completed_digests_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        inspect: impl FnOnce(&BootstrapAckOperands<'_>, Digests) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         if !self.complete || self.failed || self.finished != 5 {
             return Err(refused());
         }
@@ -264,14 +275,83 @@ impl Attempt {
             else {
                 return Err(refused());
             };
-            Ok(Digests {
-                birth,
-                kernel,
-                policy,
-                native_registration,
-                host_registration,
-            })
+            let outcome = inspect(
+                operands,
+                Digests {
+                    birth,
+                    kernel,
+                    policy,
+                    native_registration,
+                    host_registration,
+                },
+            );
+            let terminal = self.guard(original, operands);
+            let result = outcome?;
+            terminal?;
+            Ok(result)
         })
+    }
+
+    /// Lends the five computed hashes after checking the complete original Host plan.
+    ///
+    /// The original launch, nine-field controller plan and actual native SDK
+    /// must agree. Plan, channel, cut and SDK guards surround either callback
+    /// outcome. The callback and its Copy result are independently funded.
+    /// This comparison issues no controller connection, Source grant or ACK.
+    ///
+    /// # Errors
+    /// Refuses incomplete hashes, a foreign original owner, malformed or changed
+    /// Host plan, stale custody/SDK/cut, callback refusal or a terminal failure.
+    pub(in super::super) fn with_host_bound_digests_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        inspect: impl FnOnce(Digests) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.with_completed_digests_data(original, |operands, digests| {
+            let bodies = original.typed_bodies_data()?;
+            let launch = bodies.launch.launch_data();
+            let declaration = original.hello_declaration.as_ref().ok_or_else(refused)?;
+            let planned = bodies.boot.expected_host_registration_data();
+            operands.authenticate_host_plan_data(launch, declaration, planned)?;
+
+            let outcome = inspect(digests);
+            let terminal = operands.authenticate_host_plan_data(launch, declaration, planned);
+            let result = outcome?;
+            terminal?;
+            Ok(result)
+        })
+    }
+
+    /// Quotes the actual nested loans and Host comparison for a concrete Copy result.
+    ///
+    /// Dynamic callback storage remains an independent enclosing admission.
+    ///
+    /// # Errors
+    /// Refuses checked accumulation overflow.
+    pub(in super::super) fn host_loan_counter_scratch_data<R: Copy>() -> Result<usize, ProviderError>
+    {
+        [
+            native_import18_registration_counter_scratch_data(),
+            size_of::<&Self>(),
+            size_of::<&OriginalImport18RawBootstrap>(),
+            size_of::<Digests>() * 2,
+            size_of::<Result<Digests, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<(), ProviderError>>() * 3,
+            size_of::<OriginalImport18DecodedBodyLoans<'static>>(),
+            size_of::<Result<OriginalImport18DecodedBodyLoans<'static>, ProviderError>>(),
+            size_of::<&PacketNative5SourceLaunch>(),
+            size_of::<&PacketNativeImport18HelloDeclarationData>(),
+            size_of::<&Value>(),
+            size_of::<Option<&PacketNativeImport18HelloDeclarationData>>(),
+        ]
+        .into_iter()
+        .try_fold(
+            OriginalImport18RawBootstrap::bootstrap_ack_operands_counter_scratch_data::<R>()?,
+            |sum, field| sum.checked_add(field).ok_or_else(exhausted),
+        )
     }
 }
 
@@ -477,8 +557,17 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         OriginalImport18RawBootstrap::bootstrap_ack_operands_counter_scratch_data::<Digests>()?,
         |sum, field| sum.checked_add(field).ok_or_else(exhausted),
     )
+    .and_then(|construction| {
+        // Completed Host inspection is sequential with allocating normalization.
+        let host_loan = Attempt::host_loan_counter_scratch_data::<Digests>()?;
+        Ok(construction.max(host_loan))
+    })
 }
 
 #[cfg(test)]
 #[path = "bootstrap_normalizations/tests.rs"]
 pub(super) mod tests;
+
+#[cfg(test)]
+#[path = "bootstrap_normalizations/host_tests.rs"]
+pub(super) mod host_tests;

@@ -366,3 +366,23 @@ fn retained_value_bound_covers_actual_strings_empty_maps_and_unhinted_arrays() {
         );
     }
 }
+
+/// Retains a complete attempt using the independent existing role/census oracles.
+pub(super) fn complete_for_host(original: &mut OriginalImport18RawBootstrap) -> Attempt {
+    let model = Model {
+        case: "initial_policy_kernel_normalizations_complete",
+        original_retained: original.retained_requested_bytes().unwrap(),
+        constructed: Cell::new(false),
+        entered: Cell::new(0),
+        observed: Cell::new(0),
+        digests: Cell::new([None; 5]),
+    };
+    let mut attempt = Attempt::empty_data();
+    original
+        .construct_bootstrap_normalizations_data(&mut attempt, &model)
+        .unwrap();
+    assert_eq!(model.entered.get(), 31);
+    assert_eq!(model.observed.get(), 31);
+    assert_eq!(attempt.digests, model.digests.get());
+    attempt
+}
