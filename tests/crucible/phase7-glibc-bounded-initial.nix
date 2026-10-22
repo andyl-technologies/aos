@@ -7,7 +7,7 @@ in
     pname = "glibc-crucible-initial-loader";
     version = "2.39";
     src = null;
-    buildDeps = [pkgs.crucible-cc pkgs.python3 pkgs.binutils];
+    buildDeps = [pkgs.crucible-cc pkgs.python3 pkgs.binutils pkgs.linux-headers];
     phases = [
       {
         name = "qualify-installed-initial-loader";
@@ -36,6 +36,7 @@ in
           launcher_status=0
           timeout -s KILL 180 ${pkgs.crucible-cc}/bin/gcc \
             -std=gnu11 -O2 -Wall -Wextra -Werror \
+            -isystem ${pkgs.linux-headers}/include \
             "$out/launcher.c" -o "$out/launcher" \
             > "$out/launcher.log" 2>&1 || launcher_status=$?
           cat "$out/launcher.log"
