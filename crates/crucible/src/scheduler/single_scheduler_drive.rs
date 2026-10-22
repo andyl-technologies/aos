@@ -938,16 +938,15 @@ impl SingleScheduler {
         // lockstep, where the classic own clock plus lookahead is the same
         // bound. Without live edges the per-node lookahead is a pre-supplied
         // fixed parking point.
-        let network_bound = if self.effective_topology.edges().is_empty()
-            || !self.held_run_publication
-        {
-            match node.network_lookahead {
-                NetworkLookahead::Finite(duration) => Some(current_time + duration),
-                NetworkLookahead::Infinite => None,
-            }
-        } else {
-            self.graph_network_bound(node)?
-        };
+        let network_bound =
+            if self.effective_topology.edges().is_empty() || !self.held_run_publication {
+                match node.network_lookahead {
+                    NetworkLookahead::Finite(duration) => Some(current_time + duration),
+                    NetworkLookahead::Infinite => None,
+                }
+            } else {
+                self.graph_network_bound(node)?
+            };
         let horizon = horizon_from_network_bound(network_bound, exact_local_event.clone());
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
         let mut icount_rounding = horizon
