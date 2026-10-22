@@ -12,6 +12,7 @@ members = [
     "aos/boot/aos-boot-identity",
     "aos/boot/aos-recovery",
     "shared/aos-transfer",
+    "shared/libssh2-sys",
     "aos/packages/aos-build-api",
     "hub/aos-hub-api",
     "aos/packages/aos-build-server",
@@ -169,7 +170,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "ht
 tower = { version = "0.5", features = ["util"] }
 
 # Cache backends
-ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+ssh2 = "0.9"
 # Keep the modern HTTPS client and signing features without the SDK's legacy
 # rustls 0.21 compatibility connector; clients use BehaviorVersion::latest().
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
@@ -291,6 +292,9 @@ aos-hub-db = { path = "hub/aos-hub-db" }
 aos-hub-client = { path = "hub/aos-hub-client" }
 crucible-control-client = { path = "crucible/control/crucible-control-client" }
 crucible-control-server = { path = "crucible/control/crucible-control-server" }
+
+[patch.crates-io]
+libssh2-sys = { path = "shared/libssh2-sys" }
 
 [workspace.lints.clippy]
 all = "deny"

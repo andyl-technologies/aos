@@ -13,6 +13,7 @@
 //! [build]            # BuildConfig — nix-store --realise knobs
 //! [signing]          # SigningConfig — narinfo re-signing key
 //! [compression]      # CompressionConfig — NAR response compression
+//! [uploads]          # UploadConfig — inbound upload resource limits
 //! [[views]]          # ViewConfig — one table per view
 //! [oauth2]           # OAuth2Config — JWT TTL and secret file
 //! [bootstrap]        # BootstrapConfig — admin Unix socket
@@ -54,6 +55,22 @@ fn default_access_token_ttl() -> u64 {
     3600
 }
 
+fn default_max_upload_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
+
+fn default_max_upload_chunk_bytes() -> u64 {
+    2 * 1024 * 1024
+}
+
+fn default_max_concurrent_uploads() -> usize {
+    4
+}
+
+fn default_upload_timeout_seconds() -> u64 {
+    15 * 60
+}
+
 fn default_bootstrap_socket() -> PathBuf {
     PathBuf::from("/run/aos/bootstrap.sock")
 }
@@ -80,6 +97,10 @@ pub struct ServerConfig {
     /// `[compression]` section.
     #[serde(default)]
     pub compression: CompressionConfig,
+
+    /// `[uploads]` section.
+    #[serde(default)]
+    pub uploads: UploadConfig,
 
     /// `[[views]]` — one or more view definitions.
     #[serde(default)]
@@ -144,6 +165,37 @@ impl Default for CompressionConfig {
         Self {
             algorithm: default_compression_algorithm(),
             level: default_compression_level(),
+        }
+    }
+}
+
+/// Resource limits for inbound uploads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadConfig {
+    /// Maximum aggregate bytes accepted for one upload.
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_bytes: u64,
+
+    /// Maximum data bytes accepted in one streamed RPC message.
+    #[serde(default = "default_max_upload_chunk_bytes")]
+    pub max_chunk_bytes: u64,
+
+    /// Maximum uploads admitted concurrently across RPC upload methods.
+    #[serde(default = "default_max_concurrent_uploads")]
+    pub max_concurrent: usize,
+
+    /// Maximum duration of an RPC upload, including import processing.
+    #[serde(default = "default_upload_timeout_seconds")]
+    pub timeout_seconds: u64,
+}
+
+impl Default for UploadConfig {
+    fn default() -> Self {
+        Self {
+            max_bytes: default_max_upload_bytes(),
+            max_chunk_bytes: default_max_upload_chunk_bytes(),
+            max_concurrent: default_max_concurrent_uploads(),
+            timeout_seconds: default_upload_timeout_seconds(),
         }
     }
 }
@@ -261,6 +313,7 @@ impl Default for ServerConfig {
             build: BuildConfig::default(),
             signing: SigningConfig::default(),
             compression: CompressionConfig::default(),
+            uploads: UploadConfig::default(),
             views: vec![ViewConfig {
                 name: "default".to_string(),
                 ttl: Some(Duration::from_secs(7 * 24 * 3600)),

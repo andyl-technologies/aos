@@ -1138,6 +1138,8 @@ pub struct SurfaceObjectResponse {
     pub content_type: &'static str,
     /// The `Cache-Control` header value for the requested machine path.
     pub cache_control: &'static str,
+    /// The credential headers named by `Vary`, when the response is private.
+    pub vary: Option<&'static str>,
     /// When `Some`, the object is not served inline but as a temporary (`302`)
     /// redirect to this presigned origin URL — the authenticated-origin read of
     /// a private external binding (RFC-0004 "presigned GET → 302"). `302`
@@ -1667,6 +1669,10 @@ struct CachedSession {
     auth_level: i64,
     last_authenticated_at: i64,
     expires_at: i64,
+    #[serde(default)]
+    authentication: aos_hub_db::db::SessionAuthentication,
+    #[serde(default)]
+    reauthentication_generation: i64,
     email: String,
 }
 
@@ -1686,6 +1692,8 @@ impl CachedSession {
             auth_level: rs.auth.auth_level,
             last_authenticated_at: rs.auth.last_authenticated_at,
             expires_at: rs.auth.expires_at,
+            authentication: rs.auth.authentication.clone(),
+            reauthentication_generation: rs.auth.reauthentication_generation,
             email: rs.email.clone(),
         }
     }
@@ -1706,6 +1714,8 @@ impl CachedSession {
                 auth_level: self.auth_level,
                 last_authenticated_at: self.last_authenticated_at,
                 expires_at: self.expires_at,
+                authentication: self.authentication,
+                reauthentication_generation: self.reauthentication_generation,
             },
             email: self.email,
         })

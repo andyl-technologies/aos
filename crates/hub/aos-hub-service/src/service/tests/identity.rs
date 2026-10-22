@@ -224,7 +224,30 @@ async fn registry_lookup_accepts_stable_identity_and_canonical_slug() {
 
 #[tokio::test]
 async fn access_tokens_use_native_permissions_and_stable_scopes() {
-    let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let owner_id = db
+        .user_by_email("writer@example.test")
+        .await
+        .unwrap()
+        .unwrap();
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "self-service-token".into(),
+                owner: Principal::user(owner_id),
+                scope: Scope::root(),
+                permissions: vec![
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::TokensManage,
+                    Permission::TokensSelf,
+                ],
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
     let plan = service
         .plan_issue_access_token(
             Some(&auth),
@@ -276,6 +299,166 @@ async fn access_tokens_use_native_permissions_and_stable_scopes() {
     assert_eq!(token.permissions, vec!["publish", "read"]);
     assert_eq!(token.comment, "test publisher");
     assert_eq!(token.resource_version, "active");
+}
+
+#[tokio::test]
+async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let administrator_id = db
+        .create_user("token-admin@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Admin.as_str())
+        .await
+        .unwrap();
+    let owner_id = db
+        .create_user("token-owner@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "token-admin".into(),
+                owner: Principal::user(administrator_id),
+                scope: Scope::root(),
+                permissions: vec![Permission::TokensManage, Permission::MembersManage],
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
+
+    let result = service
+        .plan_issue_access_token(
+            Some(&auth),
+            pb::PlanIssueAccessTokenRequest {
+                owner: "user:token-owner@example.test".into(),
+                scope: "instance".into(),
+                permissions: vec!["members.manage".into()],
+                ttl_secs: 3600,
+                expected_resource_version: String::new(),
+                idempotency_key: "other-human-token".into(),
+                comment: String::new(),
+            },
+        )
+        .await;
+
+    assert!(matches!(result, Err(RpcError::PermissionDenied(_))));
+    assert!(
+        db.list_tokens_for(Principal::user(owner_id))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn service_account_token_delegation_is_bounded_and_rechecked() {
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let administrator_id = db
+        .create_user("service-token-admin@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Admin.as_str())
+        .await
+        .unwrap();
+    let org_id = db
+        .create_org("token-delegation", "Token delegation")
+        .await
+        .unwrap();
+    let service_account_id = db
+        .create_service_account(org_id, "publisher")
+        .await
+        .unwrap();
+    db.grant_membership(
+        "service_account",
+        service_account_id,
+        "instance",
+        Role::Owner.as_str(),
+    )
+    .await
+    .unwrap();
+
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "service-token-admin".into(),
+                owner: Principal::user(administrator_id),
+                scope: Scope::root(),
+                permissions: vec![Permission::Read, Permission::TokensManage],
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
+    let request = |permission: &str, idempotency_key: &str| pb::PlanIssueAccessTokenRequest {
+        owner: "service_account:token-delegation/publisher".into(),
+        scope: "instance".into(),
+        permissions: vec![permission.into()],
+        ttl_secs: 3600,
+        expected_resource_version: String::new(),
+        idempotency_key: idempotency_key.into(),
+        comment: String::new(),
+    };
+
+    let excessive = service
+        .plan_issue_access_token(
+            Some(&auth),
+            request("members.manage", "service-token-excessive"),
+        )
+        .await;
+    assert!(matches!(excessive, Err(RpcError::PermissionDenied(_))));
+
+    let successful_plan = service
+        .plan_issue_access_token(Some(&auth), request("read", "service-token-success"))
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let issued = service
+        .apply_issue_access_token(
+            Some(&auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: successful_plan.plan_id,
+                confirmation_hash: successful_plan.confirmation_hash,
+                idempotency_key: "service-token-success-apply".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let issued_auth = db.validate_token(&issued.secret).await.unwrap().unwrap();
+    assert_eq!(
+        issued_auth.owner,
+        Principal::service_account(service_account_id)
+    );
+    assert_eq!(issued_auth.permissions, vec![Permission::Read]);
+
+    let stale_plan = service
+        .plan_issue_access_token(Some(&auth), request("read", "service-token-stale"))
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Viewer.as_str())
+        .await
+        .unwrap();
+    let stale = service
+        .apply_issue_access_token(
+            Some(&auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: stale_plan.plan_id,
+                confirmation_hash: stale_plan.confirmation_hash,
+                idempotency_key: "service-token-stale-apply".into(),
+            },
+        )
+        .await;
+    assert!(matches!(stale, Err(RpcError::FailedPrecondition(_))));
 }
 
 #[tokio::test]

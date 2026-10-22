@@ -60,9 +60,7 @@ impl RpcService {
         req: pb::ApplyTopologyPlanRequest,
     ) -> Result<pb::AccessTokenResponse, RpcError> {
         const PLAN_KIND: &str = "issue_access_token";
-        let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
-            .await?;
+        let claims = self.require_claims(auth)?;
         if let Some(response) = self
             .replayed_control_result::<pb::AccessTokenResponse>(
                 auth,
@@ -93,8 +91,6 @@ impl RpcService {
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let scope = parse_authorization_scope(&input.scope)?;
-        self.require_permission(&claims, Permission::TokensManage, &scope)
-            .await?;
         let owner_id = self
             .resolve_existing_principal_id(&input.owner_kind, &input.owner_ref)
             .await?;
@@ -116,25 +112,14 @@ impl RpcService {
                     .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let owner_grants = self
-            .db
-            .effective_scopes(owner)
+        self.authorize_access_token_issue(&claims, owner, &scope, &permissions)
             .await
-            .map_err(RpcError::internal)?;
-        let context = self
-            .db
-            .authorization_context(scope.as_str())
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
-        if permissions
-            .iter()
-            .any(|permission| !iam::allow(&owner_grants, *permission, &context))
-        {
-            return Err(RpcError::FailedPrecondition(
-                "token-owner authority changed after planning".into(),
-            ));
-        }
+            .map_err(|error| match error {
+                RpcError::PermissionDenied(_) => RpcError::FailedPrecondition(
+                    "token issuance authority changed after planning".into(),
+                ),
+                other => other,
+            })?;
         let expires_at =
             (input.ttl_secs > 0).then_some(clock::now_unix_secs().saturating_add(input.ttl_secs));
         let (token_id, secret) = self
