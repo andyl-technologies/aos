@@ -34,7 +34,7 @@ fn running_slot_with_ceiling(max_advance_icount: u64, stop: AdvanceStopCondition
 fn settlement_fields_occupy_former_reserved_bytes() {
     assert_eq!(NODE_SLOT_SETTLED_CEILING_TICK_OFFSET, 216);
     assert_eq!(NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET, 224);
-    assert_eq!(NODE_SLOT_PAD4_OFFSET, 232);
+    assert_eq!(NODE_SLOT_PAD4_OFFSET, 240);
     assert!(NodeSlot::new(KIND_VM).reserved_bytes_are_zero());
 }
 

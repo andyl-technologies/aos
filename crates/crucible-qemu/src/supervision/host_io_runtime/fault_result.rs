@@ -165,8 +165,11 @@ impl QemuLiveHostIoRuntime {
                 break;
             }
             self.write_wake_doorbell()?;
-            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
-            thread::sleep(self.poll_interval);
+            // The acknowledgement signals the host publication word.
+            let Some(remaining) = deadline.remaining() else {
+                break;
+            };
+            self.wait_for_poll_interval(remaining);
         }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result publication fence",

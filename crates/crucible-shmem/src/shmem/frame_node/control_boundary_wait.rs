@@ -64,22 +64,29 @@ impl NodeSlot {
         expected: u32,
         remaining: Duration,
     ) -> Result<ControlBoundaryWaitOutcome, FutexError> {
-        wait_ack(&self.control_boundary_ack, expected, remaining)
+        wait_word_with_timeout(
+            &self.control_boundary_ack,
+            expected,
+            remaining,
+            "control ACK FUTEX_WAIT",
+        )
     }
 }
 
+/// Waits once on a shared futex word while it equals `expected`.
 #[cfg(target_os = "linux")]
-fn wait_ack(
-    acknowledgement: &AtomicU32,
+pub(super) fn wait_word_with_timeout(
+    word: &AtomicU32,
     expected: u32,
     remaining: Duration,
+    operation: &'static str,
 ) -> Result<ControlBoundaryWaitOutcome, FutexError> {
     let seconds = libc::time_t::try_from(remaining.as_secs()).map_err(|_| FutexError::Syscall {
-        operation: "control ACK timeout conversion",
+        operation,
         errno: libc::EOVERFLOW,
     })?;
     let nanoseconds = i32::try_from(remaining.subsec_nanos()).map_err(|_| FutexError::Syscall {
-        operation: "control ACK timeout conversion",
+        operation,
         errno: libc::EOVERFLOW,
     })?;
     let timeout = libc::timespec {
@@ -92,7 +99,7 @@ fn wait_ack(
     let result = unsafe {
         libc::syscall(
             libc::SYS_futex,
-            acknowledgement.as_ptr(),
+            word.as_ptr(),
             libc::FUTEX_WAIT,
             expected,
             &timeout as *const libc::timespec,
@@ -107,21 +114,19 @@ fn wait_ack(
         libc::EAGAIN => Ok(ControlBoundaryWaitOutcome::ValueChanged),
         libc::EINTR => Ok(ControlBoundaryWaitOutcome::Interrupted),
         libc::ETIMEDOUT => Ok(ControlBoundaryWaitOutcome::TimedOut),
-        errno => Err(FutexError::Syscall {
-            operation: "control ACK FUTEX_WAIT",
-            errno,
-        }),
+        errno => Err(FutexError::Syscall { operation, errno }),
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn wait_ack(
-    _acknowledgement: &AtomicU32,
+pub(super) fn wait_word_with_timeout(
+    _word: &AtomicU32,
     _expected: u32,
     _remaining: Duration,
+    operation: &'static str,
 ) -> Result<ControlBoundaryWaitOutcome, FutexError> {
     Err(FutexError::Syscall {
-        operation: "control ACK FUTEX_WAIT",
+        operation,
         errno: libc::ENOSYS,
     })
 }

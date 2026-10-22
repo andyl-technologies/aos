@@ -39,6 +39,8 @@ mod control_boundary_wait;
 mod frame_entry;
 #[path = "frame_node/futex.rs"]
 mod futex;
+#[path = "frame_node/host_publication.rs"]
+mod host_publication;
 #[path = "frame_node/preemption_mailbox.rs"]
 mod preemption_mailbox;
 
@@ -54,6 +56,7 @@ pub use frame_entry::{
 pub use futex::{
     FutexError, FutexWait, FutexWaitOutcome, FutexWakeResult, RegionControlError, WakeAction,
 };
+pub use host_publication::HostPublicationWaitOutcome;
 pub use preemption_mailbox::{
     PreemptionMailboxError, PublishedPreemptionCommand, SchedulerPreemptionCommand,
     SchedulerPreemptionKind,

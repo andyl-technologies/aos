@@ -44,7 +44,9 @@ pub(super) fn emit_node_slot(out: &mut String) {
     out.push_str("    _Atomic uint64_t advance_publication_sequence;\n");
     out.push_str("    _Atomic uint64_t settled_ceiling_tick;\n");
     out.push_str("    _Atomic uint64_t settled_publication_sequence;\n");
-    out.push_str("    uint8_t pad4[24];\n");
+    out.push_str("    _Atomic uint32_t host_publication_signal;\n");
+    out.push_str("    _Atomic uint32_t host_publication_waiters;\n");
+    out.push_str("    uint8_t pad4[16];\n");
     out.push_str("} crucible_shmem_node_slot;\n\n");
 
     emit_static_asserts(
@@ -131,6 +133,8 @@ pub(super) fn emit_node_slot(out: &mut String) {
                 "settled_publication_sequence",
                 "SETTLED_PUBLICATION_SEQUENCE",
             ),
+            ("host_publication_signal", "HOST_PUBLICATION_SIGNAL"),
+            ("host_publication_waiters", "HOST_PUBLICATION_WAITERS"),
             ("pad4", "PAD4"),
         ],
     );

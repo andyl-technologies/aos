@@ -150,7 +150,7 @@ in
       test -n "$shmem_abi_version"
 
       # The native-console cutover is one exact process-protocol family.
-      test "$shmem_abi_version" -eq 32
+      test "$shmem_abi_version" -eq 33
       test "$(cat crucible-protocol/src/control_protocol_version.in)" -eq 4
       grep -Fxq 'pub const PLUGIN_SETUP_PLAN_VERSION: u32 = 3;' \
         crucible-protocol/src/plugin_setup_plan.rs

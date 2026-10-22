@@ -1841,10 +1841,11 @@ fn parked_selectable_step(
 impl SimulationBackend for QemuNodeSet {
     fn dispatch_contract(&self) -> crucible::BackendDispatchContract {
         // This adapter requires its exact protocol/ABI pairing, not the
-        // unimplemented native Source admission contract. ABI 32 carries the
-        // settlement record behind bounded ceilings (RFC-0010 SCHED-12).
+        // unimplemented native Source admission contract. ABI 32 added the
+        // settlement record behind bounded ceilings (RFC-0010 SCHED-12); ABI
+        // 33 adds the hostward publication wake.
         const _: () = assert!(crucible_protocol::CONTROL_PROTOCOL_VERSION == 4);
-        const _: () = assert!(crucible_shmem::ABI_VERSION == 32);
+        const _: () = assert!(crucible_shmem::ABI_VERSION == 33);
         crucible::BackendDispatchContract::BoundedControl
     }
 

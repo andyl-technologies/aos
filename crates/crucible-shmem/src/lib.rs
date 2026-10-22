@@ -89,7 +89,9 @@
 //! 208     8     advance_publication_sequence
 //! 216     8     settled_ceiling_tick
 //! 224     8     settled_publication_sequence
-//! 232     24    alignment padding
+//! 232     4     host_publication_signal
+//! 236     4     host_publication_waiters
+//! 240     16    alignment padding
 //! ```
 //!
 //! SPSC ring header wire layout:
@@ -212,9 +214,11 @@ pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// (RFC-0010 SCHED-12): the node slot records the ceiling and advance
 /// publication through which the node attests settlement, the exact-event stop
 /// condition marks a ceiling the node must arrive at, and halted nodes without
-/// a wake publish [`IDLE_WAKE_NONE`]. The generated C view and golden vectors
-/// pin every offset.
-pub const ABI_VERSION: u32 = 32;
+/// a wake publish [`IDLE_WAKE_NONE`]. Version 33 adds a hostward publication
+/// futex word and its waiter count, carved from reserved node-slot bytes, so a
+/// host waiting for a node publication parks instead of sleep-polling. The
+/// generated C view and golden vectors pin every offset.
+pub const ABI_VERSION: u32 = 33;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of simulation ticks in one QEMU virtual nanosecond.
 pub const TICKS_PER_NS: u64 = 1_000;

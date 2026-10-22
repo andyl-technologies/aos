@@ -15,7 +15,6 @@ use std::time::Duration;
 
 static SLEEPS: AtomicU64 = AtomicU64::new(0);
 static SLEEP_NANOS: AtomicU64 = AtomicU64::new(0);
-// Futex waits arrive with the host publication signal.
 static FUTEX_WAITS: AtomicU64 = AtomicU64::new(0);
 static FUTEX_WAIT_NANOS: AtomicU64 = AtomicU64::new(0);
 static FUTEX_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
@@ -58,6 +57,15 @@ fn saturating_nanos(duration: Duration) -> u64 {
 pub(crate) fn record_sleep(requested: Duration) {
     SLEEPS.fetch_add(1, Ordering::Relaxed);
     SLEEP_NANOS.fetch_add(saturating_nanos(requested), Ordering::Relaxed);
+}
+
+/// Records one futex wait on a node's host publication signal.
+pub(crate) fn record_futex_wait(waited: Duration, timed_out: bool) {
+    FUTEX_WAITS.fetch_add(1, Ordering::Relaxed);
+    FUTEX_WAIT_NANOS.fetch_add(saturating_nanos(waited), Ordering::Relaxed);
+    if timed_out {
+        FUTEX_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Reads the current totals.
@@ -112,10 +120,14 @@ mod tests {
         let before = totals();
 
         record_sleep(Duration::from_micros(3));
+        record_futex_wait(Duration::from_micros(5), true);
 
         // Other tests may record concurrently, so only lower bounds hold.
         let delta = totals().since(before);
         assert!(delta.sleeps >= 1);
         assert!(delta.sleep_nanos >= 3_000);
+        assert!(delta.futex_waits >= 1);
+        assert!(delta.futex_wait_nanos >= 5_000);
+        assert!(delta.futex_timeouts >= 1);
     }
 }

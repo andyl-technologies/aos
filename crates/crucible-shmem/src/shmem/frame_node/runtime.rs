@@ -54,7 +54,9 @@ impl NodeSlot {
             advance_publication_sequence: AtomicU64::new(0),
             settled_ceiling_tick: AtomicU64::new(0),
             settled_publication_sequence: AtomicU64::new(0),
-            _pad4: [0; 24],
+            host_publication_signal: AtomicU32::new(0),
+            host_publication_waiters: AtomicU32::new(0),
+            _pad4: [0; 16],
         }
     }
 
@@ -79,7 +81,7 @@ impl NodeSlot {
             .store(witness.reserved, Ordering::Release);
         self.timer_witness_generation
             .store(witness.generation, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Publishes one scheduler advance with explicit completion semantics.
@@ -395,7 +397,7 @@ impl NodeSlot {
         let settles = advance.ceiling() == settled_ceiling && advance.stop().authorizes_ceiling();
 
         let current_ns = icount_to_virtual_ns(reached_icount);
-        let writer = BoundaryWriter::enter(&self.publish_gen);
+        let writer = BoundaryWriter::enter(self);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         if settles {
@@ -479,7 +481,7 @@ impl NodeSlot {
         validate_raw_retirement_at_tick(raw_icount, reached_icount)
             .map_err(NodeBoundaryPublicationError::Slot)?;
         let current_ns = icount_to_virtual_ns(reached_icount);
-        let writer = BoundaryWriter::enter(&self.publish_gen);
+        let writer = BoundaryWriter::enter(self);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         self.idle_wake_icount
@@ -567,7 +569,7 @@ impl NodeSlot {
             == advance.sequence()
             && self.settled_ceiling_tick.load(Ordering::Acquire) == max_advance_icount
             && self.current_icount.load(Ordering::Acquire) == reached_icount;
-        let writer = BoundaryWriter::enter(&self.publish_gen);
+        let writer = BoundaryWriter::enter(self);
         self.current_icount.store(reached_icount, Ordering::Release);
         self.current_ns.store(current_ns, Ordering::Release);
         self.logical_time_raw_icount
@@ -664,7 +666,7 @@ impl NodeSlot {
         self.status.store(STATUS_IDLE, Ordering::Release);
         self.logical_time_restore_ack
             .store(request.generation, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
         Ok(())
     }
 
@@ -672,14 +674,14 @@ impl NodeSlot {
     pub fn mark_running(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_RUNNING, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Marks a node as done after it observes shutdown.
     pub fn mark_done(&self) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.status.store(STATUS_DONE, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     /// Returns a stable snapshot of the slot's published fields.
@@ -1055,6 +1057,7 @@ impl NodeSlot {
         let acknowledgement = request.wrapping_add(1);
         self.control_boundary_ack
             .store(acknowledgement, Ordering::Release);
+        self.signal_host_publication();
         acknowledgement
     }
 
@@ -1094,14 +1097,14 @@ impl NodeSlot {
                 .store(idle_wake_icount, Ordering::Release);
         }
         self.status.store(status, Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     fn publish_device_io_active(&self, active: bool) {
         self.publish_gen.fetch_add(1, Ordering::AcqRel);
         self.device_io_active
             .store(u8::from(active), Ordering::Release);
-        self.publish_gen.fetch_add(1, Ordering::AcqRel);
+        self.close_node_publication();
     }
 
     pub(crate) fn validate_scheduler_ceiling(

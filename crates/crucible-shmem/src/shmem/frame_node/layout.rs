@@ -139,7 +139,9 @@ pub struct NodeSlot {
     pub(crate) advance_publication_sequence: AtomicU64,
     pub(crate) settled_ceiling_tick: AtomicU64,
     pub(crate) settled_publication_sequence: AtomicU64,
-    pub(crate) _pad4: [u8; 24],
+    pub(crate) host_publication_signal: AtomicU32,
+    pub(crate) host_publication_waiters: AtomicU32,
+    pub(crate) _pad4: [u8; 16],
 }
 
 impl Clone for NodeSlot {
@@ -235,7 +237,12 @@ impl Clone for NodeSlot {
             settled_publication_sequence: AtomicU64::new(
                 self.settled_publication_sequence.load(Ordering::Acquire),
             ),
-            _pad4: [0; 24],
+            host_publication_signal: AtomicU32::new(
+                self.host_publication_signal.load(Ordering::Acquire),
+            ),
+            // Waiters are process-local parkers on the live word, never state.
+            host_publication_waiters: AtomicU32::new(0),
+            _pad4: [0; 16],
         }
     }
 }
@@ -353,6 +360,12 @@ pub const NODE_SLOT_SETTLED_CEILING_TICK_OFFSET: usize =
 /// Byte offset of the advance publication sequence that settlement covers.
 pub const NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET: usize =
     core::mem::offset_of!(NodeSlot, settled_publication_sequence);
+/// Byte offset of the hostward publication futex word.
+pub const NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, host_publication_signal);
+/// Byte offset of the count of host threads parked on that word.
+pub const NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET: usize =
+    core::mem::offset_of!(NodeSlot, host_publication_waiters);
 /// Byte offset of the remaining forward-compatible bytes.
 pub const NODE_SLOT_PAD4_OFFSET: usize = core::mem::offset_of!(NodeSlot, _pad4);
 /// Wire size of one [`NodeSlot`].
@@ -400,6 +413,8 @@ const _: () = assert!(NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET == 204);
 const _: () = assert!(NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET == 208);
 const _: () = assert!(NODE_SLOT_SETTLED_CEILING_TICK_OFFSET == 216);
 const _: () = assert!(NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET == 224);
-const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 232);
+const _: () = assert!(NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET == 232);
+const _: () = assert!(NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET == 236);
+const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 240);
 const _: () = assert!(NODE_SLOT_SIZE == 256);
 const _: () = assert!(NODE_SLOT_ALIGN == 128);

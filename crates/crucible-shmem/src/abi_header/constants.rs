@@ -312,6 +312,14 @@ pub(super) fn emit_constants(out: &mut String) {
                 "SETTLED_PUBLICATION_SEQUENCE",
                 NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET,
             ),
+            (
+                "HOST_PUBLICATION_SIGNAL",
+                NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET,
+            ),
+            (
+                "HOST_PUBLICATION_WAITERS",
+                NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET,
+            ),
             ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],
     );

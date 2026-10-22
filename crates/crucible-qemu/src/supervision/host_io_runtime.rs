@@ -122,6 +122,8 @@ pub struct QemuLiveHostIoRuntime {
     fault_event_canonical_current_offset: usize,
     /// Plan-authored aggregate event-record ceiling reported by LIMIT-2.
     fault_event_configured_limit: usize,
+    /// Hostward publication signal observed by the previous host wait.
+    publication_signal_at_last_wait: Option<u32>,
 }
 
 mod servicing;
@@ -185,8 +187,7 @@ impl QemuLiveHostIoRuntime {
     fn wait_for_poll_interval_capped(&mut self, remaining: Duration, interval: Duration) {
         self.performance.pending_sleep();
         let pause = interval.min(remaining);
-        crate::supervision::host_wait_counters::record_sleep(pause);
-        thread::sleep(pause);
+        self.wait_for_node_publication(pause);
     }
 
     /// Maps `shmem_fd`, clones `wake_fd`, and binds the runtime to `vm_slot`.
@@ -297,6 +298,7 @@ impl QemuLiveHostIoRuntime {
             fault_event_staging_limit: HARD_FAULT_EVENT_CAPACITY as usize,
             fault_event_canonical_current_offset: 0,
             fault_event_configured_limit: HARD_FAULT_EVENT_CAPACITY as usize,
+            publication_signal_at_last_wait: None,
         })
     }
 

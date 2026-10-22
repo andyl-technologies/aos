@@ -1,6 +1,6 @@
-From 45e08b2107cc9603fd6e00b5e649da80bd0f72f6 Mon Sep 17 00:00:00 2001
+From 57041eb9e9d2110678652237386d2faec617cfaa Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 21 Oct 2026 21:57:45 +0000
+Date: Wed, 21 Oct 2026 20:32:31 -0700
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -16,11 +16,13 @@ test-crucible-control-deferred runs the production arm and bridge over one halte
 
 test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
-A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline at or before the ceiling. A runnable vCPU never moves its clock without a retirement, so it never crosses to a plugin event: it takes the event at its first boundary at or after it, and the event does not hold a boundary unsettled. A dispatch boundary whose next retirement would cross the ceiling, with no timer or fault deadline before it, is published as settled through the ceiling QEMU sampled, including an exact-event ceiling it cannot land on, and the final post-execution ceiling completion defers to the advance while such a deadline is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; six negative controls restore the old ceiling credits, the crossing to a plugin event, or the fallbacks and fail. An exact-event ceiling and an inbound delivery inside the final gap settle the boundary with the clock at its last retirement. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
+A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline at or before the ceiling. A runnable vCPU never moves its clock without a retirement, so it never crosses to a plugin event: it takes the event at its first boundary at or after it, and the event does not hold a boundary unsettled. A dispatch boundary whose next retirement would cross the ceiling, with no timer or fault deadline before it, is published as settled through the ceiling QEMU sampled, including an exact-event ceiling it cannot land on, and the final post-execution ceiling completion defers to the advance while such a deadline is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 33. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; six negative controls restore the old ceiling credits, the crossing to a plugin event, or the fallbacks and fail. An exact-event ceiling and an inbound delivery inside the final gap settle the boundary with the clock at its last retirement. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
 
 A vCPU's synchronous block I/O polls the main loop on the RR thread itself, mid-instruction, so a queued time advance runs and completes there. Completion left the advance in SETTLE_READY for the outer RR loop, which cannot run again until the guest access returns. When the blocked access needed a second advance, because the first stopped at a virtual timer below the device deadline, every later enqueue found the first advance outstanding and returned -EBUSY. The waiter retried for ever and the node stopped advancing. A completion that runs nested inside RR guest execution now releases the advance barrier itself, after the plugin committed the advance and before the device waiters are re-entered, so the waiter can enqueue the advance to its deadline. The RR thread is executing rather than parked, so this path publishes no durable idle wake; completions on the main loop still settle at the outer RR idle boundary. test-crucible-control-deferred adds a nested-io case: a waiter re-entered by the first completion enqueues a second advance, which is accepted and completes, and no idle wake is published. The nested-settle negative control leaves the completion to the outer loop and reproduces the -EBUSY refusal.
 
 A runnable vCPU also never moves its clock to a QEMU-owned deadline. The RR loop crossed the final partial instruction to a virtual timer or a fault or preemption deadline, so the guest's clock moved without a retirement. Now it fires each one at the vCPU's first instruction boundary at or after its deadline: the timer instruction limit, the boundary-deadline clamp, the fault and preemption budgets round up to that boundary, and the partial-instruction advance only runs a timer that is already due. A boundary whose next retirement would cross the ceiling settles through it with a QEMU deadline still pending in the gap, and the deadline fires at that boundary in the next quantum. The firing boundary depends only on the clock and the deadline, not on where the host split quanta. A fault command whose target lies less than one retirement before the boundary is applied there, and only a later boundary reports PAST_BOUNDARY. A commanded preemption is applied at the first boundary at or after its tick, and one a whole retirement late still aborts. An all-halted node, which cannot retire, still idles exactly to a QEMU-owned event in the gap, and the stalled-node and nested device-wait advances are unchanged. test-crucible-rr-bound-ceiling adds a runnable vCPU with a timer, a fault deadline and a preemption 24 ps ahead, each met at the next boundary with no clock move, a halted node idling to a timer in the gap, and a preemption a whole retirement late that still aborts. Four new negative controls restore the time-only crossing, the floored deadline budget, the floored timer limit and the exact preemption tick, and each fails. test-crucible-tcg-fast-paths applies fault targets 24 ticks ahead of and 999 ticks behind the boundary, and reports one a whole retirement behind as PAST_BOUNDARY.
+
+Shared-memory ABI 33 adds a hostward publication futex word and a count of parked host waiters to each node slot, carved from reserved bytes. The plugin increments the word after every node publication and control acknowledgement and wakes the host only when a waiter is registered, so the host parks until the node publishes instead of sleep-polling. QEMU itself does not read or write the new fields; this tree carries the generated headers so the build compares them byte for byte.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -61598,10 +61600,10 @@ index 9f3f329c448dd0f59998b02641a85dda96d4d152..4664a40da7afdead4db6ec573ed29a5c
  struct AccelClass {
 diff --git a/include/aos/crucible/crucible_shmem_abi.h b/include/aos/crucible/crucible_shmem_abi.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..05118dc613781f1d99906c55879ed946f4214ea9
+index 0000000000000000000000000000000000000000..c61280ad496f9cfbb7e00a77ad41cae0bad68043
 --- /dev/null
 +++ b/include/aos/crucible/crucible_shmem_abi.h
-@@ -0,0 +1,1520 @@
+@@ -0,0 +1,1526 @@
 +/* SPDX-License-Identifier: MIT OR Apache-2.0 */
 +/* Generated by crucible-shmem. Do not edit by hand. */
 +/* Public process ABI: independently implementable; contains no QEMU-private types. */
@@ -61620,7 +61622,7 @@ index 0000000000000000000000000000000000000000..05118dc613781f1d99906c55879ed946
 +#define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 +
 +#define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-+#define CRUCIBLE_SHMEM_ABI_VERSION 32u
++#define CRUCIBLE_SHMEM_ABI_VERSION 33u
 +#define CRUCIBLE_SHMEM_NATIVE_CONSOLE_SEGMENT_BYTES 525184u
 +#define CRUCIBLE_SHMEM_TICKS_PER_NS 1000u
 +#define CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION 50u
@@ -61726,7 +61728,9 @@ index 0000000000000000000000000000000000000000..05118dc613781f1d99906c55879ed946
 +#define CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET 208u
 +#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET 216u
 +#define CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET 224u
-+#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 232u
++#define CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET 232u
++#define CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET 236u
++#define CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET 240u
 +
 +#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u
 +#define CRUCIBLE_SHMEM_RING_HEADER_ALIGN 128u
@@ -61870,7 +61874,9 @@ index 0000000000000000000000000000000000000000..05118dc613781f1d99906c55879ed946
 +    _Atomic uint64_t advance_publication_sequence;
 +    _Atomic uint64_t settled_ceiling_tick;
 +    _Atomic uint64_t settled_publication_sequence;
-+    uint8_t pad4[24];
++    _Atomic uint32_t host_publication_signal;
++    _Atomic uint32_t host_publication_waiters;
++    uint8_t pad4[16];
 +} crucible_shmem_node_slot;
 +
 +CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot) == CRUCIBLE_SHMEM_NODE_SLOT_SIZE, "crucible_shmem_node_slot size");
@@ -61915,6 +61921,8 @@ index 0000000000000000000000000000000000000000..05118dc613781f1d99906c55879ed946
 +CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, advance_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.advance_publication_sequence offset");
 +CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_ceiling_tick) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_CEILING_TICK_OFFSET, "crucible_shmem_node_slot.settled_ceiling_tick offset");
 +CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, settled_publication_sequence) == CRUCIBLE_SHMEM_NODE_SLOT_SETTLED_PUBLICATION_SEQUENCE_OFFSET, "crucible_shmem_node_slot.settled_publication_sequence offset");
++CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, host_publication_signal) == CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_SIGNAL_OFFSET, "crucible_shmem_node_slot.host_publication_signal offset");
++CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, host_publication_waiters) == CRUCIBLE_SHMEM_NODE_SLOT_HOST_PUBLICATION_WAITERS_OFFSET, "crucible_shmem_node_slot.host_publication_waiters offset");
 +CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_node_slot, pad4) == CRUCIBLE_SHMEM_NODE_SLOT_PAD4_OFFSET, "crucible_shmem_node_slot.pad4 offset");
 +
 +typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_ring_header {
@@ -63978,7 +63986,7 @@ index 0000000000000000000000000000000000000000..16c16c1dd0f3f9d3cb3fda837214ec0a
 +#endif
 diff --git a/include/crucible_native_console_draft.h b/include/crucible_native_console_draft.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..86463c525fe2dcc2edb1d026b69a6f0522b9f8b6
+index 0000000000000000000000000000000000000000..153ded5d116fd715207aaf1ad237573b2618776e
 --- /dev/null
 +++ b/include/crucible_native_console_draft.h
 @@ -0,0 +1,149 @@
@@ -63990,7 +63998,7 @@ index 0000000000000000000000000000000000000000..86463c525fe2dcc2edb1d026b69a6f05
 +#include <stddef.h>
 +#include <stdatomic.h>
 +
-+#define CRUCIBLE_NATIVE_CONSOLE_REQUIRED_SHMEM_ABI 32u
++#define CRUCIBLE_NATIVE_CONSOLE_REQUIRED_SHMEM_ABI 33u
 +#define CRUCIBLE_NATIVE_CONSOLE_REQUIRED_CONTROL_VERSION 4u
 +#define CRUCIBLE_NATIVE_CONSOLE_REQUIRED_SETUP_SCHEMA 3u
 +#define CRUCIBLE_NATIVE_CONSOLE_RECORD_BYTES 128u

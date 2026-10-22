@@ -98,15 +98,15 @@ impl NodeBoundaryPublicationError<std::convert::Infallible> {
 
 /// Closes the original publication on normal return, refusal and unwind.
 pub(super) struct BoundaryWriter<'a> {
-    generation: &'a AtomicU32,
+    slot: &'a NodeSlot,
     closed_generation: u32,
 }
 
 impl<'a> BoundaryWriter<'a> {
-    pub(super) fn enter(generation: &'a AtomicU32) -> Self {
-        let previous = generation.fetch_add(1, Ordering::AcqRel);
+    pub(super) fn enter(slot: &'a NodeSlot) -> Self {
+        let previous = slot.publish_gen.fetch_add(1, Ordering::AcqRel);
         Self {
-            generation,
+            slot,
             closed_generation: previous.wrapping_add(2),
         }
     }
@@ -118,7 +118,7 @@ impl<'a> BoundaryWriter<'a> {
 
 impl Drop for BoundaryWriter<'_> {
     fn drop(&mut self) {
-        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.slot.close_node_publication();
     }
 }
 

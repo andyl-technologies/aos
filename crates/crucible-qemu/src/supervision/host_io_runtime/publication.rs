@@ -1,6 +1,22 @@
 //! Bounded coherent publication acquisition before host supervision effects.
 
+use std::time::Instant;
+
 use super::*;
+
+/// Reads wall time only to bound and account host waits.
+// crucible-lint: allow clippy-disallowed-method -- host wait budgets and diagnostics never enter guest clocks, deadlines, or results.
+#[allow(clippy::disallowed_methods)]
+fn host_wait_clock() -> Instant {
+    Instant::now()
+}
+
+/// Returns wall time elapsed since `started` for host wait accounting.
+// crucible-lint: allow clippy-disallowed-method -- host wait budgets and diagnostics never enter guest clocks, deadlines, or results.
+#[allow(clippy::disallowed_methods)]
+fn host_wait_elapsed(started: Instant) -> Duration {
+    started.elapsed()
+}
 
 impl QemuLiveHostIoRuntime {
     pub(super) fn try_node_snapshot(
@@ -25,27 +41,63 @@ impl QemuLiveHostIoRuntime {
         }
     }
 
+    /// Parks until the plugin publishes again or `backstop` elapses.
+    ///
+    /// The plugin increments the slot's hostward publication signal after
+    /// every node publication and control acknowledgement (shared-memory ABI
+    /// 33). A publication since the previous wait returns at once, so the
+    /// caller re-reads the slot instead of sleeping through it; otherwise the
+    /// thread parks on the signal word. The backstop is only a liveness bound
+    /// for writers that publish without signalling, never the normal wake.
+    pub(super) fn wait_for_node_publication(&mut self, backstop: Duration) {
+        let Ok(slot) = self.region.node_slot(self.vm_slot) else {
+            // The next slot read reports the mapping error under its deadline.
+            crate::supervision::host_wait_counters::record_sleep(backstop);
+            thread::sleep(backstop);
+            return;
+        };
+        let current = slot.host_publication_signal();
+        if self.publication_signal_at_last_wait != Some(current) {
+            self.publication_signal_at_last_wait = Some(current);
+            return;
+        }
+
+        let started = host_wait_clock();
+        let outcome = slot.wait_host_publication(current, backstop);
+        let waited = host_wait_elapsed(started);
+        let timed_out = match outcome {
+            Ok(crucible_shmem::HostPublicationWaitOutcome::TimedOut) => true,
+            Ok(_) => false,
+            Err(_) => {
+                // An unexpected futex failure falls back to the bounded sleep.
+                let rest = backstop.saturating_sub(waited);
+                crate::supervision::host_wait_counters::record_sleep(rest);
+                thread::sleep(rest);
+                true
+            }
+        };
+        crate::supervision::host_wait_counters::record_futex_wait(waited, timed_out);
+        self.publication_signal_at_last_wait = Some(slot.host_publication_signal());
+    }
+
     /// Waits up to one poll interval for the node slot to publish again.
     ///
-    /// The plugin does not wake the host when it publishes a boundary, so a
-    /// fixed sleep makes every RUN pay a whole interval after the guest has
-    /// already stopped. Probing at doubling steps from
-    /// [`MINIMUM_PUBLICATION_POLL`] returns within a few microseconds of a new
-    /// publication, while an unchanged slot still waits the full interval.
-    /// Returns whether the publication changed.
+    /// Each wait parks on the hostward publication signal, so it returns as
+    /// soon as the plugin publishes, while an unchanged slot still waits the
+    /// full interval. Returns whether the publication changed.
     pub(super) fn wait_for_publication_change(
         &mut self,
         observed: &crucible_shmem::NodeSlotSnapshot,
         remaining: Duration,
     ) -> Result<bool, QemuAsyncDriverRuntimeError> {
         let budget = self.poll_interval.min(remaining);
-        let mut waited = Duration::ZERO;
-        let mut step = MINIMUM_PUBLICATION_POLL;
-        while waited < budget {
-            let pause = step.min(budget.saturating_sub(waited));
+        let started = host_wait_clock();
+        loop {
+            let pause = budget.saturating_sub(host_wait_elapsed(started));
+            if pause.is_zero() {
+                break;
+            }
             self.wait_for_poll_interval_capped(pause, pause);
-            waited = waited.saturating_add(pause);
-            step = step.saturating_mul(2);
 
             // A contended read means a publication is in progress.
             let changed = self.try_node_snapshot()?.is_none_or(|current| {

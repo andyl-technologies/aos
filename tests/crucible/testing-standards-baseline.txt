@@ -178,8 +178,8 @@ crucible-qemu	src/shutdown	thread::sleep	1
 crucible-qemu	src/spawn_test	std::thread::sleep	1
 crucible-qemu	src/spawn_test	thread::sleep	1
 crucible-qemu	src/supervision/device_host_work	thread::sleep	1
-crucible-qemu	src/supervision/host_io_runtime	thread::sleep	1
 crucible-qemu	src/supervision/host_io_runtime/fault_result	thread::sleep	1
+crucible-qemu	src/supervision/host_io_runtime/publication	thread::sleep	1
 crucible-qemu	src/supervision/node_step_gate/support	thread::sleep	1
 crucible-qemu	tests/crash_detection	retry	1
 crucible-qemu-plugin	src/inbound	retry	1
