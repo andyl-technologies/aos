@@ -338,23 +338,25 @@ async fn injected_service_with_dependencies(
         .await
         .unwrap()
         .unwrap();
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "holder".into(),
-                owner: Principal::user(user_id),
-                scope: Scope::root(),
-                permissions: vec![
-                    Permission::RegistryConfigure,
-                    Permission::Publish,
-                    Permission::TokensManage,
-                    Permission::IamAdmin,
-                    Permission::MembersManage,
-                ],
-            },
-            3600,
+    let permissions = vec![
+        Permission::RegistryConfigure,
+        Permission::Publish,
+        Permission::TokensManage,
+        Permission::IamAdmin,
+        Permission::MembersManage,
+    ];
+    let (_, token_secret) = db
+        .create_token(
+            Principal::user(user_id),
+            "instance",
+            &permissions,
+            None,
+            None,
         )
+        .await
         .unwrap();
+    let token_auth = db.validate_token(&token_secret).await.unwrap().unwrap();
+    let token = jwt_keys.mint(&token_auth, 3600).unwrap();
     let coordinator = Arc::new(InMemoryCoordinator::new());
     let lease = Arc::new(InMemoryLease::new());
     let service = RpcService::new(

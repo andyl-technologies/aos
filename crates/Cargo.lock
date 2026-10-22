@@ -369,11 +369,14 @@ dependencies = [
  "anyhow",
  "aos-build-api",
  "aos-nar",
+ "aos-nix",
  "buffa",
  "connectrpc",
  "http 1.4.1",
  "prost",
  "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-webpki",
  "tokio",
  "tokio-stream",
  "webpki-roots",
@@ -403,6 +406,7 @@ dependencies = [
  "humantime-serde",
  "indicatif",
  "jsonwebtoken",
+ "libc",
  "prost",
  "rand 0.9.4",
  "rcgen",
@@ -420,6 +424,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "toml 0.8.23",
+ "tower",
  "tower-http",
  "tracing",
  "uuid",
@@ -743,6 +748,7 @@ dependencies = [
  "lzma-rs",
  "p256",
  "rand 0.9.4",
+ "rcgen",
  "reqwest",
  "rsa",
  "rusqlite",
@@ -1569,9 +1575,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.0"
+version = "1.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+checksum = "faac5829c2b74c28f830747e7818ccfb684261b5f48a1118b1e2a13d36dfab13"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -1579,14 +1585,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.41.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+checksum = "f1622d8446a2d4b2ce0c7eefc73dd43a99779028d5ee5c2dd8073a658ba8a2bc"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -4639,9 +4646,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libgit2-sys"
-version = "0.18.5+1.9.4"
+version = "0.18.7+1.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "005d6ae6eac1912906073e069f7db60b1fa98e052a68227824afe3e3a1c59ca2"
+checksum = "23c7391e4b9f4ffab1a624223cc1d7385ff9a678f490768add717de7ea2f4d89"
 dependencies = [
  "cc",
  "libc",
@@ -4692,15 +4699,11 @@ dependencies = [
 [[package]]
 name = "libssh2-sys"
 version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "220e4f05ad4a218192533b300327f5150e809b54c4ec83b5a1d91833601811b9"
 dependencies = [
- "cc",
  "libc",
  "libz-sys",
  "openssl-sys",
  "pkg-config",
- "vcpkg",
 ]
 
 [[package]]
@@ -4710,6 +4713,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc3a226e576f50782b3305c5ccf458698f92798987f551c6a02efe8276721e22"
 dependencies = [
  "cc",
+ "cmake",
  "libc",
  "pkg-config",
  "vcpkg",
@@ -6061,9 +6065,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -7696,9 +7700,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "1.0.7"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
 dependencies = [
  "rustls-pki-types",
 ]

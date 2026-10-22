@@ -59,13 +59,12 @@ impl Database {
             .collect()
     }
 
-    /// Find a user by email, creating one if absent; returns the user id.
+    /// Finds the verified owner of a mailbox, creating one if absent.
     ///
-    /// The human-login path: a magic link or an invitation accepts an email
-    /// and needs the user row whether or not it already exists. The lookup
-    /// and insert run under one connection lock, so two concurrent first
-    /// sign-ins for the same address resolve to one row (the second insert
-    /// hits the `UNIQUE(email)` constraint and falls back to the lookup).
+    /// The human-login path calls this only after proving control of `email`.
+    /// A legacy provider-created user that still carries the address as profile
+    /// metadata is moved to an internal address before the mailbox owner is
+    /// created. Concurrent claims resolve to the first committed owner.
     ///
     /// # Errors
     ///
@@ -74,17 +73,48 @@ impl Database {
         if let Some(id) = self.user_by_email(email).await? {
             return Ok(id);
         }
-        self.backend
-            .execute(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
-             ON CONFLICT(email) DO NOTHING",
-                &vals![email, unix_now()],
+
+        let user_id = portable_relational_id(uuid::Uuid::new_v4());
+        let now = unix_now();
+        let mut statements = Vec::new();
+        if let Some(provisional_user_id) = self.user_by_profile_email(email).await? {
+            let replacement =
+                format!("oidc-legacy-{provisional_user_id}-{user_id}@identity.invalid");
+            statements.push(
+                Statement::new(
+                    "UPDATE users SET email = ?2
+                     WHERE id = ?1 AND email = ?3 AND deleted_at IS NULL
+                       AND NOT EXISTS (
+                             SELECT 1 FROM user_mailboxes mailbox
+                              WHERE mailbox.user_id = ?1
+                           )",
+                    vals![provisional_user_id, replacement, email],
+                )
+                .expecting(1),
+            );
+        }
+        statements.extend([
+            Statement::new(
+                "INSERT INTO users (id, email, display_name, created_at)
+                 VALUES (?1, ?2, NULL, ?3)",
+                vals![user_id, email, now],
             )
-            .await?;
-        self.backend
-            .query_opt("SELECT id FROM users WHERE email = ?1", &vals![email])
-            .await?
-            .context("resolving user id after insert")?
-            .get(0)
+            .expecting(1),
+            Statement::new(
+                "INSERT INTO user_mailboxes (email, user_id, verified_at)
+                 VALUES (?1, ?2, ?3)",
+                vals![email, user_id, now],
+            )
+            .expecting(1),
+        ]);
+
+        if let Err(error) = self.backend.checked_batch(&statements).await {
+            if let Some(existing) = self.user_by_email(email).await? {
+                return Ok(existing);
+            }
+            return Err(error).context("claiming verified mailbox");
+        }
+
+        Ok(user_id)
     }
 }

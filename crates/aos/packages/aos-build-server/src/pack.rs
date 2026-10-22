@@ -191,7 +191,7 @@ pub fn create_pack(entries: &[PackEntry]) -> Vec<u8> {
 /// Returns a reason string if the path is neither a `.drv` nor
 /// content-addressed, or if `nix path-info` cannot be run or its output
 /// cannot be parsed.
-pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
+pub async fn validate_imported_path(store_path: &str) -> Result<(), String> {
     // .drv files are always safe (they're build recipes, not binaries)
     if store_path.ends_with(".drv") {
         return Ok(());
@@ -205,7 +205,7 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
     // process exits non-zero with `error: experimental Nix feature
     // 'nix-command' is disabled` on stderr. The aos rootfs ships no
     // system-wide `nix.conf`, so we have to opt in per-invocation.
-    let output = std::process::Command::new("nix")
+    let output = tokio::process::Command::new("nix")
         .envs(aos_nix_env())
         .args([
             "--extra-experimental-features",
@@ -214,9 +214,11 @@ pub fn validate_imported_path(store_path: &str) -> Result<(), String> {
             "--json",
             store_path,
         ])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .output()
+        .await
         .map_err(|e| format!("failed to query path info: {e}"))?;
 
     if !output.status.success() {
@@ -274,6 +276,7 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("entry {i}: failed to spawn nix-store --import: {e}"))?;
 
@@ -283,26 +286,22 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
             .ok_or_else(|| format!("entry {i}: no stdin on child process"))?;
 
         let nar_data = entry.nar_data.clone();
-        let stdin_task = tokio::spawn(async move {
+        let write_stdin = async move {
             stdin.write_all(&nar_data).await?;
             stdin.shutdown().await?;
             Ok::<(), std::io::Error>(())
-        });
+        };
 
-        let output = child
-            .wait_with_output()
-            .await
-            .map_err(|e| format!("entry {i}: waiting for nix-store --import: {e}"))?;
+        let wait_for_output = child.wait_with_output();
+        let (stdin_result, output_result) = tokio::join!(write_stdin, wait_for_output);
+        let output =
+            output_result.map_err(|e| format!("entry {i}: waiting for nix-store --import: {e}"))?;
 
-        // Join the stdin writer task and propagate errors.
-        match stdin_task.await {
-            Ok(Err(e)) => {
+        match stdin_result {
+            Err(e) => {
                 tracing::warn!(entry = i, hash = %entry.hash, error = %e, "stdin write error during pack import");
             }
-            Err(e) => {
-                tracing::warn!(entry = i, hash = %entry.hash, error = %e, "stdin writer task panicked during pack import");
-            }
-            Ok(Ok(())) => {}
+            Ok(()) => {}
         }
 
         if !output.status.success() {
@@ -319,7 +318,7 @@ pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
             let trimmed = line.trim();
             if !trimmed.is_empty() {
                 // Validate the imported path
-                if let Err(reason) = validate_imported_path(trimmed) {
+                if let Err(reason) = validate_imported_path(trimmed).await {
                     return Err(format!("entry {i} ({}): {reason}", entry.hash));
                 }
                 paths.push(trimmed.to_string());

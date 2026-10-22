@@ -227,7 +227,7 @@ async fn fixture() -> (RpcService, String, MemorySurface, Oid) {
         .unwrap();
     let token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "metadata-editor".into(),
                 owner: Principal::user(user),
@@ -237,6 +237,7 @@ async fn fixture() -> (RpcService, String, MemorySurface, Oid) {
                     Permission::RegistryConfigure,
                     Permission::AuditRead,
                 ],
+                expires_at: None,
             },
             3600,
         )
@@ -402,12 +403,13 @@ async fn metadata_apply_checks_confirmation_and_current_permission_before_writin
         .unwrap();
     let read_token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "metadata-read-only".into(),
                 owner: Principal::user(user),
                 scope: Scope::root(),
                 permissions: vec![Permission::Read],
+                expires_at: None,
             },
             3600,
         )

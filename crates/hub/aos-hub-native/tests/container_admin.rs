@@ -65,12 +65,13 @@ impl RunningHub {
             .await
             .unwrap();
         self.keys
-            .mint(
+            .mint_browser_session(
                 &TokenAuth {
                     token_id: token_id.to_string(),
                     owner: Principal::user(user_id),
                     scope: Scope::parse(&scope),
                     permissions,
+                    expires_at: None,
                 },
                 900,
             )
