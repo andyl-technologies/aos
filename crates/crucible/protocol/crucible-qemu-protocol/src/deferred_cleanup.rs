@@ -28,6 +28,12 @@ pub use physical_return::{
     DeferredCleanupReturnKind,
 };
 
+mod purpose;
+pub use purpose::{
+    DEFERRED_CLEANUP_PURPOSE_BYTES, DeferredCleanupDelegation, DeferredCleanupOuterPolicy,
+    DeferredCleanupPurpose,
+};
+
 #[cfg(test)]
 mod tests;
 

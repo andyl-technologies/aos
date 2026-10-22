@@ -341,6 +341,18 @@ records byte-for-byte; this does not establish executed C interoperability.
 The ABI gate now requires the exact thirteen-test group and a canonical named
 consumption case before running it, preventing a zero-test filter from passing.
 
+The independently implemented 736-byte schema-three purpose now correlates the
+physical session with a sealed future-entry delegation. It preserves the
+assigned Source, authenticated carrier, clock domain, outer entry right,
+dedicated resource parent, recipient, concrete profile and exact child extent.
+An explicit absent endpoint differs from an immutable finite outer endpoint;
+neither starts Cleanup time. Capability comparison requires exact parents,
+profile and extent and limits future duration and canonical required units.
+Sixteen Cleanup controls and all 216 protocol tests pass. The ABI gate requires
+the exact sixteen-test group. These bytes cannot select a carrier or issue any
+of the retained nominal owners; actual host issuance and native construction
+remain required before installing the proposed profile.
+
 #### Installed bounded-pthread QEMU consumer
 
 The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,

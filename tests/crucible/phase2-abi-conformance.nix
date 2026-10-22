@@ -515,7 +515,7 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
-              require_test_set 13 protocol-deferred-cleanup \
+              require_test_set 16 protocol-deferred-cleanup \
                 deferred_cleanup::tests::physical_consumption_survives_unknown_return_capture_and_failed_post \
                 -p crucible-qemu-protocol --lib deferred_cleanup::tests::
               cargo test \

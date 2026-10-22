@@ -4,6 +4,144 @@
 use super::*;
 use crate::boundary_action::{ActionBinding, ActionObservation, ActionParent};
 
+fn purpose() -> DeferredCleanupPurpose {
+    let capability = capability();
+    DeferredCleanupPurpose {
+        publisher: crate::publisher_subscription::PublisherPurpose {
+            lender_generation: 1,
+            account_generation: 2,
+            process_generation: 3,
+            capability: [20; 32],
+            reservation: [21; 32],
+            device: 0,
+            inode: 0,
+            producer_event: 4,
+            receiver_event: 5,
+            backing_bytes: 4096,
+        },
+        delegation: DeferredCleanupDelegation {
+            source_capability: [22; 32],
+            source_reservation: [23; 32],
+            account_incarnation: 2,
+            process_incarnation: 3,
+            source_issuer_incarnation: 6,
+            carrier: DeferredCleanupIdentity {
+                identity: [24; 32],
+                incarnation: 7,
+            },
+            carrier_device: 0,
+            carrier_inode: 0,
+            carrier_extent: 4096,
+            outer_policy: DeferredCleanupOuterPolicy::NoEndpoint,
+            clock_domain: [25; 32],
+            maximum_duration_ns: 1000,
+            maximum_units: 9,
+            outer: capability.outer,
+            resource: capability.resource,
+            recipient: capability.recipient,
+            profile: capability.profile,
+            physical_extent: capability.funding.total().unwrap(),
+            issuer: capability.issuer,
+        },
+    }
+}
+
+#[test]
+fn dormant_purpose_distinguishes_absent_and_finite_outer_endpoint() {
+    let absent = purpose();
+    let bytes = absent.encode().unwrap();
+    assert_eq!(bytes.len(), 736);
+    assert_eq!(DeferredCleanupPurpose::decode(&bytes), Ok(absent));
+    assert_eq!(&bytes[432..440], &[0; 8]);
+    assert!(crate::publisher_subscription::PublisherPurpose::decode(&bytes).is_err());
+    let old = absent.publisher.encode().unwrap();
+    assert!(DeferredCleanupPurpose::decode(&old).is_err());
+
+    let mut finite = absent;
+    finite.delegation.outer_policy = DeferredCleanupOuterPolicy::FiniteEndpoint {
+        endpoint_ns: i64::MAX as u64,
+    };
+    assert_eq!(
+        DeferredCleanupPurpose::decode(&finite.encode().unwrap()),
+        Ok(finite)
+    );
+    for endpoint_ns in [0, i64::MAX as u64 + 1, u64::MAX] {
+        finite.delegation.outer_policy = DeferredCleanupOuterPolicy::FiniteEndpoint { endpoint_ns };
+        assert!(finite.encode().is_err());
+    }
+}
+
+#[test]
+fn dormant_purpose_refuses_changed_assignment_padding_and_future_contract() {
+    let bytes = purpose().encode().unwrap();
+    for offset in [
+        8, 12, 120, 152, 160, 168, 176, 184, 192, 196, 200, 204, 208, 216, 224, 232, 236, 240, 244,
+        248, 252, 320, 328, 408, 412, 416, 420, 424, 428, 688, 692, 735,
+    ] {
+        let mut changed = bytes;
+        changed[offset] ^= 0x80;
+        assert!(
+            DeferredCleanupPurpose::decode(&changed).is_err(),
+            "offset {offset}"
+        );
+    }
+    for offset in [256, 288, 352, 440, 488, 528, 568, 608, 648] {
+        let mut changed = bytes;
+        changed[offset..offset + 32].fill(0);
+        assert!(
+            DeferredCleanupPurpose::decode(&changed).is_err(),
+            "identity {offset}"
+        );
+    }
+    for offset in [320, 328, 336, 344, 520, 560, 600, 680] {
+        for exhausted in [0, u64::MAX] {
+            let mut changed = bytes;
+            put64(&mut changed, offset, exhausted);
+            assert!(
+                DeferredCleanupPurpose::decode(&changed).is_err(),
+                "incarnation {offset}"
+            );
+        }
+    }
+    let mut changed = bytes;
+    put64(&mut changed, 432, 1);
+    assert!(DeferredCleanupPurpose::decode(&changed).is_err());
+    assert!(DeferredCleanupPurpose::decode(&bytes[..735]).is_err());
+    let mut oversized = bytes.to_vec();
+    oversized.push(0);
+    assert!(DeferredCleanupPurpose::decode(&oversized).is_err());
+}
+
+#[test]
+fn dormant_delegation_requires_exact_parents_extent_and_bounded_inventory() {
+    let delegation = purpose().delegation;
+    let original = capability();
+    assert_eq!(delegation.validate_capability(&original), Ok(()));
+
+    for field in 0..9 {
+        let mut changed = original;
+        match field {
+            0 => changed.issuer.incarnation += 1,
+            1 => changed.resource.identity[0] ^= 1,
+            2 => changed.outer.incarnation += 1,
+            3 => changed.recipient.incarnation += 1,
+            4 => changed.profile[0] ^= 1,
+            5 => changed.funding.guards += 1,
+            6 => changed.duration_ns += 1,
+            7 => changed.required_units += 1,
+            _ => changed.issuer.identity[0] ^= 1,
+        }
+        assert!(
+            delegation.validate_capability(&changed).is_err(),
+            "field {field}"
+        );
+    }
+    let mut smaller = original;
+    smaller.duration_ns = 1;
+    smaller.required_units = 1;
+    assert_eq!(delegation.validate_capability(&smaller), Ok(()));
+}
+
 fn capability() -> DeferredCleanupCapability {
     let owner = |byte, incarnation| DeferredCleanupIdentity {
         identity: [byte; 32],
