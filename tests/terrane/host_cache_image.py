@@ -399,7 +399,7 @@ def main():
         "publisher-confinement", "publisher-reject-descriptor", "publisher-reject-stdio",
         "seed-mixed-manifest", "seed-mixed-bad-manifest",
         "recover-mixed-manifest", "refuse-mixed-manifest",
-        "consumer-leases", "sealed-consumer", "seed-sealed-consumer-cold", "sealed-consumer-cold", "scoped-file", "publish-inline", "publish-inline-read-failure", "publish-inline-prepare-failure", "publish-inline-cancel", "publish-inline-transfer",
+        "consumer-leases", "sealed-consumer", "seed-sealed-consumer-cold", "sealed-consumer-cold", "scoped-file", "scoped-manifest", "publish-inline", "publish-inline-read-failure", "publish-inline-prepare-failure", "publish-inline-cancel", "publish-inline-transfer",
         "publish-inline-transfer-cancel", "publish-inline-transfer-conflict",
         "retain-running", "retain-running-cancel",
         "publish-manifest", "publish-manifest-cancel", "publish-manifest-bad-whole",

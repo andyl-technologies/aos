@@ -13127,3 +13127,27 @@ ABI and refuses other architectures. Committed qualification and independent
 source review remain required. This privileged kernel probe exercises no
 production broker, worker, exposure lease or allocation owner and closes no
 trunk task.
+
+Frozen qualification of that quota probe at `3b417e95c4` passes in 19.21
+seconds, preserving all 9,313 tracked files. Independent review matches the
+installed Python source, actual source-built ELF, AOS 7.2.3 kernel, rootfs and
+bounded init script. The final structured observation reports zero project
+bytes and inodes after the retained-reference charge observation. This is an
+actual new VM execution, not a replay of the earlier cached kernel probe.
+Required application-target compilation at `e195873896` passes in 755.88
+seconds; independent review again matches all 7,987 immutable source files and
+184 compiler records across 59 packages.
+
+Scoped inline and manifest qualification now use separate actual actor
+lifecycles, each retaining the original 30-second deadline. The manifest actor
+independently reopens and resumes existing whole-file custody, creates its own
+signed SDK repository, commits the complete file and closes the genuine scoped
+selection around the original recovered inode. It runs before the inline actor
+introduces a new publication's retirement state. The supervisor preserves
+captured stdout and stderr when any actor times out; explicit scoped phases
+identify recovery, repository setup, signing, selection, backing and release.
+Both independent inode observers and every existing refusal control remain
+required. No domain, project, administrative scaffold or outer deadline is
+added. The image inventory requires all 93 selectors and all 128 native library
+cases. Strict native all-target Clippy, Rust formatting and Python syntax checks
+pass. Native and required application qualification remain pending.

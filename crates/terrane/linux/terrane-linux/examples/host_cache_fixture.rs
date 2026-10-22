@@ -89,6 +89,7 @@ fn main() -> std::process::ExitCode {
             "seed-sealed-consumer-cold",
             "sealed-consumer-cold",
             "scoped-file",
+            "scoped-manifest",
             "publish-inline",
             "publish-inline-read-failure",
             "publish-inline-prepare-failure",

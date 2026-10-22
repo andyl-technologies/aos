@@ -185,8 +185,17 @@ def actor_environment(case, uuid):
 
 def actor(case, mode, uuid):
     """Executes an actual confined cache actor and retains its complete output."""
-    result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", mode]),
-                            env=actor_environment(case, uuid), text=True, capture_output=True, timeout=30)
+    try:
+        result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", mode]),
+                                env=actor_environment(case, uuid), text=True, capture_output=True, timeout=30)
+    except subprocess.TimeoutExpired as error:
+        # subprocess has already killed and reaped the actor. Retain its last
+        # bounded phase evidence without extending the deadline or retrying work.
+        for output in [error.stdout, error.stderr]:
+            if output:
+                print(output.decode(errors="replace") if isinstance(output, bytes) else output,
+                      end="", flush=True)
+        raise
     print(result.stdout, end="", flush=True)
     if result.stderr:
         print(result.stderr, end="", flush=True)
@@ -1521,6 +1530,9 @@ def main():
                 "scoped recovery lacks the three original cold whole files")
         scoped_originals = {path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
                             for path in scoped_prior_files}
+        # The manifest actor only pins existing recovery backing. Run it before
+        # the inline actor publishes new content with its own retirement state.
+        scoped_manifest = actor("sealed-consumer-cold", "scoped-manifest", uuid)
         scoped_file = actor("sealed-consumer-cold", "scoped-file", uuid)
         require("PASS actual signed scoped file returns original sealed inode; changed policy denies disclosure, foreign domain leaves physical policy unchanged, retained descriptor survives release" in scoped_file,
                 "missing actual SDK-authorized native file backing witness")
@@ -1541,9 +1553,9 @@ def main():
                     for path, original in scoped_originals.items()),
                 "scoped backing reopen replaced or changed an earlier whole-file inode")
         print("PASS independent observer matches SDK-authorized backing to the original immutable publisher inode", flush=True)
-        require("PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release" in scoped_file,
+        require("PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release" in scoped_manifest,
                 "missing actual SDK-authorized whole manifest witness")
-        manifest_inodes = [line for line in scoped_file.splitlines()
+        manifest_inodes = [line for line in scoped_manifest.splitlines()
                            if line.startswith("SCOPED_MANIFEST_INODE ")]
         original_manifests = [path for path in scoped_originals
                               if path.read_bytes() == bytes([0x5a]) * 262145]
@@ -1551,6 +1563,9 @@ def main():
                 and any(manifest_inodes[0] == f"SCOPED_MANIFEST_INODE hash={path.name} inode={scoped_originals[path][0]} size=262145"
                         for path in original_manifests),
                 "scoped manifest backing differs from both original recovered whole-file inodes")
+        require(all((path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest()) == original
+                    for path, original in scoped_originals.items()),
+                "scoped manifest reopen replaced or changed an earlier whole-file inode")
         print("PASS independent observer matches SDK-authorized manifest backing to its original recovered immutable inode", flush=True)
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
