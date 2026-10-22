@@ -282,9 +282,10 @@ Full algorithm, horizon/lookahead derivation, and edge cases are in
   QUANTUM(config):
     1. PICK     choose the node with the global-minimum horizon, where
                   horizon(n) = min( next exact local event of n,          -- timer, I/O completion
-                                    n.virtual_time + lookahead(n) )        -- conservative CMB bound
-                lookahead(n) = minimum inbound link latency to n
-                                 (a peer cannot deliver to n sooner than this)
+                                    net(n) )                               -- conservative CMB bound
+                net(n) = min over nodes j with a path to n of
+                           vt(j) + shortest-path latency(j, n)
+                                 (no peer can deliver to n sooner than this)
 
     2. RUN      run that node under -icount until it reaches its horizon
                   (its next sync point): a TB boundary at/after the horizon,

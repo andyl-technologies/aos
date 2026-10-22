@@ -214,7 +214,8 @@ the scenario's identity.
   window ([SCHED-40]), so that a `k`-node run on an `N`-core host approaches `min(k,
   N)`× the throughput of a serialized run, attenuated only by the scenario's
   critical path (§25.2.2). The realized parallelism `P` MUST be a measured output
-  of the perf-bench gate. *Gate:* `gate:perf-bench`. *Spec:* §25.2; routes [G-9],
+  of the perf-bench gate and of every live attempt's periodic progress record.
+  *Gate:* `gate:perf-bench`. *Spec:* §25.2; routes [G-9],
   references [SCHED-40], [SCHED-41].
 
 - **[PERF-4]** The achievable parallelism MUST be understood and reported as the
@@ -228,8 +229,8 @@ the scenario's identity.
 
 - **[PERF-5]** The harness MUST NOT improve parallelism by any means that weakens
   exactness: parallelism comes *only* from running independent lookahead windows
-  concurrently while RESOLVE/EMIT remain serialized through the single scheduler
-  in the total order of §8.6 ([SCHED-40]). A serialized run (`P = 1`) and a
+  concurrently while RESOLVE/EMIT are published in the canonical key order of
+  §8.6 ([SCHED-40]). A serialized run (`P = 1`) and a
   maximally-parallel run MUST produce bit-identical `S`, `T`, and canonical event
   logs; this is asserted by `gate:e2e-determinism` and re-checked under the
   perf-bench gate's varied-core-count sweep ([HARN-11] varied core counts). *Gate:*
@@ -808,8 +809,8 @@ The determinism-critical half is the run set and its ordering — the scheduler
 derives the set of nodes whose horizons do not constrain each other, and orders
 the resulting advance plans by a **completion-order key** computed from the plans
 themselves, so outcomes commit in an order that is a function of the scenario and
-never of which host worker finished first — RESOLVE and EMIT stay serialized
-through the single scheduler in the total order of §8.6 ([SCHED-40], [INV-3]).
+never of which host worker finished first — RESOLVE and EMIT are published in
+the canonical key order of §8.6 ([SCHED-40], [INV-3]).
 The half that turns that into wall-clock is the runtime: the selected nodes must
 actually be advanced on distinct host workers rather than one after another on
 the calling thread. Until they are, the run set is a plan that nothing executes

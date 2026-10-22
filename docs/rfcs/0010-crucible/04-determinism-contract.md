@@ -174,8 +174,8 @@ it takes their arrival icounts as given. It is the L0/L2 + atomic-patch property
 Contract B is the cross-node property. It is satisfied by (a) deriving each
 node's clock from its icount (4.3), (b) the single authoritative scheduler that
 assigns a delivery virtual-time to every cross-node event and converts it to a
-consumer icount ([INV-3], [INV-8], 08), and (c) the conservative PDES lookahead
-discipline that guarantees no input can arrive "in the past" of a node that has
+consumer icount ([INV-3], [INV-8], 08), and (c) the conservative PDES network
+bound that guarantees no input can arrive "in the past" of a node that has
 already advanced (08). The transport (13) carries the *delivery icount* with
 every payload so the receiving plugin makes the input visible at exactly that
 count, never "as soon as it shows up on the socket."
@@ -245,8 +245,7 @@ Contract B reduces to one precise requirement about *how an input is timed*.
 
 - **[DET-12]** A VM MUST NOT advance past the earliest icount at which an input
   *could* become visible to it without the scheduler's authorization. The
-  conservative lookahead bound (minimum inbound link latency; 08) MUST gate how
-  far a node runs, so that an input's delivery icount is always in the node's
+  conservative network bound ([SCHED-6]) MUST gate how far a node runs, so that an input's delivery icount is always in the node's
   future at the moment it is computed. A node that has run past a delivery icount
   is a contract violation and MUST fail loudly, never be papered over by
   delivering late. *Gate:* `gate:layer1-injection`, `gate:divergence-bisect`.

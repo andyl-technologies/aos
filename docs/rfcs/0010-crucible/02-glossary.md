@@ -78,9 +78,13 @@ formal model, the defining file is named.
 - **Virtual time** — the shared logical-tick timeline. Guest-visible integer
   nanoseconds are `floor(logical_ticks / 1000)`. (09)
 - **Horizon** — the furthest virtual time a node may advance to before it must
-  synchronize: `min(next exact local event, conservative network lookahead)`. (08)
-- **Lookahead** — the conservative bound from CMB PDES: the minimum inbound link
-  latency to a node; a peer cannot deliver to it sooner than this. (08)
+  synchronize: `min(next exact local event, network bound)`. (08)
+- **Network bound** — `net(n)`, the earliest time another node can influence
+  `n`: the minimum over every node `j` with a coupling path to `n` of `j`'s clock
+  plus the shortest-path latency; `+∞` when no path reaches `n`. (08)
+- **Lookahead** — the conservative bound from CMB PDES: the minimum inbound
+  coupling latency to a node. On a common clock the network bound is the node's
+  clock plus its lookahead. (08)
 - **Exact local event** — a host-computed, predictable next wakeup (timer, disk/9p
   I/O completion) that gives a node an exact horizon with no conservative bound. (08, 15)
 - **Quantum** — one `step` of the scheduler: advance the minimum-horizon node, then
