@@ -40,7 +40,7 @@ fn held_writer_refuses_channel_observers_without_allocating_or_mutating() {
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
         assert!(error.is_retryable());
-        assert!(error.message.is_empty());
+        assert!(error.message().is_empty());
         assert_eq!(
             error.quantum_node_slot_source(),
             Some(&NodeSlotError::AdvancePublicationOccupied {

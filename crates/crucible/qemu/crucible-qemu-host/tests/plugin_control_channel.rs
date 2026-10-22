@@ -52,7 +52,7 @@ fn lifecycle_stream_plugin_control_rejects_quit_before_run() -> Result<(), Box<d
     };
 
     assert_eq!(error.operation, "send plugin control Quit");
-    assert_eq!(error.message, "control lifecycle violation");
+    assert_eq!(error.message(), "control lifecycle violation");
     assert_eq!(host.state(), ControlLifecycleState::Connected);
     Ok(())
 }

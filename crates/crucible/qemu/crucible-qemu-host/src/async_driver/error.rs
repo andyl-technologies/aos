@@ -20,8 +20,13 @@ pub struct QemuAsyncDriverRuntimeError {
 
 impl std::fmt::Display for QemuAsyncDriverRuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.detail {
+        match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source)
+                if self.message.is_empty() =>
+            {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source)
                 if self.message.is_empty() =>
             {
                 write!(formatter, "{} failed: {source}", self.operation)
@@ -42,14 +47,16 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source) => Some(source),
             _ => self.supervision_post.as_ref().map(|source| source as _),
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum QemuAsyncDriverRuntimeErrorDetail {
     HostSupervision(crucible_host_resources::host_supervision::HostSupervisionError),
+    MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
     #[default]
     Message,
     FaultResultStorage(u32, u32),
@@ -58,6 +65,37 @@ enum QemuAsyncDriverRuntimeErrorDetail {
 }
 
 impl QemuAsyncDriverRuntimeError {
+    /// Borrows authored text, returning an empty string for an unformatted cause.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Retains a mapped-region refusal without formatting another diagnostic.
+    #[must_use]
+    pub fn mapped_region_access(
+        operation: &'static str,
+        source: crucible_qemu_shmem::MappedSetupRegionAccessError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the original mapped-region refusal independently of a later post.
+    #[must_use]
+    pub const fn mapped_region_access_source(
+        &self,
+    ) -> Option<&crucible_qemu_shmem::MappedSetupRegionAccessError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Retains a typed host operational deadline, cancellation, or ownership failure.
     #[must_use]
     pub fn operational_supervision(
@@ -79,8 +117,8 @@ impl QemuAsyncDriverRuntimeError {
     pub const fn operational_supervision_source(
         &self,
     ) -> Option<crucible_host_resources::host_supervision::HostSupervisionError> {
-        match self.detail {
-            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(*source),
             _ => None,
         }
     }
@@ -176,9 +214,9 @@ impl QemuAsyncDriverRuntimeError {
     /// Returns an exact PREPARE result-storage refusal, when present.
     #[must_use]
     pub const fn fault_result_storage_coordinates(&self) -> Option<(u32, u32)> {
-        match self.detail {
+        match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(requested, configured) => {
-                Some((requested, configured))
+                Some((*requested, *configured))
             }
             _ => None,
         }
@@ -187,12 +225,12 @@ impl QemuAsyncDriverRuntimeError {
     /// Returns an exact fault-event staging refusal, when present.
     #[must_use]
     pub const fn fault_event_storage_coordinates(&self) -> Option<(u64, u64, u64)> {
-        match self.detail {
+        match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::FaultEventStorage(
                 current,
                 requested,
                 configured,
-            ) => Some((current, requested, configured)),
+            ) => Some((*current, *requested, *configured)),
             _ => None,
         }
     }
@@ -200,14 +238,14 @@ impl QemuAsyncDriverRuntimeError {
     /// Returns an exact scenario resource refusal, when present.
     #[must_use]
     pub const fn resource_limit_coordinates(&self) -> Option<(&'static str, u64, u64, u64, u64)> {
-        match self.detail {
+        match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
                 field,
                 current,
                 requested,
                 configured,
                 hard,
-            ) => Some((field, current, requested, configured, hard)),
+            ) => Some((*field, *current, *requested, *configured, *hard)),
             _ => None,
         }
     }

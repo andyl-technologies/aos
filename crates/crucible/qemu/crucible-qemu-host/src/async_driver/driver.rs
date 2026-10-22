@@ -556,7 +556,7 @@ mod tests {
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
         assert_eq!(source.operation, "start quantum");
-        assert_eq!(source.message, "initiating refusal");
+        assert_eq!(source.message(), "initiating refusal");
         assert_eq!(original_after, expected);
         assert!(original.wait_slice().is_err());
         Ok(())
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(counts.allocations, 0);
         assert_eq!(counts.reallocations, 0);
         assert_eq!(error.operation, "adapter");
-        assert_eq!(error.message, "initiating refusal");
+        assert_eq!(error.message(), "initiating refusal");
         assert_eq!(error.operational_supervision_post(), Some(expected));
         assert!(original.wait_slice().is_err());
         Ok(())

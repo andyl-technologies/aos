@@ -2139,7 +2139,7 @@ impl QemuNode {
                             QemuNodeChannelPlane::ShmemHotPath,
                             QemuNodeChannelError::bounded_await_timeout(
                                 "execution_fingerprint",
-                                format!("plugin did not publish the current black-box fingerprint within {timeout:?}: {}", source.message),
+                                format!("plugin did not publish the current black-box fingerprint within {timeout:?}: {}", source.message()),
                                 timeout,
                             ),
                         ))?;
@@ -2638,7 +2638,7 @@ impl QemuShutdownTarget for QemuNodeShutdownTarget<'_, '_, '_> {
 fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownTargetError {
     match error.operational_supervision_source() {
         Some(source) => QemuShutdownTargetError::operational_supervision(error.operation, source),
-        None => QemuShutdownTargetError::new(error.operation, error.message),
+        None => QemuShutdownTargetError::new(error.operation, error.into_message()),
     }
 }
 

@@ -290,7 +290,7 @@ fn old_action_cleanup_refusal_precedes_each_command_publication() -> Result<(), 
         .unwrap_err();
     let second = node.enqueue_fault_command(command, &[]).unwrap_err();
     assert_eq!(first, second);
-    assert!(first.message.contains("physical return is pending"));
+    assert!(first.message().contains("physical return is pending"));
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert!(!node.fault_fingerprint_invalidated);
 

@@ -24,11 +24,10 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
     assert_eq!(counts.allocations, 0);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
-    assert!(
-        errors
-            .iter()
-            .all(|error| matches!(error.message, Cow::Borrowed(_)))
-    );
+    assert!(errors.iter().all(|error| matches!(
+        error.detail,
+        ChannelFailureDetail::Message(Cow::Borrowed(_))
+    )));
     assert_eq!(errors[0], errors[1]);
     assert!(!errors[0].is_retryable());
     assert!(errors[2].is_retryable());
@@ -53,9 +52,12 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
         assert_eq!(counts.allocations, 0);
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
-        assert!(matches!(error.message, Cow::Owned(_)));
-        assert_eq!(error.message.as_ptr(), allocation);
-        assert_eq!(error.message, "original owned channel diagnostic");
+        assert!(matches!(
+            error.detail,
+            ChannelFailureDetail::Message(Cow::Owned(_))
+        ));
+        assert_eq!(error.message().as_ptr(), allocation);
+        assert_eq!(error.message(), "original owned channel diagnostic");
 
         let (node, counts) = TestAllocationObserver::count(|| {
             QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, error)
@@ -106,7 +108,7 @@ fn channel_supervision_retains_actual_cause_through_shutdown_without_allocating(
     );
     assert!(!channel.is_retryable());
     assert_eq!(channel.bounded_timeout(), None);
-    assert!(matches!(channel.message, Cow::Borrowed("")));
+    assert!(channel.message().is_empty());
     assert_eq!(shutdown.operational_supervision_source(), Some(expected));
     assert_eq!(
         shutdown

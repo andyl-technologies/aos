@@ -254,7 +254,7 @@ fn issued_quantum_finish_refusal_preserves_post_and_cannot_retry()
             panic!("finish first cause and independent Original must survive");
         };
         assert_eq!(source.operation, "actual finish refusal");
-        assert_eq!(source.message, "first channel cause");
+        assert_eq!(source.message(), "first channel cause");
         assert_eq!(source.is_retryable(), retryable);
         assert!(matches!(
             original_after,
@@ -280,7 +280,7 @@ fn assert_channel_original_post(error: QemuAsyncDriverError) {
         panic!("first channel cause and independent Original must both survive");
     };
     assert_eq!(source.operation, "actual start refusal");
-    assert_eq!(source.message, "first channel cause");
+    assert_eq!(source.message(), "first channel cause");
     assert!(matches!(
         original_after,
         HostSupervisionError::Terminal {

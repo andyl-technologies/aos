@@ -89,8 +89,6 @@ pub enum QemuFingerprintSampleError {
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Authored detail, borrowed for static text and empty for typed causes.
-    pub message: Cow<'static, str>,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
@@ -116,7 +114,7 @@ pub struct QemuPendingQuantumReport {
 /// Retains typed causes inline; shared decode refusals keep their original allocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelFailureDetail {
-    Message,
+    Message(Cow<'static, str>),
     Supervision(HostSupervisionError),
     DecodeAdmission(DecodeAdmissionError),
     FingerprintSample(QemuFingerprintSampleError),
@@ -129,6 +127,25 @@ enum ChannelFailureDetail {
 }
 
 impl QemuNodeChannelError {
+    /// Borrows authored text, returning an empty string for a typed cause.
+    ///
+    /// The cause and authored text share one storage alternative. Retaining a
+    /// typed failure never allocates a replacement diagnostic.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match &self.detail {
+            ChannelFailureDetail::Message(message) => message,
+            _ => "",
+        }
+    }
+
+    pub(crate) fn into_message(self) -> Cow<'static, str> {
+        match self.detail {
+            ChannelFailureDetail::Message(message) => message,
+            _ => Cow::Borrowed(""),
+        }
+    }
+
     /// Creates a channel operation error without copying its diagnostic.
     ///
     /// Static text is borrowed. An owned message retains its allocation and
@@ -137,10 +154,9 @@ impl QemuNodeChannelError {
     pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: None,
             retryable: false,
-            detail: ChannelFailureDetail::Message,
+            detail: ChannelFailureDetail::Message(message.into()),
         }
     }
 
@@ -149,10 +165,9 @@ impl QemuNodeChannelError {
     pub fn retryable(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: None,
             retryable: true,
-            detail: ChannelFailureDetail::Message,
+            detail: ChannelFailureDetail::Message(message.into()),
         }
     }
 
@@ -165,10 +180,9 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: Some(timeout),
             retryable: false,
-            detail: ChannelFailureDetail::Message,
+            detail: ChannelFailureDetail::Message(message.into()),
         }
     }
 
@@ -179,7 +193,6 @@ impl QemuNodeChannelError {
     pub fn operational_supervision(operation: &'static str, source: HostSupervisionError) -> Self {
         Self {
             operation,
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: false,
             detail: ChannelFailureDetail::Supervision(source),
@@ -206,7 +219,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: false,
             detail: ChannelFailureDetail::DecodeAdmission(source),
@@ -230,7 +242,6 @@ impl QemuNodeChannelError {
     pub fn fingerprint_sample(operation: &'static str, source: QemuFingerprintSampleError) -> Self {
         Self {
             operation,
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: matches!(source, QemuFingerprintSampleError::BehindBoundary { .. }),
             detail: ChannelFailureDetail::FingerprintSample(source),
@@ -257,7 +268,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation,
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: false,
             detail: ChannelFailureDetail::MappedRegionAccess(source),
@@ -285,7 +295,6 @@ impl QemuNodeChannelError {
     ) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: matches!(
                 source,
@@ -308,7 +317,6 @@ impl QemuNodeChannelError {
     pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
         Self {
             operation: "qemu_quantum_shmem_hot_path",
-            message: Cow::Borrowed(""),
             timeout: None,
             retryable: true,
             detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
@@ -342,38 +350,37 @@ impl QemuNodeChannelError {
 
 impl fmt::Display for QemuNodeChannelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.message.is_empty() {
-            match &self.detail {
-                ChannelFailureDetail::Supervision(source) => {
-                    return write!(formatter, "{} failed: {source}", self.operation);
-                }
-                ChannelFailureDetail::DecodeAdmission(source) => {
-                    return write!(formatter, "{} failed: {source}", self.operation);
-                }
-                ChannelFailureDetail::FingerprintSample(source) => {
-                    return write!(formatter, "{} failed: {source}", self.operation);
-                }
-                ChannelFailureDetail::MappedRegionAccess(_) => {
-                    return write!(
-                        formatter,
-                        "{} failed: mapped QEMU quantum shared-memory access failed",
-                        self.operation
-                    );
-                }
-                ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
-                    return write!(
-                        formatter,
-                        "{} failed: QEMU quantum node-slot operation {operation} failed: {source}",
-                        self.operation
-                    );
-                }
-                ChannelFailureDetail::QuantumReportPending(source) => {
-                    return write!(formatter, "{} failed: {source}", self.operation);
-                }
-                ChannelFailureDetail::Message => {}
+        match &self.detail {
+            ChannelFailureDetail::Supervision(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::DecodeAdmission(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::FingerprintSample(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::MappedRegionAccess(_) => {
+                write!(
+                    formatter,
+                    "{} failed: mapped QEMU quantum shared-memory access failed",
+                    self.operation
+                )
+            }
+            ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
+                write!(
+                    formatter,
+                    "{} failed: QEMU quantum node-slot operation {operation} failed: {source}",
+                    self.operation
+                )
+            }
+            ChannelFailureDetail::QuantumReportPending(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::Message(message) => {
+                write!(formatter, "{} failed: {message}", self.operation)
             }
         }
-        write!(formatter, "{} failed: {}", self.operation, self.message)
     }
 }
 
@@ -386,7 +393,7 @@ impl std::error::Error for QemuNodeChannelError {
             ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
             ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
             ChannelFailureDetail::QuantumReportPending(source) => Some(source),
-            ChannelFailureDetail::Message => None,
+            ChannelFailureDetail::Message(_) => None,
         }
     }
 }
@@ -803,10 +810,10 @@ impl QemuNodeError {
             ChannelFailureDetail::QuantumReportPending(source) => {
                 Self::ChannelQuantumReportPending { plane, source }
             }
-            ChannelFailureDetail::Message => Self::Channel {
+            ChannelFailureDetail::Message(message) => Self::Channel {
                 plane,
                 operation: source.operation,
-                message: source.message,
+                message,
             },
         }
     }
