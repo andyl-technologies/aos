@@ -1,7 +1,7 @@
-From eb298a8e1ca0dfcae015aff802b376e5cb7a7842 Mon Sep 17 00:00:00 2001
+From 8c55fe5743a4df1db55ffb25682c298e6b8bd6fe Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] plugins: retain registered pending constructor custody
+Subject: [PATCH] plugins: retain Source-bound RAM reader completion custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -1120,7 +1120,7 @@ Raw control-deferred has incomplete direct boundary linkage, with a separate
 authenticated boundary-closure positive. Raw dirty-iterator retains its genuine
 mandatory lifecycle refusal; neither raw failure is converted to success.
 
-The final cumulative source adds 348 paths, changes 987 paths and deletes none
+The preceding constructor checkpoint adds 348 paths, changes 987 paths and deletes none
 against the pinned upstream base. Three additions since d009 are inventoried:
 the constructor fragment and fixture explicitly use GPL-2.0-or-later, and the
 unmarked proposal documentation uses QEMU's GPL-2.0-or-later default. Preserve
@@ -1134,6 +1134,112 @@ selected execution and activation remain unexecuted or unavailable. No
 accepting issuer, placeholder provider, relaxed bound or source-inspection
 authority is introduced. Independent packaged/native/ABI/license and full
 mandatory qualification remain separate.
+
+Retain Source-bound RAM reader registration and nominal read-child custody.
+Bind the actual installing Module, retained paid Runtime and real callback
+parent before publishing the canonical registration. Selected reads require
+the real Source operation and Native frame; a legacy raw v3 callback cannot
+admit that route. Preserve generic unselected behavior, exact unsupported CPU
+admission and all existing ACK, rearm and Original production bodies.
+
+Publish a real child before the Source birth post and preserve independent
+callback, Module post, Source post, physical return and consumed/uncertain
+facts. Keep the actual outer view, logical claim, operation, component,
+registration and service owners blocked by read or completion debt. Retain
+born-negative children and entered uncertain return without retry.
+
+Freeze the additive native SDK r2 contract da09e03a: callback table 56,
+observation 64, disposition 64, Module journal 128, registration return 32,
+Source read facts 112, enrolled Module receipt 240 and Source completion 160.
+Enroll the exact disjoint paid Runtime fields before use. Deliver actual
+Source 112 plus unchanged Module 128 into that enrolled receipt before exact
+argument acknowledgement. Require actual completion callback return and an
+independent identity-only Source post after acknowledgement. Keep two paid
+completion cells so the previous final 160 survives the next read birth and
+next completion callback. A Source no-call carries no Module birth and can
+copy the previous unchanged Module 128; its old epoch never identifies a birth
+for the new Source epoch. Factual observers survive expiry and registration
+consumption only while the real containing Runtime remains alive.
+
+Fresh complete joined C layouts and a genuinely linked whole-system floor
+measure Source 243112 plus all 27 actual getter terms 43942 equals 287054 bytes.
+The reader owner 632 and read 272 are actual inline Source fields; the Native
+RAM frame 96 is included by its real storage getter. Rebuild all 1,918 affected
+configured objects against those headers and link both system binaries plus
+actual owning units. Preserve the failed initial configured asm-header
+reconstruction and missing supplemental stub attempts, then correct only
+configured input reconstruction and compile the real stub. Verify 64 actual
+strong provider definitions in both system ELFs; no accepting placeholder is
+introduced.
+
+The first and only normal entry on signed 881048e43 passes 48.461516638 seconds
+under the unchanged 60-second/6 GiB limit with at most two compiler processes.
+Retain its exact ordinary support/provider metadata authentication and full
+logs separately from all prior samples. The new reader component preserves
+49 independently rebuilt omission classifiers and negative real-body owner
+boundaries. Its local record positives do not issue a Source, Runtime, Module
+or read child. Keep the genuine dirty-iterator lifecycle refusal unchanged.
+
+The current cumulative source has 990 changed paths, including 351 additions,
+and deletes none against the sole pinned base. The three additions since 065a are the
+reader fragment, component script and custody documentation; each explicitly
+uses GPL-2.0-or-later. Retain all prior notices and complete per-file license
+facts. Exclude generated include/aos protocol inputs, configured outputs and
+evidence from the signed tree; inventory those inputs separately. The new
+reader script is an authenticated Meson dependency and standalone control,
+not an execution selected by the owning 187 scenarios or delivery. Do not
+interpret dependency coverage as real launched reader qualification.
+
+Genuine paid Module reader registration, real Root subloan custody, selected
+production and activation remain unexecuted. This checkpoint does not remove
+the missing launched lifecycle refusal or claim counterpart authority.
+Preserve the frozen constructor seal and every superseded SDK/control failure.
+
+Correct the factual parent-identity path after review of signed 881048e43.
+Retained reader and completion debt must block the actual parent return,
+while ordinary factual lender identity remains available during a genuine
+child lifetime. Gate the five existing debt terms by the actual returning
+phase without changing the physical-return refusal or semantic admission.
+The original signed source and its 48.461516638-second normal result remain
+separately sealed pre-correction evidence.
+
+Preserve every original reader omission and add paired causal controls for
+all five retained-debt terms: ordinary identity reaches an unavailable
+continuation, while actual return refuses with EBUSY. The continuation always
+returns ENOKEY and supplies no issuer or selected authority. All 55 rebuilt
+reader omissions retain the original classifiers, commands and limits.
+
+Freshly rebuild all 1,918 configured objects against corrected 0137bd538 and
+relink both genuine system ELFs and owning units. The complete Source remains
+243112 bytes and all 27 real getter terms remain 43942, for a 287054-byte
+fixed floor. The frozen r2 SDK block da09e03a and its complete selected private
+header inventory remain unchanged. Authenticate all 323 literal rows, 370
+selected production definitions and all 251 source paths in the actual
+Meson dependency closure.
+
+The first and only corrected normal delivery entry passes 52.926962437
+seconds under the unchanged 60-second/6 GiB bound with at most two compiler
+processes and ordinary provider/support authentication. Keep this result
+separate from the original pre-correction sample and earlier timeout history.
+Genuine paid Module registration, Root subloan execution, selected activation
+and the missing launched dirty lifecycle remain unexecuted or refused.
+
+Complete the corrected-tree independent sweep without changing tests or
+limits: all 92 separately rebuilt preexec omissions, all 47 existing causal
+controls and all four late controls reach their intended classifiers. Retain
+owning, pending, receiver, service, workspace, storage, mapping journal and
+actual ordinary QMP evidence separately. Changed-input metadata/provider
+controls refuse actual altered inputs and restore exact original bytes;
+final literal extraction remains identical to the freshly compiled cohort.
+
+The 25 raw ordinary entries retain two failures: control-deferred lacks its
+complete direct support linkage, while its separate actual configured closure
+passes; dirty-iterator still refuses the missing genuine launched lifecycle.
+The other 23 raw entries pass. These failures are not converted into omission
+success or hidden by the successful normal delivery sample. Keep standalone
+coverage and original external bounds distinct from owning execution and the
+60-second delivery entry. Preserve every superseded attempt and earlier
+namespace byte-for-byte before producing this complete source artifact.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -22059,6 +22165,235 @@ index 0000000000000000000000000000000000000000..b98bc9cd6794757563eddc0cc9f099f3
 +actual journals before their births. The genuine paid registration, recipient,
 +Original, execution, cleanup and external counterpart positives remain
 +unexecuted; literal callback-table tests invoke no producer.
+diff --git a/docs/devel/crucible-ram-reader-custody.rst b/docs/devel/crucible-ram-reader-custody.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..13e59cbe0a42e6dba1c6912c27fa7a6fdb150afa
+--- /dev/null
++++ b/docs/devel/crucible-ram-reader-custody.rst
+@@ -0,0 +1,223 @@
++RAM reader custody in the QEMU process
++======================================
++
++.. SPDX-License-Identifier: GPL-2.0-or-later
++
++This additive SDK contract is process private. It does not alter a control or
++shared-memory format, the frozen v6 tables, Original admission, dirty rearm or
++ACK semantics. Its genuine Module counterpart and launched paid cohort are not
++yet connected. Selected readers must refuse in their absence. A component
++fixture or a copied record cannot supply that authority.
++
++Registration and retained fields
++--------------------------------
++
++``qemu_plugin_crucible_register_ram_readers_v4`` requires the actual installing
++Module invocation, its retained installer identity and genuine paid Runtime,
++and the real callback-registration child owner. The canonical owner pointer,
++nonwrapping epoch, complete Module journal and completed-receipt storage occupy
++four disjoint, aligned fields in that same Runtime and are initially zero.
++Source copies the callback table and pins the actual registration owner before
++publishing those fields. A negative installing post
++retains the born owner and registration pin; it does not admit a read.
++
++The Module supplies ordinary and root-scratch read functions, an independent
++same-child ``post`` observer, a physical ``return_read`` function and a separate
++``returned_current`` observer. A sixth ``completed`` registration callback
++receives the factual Source receipt after known read-cell closure. Its nominal
++owner, owner epoch, read epoch and receipt address are separate arguments; it
++receives no dead Module child. Their exact signatures are in
++``include/plugins/qemu-plugin.h``. Legacy v3 callbacks remain generic,
++unselected behavior only. Selection cannot inherit a callback registered
++before selection and cannot fall back to memcpy.
++
++Inline Module layout
++--------------------
++
++On the configured 64-bit ABI the complete callback table is 56 bytes, with
++schema and size at offsets 0 and 4, followed by six function pointers at
++8, 16, 24, 32, 40 and 48. It contains no userdata or caller-issued authority.
++
++The Module's canonical journal is 128 bytes, aligned to 8: a 64-byte
++``qemu_plugin_crucible_ram_read_observation_v1`` followed at offset 64 by a
++64-byte ``qemu_plugin_crucible_ram_read_disposition_v1``. Both start with
++schema/size at 0/4, Source epoch at 8, Module epoch at 16 and the historical
++Module child address at 24. These are native process-private pointers.
++
++The observation's eight 32-bit fields at offsets 32 through 60 are
++``birth_attempted``, ``born``, ``callback_entered``, ``callback_returned``,
++``post_recorded``, signed ``first_status``, signed ``post_status`` and zero
++``reserved``. A born negative child retains its real address and nonzero Module
++epoch even if its read callback was never entered. No-birth has neither, and
++must not claim an entered callback. Callback return and its independent post
++remain separate facts.
++
++The disposition's eight 32-bit fields at offsets 32 through 60 are
++``attempted``, ``returned``, ``consumed``, ``uncertain``, signed ``first_status``,
++signed ``post_status``, ``post_recorded`` and zero ``reserved``. They describe
++the actual physical Module child, not the enclosing C call. Consumption is
++never inferred from a status, callback return, ACK or absence of an output.
++The historical Module child/epoch corroborate the SAME observation after
++consumption. A factual no-birth disposition claims no physical attempt or
++consumption; it still requires its independent returned-current observation.
++
++All boolean fields are 0 or 1. Every size is the complete native structure
++size and every schema is 1. The Module's actual journal and the output of each
++independent observer must agree byte for byte. The Source child keeps its own
++copies; neither a caller-supplied journal nor its values alone is admission.
++
++Read, posts and physical return
++-------------------------------
++
++Only an actual Native read frame beneath the entered Source/Root operation
++may birth the fixed Source child. It binds the registration, operation epoch,
++thread/process and exact read arguments. Source publishes this child before
++its independent birth post. If that post refuses before Module read entry,
++Source records its actual no-call and Source post, then returns only its own
++cell. It invokes neither Module post nor Module return and leaves the previous
++Module journal untouched. There is no Module birth to assert for that epoch.
++
++After actual Module read entry, the Module constructor initializes its own
++canonical journal for that epoch, but only after its previous child factually
++consumed and Source permitted this new epoch. Source never resets the Module
++journal and keeps independent copies before allowing reuse. A negative Module
++constructor result still requires its real born-negative or factual no-birth
++post and physical disposition. It is not the Source no-call route.
++
++During the actual read and Module-post calls,
++``qemu_plugin_crucible_ram_read_child_identity_v1`` corroborates only that SAME
++entered child, exact callback phase and retained registration. It remains
++available for a factual no-birth or negative post after semantic expiry.
++``qemu_plugin_crucible_ram_read_child_current_v1`` additionally checks the
++current Source parent before an actual read. Neither creates an operation or
++renews a clock. Source records the actual read return, invokes the independent Module
++post, and observes its own Source parent independently of the Module result.
++
++Source marks the physical return attempt before entering ``return_read``.
++``qemu_plugin_crucible_ram_read_child_return_identity_v1`` corroborates only
++that actual cleanup call or its returned-current observation; semantic expiry
++cannot manufacture another read and cannot erase cleanup identity. The
++returned-current callback observes the already attempted physical disposition;
++it must not perform another physical return. A negative or uncertain entered
++return is never retried. Unknown consumption retains the Source child,
++registration, parent operation and containing Module disposal debt.
++
++A genuine Module constructor may retain its existing real Root Original borrow
++as the parent of a distinct nominal read subloan, with that child's actual
++retained borrow/debt and epoch. The real Module parent must refuse view return while
++this child remains retained. Physical child return consumes only that subloan;
++Source/Module outer view and claim return remain blocked until the Source read
++cell closes. It must not consume the outer Original or substitute a
++copied pointer/current result for a child birth. Constructor failure retains
++any genuinely born child. Return and returned-current observe saved child
++identity and physical journals; neither requires a consumed parent to be
++current, creates another Original or restarts an operation.
++
++Known physical consumption can return the Source child even after a negative
++semantic post. The first read error, Module post, Source post, physical return
++and returned-current result remain independent sticky records. They do not
++manufacture the outer Original post or change rearm/ACK/publication ordering.
++
++Retirement and current qualification
++------------------------------------
++
++Close reader admission first, drain actual in-flight read children, physically
++return the reader registration, then retire its containing component and
++callback-registration owner. Closing does not consume a child or revoke an
++entered operation. The registration pin remains until genuine physical return;
++uncertain read debt blocks Source, service and Module disposal.
++
++Registration return clears both enrolled canonical fields, under the Source
++registry mutex, only after known physical consumption. Retained or uncertain
++custody leaves both intact. The return status alone is never this evidence.
++``qemu_plugin_crucible_ram_reader_returned_current_v1`` observes the permanent
++Source cell by the original field addresses and exact retained owner epoch,
++not by dereferencing a consumed
++owner. Its 32-byte inline output holds the historical owner epoch at offset 0,
++32-bit attempted/returned/consumed/uncertain at 8/12/16/20, and independent
++signed first/post statuses at 24/28. Source verifies that both fields agree
++with its physical record, including both being zero after consumption. The
++observer requires the containing actual Runtime/registration owner still
++retained; invoke it before disposing that parent. Neither a negative return
++nor a failed observation authorizes a second entered physical return.
++
++``qemu_plugin_crucible_ram_read_returned_current_v1`` observes the latest
++Source read epoch through those same original field addresses and exact
++owner epoch. It authenticates
++the still-retained actual Runtime before any canonical-field read and invokes
++no provider or semantic-current check. A stale owner or read epoch refuses without
++output; another child cannot be mistaken for the requested disposition. This
++112-byte process-private observation begins with owner/Source/Module epochs
++at 0/8/16. Fifteen 32-bit factual fields at 24 through 80 report held, callback
++entered/returned, Module post entered/returned, Source post recorded, return
++attempted/entered/returned, returned-post entered/returned, Source consumed,
++uncertain, Module born and Module consumed. Seven signed status fields at
++84 through 108 retain first, birth post, callback, Module post, Source post,
++return and returned post separately. A successful observation authenticates
++these facts only; it does not assert consumption or grant another read.
++
++Factual completion and saved receipts
++-------------------------------------
++
++There is no assumed Module control point after each native RAM call: traversal
++can immediately request another page. Source therefore performs a genuine
++factual registration delivery after known child consumption. It first clears
++its canonical Native child/epoch fields, captures the final Source112 facts
++and the unchanged Module128 journal, and retains completion debt. It then
++invokes ``completed`` with no Source mutex held. This is separate from read,
++Module post and physical return. Source no-call delivery explicitly has no
++Module birth and must not reset or synthesize the Module child journal. Its
++Source112 ``callback_entered`` and ``module_born`` are zero, with no Module
++epoch. The saved Module128 copy may legitimately describe a previous read;
++its old child/epoch is never interpreted as birth for this Source epoch.
++
++``qemu_plugin_crucible_ram_read_completed_identity_v1`` authenticates only the
++actual entered completion callback, exact registration/owner/read epochs and
++the actual Source receipt address. It consults neither semantic expiry nor a
++consumed Module child. Before acknowledging, the Module publishes both copies
++in its enrolled ``qemu_plugin_crucible_ram_read_completed_receipt_v1``. This
++240-byte, 8-aligned Runtime field contains Module128 at offset 0 and Source112
++at offset 128. Its whole span is protected from unrelated outputs and must be
++disjoint from the canonical journal, owner pointer and epoch. These four
++fields require 384 actual Runtime bytes on this ABI, excluding alignment and
++all other Runtime storage.
++
++``qemu_plugin_crucible_ram_read_completed_ack_v1`` is available only within that
++same callback. It compares every Source112 and Module128 byte in the actual
++enrolled storage, and verifies the canonical Module journal is unchanged from
++Source's pre-delivery snapshot. Missing, foreign, transient, overlapping or
++incomplete saved receipt storage cannot acknowledge. The acknowledgement is a
++separate recorded attempt; an entered failed acknowledgement is not retried.
++An acknowledgement alone does not release completion debt: actual callback
++return and an independent identity-only Source completion post must follow.
++Any negative callback/post, missing acknowledgement or uncertain disposition
++retains debt and blocks reuse and all enclosing view, claim, registration and
++component returns. Neither expiry nor a successful read erases this debt.
++
++Source keeps two separately paid 160-byte registration records: the current
++delivery and the last completed delivery. Each begins with the Source112
++receipt. Eight 32-bit fields at 112 through 140 are delivery entered/returned,
++acknowledgement attempted/acknowledged, post recorded, retained, uncertain and
++zero reserved. Four signed fields at 144/148/152/156 retain callback status,
++Source completion-post status, first failure and acknowledgement status.
++``qemu_plugin_crucible_ram_reader_completion_current_v1`` observes the last
++completed record by canonical Runtime field addresses and saved owner/read
++epochs, before the containing Runtime returns. It grants no read or operation.
++
++The last completed record survives the following Source read birth and remains
++observable through the following ``completed`` callback. The Module must
++corroborate its previous final delivery before overwriting its own saved
++receipt, either at the next actual constructor or within that next completion
++callback. This also covers a following Source no-call, where no Module
++constructor ran. Only after that callback returns and its independent Source
++post is recorded does Source publish the new final record. Old epoch queries
++then refuse rather than reconstruct a receipt. Historical copies are evidence,
++never a grant or issuer. A next actual Module constructor resets the canonical
++journal only after the prior actual child consumed and the preceding factual
++delivery closed; Source never resets it.
++
++The SDK layout probe establishes native structure sizes only. Source-body
++inspection, component controls and storage measurements do not qualify a
++launched paid reader. The existing dirty-iterator mandatory lifecycle refusal
++must remain until that genuine cohort executes actual read/post, rearm, ACK,
++physical return and fresh admission. Selected CPU admission remains unsupported.
 diff --git a/docs/devel/index.rst b/docs/devel/index.rst
 index 29f032d6a825aef7caf8494b020bcb3f2da3829f..0f12a486e5b533c1f3f9a3e4b1055bb781cdfc52 100644
 --- a/docs/devel/index.rst
@@ -70636,7 +70971,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4bd41d6335447d7aa9092f7518d854e7a89b2a12 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..218f3deb24a492ac9c136d4c050cbdc56e57c188 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -73415,7 +73750,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4bd41d6335447d7aa9092f7518d854e7
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3237,4635 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3237,4852 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -73976,6 +74311,223 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4bd41d6335447d7aa9092f7518d854e7
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_startup_runtime_check_v3(
 +    qemu_plugin_id_t id, qemu_plugin_crucible_runtime_purpose_v3 *purpose);
++
++/* Process-private nominal custody; never a wire record or an issuer ticket. */
++typedef struct QemuCrucibleSourceRamReaderOwner
++    qemu_plugin_crucible_ram_reader_owner_v1;
++typedef struct QemuCrucibleSourceRamReadChild
++    qemu_plugin_crucible_ram_read_child_v1;
++
++/* The actual Module maintains this journal in its paid Runtime. Source checks
++ * the same child/epoch and independent post; C callback return is insufficient. */
++struct qemu_plugin_crucible_ram_read_observation_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t source_epoch;
++    uint64_t module_epoch;
++    const void *module_child;
++    uint32_t birth_attempted;
++    uint32_t born;
++    uint32_t callback_entered;
++    uint32_t callback_returned;
++    uint32_t post_recorded;
++    int32_t first_status;
++    int32_t post_status;
++    uint32_t reserved;
++};
++
++struct qemu_plugin_crucible_ram_read_disposition_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t source_epoch;
++    uint64_t module_epoch;
++    const void *module_child;
++    uint32_t attempted;
++    uint32_t returned;
++    uint32_t consumed;
++    uint32_t uncertain;
++    int32_t first_status;
++    int32_t post_status;
++    uint32_t post_recorded;
++    uint32_t reserved;
++};
++
++struct qemu_plugin_crucible_ram_read_journal_v1 {
++    struct qemu_plugin_crucible_ram_read_observation_v1 observation;
++    struct qemu_plugin_crucible_ram_read_disposition_v1 disposition;
++};
++
++struct qemu_plugin_crucible_ram_read_return_observation_v1;
++
++struct qemu_plugin_crucible_ram_reader_callbacks_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    int (*ordinary)(qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch,
++                    uint64_t host_address, uint8_t *bytes, uint32_t valid_length);
++    int (*root_scratch)(qemu_plugin_crucible_ram_read_child_v1 *child,
++                        uint64_t epoch, uint64_t host_address,
++                        struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++                        uint32_t valid_length,
++                        const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher);
++    int (*post)(qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch,
++                struct qemu_plugin_crucible_ram_read_observation_v1 *out);
++    int (*return_read)(qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch,
++                       struct qemu_plugin_crucible_ram_read_disposition_v1 *out);
++    int (*returned_current)(qemu_plugin_crucible_ram_read_child_v1 *child,
++                            uint64_t epoch,
++                            const struct qemu_plugin_crucible_ram_read_disposition_v1 *out);
++    int (*completed)(qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++                     uint64_t owner_epoch, uint64_t read_epoch,
++                     const struct qemu_plugin_crucible_ram_read_return_observation_v1 *receipt);
++};
++
++/* Factual registration disposition from the permanent Source cell. */
++struct qemu_plugin_crucible_ram_reader_return_observation_v1 {
++    uint64_t owner_epoch;
++    uint32_t attempted;
++    uint32_t returned;
++    uint32_t consumed;
++    uint32_t uncertain;
++    int32_t first_status;
++    int32_t post_status;
++};
++
++/* Independent Source facts for the latest read epoch; no operation grant. */
++struct qemu_plugin_crucible_ram_read_return_observation_v1 {
++    uint64_t owner_epoch;
++    uint64_t source_epoch;
++    uint64_t module_epoch;
++    uint32_t held;
++    uint32_t callback_entered;
++    uint32_t callback_returned;
++    uint32_t module_post_entered;
++    uint32_t module_post_returned;
++    uint32_t source_post_recorded;
++    uint32_t return_attempted;
++    uint32_t return_entered;
++    uint32_t return_returned;
++    uint32_t returned_post_entered;
++    uint32_t returned_post_returned;
++    uint32_t consumed;
++    uint32_t uncertain;
++    uint32_t module_born;
++    uint32_t module_consumed;
++    int32_t first_status;
++    int32_t birth_post_status;
++    int32_t callback_status;
++    int32_t module_post_status;
++    int32_t source_post_status;
++    int32_t return_status;
++    int32_t returned_post_status;
++};
++
++/* Canonical prepaid Module storage; acknowledgement compares every byte. */
++struct qemu_plugin_crucible_ram_read_completed_receipt_v1 {
++    struct qemu_plugin_crucible_ram_read_journal_v1 module;
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 source;
++};
++
++/* Final factual delivery, retained across the following read birth/callback. */
++struct qemu_plugin_crucible_ram_read_completion_observation_v1 {
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 read;
++    uint32_t delivery_entered;
++    uint32_t delivery_returned;
++    uint32_t acknowledgement_attempted;
++    uint32_t acknowledged;
++    uint32_t post_recorded;
++    uint32_t retained;
++    uint32_t uncertain;
++    uint32_t reserved;
++    int32_t callback_status;
++    int32_t post_status;
++    int32_t first_status;
++    int32_t acknowledgement_status;
++};
++
++/* Genuine installing Module only. The canonical holder, epoch and entire
++ * journal must occupy disjoint fields in its actual paid Runtime. Source keeps
++ * the callback-registration owner alive until closed, drained physical return.
++ * A born negative enrollment remains retained in those canonical fields. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_register_ram_readers_v4(
++    qemu_plugin_id_t id, qemu_plugin_crucible_runtime_purpose_v3 *runtime,
++    const struct qemu_plugin_crucible_ram_reader_callbacks_v1 *callbacks,
++    struct qemu_plugin_crucible_ram_read_journal_v1 *journal,
++    struct qemu_plugin_crucible_ram_read_completed_receipt_v1 *receipt,
++    qemu_plugin_crucible_ram_reader_owner_v1 **holder, uint64_t *epoch);
++
++/* Close admission before retiring the containing callback owner. Busy children
++ * retain debt. Drain observations never retry an entered uncertain return. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_reader_close_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t epoch);
++
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_reader_return_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 **holder,
++    uint64_t *epoch);
++
++/* Observe before disposing the containing Runtime. Addresses must be the
++ * original enrolled fields; the observer never dereferences a consumed owner. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_reader_returned_current_v1(
++    qemu_plugin_id_t id,
++    qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch,
++    struct qemu_plugin_crucible_ram_reader_return_observation_v1 *out);
++
++/* Factual latest-epoch snapshot through the original retained Runtime fields.
++ * Observe before that Runtime physically returns; this calls no provider. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_returned_current_v1(
++    qemu_plugin_id_t id,
++    qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch, uint64_t read_epoch,
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 *out);
++
++/* Factual registration delivery only; no read-child or semantic grant.
++ * The receipt address must be the actual Source delivery argument. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_completed_identity_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t owner_epoch, uint64_t read_epoch,
++    const struct qemu_plugin_crucible_ram_read_return_observation_v1 *receipt);
++
++/* Call only after publishing both copies in the enrolled Module receipt.
++ * Acknowledgement alone does not close delivery or permit cell reuse. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_completed_ack_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t owner_epoch, uint64_t read_epoch,
++    const struct qemu_plugin_crucible_ram_read_return_observation_v1 *receipt);
++
++/* The preceding final delivery remains observable during the next completed
++ * callback, before that callback acknowledges replacing its saved receipt. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_reader_completion_current_v1(
++    qemu_plugin_id_t id,
++    qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch, uint64_t read_epoch,
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 *out);
++
++/* Actual read/post callback identity only, including factual no-birth posts.
++ * This does not consult or renew semantic time and grants no RAM access. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_child_identity_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch);
++
++/* Only the actual entered registered read/post may corroborate this child.
++ * This issues no new Original, RAM mapping, dirty ACK or rearm permission. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_child_current_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch);
++
++/* Cleanup identity only, within the actual return/returned-current call.
++ * Semantic expiry neither grants another read nor prevents factual cleanup. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_ram_read_child_return_identity_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch);
 +
 +/* Source-owned whole setup mapping. The installing Source borrows its actual
 + * retained setup role and checked extent; callers nominate neither FD nor size.
@@ -81519,10 +82071,10 @@ index 0000000000000000000000000000000000000000..3e4979d6523f85191a0ec94fa9680ab4
 +#endif
 diff --git a/include/qemu/crucible-paged-ram.h b/include/qemu/crucible-paged-ram.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2bc074c364c7e5d225b0fe9e2a29d561868644a9
+index 0000000000000000000000000000000000000000..bc63a8d794173d320e1b5a60a6516e841a8ea878
 --- /dev/null
 +++ b/include/qemu/crucible-paged-ram.h
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,149 @@
 +/* SPDX-License-Identifier: GPL-2.0-or-later */
 +#ifndef QEMU_CRUCIBLE_PAGED_RAM_H
 +#define QEMU_CRUCIBLE_PAGED_RAM_H
@@ -81567,6 +82119,13 @@ index 0000000000000000000000000000000000000000..2bc074c364c7e5d225b0fe9e2a29d561
 +int qemu_crucible_ram_physical_graph_seal(uint64_t device_generation);
 +
 +#ifdef CONFIG_PLUGIN
++/* Identity of the actual Native read frame, never read authority by itself. */
++int qemu_crucible_ram_read_invocation_current_v1(
++    qemu_plugin_crucible_ram_read_child_v1 **holder, uint64_t *epoch,
++    uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher);
++
 +/* Finds one dirty target-page interval within a retained half-open RAM range.
 + * Zero returns an interval, one means clean, and negative values refuse it. */
 +int qemu_crucible_ram_next_dirty_range(
@@ -111090,10 +111649,10 @@ index 0000000000000000000000000000000000000000..519afa3957f4cc3aa673d1e343b75ce3
 +}
 diff --git a/plugins/crucible-callback-child.inc.h b/plugins/crucible-callback-child.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..755911d95f11ec3048e550b2148556119c46176c
+index 0000000000000000000000000000000000000000..ff99dcb80f7a851f8827f95c4e285c691ed61b72
 --- /dev/null
 +++ b/plugins/crucible-callback-child.inc.h
-@@ -0,0 +1,860 @@
+@@ -0,0 +1,873 @@
 +/*
 + * Source-owned callback-child allocation and physical custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -111123,6 +111682,8 @@ index 0000000000000000000000000000000000000000..755911d95f11ec3048e550b214855611
 +        registry->storage.holder,
 +        registry->storage.runtime_holder,
 +        startup_source.control_callback.holder,
++        startup_source.ram_reader.holder,
++        startup_source.ram_reader.epoch,
 +        startup_source.callbacks.owner.holder,
 +        startup_source.callbacks.owner.runtime_holder,
 +        startup_source.publisher_module.runtime_holder,
@@ -111190,6 +111751,17 @@ index 0000000000000000000000000000000000000000..755911d95f11ec3048e550b214855611
 +        (output != observation ||
 +         observation != startup_source.command_member.pending_constructor.observation ||
 +         bytes != sizeof(*startup_source.command_member.pending_constructor.observation))) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.ram_reader.journal,
++            sizeof(*startup_source.ram_reader.journal)) ||
++        callback_child_output_overlap(output, bytes,
++            startup_source.ram_reader.receipt,
++            sizeof(*startup_source.ram_reader.receipt)) ||
++        (startup_source.ram_read.held &&
++         callback_child_output_overlap(output, bytes,
++             startup_source.ram_read.output, startup_source.ram_read.output_bytes))) {
 +        return true;
 +    }
 +    for (size_t index = 0; index < G_N_ELEMENTS(fields); index++) {
@@ -174885,10 +175457,10 @@ index 0000000000000000000000000000000000000000..93f2e2a65ffb82714addd5869f502651
 +}
 diff --git a/plugins/crucible-paged-ram.c b/plugins/crucible-paged-ram.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16400e4ad6
+index 0000000000000000000000000000000000000000..7eb6970ea98e31a84e38d1c3e39120deea080303
 --- /dev/null
 +++ b/plugins/crucible-paged-ram.c
-@@ -0,0 +1,8184 @@
+@@ -0,0 +1,8286 @@
 +/*
 + * Logical RAM observation and host paging ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -175319,6 +175891,25 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +static int fingerprint_retirement_final_publication(bool accepted);
 +static int fingerprint_retirement_cancel(int first_status);
 +
++/* One actual synchronous read frame. An uncertain Source child prevents reuse
++ * even after its enclosing C invocation returns. This entire cell is paid. */
++static struct {
++    qemu_plugin_crucible_ram_read_child_v1 *child;
++    uint64_t epoch;
++    qemu_plugin_crucible_fingerprint_operation_v1 *operation;
++    QemuThread thread;
++    pid_t process;
++    uint64_t root_serial;
++    uint64_t address;
++    uint8_t *bytes;
++    uint32_t valid;
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch;
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher;
++    int first_status;
++    bool active;
++    bool returned;
++} ram_read_frame;
++
 +size_t qemu_crucible_checkpoint_candidate_capture_storage_bytes_v1(void)
 +{
 +    return sizeof(candidate_capture) + sizeof(inventory_capture) + sizeof(candidate_fingerprint_deferred) +
@@ -175329,7 +175920,7 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +        sizeof(fingerprint_root_writer) + sizeof(fingerprint_root_outcome) +
 +        sizeof(fingerprint_root_frame) + sizeof(fingerprint_root_execution) +
 +        sizeof(fingerprint_root_background) +
-+        sizeof(fingerprint_cleanup) +
++        sizeof(fingerprint_cleanup) + sizeof(ram_read_frame) +
 +        sizeof(fingerprint_baseline) + sizeof(fingerprint_publication) +
 +        qemu_crucible_observation_writer_metadata_bytes_v1();
 +}
@@ -177644,10 +178235,83 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +    return 0;
 +}
 +
++int qemu_crucible_ram_read_invocation_current_v1(
++    qemu_plugin_crucible_ram_read_child_v1 **holder, uint64_t *epoch,
++    uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher)
++{
++    return bql_locked() && !qemu_in_coroutine() && ram_read_frame.active &&
++        !ram_read_frame.returned && ram_read_frame.process == getpid() &&
++        qemu_thread_is_self(&ram_read_frame.thread) &&
++        holder == &ram_read_frame.child && epoch == &ram_read_frame.epoch &&
++        address == ram_read_frame.address && bytes == ram_read_frame.bytes &&
++        valid == ram_read_frame.valid && scratch == ram_read_frame.scratch &&
++        hasher == ram_read_frame.hasher && logical_root_invocation &&
++        fingerprint_root_frame.active &&
++        fingerprint_root_frame.serial == ram_read_frame.root_serial &&
++        fingerprint_root_operation &&
++        fingerprint_root_operation == ram_read_frame.operation &&
++        fingerprint_root_outcome.module_invoking &&
++        !fingerprint_root_outcome.callback_returned ? 0 : -EPERM;
++}
++
++static int selected_ram_read(
++    uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher)
++{
++    int status;
++
++    if (!bql_locked() || qemu_in_coroutine() || !logical_root_invocation ||
++        !fingerprint_root_frame.active || !fingerprint_root_operation ||
++        !fingerprint_root_outcome.module_invoking ||
++        fingerprint_root_outcome.callback_returned) {
++        return -ENOKEY;
++    }
++    if (ram_read_frame.active || ram_read_frame.child || ram_read_frame.epoch) {
++        return -EBUSY;
++    }
++    ram_read_frame = (typeof(ram_read_frame)) {
++        .operation = fingerprint_root_operation,
++        .process = getpid(),
++        .root_serial = fingerprint_root_frame.serial,
++        .address = address,
++        .bytes = bytes,
++        .valid = valid,
++        .scratch = scratch,
++        .hasher = hasher,
++        .active = true,
++    };
++    qemu_thread_get_self(&ram_read_frame.thread);
++    status = qemu_crucible_startup_source_ram_read_v1(
++        address, bytes, valid, scratch, hasher,
++        &ram_read_frame.child, &ram_read_frame.epoch);
++    ram_read_frame.first_status = status;
++    ram_read_frame.returned = true;
++    ram_read_frame.active = false;
++    if (!status && (ram_read_frame.child || ram_read_frame.epoch)) {
++        ram_read_frame.first_status = -EOWNERDEAD;
++    }
++    return ram_read_frame.first_status;
++}
++
++static int selected_ram_root_scratch_read(
++    uint64_t address, struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    uint32_t valid,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher)
++{
++    return selected_ram_read(address, scratch ? scratch->bytes : NULL,
++                             valid, scratch, hasher);
++}
++
 +int qemu_plugin_crucible_register_ram_readers_v3(
 +    qemu_plugin_crucible_ram_operational_read_v1 ordinary,
 +    qemu_plugin_crucible_ram_root_scratch_read_v3 root_scratch)
 +{
++    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {
++        return -ENOKEY;
++    }
 +    if (!ordinary || !root_scratch) {
 +        return -EINVAL;
 +    }
@@ -177678,6 +178342,9 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +    qemu_plugin_crucible_ram_operational_read_v1 reader =
 +        qatomic_load_acquire(&operational_reader);
 +
++    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {
++        return selected_ram_read(address, bytes, valid, NULL, NULL);
++    }
 +    if (reader) {
 +        /* A cold read authenticates staging; it never populates guest RAM. */
 +        return reader(address, bytes, valid);
@@ -180173,7 +180840,8 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +        if (capacity != sizeof(struct qemu_plugin_crucible_ram_root_scratch_v2)) {
 +            return -EINVAL;
 +        }
-+        if (qatomic_load_acquire(&root_reader_registration.state) != ROOT_READERS_READY) {
++        if (!qemu_crucible_startup_source_fingerprint_enrollment_required_v1() &&
++            qatomic_load_acquire(&root_reader_registration.state) != ROOT_READERS_READY) {
 +            return -ENOSYS;
 +        }
 +    }
@@ -180186,7 +180854,11 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +    if (owner_token) {
 +        /* The diagnostic owns this exact private page and discards it
 +         * on failure. Ordinary token-zero outputs remain staged. */
-+        status = root_reader_registration.reader(
++        qemu_plugin_crucible_ram_root_scratch_read_v3 reader =
++            qemu_crucible_startup_source_fingerprint_enrollment_required_v1() ?
++            selected_ram_root_scratch_read : root_reader_registration.reader;
++
++        status = reader(
 +            (uintptr_t)region->block->host + offset,
 +            (struct qemu_plugin_crucible_ram_root_scratch_v2 *)bytes,
 +            valid, NULL);
@@ -183009,7 +183681,8 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +    if (qemu_crucible_ram_diagnostic_failure()) {
 +        return qemu_crucible_ram_diagnostic_failure();
 +    }
-+    if (qatomic_load_acquire(&root_reader_registration.state) != ROOT_READERS_READY) {
++    if (!qemu_crucible_startup_source_fingerprint_enrollment_required_v1() &&
++        qatomic_load_acquire(&root_reader_registration.state) != ROOT_READERS_READY) {
 +        return -ENOSYS;
 +    }
 +    root_reader_registration.observation_active = true;
@@ -183018,7 +183691,8 @@ index 0000000000000000000000000000000000000000..3d0e18f7bd850022993ae37c6f251b16
 +    if (!status) {
 +        status = full_hash_prepared_regions(
 +            regions, scope, owner_token, root, logical_bytes,
-+            root_reader_registration.reader);
++            qemu_crucible_startup_source_fingerprint_enrollment_required_v1() ?
++            selected_ram_root_scratch_read : root_reader_registration.reader);
 +        status = region_inventory_drop_preserving(&regions, status);
 +        status = diagnostic_root_result(status, root, logical_bytes);
 +    }
@@ -188650,10 +189324,10 @@ index 0000000000000000000000000000000000000000..d7191d36b2ba102026cd429d944bd027
 +}
 diff --git a/plugins/crucible-publisher-service.inc.h b/plugins/crucible-publisher-service.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..12ca622782005458901a297cdd1d40e5d96a5a0a
+index 0000000000000000000000000000000000000000..895226faf68408a5ec02f5655620f51e6b92631d
 --- /dev/null
 +++ b/plugins/crucible-publisher-service.inc.h
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,432 @@
 +/*
 + * Retained transfer and physical return of the actual Setup6 service child.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -188844,7 +189518,12 @@ index 0000000000000000000000000000000000000000..12ca622782005458901a297cdd1d40e5
 + * It neither consumes them nor asks any callback to perform cleanup work. */
 +static bool publisher_service_users_drained(void)
 +{
-+    return !startup_source.pending_offer_read.busy &&
++    return !startup_source.ram_reader.held &&
++        !startup_source.ram_read.held &&
++        !startup_source.ram_read.uncertain &&
++        !startup_source.ram_reader.delivery.retained &&
++        !startup_source.ram_reader.delivery.uncertain &&
++        !startup_source.pending_offer_read.busy &&
 +        !startup_source.advance_holder &&
 +        !startup_source.advance_receiver.held &&
 +        !startup_source.publisher_module.advance_users &&
@@ -194035,6 +194714,821 @@ index 0000000000000000000000000000000000000000..533d4b79f2b2d900fa6d96609c5d6ba1
 +void qemu_crucible_ram_owner_diagnostic_report(CrucibleRamOwnerDiagnostic *result);
 +
 +#endif /* CRUCIBLE_RAM_OWNER_DIAGNOSTIC_H */
+diff --git a/plugins/crucible-ram-reader.inc.h b/plugins/crucible-ram-reader.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c68e3fb51fb478e1899b58c5226759c10002b4a1
+--- /dev/null
++++ b/plugins/crucible-ram-reader.inc.h
+@@ -0,0 +1,809 @@
++/*
++ * Source-bound RAM reader registration and read-child custody
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifdef CONFIG_LINUX
++static int ram_read_signed_status(int status)
++{
++    return status > 0 ? -EPROTO : status;
++}
++
++static void ram_read_first(QemuCrucibleSourceRamReadChild *child, int status)
++{
++    status = ram_read_signed_status(status);
++    if (status && !child->first_status) {
++        child->first_status = status;
++    }
++}
++
++static bool ram_reader_runtime_field(QemuCrucibleCallbackChildOwner *owner,
++                                     const void *field, size_t bytes,
++                                     size_t alignment)
++{
++    uintptr_t start = (uintptr_t)field;
++
++    return field && alignment && !(start % alignment) &&
++        owner->runtime_extent && owner->runtime_extent <= UINTPTR_MAX - owner->runtime_base &&
++        start >= owner->runtime_base && bytes <= owner->runtime_extent &&
++        start - owner->runtime_base <= owner->runtime_extent - bytes &&
++        !callback_child_output_conflicts_locked(field, bytes);
++}
++
++static int ram_reader_identity_locked(QemuCrucibleSourceRamReaderOwner *owner,
++                                      bool consumed)
++{
++    int status;
++
++    if (owner == &startup_source.ram_reader && !owner->attempted) {
++        return -ENOKEY;
++    }
++    if (owner != &startup_source.ram_reader || !owner->attempted ||
++        owner->runtime != &startup_source.runtime_purpose || !owner->runtime_owner ||
++        owner->runtime_owner != &startup_source.callbacks.owner ||
++        owner->installer.ctx != startup_source.saved.ctx ||
++        owner->installer.module != startup_source.saved.module ||
++        owner->installer.install != startup_source.saved.install ||
++        owner->installer.plugin_id != startup_source.saved.plugin_id ||
++        !owner->holder || !owner->epoch || !owner->journal || !owner->receipt ||
++        !owner->serial ||
++        (!consumed && (!owner->held || owner->consumed))) {
++        return -EPERM;
++    }
++    /* Authenticate the containing live Runtime BEFORE reading its fields.
++     * The permanent Source cell alone cannot extend that storage lifetime. */
++    status = callback_child_owner_identity_locked(owner->runtime_owner);
++    if (status) {
++        return status;
++    }
++    if (owner->held == owner->consumed) {
++        return -ESTALE;
++    }
++    if (owner->consumed ? (*owner->holder || *owner->epoch) :
++        (*owner->holder != owner || *owner->epoch != owner->serial)) {
++        return -ESTALE;
++    }
++    if (!owner->consumed && !owner->runtime_owner->component_users) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static int ram_read_identity(QemuCrucibleSourceRamReadChild *child, uint64_t epoch)
++{
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status;
++
++    if (!bql_locked() || !qatomic_load_acquire(&commands->initialized) ||
++        child != &startup_source.ram_read || !child->held || !epoch ||
++        epoch != child->serial || !child->owner ||
++        child->native_holder == NULL || *child->native_holder != child ||
++        !child->native_epoch || *child->native_epoch != epoch ||
++        child->operation != &startup_source.standing.operation ||
++        child->operation_serial != child->operation->serial ||
++        !standing_operation_identity(child->operation)) {
++        return -EPERM;
++    }
++    status = qemu_crucible_ram_read_invocation_current_v1(
++        child->native_holder, child->native_epoch, child->host_address,
++        child->output, child->valid_length, child->scratch, child->hasher);
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(child->owner, false);
++    if (!status && (!child->operation->module_borrowed ||
++                    !child->operation->module_view_holder ||
++                    child->operation->module_view_holder !=
++                        startup_source.fingerprint_completion.module_view_holder ||
++                    *child->operation->module_view_holder != child->operation)) {
++        status = -ESTALE;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++}
++
++static bool ram_read_observation_valid(QemuCrucibleSourceRamReadChild *child)
++{
++    const struct qemu_plugin_crucible_ram_read_observation_v1 *out = &child->observation;
++
++    if (out->schema_version != 1 || out->struct_size != sizeof(*out) ||
++        out->source_epoch != child->serial || out->reserved ||
++        out->birth_attempted != 1 || out->born > 1 || out->callback_entered > 1 ||
++        out->callback_returned != out->callback_entered || out->post_recorded != 1 ||
++        out->first_status != child->callback_status || out->first_status > 0 ||
++        out->post_status > 0 ||
++        memcmp(out, &child->owner->journal->observation, sizeof(*out))) {
++        return false;
++    }
++    if (out->born) {
++        return out->module_child && out->module_epoch > child->owner->last_module_epoch &&
++            (out->callback_entered || out->first_status);
++    }
++    return !out->module_child && !out->module_epoch &&
++        !out->callback_entered && out->first_status;
++}
++
++static bool ram_read_disposition_valid(QemuCrucibleSourceRamReadChild *child)
++{
++    const struct qemu_plugin_crucible_ram_read_disposition_v1 *out = &child->disposition;
++    const struct qemu_plugin_crucible_ram_read_observation_v1 *read = &child->observation;
++
++    if (!ram_read_observation_valid(child) || out->schema_version != 1 ||
++        out->struct_size != sizeof(*out) || out->source_epoch != child->serial ||
++        out->module_epoch != read->module_epoch || out->module_child != read->module_child ||
++        out->attempted > 1 || out->returned > 1 || out->consumed > 1 ||
++        out->uncertain || out->reserved || out->post_recorded != 1 ||
++        out->first_status != child->return_status || out->first_status > 0 ||
++        out->post_status > 0 ||
++        memcmp(out, &child->owner->journal->disposition, sizeof(*out))) {
++        return false;
++    }
++    return read->born ? out->attempted && out->returned && out->consumed :
++        !out->attempted && !out->returned && !out->consumed;
++}
++static bool ram_read_saved_receipt_matches_locked(
++    QemuCrucibleSourceRamReaderOwner *owner)
++{
++    return owner->receipt &&
++        !memcmp(&owner->receipt->source, &owner->delivery.read,
++                sizeof(owner->receipt->source)) &&
++        !memcmp(&owner->receipt->module, &owner->delivery_module,
++                sizeof(owner->receipt->module)) &&
++        !memcmp(owner->journal, &owner->delivery_module, sizeof(*owner->journal));
++}
++
++static void ram_read_completion_finish_locked(QemuCrucibleSourceRamReaderOwner *owner)
++{
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 *delivery =
++        &owner->delivery;
++
++    if (!delivery->first_status) {
++        delivery->first_status = delivery->callback_status ?
++            delivery->callback_status : delivery->post_status;
++    }
++    if (!delivery->first_status &&
++        (delivery->delivery_entered != 1 || delivery->delivery_returned != 1 ||
++         delivery->acknowledgement_attempted != 1 || delivery->acknowledged != 1 ||
++         delivery->post_recorded != 1 || delivery->acknowledgement_status ||
++         delivery->read.held || !delivery->read.consumed || delivery->read.uncertain ||
++         !delivery->read.source_post_recorded)) {
++        delivery->first_status = -ENOMSG;
++    }
++    delivery->retained = delivery->first_status != 0;
++    delivery->uncertain = delivery->retained;
++    owner->completed = *delivery;
++}
++
++static void ram_read_snapshot_locked(
++    QemuCrucibleSourceRamReaderOwner *owner, QemuCrucibleSourceRamReadChild *child,
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 *out)
++{
++    *out = (struct qemu_plugin_crucible_ram_read_return_observation_v1) {
++        .owner_epoch = owner->serial,
++        .source_epoch = child->serial,
++        .module_epoch = child->observation.module_epoch,
++        .held = child->held,
++        .callback_entered = child->callback_entered,
++        .callback_returned = child->callback_returned,
++        .module_post_entered = child->module_post_entered,
++        .module_post_returned = child->module_post_returned,
++        .source_post_recorded = child->source_post_recorded,
++        .return_attempted = child->return_attempted,
++        .return_entered = child->return_entered,
++        .return_returned = child->return_returned,
++        .returned_post_entered = child->returned_post_entered,
++        .returned_post_returned = child->returned_post_returned,
++        .consumed = child->consumed,
++        .uncertain = child->uncertain,
++        .module_born = child->observation.born,
++        .module_consumed = child->disposition.consumed,
++        .first_status = child->first_status,
++        .birth_post_status = child->birth_post_status,
++        .callback_status = child->callback_status,
++        .module_post_status = child->module_post_status,
++        .source_post_status = child->source_post_status,
++        .return_status = child->return_status,
++        .returned_post_status = child->returned_post_status,
++    };
++}
++
++#endif
++
++int qemu_plugin_crucible_register_ram_readers_v4(
++    qemu_plugin_id_t id, qemu_plugin_crucible_runtime_purpose_v3 *runtime,
++    const struct qemu_plugin_crucible_ram_reader_callbacks_v1 *callbacks,
++    struct qemu_plugin_crucible_ram_read_journal_v1 *journal,
++    struct qemu_plugin_crucible_ram_read_completed_receipt_v1 *receipt,
++    qemu_plugin_crucible_ram_reader_owner_v1 **holder, uint64_t *epoch)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleCallbackChildOwner *parent = &startup_source.callbacks.owner;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    struct qemu_plugin_crucible_ram_reader_callbacks_v1 selected;
++    const struct qemu_plugin_crucible_ram_read_journal_v1 empty_journal = { 0 };
++    const struct qemu_plugin_crucible_ram_read_completed_receipt_v1 empty_receipt = { 0 };
++    int status = command_registry_identity(id);
++    int post;
++
++    if (status) {
++        return status;
++    }
++    if (!startup_invocation(id) || startup_source.install_returned || !callbacks) {
++        return -EPERM;
++    }
++    selected = *callbacks;
++    if (selected.schema_version != 1 || selected.struct_size != sizeof(selected) ||
++        !selected.ordinary || !selected.root_scratch || !selected.post ||
++        !selected.return_read || !selected.returned_current || !selected.completed) {
++        return -EINVAL;
++    }
++    status = startup_runtime_admission(id, runtime);
++    if (!status) {
++        status = fingerprint_completion_identity(&startup_source.fingerprint_completion);
++    }
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = callback_registration_owner_live_locked(parent);
++    if (!status && (owner->attempted || runtime != parent->runtime ||
++                    parent->component_users == UINT64_MAX)) {
++        status = -EBUSY;
++    }
++    if (!status &&
++        (!ram_reader_runtime_field(parent, holder, sizeof(*holder), _Alignof(*holder)) ||
++         !ram_reader_runtime_field(parent, epoch, sizeof(*epoch), _Alignof(*epoch)) ||
++         !ram_reader_runtime_field(parent, journal, sizeof(*journal), _Alignof(*journal)) ||
++         !ram_reader_runtime_field(parent, receipt, sizeof(*receipt), _Alignof(*receipt)) ||
++         callback_child_output_overlap(receipt, sizeof(*receipt), holder, sizeof(*holder)) ||
++         callback_child_output_overlap(receipt, sizeof(*receipt), epoch, sizeof(*epoch)) ||
++         callback_child_output_overlap(receipt, sizeof(*receipt), journal, sizeof(*journal)) ||
++         callback_child_output_overlap(holder, sizeof(*holder), epoch, sizeof(*epoch)) ||
++         callback_child_output_overlap(holder, sizeof(*holder), journal, sizeof(*journal)) ||
++         callback_child_output_overlap(epoch, sizeof(*epoch), journal, sizeof(*journal)))) {
++        status = -EINVAL;
++    }
++    if (!status && (*holder || *epoch || memcmp(journal, &empty_journal, sizeof(*journal)) ||
++                    memcmp(receipt, &empty_receipt, sizeof(*receipt)))) {
++        status = -EBUSY;
++    }
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    *owner = (QemuCrucibleSourceRamReaderOwner) {
++        .installer = startup_source.saved,
++        .runtime = runtime,
++        .runtime_owner = parent,
++        .callbacks = selected,
++        .journal = journal,
++        .receipt = receipt,
++        .holder = holder,
++        .epoch = epoch,
++        .serial = 1,
++        .attempted = true,
++        .held = true,
++    };
++    parent->component_users++;
++    *holder = owner;
++    *epoch = owner->serial;
++    qemu_mutex_unlock(&commands->mutex);
++
++    post = startup_runtime_admission(id, runtime);
++    qemu_mutex_lock(&commands->mutex);
++    owner->first_status = post;
++    owner->post_status = post;
++    owner->enrolled = !post;
++    qemu_mutex_unlock(&commands->mutex);
++    return post;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_reader_close_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t epoch)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = startup_runtime_cleanup_identity(id, &startup_source.runtime_purpose);
++
++    if (status || !bql_locked() || !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, false);
++    if (!status && epoch != owner->serial) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        owner->closed = true;
++        if (startup_source.ram_read.held || startup_source.ram_read.uncertain ||
++            owner->delivery.retained || owner->delivery.uncertain) {
++            status = -EBUSY;
++        }
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_reader_return_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 **holder,
++    uint64_t *epoch)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    int status = startup_runtime_cleanup_identity(id, &startup_source.runtime_purpose);
++
++    if (status || !bql_locked() || !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, false);
++    if (!status && (holder != owner->holder || epoch != owner->epoch)) {
++        status = -EPERM;
++    }
++    if (!status && (!owner->closed || owner->return_attempted || owner->uncertain ||
++                    startup_source.ram_read.held || startup_source.ram_read.uncertain ||
++                    owner->delivery.retained || owner->delivery.uncertain ||
++                    startup_source.standing.operation.held ||
++                    !owner->runtime_owner->component_users)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        /* This physical cut only releases our real registration pin. There is
++         * no fallible callback between the attempt and known consumption. */
++        owner->return_attempted = true;
++        owner->runtime_owner->component_users--;
++        *holder = NULL;
++        *epoch = 0;
++        owner->held = false;
++        owner->enrolled = false;
++        owner->consumed = true;
++        owner->return_returned = true;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (status) {
++        return status;
++    }
++    /* Keep post separate from physical disposition, including consumed-negative.
++     * The permanent cell and enrolled field addresses remain observable. */
++    owner->return_post_status = startup_runtime_cleanup_identity(id, owner->runtime);
++    return owner->return_post_status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_reader_returned_current_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch,
++    struct qemu_plugin_crucible_ram_reader_return_observation_v1 *out)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    int status = startup_runtime_cleanup_identity(id, &startup_source.runtime_purpose);
++
++    if (status || !bql_locked() || !out ||
++        !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, true);
++    if (!status && (holder != owner->holder || epoch != owner->epoch ||
++                    owner_epoch != owner->serial ||
++                    callback_child_output_conflicts_locked(out, sizeof(*out)))) {
++        status = -EINVAL;
++    }
++    if (!status) {
++        *out = (struct qemu_plugin_crucible_ram_reader_return_observation_v1) {
++            .owner_epoch = owner->serial,
++            .attempted = owner->return_attempted,
++            .returned = owner->return_returned,
++            .consumed = owner->consumed,
++            .uncertain = owner->uncertain,
++            .first_status = owner->return_status,
++            .post_status = owner->return_post_status,
++        };
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_returned_current_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch, uint64_t read_epoch,
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 *out)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    QemuCrucibleSourceRamReadChild *child = &startup_source.ram_read;
++    int status = qemu_crucible_startup_source_fingerprint_context_identity_v1(id);
++
++    if (status || !bql_locked() || !out || !read_epoch ||
++        !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, true);
++    if (!status && (holder != owner->holder || epoch != owner->epoch ||
++                    owner_epoch != owner->serial ||
++                    child->owner != owner || read_epoch != child->serial ||
++                    callback_child_output_conflicts_locked(out, sizeof(*out)))) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        ram_read_snapshot_locked(owner, child, out);
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_completed_identity_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t owner_epoch, uint64_t read_epoch,
++    const struct qemu_plugin_crucible_ram_read_return_observation_v1 *receipt)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReadChild *child = &startup_source.ram_read;
++    int status = qemu_crucible_startup_source_fingerprint_context_identity_v1(id);
++
++    if (status || !bql_locked() || !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, false);
++    if (!status && (owner_epoch != owner->serial || !read_epoch ||
++                    read_epoch != child->serial || child->owner != owner ||
++                    child->held || !child->consumed || !child->source_post_recorded ||
++                    receipt != &owner->delivery.read ||
++                    owner->delivery.read.source_epoch != read_epoch ||
++                    !owner->delivery.delivery_entered || owner->delivery.delivery_returned ||
++                    !owner->delivery.retained || owner->delivery.uncertain)) {
++        status = -ESTALE;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    if (!status) {
++        status = qemu_crucible_ram_read_invocation_current_v1(
++            child->native_holder, child->native_epoch, child->host_address,
++            child->output, child->valid_length, child->scratch, child->hasher);
++    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_completed_ack_v1(
++    qemu_plugin_id_t id, qemu_plugin_crucible_ram_reader_owner_v1 *owner,
++    uint64_t owner_epoch, uint64_t read_epoch,
++    const struct qemu_plugin_crucible_ram_read_return_observation_v1 *receipt)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    int status = qemu_plugin_crucible_ram_read_completed_identity_v1(
++        id, owner, owner_epoch, read_epoch, receipt);
++
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (owner->delivery.acknowledgement_attempted) {
++        if (!owner->delivery.first_status) {
++            owner->delivery.first_status = -EALREADY;
++        }
++        qemu_mutex_unlock(&commands->mutex);
++        return -EALREADY;
++    }
++    owner->delivery.acknowledgement_attempted = 1;
++    /* Same actual Module call, after its saved-copy publication. Compare the
++     * complete enrolled spans; a pointer or asserted copy is insufficient. */
++    if (owner->delivery.acknowledged || !ram_read_saved_receipt_matches_locked(owner)) {
++        status = -EPROTO;
++    } else {
++        owner->delivery.acknowledged = 1;
++    }
++    owner->delivery.acknowledgement_status = status;
++    if (status && !owner->delivery.first_status) {
++        owner->delivery.first_status = status;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_reader_completion_current_v1(
++    qemu_plugin_id_t id,
++    qemu_plugin_crucible_ram_reader_owner_v1 *const *holder,
++    const uint64_t *epoch, uint64_t owner_epoch, uint64_t read_epoch,
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 *out)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    int status = qemu_crucible_startup_source_fingerprint_context_identity_v1(id);
++
++    if (status || !bql_locked() || !out || !read_epoch ||
++        !qatomic_load_acquire(&commands->initialized)) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, true);
++    if (!status && (holder != owner->holder || epoch != owner->epoch ||
++                    owner_epoch != owner->serial ||
++                    read_epoch != owner->completed.read.source_epoch ||
++                    !owner->completed.delivery_returned || !owner->completed.post_recorded ||
++                    callback_child_output_conflicts_locked(out, sizeof(*out)))) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        *out = owner->completed;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_child_identity_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch)
++{
++#ifdef CONFIG_LINUX
++    int status = ram_read_identity(child, epoch);
++
++    if (status) {
++        return status;
++    }
++    return (child->callback_entered && !child->callback_returned) ||
++        (child->module_post_entered && !child->module_post_returned) ? 0 : -EPERM;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_child_current_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch)
++{
++#ifdef CONFIG_LINUX
++    int status = qemu_plugin_crucible_ram_read_child_identity_v1(child, epoch);
++
++    if (!status && (child->owner->closed || !child->owner->enrolled ||
++                    child->owner->first_status || child->owner->read_first_status ||
++                    child->first_status ||
++                    child->operation->first_status || child->operation->post_recorded)) {
++        status = -EPERM;
++    }
++    return status ? status : standing_operation_current(child->operation);
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_ram_read_child_return_identity_v1(
++    qemu_plugin_crucible_ram_read_child_v1 *child, uint64_t epoch)
++{
++#ifdef CONFIG_LINUX
++    int status = ram_read_identity(child, epoch);
++
++    if (status) {
++        return status;
++    }
++    return child->return_attempted &&
++        ((child->return_entered && !child->return_returned) ||
++         (child->returned_post_entered && !child->returned_post_returned)) ? 0 : -EPERM;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_startup_source_ram_read_v1(
++    uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher,
++    QemuCrucibleSourceRamReadChild **holder, uint64_t *epoch)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++    QemuCrucibleSourceRamReadChild *child = &startup_source.ram_read;
++    struct QemuCrucibleFingerprintOperation *operation = &startup_source.standing.operation;
++    uint64_t serial;
++    int status;
++
++    if (!holder || !epoch || !bytes || !valid || valid > 4096 ||
++        (scratch && bytes != scratch->bytes) || (!scratch && hasher)) {
++        return -EINVAL;
++    }
++    status = qemu_crucible_ram_read_invocation_current_v1(
++        holder, epoch, address, bytes, valid, scratch, hasher);
++    if (!status) {
++        status = qemu_crucible_ram_fingerprint_root_module_current_v1(
++            startup_source.saved.plugin_id);
++    }
++    if (!status) {
++        status = standing_operation_current(operation);
++    }
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    status = ram_reader_identity_locked(owner, false);
++    if (!status && (!operation->module_borrowed ||
++                    !operation->module_view_holder ||
++                    operation->module_view_holder !=
++                        startup_source.fingerprint_completion.module_view_holder ||
++                    *operation->module_view_holder != operation)) {
++        status = -ESTALE;
++    }
++    if (!status && (!owner->enrolled || owner->closed || owner->first_status ||
++                    owner->read_first_status ||
++                    operation->first_status || operation->post_recorded ||
++                    child->held || child->uncertain || owner->delivery.retained ||
++                    owner->delivery.uncertain || *holder || *epoch)) {
++        status = -EBUSY;
++    }
++    if (!status && callback_child_output_conflicts_locked(
++            bytes, scratch ? sizeof(*scratch) : valid)) {
++        status = -EINVAL;
++    }
++    if (!status && (child->serial == UINT64_MAX || owner->last_module_epoch == UINT64_MAX)) {
++        status = -EOVERFLOW;
++    }
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    serial = child->serial + 1;
++    *child = (QemuCrucibleSourceRamReadChild) {
++        .owner = owner,
++        .operation = operation,
++        .native_holder = holder,
++        .native_epoch = epoch,
++        .output = bytes,
++        .output_bytes = scratch ? sizeof(*scratch) : valid,
++        .host_address = address,
++        .valid_length = valid,
++        .scratch = scratch,
++        .hasher = hasher,
++        .operation_serial = operation->serial,
++        .serial = serial,
++        .held = true,
++    };
++    *holder = child;
++    *epoch = serial;
++    qemu_mutex_unlock(&commands->mutex);
++
++    child->birth_post_status = standing_operation_current(operation);
++    ram_read_first(child, child->birth_post_status);
++    if (!child->birth_post_status) {
++        child->callback_entered = true;
++        if (scratch) {
++            SOURCE_CALLBACK_MASKED_INVOKE(
++                status, &owner->callbacks.root_scratch, owner->callbacks.root_scratch,
++                owner->journal, child, serial, address, scratch, valid, hasher);
++        } else {
++            SOURCE_CALLBACK_MASKED_INVOKE(
++                status, &owner->callbacks.ordinary, owner->callbacks.ordinary,
++                owner->journal, child, serial, address, bytes, valid);
++        }
++        child->callback_status = ram_read_signed_status(status);
++        child->callback_returned = true;
++        ram_read_first(child, child->callback_status);
++
++        child->module_post_entered = true;
++        SOURCE_CALLBACK_MASKED_INVOKE(
++            status, &owner->callbacks.post, owner->callbacks.post,
++            owner->journal, child, serial, &child->observation);
++        child->module_post_status = ram_read_signed_status(status);
++        child->module_post_returned = true;
++        ram_read_first(child, child->module_post_status);
++        if (!ram_read_observation_valid(child)) {
++            ram_read_first(child, -EPROTO);
++        } else {
++            ram_read_first(child, child->observation.post_status);
++        }
++    }
++
++    /* This is the SAME Source parent post, independently observed even after
++     * callback or Module-post failure. It does not post the outer Original. */
++    child->source_post_status = standing_operation_current(operation);
++    child->source_post_recorded = true;
++    ram_read_first(child, child->source_post_status);
++    if (child->callback_entered) {
++        child->return_attempted = true;
++        child->return_entered = true;
++        SOURCE_CALLBACK_MASKED_INVOKE(
++            status, &owner->callbacks.return_read, owner->callbacks.return_read,
++            owner->journal, child, serial, &child->disposition);
++        child->return_status = ram_read_signed_status(status);
++        child->return_returned = true;
++        ram_read_first(child, child->return_status);
++
++        child->returned_post_entered = true;
++        SOURCE_CALLBACK_MASKED_INVOKE(
++            status, &owner->callbacks.returned_current, owner->callbacks.returned_current,
++            owner->journal, child, serial, &child->disposition);
++        child->returned_post_status = ram_read_signed_status(status);
++        child->returned_post_returned = true;
++        ram_read_first(child, child->returned_post_status);
++        child->consumed = !child->returned_post_status && ram_read_disposition_valid(child);
++        if (child->consumed) {
++            ram_read_first(child, child->disposition.post_status);
++        } else {
++            child->uncertain = true;
++            ram_read_first(child, -EOWNERDEAD);
++        }
++    } else {
++        /* Actual Source no-call: there was no Module constructor for this
++         * epoch. Do not fabricate a Module journal or invoke its cleanup. */
++        child->return_attempted = true;
++        child->return_returned = true;
++        child->consumed = true;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (child->consumed && child->observation.born) {
++        owner->last_module_epoch = child->observation.module_epoch;
++    }
++    if (child->consumed && child->source_post_recorded) {
++        child->held = false;
++        *holder = NULL;
++        *epoch = 0;
++        /* Preserve the previous final delivery through this new callback.
++         * Its receipt can be corroborated before Module replaces its copy. */
++        owner->delivery = (struct qemu_plugin_crucible_ram_read_completion_observation_v1) {
++            .delivery_entered = 1,
++            .retained = 1,
++        };
++        ram_read_snapshot_locked(owner, child, &owner->delivery.read);
++        owner->delivery_module = *owner->journal;
++        qemu_mutex_unlock(&commands->mutex);
++
++        SOURCE_CALLBACK_MASKED_INVOKE(
++            status, &owner->callbacks.completed, owner->callbacks.completed,
++            owner->journal, owner, owner->serial, serial, &owner->delivery.read);
++
++        qemu_mutex_lock(&commands->mutex);
++        owner->delivery.callback_status = ram_read_signed_status(status);
++        owner->delivery.delivery_returned = 1;
++        /* Identity-only completion post, after actual callback return. This
++         * does not consult expiry, renew an Original or retry physical return. */
++        status = ram_reader_identity_locked(owner, false);
++        if (!status && !standing_operation_identity(operation)) {
++            status = -ESTALE;
++        }
++        owner->delivery.post_status = ram_read_signed_status(status);
++        owner->delivery.post_recorded = 1;
++        ram_read_completion_finish_locked(owner);
++    }
++    status = child->first_status ? child->first_status : owner->delivery.first_status;
++    if (status && !owner->read_first_status) {
++        owner->read_first_status = status;
++    }
++    if (status && !operation->first_status) {
++        operation->first_status = status;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
 diff --git a/plugins/crucible-ram-record.inc.h b/plugins/crucible-ram-record.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..06c7717a72f48d51622e9c7da2c2fc984b07b99f
@@ -197775,10 +199269,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329fa3b6ab9
+index 0000000000000000000000000000000000000000..aa90a46e9db7398383faf8f8b68c73df01a4127b
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8670 @@
+@@ -0,0 +1,8698 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -198071,6 +199565,13 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +        return -EPERM;
 +    }
 +    if (!child) {
++        if (returning &&
++            (startup_source.ram_reader.held || startup_source.ram_read.held ||
++             startup_source.ram_read.uncertain ||
++             startup_source.ram_reader.delivery.retained ||
++             startup_source.ram_reader.delivery.uncertain)) {
++            return -EBUSY;
++        }
 +        if (returned) {
 +            return -EINVAL;
 +        }
@@ -202346,6 +203847,13 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +        !(*borrow)->module_borrowed || (*borrow)->module_view_holder != borrow) {
 +        return -EPERM;
 +    }
++    /* A distinct read subloan must physically close before its parent view
++     * or claim. Semantic expiry cannot erase retained or uncertain debt. */
++    if (startup_source.ram_read.held || startup_source.ram_read.uncertain ||
++        startup_source.ram_reader.delivery.retained ||
++        startup_source.ram_reader.delivery.uncertain) {
++        return -EBUSY;
++    }
 +    /* Only the exact actual module field used by borrow can be consumed.
 +     * A native selector copied to a local alias cannot return this custody. */
 +    (*borrow)->module_borrowed = false;
@@ -202394,7 +203902,10 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +    operation = *owner;
 +    if (!operation->post_recorded || operation->module_borrowed || operation->claim ||
 +        operation->progress_witness || startup_source.fingerprint_operation_owner ||
-+        startup_source.fingerprint_loan) {
++        startup_source.fingerprint_loan || startup_source.ram_read.held ||
++        startup_source.ram_read.uncertain ||
++        startup_source.ram_reader.delivery.retained ||
++        startup_source.ram_reader.delivery.uncertain) {
 +        return -EBUSY;
 +    }
 +    /* Identity-only physical return remains possible after semantic expiry.
@@ -202752,6 +204263,13 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +
 +    if (!claim || !*claim || !standing_operation_identity(operation) || operation->claim != *claim) {
 +        return -EPERM;
++    }
++    /* A distinct read subloan must physically close before its parent view
++     * or claim. Semantic expiry cannot erase retained or uncertain debt. */
++    if (startup_source.ram_read.held || startup_source.ram_read.uncertain ||
++        startup_source.ram_reader.delivery.retained ||
++        startup_source.ram_reader.delivery.uncertain) {
++        return -EBUSY;
 +    }
 +    status = standing_progress_return(operation);
 +    if (status || operation->progress_witness) {
@@ -206236,7 +207754,10 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +        startup_source.intent_observation.held ||
 +        startup_source.standing.cleanup_execution ||
 +        binding->invocation.held || binding->invocation.active ||
-+        binding->invocation.retained) {
++        binding->invocation.retained || startup_source.ram_reader.held ||
++        startup_source.ram_read.held || startup_source.ram_read.uncertain ||
++        startup_source.ram_reader.delivery.retained ||
++        startup_source.ram_reader.delivery.uncertain) {
 +        return -EBUSY;
 +    }
 +    /* Native checks execute outside Source custody. Their return consumes no
@@ -206437,6 +207958,7 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +#include "crucible-pending-command.inc.h"
 +#include "crucible-pending-constructor.inc.h"
 +#include "crucible-pending-offer.inc.h"
++#include "crucible-ram-reader.inc.h"
 +
 +#include "crucible-device-workspace.inc.h"
 +
@@ -206451,10 +207973,10 @@ index 0000000000000000000000000000000000000000..b08eccd6a7cb72917394ad873b234329
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a106db1f1f71e8115129c47f16ad2ef1b0f4ff9
+index 0000000000000000000000000000000000000000..98528453eaff41cb4c514e7cbd7159381e832c91
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,3314 @@
+@@ -0,0 +1,3392 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -209003,6 +210525,75 @@ index 0000000000000000000000000000000000000000..5a106db1f1f71e8115129c47f16ad2ef
 +    uint64_t serial;
 +};
 +
++/* One retained registration and read cell belong to the paid static Source.
++ * The Runtime journal belongs to the genuine Module and remains excluded from
++ * every unrelated output until registration physically returns. */
++typedef struct QemuCrucibleSourceRamReaderOwner {
++    QemuCrucibleStartupInstallerBinding installer;
++    QemuCrucibleStartupRuntimePurpose *runtime;
++    QemuCrucibleCallbackChildOwner *runtime_owner;
++    struct qemu_plugin_crucible_ram_reader_callbacks_v1 callbacks;
++    struct qemu_plugin_crucible_ram_read_journal_v1 *journal;
++    struct qemu_plugin_crucible_ram_read_completed_receipt_v1 *receipt;
++    struct qemu_plugin_crucible_ram_read_journal_v1 delivery_module;
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 delivery;
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 completed;
++    struct QemuCrucibleSourceRamReaderOwner **holder;
++    uint64_t *epoch;
++    uint64_t serial;
++    uint64_t last_module_epoch;
++    int first_status;
++    int post_status;
++    int read_first_status;
++    bool attempted;
++    bool held;
++    bool enrolled;
++    bool closed;
++    bool return_attempted;
++    bool return_returned;
++    bool consumed;
++    bool uncertain;
++    int return_status;
++    int return_post_status;
++} QemuCrucibleSourceRamReaderOwner;
++
++typedef struct QemuCrucibleSourceRamReadChild {
++    QemuCrucibleSourceRamReaderOwner *owner;
++    struct QemuCrucibleFingerprintOperation *operation;
++    struct QemuCrucibleSourceRamReadChild **native_holder;
++    uint64_t *native_epoch;
++    void *output;
++    size_t output_bytes;
++    uint64_t host_address;
++    uint32_t valid_length;
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch;
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher;
++    uint64_t operation_serial;
++    uint64_t serial;
++    struct qemu_plugin_crucible_ram_read_observation_v1 observation;
++    struct qemu_plugin_crucible_ram_read_disposition_v1 disposition;
++    int birth_post_status;
++    int callback_status;
++    int module_post_status;
++    int source_post_status;
++    int return_status;
++    int returned_post_status;
++    int first_status;
++    bool held;
++    bool callback_entered;
++    bool callback_returned;
++    bool module_post_entered;
++    bool module_post_returned;
++    bool source_post_recorded;
++    bool return_attempted;
++    bool return_entered;
++    bool return_returned;
++    bool returned_post_entered;
++    bool returned_post_returned;
++    bool consumed;
++    bool uncertain;
++} QemuCrucibleSourceRamReadChild;
++
 +typedef struct QemuCrucibleStartupSourceControl {
 +    QemuCrucibleOriginalStartupWireRecord original;
 +    QemuCrucibleStartupInstallerBinding current;
@@ -209111,6 +210702,8 @@ index 0000000000000000000000000000000000000000..5a106db1f1f71e8115129c47f16ad2ef
 +    QemuCrucibleStartupRuntimePurpose runtime_purpose;
 +    QemuCrucibleCommandConsumerRegistry commands;
 +    QemuCrucibleCallbackPublicationRegistry callbacks;
++    QemuCrucibleSourceRamReaderOwner ram_reader;
++    QemuCrucibleSourceRamReadChild ram_read;
 +    QemuCrucibleCallbackRegistrationGroups callback_groups;
 +    QemuCrucibleFingerprintWorkerClaim worker_claim;
 +    QemuCrucibleFingerprintWorker fingerprint_worker;
@@ -209767,6 +211360,13 @@ index 0000000000000000000000000000000000000000..5a106db1f1f71e8115129c47f16ad2ef
 +int qemu_crucible_parent_park_rearm_main_v1(
 +    const QemuCrucibleParkBinding *binding,
 +    QemuCrucibleNativeParkRequest *request);
++
++/* Only the actual Native RAM-read frame calls this factory/dispatch. */
++int qemu_crucible_startup_source_ram_read_v1(
++    uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher,
++    QemuCrucibleSourceRamReadChild **holder, uint64_t *epoch);
 +
 +#endif /* CRUCIBLE_STARTUP_SOURCE_H */
 diff --git a/plugins/crucible-stop-context.h b/plugins/crucible-stop-context.h
@@ -221263,7 +222863,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d37214f70eabbc752da0de0791eb17f855cdf5a
+index 0000000000000000000000000000000000000000..adb883eed3f39d8f3034b074c7a8bd17a882be94
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,111 @@
@@ -221295,9 +222895,9 @@ index 0000000000000000000000000000000000000000..2d37214f70eabbc752da0de0791eb17f
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f2d6ec5ece0913176036fe101b0be4ac027f11234291aced314da0cf1caf46f8',
++        '3f35e1ca4d9bde524cc51c55cfbd88fa8cf9e197274ec814ce741a1a3f1b8f57',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f658061c35d98fc7acebc07a34f9369fbee97758df929a6745293c7f5aabe91f',
++        'a9cde8fa19de72a98b215da99ca0da4d8dafa2012f5c0c6a944730f82b182e50',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '950f7a14aca04211755bb8dca985efc147c90a3f78aab06d02ea3819551cb809',
 +}
@@ -273922,7 +275522,7 @@ index 0000000000000000000000000000000000000000..25aafdfc06f195785e3c99f5a6847c71
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..93dd2339225ded98edcf0c732cb0cda97d0cad21
+index 0000000000000000000000000000000000000000..f53d71da11caa0aa5e3c2c4560ea2c8f9de8cbcd
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -273940,7 +275540,7 @@ index 0000000000000000000000000000000000000000..93dd2339225ded98edcf0c732cb0cda9
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f658061c35d98fc7acebc07a34f9369fbee97758df929a6745293c7f5aabe91f',
++        'a9cde8fa19de72a98b215da99ca0da4d8dafa2012f5c0c6a944730f82b182e50',
 +}
 +
 +FUNCTIONS = (
@@ -274028,7 +275628,7 @@ index 0000000000000000000000000000000000000000..93dd2339225ded98edcf0c732cb0cda9
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c28b153a1de20a6bb11edfdbd7352df73ddbc05f
+index 0000000000000000000000000000000000000000..a608eddcc75ea5196563a458b637e4c539e1d632
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -274049,17 +275649,17 @@ index 0000000000000000000000000000000000000000..c28b153a1de20a6bb11edfdbd7352df7
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '45890eb5c63d1f7043d99cccd0ff22ac0d5a94d97b42a81ee2b4847b4a1b7e8d',
++        '35fdeb11e9ea0af80ebc016daab20b8fdb2d645e132291ba82611c38c3b2c435',
 +    'plugins/crucible-startup-source.h':
-+        '8334d434d72f59a8e55e38bc3c3dad6f8f48b1e20fff1a427dd18fe822670507',
++        'df5021c75a7d33770c73f773d36ccad50901f452de31bd67af72d1f9de8eb97b',
 +    'include/plugins/qemu-plugin.h':
-+        'f2d6ec5ece0913176036fe101b0be4ac027f11234291aced314da0cf1caf46f8',
++        '3f35e1ca4d9bde524cc51c55cfbd88fa8cf9e197274ec814ce741a1a3f1b8f57',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f658061c35d98fc7acebc07a34f9369fbee97758df929a6745293c7f5aabe91f',
++        'a9cde8fa19de72a98b215da99ca0da4d8dafa2012f5c0c6a944730f82b182e50',
 +}
 +
 +FUNCTIONS = (
@@ -274275,7 +275875,7 @@ index 0000000000000000000000000000000000000000..c28b153a1de20a6bb11edfdbd7352df7
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f27b8447b4f3b7949e466ce7a79ffc138bf9ff04
+index 0000000000000000000000000000000000000000..3a8ec4f2816288388f40c30dae5f79b054971382
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -274299,7 +275899,7 @@ index 0000000000000000000000000000000000000000..f27b8447b4f3b7949e466ce7a79ffc13
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f658061c35d98fc7acebc07a34f9369fbee97758df929a6745293c7f5aabe91f',
++        'a9cde8fa19de72a98b215da99ca0da4d8dafa2012f5c0c6a944730f82b182e50',
 +}
 +
 +FUNCTIONS = (
@@ -274393,7 +275993,7 @@ index 0000000000000000000000000000000000000000..f27b8447b4f3b7949e466ce7a79ffc13
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..703d0a8df5b6210f8be484cf3923b1365b9709d1
+index 0000000000000000000000000000000000000000..90198d5133267eb75540360a68ddf8784ffefa58
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,699 @@
@@ -274434,21 +276034,21 @@ index 0000000000000000000000000000000000000000..703d0a8df5b6210f8be484cf3923b136
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f2d6ec5ece0913176036fe101b0be4ac027f11234291aced314da0cf1caf46f8',
++        '3f35e1ca4d9bde524cc51c55cfbd88fa8cf9e197274ec814ce741a1a3f1b8f57',
 +    'plugins/crucible-process-purpose.c':
 +        '71bfd2c2b7817d1bf6563e18eb679a07ac3a5d63149b81a9ccfdc8905ef6f8d1',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f658061c35d98fc7acebc07a34f9369fbee97758df929a6745293c7f5aabe91f',
++        'a9cde8fa19de72a98b215da99ca0da4d8dafa2012f5c0c6a944730f82b182e50',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'e8a21f8a09162fc0a0589e3543b8a6b992cd125be77f9a6241ac01b2accd58bb',
++        'e0f650f5e73ffc7445c92bbcfa94940dcd2938b8f04d2cd784d0fc0153a16ba0',
 +    'meson.build':
 +        '589d136b1cfb1d178307cf90114e6c057cbe2d86796f3c3767afa1f76ef09d2d',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '9fda0d3a1da3a8e5819744cae3cd2e8913ca7d9afdd5fe5a50933867e25423d7',
 +    'tests/unit/meson.build':
-+        'ce54d8f36c155a553d58f4f9d4c3a2b4291dd144dafefb5d1e7c66207ad239ac',
++        '9d9d613db1dffda82cefbeae07a8de16c2f16327f78f84ae06c275c4ec4434ef',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '950f7a14aca04211755bb8dca985efc147c90a3f78aab06d02ea3819551cb809',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -275098,10 +276698,10 @@ index 0000000000000000000000000000000000000000..703d0a8df5b6210f8be484cf3923b136
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4ad0d0abc
+index 0000000000000000000000000000000000000000..d07d57e33f76f7aaa21caa56c7af0f2ea2986628
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1505 @@
+@@ -0,0 +1,1513 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -275111,6 +276711,11 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-ram-reader.inc.h':
++        'fc7f98c5d5f34ca028f9d508d1bad3ae71a7b4afd50e98dbbc4f4bfecd35ce2f',
++    'tests/unit/test-crucible-ram-reader-custody.py':
++        'a2d63d34c4e5818b684f55f7b5f951544e65d7ce5c7354b3b0a51ffb4fb7f658',
++
 +    'plugins/crucible-native-initial-read.inc.h':
 +        '4520d466d132af6088a9ca3779de867496f036055a057b9c9a37d5a7b49b7bba',
 +    'tests/unit/test-crucible-initial-native-read.py':
@@ -275132,7 +276737,7 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +    'tests/unit/test-crucible-ram-mapping-qmp.py':
 +        'f0bfafb54bdcf635764c09af4d6a5781116bd5a1a253a8b2827c4e8118094a8e',
 +    'plugins/crucible-publisher-service.inc.h':
-+        '707fcba5c723ed6d2a62432e58b1b329ba541639ab1cf6b5c62b90fe5f2120cc',
++        'f1e0f7af1002f2129d60a7067b29f60089e17fe5f53ce0e09a7d4b4c8d860ddd',
 +    'tests/unit/test-crucible-publisher-service-transfer.py':
 +        'c797d75ec436d585be086caa8d283567aa8ca5c622becad237b3dbee978b190c',
 +    'tests/unit/test-crucible-stopped-control-rearm.py':
@@ -275252,7 +276857,7 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        'ce54d8f36c155a553d58f4f9d4c3a2b4291dd144dafefb5d1e7c66207ad239ac',
++        '9d9d613db1dffda82cefbeae07a8de16c2f16327f78f84ae06c275c4ec4434ef',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -275434,7 +277039,7 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +    'include/system/ram_addr.h':
 +        '519c6bc464edc7a03a0f90bc2a7a7da3b56f44533979c800ae9791b66f718441',
 +    'tests/unit/test-crucible-startup-source-layout.c':
-+        '478ec57245e3a316ee45b6329a39fd9d73a55be9cef6f0149b1109cd5880e6b4',
++        'f99879350898e20ab50411e8722058c9b547e73f88a4ef1c94e519f666c01652',
 +    'include/qemu/crucible-metadata-partition.h':
 +        '729ac52672303d2976a5fd2dc771047ee6971e4b6b71f12741749da0b373af10',
 +    'plugins/api-system.c':
@@ -275446,27 +277051,27 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
-+        '3e5086e3bdfed2b63926eb1431e6df85df929571332c81c4dd412bce6d5a5fe1',
++        '96cf642cdc4e7d7cc75a1211e39ed609615ffbf5829c3f43db055233a1a4eb2a',
 +    'monitor/qmp-cmds.c':
 +        '0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '45890eb5c63d1f7043d99cccd0ff22ac0d5a94d97b42a81ee2b4847b4a1b7e8d',
++        '35fdeb11e9ea0af80ebc016daab20b8fdb2d645e132291ba82611c38c3b2c435',
 +    'plugins/crucible-startup-source.h':
-+        '8334d434d72f59a8e55e38bc3c3dad6f8f48b1e20fff1a427dd18fe822670507',
++        'df5021c75a7d33770c73f773d36ccad50901f452de31bd67af72d1f9de8eb97b',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f2d6ec5ece0913176036fe101b0be4ac027f11234291aced314da0cf1caf46f8',
++        '3f35e1ca4d9bde524cc51c55cfbd88fa8cf9e197274ec814ce741a1a3f1b8f57',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
 +        'bcf6c52bccd7660a6f2208ab0a47fa6cf97b19df64adb8c1c203cf02042f3e42',
 +    'plugins/crucible-callback-child.inc.h':
-+        '5577c499e93e916b98ef98f2c79d05d1395d655570e8afe89491f10478b7e533',
++        'aacff551e2dc8d01ed3c74f2482f770f03bb1e7c8ec103858bf77e3113549cd8',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a',
 +    'plugins/crucible-plugin-worker.inc.h':
@@ -275540,7 +277145,7 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +    'include/qemu/crucible-process-purpose.h':
 +        '35bf5eec7adff29428b200772aeb37e02f58c66d74810e5bbdc5f36a093c8674',
 +    'include/qemu/crucible-paged-ram.h':
-+        '388bdd0f63b1a7ed67105b224390298f1aba6ff54b4653dab95387427c216c71',
++        'a2e428049e875106dfb872a48ac889f0d5776637f84767711ba936f7c744f6bd',
 +    'include/qom/object.h':
 +        '089f13e70e9840c38bb6e414de4c615738cf39f8b221d93de9670cee52ce2a58',
 +    'qobject/json-writer.c':
@@ -276314,6 +277919,9 @@ index 0000000000000000000000000000000000000000..42d265ac3739cd867f010d0ae57ecbc4
 +         "struct QemuCrucibleCheckpointRequestLoan {",
 +         "static int checkpoint_provider_check_main("),
 +        ("plugins/crucible-paged-ram.c",
++         "/* One actual synchronous read frame.",
++         "size_t qemu_crucible_checkpoint_candidate_capture_storage_bytes_v1("),
++        ("plugins/crucible-paged-ram.c",
 +         "static bool capture_observation_only;", "static int logical_capture_root_return("),
 +        ("plugins/api-system.c", "static struct {\n    QemuCrucibleNativeRegistration *control;",
 +         "static qemu_plugin_time_advance_cb_t"),
@@ -276706,7 +278314,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..5b29c479b21fe3c6dac8ffd4466d314f6738dbb8 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..12186a867e9b977c9e143c8344f913d24d87d54f 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -276781,7 +278389,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..5b29c479b21fe3c6dac8ffd4466d314f
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1405 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1407 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -277529,6 +279137,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..5b29c479b21fe3c6dac8ffd4466d314f
 +              meson.project_source_root(), '@OUTPUT0@',
 +              '--source-body', '@OUTPUT1@', '--storage', '@OUTPUT2@'],
 +    depend_files: files(
++                        '../../plugins/crucible-ram-reader.inc.h',
++                        'test-crucible-ram-reader-custody.py',
 +                        '../../plugins/crucible-pending-constructor.inc.h',
 +                        'test-crucible-pending-constructor.py',
 +                        '../../include/qemu/crucible-register-read.h',
@@ -334907,6 +336517,767 @@ index 0000000000000000000000000000000000000000..2d6bfe0bed3cdf2c0293ddc1f3b09012
 +    wire_in.close()
 +    wire_out.close()
 +    stderr.close()
+diff --git a/tests/unit/test-crucible-ram-reader-custody.py b/tests/unit/test-crucible-ram-reader-custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..3b5b3d59cb745cf4ca8a037937dd8e1d9a4e7578
+--- /dev/null
++++ b/tests/unit/test-crucible-ram-reader-custody.py
+@@ -0,0 +1,755 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check RAM-reader record validation and negative-only selected boundaries.
++
++Local journal shapes never construct or admit a Source, Runtime, Module, Root
++or read child. The unavailable selected dispatch always refuses. The genuine
++launched paid reader remains unexecuted and dirty-iterator still refuses it.
++"""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++
++
++PREFIX = r'''
++#include "qemu/osdep.h"
++#include "plugins/crucible-startup-source.h"
++#include <sys/mman.h>
++#include <sys/wait.h>
++#include "qemu/atomic.h"
++#include "qemu/main-loop.h"
++#include "qemu/crucible-paged-ram.h"
++
++static QemuCrucibleStartupSourceControl startup_source;
++static unsigned refused_parent_calls;
++static bool callback_child_output_conflicts_locked(const void *out, size_t bytes);
++static int callback_child_owner_identity_locked(QemuCrucibleCallbackChildOwner *owner)
++{
++    refused_parent_calls++;
++    return -ENOKEY;
++}
++
++#define CHECK(condition, label) do { \
++    if (!(condition)) { \
++        fprintf(stderr, "FAIL reader component: %s\n", label); \
++        abort(); \
++    } \
++} while (0)
++'''
++
++RECORD_CHECKS = r'''
++static void check_parent_before_fields(void)
++{
++    pid_t child = fork();
++    int status;
++
++    CHECK(child >= 0, "factual subprocess birth");
++    if (!child) {
++        QemuCrucibleSourceRamReaderOwner *owner = &startup_source.ram_reader;
++        void *unreadable = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++
++        CHECK(unreadable != MAP_FAILED, "factual unreadable field page");
++        CHECK(ram_reader_identity_locked(owner, true) == -ENOKEY && !refused_parent_calls,
++              "empty Source refuses without fields");
++        /* Local metadata can reach only the refusing parent bridge. The
++         * protected page detects an attempted read before that refusal. */
++        *owner = (QemuCrucibleSourceRamReaderOwner) {
++            .runtime = &startup_source.runtime_purpose,
++            .runtime_owner = &startup_source.callbacks.owner,
++            .holder = unreadable,
++            .epoch = unreadable,
++            .journal = unreadable,
++            .receipt = unreadable,
++            .serial = 1,
++            .attempted = true,
++            .held = true,
++        };
++        CHECK(ram_reader_identity_locked(owner, true) == -ENOKEY && refused_parent_calls == 1,
++              "actual unavailable parent refuses");
++        CHECK(!munmap(unreadable, 4096), "factual unreadable page returned");
++        _exit(0);
++    }
++    CHECK(waitpid(child, &status, 0) == child, "factual child joined");
++    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
++          "parent refuses before canonical field access");
++}
++
++static void check_records(void)
++{
++    struct qemu_plugin_crucible_ram_read_journal_v1 journal = { 0 };
++    QemuCrucibleSourceRamReaderOwner owner = { .journal = &journal, .last_module_epoch = 2 };
++    QemuCrucibleSourceRamReadChild read = { .owner = &owner, .serial = 4 };
++    struct qemu_plugin_crucible_ram_read_observation_v1 observation = {
++        .schema_version = 1, .struct_size = sizeof(observation),
++        .source_epoch = 4, .module_epoch = 3, .module_child = &journal,
++        .birth_attempted = 1, .born = 1, .callback_entered = 1,
++        .callback_returned = 1, .post_recorded = 1,
++    };
++    struct qemu_plugin_crucible_ram_read_disposition_v1 disposition = {
++        .schema_version = 1, .struct_size = sizeof(disposition),
++        .source_epoch = 4, .module_epoch = 3, .module_child = &journal,
++        .attempted = 1, .returned = 1, .consumed = 1, .post_recorded = 1,
++    };
++
++    ram_read_first(&read, -EIO);
++    ram_read_first(&read, -ESTALE);
++    ram_read_first(&read, 0);
++    CHECK(read.first_status == -EIO, "first remains sticky");
++    CHECK(ram_read_signed_status(1) == -EPROTO, "positive status refused");
++    read.first_status = 0;
++    read.observation = journal.observation = observation;
++    CHECK(ram_read_observation_valid(&read), "local born record shape");
++    read.disposition = journal.disposition = disposition;
++    CHECK(ram_read_disposition_valid(&read), "local consumed record shape");
++
++#define BAD_READ(field, value, label) do { \
++    read.observation = journal.observation = observation; \
++    read.observation.field = journal.observation.field = (value); \
++    CHECK(!ram_read_observation_valid(&read), label); \
++} while (0)
++    BAD_READ(schema_version, 0, "read schema");
++    BAD_READ(struct_size, sizeof(observation) - 1, "read complete size");
++    BAD_READ(source_epoch, 3, "same Source epoch");
++    BAD_READ(module_epoch, 2, "fresh Module epoch");
++    BAD_READ(module_child, NULL, "born retains Module identity");
++    BAD_READ(birth_attempted, 0, "birth attempted");
++    BAD_READ(born, 2, "born boolean");
++    BAD_READ(callback_entered, 2, "entered boolean");
++    BAD_READ(callback_returned, 0, "callback returned separately");
++    BAD_READ(post_recorded, 0, "Module post recorded");
++    BAD_READ(first_status, -EIO, "same actual callback first");
++    BAD_READ(post_status, 1, "Module post signed");
++    BAD_READ(reserved, 1, "read reserved zero");
++    read.observation = journal.observation = observation;
++    journal.observation.module_epoch++;
++    CHECK(!ram_read_observation_valid(&read), "same canonical read journal");
++    read.observation = journal.observation = observation;
++
++#define BAD_RETURN(field, value, label) do { \
++    read.disposition = journal.disposition = disposition; \
++    read.disposition.field = journal.disposition.field = (value); \
++    CHECK(!ram_read_disposition_valid(&read), label); \
++} while (0)
++    BAD_RETURN(schema_version, 0, "return schema");
++    BAD_RETURN(struct_size, sizeof(disposition) - 1, "return complete size");
++    BAD_RETURN(source_epoch, 3, "return Source epoch");
++    BAD_RETURN(module_epoch, 4, "return same Module epoch");
++    BAD_RETURN(module_child, NULL, "return same Module child");
++    BAD_RETURN(attempted, 0, "physical attempt distinct");
++    BAD_RETURN(returned, 0, "physical returned distinct");
++    BAD_RETURN(consumed, 0, "physical consumed distinct");
++    BAD_RETURN(uncertain, 1, "uncertain retains debt");
++    BAD_RETURN(first_status, -EIO, "same physical first");
++    BAD_RETURN(post_status, 1, "return post signed");
++    BAD_RETURN(post_recorded, 0, "physical post recorded");
++    BAD_RETURN(reserved, 1, "return reserved zero");
++    read.disposition = journal.disposition = disposition;
++    journal.disposition.module_epoch++;
++    CHECK(!ram_read_disposition_valid(&read), "same canonical return journal");
++
++    read.callback_status = -ECANCELED;
++    observation.first_status = -ECANCELED;
++    observation.callback_entered = observation.callback_returned = 0;
++    read.observation = journal.observation = observation;
++    CHECK(ram_read_observation_valid(&read), "born negative retains real child");
++    read.return_status = -EIO;
++    disposition.first_status = -EIO;
++    disposition.post_status = -ESTALE;
++    read.disposition = journal.disposition = disposition;
++    CHECK(ram_read_disposition_valid(&read), "consumed negative remains factual");
++
++    observation.born = 0;
++    observation.module_child = NULL;
++    observation.module_epoch = 0;
++    read.observation = journal.observation = observation;
++    CHECK(ram_read_observation_valid(&read), "entered Module factual no birth");
++    disposition.module_child = NULL;
++    disposition.module_epoch = 0;
++    disposition.attempted = disposition.returned = disposition.consumed = 0;
++    read.disposition = journal.disposition = disposition;
++    CHECK(ram_read_disposition_valid(&read), "no birth claims no physical consumption");
++    read.disposition.consumed = journal.disposition.consumed = 1;
++    CHECK(!ram_read_disposition_valid(&read), "no birth cannot manufacture consumption");
++}
++'''
++
++OBSERVER_PREFIX = r'''
++/* Neither boundary can issue a Runtime or hold the actual BQL here. */
++static bool startup_owner(void)
++{
++    return false;
++}
++
++bool bql_locked(void)
++{
++    return false;
++}
++
++static bool output_conflict;
++static bool callback_child_output_conflicts_locked(const void *out, size_t bytes)
++{
++    return output_conflict;
++}
++'''
++
++OBSERVER_CHECKS = r'''
++static void check_factual_observer_refusals(void)
++{
++    struct qemu_plugin_crucible_ram_reader_return_observation_v1 registration;
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 read;
++    struct qemu_plugin_crucible_ram_reader_return_observation_v1 registration_before;
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 read_before;
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 completed;
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 completed_before;
++
++    memset(&registration, 0xa5, sizeof(registration));
++    memset(&read, 0x5a, sizeof(read));
++    registration_before = registration;
++    read_before = read;
++    CHECK(qemu_plugin_crucible_ram_reader_returned_current_v1(
++              0, NULL, NULL, 1, &registration) == -EPERM,
++          "actual registration observer refuses absent Runtime");
++    CHECK(!memcmp(&registration, &registration_before, sizeof(registration)),
++          "registration refusal preserves output");
++    CHECK(qemu_plugin_crucible_ram_read_returned_current_v1(
++              0, NULL, NULL, 1, 1, &read) == -EPERM,
++          "actual read observer refuses absent Source context");
++    CHECK(!memcmp(&read, &read_before, sizeof(read)),
++          "read refusal preserves output");
++    CHECK(qemu_plugin_crucible_ram_read_completed_identity_v1(
++              0, NULL, 1, 1, NULL) == -EPERM,
++          "actual completion identity refuses absent registration");
++    CHECK(qemu_plugin_crucible_ram_read_completed_ack_v1(
++              0, NULL, 1, 1, NULL) == -EPERM,
++          "actual completion acknowledgement refuses absent registration");
++    memset(&completed, 0x4c, sizeof(completed));
++    completed_before = completed;
++    CHECK(qemu_plugin_crucible_ram_reader_completion_current_v1(
++              0, NULL, NULL, 1, 1, &completed) == -EPERM,
++          "actual completed observer refuses absent registration");
++    CHECK(!memcmp(&completed, &completed_before, sizeof(completed)),
++          "completed refusal preserves output");
++}
++
++static void check_factual_epoch_predicates(void)
++{
++    /* Local records exercise only the exact selected predicate. Their passing
++     * continuation still refuses; no Source owner or Runtime is issued. */
++    QemuCrucibleSourceRamReaderOwner record = { .serial = 7 };
++    QemuCrucibleSourceRamReadChild child = { .owner = &record, .serial = 9 };
++    uint64_t epoch = 7;
++    QemuCrucibleSourceRamReaderOwner *holder = &record;
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 out;
++
++    record.holder = &holder;
++    record.epoch = &epoch;
++    CHECK(probe_factual_epochs(&record, &child, &holder, &epoch, 7, 9, &out) == -ENOKEY,
++          "matching local epochs still issue nothing");
++    CHECK(probe_factual_epochs(&record, &child, &holder, &epoch, 6, 9, &out) == -ESTALE,
++          "factual exact retained owner epoch");
++    CHECK(probe_factual_epochs(&record, &child, &holder, &epoch, 7, 8, &out) == -ESTALE,
++          "factual exact latest read epoch");
++    child.owner = NULL;
++    CHECK(probe_factual_epochs(&record, &child, &holder, &epoch, 7, 9, &out) == -ESTALE,
++          "factual read belongs to exact owner");
++}
++'''
++
++
++COMPLETION_CHECKS = r'''
++static void check_receipt_storage_predicate(void)
++{
++    _Alignas(8) uint8_t span[384] = { 0 };
++    _Alignas(8) uint8_t foreign[240] = { 0 };
++    QemuCrucibleCallbackChildOwner enclosing = {
++        .runtime_base = (uintptr_t)span,
++        .runtime_extent = sizeof(span),
++    };
++
++    CHECK(ram_reader_runtime_field(&enclosing, span + 144, 240, 8),
++          "local complete receipt span shape");
++    CHECK(!ram_reader_runtime_field(&enclosing, NULL, 240, 8),
++          "missing enrolled receipt storage");
++    CHECK(!ram_reader_runtime_field(&enclosing, foreign, 240, 8),
++          "foreign transient receipt storage");
++    CHECK(!ram_reader_runtime_field(&enclosing, span + 137, 240, 8),
++          "unaligned receipt storage");
++    CHECK(!ram_reader_runtime_field(&enclosing, span + 152, 240, 8),
++          "complete receipt extent");
++    output_conflict = true;
++    CHECK(!ram_reader_runtime_field(&enclosing, span + 144, 240, 8),
++          "receipt excludes protected spans");
++    output_conflict = false;
++}
++
++static void check_completed_receipt_records(void)
++{
++    struct qemu_plugin_crucible_ram_read_completed_receipt_v1 receipt = { 0 };
++    struct qemu_plugin_crucible_ram_read_journal_v1 journal = {
++        .observation = { .source_epoch = 2, .module_epoch = 99, .born = 1 },
++        .disposition = { .source_epoch = 2, .module_epoch = 99, .consumed = 1 },
++    };
++    QemuCrucibleSourceRamReaderOwner owner = {
++        .receipt = &receipt, .journal = &journal, .serial = 3,
++    };
++    QemuCrucibleSourceRamReadChild no_call = {
++        .owner = &owner, .serial = 4, .source_post_recorded = true,
++    };
++    struct qemu_plugin_crucible_ram_read_return_observation_v1 no_call_snapshot;
++    struct qemu_plugin_crucible_ram_read_completion_observation_v1 delivered = {
++        .read = { .owner_epoch = 3, .source_epoch = 4, .consumed = 1,
++                  .source_post_recorded = 1 },
++        .delivery_entered = 1, .delivery_returned = 1,
++        .acknowledgement_attempted = 1, .acknowledged = 1, .post_recorded = 1,
++    };
++
++    /* Local receipt records are deliberately nonissuing. No Source registration
++     * or Module child is accepted, and this no-call shape has no Module birth. */
++    apply_source_no_call_return(&no_call);
++    ram_read_snapshot_locked(&owner, &no_call, &no_call_snapshot);
++    CHECK(no_call_snapshot.consumed && !no_call_snapshot.held,
++          "actual no-call returns only Source cell");
++    CHECK(!no_call_snapshot.callback_entered && !no_call_snapshot.module_born &&
++          !no_call_snapshot.module_epoch && journal.observation.module_epoch == 99,
++          "no-call never attributes previous Module birth");
++    owner.delivery = delivered;
++    owner.delivery_module = journal;
++    receipt.module = journal;
++    receipt.source = delivered.read;
++    CHECK(ram_read_saved_receipt_matches_locked(&owner), "local saved-copy shape");
++    receipt.source.source_epoch++;
++    CHECK(!ram_read_saved_receipt_matches_locked(&owner), "saved same Source epoch");
++    receipt.source = delivered.read;
++    receipt.source.returned_post_status = -EIO;
++    CHECK(!ram_read_saved_receipt_matches_locked(&owner), "saved complete Source receipt");
++    receipt.source = delivered.read;
++    receipt.module.observation.source_epoch++;
++    CHECK(!ram_read_saved_receipt_matches_locked(&owner), "saved complete Module journal");
++    receipt.module = journal;
++    journal.observation.source_epoch++;
++    CHECK(!ram_read_saved_receipt_matches_locked(&owner), "no-call leaves Module journal unchanged");
++    journal = receipt.module;
++    owner.receipt = NULL;
++    CHECK(!ram_read_saved_receipt_matches_locked(&owner), "missing canonical saved receipt");
++    owner.receipt = &receipt;
++
++    ram_read_completion_finish_locked(&owner);
++    CHECK(!owner.delivery.retained && !owner.delivery.uncertain &&
++          !owner.completed.first_status && owner.completed.read.source_epoch == 4,
++          "local final delivery shape only");
++#define RETAIN_DELIVERY(field, value, label) do { \
++    owner.delivery = delivered; \
++    owner.delivery.field = (value); \
++    ram_read_completion_finish_locked(&owner); \
++    CHECK(owner.completed.retained && owner.completed.uncertain && \
++          owner.completed.first_status, label); \
++} while (0)
++    RETAIN_DELIVERY(delivery_entered, 0, "completion entered independently");
++    RETAIN_DELIVERY(delivery_returned, 0, "completion returned independently");
++    RETAIN_DELIVERY(acknowledgement_attempted, 0, "acknowledgement attempted independently");
++    RETAIN_DELIVERY(acknowledged, 0, "acknowledgement independently");
++    RETAIN_DELIVERY(post_recorded, 0, "completion post independently");
++    RETAIN_DELIVERY(acknowledgement_status, -EIO, "negative acknowledgement retains debt");
++    RETAIN_DELIVERY(callback_status, -EIO, "negative completion retains debt");
++    RETAIN_DELIVERY(post_status, -ESTALE, "negative completion post retains debt");
++    RETAIN_DELIVERY(read.held, 1, "Source child still held retains debt");
++    RETAIN_DELIVERY(read.consumed, 0, "Source consumption independently");
++    RETAIN_DELIVERY(read.uncertain, 1, "Source uncertainty retains debt");
++    RETAIN_DELIVERY(read.source_post_recorded, 0, "Source read post independently");
++    owner.delivery = delivered;
++    owner.delivery.first_status = -ECANCELED;
++    owner.delivery.callback_status = -EIO;
++    ram_read_completion_finish_locked(&owner);
++    CHECK(owner.completed.first_status == -ECANCELED,
++          "completion first failure sticky");
++    owner.delivery = (struct qemu_plugin_crucible_ram_read_completion_observation_v1) { 0 };
++    CHECK(owner.completed.read.source_epoch == 4,
++          "prior final survives next delivery cell reset");
++}
++'''
++
++
++BOUNDARY_PREFIX = r'''
++static bool selected;
++static unsigned raw_calls, unavailable_calls;
++int qemu_crucible_startup_source_fingerprint_enrollment_required_v1(void)
++{
++    return selected;
++}
++static int selected_ram_read(uint64_t address, uint8_t *bytes, uint32_t valid,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher)
++{
++    /* Negative-only counterpart boundary; no Source or Module can issue here. */
++    unavailable_calls++;
++    return -ENOKEY;
++}
++static int ordinary(uint64_t address, uint8_t *bytes, uint32_t valid)
++{
++    raw_calls++;
++    memset(bytes, 0x7e, valid);
++    return 0;
++}
++static int root_scratch(uint64_t address,
++    struct qemu_plugin_crucible_ram_root_scratch_v2 *scratch, uint32_t valid,
++    const struct qemu_plugin_crucible_ram_page_hasher_v3 *hasher)
++{
++    raw_calls++;
++    memset(scratch->bytes, 0x7e, valid);
++    return 0;
++}
++'''
++
++BOUNDARY_CHECKS = r'''
++static void check_boundaries(void)
++{
++    uint8_t source[8] = { 1, 2, 3 }, bytes[8] = { 0 };
++
++    CHECK(!operational_read((uintptr_t)source, bytes, sizeof(bytes)), "generic memcpy");
++    CHECK(!memcmp(source, bytes, sizeof(bytes)), "generic actual bytes");
++    selected = true;
++    CHECK(qemu_plugin_crucible_register_ram_readers_v3(ordinary, root_scratch) == -ENOKEY,
++          "selected legacy registration refuses");
++    CHECK(root_reader_registration.state == ROOT_READERS_EMPTY && !operational_reader,
++          "selected registration changes no state");
++    selected = false;
++    CHECK(!qemu_plugin_crucible_register_ram_readers_v3(ordinary, root_scratch),
++          "generic legacy registration preserved");
++    CHECK(!operational_read((uintptr_t)source, bytes, sizeof(bytes)), "generic callback");
++    CHECK(raw_calls == 1 && bytes[0] == 0x7e, "generic callback unchanged");
++    selected = true;
++    memset(bytes, 0x31, sizeof(bytes));
++    CHECK(operational_read((uintptr_t)source, bytes, sizeof(bytes)) == -ENOKEY,
++          "selected dispatch refuses unavailable Source");
++    CHECK(raw_calls == 1 && unavailable_calls == 1 && bytes[0] == 0x31,
++          "selected never enters previously registered raw reader");
++}
++'''
++
++
++PARENT_CHECKS = r'''
++static void check_lender_parent_phase(void)
++{
++    bool *debts[] = {
++        &startup_source.ram_reader.held,
++        &startup_source.ram_read.held,
++        &startup_source.ram_read.uncertain,
++    };
++
++    /* Only the literal debt cut is exercised. Its continuation always refuses;
++     * these local records never authenticate or issue the genuine parent. */
++    for (size_t index = 0; index < G_N_ELEMENTS(debts); index++) {
++        *debts[index] = true;
++        CHECK(probe_lender_parent_gate(0) == -ENOKEY,
++              "retained child permits factual parent continuation");
++        CHECK(probe_lender_parent_gate(1) == -EBUSY,
++              "retained child blocks physical parent return");
++        *debts[index] = false;
++    }
++    startup_source.ram_reader.delivery.retained = 1;
++    CHECK(probe_lender_parent_gate(0) == -ENOKEY,
++          "completion debt permits factual parent continuation");
++    CHECK(probe_lender_parent_gate(1) == -EBUSY,
++          "completion debt blocks physical parent return");
++    startup_source.ram_reader.delivery.retained = 0;
++    startup_source.ram_reader.delivery.uncertain = 1;
++    CHECK(probe_lender_parent_gate(0) == -ENOKEY,
++          "uncertain completion permits factual parent continuation");
++    CHECK(probe_lender_parent_gate(1) == -EBUSY,
++          "uncertain completion blocks physical parent return");
++    startup_source.ram_reader.delivery.uncertain = 0;
++    CHECK(probe_lender_parent_gate(0) == -ENOKEY &&
++          probe_lender_parent_gate(1) == -ENOKEY,
++          "empty parent continuation remains unavailable");
++}
++
++static void check_parent_debt_gates(void)
++{
++    startup_source.ram_read.held = true;
++    CHECK(probe_outer_view_return() == -EBUSY, "outer view held read debt");
++    CHECK(probe_outer_claim_return() == -EBUSY, "outer claim held read debt");
++    startup_source.ram_read.held = false;
++    startup_source.ram_read.uncertain = true;
++    CHECK(probe_outer_view_return() == -EBUSY, "outer view uncertain read debt");
++    CHECK(probe_outer_claim_return() == -EBUSY, "outer claim uncertain read debt");
++    startup_source.ram_read.uncertain = false;
++    startup_source.ram_reader.delivery.retained = 1;
++    CHECK(probe_outer_view_return() == -EBUSY, "outer view completion retained debt");
++    CHECK(probe_outer_claim_return() == -EBUSY, "outer claim completion retained debt");
++    startup_source.ram_reader.delivery.retained = 0;
++    startup_source.ram_reader.delivery.uncertain = 1;
++    CHECK(probe_outer_view_return() == -EBUSY, "outer view completion uncertain debt");
++    CHECK(probe_outer_claim_return() == -EBUSY, "outer claim completion uncertain debt");
++    startup_source.ram_reader.delivery.uncertain = 0;
++    CHECK(probe_outer_view_return() == -ENOKEY, "outer view continuation never issues");
++    CHECK(probe_outer_claim_return() == -ENOKEY, "outer claim continuation never issues");
++}
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("source", type=Path)
++    parser.add_argument("output", type=Path)
++    args = parser.parse_args()
++    source = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    fragment = (source / "plugins/crucible-ram-reader.inc.h").read_text()
++    ram = (source / "plugins/crucible-paged-ram.c").read_text()
++    records = "\n\n".join(extract["function"](fragment, prefix) for prefix in (
++        "static int ram_read_signed_status(", "static void ram_read_first(",
++        "static int ram_reader_identity_locked(",
++        "static bool ram_read_observation_valid(", "static bool ram_read_disposition_valid(",
++        "static bool ram_reader_runtime_field(", "static bool ram_read_saved_receipt_matches_locked(",
++        "static void ram_read_completion_finish_locked(", "static void ram_read_snapshot_locked("))
++    boundary = (extract["unique_line"](ram,
++        "static qemu_plugin_crucible_ram_operational_read_v1 operational_reader;") +
++        extract["body_cut"](ram, "enum RootReaderRegistrationState {",
++                           "static int (*operational_rearm)") +
++        extract["function"](ram, "int qemu_plugin_crucible_register_ram_readers_v3(") +
++        extract["function"](ram, "static int operational_read("))
++    startup = (source / "plugins/crucible-startup-source.c").read_text()
++    parent_bodies = {}
++    parent_guards = {}
++    for name, signature, after in (
++        ("outer_view", "int qemu_plugin_crucible_fingerprint_operation_borrow_end_v1(",
++         "    /* Only the exact actual module field"),
++        ("outer_claim", "int qemu_crucible_startup_source_logical_capture_return_v1(",
++         "    status = standing_progress_return(operation);"),
++    ):
++        current = extract["function"](startup, signature)
++        parent_bodies[name] = current
++        # Exact production debt predicate; the omitted nominal parent/current
++        # surroundings have only an unavailable continuation in this probe.
++        guard = extract["body_cut"](current,
++            "    if (startup_source.ram_read.held || startup_source.ram_read.uncertain", after)
++        parent_guards[name] = guard
++    observer_names = (
++        "int qemu_plugin_crucible_ram_reader_returned_current_v1(",
++        "int qemu_plugin_crucible_ram_read_returned_current_v1(",
++        "int qemu_plugin_crucible_ram_read_completed_identity_v1(",
++        "int qemu_plugin_crucible_ram_read_completed_ack_v1(",
++        "int qemu_plugin_crucible_ram_reader_completion_current_v1(",
++    )
++    observer_bodies = {name: extract["function"](fragment, name) for name in observer_names}
++    observer_context = "\n".join(extract["function"](startup, name) for name in (
++        "static int startup_runtime_cleanup_identity(",
++        "int qemu_crucible_startup_source_fingerprint_context_identity_v1("))
++    read_observer = observer_bodies[observer_names[1]]
++    epoch_guard = extract["body_cut"](read_observer,
++        "    if (!status && (holder != owner->holder", "    if (!status) {")
++    # Conflict detection is independently negative in the full observer. This
++    # pure epoch predicate never admits a Source owner or writes an observation.
++    epoch_guard = epoch_guard.replace(
++        "callback_child_output_conflicts_locked(out, sizeof(*out))", "false")
++    epoch_probe = ("static int probe_factual_epochs(\n"
++        "    QemuCrucibleSourceRamReaderOwner *owner, QemuCrucibleSourceRamReadChild *child,\n"
++        "    qemu_plugin_crucible_ram_reader_owner_v1 *const *holder, const uint64_t *epoch,\n"
++        "    uint64_t owner_epoch, uint64_t read_epoch,\n"
++        "    struct qemu_plugin_crucible_ram_read_return_observation_v1 *out)\n{\n"
++        "    int status = 0;\n" + epoch_guard + "    return status ? status : -ENOKEY;\n}\n")
++    records += ("\n" + OBSERVER_PREFIX + observer_context + "\n" +
++                "\n".join(observer_bodies.values()) + "\n" + epoch_probe)
++    source_factory = extract["function"](fragment, "int qemu_crucible_startup_source_ram_read_v1(")
++    no_call_return = extract["body_cut"](source_factory,
++        "        /* Actual Source no-call:", "    }\n    qemu_mutex_lock(&commands->mutex);")
++    records += ("\nstatic void apply_source_no_call_return("
++                "QemuCrucibleSourceRamReadChild *child)\n{\n" + no_call_return + "}\n")
++    lender_body = extract["function"](startup,
++        "int qemu_crucible_startup_source_publisher_receiver_identity_v1(")
++    lender_guard = extract["body_cut"](lender_body,
++        "        if (returning &&", "        if (returned) {")
++    lender_probe = ("static int probe_lender_parent_gate(int returning)\n{\n" +
++                    lender_guard + "    return -ENOKEY;\n}\n")
++    records += "\n" + lender_probe
++    parent = "\n".join(
++        f"static int probe_{name}_return(void)\n{{\n" + guard + "    return -ENOKEY;\n}\n"
++        for name, guard in parent_guards.items())
++    base_records = records
++    records += "\n" + parent
++    cases = {"positive": (records, boundary, None)}
++    omissions = {
++        "omit-parent-before-fields": ("status = callback_child_owner_identity_locked(owner->runtime_owner);", "status = 0;", "parent refuses before canonical field access"),
++        "omit-sticky-first": ("status && !child->first_status", "status", "first remains sticky"),
++        "omit-read-schema": ("out->schema_version != 1 ||", "", "read schema"),
++        "omit-read-size": ("out->struct_size != sizeof(*out) ||", "", "read complete size"),
++        "omit-source-epoch": ("out->source_epoch != child->serial ||", "", "same Source epoch"),
++        "omit-module-epoch": ("out->module_epoch > child->owner->last_module_epoch", "out->module_epoch", "fresh Module epoch"),
++        "omit-birth-attempt": ("out->birth_attempted != 1 ||", "", "birth attempted"),
++        "omit-callback-return": ("out->callback_returned != out->callback_entered ||", "", "callback returned separately"),
++        "omit-module-post": ("out->post_recorded != 1 ||", "", "Module post recorded"),
++        "omit-read-first": ("out->first_status != child->callback_status ||", "", "same actual callback first"),
++        "omit-read-journal": ("memcmp(out, &child->owner->journal->observation, sizeof(*out))", "false", "same canonical read journal"),
++        "omit-return-attempt": ("out->attempted && out->returned && out->consumed", "out->returned && out->consumed", "physical attempt distinct"),
++        "omit-returned": ("out->attempted && out->returned && out->consumed", "out->attempted && out->consumed", "physical returned distinct"),
++        "omit-consumed": ("out->attempted && out->returned && out->consumed", "out->attempted && out->returned", "physical consumed distinct"),
++        "omit-uncertain-debt": ("out->uncertain ||", "", "uncertain retains debt"),
++        "omit-return-child": ("out->module_child != read->module_child ||", "", "return same Module child"),
++        "omit-return-epoch": ("out->module_epoch != read->module_epoch ||", "", "return same Module epoch"),
++        "omit-return-first": ("out->first_status != child->return_status ||", "", "same physical first"),
++        "omit-return-journal": ("memcmp(out, &child->owner->journal->disposition, sizeof(*out))", "false", "same canonical return journal"),
++    }
++    for name, (before, after, detector) in omissions.items():
++        # Some guards occur in both record validators. Mutate the intended
++        # first occurrence and require the corresponding specific detector.
++        if before not in records:
++            raise ValueError(f"missing production guard: {name}")
++        cases[name] = (records.replace(before, after, 1), boundary, detector)
++    for name, field, detector in (
++        ("omit-view-held", "held", "outer view held read debt"),
++        ("omit-view-uncertain", "uncertain", "outer view uncertain read debt"),
++        ("omit-claim-held", "held", "outer claim held read debt"),
++        ("omit-claim-uncertain", "uncertain", "outer claim uncertain read debt"),
++    ):
++        parent_name = "outer_view" if "view" in name else "outer_claim"
++        guard = parent_guards[parent_name]
++        before = "startup_source.ram_read." + field
++        if guard.count(before) != 1:
++            raise ValueError(f"nonunique debt predicate: {name}")
++        opening = f"static int probe_{parent_name}_return(void)\n{{\n"
++        mutated = parent.replace(opening + guard, opening + guard.replace(before, "false", 1), 1)
++        cases[name] = (base_records + "\n" + mutated, boundary, detector)
++    for name, parent_name, field, detector in (
++        ("omit-view-completion-retained", "outer_view", "retained", "outer view completion retained debt"),
++        ("omit-view-completion-uncertain", "outer_view", "uncertain", "outer view completion uncertain debt"),
++        ("omit-claim-completion-retained", "outer_claim", "retained", "outer claim completion retained debt"),
++        ("omit-claim-completion-uncertain", "outer_claim", "uncertain", "outer claim completion uncertain debt"),
++    ):
++        guard = parent_guards[parent_name]
++        before = "startup_source.ram_reader.delivery." + field
++        if guard.count(before) != 1:
++            raise ValueError(f"nonunique completion debt predicate: {name}")
++        opening = f"static int probe_{parent_name}_return(void)\n{{\n"
++        mutated = parent.replace(opening + guard, opening + guard.replace(before, "false", 1), 1)
++        cases[name] = (base_records + "\n" + mutated, boundary, detector)
++    for name, before, detector in (
++        ("omit-factual-owner-epoch", "owner_epoch != owner->serial ||", "factual exact retained owner epoch"),
++        ("omit-factual-read-epoch", "read_epoch != child->serial ||", "factual exact latest read epoch"),
++        ("omit-factual-read-owner", "child->owner != owner ||", "factual read belongs to exact owner"),
++    ):
++        if epoch_probe.count(before) != 1:
++            raise ValueError(f"nonunique factual predicate: {name}")
++        cases[name] = (records.replace(epoch_probe, epoch_probe.replace(before, "", 1), 1),
++                       boundary, detector)
++    completion_omissions = {
++        "omit-no-call-source-consumption": ("child->consumed = true;", "child->consumed = false;", "actual no-call returns only Source cell"),
++        "omit-receipt-alignment": ("!(start % alignment) &&", "", "unaligned receipt storage"),
++        "omit-receipt-protected-spans": ("!callback_child_output_conflicts_locked(field, bytes)", "true", "receipt excludes protected spans"),
++        "omit-receipt-runtime-containment": ("start >= owner->runtime_base && bytes <= owner->runtime_extent &&\n        start - owner->runtime_base <= owner->runtime_extent - bytes", "true", "foreign transient receipt storage"),
++        "omit-complete-source-saved-bytes": ("sizeof(owner->receipt->source))", "offsetof(struct qemu_plugin_crucible_ram_read_return_observation_v1, returned_post_status))", "saved complete Source receipt"),
++        "omit-saved-source-copy": ("!memcmp(&owner->receipt->source, &owner->delivery.read,\n                sizeof(owner->receipt->source))", "true", "saved same Source epoch"),
++        "omit-saved-module-copy": ("!memcmp(&owner->receipt->module, &owner->delivery_module,\n                sizeof(owner->receipt->module))", "true", "saved complete Module journal"),
++        "omit-unchanged-module-journal": ("!memcmp(owner->journal, &owner->delivery_module, sizeof(*owner->journal))", "true", "no-call leaves Module journal unchanged"),
++        "omit-completion-entered": ("delivery->delivery_entered != 1 ||", "", "completion entered independently"),
++        "omit-completion-returned": ("delivery->delivery_returned != 1 ||", "", "completion returned independently"),
++        "omit-completion-ack-attempt": ("delivery->acknowledgement_attempted != 1 ||", "", "acknowledgement attempted independently"),
++        "omit-completion-ack": ("delivery->acknowledged != 1 ||", "", "acknowledgement independently"),
++        "omit-completion-post": ("delivery->post_recorded != 1 ||", "", "completion post independently"),
++        "omit-completion-ack-error": ("delivery->acknowledgement_status ||", "", "negative acknowledgement retains debt"),
++        "omit-source-consumed": ("!delivery->read.consumed ||", "", "Source consumption independently"),
++        "omit-source-uncertainty": ("delivery->read.uncertain ||", "", "Source uncertainty retains debt"),
++        "omit-source-read-post": ("!delivery->read.source_post_recorded", "false", "Source read post independently"),
++    }
++    for name, (before, after, detector) in completion_omissions.items():
++        if records.count(before) != 1:
++            raise ValueError(f"nonunique completion guard: {name}")
++        cases[name] = (records.replace(before, after, 1), boundary, detector)
++    lender_omissions = {
++        "omit-parent-return-phase": ("returning &&", "true &&",
++            "retained child permits factual parent continuation"),
++        "omit-parent-reader-debt": ("startup_source.ram_reader.held", "false",
++            "retained child blocks physical parent return"),
++        "omit-parent-read-debt": ("startup_source.ram_read.held", "false",
++            "retained child blocks physical parent return"),
++        "omit-parent-read-uncertain": ("startup_source.ram_read.uncertain", "false",
++            "retained child blocks physical parent return"),
++        "omit-parent-completion-debt": ("startup_source.ram_reader.delivery.retained", "false",
++            "completion debt blocks physical parent return"),
++        "omit-parent-completion-uncertain": ("startup_source.ram_reader.delivery.uncertain", "false",
++            "uncertain completion blocks physical parent return"),
++    }
++    for name, (before, after, detector) in lender_omissions.items():
++        if lender_guard.count(before) != 1:
++            raise ValueError(f"nonunique lender return predicate: {name}")
++        mutated = lender_probe.replace(lender_guard, lender_guard.replace(before, after, 1), 1)
++        cases[name] = (records.replace(lender_probe, mutated, 1), boundary, detector)
++    registration = "    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {\n        return -ENOKEY;\n    }\n"
++    dispatch = "    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {\n        return selected_ram_read(address, bytes, valid, NULL, NULL);\n    }\n"
++    for name, before, detector in (
++        ("omit-selected-registration", registration, "selected legacy registration refuses"),
++        ("omit-selected-dispatch", dispatch, "selected dispatch refuses unavailable Source"),
++    ):
++        if boundary.count(before) != 1:
++            raise ValueError(f"nonunique boundary: {name}")
++        cases[name] = (records, boundary.replace(before, "", 1), detector)
++    results = {}
++    for name, (record_body, boundary_body, detector) in cases.items():
++        main_body = r'''
++int main(void)
++{
++    check_parent_before_fields();
++    check_records();
++    check_boundaries();
++    check_parent_debt_gates();
++    check_lender_parent_phase();
++    check_factual_observer_refusals();
++    check_factual_epoch_predicates();
++    check_receipt_storage_predicate();
++    check_completed_receipt_records();
++
++    puts("PASS local records and negative-only boundaries; no owner issued");
++    return 0;
++}
++'''
++        text = (PREFIX + record_body + RECORD_CHECKS + BOUNDARY_PREFIX + boundary_body +
++                BOUNDARY_CHECKS + PARENT_CHECKS + OBSERVER_CHECKS + COMPLETION_CHECKS + main_body)
++        path = output / (name + ".c")
++        binary = output / name
++        path.write_text(text)
++        command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(path), "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / (name + ".command.json")).write_text(json.dumps(command, indent=2) + "\n")
++        compiled = subprocess.run(command, capture_output=True, text=True, timeout=30)
++        (output / (name + ".compile.log")).write_text(compiled.stdout + compiled.stderr)
++        compiled.check_returncode()
++        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
++        (output / (name + ".log")).write_text(result.stdout + result.stderr)
++        if detector is None:
++            if result.returncode:
++                raise RuntimeError(f"positive: {result.returncode}")
++        elif result.returncode != -signal.SIGABRT or f"FAIL reader component: {detector}\n" not in result.stderr:
++            raise RuntimeError(f"{name}: intended detector absent ({result.returncode})")
++        results[name] = dict(status=result.returncode, detector=detector)
++    proof = dict(scope="local record predicates and negative-only selected boundary", genuine_issued_child=False,
++                 launched_paid_reader=False, dirty_lifecycle_qualified=False, results=results,
++                 source_sha256={p: hashlib.sha256((source / p).read_bytes()).hexdigest() for p in (
++                     "plugins/crucible-ram-reader.inc.h", "plugins/crucible-paged-ram.c",
++                     "plugins/crucible-startup-source.c",
++                     "plugins/crucible-startup-source.h", "include/plugins/qemu-plugin.h")},
++                 selected_body_sha256=dict(lender_parent_body=hashlib.sha256(lender_body.encode()).hexdigest(),
++                                           lender_parent_guard=hashlib.sha256(lender_guard.encode()).hexdigest(),
++                                           observers={name: hashlib.sha256(body.encode()).hexdigest() for name, body in observer_bodies.items()},
++                                           observer_context=hashlib.sha256(observer_context.encode()).hexdigest(),
++                                           source_factory=hashlib.sha256(source_factory.encode()).hexdigest(),
++                                           source_no_call_return=hashlib.sha256(no_call_return.encode()).hexdigest(),
++                                           factual_epoch_predicate=hashlib.sha256(epoch_guard.encode()).hexdigest(),
++                                           records=hashlib.sha256(records.encode()).hexdigest(),
++                                           boundary=hashlib.sha256(boundary.encode()).hexdigest(),
++                                           parent_guards={name:hashlib.sha256(body.encode()).hexdigest() for name,body in parent_guards.items()},
++                                           parent_bodies={name:hashlib.sha256(body.encode()).hexdigest() for name,body in parent_bodies.items()}))
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(f"PASS local records/negative-only boundaries and {len(cases) - 1} independently rebuilt omissions")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..98cbee197d62bf1ba9802c1ff6d2b19c4f810db8
@@ -344042,10 +346413,10 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +}
 diff --git a/tests/unit/test-crucible-startup-source-layout.c b/tests/unit/test-crucible-startup-source-layout.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7f5a3310d94dfcd3818d87f416cce4d76124ad41
+index 0000000000000000000000000000000000000000..51c9a70a2ca0e5f30fbc154b52423b7c86598ca4
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source-layout.c
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,222 @@
 +/*
 + * Actual-declaration layout report for fixed installer startup control
 + *
@@ -344140,6 +346511,8 @@ index 0000000000000000000000000000000000000000..7f5a3310d94dfcd3818d87f416cce4d7
 +    CONTROL_FIELD(publisher_module.source_group_return_status),
 +    CONTROL_FIELD(publisher_module.native_revocation_attempted),
 +    CONTROL_FIELD(publisher_module.transferred),
++    CONTROL_FIELD(ram_reader),
++    CONTROL_FIELD(ram_read),
 +    CONTROL_FIELD(callbacks.owner.service_users),
 +    CONTROL_FIELD(callbacks.owner.publisher_service),
 +    CONTROL_FIELD(publisher_module.view),

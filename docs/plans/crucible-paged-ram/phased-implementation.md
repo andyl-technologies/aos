@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `a0651364c1` imports signed `eb298a8e1c`, tree `d940cee8`, adding retained pending-constructor custody. Exact raw atomic reconstruction, the 348-created-file license inventory and 187 owning Source tests pass. The 1,918-object cohort and corrected first normal delivery pass under unchanged bounds. | The missing-helper failure, fixture correction and explicit qualification bridge remain retained. All twenty-five bounded custody suites and ABI conformance pass. Full QEMU still fails launched dirty capture; genuine Module issuance, selected execution and complete return remain open. The canonical license gate still stops at strict controller Clippy. |
+| Native integration | Signed reader `8c55fe5743` imports conventional `0137bd538c`, tree `27234c29`. Exact raw reconstruction and the 351-created-file license inventory pass. Independent import verification matches 990 changed-source hashes, 10,908 evidence files and 156 literal links. The fresh 1,918-object cohort and first corrected normal delivery pass under unchanged bounds. | Packaged Source, 26 bounded custody suites and fresh ABI/license checks remain in progress. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -334,18 +334,42 @@ all 287 exact supervision cases pass in nine groups at
 canonical license gate stops before its assertions at strict controller Clippy:
 1,184 host-library and 1,255 host-test errors.
 
-The matching public Source reader is staged, not imported. Review caught an
-ordinary-parent-current cycle in signed `881048e437`: retained reader debt
-incorrectly refused the identity observations needed by that reader. Signed
-`0137bd538c` restricts those five debt checks to actual parent return. The
-original 49 and six paired omission controls pass in 39.807 seconds. Its fresh
-1,918-object owning build passes in 150.398 seconds under the unchanged
-600-second/6-GiB/two-compiler bound. Its first corrected-tree normal delivery
-passes in 52.927 seconds under the original 60-second/6-GiB bound; the
-independent sweep and final artifact seal remain in progress. The earlier 881
-first normal pass (48.462 of 60 seconds) and interrupted subsequent sweep belong to the preserved earlier
-snapshot. Neither layout tests nor that earlier normal pass qualify genuine
-installed Module reads, selected activation or physical Source return.
+The matching public Source reader is imported as signed atomic
+`8c55fe5743a4df1db55ffb25682c298e6b8bd6fe`, tree
+`27234c29ba1a821c67a9b08126d7ac79611f3069`, from conventional
+`0137bd538c458b0c225d86b561fb886895c5e881`. Review caught an
+ordinary-parent-current cycle in the earlier signed `881048e437`: retained
+reader debt incorrectly refused identity observations needed by that reader.
+The correction restricts those five debt checks to actual parent return.
+The original 49 and six paired omission controls pass in 39.807 seconds.
+All 1,918 fresh configured objects pass in 150.398 seconds under the unchanged
+600-second/6-GiB/two-compiler bound. The first and only corrected normal delivery
+passes in 52.927 seconds under the original 60-second/6-GiB bound.
+
+The final independent sweep passes 92 preexec omissions, 47 causal controls and
+four late controls. Both system links and six owning executables pass. Raw
+ordinary fixtures retain 23 passes, a separate incomplete direct-link failure
+for control-deferred (whose configured closure passes), and the mandatory
+genuine dirty-lifecycle refusal. The earlier 881 first normal pass (48.462
+seconds) and interrupted sweep remain separate. None of these results qualify
+genuine installed Module reads, selected activation or complete physical return.
+
+Independent import verification matches 990 signed changed-source hashes,
+10,908 regular evidence files, 156 literal links and three artifact hashes,
+with zero mismatches. The comparison record has SHA-256
+`d13608cee6f125423f26dd36cb65bd888bd5a894930b7138dd37e02080138610`.
+The agent's complete source reconstruction records all 78,158 tracked blobs
+and modes; the import comparison does not independently re-audit that archive.
+The exact raw patch/bundle reconstruction passes at
+`l3y4q9dpgh08dcfa5bjxpqpk74hb0nxn`; the 351-created-file license inventory passes
+at `62hq7qrc96jk5b7i37sawmwgbfdvv5n9`. An initial descriptor included an extra
+message newline; the failed reconstruction remains recorded and the corrected
+descriptor reconstructs the exact signed subject, body and DCO. Packaged Source,
+all 26 bounded custody components and fresh ABI/license-boundary checks remain
+in progress. The immutable SDK r2 is unchanged. Actual Source 243,112 plus 27
+real getter terms 43,942 gives the 287,054-byte fixed floor; reader owner 632
+and child 272 are inline, and the Native RAM frame contributes 96 through its
+actual getter. Module storage and execution stacks remain separate payers.
 
 `31fe9199e9` corrects registration-return history after an earlier close
 refusal. Physical cleanup can finish, but its saved first close status remains
@@ -386,7 +410,8 @@ compilation passes at `rvx6s8vrfhh0pzmwnyc3dlm8fch7vi5j`; all 5,298 committed
 Rust/TOML files match immutable source `mqczf8kqqy5svsg6brg4h6202jzkpq99`.
 The comparison record has SHA-256
 `9abfaaeade9b42f5ef053b2b05b613d10287ca0ce13031a072d8260265fd66e5`.
-Exact supervision remains in progress. Complete diagnostic funding, actual
+All 288 exact supervision cases pass in nine groups at
+`il7xpcllfdzk2dahm7ns4qsiy39ancqz`. Complete diagnostic funding, actual
 Source stop custody and Native admission remain open.
 
 #### Typed fault consumer refusals
