@@ -2676,6 +2676,49 @@ shapes supply no genuine Source/Birth funding, opaque Initial/Recipe, live ACK,
 model or phase authority. Their normalization constructor, genuine enclosing
 owners and full RFC acceptance remain unfinished.
 
+## Original five-role bootstrap normalization hashes
+
+Commits `5fe3686908` and `a8c2e06cea` compute the original birth, measured
+kernel, immutable policy, native registration and retained Host hashes under
+one original raw/typed/policy/SDK guard chain. An external attempt retains its
+current Value, inline BLAKE3 writer and computed digest prefix. Each role is
+admitted before allocation and observed after either constructor outcome;
+failed output remains owned and both original occurrences stay spent.
+
+Canonical bytes stream directly into the bounded hash writer. The Host Value
+is borrowed from the original decoder. The other four serde Value constructors
+have a separate backing bound covering copied strings, actual sequence growth
+and the pinned tree census, including possible empty roots. Existing DOM/JCS
+scratch remains intact. No canonical output bank or JSON parser is constructed.
+The initial Source and native calculations use the same complete five-role
+schedule, actual compiled schema factories and sequential counter maxima.
+The independent 256 MiB ceiling, later four inert partitions and original
+five-second operational cut remain unchanged.
+
+Thirteen new physical flights cover both program families, incomplete kernel,
+changed cut, construction/role refusal, every retained output prefix, expiry
+and actual SDK revocation. Independent canonical hashes agree with the
+accepted streamed bytes. Separate controls check sticky short writes, exact
+and short complete restrictions, checked overflow, and actual Value census
+through sequence growth and nested/empty objects. The older thirty-three
+policy/kernel/operand flights retain their independent field oracles. Their
+oracle work now stays in its own timed flights; the first full standard run
+before this harness correction failed an older kernel callback control.
+
+For `a8c2e06cea`, both complete Transport configurations pass 1,961 tests each,
+with zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, changed-file formatting and all six architecture
+gates pass. The application compilation gate emits 180 test executables across
+58 package identities, including 71 integration targets. All 316 owned
+Rust/Cargo inputs match the commit and its exact captured application source.
+The gate executes no tests. No new VM or configured Engine/Daemon runtime
+result is claimed.
+
+These admissions remain models and the retained Host fixture is still inert
+DATA. Complete Host-plan authentication, genuine enclosing Source/Birth funding,
+opaque Initial/Recipe production, live ACK publication and full RFC acceptance
+remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
