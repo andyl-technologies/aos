@@ -75,9 +75,25 @@ fn check_directory(file: &File) -> io::Result<()> {
 }
 
 #[cfg(feature = "tokio")]
-pub(super) fn inspect_layout(
-    config: &super::NativePublisherConfig,
-) -> io::Result<(Vec<File>, crate::host_quota::DomainProvisioningGuard)> {
+/// Retains every checked directory and the original provisioning exclusion.
+///
+/// Internal adapters share these exact open descriptions. They never use their
+/// directory offsets, and sharing creates no additional kernel descriptors.
+pub(super) struct PreparedLayout {
+    pub root: Arc<File>,
+    pub chunks: Arc<File>,
+    pub objects: Arc<File>,
+    pub pending: Arc<File>,
+    pub quarantine: Arc<File>,
+    _state: Arc<File>,
+    _sealed: Arc<File>,
+    _staging: Arc<File>,
+    _publication: Arc<File>,
+    _provisioning: crate::host_quota::DomainProvisioningGuard,
+}
+
+#[cfg(feature = "tokio")]
+pub(super) fn inspect_layout(config: &super::NativePublisherConfig) -> io::Result<PreparedLayout> {
     if !config.layout_root.is_absolute()
         || config
             .layout_root
@@ -138,12 +154,34 @@ pub(super) fn inspect_layout(
         }
         device = Some(metadata.dev());
         inodes.push(metadata.ino());
-        retained.push(file);
+        retained.push(Arc::new(file));
     }
-    Ok((
-        retained,
-        provisioning.ok_or_else(|| io::Error::other("publisher root guard missing"))?,
-    ))
+    let [
+        root,
+        state,
+        chunks,
+        objects,
+        quarantine,
+        sealed,
+        staging,
+        pending,
+        publication,
+    ]: [Arc<File>; 9] = retained
+        .try_into()
+        .map_err(|_| invalid("publisher layout directory inventory changed"))?;
+    Ok(PreparedLayout {
+        root,
+        chunks,
+        objects,
+        pending,
+        quarantine,
+        _state: state,
+        _sealed: sealed,
+        _staging: staging,
+        _publication: publication,
+        _provisioning: provisioning
+            .ok_or_else(|| io::Error::other("publisher root guard missing"))?,
+    })
 }
 
 fn child_directory(parent: &File, name: &str) -> io::Result<File> {

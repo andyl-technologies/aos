@@ -224,7 +224,7 @@ pub struct NativePublisherPrepared {
     native: NativePublisher,
     state_directory: PathBuf,
     retained_state: File,
-    retained_layout: (Vec<File>, crate::host_quota::DomainProvisioningGuard),
+    retained_layout: super::native::PreparedLayout,
     body_io: BodyIo,
     inventory: inventory::NativeInventory,
 }
@@ -253,11 +253,7 @@ impl NativePublisherPrepared {
                 "configured publisher custody already attached",
             ));
         }
-        let root = self
-            .retained_layout
-            .0
-            .first()
-            .ok_or_else(|| io::Error::other("missing retained domain root"))?;
+        let root = &self.retained_layout.root;
         custody.check_domain(&self.config.domain, root, &self.confinement)?;
         self.configured_custody = Some(custody);
         Ok(())
@@ -266,11 +262,7 @@ impl NativePublisherPrepared {
     fn check_custody(&self) -> io::Result<()> {
         self.confinement.check_current()?;
         if let Some(custody) = &self.configured_custody {
-            let root = self
-                .retained_layout
-                .0
-                .first()
-                .ok_or_else(|| io::Error::other("missing retained domain root"))?;
+            let root = &self.retained_layout.root;
             custody.check_domain(&self.config.domain, root, &self.confinement)?;
         }
         Ok(())
@@ -327,14 +319,8 @@ impl NativePublisherConfig {
             ));
         }
         let retained_layout = super::native::inspect_layout(&self)?;
-        let inventory = inventory::NativeInventory::new(
-            &self,
-            retained_layout
-                .0
-                .first()
-                .ok_or_else(|| io::Error::other("missing retained layout root"))?,
-        )?;
-        let body_io = BodyIo::open(&self)?;
+        let inventory = inventory::NativeInventory::new(&self, &retained_layout.root)?;
+        let body_io = BodyIo::from_layout(&self, &retained_layout)?;
         let native = NativePublisher::open_unrecovered(
             Arc::clone(&confinement),
             self.domain.clone(),

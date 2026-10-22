@@ -13063,3 +13063,27 @@ files and preserves all three original cold inodes and bytes. No new physical
 domain, scaffold entry, actor limit, grace interval or selector is introduced.
 Strict native all-target Clippy and Python syntax checks pass; committed native
 and application qualification remain required for this added manifest case.
+
+The complete native qualification at `00f7bad8fc` terminates failed after
+1,320.48 seconds, with all 9,313 tracked files unchanged. The scoped inline
+case and independent observer pass, as do the subsequent shared extraction,
+encoded eviction and cold recovery controls reached before the failure.
+`manifest-pending-metadata-cold/recover-writable-manifest` again receives
+publisher inventory `Unavailable` at guest second 736. This is a failed full
+run, not a runtime qualification or an outer timeout. Its native cause remains
+unresolved. Required application compilation for the publisher diagnostics at
+`52826e72fb` passes in 806.81 seconds; independent review matches all 7,987
+immutable source files and 184 compiler records across 59 packages.
+
+The failed run's earlier resource observation records 3,739 open publisher
+descriptors against its unchanged 4,096 limit. Descriptor exhaustion is a
+hypothesis until the instrumented run supplies the actual failure. Review finds
+four redundant directory opens per configured domain in the encoded-body
+adapter. Publisher preparation now retains a named, private layout and shares
+its actual checked chunks, objects, pending-delete and quarantine descriptions
+with that adapter. All nine validated directory inodes and original provisioning
+exclusion remain retained; relative body operations use no directory cursor.
+Native custody, project, ownership and incarnation checks remain in place. This
+reduces descriptor use without raising the limit or reopening those four paths.
+Strict native all-target Clippy and formatting pass; full native and required
+application qualification remain necessary before claiming a failure fix.

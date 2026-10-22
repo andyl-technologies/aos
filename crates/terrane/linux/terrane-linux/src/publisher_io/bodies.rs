@@ -6,8 +6,9 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
 
-use rustix::fs::{self, AtFlags, Mode, OFlags, ResolveFlags};
+use rustix::fs::{self, AtFlags, Mode, OFlags};
 use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_format::pack_format::{HEADER_SIZE, Header};
 use terrane_sdk::host::publication::RetirementInode;
@@ -15,10 +16,10 @@ use terrane_sdk::host::publication::RetirementInode;
 use super::{NativeBodyKey, NativePublisherConfig};
 
 pub(super) struct BodyIo {
-    chunks: File,
-    objects: File,
-    pending: File,
-    quarantine: File,
+    chunks: Arc<File>,
+    objects: Arc<File>,
+    pending: Arc<File>,
+    quarantine: Arc<File>,
     uid: u32,
     gid: u32,
     device: u64,
@@ -77,23 +78,19 @@ fn readonly(parent: &File, name: &str, directory: bool) -> io::Result<File> {
 }
 
 impl BodyIo {
-    pub(super) fn open(config: &NativePublisherConfig) -> io::Result<Self> {
-        let open = |name: &str| -> io::Result<File> {
-            Ok(File::from(fs::openat2(
-                fs::CWD,
-                config.layout_root.join(name),
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-                Mode::empty(),
-                ResolveFlags::NO_SYMLINKS,
-            )?))
-        };
-        let chunks = open("chunks")?;
-        let device = chunks.metadata()?.dev();
+    pub(super) fn from_layout(
+        config: &NativePublisherConfig,
+        layout: &super::native::PreparedLayout,
+    ) -> io::Result<Self> {
+        // Preparation already retains and validates these exact directories.
+        // Share their descriptions instead of reopening four paths per domain;
+        // body operations use relative syscalls and never a directory cursor.
+        let device = layout.chunks.metadata()?.dev();
         Ok(Self {
-            chunks,
-            objects: open("objects")?,
-            pending: open("pending-delete")?,
-            quarantine: open("quarantine")?,
+            chunks: Arc::clone(&layout.chunks),
+            objects: Arc::clone(&layout.objects),
+            pending: Arc::clone(&layout.pending),
+            quarantine: Arc::clone(&layout.quarantine),
             uid: config.content_uid,
             gid: config.content_gid,
             device,
