@@ -201,9 +201,39 @@ pub(super) fn recover(
         })
         .await
     })??;
+    // A genuine recovery retains its newly funded metadata bootstrap after
+    // Resume. Compare this one new hold separately; it grants no native authority.
+    let recovered = runtime.block_on(exposure::snapshot(inputs))?;
+    let new_holds: Vec<_> = recovered
+        .reservations
+        .iter()
+        .filter(|hold| !before.reservations.iter().any(|old| old.id == hold.id))
+        .collect();
+    let config = inputs.owner_config()?;
+    let [bootstrap] = new_holds.as_slice() else {
+        return Err("forced recovery did not retain exactly one new bootstrap hold".into());
+    };
+    if bootstrap.owner != config.quota_owner
+        || bootstrap.bytes != config.metadata_sync_hold_bytes
+        || bootstrap.id.len() != 32
+        || !bootstrap
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || before
+            .reservations
+            .iter()
+            .try_fold(bootstrap.bytes, |sum, hold| sum.checked_add(hold.bytes))
+            .ok_or("recovery hold sum overflows")?
+            != completed.future_hold_bytes()
+    {
+        return Err("forced recovery changed its funded metadata bootstrap".into());
+    }
+    let bootstrap = (*bootstrap).clone();
     runtime.block_on(owner.resume_recovered(completed))?;
     let after = runtime.block_on(exposure::snapshot(inputs))?;
     let mut expected = before;
+    expected.reservations.push(bootstrap);
     let pin_owner = expected.exposures[0].pin_owner();
     expected.exposures.clear();
     expected.pins.retain(|pin| pin.owner != pin_owner);
@@ -211,6 +241,10 @@ pub(super) fn recover(
     // The fixture compares every typed field, including the private snapshot
     // version, without introducing an alternate cache-state encoder.
     if format!("{after:?}") != format!("{expected:?}") || canonical.exists() {
+        eprintln!(
+            "CRASH_RECOVERY expected={expected:?} actual={after:?} canonical_exists={}",
+            canonical.exists()
+        );
         return Err("forced crash recovery changed obligations beyond original exposure".into());
     }
     println!(
