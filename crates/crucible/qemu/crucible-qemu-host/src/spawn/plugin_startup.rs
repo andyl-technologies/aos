@@ -202,6 +202,17 @@ impl OriginalPluginStartup {
                 });
             }
         };
+        // The admission already owns its paid canonical slot. Save a born
+        // issuer there before its independent Setup post, so even refusal
+        // cannot discard or reissue the actual node's delegation.
+        #[cfg(target_os = "linux")]
+        if let Err(source) = source.delegate_cleanup_issuer(&original) {
+            return Err(PluginStartupError {
+                source: PluginStartupCause::Original(source),
+                original_after: original.wait_slice().err(),
+                _control: Some(control),
+            });
+        }
         // Both bodies remain under the same admitted host peak. Enter the
         // actual Setup before allocating or constructing its physical controls.
         let mut body = Box::new(None);

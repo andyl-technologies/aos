@@ -361,6 +361,25 @@ compiler dependencies match their recorded hashes. This is executed wire
 compatibility, not issuer or runtime admission. The independent review proof is
 `e90b422547725fff192c363175f239ad6e932043e653e1ce56d26446703947e5`.
 
+The actual host budget owner now retains a once-only local Cleanup issuer.
+Delegation occurs during genuine Setup or Preparation, creates no operation
+record or Cleanup interval, and saves born output before the independent post.
+Reservation requires the exact same supervisor allocation; equal capability
+bytes and shared outer ancestry do not authorize another budget owner. Four
+new controls cover allocation-free delegation, Setup return before reservation,
+foreign owners, permanent once-only refusal and a negative independent post.
+All 215 resource-crate tests pass; the private measurement feature passes 290
+with one existing ignored test. The preceding sixteen-codec ABI gate passes.
+The strict license gate reproduces the actual 908 host Clippy failures and
+remains failed.
+
+Initial Source admission now prepays an inline canonical issuer slot as part
+of its actual retained state. The real startup Setup delegates into that slot
+only after exact node-supervisor and Source-custody checks. A negative post
+keeps the born issuer with the same admission after startup refuses. No native
+resource child, selected carrier or wire capability is issued by this local
+holder; the authenticated cross-process installation remains required.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree

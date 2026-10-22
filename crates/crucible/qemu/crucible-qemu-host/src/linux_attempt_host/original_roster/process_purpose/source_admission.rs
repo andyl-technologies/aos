@@ -5,7 +5,10 @@
 //! a RAM Target, copied limits nor a caller-supplied subject constructs admission.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::sync::Mutex;
+
 use crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose;
+use crucible_host_resources::host_supervision::{HostDeferredCleanupIssuer, HostSupervisionError};
 use crucible_host_resources::ram_policy::HostResourceVector;
 
 use super::*;
@@ -34,6 +37,7 @@ struct InstalledSourceState {
     artifact_digest: [u8; 32],
     receiver: crate::artifact_identity::NativeReceiverArtifact,
     supervisor: HostOperationSupervisor,
+    cleanup_issuer: Mutex<Option<HostDeferredCleanupIssuer>>,
     host: AuthenticatedSourceHostPurpose,
     _control: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
 }
@@ -384,6 +388,7 @@ fn construct_source_admission(
             artifact_digest,
             receiver,
             supervisor,
+            cleanup_issuer: Mutex::new(None),
             host,
             _control: control,
         }),
@@ -391,6 +396,32 @@ fn construct_source_admission(
 }
 
 impl InstalledSourceAdmission {
+    /// Retains the exact node owner's future Cleanup issuer during real Setup.
+    ///
+    /// The inline slot is part of the Source admission's prepaid body. It stays
+    /// with that actual admission after Setup returns, including a negative
+    /// delegation post. This creates no native resource child or wire grant.
+    ///
+    /// # Errors
+    /// Refuses another supervisor, unavailable Source custody, an occupied or
+    /// uncertain slot, or the original delegation and its independent post.
+    pub(crate) fn delegate_cleanup_issuer(
+        &self,
+        setup: &HostOperationGuard,
+    ) -> Result<(), HostSupervisionError> {
+        if !setup.belongs_to_supervisor(&self.held.supervisor) {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        self.check()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        let mut issuer = self
+            .held
+            .cleanup_issuer
+            .try_lock()
+            .map_err(|_| HostSupervisionError::Unavailable)?;
+        setup.delegate_deferred_cleanup_issuer(&mut issuer)
+    }
+
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.held, &other.held)
     }
