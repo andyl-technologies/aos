@@ -16,6 +16,7 @@ mod disclosure_rotation;
 #[cfg(unix)]
 mod domain_deletion;
 mod error;
+mod head;
 mod history;
 #[cfg(feature = "std")]
 mod import;

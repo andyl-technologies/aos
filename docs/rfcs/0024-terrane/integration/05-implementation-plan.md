@@ -12350,3 +12350,36 @@ application-target compilation in 1,662.61 seconds. Independent review matches
 7,928 immutable source files and actual Cargo compilation records for 184 test
 executables across 59 packages. Application-target outputs retain compiler
 metadata, not executable bytes; these counts establish compilation only.
+
+
+#### Guarded current reference point reads
+
+`Repository::ref_head` now exposes the complete record returned by the ordinary
+fresh whole-root Read guard. It distinguishes authorized absence from invalid
+credentials, grant or current ACL denial, unavailable history and backend
+failures. It supports branches and immutable tags without requiring inventory
+or materializing a public reflog suffix. The record retains policy, home, epoch
+and candidate selector. Metadata creates no authority for a later read or write,
+and this operation adds no distributed freshness guarantee to its backend.
+It is a prerequisite for GetRef, not a deployed Distribution implementation.
+
+All six genuine native integration cases pass under the existing thirty-second
+selector bound: full current heads matched against independent committed
+history across reopen; an actual immutable tag; authorized absence versus
+invalid credentials and insufficient scope; Read-only attenuation and signed
+expiry; a genuine issuer signature with broad grants still denied by the current
+root ACL; and malformed names plus loss of the actual protected original
+association remaining an error. The initial tag fixture used an invalid
+unqualified name and was corrected to the canonical `refs/tags/_/release`;
+production behavior was unchanged. The failed diagnostic remains separate from
+the final complete passing run. Strict SDK/Linux/CLI all-target Clippy, native
+`std,wasm`, actual WebAssembly-target checking, Rust/Nix formatting and check
+evaluation pass. Frozen `integration.ref-head` and required application-target
+qualification remain pending. No task acceptance changes.
+
+Required application-target compilation for `e5578c0b2c` passes in 1,572.63
+seconds. Independent review matches 7,934 immutable source files and compiler
+records for 184 test executables across 59 packages. This remains compilation
+evidence only, with no retained application executable or runtime claim. The
+watch change at `d679a0f17e` is pushed; its frozen owning-gate and required
+application-target checks are running.
