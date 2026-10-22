@@ -357,6 +357,7 @@ async fn access_tokens_use_native_permissions_and_stable_scopes() {
                     Permission::TokensManage,
                     Permission::TokensSelf,
                 ],
+                expires_at: None,
             },
             3600,
         )
@@ -441,6 +442,7 @@ async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
                 owner: Principal::user(administrator_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::TokensManage, Permission::MembersManage],
+                expires_at: None,
             },
             3600,
         )
@@ -506,6 +508,7 @@ async fn service_account_token_delegation_is_bounded_and_rechecked() {
                 owner: Principal::user(administrator_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::Read, Permission::TokensManage],
+                expires_at: None,
             },
             3600,
         )
