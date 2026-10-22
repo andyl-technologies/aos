@@ -3058,6 +3058,47 @@ so do opaque Initial/Recipe production, the actual five-phase native adopter,
 complete Source/runtime preservation and remaining full RFC qualification. No
 new VM or configured engine/daemon runtime result is claimed.
 
+## Source bootstrap original custody and initial Hello cut
+
+Commit `73573ba403` adds dedicated SDK correlation DATA transitions for the sole
+sequence-two Bootstrap18 request and response. Settlement moves the actual
+pending request into the caller's retained slot before later fallible checks.
+It advances incoming sequence once; duplicate settlement refuses. An occupied
+destination preserves both owners before effects. Other receive refusals fence
+the guard and preserve the actual original wherever it remains owned.
+
+The checks require the distinct negotiated proof/receipt positions, null native
+routes and no other SDK traffic or imported continuation. They authenticate
+transport correspondence only. Bodies, proof/receipt MACs, genuine Source
+ownership and the complete admitted Source holder remain separate requirements.
+The received DATA predicate cannot prove that supplied historical records are
+genuine owners.
+
+Both real Session construction paths capture the initial opaque Hello deadline.
+The dedicated typed Bootstrap constructor checks that unchanged, still-live cut
+beside the actual unused Controller SDK, recorded Hello and current registration.
+It refuses a renewed timer even when all protocol scalars remain unchanged.
+The cut has no portable clock-coordinate codec. Existing generic exchange
+behavior and serialized Session17 grammars remain unchanged. Defining constructor
+quotes include the additional cut-capture and frontier controls.
+
+All ten new custody/cut/frontier tests pass. The affected client, connection and
+existing session namespaces pass 186, 196 and six tests respectively, with zero
+failures or ignores. Transport/Engine/Daemon all-feature/all-target checking and
+all six architecture checks pass. After full-file review, the two changed large
+source files have refreshed digest-bound engineering review records.
+
+The required application compilation gate emits 180 test executables across
+58 package IDs, including 71 integration targets. All 362 owned Rust/Cargo inputs
+match committed `73573ba403` and its actual captured Nix source. This gate executes
+no tests. The preceding complete Transport library qualification remains bound
+to `18bd949f08`; no new full-library, VM or configured runtime result is claimed.
+
+The actual Source Bootstrap assignment/seal/publication/receive transaction,
+independent whole funding, opaque Initial/Recipe producers, five native phase
+consumers and remaining full RFC work are still incomplete. These SDK DATA
+transitions grant no native phase, model installation or common Ready.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
