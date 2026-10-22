@@ -158,13 +158,6 @@ pub(in super::super::super) fn assert_child(
             suffix != "missing_correlation",
         );
     let mut attempt = Attempt::empty_data();
-    let prior = correlation::Inputs {
-        original,
-        normalizations: &normalizations,
-        literal: &literal,
-        parsed: &parsed,
-        codec: &codec,
-    };
     let model = Model {
         suffix,
         calls: Cell::new(0),
@@ -179,10 +172,6 @@ pub(in super::super::super) fn assert_child(
             correlation.retained_requested_bytes_data(original).unwrap(),
         ],
     };
-    model.census(Inputs {
-        prior,
-        correlation: correlation.view_data(),
-    });
     let pointers = original.bodies.each_ref().map(Vec::as_ptr);
     let launch = Rc::as_ptr(original.parsed.shared_launch_data().unwrap());
     let cut = original.cut;
@@ -222,7 +211,6 @@ pub(in super::super::super) fn assert_child(
         },
         correlation: correlation.view_data(),
     };
-    model.census(inputs);
     assert_eq!(original.bodies.each_ref().map(Vec::as_ptr), pointers);
     assert_eq!(
         Rc::as_ptr(original.parsed.shared_launch_data().unwrap()),
@@ -265,6 +253,12 @@ pub(in super::super::super) fn assert_child(
                 .is_err()
         );
     }
+
+    // The final immutable predecessor census follows the separately guarded
+    // inspection. Construction and each output already observed the complete
+    // owners; repeating that census before inspection spends its finite cut.
+    model.census(inputs);
+
     if !success && suffix != "missing_correlation" {
         super::super::bootstrap_correlation::tests::assert_fenced_record(&mut correlation);
     }
