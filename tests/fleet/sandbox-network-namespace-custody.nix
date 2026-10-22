@@ -97,6 +97,14 @@
     mkSystem [
       ../../systems/server-test.nix
       ({lib, ...}: {
+        # Native host activation evaluates its own configuration. Retain the
+        # fixture caller account there before the identity-owned socket starts.
+        aos.activation.stages.host.configuration = [
+          (builtins.path {
+            path = ./_sandbox-controller-identity.nix;
+            name = "aos-sandbox-controller-identity.nix";
+          })
+        ];
         aos.sandbox.networkBroker = {
           enable = true;
           maximumRetainedNamespaces = capacity;
