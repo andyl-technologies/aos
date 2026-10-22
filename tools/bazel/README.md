@@ -122,6 +122,23 @@ case cannot mask a required miss. It checks affected misses, unaffected hits,
 action digests, semantic fingerprints, and all three executable results. The passing native
 Linux evidence is in `tests/evidence/native-linux-invalidation.json`.
 
+The expanded eleven-case matrix also changes a named Rust target CPU and an
+actual header in a selected AOS sysroot overlay. Their programs return changed
+values, and the sysroot proof requires the header in the compiler's declared
+inputs. Symlinked headers retain their canonical AOS roots through explicit
+`extraHeaderRoots`; those roots enter both include policy and closure identity.
+Changes to proof definitions also select a new cache namespace, preventing an
+older candidate result from concealing a required miss.
+
+On x86_64 Linux, `cache.target` builds the same package labels first natively,
+then for AArch64, then for AArch64 again in a third fresh Nix execution.
+Target compilation must miss the native entries while the execution-platform
+procedural macro is restored. The final build restores all selected foreign
+actions with identical declared bytes. All three artifacts have the required
+ELF machine and runtime results, with foreign execution through AOS QEMU.
+`tests/evidence/native-linux-target-cpu-sysroot.json` retains the passing matrix,
+target action digests, compiler inputs and source fingerprints.
+
 `cache.concurrent` runs independent Nix builds against the same cache namespace,
 requires overlapping execution intervals, and compares every exported artifact
 with isolated builds. It verifies distinct mount/PID/user namespaces and output
@@ -131,8 +148,8 @@ in `tests/evidence/native-linux-concurrent.json`.
 
 Build evidence also retains launcher wall/CPU time, child peak RSS, block I/O,
 UID mappings, namespaces, command, and cache selection. These are individual execution measurements;
-they do not establish production performance budgets. Foreign-target, CPU,
-linker executable/sysroot, and PGO invalidation and
+they do not establish production performance budgets. Further foreign-platform,
+linker executable and PGO invalidation and
 family-specific performance baselines remain required before their cutovers.
 
 `tests/evidence/native-linux-toolchain-cache.json` records a fresh native trial

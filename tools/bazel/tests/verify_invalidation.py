@@ -23,6 +23,8 @@ def verify(baseline, variants):
         "rust-flags": {"rust_library", "rust_app", "native_app"},
         "link-flags": {"cpp_link"},
         "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "rust-cpu": {"rust_library", "rust_app", "native_app"},
+        "sysroot": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
     }
     actions = {
         "generated": "AosPythonGenerate", "generated_library": "Rustc",
@@ -36,6 +38,7 @@ def verify(baseline, variants):
         "generator-environment": (43, 43, 86), "feature": (43, 42, 85),
         "rust-flags": (42, 42, 84), "tool-closure": (42, 42, 84),
         "link-flags": (42, 42, 84),
+        "rust-cpu": (43, 42, 85), "sysroot": (42, 43, 85),
     }
     evidence = {"schema_version": 1, "baseline": str(baseline), "variants": {}}
     for variant, build in variants.items():
@@ -53,6 +56,11 @@ def verify(baseline, variants):
             if (original["action_digest"] == result["action_digest"]) != same_identity:
                 raise ValueError(f"unexpected Bazel action digest for {variant}: {target}")
             results[target] = result
+        if variant == "sysroot":
+            compiler = next(event for event in events if event["targetLabel"] == "//tools/bazel/tests/fixture:cpp_library"
+                            and event["mnemonic"] == "CppCompile")
+            if not any(entry["path"].endswith("/aos-cache-probe.h") for entry in compiler.get("inputs", [])):
+                raise ValueError("sysroot experiment omitted its actual compiler header input")
         artifacts = package_files(build)
         digests = {}
         for destination, value in zip(["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"], expected_values[variant]):

@@ -11,6 +11,7 @@
   binutils ? pkgs.binutils,
   glibc ? pkgs.glibc,
   gccRuntime ? pkgs.gcc-libs,
+  extraHeaderRoots ? [],
   identity ? "native",
 }: let
   platform = pkgs.stdenv.hostPlatform;
@@ -19,15 +20,17 @@
     if platform.isx86_64
     then "x86_64"
     else "aarch64";
-  includeDirectories = [
-    "${glibc.dev}/include"
-    "${gcc}/lib/gcc/${triple}/${gcc.version}/include"
-    "${gcc}/lib/gcc/${triple}/${gcc.version}/include-fixed"
-    "${gcc}/include/c++/${gcc.version}"
-    "${gcc}/include/c++/${gcc.version}/${triple}"
-    "${gcc}/${triple}/include/c++/${gcc.version}"
-    "${gcc}/${triple}/include/c++/${gcc.version}/${triple}"
-  ];
+  includeDirectories =
+    [
+      "${glibc.dev}/include"
+      "${gcc}/lib/gcc/${triple}/${gcc.version}/include"
+      "${gcc}/lib/gcc/${triple}/${gcc.version}/include-fixed"
+      "${gcc}/include/c++/${gcc.version}"
+      "${gcc}/include/c++/${gcc.version}/${triple}"
+      "${gcc}/${triple}/include/c++/${gcc.version}"
+      "${gcc}/${triple}/include/c++/${gcc.version}/${triple}"
+    ]
+    ++ map (root: "${root}/include") extraHeaderRoots;
   tools = {
     gcc = "${cc}/bin/cc";
     cpp = "${cc}/bin/cc";
@@ -56,7 +59,7 @@ in
       sharedBuildCache = false;
       buildDeps = [pkgs.jq];
       outputChecks.out = {};
-      exportReferencesGraph.compilers = [rust rustDeveloperTools cc gcc binutils glibc.dev gccRuntime pkgs.bash pkgs.python3];
+      exportReferencesGraph.compilers = [rust rustDeveloperTools cc gcc binutils glibc.dev gccRuntime pkgs.bash pkgs.python3] ++ extraHeaderRoots;
       dontStrip = true;
       dontPatchELF = true;
       dontNukeRefs = true;

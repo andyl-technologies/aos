@@ -4,7 +4,29 @@
   workspace,
   trial,
 }: let
-  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure"];
+  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure" "rust-cpu" "sysroot"];
+  sysroot = variant:
+    pkgs.runCommand "aos-bazel-${variant}-headers" {} ''
+      cp -as ${pkgs.glibc.dev}/. "$out/"
+      chmod u+w "$out" "$out/include"
+      printf '#define AOS_CACHE_SYSROOT_VALUE %s\n' ${
+        if variant == "sysroot"
+        then "43"
+        else "42"
+      } \
+        > "$out/include/aos-cache-probe.h"
+    '';
+  sysrootCompiler = variant:
+    pkgs.runCommand "aos-bazel-${variant}-compiler" {dontNukeRefs = true;} ''
+      mkdir -p "$out/bin"
+      for tool in cc c++; do
+        cat > "$out/bin/$tool" <<COMPILER
+      #!${pkgs.bash}/bin/bash
+      exec ${pkgs.cc}/bin/$tool -isystem ${sysroot variant}/include "\$@"
+      COMPILER
+        chmod +x "$out/bin/$tool"
+      done
+    '';
   replacedRust =
     pkgs.runCommand "aos-bazel-replaced-rust-executable" {
       version = pkgs.rust.version;
@@ -21,15 +43,22 @@
       ln -s ${pkgs.rust}/lib "$out/lib"
     '';
   toolchains = variant:
-    pkgs.mkAosBazelToolchains {
-      identity = "invalidation:${trial}";
-      # Replace an actual compiler executable and its realized closure while
-      # keeping the logical Bazel compiler label and output behavior unchanged.
-      rust =
-        if variant == "tool-closure"
-        then replacedRust
-        else pkgs.rust;
-    };
+    pkgs.mkAosBazelToolchains ({
+        identity = "invalidation:${trial}";
+        # Replace an actual compiler executable and its realized closure while
+        # keeping the logical Bazel compiler label and output behavior unchanged.
+        rust =
+          if variant == "tool-closure"
+          then replacedRust
+          else pkgs.rust;
+      }
+      // pkgs.lib.optionalAttrs (builtins.elem variant ["sysroot" "sysroot-baseline"]) {
+        glibc = pkgs.glibc // {dev = sysroot variant;};
+        cc = sysrootCompiler variant;
+        # The overlay retains the original AOS headers through symlinks.
+        # Declare their canonical source root as well as the selected overlay.
+        extraHeaderRoots = [pkgs.glibc.dev];
+      });
   configured = variant:
     pkgs.mkAosBazelWorkspace {
       root = ../..;
@@ -43,13 +72,24 @@
       cp -a ${workspace.source}/. "$out/"
       chmod -R u+w "$out"
       ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/mutate_fixture.py} \
-        --root "$out" --variant ${variant}
+        --root "$out" --variant ${variant} --cpu ${
+        if pkgs.stdenv.hostPlatform.isx86_64
+        then "x86_64"
+        else "aarch64"
+      }
     '';
   experiment = variant: let
     cacheNamespace = "invalidation-${trial}-${variant}";
+    baselineVariant =
+      if builtins.elem variant ["sysroot" "rust-cpu"]
+      then "${variant}-baseline"
+      else null;
     baseline = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-${variant}-baseline";
-      workspace = original;
+      workspace =
+        if baselineVariant == null
+        then original
+        else (configured baselineVariant) // {source = snapshot baselineVariant;};
       targets = ["//tools/bazel/tests/fixture:package"];
       inherit cacheNamespace;
     };
@@ -57,7 +97,7 @@
       pname = "aos-bazel-invalidation-${variant}";
       workspace =
         (
-          if variant == "tool-closure"
+          if builtins.elem variant ["tool-closure" "sysroot"]
           then configured variant
           else original
         )
