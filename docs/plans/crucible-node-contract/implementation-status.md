@@ -2645,6 +2645,37 @@ No new VM or configured Engine/Daemon runtime result is claimed. Genuine
 Source/Birth funding, live ACK publication, complete phase construction and
 full RFC acceptance remain unfinished.
 
+## Combined original bootstrap ACK operands
+
+Commits `ead22bb4de` and `aae8f9089b` lend the actual birth, measured kernel,
+immutable policy and native registration views through one original guard chain.
+The policy and registration borrow the same actual SDK authority. Each shape is
+projected before a normalization serializer runs; the caller still owes the
+combined construction schedule. Copy results include their actual control sizes.
+No original owner moves and no resource ceiling or operational deadline changes.
+
+All thirty-three physical policy/kernel/operand cases pass. Controls cover exact,
+short and larger restrictions, complete field rosters and cross-view joins,
+callback refusal, substituted cuts and expiry after either callback outcome.
+The independent executable oracle is prepared before creating the timed receiver;
+production measurement remains under the unchanged five-second original cut.
+This avoids test expectation work consuming the production operation's deadline.
+The earlier combined-operand checkpoint failed one full raw-value oracle case;
+the corrected checkpoint below supersedes that qualification attempt.
+
+For `aae8f9089b`, both complete Transport configurations pass 1,957 tests each,
+with no failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, changed-file formatting and all six architecture
+gates pass. The required application gate compiles 180 test executables across
+58 package identities, including 71 integration targets. All 310 owned Rust/Cargo
+inputs match the commit and its exact captured application source. This gate
+executes no tests. No new VM or configured Engine/Daemon runtime is claimed.
+
+The admissions in these controls remain models. Combined views and their DATA
+shapes supply no genuine Source/Birth funding, opaque Initial/Recipe, live ACK,
+model or phase authority. Their normalization constructor, genuine enclosing
+owners and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
