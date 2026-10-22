@@ -639,13 +639,12 @@ in {
               cfg.package
               == onlineNix._package
               && !cfg.sourceSuccessorIssuance.enable
-              && !cfg.method46TpmFloor.required
               && normalRootProfile != null
               && brokers.policyAuthority.package == onlineNix._package
               && cfg.credentials.brokerPlanSigningKey != null
               && ownershipAuthority.enable
             );
-          message = "online Resolve50 requires the exact selected Controller/Root package, genuine paired Root/Nix startup, independent plan/lease inputs, and no method46 or successor-issuance substitution";
+          message = "online Resolve50 requires the exact selected Controller/Root package, genuine paired Root/Nix startup, independent plan/lease inputs, and no successor-issuance substitution";
         }
         {
           assertion = !ownershipAuthority.enable || ownershipAuthority.credentials.sessionKey != null;
@@ -666,7 +665,14 @@ in {
       ++ method46FloorConfiguration.assertions
       ++ [
         {
-          assertion = !cfg.method46TpmFloor.required || (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0" && config.aos.security.selinux.mode == "enforcing" && cfg.package == pkgs.aos-sandboxd);
+          assertion =
+            !cfg.method46TpmFloor.required
+            || (
+              config.aos.security.selinux.enable
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+              && config.aos.security.selinux.mode == "enforcing"
+              && cfg.package == selectedPackage
+            );
           message = "required Controller TPM floor requires immutable enforcing SELinux and the exact AOS package; owner IDs are independently compiled from the immutable module assignment";
         }
         {

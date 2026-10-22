@@ -9845,3 +9845,28 @@ default-false Boolean. It must link and expand with normal neverallows before
 the same effective checker rejects its exact out-of-cohort target. Fifty-six
 checker unit tests pass; standalone mutant syntax compilation passes. Neither
 proves final compiled policy, installed startup, or public-operation readiness.
+
+### Combined online-Nix and required method-46 startup profile (artifact qualified)
+
+The installation modules now select the same exact Controller package for
+online Nix and required method-46 floors. The online package retains its
+independently compiled method-46 helper and PID 1 pins; arbitrary package
+substitution still rejects configuration. Nix's measured unit contract now
+includes the separately claimed method-46 PID 1 descriptor alongside the
+Root profile and the two Nix inputs, matching the existing four-descriptor
+consumer. Required owner-specific public/NV-auth inputs remain external and
+distinct. Neither profile selection nor unit delivery provisions a floor.
+
+`build.sandbox-nix-method46-profile` evaluates the actual V11 lifecycle-funded
+installation with required Controller and Storage floors, checks every module
+assertion, and rejects a wrong Controller package and missing NV auth. Its
+artifact check builds the real startup profile and compares the measured unit
+hash against the independently rendered installed Controller unit. The artifact
+check passes at
+`/nix/store/sd2zlx5130yxyqn7qsw5b60i0f03ksp8-sandbox-nix-method46-profile-check`.
+Core evaluation, the Controller service contract and formatting also pass.
+This receipt uses the previously qualified compiled policy; the subsequent
+native-overlay policy repair has its own pending build and installed reruns.
+This is a startup composition check, not an installed Required-mode or public
+Create proof.
+The installed method-46 and public Create qualification gates remain closed.

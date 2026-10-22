@@ -103,7 +103,11 @@
       if owner
       then []
       else
-        lib.optional (config.aos.sandbox.policyAuthority.enable)
+        # Preserve Controller's independently claimed method-46 image role in
+        # the measured unit contract. It is separate from Nix's PID 1 image.
+        lib.optional controllerService.method46TpmFloor.required
+        "/proc/1/exe:aos-method46-pid1-image:read-only"
+        ++ lib.optional (config.aos.sandbox.policyAuthority.enable)
         "${config.aos.sandbox.policyAuthority._normalStartupProfile}/profile.json:aos-normal-root-client-profile:read-only";
     normalized =
       unit
