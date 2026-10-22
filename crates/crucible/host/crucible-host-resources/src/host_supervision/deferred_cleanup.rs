@@ -7,6 +7,9 @@
 
 use super::*;
 
+mod issuer;
+pub use issuer::HostDeferredCleanupIssuer;
+
 /// Retains a once-only Cleanup record reserved by an actual Quantum operation.
 ///
 /// The containing owner must fund this inline holder before reservation and

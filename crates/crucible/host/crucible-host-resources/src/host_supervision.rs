@@ -25,7 +25,7 @@ mod deadline;
 mod deadline_sources;
 pub use deadline_sources::HostDeadlineSources;
 mod deferred_cleanup;
-pub use deferred_cleanup::HostDeferredCleanupControl;
+pub use deferred_cleanup::{HostDeferredCleanupControl, HostDeferredCleanupIssuer};
 mod entry;
 mod prepared_start;
 mod worker_admission;
@@ -394,6 +394,8 @@ struct SupervisionState {
     next_operation: u64,
     // Pending nominal holders share the same bounded inventory as live guards.
     reserved_controls: usize,
+    // One retained delegation per actual budget owner; dropping it never rearms.
+    cleanup_issuer_delegated: bool,
     operations: BTreeMap<u64, Operation>,
 }
 
@@ -481,6 +483,7 @@ impl HostOperationSupervisor {
                     cap_state: HostOperationState::Running,
                     next_operation: 0,
                     reserved_controls: 0,
+                    cleanup_issuer_delegated: false,
                     operations: BTreeMap::new(),
                 }),
                 changed: Arc::clone(&changed),
@@ -678,6 +681,7 @@ impl HostOperationSupervisor {
                 cap_state: outer.state,
                 next_operation: 0,
                 reserved_controls: 0,
+                cleanup_issuer_delegated: false,
                 operations: BTreeMap::new(),
             }),
             changed: Arc::new(Condvar::new()),

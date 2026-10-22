@@ -65,6 +65,7 @@ impl HostSupervisionBootstrap {
             cap_state: HostOperationState::Running,
             next_operation: 0,
             reserved_controls: 0,
+            cleanup_issuer_delegated: false,
             operations: BTreeMap::new(),
         };
 
@@ -149,6 +150,7 @@ impl HostSupervisionBootstrap {
                 cap_state: HostOperationState::Running,
                 next_operation: 1,
                 reserved_controls: 0,
+                cleanup_issuer_delegated: false,
                 operations: BTreeMap::new(),
             },
             preparation: Operation {

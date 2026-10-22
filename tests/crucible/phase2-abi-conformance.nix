@@ -638,6 +638,18 @@ in
                 -p crucible-host-resources --features private-measurement-domain \
                 --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
                 -- --test-threads=1
+              require_test_set 4 host-deferred-cleanup-issuer \
+                host_supervision::deferred_cleanup::issuer::tests::equal_cap_identity_and_shared_outer_do_not_authorize_another_budget_owner \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::issuer::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::issuer::tests:: \
+                -- --test-threads=1
               require_test_set 8 host-deferred-cleanup \
                 host_supervision::deferred_cleanup::tests::reservation_allocates_nothing_and_enters_after_actual_work_record_retirement \
                 -p crucible-host-resources --features private-measurement-domain \

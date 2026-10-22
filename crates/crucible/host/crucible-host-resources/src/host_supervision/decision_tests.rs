@@ -22,6 +22,7 @@ fn fixture(class: HostOperationClass) -> SupervisionState {
         cap_state: HostOperationState::Running,
         next_operation: 1,
         reserved_controls: 0,
+        cleanup_issuer_delegated: false,
         operations: BTreeMap::from([(
             1,
             Operation {
