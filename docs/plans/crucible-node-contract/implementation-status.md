@@ -2080,8 +2080,13 @@ A real SDK model-callback control accepts 1,025 descending, unique protocol
 versions for both program families, exercises internal tree splits, and preserves
 the original wire order. Adding a duplicate preserves the original typed reason,
 refuses before either trusted callback and spends admission. These controls do
-not use the native verifier or grant native Source/Birth provenance. Complete
-qualification is pending.
+not use the native verifier or grant native Source/Birth provenance. Both
+complete Transport configurations pass 1,911 tests with zero failures, no
+filtering and sixteen existing ignores; affected all-feature/all-target checking
+and scoped formatting pass. The architecture gate rejects the enlarged SDK
+negotiation module above its responsibility-review threshold. Its new pure
+counter is now in a focused child module; qualification of that extraction is
+pending. No threshold or review exception is changed.
 
 These are partial construction terms. Complete decoder/writer and validator
 work, owning leaf clones and backing, native callback measurement/equality,
