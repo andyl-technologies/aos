@@ -76,14 +76,9 @@ pub(super) fn acquire(source: &mut InstallerStartupSource) -> Result<(), Startup
         size_of::<Output>(),
         &mut output,
     ))?;
-    source.acquired = true;
-
     // The Native creation holder already retains every role on a malformed
     // output or failed post. Validation never turns them into OwnedFd values.
-    let retained = validate_output(&output, current)?;
-    source.plan = Some(retained.role(2)?);
-    source.native_setup = Some(retained);
-    source.check()
+    source.complete_native_setup_acquisition(validate_output(&output, current))
 }
 
 impl PublisherBorrow {

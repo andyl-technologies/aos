@@ -83,6 +83,34 @@ fn borrow_refuses_wrong_edition_reserved_count_and_alias_overlap() {
 }
 
 #[test]
+fn malformed_native_view_cannot_leave_source_current() {
+    let fixture = Fixture::new();
+    let descriptors = fixture.descriptors();
+    let mut output = fixture.output(&descriptors[..5]);
+    output.reserved = 1;
+    let mut source = InstallerStartupSource::retain_native_setup(7);
+    source.api = Some(super::super::test_support::InstallerStartupSourceModel::ready().api);
+    source.acquisition_attempted = true;
+
+    assert!(
+        source
+            .complete_native_setup_acquisition(validate_output(&output))
+            .is_err()
+    );
+
+    assert!(source.check().is_err());
+    assert!(source.wait_slice().is_err());
+    assert!(source.registration_complete().is_err());
+    assert!(source.plan.is_none());
+    assert!(source.retained_native_setup().is_none());
+    assert!(source.acquire_native_setup().is_err());
+    for descriptor in descriptors.into_iter().chain([fixture.control.as_raw_fd()]) {
+        // SAFETY: rejection must preserve every alias owned by this fixture.
+        assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    }
+}
+
+#[test]
 fn selected_frame_refuses_legacy_tag_and_partial_workspace_binding() {
     let mut fixture = Fixture::new();
     let descriptors = fixture.descriptors();

@@ -147,6 +147,39 @@ fn publisher_view_refuses_mixed_editions_shapes_and_rosters() {
 }
 
 #[test]
+fn malformed_publisher_view_cannot_leave_source_current() {
+    let fixture = Fixture::new(false);
+    let descriptors = fixture.descriptors();
+    let mut output = fixture.output(&descriptors[..5]);
+    output.reserved_tail = 1;
+    let mut source = InstallerStartupSource::retain_native_setup(7);
+    source.api = Some(super::super::super::test_support::InstallerStartupSourceModel::ready().api);
+    source.acquisition_attempted = true;
+
+    assert!(
+        source
+            .complete_native_setup_acquisition(validate_output(&output, invalid_current))
+            .is_err()
+    );
+
+    assert!(source.check().is_err());
+    assert!(source.wait_slice().is_err());
+    assert!(source.registration_complete().is_err());
+    assert!(source.plan.is_none());
+    assert!(source.retained_native_setup().is_none());
+    assert!(source.acquire_native_setup().is_err());
+    for descriptor in fixture
+        .owners
+        .iter()
+        .map(AsRawFd::as_raw_fd)
+        .chain(std::iter::once(fixture.control.as_raw_fd()))
+    {
+        // SAFETY: rejection must preserve every alias owned by this fixture.
+        assert!(unsafe { libc::fcntl(descriptor, libc::F_GETFD) } >= 0);
+    }
+}
+
+#[test]
 fn publisher_view_refuses_noncanonical_frame_before_borrowing() {
     let fixture = Fixture::new(false);
     let descriptors = fixture.descriptors();

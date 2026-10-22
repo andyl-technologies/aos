@@ -235,6 +235,27 @@ producers still require their separately versioned paired implementation.
 The existing schema-two already-entered Cleanup profile is unchanged and does
 not impose a hidden wall-time bound on otherwise unbounded Work.
 
+#### Rejected Setup views cannot leave Module Source current
+
+Both native Setup acquisition paths now share one completion boundary. A
+successful Native scalar does not mark the Module keeper acquired until its
+compulsory fixed view is validated and its plan and Setup borrow are retained.
+Previously a rejected view left `acquired` true with no retained Setup, and a
+later Source check could succeed by skipping the absent view. Native retains
+all physical alias debt on rejection; this change neither closes aliases nor
+permits another acquisition.
+
+Two new causal controls first fail at the later Source check after actual
+view rejection, for the base and publisher editions. Both pass after moving
+the success marker, and also refuse observation slices, registration and a
+repeated acquisition while every fixture-owned alias remains open. These
+explicit status-table fixtures issue no native Source or operation authority.
+All 1,187 plugin unit cases and four integration cases pass with every feature;
+focused Rust and Nix formatting pass. The ABI gate registers both regressions.
+Strict plugin Clippy fails with 110 library errors outside the changed files;
+no strict pass is claimed. Mandatory application compilation, ABI conformance
+and strict license-boundary qualification are pending for this follow-up.
+
 #### Explicit Main/RR stack carrier codecs
 
 The separate pure stack namespace now encodes Setup8 (tag `0x18` with a

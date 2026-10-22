@@ -199,12 +199,21 @@ impl InstallerStartupSource {
             descriptor_count: 0,
         };
         self.accept_status(borrow(self.plugin_id, &mut output))?;
-        self.acquired = true;
         // Native already retains every role on a malformed/failed postcut.
         // Never construct an owning descriptor or retry this same acquisition.
-        let retained = validate_output(&output)?;
+        self.complete_native_setup_acquisition(validate_output(&output))
+    }
+
+    fn complete_native_setup_acquisition(
+        &mut self,
+        retained: Result<NativeSetupBorrow, StartupSourceError>,
+    ) -> Result<(), StartupSourceError> {
+        let retained = retained?;
         self.plan = Some(retained.role(2)?);
         self.native_setup = Some(retained);
+        // A successful Native status alone must not leave Source current after
+        // its compulsory view is rejected. Native still retains all alias debt.
+        self.acquired = true;
         self.check()
     }
 

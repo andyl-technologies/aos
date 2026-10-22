@@ -695,6 +695,17 @@ in
                 -p crucible-qemu-plugin \
                 --lib whitebox_doorbell \
                 -- --test-threads=1
+              require_test_set 2 plugin-setup-rejection \
+                startup_source::native_setup::tests::malformed_native_view_cannot_leave_source_current \
+                -p crucible-qemu-plugin --lib cannot_leave_source_current
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                --lib cannot_leave_source_current \
+                -- --test-threads=1
               require_test_set 2 plugin-owner \
                 gate_abi_conformance_covers_plugin_io_wire_fuzzing \
                 -p crucible-qemu-plugin --test gate_abi_conformance
