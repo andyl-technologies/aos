@@ -9897,6 +9897,11 @@ switch-root and reexec attacks remain unqualified until the rerun completes.
 The Host library check now follows the versioned DSO symlink when comparing
 the actual library inodes, modes and security contexts. Its prior installed run
 passed byte comparison but stopped while reading the symlink's context.
+The next run passes byte, inode, mode and ownership comparisons, then finds
+that the selected Coreutils `stat` has no libselinux support. The fixture now
+uses the AOS-built `getfattr` to compare the actual raw `security.selinux`
+values, following the DSO links. This label comparison remains unqualified
+until the installed rerun passes.
 
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.

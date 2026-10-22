@@ -88,7 +88,7 @@
           C /run/credentials/@system/phase0-test-seed 0600 root root - ${testKeys}/seed
           C /run/credentials/@system/phase0-test-public 0600 root root - ${testKeys}/public
         '';
-        environment.systemPackages = [credentialFixture pkgs.coreutils pkgs.diffutils pkgs.openssl pkgs.systemd];
+        environment.systemPackages = [credentialFixture pkgs.attr pkgs.coreutils pkgs.diffutils pkgs.openssl pkgs.systemd];
         aos.image.erofsCompressionLevel = 1;
         # The nested Guest template copies fixed store bytes under independent
         # names and inodes. Reuse only their compressed data, never their labels.
@@ -244,7 +244,15 @@ in {
       assert len(identities) == 2 and identities[0] != identities[1], identities
       metadata = vm.succeed(f"stat -L -c '%a %u %g' {outer_library} {guest_library}").splitlines()
       assert metadata == ["555 0 0", "555 0 0"], metadata
-      contexts = vm.succeed(f"stat -L -c '%C' {outer_library} {guest_library}").splitlines()
+      # Read the physical raw labels independently of stat's optional
+      # libselinux support. getfattr follows these DSO symlinks by default.
+      contexts = [
+          vm.succeed(
+              f"${pkgs.attr}/bin/getfattr --only-values --absolute-names "
+              f"--name=security.selinux {library}"
+          ).rstrip("\0\n")
+          for library in (outer_library, guest_library)
+      ]
       assert contexts == ["system_u:object_r:lib_t", "system_u:object_r:lib_t"], contexts
 
       vm.succeed("test -s /run/credentials/@system/phase0-test-seed")
