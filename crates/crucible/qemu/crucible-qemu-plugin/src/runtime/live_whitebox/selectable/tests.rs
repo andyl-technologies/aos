@@ -436,6 +436,53 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     let transport = state.pending_transport_record()?;
     assert_eq!(transport.request(), &request);
     assert_eq!(transport.guest_virtual_address(), 0x4000);
+
+    let header = RingHeader::new();
+    let mut entries = [WhiteboxMarkerEntry::default()];
+    // SAFETY: the actual stack ring remains in place through this serialized
+    // producer's last use; each observation follows its synchronous publication.
+    let mut producer = unsafe {
+        LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+            std::ptr::from_ref(&header),
+            entries.as_mut_ptr(),
+            entries.len(),
+        )
+    };
+    let mut workspace = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let registered = registration(1)?;
+    producer.record_selectable_registration(500, 0, &registered, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED);
+    assert_eq!(observed.current_icount(), 500);
+    assert_eq!(observed.vcpu_index(), 0);
+    assert_eq!(observed.payload(), registered.encode()?);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+
+    workspace.fill(0xa5);
+    producer.record_selectable_pending(2_500, 1, &transport, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING);
+    assert_eq!(observed.current_icount(), 2_500);
+    assert_eq!(observed.vcpu_index(), 1);
+    assert_eq!(observed.payload(), transport.encode()?);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+
+    let reply = SelectionReply::selected(2, [1; 32], [2; 32], vec![2])?;
+    workspace.fill(0xa5);
+    producer.record_selectable_completed(2_550, 1, &reply, &mut workspace)?;
+    let observed = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let observed = observed.validate()?;
+    assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED);
+    assert_eq!(observed.current_icount(), 2_550);
+    assert_eq!(observed.vcpu_index(), 1);
+    assert_eq!(observed.payload(), reply.encode()?);
+    let prefix_len = observed.payload().len();
+    assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
+    assert!(header.dequeue_whitebox_marker(&mut entries)?.is_none());
     Ok(())
 }
 

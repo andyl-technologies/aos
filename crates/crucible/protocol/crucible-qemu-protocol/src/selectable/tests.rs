@@ -36,6 +36,21 @@ fn selectable_registration_v1_has_frozen_canonical_bytes() -> Result<(), Selecta
         b'e', b't', 0xaa, 0xbb, 1, 1, 0, b'a', 1, 0, b'z',
     ];
     assert_eq!(bytes, expected);
+
+    let mut destination = [0xa5; 96];
+    let written = register.encode_into(&mut destination)?;
+    assert_eq!(written, expected.len());
+    assert_eq!(&destination[..written], expected);
+    assert!(destination[written..].iter().all(|byte| *byte == 0xa5));
+    let mut insufficient = [0xa5; 67];
+    assert_eq!(
+        register.encode_into(&mut insufficient),
+        Err(SelectableProtocolError::ReplyCapacityTooSmall {
+            capacity: 67,
+            minimum: 68,
+        })
+    );
+    assert_eq!(insufficient, [0xa5; 67]);
     assert_eq!(SelectableRegister::decode(&bytes), Ok(register));
     Ok(())
 }
@@ -56,6 +71,20 @@ fn selection_request_v1_reserves_one_exact_zeroed_reply_buffer()
         ]
     );
     assert!(bytes[59..].iter().all(|byte| *byte == 0));
+    let mut destination = [0xa5; 128];
+    let written = request.encode_into(&mut destination)?;
+    assert_eq!(written, bytes.len());
+    assert_eq!(&destination[..written], bytes);
+    assert!(destination[written..].iter().all(|byte| *byte == 0xa5));
+    let mut insufficient = [0xa5; 103];
+    assert_eq!(
+        request.encode_into(&mut insufficient),
+        Err(SelectableProtocolError::ReplyCapacityTooSmall {
+            capacity: 103,
+            minimum: 104,
+        })
+    );
+    assert_eq!(insufficient, [0xa5; 103]);
     assert_eq!(SelectionRequest::decode(&bytes), Ok(request));
 
     let mut contaminated = bytes;
@@ -279,6 +308,10 @@ fn selection_request_optional_domain_flag_and_capacity_are_exact()
     let bytes = plain.encode()?;
     assert_eq!(&bytes[36..44], &[0; 8]);
     assert_eq!(&bytes[6..8], &[0; 2]);
+    let mut destination = [0xa5; 160];
+    let written = plain.encode_into(&mut destination)?;
+    assert_eq!(&destination[..written], bytes);
+    assert!(destination[written..].iter().all(|byte| *byte == 0xa5));
     assert_eq!(SelectionRequest::decode(&bytes), Ok(plain));
 
     assert!(matches!(
@@ -341,6 +374,12 @@ fn length_queries_keep_nested_message_capacity_refusals() -> Result<(), Selectab
         request.encoded_len().unwrap_err()
     );
     assert_eq!(request, before);
+    let mut destination = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    assert_eq!(
+        request.encode_into(&mut destination).unwrap_err(),
+        request.encode().unwrap_err()
+    );
+    assert!(destination.iter().all(|byte| *byte == 0xa5));
 
     request.reply_capacity = usize::MAX;
     assert_eq!(
@@ -355,5 +394,22 @@ fn length_queries_keep_nested_message_capacity_refusals() -> Result<(), Selectab
         register.encoded_len().unwrap_err()
     );
     assert_eq!(register, before);
+    assert_eq!(
+        register.encode_into(&mut destination).unwrap_err(),
+        register.encode().unwrap_err()
+    );
+    assert!(destination.iter().all(|byte| *byte == 0xa5));
+
+    request = SelectionRequest::new(9, "net", "epoch/1", None, 104)?;
+    request.selectable_id.clear();
+    assert_eq!(
+        request.encode().unwrap_err(),
+        request.encoded_len().unwrap_err()
+    );
+    assert_eq!(
+        request.encode_into(&mut destination).unwrap_err(),
+        request.encode().unwrap_err()
+    );
+    assert!(destination.iter().all(|byte| *byte == 0xa5));
     Ok(())
 }

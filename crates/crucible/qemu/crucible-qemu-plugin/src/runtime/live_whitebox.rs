@@ -143,7 +143,12 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
         state
             .marker_sink
             .output
-            .record_selectable_completed(current_icount, vcpu_index, &reply)?;
+            .record_selectable_completed(
+                current_icount,
+                vcpu_index,
+                &reply,
+                &mut state.selectable_reply_buffer,
+            )?;
     }
     Ok(())
 }
@@ -708,6 +713,7 @@ impl LiveWhiteboxState {
                         trap_tick_ps,
                         vcpu_index as u32,
                         &registration,
+                        &mut self.selectable_reply_buffer,
                     )?;
                 }
                 crate::SelectableDoorbellOutcome::Pending { .. } => {
@@ -716,6 +722,7 @@ impl LiveWhiteboxState {
                         trap_tick_ps,
                         vcpu_index as u32,
                         &record,
+                        &mut self.selectable_reply_buffer,
                     )?;
                 }
                 _ => {}

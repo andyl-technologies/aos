@@ -402,7 +402,7 @@ shape-line|crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.r
 shape-line|crates/crucible/protocol/crucible-qemu-protocol/src/guest_introspection.rs|986
 shape-line|crates/crucible/protocol/crucible-qemu-protocol/src/choice.rs|832
 shape-line|crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs|2868
-shape-review|crates/crucible/protocol/crucible-qemu-protocol/src/selectable.rs|sha256:d2173197c3283b93e125e599aec368936a62bdd956622a18a00f8506c12eda4e|implementation|1327|Canonical guest-selectable registration, request and reply encoding and decoding with shared bounds, validation and wire-range helpers.|threshold-not-reached
+shape-review|crates/crucible/protocol/crucible-qemu-protocol/src/selectable.rs|sha256:9fa79f46d579dee81c960dea7c1fa39e145a21d234d2bec8830f71b9ad1d2647|implementation|1366|Canonical guest-selectable registration, request and reply encoding and decoding with shared bounds, validation and wire-range helpers.|threshold-not-reached
 shape-line|crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs|938
 shape-line|crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs|2700
 shape-line|crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs|2365

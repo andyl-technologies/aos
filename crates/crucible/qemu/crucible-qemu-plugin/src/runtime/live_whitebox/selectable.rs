@@ -478,13 +478,14 @@ impl LiveWhiteboxMarkerShmemProducer {
         current_icount: u64,
         vcpu_index: u32,
         registration: &crucible_qemu_protocol::SelectableRegister,
+        buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let payload = registration.encode().map_err(callback_error)?;
+        let written = registration.encode_into(buffer).map_err(callback_error)?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
-            &payload,
+            &buffer[..written],
         )
         .map_err(callback_error)
     }
@@ -494,13 +495,14 @@ impl LiveWhiteboxMarkerShmemProducer {
         current_icount: u64,
         vcpu_index: u32,
         record: &SelectablePendingTransportRecord,
+        buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let payload = record.encode().map_err(callback_error)?;
+        let written = record.encode_into(buffer).map_err(callback_error)?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
-            &payload,
+            &buffer[..written],
         )
         .map_err(callback_error)
     }
@@ -510,13 +512,14 @@ impl LiveWhiteboxMarkerShmemProducer {
         current_icount: u64,
         vcpu_index: u32,
         reply: &SelectionReply,
+        buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let payload = reply.encode().map_err(callback_error)?;
+        let written = reply.encode_into(buffer).map_err(callback_error)?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
-            &payload,
+            &buffer[..written],
         )
         .map_err(callback_error)
     }

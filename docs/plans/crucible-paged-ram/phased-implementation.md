@@ -69,6 +69,35 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Selectable catalog deltas in the retained workspace
+
+Registration, request and pending-transport encoding now accept caller-owned
+storage with validation and capacity checks before every write. The canonical
+prefix is overwritten, including the request's full zero-filled reservation;
+the remaining suffix is preserved. Owned encoders allocate their final extent
+once and delegate to the same writer. Pending-record construction validates
+length without serializing the request. Request range validation borrows a
+fixed array instead of allocating a temporary range Vec.
+
+The actual live registration, pending and completed ring publications borrow
+the containing Runtime's existing 4,608-byte reply workspace after its previous
+synchronous use finishes. They create no new output or nested-request Vec.
+The ring still copies only the exact canonical prefix into its existing entry;
+coordinates, kinds, reservation bounds and compatibility editions are unchanged.
+Decoded fields, catalog allocations and error payloads still need complete real
+funding; these buffer cuts do not create a Quantum Original or CPU admission.
+
+All 22 selected protocol controls and all 1,177 plugin unit tests pass. Existing
+frozen registration/request vectors remain exact. Nonzero caller buffers cover
+suffix preservation, complete zero padding, insufficient capacity, invalid
+messages and the maximum 4,608-byte transport. The existing live-catalog control
+also publishes each of the three real delta kinds through an actual SPSC ring,
+checking its exact coordinate and bytes against the canonical owned encoder.
+Engineering hygiene and compilation of all protocol/plugin test targets pass.
+All 73 focused source-policy controls pass. Mandatory application compilation
+passes at `bml9j24nc1jgkya364678pv6lk04a47f`. ABI and exact supervision
+results are being collected. No test binding is added.
+
 #### Typed debugger-custody poison refusal
 
 The actual retained-debugger cleanup path now returns the existing typed
@@ -80,12 +109,46 @@ control now requires that exact error alongside its original descriptor,
 identity and ownership checks. The existing closed source contract follows the
 actual helper and exact assertion; it gains no classifier exception.
 
+All six actual retained-debugger controls and engineering hygiene pass.
+Mandatory application compilation passes at `p0kq5g267rps5i3aazcja58ya263y2kh`;
+all 5,313 committed Rust/TOML files at
+`ae3aab1ae41f604cea5b6fc76906091e2fc5058c` match immutable source
+`n1p5sxrf6967wsbmihnxwf3xzc11bs40`, with comparison record SHA-256
+`a26a6912bc39cf54936936bced22a0ab4227043b765396732fadf821b6baf539`.
+The first focused policy run passed 72 controls and failed the old mutation
+inventory's expectation of five generic refusal assertions. That inventory now
+mutates each of the four generic and one exact typed-poison assertions
+independently. All 73 focused controls pass after that correction; the initial
+failure remains separate from the corrected run.
+
 A fresh broad source-policy run reports twenty paths: thirteen daemon and
 seven host/plugin paths. The additional findings include negative-control
 function names containing `retry`; the scanner treats underscores as word
 separators. This remains a failing check. No test rename, source mask or new
 waiver is used to remove a finding. Complete producer funding, Source activation
 and physical-return qualification remain open.
+
+#### Exact configured-input recovery
+
+The prior configured build's link chain ended at a removed build directory.
+A separate immutable af148 snapshot recovers the actual generated inputs without
+editing shared links or the previous seal. All 5,541 original GCC dependency
+rows match; the retained 3,388 compile commands are rebased only to the recovered
+source/build coordinates. The fresh 3,456-entry Meson inventory is recorded
+separately. No owning object, provider or execution result is supplied by this
+recovery.
+
+Independent review matches 116,786 regular files, 228 literal links, sixteen
+manifest records and all 5,541 dependency rows with zero differences. Its record
+SHA-256 is `a5a2d785af38371253e2308020ab660338cf3b49a2f4d21925494e02fadcdc60`;
+the sealed recovery manifest SHA-256 is
+`7866c2f4356d4508695f2b9c88fd11a939a2a40d61d1a18324f7205e8452845f`.
+Configure and generator recovery pass in 29.451/600 and 23.100/600 seconds, with
+core dumps disabled, 6-GiB per-process and aggregate virtual-memory bounds and
+one compiler lane. Fourteen initially different decoder outputs remain retained;
+the exact original generator commands with `PYTHONHASHSEED=0` reproduce their
+sealed bytes in 2.732 seconds. These are recovered inputs, not new compilation
+or semantic qualification. Later owning changes retain their own build identity.
 
 #### Permanent Core keeper and registration composition
 
