@@ -517,6 +517,34 @@ headers in proof
 These results qualify this package component, not the subsequent fail-stop
 provider revision, whole-image/TLS payment or launched runtime profile.
 
+#### Prebirth containing-process transfer description
+
+An independent Rust reader now describes the proposed 1,472-byte native subloan
+material separately from RuntimePair192. It uses the public contract clarified
+at signed `2dd6a79aeaa86d8db86ff903e2eda657ff5b006a`, tree
+`733732b88065db12c710425f910af2a409470802`. Independent review verifies all seven
+contract payloads against manifest
+`ad4748312e373e2e7edc0d792bd36397782c426571e3402ab381ff0f4236de08`.
+The earlier signed proposal remains separately retained, including its missing
+artifact-count and page-edition bounds; it is not attributed the clarification.
+
+The reader preserves ten ordered process-reap liabilities, disjoint native and
+outside memory, compulsory fixed-floor/progress/physical-terminal rows and
+positive outside creator history. It accepts only the proposed 4-KiB page
+edition and two-to-32-artifact syntax bound, checks every arithmetic sum and
+corroborates the exact runtime encoding and process/account/Source coordinates.
+Nine adversarial/component cases pass in the full 248-test protocol suite;
+strict all-target protocol Clippy also passes after replacing dynamic chunk
+iteration with the compiler's fixed-array views. The initial Clippy refusal is
+retained. Counted ABI registration and exact component bindings are added;
+fresh hermetic ABI and application compilation remain pending.
+
+Independent C vectors, the complete manifest/probe readers, negotiated resource
+phase, real prebirth issuer and launcher, retained borrower adoption and matching
+kernel reap remain incomplete. Setup ten and plan thirteen cannot consume this
+material. Parsing it grants no resources or execution/cleanup permission, and
+no profile is activated by this component.
+
 #### Selected allocator fail-stop component
 
 The package subsequently imports signed provider

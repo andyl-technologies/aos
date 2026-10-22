@@ -31,6 +31,8 @@
 //! region; those observations do not enable its unimplemented capability.
 //! `deferred_cleanup` separates dormant reservations, termination requests and
 //! actual entry reports without granting local entry authority.
+//! `native_transfer` describes proposed prebirth resource transfers without
+//! issuing, moving or returning the described containing-process subloan.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -67,6 +69,7 @@ mod doorbell_marker;
 mod golden_vectors;
 pub mod guest_introspection;
 pub mod guest_introspection_doorbell;
+pub mod native_transfer;
 pub mod parent_park_return;
 mod plugin_observation;
 pub mod plugin_setup_plan;

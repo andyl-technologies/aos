@@ -664,6 +664,17 @@ in
                 -p crucible-qemu-protocol \
                 --lib plugin_setup_plan::deferred_cleanup::tests:: \
                 -- --test-threads=1
+              require_test_set 9 protocol-native-transfer \
+                native_transfer::tests::transfer_retains_compulsory_reserves_and_outside_creator_history \
+                -p crucible-qemu-protocol --lib native_transfer::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib native_transfer::tests:: \
+                -- --test-threads=1
               require_test_set 4 protocol-runtime-pair \
                 runtime_artifact::tests::runtime_pair_matches_all_public_vectors_and_exact_accepted_round_trips \
                 -p crucible-qemu-protocol --lib runtime_artifact::tests::runtime_pair
