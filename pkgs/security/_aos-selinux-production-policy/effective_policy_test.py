@@ -281,6 +281,19 @@ FAKE_SETOOLS = SimpleNamespace(
 
 
 class EffectivePolicyTest(unittest.TestCase):
+    def test_managed_namespace_creation_stays_with_the_manager(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access("init_t", "init_t", "user_namespace", "create")
+        )
+        for domain in (
+            "aos_sandbox_controller_t", "aos_sandbox_host_t",
+            effective_policy.GUEST_OWNER, effective_policy.GUEST_TENANT,
+        ):
+            with self.subTest(domain=domain):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(domain, domain, "user_namespace", "create")
+                )
+
     """Exercises positive, negative, conditional, and permissive gates."""
 
     def _storage_policy(self) -> FakePolicy:

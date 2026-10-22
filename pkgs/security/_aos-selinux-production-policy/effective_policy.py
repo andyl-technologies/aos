@@ -249,6 +249,7 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    Access("init_t", "init_t", "user_namespace", "create"),
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
     *accesses("init_t", "init_t", "system", ("status", "reload")),
@@ -1167,7 +1168,15 @@ POSITIVE_ACCESS = (
       else ()),
 )
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
-NEGATIVE_ACCESS = (*negative_access(), *OWNER_NEGATIVE)
+NEGATIVE_ACCESS = (
+    *negative_access(), *OWNER_NEGATIVE,
+    *(
+        Access(domain, domain, "user_namespace", "create")
+        for domain in (
+            "aos_sandbox_controller_t", "aos_sandbox_host_t", GUEST_OWNER, GUEST_TENANT,
+        )
+    ),
+)
 
 if HOST_COMPONENT_CONTROL:
     POSITIVE_ACCESS = (

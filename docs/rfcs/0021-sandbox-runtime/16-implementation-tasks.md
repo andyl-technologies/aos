@@ -10532,3 +10532,18 @@ and rejection of changed or unselected definitions. The real lifecycle-funded
 VM derivation evaluates successfully. Focused Rust execution, complete test-target
 compilation and installed boot/reboot qualification remain pending. No public
 Create or method-46 qualification gate is opened.
+
+### Managed namespace creation by original PID 1 (installed retry pending)
+
+With both namespace-service sockets present, the installed Host probe reaches
+systemd's empty-user-namespace creation and fails with EPERM before the target
+executes. An exact-image debug run confirms nsresourced and mountfsd are running;
+SETools finds no effective `init_t self:user_namespace create` allow in the
+installed compiled policy. The selected kernel checks that permission when
+creating the namespace, before nsresourced assigns its shifted range.
+
+The policy now adds that single manager permission. Effective checks require
+it and reject namespace creation by Controller, Host and the two guest roles.
+All 147 checker unit tests pass. The full compiled-policy checks and installed
+Host execution remain pending; this source repair does not qualify phase 0.
+The target retains its empty capability bounding set and namespace restrictions.

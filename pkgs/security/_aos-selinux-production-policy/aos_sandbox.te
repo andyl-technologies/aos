@@ -53,7 +53,12 @@ require {
     class memfd_file { create getattr ioctl map open read write };
     class sock_file { create getattr open read rename setattr unlink write };
     class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
+    class user_namespace create;
 }
+
+# PID 1 creates the empty namespace before nsresourced assigns the managed
+# shifted range. Confined owners and guests do not inherit this permission.
+allow init_t self:user_namespace create;
 
 # Native host activation subscribes to PID 1 before reconciling its generated
 # units. Sandbox owners retain their separately checked status-only access.
