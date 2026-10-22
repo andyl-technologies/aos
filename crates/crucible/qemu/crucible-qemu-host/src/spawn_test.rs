@@ -597,6 +597,7 @@ fn spawn_unpinned_test_process_with_resources(
         maximum_file_bytes: contract.maximum_writable_bytes,
         maximum_file_descriptors: contract.effective_file_descriptors(),
         maximum_locked_bytes: contract.maximum_locked_bytes,
+        main_stack_bytes: contract.main_stack_limit(),
         credentials: contract.credentials,
     });
 
@@ -2354,3 +2355,6 @@ fn source_fds_from_env() -> Result<Vec<RawFd>, Box<dyn Error>> {
         .map(|part| part.parse::<RawFd>().map_err(Into::into))
         .collect()
 }
+
+#[path = "spawn/main_stack_tests.rs"]
+mod main_stack;

@@ -69,6 +69,36 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Explicit physical exec Main stack control
+
+The process contract now retains one optional finite Main stack selection in
+its existing shared attempt binding. All duplicates observe the same once-only
+choice, and the shared prelaunch latch excludes refinement and launch. Both
+QEMU and image-helper child cuts install equal soft and hard RLIMIT_STACK before
+exec, then independently read back the actual kernel limits even if installation
+refused. Failure prevents exec. Existing contracts without a selection retain
+their inherited policy. An earlier configured-process observation becomes stale
+when the shared stack choice changes; equal numeric copies cannot replace it.
+The actual binding layout prices its added scalar through the existing extent
+recipe. The focused child uses safe fixed-storage syscall wrappers.
+
+This is physical containment, not a stack resource issuer. The separate signed
+public stack contract defines Setup8/plan eleven and real pre-entry Main/RR
+subgrants, profile/TLS/control inventory and deferred Cleanup requirements.
+The current control does not enable that profile, manufacture a grant or apply
+an implicit Work wall-time bound. Actual retained backing and paired nominal
+stack issuance remain required before activation.
+
+Four controls cover real duplicated contracts, invalid/repeated selection,
+refinement/launch exclusion, stale process observations, and an actual spawned
+child reading both installed limits after exec while the parent stays unchanged.
+All four focused controls pass. Running the child assertion directly without
+the guarded installation refuses at the intended inherited-limit mismatch
+(exit 101), so an unconfigured exec cannot satisfy the positive control.
+The ABI gate registers the exact count and canonical child-probe name.
+Hygiene passes; mandatory application compilation, all-target QEMU Host
+compilation, ABI and strict boundary checks are running.
+
 #### Sticky terminal decisions from actual lender collection
 
 The collector now saves the actual typed operation disposition under the same
@@ -88,8 +118,14 @@ intervening operation-status poll; original start and progress coordinates stay
 unchanged. Every Host resource target passes (324 reported cases), as does
 strict all-target, all-feature Clippy. The canonical ABI registration includes
 both regressions, bringing the selected collector group to eight plus the
-separate unsupported-publisher refusal. Mandatory application compilation,
-ABI, exact supervision and hygiene checks are running.
+separate unsupported-publisher refusal. Mandatory application compilation
+passes at `d9jbf03n9xb1acxmnnyfr3vm61nzsl3p`; all 5,323 committed Rust/TOML files
+match its frozen source (proof SHA-256
+`2171e990070c398ab14d59108c7ae87f48ad4ae1b498d560d39fcf76af199f95`).
+ABI passes at `pvrpl4w09kqz4gnlswm9yp24gc4lz91x`, and hygiene passes.
+Exact supervision is still running. The strict license-boundary gate again
+refuses at 909 Host library and 963 test Clippy errors; its boundary assertions
+did not run.
 
 This fixes actual Host lender state and does not create a Source or Native
 owner. Complete paired publication, deferred independent Cleanup entry for
@@ -125,7 +161,9 @@ mechanism fixtures with real entered Host operations and directly seeded
 memberships; they create no authenticated Source purpose or Native borrower.
 The ABI gate registers the seven controls with exact counts and canonical
 names. Every QEMU Host target compiles with all features. Required application
-compilation, ABI and license-boundary checks are running. The corrected hygiene
+compilation passes at `r6w0ws0sbbsvj7yy608y5q380s5lmwa9`, and the registered ABI
+gate passes at `xiif841kf3y0vm01a9adnkf5brm38q74`. The strict license-boundary
+check refuses; its boundary assertions did not run. The corrected hygiene
 check passes. The first hygiene evaluation
 correctly refused the stale review digest for the parent module's changed
 reexport; its unchanged 1,824-line responsibility and focused child boundary

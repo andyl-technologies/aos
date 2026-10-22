@@ -572,6 +572,18 @@ in
                 -p crucible-host-resources --features private-measurement-domain \
                 --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
                 -- --test-threads=1
+              require_test_set 4 host-main-stack \
+                spawn::tests::main_stack::guarded_pre_exec_installs_exact_main_stack_limit_without_changing_parent \
+                -p crucible-qemu-host --features private-measurement-domain --lib main_stack
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-host \
+                --features private-measurement-domain \
+                --lib main_stack \
+                -- --test-threads=1
               require_test_set 3 protocol-doorbell \
                 doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
                 -p crucible-qemu-protocol doorbell_abi

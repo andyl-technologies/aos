@@ -54,6 +54,25 @@ impl AttemptResourceBinding {
         Ok(())
     }
 
+    pub(super) fn configure_main_stack(&self, bytes: u64) -> std::io::Result<()> {
+        self.launch_state
+            .compare_exchange(OPEN, REFINING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| super::main_stack::refused(libc::EBUSY))?;
+
+        // All clones share one once-only choice. Refusing a repeated request
+        // preserves the first choice and leaves unrelated refinements available.
+        let result = self.main_stack_bytes.compare_exchange(
+            0,
+            bytes,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        self.launch_state.store(OPEN, Ordering::Release);
+        result
+            .map(|_| ())
+            .map_err(|_| super::main_stack::refused(libc::EALREADY))
+    }
+
     pub(super) fn freeze_for_launch(&self) -> Result<(), QemuSpawnError> {
         match self
             .launch_state
@@ -101,6 +120,7 @@ pub(crate) struct ConfiguredProcessEnvelope {
     maximum_writable_bytes: u64,
     maximum_file_descriptors: u64,
     maximum_locked_bytes: u64,
+    main_stack_bytes: Option<u64>,
 }
 
 impl QemuChildProcessContract {
@@ -229,6 +249,7 @@ impl QemuChildProcessContract {
             maximum_writable_bytes: self.maximum_writable_bytes,
             maximum_file_descriptors,
             maximum_locked_bytes: self.maximum_locked_bytes,
+            main_stack_bytes: self.main_stack_limit(),
         })
     }
 }
@@ -284,6 +305,8 @@ impl ConfiguredProcessEnvelope {
             && self.maximum_writable_bytes == other.maximum_writable_bytes
             && self.maximum_file_descriptors == other.maximum_file_descriptors
             && self.maximum_locked_bytes == other.maximum_locked_bytes
+            && self.main_stack_bytes == other.main_stack_bytes
+            && self.main_stack_bytes == super::main_stack::selected_limit(&_left)
     }
 
     /// Verifies that the current contract still names this exact process owner.
@@ -355,7 +378,24 @@ mod tests {
             maximum_writable_bytes: 8192,
             maximum_file_descriptors: 32,
             maximum_locked_bytes: 0,
+            main_stack_bytes: None,
         }
+    }
+
+    #[test]
+    fn selecting_main_stack_invalidates_an_earlier_process_observation() {
+        let binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let earlier = identity(&binding);
+        let same_earlier = identity(&binding);
+        assert!(earlier.same_process_as(&same_earlier));
+
+        binding.configure_main_stack(2 * 1024 * 1024).unwrap();
+        assert!(!earlier.same_process_as(&same_earlier));
+
+        let mut current = identity(&binding);
+        current.main_stack_bytes = Some(2 * 1024 * 1024);
+        assert!(current.same_process_as(&current));
+        assert!(!earlier.same_process_as(&current));
     }
 
     #[test]

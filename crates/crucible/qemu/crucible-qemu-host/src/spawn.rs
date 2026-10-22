@@ -129,6 +129,7 @@ struct AttemptResourceBinding {
     // The state is shared by the existing allocation, never a new authority.
     launch_state: std::sync::atomic::AtomicU8,
     effective_resident_bytes: std::sync::atomic::AtomicU64,
+    main_stack_bytes: std::sync::atomic::AtomicU64,
     effective_file_descriptors: std::sync::atomic::AtomicU64,
 }
 
@@ -139,6 +140,7 @@ impl AttemptResourceBinding {
             helper_receiver: std::sync::OnceLock::new(),
             launch_state: std::sync::atomic::AtomicU8::new(0),
             effective_resident_bytes: std::sync::atomic::AtomicU64::new(resident_bytes),
+            main_stack_bytes: std::sync::atomic::AtomicU64::new(0),
             effective_file_descriptors: std::sync::atomic::AtomicU64::new(
                 file_descriptors.unwrap_or(0),
             ),
@@ -147,6 +149,7 @@ impl AttemptResourceBinding {
 }
 
 mod child_privilege;
+mod main_stack;
 pub(crate) mod helper_first;
 pub use helper_first::QemuIssuedHelperFailure;
 pub(crate) mod helper_receiver;
@@ -1939,6 +1942,7 @@ fn spawn_process_with_resources(
         maximum_file_bytes: contract.process.maximum_writable_bytes,
         maximum_file_descriptors: contract.process.effective_file_descriptors(),
         maximum_locked_bytes: contract.process.maximum_locked_bytes,
+        main_stack_bytes: contract.process.main_stack_limit(),
         credentials: contract.process.credentials,
     });
     let pinned_run_directory = PreparedRunDirectoryRaw {
@@ -2159,6 +2163,7 @@ fn install_guarded_helper_authority_with_probe_pin(
         maximum_file_bytes: process_contract.maximum_writable_bytes,
         maximum_file_descriptors: process_contract.effective_file_descriptors(),
         maximum_locked_bytes: process_contract.maximum_locked_bytes,
+        main_stack_bytes: process_contract.main_stack_limit(),
         credentials: process_contract.credentials,
     };
     let directory = PreparedRunDirectoryRaw {
@@ -2359,6 +2364,7 @@ struct ChildProcessContractRaw {
     maximum_file_descriptors: Option<u64>,
     maximum_locked_bytes: u64,
     credentials: Option<QemuChildCredentials>,
+    main_stack_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -2498,6 +2504,10 @@ fn install_attempt_process_contract(contract: ChildProcessContractRaw) -> io::Re
         if result != 0 {
             return Err(io::Error::last_os_error());
         }
+    }
+
+    if let Some(bytes) = contract.main_stack_bytes {
+        main_stack::install_and_verify(bytes)?;
     }
 
     // Install the exact authored limit before credentials are dropped. Kernel
