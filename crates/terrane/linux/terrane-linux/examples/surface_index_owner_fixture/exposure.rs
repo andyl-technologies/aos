@@ -208,7 +208,6 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             "ordinary release, drain or receipt drop released exposure object protection".into(),
         );
     }
-    closure::verify(owner, inputs, &fixture).await?;
     println!(
         "PASS scoped exposure root grants the original read-only index; changed policy and draining deny new grants while retained metadata remains readable"
     );
@@ -224,6 +223,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     println!(
         "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain"
     );
+    closure::verify(owner, inputs, &fixture).await?;
     Ok(())
 }
 
