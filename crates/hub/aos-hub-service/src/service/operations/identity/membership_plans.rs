@@ -24,15 +24,12 @@ impl RpcService {
         let principal_id = self
             .resolve_existing_principal_id(&req.principal_kind, &req.principal_ref)
             .await?;
-        let baseline_role = self
+        let baseline = self
             .db
-            .list_memberships_for(&req.principal_kind, principal_id)
+            .membership_snapshot(&req.principal_kind, principal_id, scope.as_str())
             .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .find_map(|(candidate_scope, role)| {
-                (candidate_scope == scope.as_str()).then_some(role)
-            });
+            .map_err(RpcError::internal)?;
+        let baseline_role = baseline.as_ref().map(|snapshot| snapshot.role.clone());
         self.require_membership_grant_ceiling(
             &claims,
             &scope,
@@ -53,6 +50,10 @@ impl RpcService {
             scope: scope.as_str().to_string(),
             desired_role: desired_role.map(|role| role.as_str().to_string()),
             baseline_role,
+            baseline_membership_id: baseline.as_ref().map(|snapshot| snapshot.id),
+            baseline_membership_incarnation: baseline
+                .as_ref()
+                .and_then(|snapshot| snapshot.incarnation_id.clone()),
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,

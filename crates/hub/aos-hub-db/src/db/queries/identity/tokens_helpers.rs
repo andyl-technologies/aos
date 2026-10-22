@@ -96,6 +96,7 @@ impl Database {
             owner: principal,
             scope: aos_hub_model::domain::Scope::parse(&scope),
             permissions,
+            expires_at,
         }))
     }
 }

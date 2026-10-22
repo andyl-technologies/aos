@@ -36,6 +36,7 @@
 
 use aos_hub_model::clock::Instant;
 
+use anyhow::Context as _;
 use axum::extract::{Form, Path, Query};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -46,7 +47,9 @@ use crate::web::console::ports::ConsoleDeps;
 use crate::web::console_render as console;
 use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
 use crate::web::session::resolve_session_from_headers;
-use aos_hub_db::db::{Database, SessionAuth as DbSession};
+use aos_hub_db::db::{
+    Database, EnforcedSsoProvider, SessionAuth as DbSession, SessionAuthentication,
+};
 use aos_hub_model::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
 use aos_hub_model::domain::{iam, Permission, Principal, Role, Scope};
 
@@ -124,6 +127,23 @@ async fn require_session_with_return(
         }
         Err(err) => return Err(Box::new(internal(err))),
     };
+    let policy =
+        match current_authentication_policy(deps, &resolved.email, Some(resolved.auth.user_id))
+            .await
+        {
+            Ok(policy) => policy,
+            Err(err) => return Err(Box::new(internal(err))),
+        };
+    if let Some(response) = authentication_policy_response(
+        policy.decide(&resolved.auth.authentication),
+        safe_return_path(return_to),
+    ) {
+        if let Err(err) = deps.db.revoke_session(&resolved.secret).await {
+            return Err(Box::new(internal(err)));
+        }
+        return Err(Box::new(response));
+    }
+
     Ok(Session {
         secret: resolved.secret,
         auth: resolved.auth,
@@ -153,12 +173,13 @@ impl Session {
             .expires_at
             .saturating_sub(aos_hub_model::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
-        let token = deps.jwt_keys.mint(
+        let token = deps.jwt_keys.mint_browser_session(
             &aos_hub_db::db::TokenAuth {
                 token_id: format!("browser-session-{}", self.auth.user_id),
                 owner: self.principal(),
                 scope: Scope::root(),
                 permissions: iam::role_grants(Role::Owner).to_vec(),
+                expires_at: Some(self.auth.expires_at),
             },
             ttl,
         )?;
@@ -218,8 +239,12 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         owner: session.principal(),
         scope: Scope::root(),
         permissions: iam::role_grants(Role::Owner).to_vec(),
+        expires_at: Some(session.auth.expires_at),
     };
-    let access_token = match deps.jwt_keys.mint(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS) {
+    let access_token = match deps
+        .jwt_keys
+        .mint_browser_session(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS)
+    {
         Ok(token) => token,
         Err(error) => return internal(error),
     };
@@ -883,6 +908,22 @@ pub(crate) async fn reauth(
         ))
         .into_response()
     };
+    let policy = match current_authentication_policy(
+        &deps,
+        &session.email,
+        Some(session.auth.user_id),
+    )
+    .await
+    {
+        Ok(policy) => policy,
+        Err(err) => return internal(err),
+    };
+    if let Some(response) = authentication_policy_response(
+        policy.decide(&SessionAuthentication::Password),
+        Some(&return_to),
+    ) {
+        return response;
+    }
     // Verify the password against the session's own user (never a different
     // account, even if the email somehow resolves elsewhere).
     let (user_id, hash) = match deps.db.user_for_password(&session.email).await {
@@ -899,7 +940,11 @@ pub(crate) async fn reauth(
     {
         return render_err("Incorrect password.");
     }
-    if let Err(err) = deps.db.elevate_session(&session.secret).await {
+    if let Err(err) = deps
+        .db
+        .elevate_session_with_authentication(&session.secret, &SessionAuthentication::Password)
+        .await
+    {
         return internal(err);
     }
     Redirect::to(&return_to).into_response()
@@ -1035,8 +1080,26 @@ pub(crate) async fn login_submit(
             return too_many_requests(retry_after);
         }
     }
-    // Domain capture: route to the org's IdP when one is configured.
-    if let Some((org_slug, enforce_sso)) = sso_target(&deps, &email).await {
+    let user_id = match deps.db.user_by_email(&email).await {
+        Ok(user_id) => user_id,
+        Err(err) => return internal(err),
+    };
+    let policy = match current_authentication_policy(&deps, &email, user_id).await {
+        Ok(policy) => policy,
+        Err(err) => return internal(err),
+    };
+    if let Some(response) =
+        authentication_policy_response(policy.decide(&SessionAuthentication::MagicLink), next)
+    {
+        return response;
+    }
+
+    // Domain capture: offer the org's IdP when one is configured but optional.
+    let target = match sso_target(&deps, &email).await {
+        Ok(target) => target,
+        Err(err) => return internal(err),
+    };
+    if let Some((org_slug, enforce_sso)) = target {
         let start = sso_start_path(&org_slug, next);
         if enforce_sso {
             return Redirect::to(&start).into_response();
@@ -1169,16 +1232,22 @@ pub(crate) async fn login_password(
     // password login would not, and matches the magic-link path's UX. (Reaching
     // here with the password verified means an SSO-enforced user had a password
     // set before enforcement was turned on; refuse the local session anyway.)
-    match sso_enforced_for(&deps, &email, Some(user_id)).await {
-        Ok(Some(org_slug)) => {
-            return Redirect::to(&sso_start_path(&org_slug, next)).into_response()
-        }
-        Ok(None) => {}
+    let policy = match current_authentication_policy(&deps, &email, Some(user_id)).await {
+        Ok(policy) => policy,
         Err(err) => return internal(err),
+    };
+    if let Some(response) =
+        authentication_policy_response(policy.decide(&SessionAuthentication::Password), next)
+    {
+        return response;
     }
     // A correct password is a re-authentication: the session is sudo-capable.
     let lifetime = effective_session_lifetime(&deps).await;
-    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+    let cookie = match deps
+        .db
+        .create_session_with_authentication(user_id, lifetime, 1, &SessionAuthentication::Password)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
@@ -1188,65 +1257,107 @@ pub(crate) async fn login_password(
 
 // -- SSO enforcement helpers (DB-only, shared with the hub auth flow) --------
 
+struct CurrentAuthenticationPolicy {
+    providers: Vec<EnforcedSsoProvider>,
+    instance_owner: bool,
+}
+
+enum AuthenticationPolicyDecision<'a> {
+    Allowed,
+    RequireSso(&'a str),
+    IncompatibleProviders,
+}
+
+impl CurrentAuthenticationPolicy {
+    fn decide<'a>(
+        &'a self,
+        authentication: &SessionAuthentication,
+    ) -> AuthenticationPolicyDecision<'a> {
+        if self.providers.is_empty() {
+            return AuthenticationPolicyDecision::Allowed;
+        }
+        if self.instance_owner && matches!(authentication, SessionAuthentication::Password) {
+            return AuthenticationPolicyDecision::Allowed;
+        }
+
+        let first = &self.providers[0];
+        let one_issuer = self
+            .providers
+            .iter()
+            .all(|provider| provider.issuer == first.issuer);
+        if let SessionAuthentication::Oidc(issuer) = authentication {
+            if one_issuer && issuer == &first.issuer {
+                return AuthenticationPolicyDecision::Allowed;
+            }
+        }
+        if one_issuer {
+            AuthenticationPolicyDecision::RequireSso(&first.org_slug)
+        } else {
+            AuthenticationPolicyDecision::IncompatibleProviders
+        }
+    }
+}
+
+async fn current_authentication_policy(
+    deps: &ConsoleDeps,
+    email: &str,
+    user_id: Option<i64>,
+) -> anyhow::Result<CurrentAuthenticationPolicy> {
+    let providers = deps.db.enforced_sso_providers(email, user_id).await?;
+    let instance_owner = match user_id {
+        Some(user_id) => deps.db.user_is_instance_owner(user_id).await?,
+        None => false,
+    };
+
+    Ok(CurrentAuthenticationPolicy {
+        providers,
+        instance_owner,
+    })
+}
+
+fn authentication_policy_response(
+    decision: AuthenticationPolicyDecision<'_>,
+    next: Option<&str>,
+) -> Option<Response> {
+    match decision {
+        AuthenticationPolicyDecision::Allowed => None,
+        AuthenticationPolicyDecision::RequireSso(org_slug) => {
+            Some(Redirect::to(&sso_start_path(org_slug, next)).into_response())
+        }
+        AuthenticationPolicyDecision::IncompatibleProviders => Some(
+            (
+                StatusCode::FORBIDDEN,
+                "This account belongs to organizations with incompatible sign-in policies.",
+            )
+                .into_response(),
+        ),
+    }
+}
+
 /// Resolve the org whose **verified** domain captures `email`, together with
 /// whether that org has an OIDC IdP configured and enforces SSO.
 ///
 /// Returns `(org_slug, enforce_sso)` when the email's domain is captured by an
 /// org *and* that org has an IdP; `None` otherwise.
-async fn sso_target(deps: &ConsoleDeps, email: &str) -> Option<(String, bool)> {
-    let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase())?;
-    let org_id = deps.db.org_for_domain(&domain).await.ok().flatten()?;
-    let config = deps.db.idp_config(org_id).await.ok().flatten()?;
-    let org = deps.db.org_by_id(org_id).await.ok().flatten()?;
-    Some((org.slug, config.enforce_sso))
-}
-
-/// Decide whether a user is **subject to SSO enforcement**, returning the org
-/// slug to redirect them into when they are.
-///
-/// A user is captured by an org two ways — verified domain or membership — and
-/// either binds them to the IdP. If any such org has `enforce_sso = true`, this
-/// returns `Some(org_slug)`; otherwise `None`.
-///
-/// # Errors
-///
-/// Returns an error only on an unexpected database failure while listing the
-/// user's memberships.
-async fn sso_enforced_for(
-    deps: &ConsoleDeps,
-    email: &str,
-    user_id: Option<i64>,
-) -> anyhow::Result<Option<String>> {
-    if let Some((org_slug, true)) = sso_target(deps, email).await {
-        return Ok(Some(org_slug));
-    }
-    if let Some(user_id) = user_id {
-        let principal = Principal::user(user_id);
-        let mut seen_slugs = std::collections::HashSet::new();
-        for (scope, _role) in deps
-            .db
-            .list_memberships_for(principal.kind.as_str(), principal.id)
-            .await?
-        {
-            let Some(org_scope) = Scope::try_parse(&scope)
-                .and_then(|scope| scope.as_str().split('/').next().map(str::to_string))
-            else {
-                continue;
-            };
-            if !seen_slugs.insert(org_scope.clone()) {
-                continue;
-            }
-            let Some(org) = deps.db.org_by_stable_id(&org_scope).await? else {
-                continue;
-            };
-            if let Some(config) = deps.db.idp_config(org.id).await? {
-                if config.enforce_sso {
-                    return Ok(Some(org.slug));
-                }
-            }
-        }
-    }
-    Ok(None)
+async fn sso_target(deps: &ConsoleDeps, email: &str) -> anyhow::Result<Option<(String, bool)>> {
+    let Some(domain) = email
+        .rsplit_once('@')
+        .map(|(_, domain)| domain.to_lowercase())
+    else {
+        return Ok(None);
+    };
+    let Some(org_id) = deps.db.org_for_domain(&domain).await? else {
+        return Ok(None);
+    };
+    let Some(config) = deps.db.idp_config(org_id).await? else {
+        return Ok(None);
+    };
+    let org = deps
+        .db
+        .org_by_id(org_id)
+        .await?
+        .context("captured-domain organization disappeared")?;
+    Ok(Some((org.slug, config.enforce_sso)))
 }
 
 /// The OIDC start path that redirects a browser into an org's IdP login.
@@ -1417,9 +1528,37 @@ pub(crate) async fn oidc_callback(
         Ok(_) => {}
         Err(err) => return internal(err),
     }
+
+    let email = match deps.db.user_email(login.user_id).await {
+        Ok(Some(email)) => email,
+        Ok(None) => return sso_error("Sign-in could not be completed. Please try again.", started),
+        Err(err) => return internal(err),
+    };
+    let policy = match current_authentication_policy(&deps, &email, Some(login.user_id)).await {
+        Ok(policy) => policy,
+        Err(err) => return internal(err),
+    };
+    if let Some(mut response) = authentication_policy_response(
+        policy.decide(&SessionAuthentication::Oidc(login.issuer.clone())),
+        safe_return_path(login.redirect_after.as_deref()),
+    ) {
+        if let Err(err) = append_set_cookie(&mut response, &clear_binding) {
+            return internal(err);
+        }
+        return response;
+    }
     // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
     let lifetime = effective_session_lifetime(&deps).await;
-    let cookie = match deps.db.create_session(login.user_id, lifetime, 1).await {
+    let cookie = match deps
+        .db
+        .create_session_with_authentication(
+            login.user_id,
+            lifetime,
+            1,
+            &SessionAuthentication::Oidc(login.issuer),
+        )
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
@@ -1517,8 +1656,22 @@ pub(crate) async fn magic_consume(
         Ok(id) => id,
         Err(err) => return internal(err),
     };
+    let policy = match current_authentication_policy(&deps, &email, Some(user_id)).await {
+        Ok(policy) => policy,
+        Err(err) => return internal(err),
+    };
+    if let Some(response) = authentication_policy_response(
+        policy.decide(&SessionAuthentication::MagicLink),
+        safe_return_path(query.next.as_deref()),
+    ) {
+        return response;
+    }
     let lifetime = effective_session_lifetime(&deps).await;
-    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+    let cookie = match deps
+        .db
+        .create_session_with_authentication(user_id, lifetime, 1, &SessionAuthentication::MagicLink)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };
@@ -1631,36 +1784,45 @@ pub(crate) async fn account_set_password(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    match sso_enforced_for(&deps, &session.email, Some(session.auth.user_id)).await {
-        Ok(Some(_)) => {
-            let tokens = deps
-                .db
-                .list_tokens_for(session.principal())
-                .await
-                .unwrap_or_default();
-            let password_set = deps
-                .db
-                .user_has_password(session.auth.user_id)
-                .await
-                .unwrap_or(false);
-            return (
-                StatusCode::FORBIDDEN,
-                Html(console::account_page(
-                    &session.email,
-                    &session.csrf(),
-                    &tokens,
-                    password_set,
-                    Some(
-                        "Your organization requires single sign-on; \
-                         passwords cannot be set. Sign in through your identity provider.",
-                    ),
-                    started,
-                )),
-            )
-                .into_response();
-        }
-        Ok(None) => {}
+    let policy = match current_authentication_policy(
+        &deps,
+        &session.email,
+        Some(session.auth.user_id),
+    )
+    .await
+    {
+        Ok(policy) => policy,
         Err(err) => return internal(err),
+    };
+    if !matches!(
+        policy.decide(&SessionAuthentication::Password),
+        AuthenticationPolicyDecision::Allowed
+    ) {
+        let tokens = deps
+            .db
+            .list_tokens_for(session.principal())
+            .await
+            .unwrap_or_default();
+        let password_set = deps
+            .db
+            .user_has_password(session.auth.user_id)
+            .await
+            .unwrap_or(false);
+        return (
+            StatusCode::FORBIDDEN,
+            Html(console::account_page(
+                &session.email,
+                &session.csrf(),
+                &tokens,
+                password_set,
+                Some(
+                    "Your organization requires single sign-on; \
+                         passwords cannot be set. Sign in through your identity provider.",
+                ),
+                started,
+            )),
+        )
+            .into_response();
     }
     if form.password.is_empty() || form.password.len() > 1024 {
         let tokens = deps
@@ -1696,7 +1858,12 @@ pub(crate) async fn account_set_password(
     let lifetime = effective_session_lifetime(&deps).await;
     let cookie = match deps
         .db
-        .create_session(session.auth.user_id, lifetime, 1)
+        .create_session_with_authentication(
+            session.auth.user_id,
+            lifetime,
+            1,
+            &SessionAuthentication::Password,
+        )
         .await
     {
         Ok(secret) => set_cookie_header(&secret, lifetime),
@@ -1757,9 +1924,9 @@ pub(crate) struct PasskeyRemoveForm {
 /// `POST /-/account/passkeys/remove` — delete one of the signed-in user's
 /// passkeys, then return to the passkeys page.
 ///
-/// Scoped to the session user, so a request can only remove the caller's own
-/// credential. Removing a passkey never locks the account out — email
-/// magic-link sign-in remains available.
+/// Requires recent reauthentication and is scoped to the session user, so a
+/// request can only remove the caller's own credential. Removing a passkey
+/// never locks the account out - email magic-link sign-in remains available.
 pub(crate) async fn passkeys_remove(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1770,6 +1937,9 @@ pub(crate) async fn passkeys_remove(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     match deps
@@ -1795,7 +1965,8 @@ pub(crate) struct PasskeyBeginForm {
     csrf: String,
 }
 
-/// `POST /-/account/passkeys/begin` — stage a registration challenge (JSON).
+/// `POST /-/account/passkeys/begin` — stage a session-bound registration
+/// challenge after recent reauthentication (JSON).
 pub(crate) async fn passkeys_begin(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1806,6 +1977,9 @@ pub(crate) async fn passkeys_begin(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let rp = match crate::auth::webauthn::relying_party(&deps.external_url) {
@@ -1820,6 +1994,8 @@ pub(crate) async fn passkeys_begin(
         &session.email,
         &rp.id,
         rp_name,
+        &session.secret,
+        session.auth.reauthentication_generation,
     )
     .await
     {
@@ -1838,7 +2014,8 @@ pub(crate) struct PasskeyFinishBody {
     attestation_object: String,
 }
 
-/// `POST /-/account/passkeys/finish` — verify + persist the new credential.
+/// `POST /-/account/passkeys/finish` — verify and persist the new credential
+/// when the same recently reauthenticated session began the ceremony.
 pub(crate) async fn passkeys_finish(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1851,16 +2028,28 @@ pub(crate) async fn passkeys_finish(
     if let Err(resp) = check_csrf(&session, &body.csrf) {
         return *resp;
     }
-    match sso_enforced_for(&deps, &session.email, Some(session.auth.user_id)).await {
-        Ok(Some(_)) => {
-            return (
-                StatusCode::FORBIDDEN,
-                "Your organization requires single sign-on; passkeys cannot be enrolled.",
-            )
-                .into_response();
-        }
-        Ok(None) => {}
+    if let Err(resp) = require_sudo(&session, &headers) {
+        return *resp;
+    }
+    let policy = match current_authentication_policy(
+        &deps,
+        &session.email,
+        Some(session.auth.user_id),
+    )
+    .await
+    {
+        Ok(policy) => policy,
         Err(err) => return internal(err),
+    };
+    if !matches!(
+        policy.decide(&SessionAuthentication::Passkey),
+        AuthenticationPolicyDecision::Allowed
+    ) {
+        return (
+            StatusCode::FORBIDDEN,
+            "Your organization requires single sign-on; passkeys cannot be enrolled.",
+        )
+            .into_response();
     }
     let rp = match crate::auth::webauthn::relying_party(&deps.external_url) {
         Ok(rp) => rp,
@@ -1883,6 +2072,8 @@ pub(crate) async fn passkeys_finish(
         session.auth.user_id,
         &rp.id,
         &rp.origin,
+        &session.secret,
+        session.auth.reauthentication_generation,
         &response,
         label,
     )
@@ -1945,22 +2136,40 @@ pub(crate) async fn passkey_login_finish(
         }
     };
     match deps.db.user_email(user_id).await {
-        Ok(Some(email)) => match sso_enforced_for(&deps, &email, Some(user_id)).await {
-            Ok(Some(org_slug)) => {
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(serde_json::json!({ "redirect": sso_start_path(&org_slug, None) })),
-                )
-                    .into_response();
+        Ok(Some(email)) => {
+            let policy = match current_authentication_policy(&deps, &email, Some(user_id)).await {
+                Ok(policy) => policy,
+                Err(err) => return internal(err),
+            };
+            match policy.decide(&SessionAuthentication::Passkey) {
+                AuthenticationPolicyDecision::Allowed => {}
+                AuthenticationPolicyDecision::RequireSso(org_slug) => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({ "redirect": sso_start_path(&org_slug, None) })),
+                    )
+                        .into_response();
+                }
+                AuthenticationPolicyDecision::IncompatibleProviders => {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(serde_json::json!({
+                            "error": "account sign-in policies are incompatible"
+                        })),
+                    )
+                        .into_response();
+                }
             }
-            Ok(None) => {}
-            Err(err) => return internal(err),
-        },
+        }
         Ok(None) => return (StatusCode::UNAUTHORIZED, "passkey sign-in failed").into_response(),
         Err(err) => return internal(err),
     }
     let lifetime = effective_session_lifetime(&deps).await;
-    let cookie = match deps.db.create_session(user_id, lifetime, 1).await {
+    let cookie = match deps
+        .db
+        .create_session_with_authentication(user_id, lifetime, 1, &SessionAuthentication::Passkey)
+        .await
+    {
         Ok(secret) => set_cookie_header(&secret, lifetime),
         Err(err) => return internal(err),
     };

@@ -59,12 +59,13 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 /// Mints a test bearer for one exact authorization scope.
 fn bearer(principal: Principal, scope: &str, permissions: &[Permission]) -> String {
     JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "settings-workflow-test-token".into(),
                 owner: principal,
                 scope: Scope::parse(scope),
                 permissions: permissions.to_vec(),
+                expires_at: None,
             },
             900,
         )

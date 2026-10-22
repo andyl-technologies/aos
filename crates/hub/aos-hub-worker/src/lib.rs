@@ -3521,7 +3521,7 @@ mod entry {
                 .map_err(|error| worker::Error::RustError(format!("e2e session: {error:#}")))?;
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());
             let token = jwt
-                .mint(
+                .mint_browser_session(
                     &TokenAuth {
                         token_id: "workerd-e2e".into(),
                         owner: Principal::user(user_id),
@@ -3532,6 +3532,7 @@ mod entry {
                             Permission::Publish,
                             Permission::Read,
                         ],
+                        expires_at: None,
                     },
                     3_600,
                 )

@@ -86,6 +86,7 @@ tower = { workspace = true }
 http = { workspace = true }
 futures = { workspace = true }
 http-body-util = { workspace = true }
+rcgen = { workspace = true }
 
 [[bin]]
 name = "aos-hub"

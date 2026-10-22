@@ -81,7 +81,7 @@ pub fn run_view_gc(
         max_store_size: None,
         max_paths: None,
     };
-    let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
+    let view_mgr = ViewManager::new(root.clone(), vec![view_config])?;
 
     // Step 1: Expire TTL roots
     let expired = evict::expire_ttl_roots(&view_mgr, view_name)?;

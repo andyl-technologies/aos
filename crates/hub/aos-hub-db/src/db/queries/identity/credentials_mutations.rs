@@ -26,11 +26,11 @@ impl Database {
         Ok(())
     }
 
-    /// Look up a user's id and stored password hash by email, for login.
+    /// Looks up a verified mailbox owner's id and stored password hash for login.
     ///
     /// Returns `Ok(Some((user_id, phc)))` only when a non-deleted user exists
     /// for `email` **and** has a password set; returns `Ok(None)` when no such
-    /// user exists *or* the user has no password (`password_hash IS NULL`).
+    /// mailbox owner exists or the user has no password (`password_hash IS NULL`).
     /// The caller verifies `phc` with
     /// [`aos_hub_model::auth::password::verify_password`] and must surface the same
     /// generic "invalid email or password" outcome for both the `None` and the
@@ -44,8 +44,10 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT id, password_hash FROM users
-                 WHERE email = ?1 AND deleted_at IS NULL AND password_hash IS NOT NULL",
+                "SELECT u.id, u.password_hash FROM user_mailboxes mailbox
+                 JOIN users u ON u.id = mailbox.user_id
+                 WHERE mailbox.email = ?1 AND u.deleted_at IS NULL
+                   AND u.password_hash IS NOT NULL",
                 &vals![email],
             )
             .await
@@ -271,9 +273,10 @@ impl Database {
 
     /// Record an in-flight OIDC authorization-code request.
     ///
-    /// Stores the opaque `state`, the `nonce` the id_token will be checked
-    /// against, the PKCE `code_verifier`, and the browser-binding digest, with
-    /// an `expires_at` `ttl_secs` from now. The row is consumed exactly once at
+    /// Stores the opaque `state`, the verifier configuration, the `nonce` the
+    /// id_token will be checked against, the PKCE `code_verifier`, and the
+    /// browser-binding digest, with an `expires_at` `ttl_secs` from now. The
+    /// row is consumed exactly once at
     /// the callback by [`Database::take_oidc_flow`].
     ///
     /// # Errors
@@ -283,6 +286,7 @@ impl Database {
         &self,
         state: &str,
         org_id: i64,
+        verifier_id: &str,
         nonce: &str,
         code_verifier: &str,
         browser_binding_hash: &str,
@@ -293,12 +297,13 @@ impl Database {
         self.backend
             .execute(
                 "INSERT INTO oidc_flows
-             (state, org_id, nonce, code_verifier, browser_binding_hash,
-              redirect_after, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (state, org_id, verifier_id, nonce, code_verifier,
+              browser_binding_hash, redirect_after, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 &vals![
                     state,
                     org_id,
+                    verifier_id,
                     nonce,
                     code_verifier,
                     browser_binding_hash,
@@ -339,7 +344,7 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
+                    "SELECT state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at
                      FROM oidc_flows
                      WHERE state = ?1 AND browser_binding_hash = ?2",
                     &vals![state, browser_binding_hash],
@@ -367,7 +372,7 @@ impl Database {
                 .query_opt(
                     "DELETE FROM oidc_flows
                      WHERE state = ?1 AND browser_binding_hash = ?2
-                     RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
+                     RETURNING state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at",
                     &vals![state, browser_binding_hash],
                 )
                 .await
@@ -389,7 +394,9 @@ impl Database {
     /// `kind` is `"registration"` or `"assertion"`; `user_id` is the
     /// registering user for a registration ceremony, or `None` for a
     /// usernameless assertion ceremony (the user is resolved from the presented
-    /// credential at verify). The challenge is consumed exactly once by
+    /// credential at verify). Registration ceremonies carry the browser-session
+    /// binding that authorized them; assertion ceremonies pass `None`. The
+    /// challenge is consumed exactly once by
     /// [`Database::take_webauthn_challenge`].
     ///
     /// # Errors
@@ -402,13 +409,31 @@ impl Database {
         user_id: Option<i64>,
         kind: &str,
         ttl_secs: i64,
+        registration_binding: Option<&WebauthnChallengeBinding>,
     ) -> Result<()> {
         let now = unix_now();
+        let (session_id_hash, reauthentication_generation) =
+            registration_binding.map_or((None, None), |binding| {
+                (
+                    Some(binding.session_id_hash.as_str()),
+                    Some(binding.reauthentication_generation),
+                )
+            });
         self.backend
             .execute(
-                "INSERT INTO webauthn_challenges (challenge, user_id, kind, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-                &vals![challenge, user_id, kind, now, now + ttl_secs],
+                "INSERT INTO webauthn_challenges
+                 (challenge, user_id, kind, created_at, expires_at,
+                  session_id_hash, reauthentication_generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &vals![
+                    challenge,
+                    user_id,
+                    kind,
+                    now,
+                    now + ttl_secs,
+                    session_id_hash,
+                    reauthentication_generation
+                ],
             )
             .await?;
         Ok(())
@@ -444,7 +469,8 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT challenge, user_id, kind, expires_at
+                    "SELECT challenge, user_id, kind, expires_at,
+                            session_id_hash, reauthentication_generation
                      FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
                     &vals![challenge, kind],
                 )
@@ -469,7 +495,8 @@ impl Database {
             self.backend
                 .query_opt(
                     "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2
-                     RETURNING challenge, user_id, kind, expires_at",
+                     RETURNING challenge, user_id, kind, expires_at,
+                               session_id_hash, reauthentication_generation",
                     &vals![challenge, kind],
                 )
                 .await
