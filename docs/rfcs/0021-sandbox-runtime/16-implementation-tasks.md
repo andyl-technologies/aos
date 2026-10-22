@@ -9642,6 +9642,13 @@ inode at
 `/nix/store/j3rc2x11jsa66m6lqbr0yjs4wkxdl1sc-selinux-erofs-labels-check-0`.
 Enforcing installed reruns still determine runtime qualification.
 
+The offline preparation fixture now installs the unchanged Controller reference
+through `environment.etc`, retaining its lack of activation links. Its former
+assignment to the internally derived, read-only `systemd.units` option was
+rejected when the hardware-profile check forced that option. The canonical
+reference removes that evaluation error; core evaluation passes. Candidate
+creation and stopped-owner readback still require the installed VM receipt.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

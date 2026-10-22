@@ -9,6 +9,10 @@
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
+  controllerReference = pkgs.writeTextFile {
+    name = "sandbox-nix-offline-controller-reference";
+    text = runtimeSystem.config.systemd.units."aos-sandboxd.service".text;
+  };
   publicInputs =
     pkgs.runCommand "sandbox-nix-offline-preparation-public-inputs" {
       buildDeps = [pkgs.python3];
@@ -65,7 +69,7 @@
         # without its activation links or external runtime credentials. The
         # reference target keeps the inactive unit loaded for PID1 readback;
         # ordering alone never starts it. The Nix owner remains uninstalled.
-        systemd.units."aos-sandboxd.service".text = runtimeSystem.config.systemd.units."aos-sandboxd.service".text;
+        environment.etc."systemd/system/aos-sandboxd.service".source = controllerReference;
         systemd.targets.aos-offline-controller-reference = {
           description = "Retain the installed inactive Controller unit for provisioning";
           wantedBy = ["multi-user.target"];
