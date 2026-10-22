@@ -101,58 +101,45 @@ in {
   };
 
   testScript = ''
-    import json
     import shlex
 
     unit = "aos-sandbox-nix-floor-provision.service"
     root = "/var/lib/aos/sandbox-nix-floor-provision"
     python = "${pkgs.python3}/bin/python3"
 
-    def candidate_snapshot():
-        # Read secrets only inside the guest and return hashes and metadata.
-        # The exact entry set also excludes an approval, hardware journal,
-        # runtime publication or floor produced by this prepare-only step.
+    def public_candidate_exports():
+        journal = vm.succeed(
+            f"journalctl --boot=0 --unit={unit} --output=cat --no-pager"
+        )
+        prefix = "AOS_NIX_OFFLINE_PUBLIC_V3="
+        exports = []
+        for line in journal.splitlines():
+            if not line.startswith(prefix):
+                continue
+            encoded = line[len(prefix):]
+            assert len(encoded) == 536 and encoded == encoded.lower(), encoded
+            public = bytes.fromhex(encoded)
+            assert len(public) == 268 and public.hex() == encoded
+            assert public[:12] == b'AOSNPC03\x03\0\0\0'
+            assert public[28:44] == bytes([0x41]) * 16
+            exports.append(public)
+        return exports
+
+    def assert_candidate_reads_denied():
+        # The successful owner verifies originals before exporting public bytes.
+        # Generic root has no authority to inspect either protected state file.
         check = r"""
-    import hashlib
-    import json
-    import os
     import pathlib
-    import stat
 
     root = pathlib.Path('/var/lib/aos/sandbox-nix-floor-provision')
-    assert sorted(path.name for path in root.iterdir()) == [
-        'candidate-private-v3', 'candidate-public-v3', 'installation.lock',
-    ]
-    result = {}
-    entries = [(root, 0o700, None)] + [
-        (root / 'candidate-private-v3', 0o600, 336),
-        (root / 'candidate-public-v3', 0o400, 268),
-        (root / 'installation.lock', 0o600, 0),
-    ]
-    for path, mode, size in entries:
-        metadata = path.lstat()
-        assert (metadata.st_uid, metadata.st_gid) == (0, 0)
-        assert stat.S_IMODE(metadata.st_mode) == mode
-        assert os.getxattr(path, 'security.selinux').rstrip(b'\0') == (
-            b'system_u:object_r:aos_nix_offline_prepare_state_t'
-        )
-        digest = None
-        if size is not None:
-            assert stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
-            assert metadata.st_size == size
-            content = path.read_bytes()
-            if path.name == 'candidate-private-v3':
-                assert content[:16] == b'AOSNPK03\x03\0' + bytes(6)
-            if path.name == 'candidate-public-v3':
-                assert content[:12] == b'AOSNPC03\x03\0\0\0'
-                assert content[28:44] == bytes([0x41]) * 16
-            digest = hashlib.sha256(content).hexdigest()
-        else:
-            assert stat.S_ISDIR(metadata.st_mode)
-        result[path.name] = [metadata.st_ino, mode, size, digest]
-    print(json.dumps(result, sort_keys=True))
+    for name in ('candidate-private-v3', 'candidate-public-v3'):
+        try:
+            (root / name).read_bytes()
+        except PermissionError:
+            continue
+        raise AssertionError(f'generic root read protected candidate {name}')
     """
-        return json.loads(vm.succeed(f"{python} -c {shlex.quote(check)}"))
+        vm.succeed(f"{python} -c {shlex.quote(check)}")
 
     def reject_repeated_preparation(expected):
         vm.succeed(f"systemctl reset-failed {unit}")
@@ -162,7 +149,8 @@ in {
             f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
             timeout=120,
         )
-        assert candidate_snapshot() == expected
+        assert public_candidate_exports() == expected
+        assert_candidate_reads_denied()
 
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
@@ -213,16 +201,19 @@ in {
         f"test $(systemctl show {unit} --property=ActiveState --value) = inactive",
         timeout=120,
     )
-    original = candidate_snapshot()
+    original = public_candidate_exports()
+    assert len(original) == 1, original
+    assert_candidate_reads_denied()
     reject_repeated_preparation(original)
 
-    # The persistent originals, rather than a fresh process or boot, fix
-    # the attempt. The public delivery remains present in the same image.
+    # Reboot does not authorize replacement of the protected installation.
+    # A rejected attempt must not export another public candidate.
     vm.reboot()
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.wait_for_unit("aos-offline-controller-reference.target")
-    assert candidate_snapshot() == original
+    assert public_candidate_exports() == []
+    assert_candidate_reads_denied()
     vm.fail(f"systemctl is-active --quiet {unit}")
-    reject_repeated_preparation(original)
+    reject_repeated_preparation([])
   '';
 }

@@ -4,6 +4,7 @@
 //! Explicit process exit retains originals through the terminal boundary; it
 //! deliberately avoids returning an ExitCode that would drop failed custody.
 
+use std::io::{self, Write as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use aos_sandbox_controller_domain::normal_root::OfflineNixPrepareStartupV3;
@@ -81,7 +82,18 @@ fn main() {
     match selected {
         Command::PrepareKeys => {
             let mut attempt = NixPrepareKeysAttemptV3::new(origin);
-            let prepared = catch_unwind(AssertUnwindSafe(|| attempt.prepare_keys().is_ok()));
+            let prepared = catch_unwind(AssertUnwindSafe(|| {
+                if attempt.prepare_keys().is_err() {
+                    return false;
+                }
+
+                // Operators receive only the verified public candidate through
+                // the selected unit's output, without opening its private tree.
+                let Some(public) = attempt.public_candidates_data() else {
+                    return false;
+                };
+                write_public_candidate(public).is_ok()
+            }));
             let success = matches!(prepared, Ok(true));
             let _original_unwind = prepared.err();
 
@@ -103,6 +115,23 @@ fn main() {
         }
         Command::Initialize | Command::Recover => std::process::exit(2),
     }
+}
+
+fn write_public_candidate(public: &[u8; 268]) -> io::Result<()> {
+    const PREFIX: &[u8] = b"AOS_NIX_OFFLINE_PUBLIC_V3=";
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let mut line = [0; PREFIX.len() + 536 + 1];
+    line[..PREFIX.len()].copy_from_slice(PREFIX);
+    for (index, byte) in public.iter().copied().enumerate() {
+        line[PREFIX.len() + index * 2] = HEX[usize::from(byte >> 4)];
+        line[PREFIX.len() + index * 2 + 1] = HEX[usize::from(byte & 15)];
+    }
+    line[PREFIX.len() + 536] = b'\n';
+
+    let mut output = io::stdout().lock();
+    output.write_all(&line)?;
+    output.flush()
 }
 
 fn hardware_main(selected: Command) -> ! {

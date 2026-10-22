@@ -171,6 +171,21 @@ impl<'startup> NixPrepareKeysAttemptV3<'startup> {
         }
     }
 
+    /// Borrows the unsigned public export after successful original readback.
+    ///
+    /// The fixed public candidate contains no private seed or hierarchy
+    /// authorization. It identifies the independently approvable installation,
+    /// without granting an effect, session, currentness receipt or runtime floor.
+    /// Failed, interrupted and repeated attempts expose no export.
+    #[must_use]
+    pub fn public_candidates_data(&self) -> Option<&[u8; 268]> {
+        if !self.complete || self.first_failure.is_some() {
+            return None;
+        }
+
+        self.public.as_slice().try_into().ok()
+    }
+
     /// Borrows the first returned failure without converting it into a receipt.
     pub fn failure(&self) -> Option<&Error> {
         self.first_failure.as_ref()

@@ -9680,6 +9680,25 @@ five-minute deadline; switching commands through a reboot cannot establish it.
 No hardware initialization, runtime floor publication or admission release is
 claimed by the independent signer test.
 
+Successful key preparation now exposes only its verified 268-byte public
+candidate through the selected unit's inherited output stream. The fixed
+`AOS_NIX_OFFLINE_PUBLIC_V3=` line carries canonical lowercase hex; the private
+candidate, hierarchy authorization and original descriptors remain private.
+Failed and repeated attempts expose no candidate. Its policy addition permits
+only writing the inherited `init_t` stream; explicit negative queries retain
+the prohibitions on reading it or opening a new connection. The installed test
+consumes the unit journal instead of opening protected candidate files as root,
+requires both root reads to fail with permission denial, and checks that a
+rejected retry emits no new public record, including after reboot.
+
+The selected service test, core evaluation and formatting pass. Complete Rust
+target compilation, compiled policy/profile checks and the enforcing installed
+test remain in flight for this change. The standalone Python directory discovery
+ran 216 passing cases but also an import error for the separately configured
+SETools differential test; it is not a complete policy-suite pass. Approval
+import and hardware history delivery still require their own protected purpose;
+the public export supplies neither and authorizes no TPM or runtime operation.
+
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
 `unlabeled_t:filesystem associate` denial on the writable tmpfs upper. The

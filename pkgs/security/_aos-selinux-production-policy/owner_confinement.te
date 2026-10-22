@@ -61,6 +61,10 @@ allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint
 allow aos_nix_offline_prepare_t self:capability { chown dac_override };
 allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
 allow aos_nix_offline_prepare_t init_t:fd use;
+# The selected unit supplies the journal output stream. This type-wide write
+# supports the bounded public candidate export; new init_t connections and
+# reads remain forbidden, and no private candidate bytes enter the stream.
+allow aos_nix_offline_prepare_t init_t:unix_stream_socket write;
 allow aos_nix_offline_prepare_t null_device_t:chr_file { getattr open read write };
 allow aos_nix_offline_prepare_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
 allow aos_nix_offline_prepare_t { usr_t etc_t }:file { getattr open read };

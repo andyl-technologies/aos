@@ -447,6 +447,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "dac_override"),
         Access(OFFLINE_PREPARE, "init_t", "fd", "use"),
+        Access(OFFLINE_PREPARE, "init_t", "unix_stream_socket", "write"),
         Access(OFFLINE_PREPARE, "init_t", "system", "status"),
         Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
         Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
@@ -487,6 +488,9 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     for permission in ("start", "stop", "reload", "reboot", "halt"):
         negative.append(Access(OFFLINE_PREPARE, "*", "system", permission))
     negative.append(Access(OFFLINE_PREPARE, "*", "file", "execute_no_trans"))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, "init_t", "unix_stream_socket", ("connectto", "read"),
+    ))
     negative.append(Access(OFFLINE_PREPARE, "aos_method46_tpm_device_t", "chr_file", "open"))
     for target in ("cgroup_t", "sysctl_kernel_t"):
         negative.extend(accesses(OFFLINE_PREPARE, target, "file", file_mutate))
