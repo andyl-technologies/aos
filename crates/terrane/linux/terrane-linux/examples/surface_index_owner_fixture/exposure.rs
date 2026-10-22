@@ -25,6 +25,9 @@ mod root;
 #[path = "exposure/backing.rs"]
 mod backing;
 
+#[path = "exposure/census.rs"]
+mod census;
+
 fn limits() -> RootNodeLimits {
     RootNodeLimits {
         max_entries: 16,
@@ -88,6 +91,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("root descriptor grant lost the exact original exposure context".into());
     }
     root::check(&root_grant, inputs).await?;
+    census::verify(&root_grant, inputs)?;
     let closing_root = fixture
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
@@ -212,6 +216,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     );
     println!(
         "PASS durable exposure records match actual original index and file inodes and verity measurements; draining and receipt drop retain all bindings"
+    );
+    println!(
+        "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain"
     );
     Ok(())
 }

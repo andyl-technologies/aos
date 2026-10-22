@@ -443,6 +443,28 @@
       name = "host-helper-bounded-descriptor-limit";
       pass = helper.systemd.services.aos-terrane-host-quota.serviceConfig.LimitNOFILE == 8192 && helper.systemd.services.aos-terrane-host-provision.serviceConfig.LimitNOFILE == 8192;
     }
+    {
+      name = "host-census-explicit-resources-and-descriptor-budget";
+      pass = let
+        census = evaluate (lib.recursiveUpdate helperFixture {
+          aos.terrane.hostHelper.projectCensus = {};
+        });
+        text = census.environment.etc."terrane-host/host.toml".text;
+      in
+        checksPass census
+        && !(lib.hasInfix "project_census" helperConfig)
+        && builtins.all (field: lib.hasInfix field text) ["[project_census]" "retained_inodes = 1024" "directory_entries = 65536" "depth = 64"]
+        && census.systemd.services.aos-terrane-host-quota.serviceConfig.LimitNOFILE == 9219;
+    }
+    {
+      name = "host-census-zero-or-excessive-bounds-refused";
+      pass = builtins.all rejectedHelper [
+        {aos.terrane.hostHelper.projectCensus.retainedInodes = 0;}
+        {aos.terrane.hostHelper.projectCensus.retainedInodes = 65537;}
+        {aos.terrane.hostHelper.projectCensus.directoryEntries = 1048577;}
+        {aos.terrane.hostHelper.projectCensus.depth = 257;}
+      ];
+    }
 
     {
       name = "host-helper-summed-domain-budget-refused";

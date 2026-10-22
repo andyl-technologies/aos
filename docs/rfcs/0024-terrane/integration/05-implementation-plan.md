@@ -13874,3 +13874,44 @@ native state. Cold exposure recovery still refuses before mutation. Authenticate
 census transport, durable pending retirement and physical release remain required;
 no SDK row, dropped receipt or deletion notification discharges an obligation.
 No trunk task is closed by this increment.
+
+The five SDK exposure cases at `0ec93fcd1d` pass with no failed or ignored
+cases after 12 minutes of optimized test compilation. The command's subsequent
+workspace formatting check reports newly edited census source, rather than an
+SDK test failure; that source is formatted separately. Native and required
+application qualification of the frozen backing-record commit remain running.
+
+The next increment connects the qualified native inode census to authenticated
+host-helper sessions. Registered version 2 requests preserve the version 1
+quota schema and share its protected endpoint, kernel peer identity, exact epoch,
+owner/domain checks and complete partition verification. Canonical bounded
+protobuf rejects unknown, duplicate, nonminimal and ambiguous fields. A request
+contains only correlation and bounded original inode exclusions; host config
+alone chooses roots, project and traversal limits. The client bounds input before
+allocation, authenticates a fresh connection and never resubmits a failed query.
+Only that client can construct the verified census evidence type.
+
+The helper serializes census descriptor retention, returning unavailable under
+contention or exhausted bounds. Successful charges come from the actual kernel
+query taken while distinct non-excluded inodes remain held, without substituting
+an independent quota sample. Optional protected configuration enables census;
+omission retains the prior quota-only behavior. The module projects finite
+descriptor, entry and depth bounds and funds the additional service descriptor
+allowance. Ninety-nine module checks pass, including explicit resource projection
+and invalid bounds. Existing service capabilities and client identities remain
+unchanged.
+
+All four original quota protocol controls and three new census controls pass
+without ignored cases. The new controls cover canonical encoding, full-width
+identities, bounds, truncation, correlated complete same-device roots, invalid
+counts and evidence-free error responses. Strict native/integration checks pass
+for all-feature and ordinary Tokio profiles; native declaration inventory,
+supervisor syntax and Nix formatting also pass. The actual surface VM enables
+explicit host census bounds and asks the root helper about the actual granted
+index descriptor. It requires unresolved custody while that descriptor remains
+open and denial for an unconfigured owner/domain pair. This new native execution
+and required application compilation still need frozen qualification.
+
+This increment introduces no physical release, pending-unlink transition or cold
+exposure reconciliation. The owner must still bind exact durable incarnations
+to serialized retirement before consuming closure evidence. No task is closed.

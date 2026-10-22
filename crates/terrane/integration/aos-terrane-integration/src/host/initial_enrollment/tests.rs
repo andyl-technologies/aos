@@ -27,6 +27,7 @@ fn config() -> HostConfig {
         socket: PathBuf::from("/run/terrane-host/quota.sock"),
         epoch: "00000000000000000000000000000001".to_owned(),
         tier_charge_budget_bytes: 32 * 1024 * 1024,
+        project_census: None,
         owners: vec![OwnerConfig {
             owner_id: "owner-a".to_owned(),
             domain: "private:a".to_owned(),

@@ -10,6 +10,9 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+mod census;
+pub use census::VerifiedProjectCensus;
+
 /// Identifies every allocation class in a single compatible project.
 pub const ROOT_LABELS: [&str; 8] = [
     "chunks",
@@ -149,6 +152,7 @@ pub struct HostQuotaBroker {
     epoch: [u8; 16],
     budget: u64,
     owners: Vec<ConfiguredOwner>,
+    census: Option<census::CensusService>,
 }
 
 impl HostQuotaBroker {
@@ -196,6 +200,7 @@ impl HostQuotaBroker {
             epoch,
             budget,
             owners,
+            census: None,
         })
     }
 
@@ -218,76 +223,88 @@ impl HostQuotaBroker {
         }
         let mut sequence = 0u64;
         loop {
-            let request = QuotaQuery::decode_strict(&socket.receive()?)?;
+            let bytes = socket.receive()?;
             sequence = sequence
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("quota sequence exhausted"))?;
-            let mut response = QuotaObservation {
-                version: 1,
-                request_id: request.request_id,
-                configuration_epoch: self.epoch.to_vec(),
-                owner_id: request.owner_id.clone(),
-                domain: request.domain.clone(),
-                query_sequence: sequence,
-                result: 4,
-                ..QuotaObservation::default()
-            };
-            if request.configuration_epoch != self.epoch {
-                response.result = 5;
-            } else if let Some(owner) = self.owners.iter().find(|owner| {
-                owner.owner_id == request.owner_id
-                    && owner.domain == request.domain
-                    && owner.allowed_client_uids.contains(&uid)
-            }) {
-                // Re-query the entire configured partition each time. A startup
-                // snapshot cannot establish current enforcement or budget coverage.
-                let mut sum = 0u64;
-                let mut selected = None;
-                let mut valid = true;
-                for configured in &self.owners {
-                    match configured.inspect() {
-                        Ok((quota, roots)) => {
-                            match sum.checked_add(quota.hard_limit_bytes) {
-                                Some(value) => sum = value,
-                                None => {
-                                    valid = false;
-                                    break;
-                                }
-                            }
-                            if configured.owner_id == owner.owner_id
-                                && configured.domain == owner.domain
-                            {
-                                selected = Some((quota, roots));
-                            }
-                        }
-                        Err(_) => {
-                            valid = false;
-                            break;
-                        }
-                    }
-                }
-                if valid
-                    && sum <= self.budget
-                    && let Some((quota, roots)) = selected
-                {
-                    response.result = 0;
-                    response.filesystem_uuid = owner.filesystem_uuid.to_vec();
-                    response.project_id = owner.project_id;
-                    response.accounting = true;
-                    response.enforcement = true;
-                    response.hard_limit_bytes = quota.hard_limit_bytes;
-                    response.charged_reserved_bytes = quota.charged_reserved_bytes;
-                    response.hard_inode_limit = quota.hard_inode_limit;
-                    response.charged_inodes = quota.charged_inodes;
-                    response.roots = roots;
-                    response.tier_charge_budget_bytes = self.budget;
-                    response.configured_limit_sum_bytes = sum;
-                }
-            } else {
-                response.result = 2;
+            if let Ok(request) = super::CensusQuery::decode_strict(&bytes) {
+                let response = self.census_observation(uid, sequence, request);
+                socket.send(&response.encode_to_vec())?;
+                continue;
             }
+            let request = QuotaQuery::decode_strict(&bytes)?;
+            let response = self.quota_observation(uid, sequence, &request);
             socket.send(&response.encode_to_vec())?;
         }
+    }
+
+    /// Rechecks the complete configured partition for either read-only protocol.
+    fn quota_observation(&self, uid: u32, sequence: u64, request: &QuotaQuery) -> QuotaObservation {
+        let mut response = QuotaObservation {
+            version: 1,
+            request_id: request.request_id,
+            configuration_epoch: self.epoch.to_vec(),
+            owner_id: request.owner_id.clone(),
+            domain: request.domain.clone(),
+            query_sequence: sequence,
+            result: 4,
+            ..QuotaObservation::default()
+        };
+        if request.configuration_epoch != self.epoch {
+            response.result = 5;
+        } else if let Some(owner) = self.owners.iter().find(|owner| {
+            owner.owner_id == request.owner_id
+                && owner.domain == request.domain
+                && owner.allowed_client_uids.contains(&uid)
+        }) {
+            // Re-query the entire configured partition each time. A startup
+            // snapshot cannot establish current enforcement or budget coverage.
+            let mut sum = 0u64;
+            let mut selected = None;
+            let mut valid = true;
+            for configured in &self.owners {
+                match configured.inspect() {
+                    Ok((quota, roots)) => {
+                        match sum.checked_add(quota.hard_limit_bytes) {
+                            Some(value) => sum = value,
+                            None => {
+                                valid = false;
+                                break;
+                            }
+                        }
+                        if configured.owner_id == owner.owner_id
+                            && configured.domain == owner.domain
+                        {
+                            selected = Some((quota, roots));
+                        }
+                    }
+                    Err(_) => {
+                        valid = false;
+                        break;
+                    }
+                }
+            }
+            if valid
+                && sum <= self.budget
+                && let Some((quota, roots)) = selected
+            {
+                response.result = 0;
+                response.filesystem_uuid = owner.filesystem_uuid.to_vec();
+                response.project_id = owner.project_id;
+                response.accounting = true;
+                response.enforcement = true;
+                response.hard_limit_bytes = quota.hard_limit_bytes;
+                response.charged_reserved_bytes = quota.charged_reserved_bytes;
+                response.hard_inode_limit = quota.hard_inode_limit;
+                response.charged_inodes = quota.charged_inodes;
+                response.roots = roots;
+                response.tier_charge_budget_bytes = self.budget;
+                response.configured_limit_sum_bytes = sum;
+            }
+        } else {
+            response.result = 2;
+        }
+        response
     }
 }
 

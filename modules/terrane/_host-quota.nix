@@ -46,26 +46,34 @@
     builtins.hasAttr owner.domain domainRoots
     && builtins.length owner.roots == builtins.length (expectedRoots owner.domain)
     && builtins.all (expected: builtins.any (root: root.roleDirectory == expected.roleDirectory && root.path == expected.path) owner.roots) (expectedRoots owner.domain);
-  configuration = {
-    socket = "${socketDirectory}/quota.sock";
-    epoch = cfg.epoch;
-    tier_charge_budget_bytes = terrane.hostTier.sizeBytes;
-    owners =
-      map (owner: {
-        owner_id = owner.ownerId;
-        inherit (owner) domain;
-        project_id = owner.projectId;
-        hard_limit_bytes = owner.hardLimitBytes;
-        allowed_client_uids = owner.allowedClientUids;
-        roots =
-          map (root: {
-            role_directory = root.roleDirectory;
-            inherit (root) path;
-          })
-          owner.roots;
-      })
-      cfg.owners;
-  };
+  configuration =
+    {
+      socket = "${socketDirectory}/quota.sock";
+      epoch = cfg.epoch;
+      tier_charge_budget_bytes = terrane.hostTier.sizeBytes;
+      owners =
+        map (owner: {
+          owner_id = owner.ownerId;
+          inherit (owner) domain;
+          project_id = owner.projectId;
+          hard_limit_bytes = owner.hardLimitBytes;
+          allowed_client_uids = owner.allowedClientUids;
+          roots =
+            map (root: {
+              role_directory = root.roleDirectory;
+              inherit (root) path;
+            })
+            owner.roots;
+        })
+        cfg.owners;
+    }
+    // lib.optionalAttrs (cfg.projectCensus != null) {
+      project_census = {
+        retained_inodes = cfg.projectCensus.retainedInodes;
+        directory_entries = cfg.projectCensus.directoryEntries;
+        depth = cfg.projectCensus.depth;
+      };
+    };
   commonService = {
     User = "root";
     Group = "root";
@@ -73,7 +81,15 @@
     UMask = "0077";
     # Each bounded allocation-scaffold directory retains native descriptors
     # and its parent binding throughout the inspector's lifetime.
-    LimitNOFILE = 8192;
+    # Census requests serialize their additional retained descriptors; ordinary
+    # query workers keep the existing scaffold and connection allowance.
+    LimitNOFILE =
+      8192
+      + (
+        if cfg.projectCensus == null
+        then 0
+        else cfg.projectCensus.retainedInodes + 3
+      );
     NoNewPrivileges = true;
     AmbientCapabilities = "";
     PrivateNetwork = true;
@@ -97,6 +113,15 @@ in {
     enable = lib.mkEnableOption "host-supplied Terrane project-quota inspection";
     package = option (types.nullOr types.package) null "Explicit AOS-built host helper; no package is selected implicitly.";
     epoch = option (types.nullOr (types.strMatching "[0-9a-f]{32}")) null "Explicit provisioning epoch persisted in the host-owned ledger.";
+    projectCensus =
+      option (types.nullOr (types.submodule {
+        options = {
+          retainedInodes = option (types.addCheck positive (value: value <= 65536)) 1024 "Maximum distinct inode descriptors held through one serialized census.";
+          directoryEntries = option (types.addCheck positive (value: value <= 1048576)) 65536 "Maximum visited entries, including aliases and excluded names.";
+          depth = option (types.addCheck positive (value: value <= 256)) 64 "Maximum traversal depth beneath configured roots.";
+        };
+      }))
+      null "Explicit read-only inode census bounds; null disables census queries.";
     owners = option (types.listOf (types.submodule {
       options = {
         ownerId = lib.mkOption {

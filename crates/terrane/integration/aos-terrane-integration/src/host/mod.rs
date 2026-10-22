@@ -47,6 +47,21 @@ pub struct HostConfig {
     pub tier_charge_budget_bytes: u64,
     /// Complete project partition.
     pub owners: Vec<OwnerConfig>,
+    /// Explicit bounds enabling read-only original-inode census; absent disables it.
+    #[serde(default)]
+    pub project_census: Option<ProjectCensusConfig>,
+}
+
+/// Bounds the host helper's single concurrent original-inode census.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectCensusConfig {
+    /// Maximum distinct inode descriptors retained through the quota query.
+    pub retained_inodes: usize,
+    /// Maximum visited directory entries, including aliases and excluded names.
+    pub directory_entries: usize,
+    /// Maximum traversal depth beneath a configured retained root.
+    pub depth: u32,
 }
 
 /// Configures one stable domain charge owner.
@@ -817,12 +832,26 @@ pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     if metadata.uid() != 0 || metadata.mode() & 0o022 != 0 {
         return Err(io::Error::other("unsafe quota socket parent"));
     }
-    let broker = std::sync::Arc::new(HostQuotaBroker::bind(
-        &config.socket,
-        epoch(&config.epoch)?,
-        config.tier_charge_budget_bytes,
-        owners,
-    )?);
+    let broker = match config.project_census {
+        Some(limits) => HostQuotaBroker::bind_with_project_census(
+            &config.socket,
+            epoch(&config.epoch)?,
+            config.tier_charge_budget_bytes,
+            owners,
+            terrane_linux::host_quota::ProjectCensusLimits {
+                retained_inodes: limits.retained_inodes,
+                directory_entries: limits.directory_entries,
+                depth: limits.depth,
+            },
+        )?,
+        None => HostQuotaBroker::bind(
+            &config.socket,
+            epoch(&config.epoch)?,
+            config.tier_charge_budget_bytes,
+            owners,
+        )?,
+    };
+    let broker = std::sync::Arc::new(broker);
     fs::set_permissions(&config.socket, fs::Permissions::from_mode(0o666))?;
     let mut workers = Vec::new();
     for _ in 0..16 {

@@ -9,12 +9,13 @@ pub mod initial_enrollment;
 mod native;
 pub use native::{NativeProject, NativeQuota, provision_project, synchronized_allocated_bytes};
 
-#[cfg(feature = "surface-fuse")]
 mod census;
-#[cfg(feature = "surface-fuse")]
 pub use census::{
     NativeProjectClosure, ProjectCensusLimits, ProjectInode, observe_project_closure,
 };
+
+mod census_wire;
+pub use census_wire::{CensusInode, CensusObservation, CensusQuery, MAX_CENSUS_EXCLUSIONS};
 
 mod wire;
 pub use wire::{QuotaObservation, QuotaQuery, QuotaRoot};
@@ -23,7 +24,7 @@ mod broker;
 mod socket;
 pub use broker::{
     ConfiguredOwner, ConfiguredRoot, ConfiguredScaffold, HostQuotaBroker, HostQuotaClient,
-    ROOT_LABELS, VerifiedQuotaObservation,
+    ROOT_LABELS, VerifiedProjectCensus, VerifiedQuotaObservation,
 };
 pub use native::filesystem_uuid;
 pub use native::open_host_path;

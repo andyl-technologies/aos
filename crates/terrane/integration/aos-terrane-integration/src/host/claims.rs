@@ -633,6 +633,7 @@ mod tests {
             epoch: "00000000000000000000000000000001".into(),
             tier_charge_budget_bytes: 4194304,
             owners: Vec::new(),
+            project_census: None,
         };
         let file = File::open(&a).expect("actual directory");
         let uuid = filesystem_uuid(&file).expect("actual filesystem UUID");

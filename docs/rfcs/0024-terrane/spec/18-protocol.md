@@ -102,6 +102,9 @@ under PROTO-60; it cannot perform publisher or Distribution operations.
 - **[PROTO-60]** A host-supplied privileged quota inspector MUST use the
   registered `host-quota-local-v1` transport in
   [`reference/protocol.md`](reference/protocol.md#host-quota-local-v1).
+  Original-inode closure inspection MAY additionally use the explicitly
+  versioned [`host-quota-local-v2` census](reference/protocol.md#host-quota-local-v2-census)
+  without extending the version 1 field vocabulary.
   Its only operation is read-only inspection of a host-configured quota
   owner/domain at a configuration epoch. It MUST NOT accept caller paths,
   filesystem descriptors, project numbers, mutable quota commands or

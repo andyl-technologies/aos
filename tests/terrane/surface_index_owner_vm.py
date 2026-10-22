@@ -67,6 +67,11 @@ def main():
     support.scaffold()
     support.administrative_preflight("after")
     quota_config, publisher_config = support.configurations()
+    # Explicit host policy enables the new read-only protocol; peers cannot
+    # supply traversal paths or increase these descriptor and scan bounds.
+    quota_config.write_text(
+        "project_census = { retained_inodes = 512, directory_entries = 4096, depth = 16 }\n"
+        + quota_config.read_text())
     helper = image / "bin/aos-terrane-host"
     ledger = support.ADMIN / "ledger.toml"
     support.run(support.admin_command(support.PROVISION_CAPS,
@@ -197,6 +202,7 @@ def main():
             "PASS actual sealed exposure file is pinned before closing Read; ordinary release and draining preserve durable object protection",
             "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop",
             "PASS durable exposure records match actual original index and file inodes and verity measurements; draining and receipt drop retain all bindings",
+            "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain",
             "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"],
             "durable native root exposure actor failed")
         verify_surface(image, source)

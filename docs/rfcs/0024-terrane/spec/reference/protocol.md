@@ -405,6 +405,91 @@ Provisioning is a host administrative operation, not a protocol method.
 A privileged-opened descriptor or static provisioning record does not grant
 unprivileged kernel query permission or replace live quota observations.
 
+## `host-quota-local-v2` census
+
+Version 2 adds optional read-only original-inode census on the same authenticated
+host quota socket. Version 1 packets retain the schema and checks above. A helper
+without explicitly configured census bounds returns `QUOTA_UNSUPPORTED` for a
+valid version 2 request. Older helpers reject the unknown version. Neither peer
+guesses a version or falls back after submitting an accepted request.
+
+The version 1 packet size, descriptor prohibition, protected socket parent,
+kernel peer authentication, owner/domain authorization and exact epoch checks
+also apply. Version 2 additionally requires canonical protobuf encoding: fields
+appear in tag order, singular fields occur at most once, default scalar fields are
+omitted, varints use their minimal representation, and unknown fields are
+rejected at every level. Repeated identities retain request order. The closed
+schema is:
+
+```protobuf
+syntax = "proto3";
+package terrane.host.quota.v2;
+
+message CensusInode {
+  uint64 device = 1; // nonzero original native device
+  uint64 inode = 2;  // nonzero original inode, including all 64 bits
+}
+
+message CensusQuery {
+  uint32 version = 1; // exactly 2
+  uint64 request_id = 2;
+  bytes configuration_epoch = 3;
+  string owner_id = 4;
+  string domain = 5;
+  repeated CensusInode excluded = 6; // 1..512 distinct original identities
+}
+
+message CensusObservation {
+  uint32 version = 1; // exactly 2
+  uint64 request_id = 2;
+  bytes configuration_epoch = 3;
+  string owner_id = 4;
+  string domain = 5;
+  uint64 query_sequence = 6;
+  int32 result = 7; // registered QuotaResult codes
+  terrane.host.quota.v1.QuotaObservation quota = 8;
+  repeated CensusInode excluded = 9;
+  uint64 retained_inodes = 10;
+}
+```
+
+Correlation fields have the version 1 bounds. Errors carry correlation and
+result alone, with no quota, exclusions or retained count. A successful response
+contains a valid complete version 1 quota observation with the same correlation
+and sequence, and exactly echoes the ordered exclusions. Each exclusion belongs
+to the observed native device. The nonzero retained count MUST NOT exceed the
+fresh kernel project inode charge. Bare decoded messages grant no native
+authority; the physical owner consumes only authenticated correlated evidence.
+
+Only protected host configuration chooses traversal roots, filesystem, project
+and resource bounds. No request supplies a path, descriptor, project number,
+traversal budget or mutation. The helper rechecks the complete configured quota
+partition and durable native project claims, then retains distinct non-excluded
+inodes through the kernel quota query. Every alias of an excluded identity is
+excluded. Counted descriptors remain held through native binding checks around
+that query. The returned quota charges MUST come from this held-inode query,
+rather than an independent sample taken before or after it.
+
+Host configuration bounds retained descriptors, visited entries including
+aliases, and traversal depth. At most one census holds its additional descriptor
+budget at a time; contention, exhaustion, incomplete native inspection or
+unsupported entries yield unavailable evidence. Ordinary quota queries retain
+their existing bounded sessions. Production service descriptor limits include
+both the existing retained scaffold allowance and the configured census budget.
+An incomplete namespace can conservatively prevent closure; a pathname,
+policy byte total, deletion notification or estimated allocation cannot replace
+the native comparison.
+
+Equality between the retained distinct inode count and the complete charged
+project inode count establishes that none of these exact exclusions remained
+charged at the observation. A larger charge retains unresolved obligations.
+The physical owner MUST first bind the exclusions to its durable original
+incarnations and serialized retirement, stop new grants, unlink retired names
+and close its own backing descriptors. It MUST preserve the ban on untrusted
+project setters. The observation itself performs none of these transitions,
+does not identify reference holders, and does not authorize release of any
+different inode or policy obligation.
+
 ## Common types
 
 ```protobuf
