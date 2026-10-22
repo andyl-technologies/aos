@@ -14126,3 +14126,27 @@ profiles, the complete 128-case source inventory and supervisor syntax pass.
 Frozen runtime and mandatory application qualification for this correction
 remain pending. Authenticated worker-channel work remains uncommitted and is
 excluded from this correction's source checkpoint. No trunk task is closed.
+
+Review of the binding cleanup identifies one further lifetime requirement:
+`RetainedBinding` deliberately keeps the original record through failed unlink
+or directory synchronization, but must close that descriptor once both succeed.
+Otherwise the newly unlinked private record itself remains a charged inode that
+the namespace census cannot count. Successful removal now clears that original
+snapshot; failed synchronization still retains it unchanged. The existing real
+parent-sync-failure control additionally checks that successful reconciliation
+closes its snapshot. All three binding-repair controls pass, including refusal
+of special inodes, replacements and same-inode byte mutation. Formatting and
+strict Linux all-target Clippy in both feature profiles also pass. The running
+`ddd3c52568` qualification predates this descriptor-close correction and remains
+separate evidence. No new native closure pass is claimed.
+
+At `4f67e30ba9`, required application-target compilation passes in 1,496.82
+seconds and full native host-cache qualification passes in 1,534.66 seconds.
+Immutable review matches all 8,032 source files, 184 application compiler
+records across 59 packages, 5,327 native inputs and four installed native Cargo
+ELFs. The host-cache VM executes all 128 native library cases and 92 fixture
+selectors. These passes do not override that checkpoint's failed surface VM or
+qualify subsequent publisher-binding finalization changes. The earlier combined
+retirement checkpoint `d297b9c086` also passes application compilation in
+1,514.51 seconds; review matches all 8,030 source files, 184 records and 59
+packages. Compilation establishes no mounted-surface behavior.

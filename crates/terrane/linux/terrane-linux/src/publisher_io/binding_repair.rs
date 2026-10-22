@@ -127,7 +127,15 @@ impl RetainedBinding {
         // both operations. A sync failure retains the snapshot for reconciliation;
         // it never grants a backing handle or replaces a binding record.
         fs::unlinkat(&self.directory, name, AtFlags::empty())?;
-        self.directory.sync_all()
+        self.directory.sync_all()?;
+        // Successful removal no longer needs a retained descriptor. Keeping it
+        // would preserve an unlinked project inode indefinitely. Failed sync
+        // returns above with the original snapshot still retained for recovery.
+        *self
+            .snapshot
+            .get_mut()
+            .map_err(|_| io::Error::other("binding custody lock poisoned"))? = None;
+        Ok(())
     }
 }
 
@@ -226,5 +234,6 @@ mod tests {
         recovered.capture(&path).unwrap();
         recovered.remove(&path).unwrap();
         assert!(!path.exists());
+        assert!(recovered.snapshot.get_mut().unwrap().is_none());
     }
 }
