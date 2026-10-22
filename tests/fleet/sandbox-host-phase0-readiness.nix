@@ -88,7 +88,7 @@
           C /run/credentials/@system/phase0-test-seed 0600 root root - ${testKeys}/seed
           C /run/credentials/@system/phase0-test-public 0600 root root - ${testKeys}/public
         '';
-        environment.systemPackages = [credentialFixture pkgs.coreutils pkgs.openssl pkgs.systemd];
+        environment.systemPackages = [credentialFixture pkgs.coreutils pkgs.diffutils pkgs.openssl pkgs.systemd];
         aos.image.erofsCompressionLevel = 1;
         # The nested Guest template copies fixed store bytes under independent
         # names and inodes. Reuse only their compressed data, never their labels.
@@ -238,7 +238,7 @@ in {
       # inode alias, change immutable ownership/modes, or replace its label.
       outer_library = "${pkgs.openssl}/lib/libcrypto.so.4"
       guest_library = "${pkgs.aos-sandbox-guest-root-template}/root${pkgs.openssl}/lib/libcrypto.so.4"
-      vm.succeed(f"cmp {outer_library} {guest_library}")
+      vm.succeed(f"${pkgs.diffutils}/bin/cmp {outer_library} {guest_library}")
       identities = vm.succeed(f"stat -c '%d:%i' {outer_library} {guest_library}").splitlines()
       assert len(identities) == 2 and identities[0] != identities[1], identities
       metadata = vm.succeed(f"stat -c '%a %u %g' {outer_library} {guest_library}").splitlines()

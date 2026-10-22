@@ -9927,6 +9927,16 @@ Fresh installed reruns must establish labeling and Host readiness; no guest
 repair, policy permission or service-comparison relaxation establishes that
 result.
 
+The corrected Host image subsequently finishes authenticated native host
+activation, records its committed boot deployment and reaches `multi-user.target`
+with enforcement enabled. That installed attempt then fails at the first
+Guest-copy byte comparison because the fixture does not install `cmp`:
+`/nix/store/2drpr8zr9n14s316844b3rpb37sds605-aos-fleet-test-sandbox-host-phase0-readiness-0.drv`.
+The fixture now explicitly includes AOS `pkgs.diffutils` and invokes its exact
+`cmp` path. This is an enforcing native-activation observation, not a passing
+Host phase-0 receipt; the remaining readiness and rejection checks still
+require the corrected installed rerun.
+
 The separate enforcing root-handoff rerun also fails before its test body:
 the post-pin machine never reaches its agent. Its serial transcript shows
 switch-root isolation closing the qualification custody socket and stopping
