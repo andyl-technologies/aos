@@ -26,11 +26,11 @@ impl Database {
         Ok(())
     }
 
-    /// Look up a user's id and stored password hash by email, for login.
+    /// Looks up a verified mailbox owner's id and stored password hash for login.
     ///
     /// Returns `Ok(Some((user_id, phc)))` only when a non-deleted user exists
     /// for `email` **and** has a password set; returns `Ok(None)` when no such
-    /// user exists *or* the user has no password (`password_hash IS NULL`).
+    /// mailbox owner exists or the user has no password (`password_hash IS NULL`).
     /// The caller verifies `phc` with
     /// [`aos_hub_model::auth::password::verify_password`] and must surface the same
     /// generic "invalid email or password" outcome for both the `None` and the
@@ -44,8 +44,10 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT id, password_hash FROM users
-                 WHERE email = ?1 AND deleted_at IS NULL AND password_hash IS NOT NULL",
+                "SELECT u.id, u.password_hash FROM user_mailboxes mailbox
+                 JOIN users u ON u.id = mailbox.user_id
+                 WHERE mailbox.email = ?1 AND u.deleted_at IS NULL
+                   AND u.password_hash IS NOT NULL",
                 &vals![email],
             )
             .await
@@ -271,10 +273,10 @@ impl Database {
 
     /// Record an in-flight OIDC authorization-code request.
     ///
-    /// Stores the opaque `state`, the `nonce` the id_token will be checked
-    /// against, and the PKCE `code_verifier`, with an `expires_at` `ttl_secs`
-    /// from now. The row is consumed exactly once at the callback by
-    /// [`Database::take_oidc_flow`].
+    /// Stores the opaque `state`, the verifier configuration, the `nonce` the
+    /// id_token will be checked against, and the PKCE `code_verifier`, with an
+    /// `expires_at` `ttl_secs` from now. The row is consumed exactly once at
+    /// the callback by [`Database::take_oidc_flow`].
     ///
     /// # Errors
     ///
@@ -283,6 +285,7 @@ impl Database {
         &self,
         state: &str,
         org_id: i64,
+        verifier_id: &str,
         nonce: &str,
         code_verifier: &str,
         redirect_after: Option<&str>,
@@ -292,11 +295,12 @@ impl Database {
         self.backend
             .execute(
                 "INSERT INTO oidc_flows
-             (state, org_id, nonce, code_verifier, redirect_after, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (state, org_id, verifier_id, nonce, code_verifier, redirect_after, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 &vals![
                     state,
                     org_id,
+                    verifier_id,
                     nonce,
                     code_verifier,
                     redirect_after,
@@ -331,7 +335,7 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
+                    "SELECT state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at
                      FROM oidc_flows WHERE state = ?1",
                     &vals![state],
                 )
@@ -353,7 +357,7 @@ impl Database {
             self.backend
                 .query_opt(
                     "DELETE FROM oidc_flows WHERE state = ?1
-                     RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
+                     RETURNING state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at",
                     &vals![state],
                 )
                 .await

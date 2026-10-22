@@ -235,6 +235,52 @@ impl Database {
         error: Option<&str>,
         expected_observation_version: Option<i64>,
     ) -> Result<BindingWriteObservationRecord> {
+        self.observe_binding_write_revision_inner(
+            binding_id,
+            revision,
+            state,
+            error,
+            expected_observation_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records binding validation under both lease and observation CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, revision, state, or expected observation
+    /// version is invalid, or when the database operation fails.
+    pub async fn observe_binding_write_revision_fenced(
+        &self,
+        binding_id: i64,
+        revision: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_observation_version: Option<i64>,
+        fence: &ControllerLeaseFence<'_>,
+    ) -> Result<BindingWriteObservationRecord> {
+        self.observe_binding_write_revision_inner(
+            binding_id,
+            revision,
+            state,
+            error,
+            expected_observation_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    async fn observe_binding_write_revision_inner(
+        &self,
+        binding_id: i64,
+        revision: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_observation_version: Option<i64>,
+        fence: Option<&ControllerLeaseFence<'_>>,
+    ) -> Result<BindingWriteObservationRecord> {
         if !matches!(state, "unknown" | "validating" | "valid" | "invalid") {
             bail!("invalid binding-write observation state '{state}'");
         }
@@ -242,32 +288,31 @@ impl Database {
             bail!("only an invalid binding-write observation may carry an error");
         }
         let validated_at = matches!(state, "valid" | "invalid").then(unix_now);
-        let affected = if let Some(version) = expected_observation_version {
-            self.backend
-                .execute(
-                    "UPDATE binding_write_observations
+        let observation = if let Some(version) = expected_observation_version {
+            Statement::new(
+                "UPDATE binding_write_observations
                      SET state = ?4, validated_at = ?5, error = ?6,
                          observation_version = observation_version + 1
                      WHERE binding_id = ?1 AND revision = ?2
                        AND observation_version = ?3",
-                    &vals![binding_id, revision, version, state, validated_at, error],
-                )
-                .await?
+                vals![binding_id, revision, version, state, validated_at, error],
+            )
         } else {
-            self.backend
-                .execute(
-                    "INSERT INTO binding_write_observations
+            Statement::new(
+                "INSERT INTO binding_write_observations
                      (binding_id, revision, state, validated_at, error)
                      SELECT binding_id, revision, ?3, ?4, ?5
                      FROM binding_write_revisions
                      WHERE binding_id = ?1 AND revision = ?2",
-                    &vals![binding_id, revision, state, validated_at, error],
-                )
-                .await?
+                vals![binding_id, revision, state, validated_at, error],
+            )
         };
-        if affected != 1 {
-            bail!("binding-write revision is missing or its observation version is stale");
+        let mut statements = Vec::with_capacity(2);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
         }
+        statements.push(observation.expecting(1));
+        self.backend.checked_batch(&statements).await?;
         let row = self.backend.query_opt(
             &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM binding_write_observations WHERE binding_id = ?1 AND revision = ?2"),
             &vals![binding_id, revision],
