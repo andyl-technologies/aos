@@ -37,8 +37,10 @@ use self::activation::take_systemd_activation;
 use self::control::{ControlCommand, ControlListener, send_control_command};
 use self::state::{CustodyState, PinRoot};
 
-const CONTROL_SOCKET: &str = "/var/lib/aos/sandbox-network/custody-fixture.sock";
-const STATE_FILE: &str = "/var/lib/aos/sandbox-network/custody-fixture.state";
+// Use the production broker's writable state subdivision. Its parent remains
+// read-only under ProtectSystem=strict in the inherited service sandbox.
+const CONTROL_SOCKET: &str = "/var/lib/aos/sandbox-network/broker-state/custody-fixture.sock";
+const STATE_FILE: &str = "/var/lib/aos/sandbox-network/broker-state/custody-fixture.state";
 const HOST_IDENTITY_FILE: &str = "/var/lib/aos/sandbox-network/trusted-host-netns";
 const PIN_ROOT: &str = "/run/aos/sandbox-pins/netns";
 

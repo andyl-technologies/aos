@@ -236,7 +236,8 @@ in {
     STAT = "${pkgs.coreutils}/bin/stat"
     STATE_ROOT = "/var/lib/aos/sandbox-network"
     RUNTIME_ROOT = "/run/aos/sandbox-pins/netns"
-    CONTROL = f"{STATE_ROOT}/custody-fixture.sock"
+    BROKER_STATE = f"{STATE_ROOT}/broker-state"
+    CONTROL = f"{BROKER_STATE}/custody-fixture.sock"
     NAME = "aos-network-netns-v1-" + "01" * 32
     HOST_NAME = "aos-network-netns-v1-" + "02" * 32
     SECOND_NAME = "aos-network-netns-v1-" + "03" * 32
@@ -870,12 +871,12 @@ in {
 
     # Filesystem permissions are relaxed only long enough to demonstrate that
     # the listener authenticates each packet's kernel credentials itself.
-    lifecycle.succeed(f"chmod 0711 {STATE_ROOT}; chmod 0666 {CONTROL}")
+    lifecycle.succeed(f"chmod 0711 {STATE_ROOT} {BROKER_STATE}; chmod 0666 {CONTROL}")
     untrusted = lifecycle.succeed(
         f"{SETPRIV} --reuid 65534 --regid 65534 --clear-groups "
         f"{FIXTURE} send PING"
     ).strip()
-    lifecycle.succeed(f"chmod 0600 {CONTROL}; chmod 0700 {STATE_ROOT}")
+    lifecycle.succeed(f"chmod 0600 {CONTROL}; chmod 0700 {STATE_ROOT} {BROKER_STATE}")
     assert untrusted.startswith("ERROR control command is not from root:root"), untrusted
     assert fixture(lifecycle, "PING") == "PONG"
 
