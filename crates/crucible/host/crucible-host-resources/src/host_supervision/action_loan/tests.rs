@@ -65,6 +65,20 @@ fn actual_producing_class_and_entered_clock_survive_live_policy_and_progress() {
 #[derive(Debug)]
 struct UnissuedPublisher;
 
+#[test]
+fn unsupported_publisher_refuses_quantum_role_projection() {
+    assert!(
+        UnissuedPublisher
+            .publish_quantum_role(
+                binding(),
+                HostQuantumActionRole::Cleanup,
+                [ActionParent::default(); 4],
+                2,
+            )
+            .is_err()
+    );
+}
+
 fn unissued_publisher() -> FundedSourcePublisher<dyn HostActionPublisher> {
     use crate::host_services::{HostServiceAllocator, HostServiceLeasePair};
 

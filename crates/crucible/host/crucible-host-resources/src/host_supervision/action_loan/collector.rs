@@ -5,6 +5,101 @@
 
 use super::*;
 
+/// Selects one independently retained role of a Quantum action.
+///
+/// Work and Cleanup retain separate primary operations and their registered
+/// Preparation dependencies. Selecting a role enters no operation and grants
+/// no permission; the actual registered publisher decides from locked facts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostQuantumActionRole {
+    /// Selects the original Quantum work operation and its dependency.
+    Work,
+    /// Selects the independently entered finite Cleanup and its dependency.
+    Cleanup,
+}
+
+impl HostQuantumActionRole {
+    fn primary(self) -> usize {
+        match self {
+            Self::Work => 0,
+            Self::Cleanup => 1,
+        }
+    }
+
+    fn validate(self, parents: &[ActionParent; 4], mask: u32) -> Result<(), HostSupervisionError> {
+        let index = self.primary();
+        let primary = &parents[index];
+        let class = match self {
+            Self::Work => HostOperationClass::Quantum,
+            Self::Cleanup => HostOperationClass::Cleanup,
+        };
+        if primary.class != class as u32 || primary.role != 0 {
+            return Err(HostSupervisionError::Unavailable);
+        }
+
+        let mut expected = 1 << index;
+        if primary.preparation != 0 {
+            if !(3..=4).contains(&primary.preparation) {
+                return Err(HostSupervisionError::Unavailable);
+            }
+            let dependency = primary.preparation as usize - 1;
+            let preparation = &parents[dependency];
+            if preparation.class != HostOperationClass::Preparation as u32
+                || preparation.role != 1
+                || preparation.preparation != 0
+            {
+                return Err(HostSupervisionError::Unavailable);
+            }
+            expected |= 1 << dependency;
+        }
+
+        if mask != expected {
+            return Err(HostSupervisionError::Unavailable);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Projection {
+    Cohort(u32),
+    QuantumRole(HostQuantumActionRole),
+}
+
+impl Projection {
+    fn mask(self, loans: &[Option<&HostActionLoan>; 4]) -> Result<u32, HostSupervisionError> {
+        match self {
+            Self::Cohort(count) => {
+                if !(1..=4).contains(&count) {
+                    return Err(HostSupervisionError::InvalidBudget);
+                }
+                Ok((1 << count) - 1)
+            }
+            Self::QuantumRole(role) => {
+                let primary = role.primary();
+                if loans[primary].is_none() || loans[1 - primary].is_some() {
+                    return Err(HostSupervisionError::Unavailable);
+                }
+                Ok(loans.iter().enumerate().fold(0, |mask, (index, loan)| {
+                    mask | if loan.is_some() { 1 << index } else { 0 }
+                }))
+            }
+        }
+    }
+
+    fn first(self) -> usize {
+        match self {
+            Self::Cohort(_) => 0,
+            Self::QuantumRole(role) => role.primary(),
+        }
+    }
+}
+
+/// Prices the forwarding selector and both caller-owned reference rosters.
+pub(super) const fn selection_scratch_bytes() -> usize {
+    2 * std::mem::size_of::<[Option<&HostActionLoan>; 4]>() + std::mem::size_of::<Projection>()
+}
+
 impl HostActionLoan {
     /// Refreshes all actual primary and Preparation lenders at one locked cut.
     ///
@@ -21,17 +116,46 @@ impl HostActionLoan {
         loans: [Option<&Self>; 4],
         count: u32,
     ) -> Result<(), HostSupervisionError> {
-        if !(1..=4).contains(&count) {
-            return Err(HostSupervisionError::InvalidBudget);
-        }
-        let first = loans[0].ok_or(HostSupervisionError::Unavailable)?;
+        Self::refresh_selected(loans, Projection::Cohort(count))
+    }
+
+    /// Refreshes only one Quantum role through its actual retained memberships.
+    ///
+    /// The roster uses original global row positions: Work is row zero,
+    /// Cleanup is row one, and the selected primary's registered Preparation
+    /// dependency, if present, occupies row two or three. All other slots must
+    /// be absent. Cleanup selects no Work loan and never queries or republishes
+    /// its operation. A shared supervisor still contributes its one state lock.
+    ///
+    /// The selected publisher receives current observations while all selected
+    /// lender locks remain held. This enters no Cleanup, renews no clock and
+    /// returns no semantic or physical ownership. Unsupported publishers refuse.
+    /// Callers must release Source/publisher guards before entry, as for
+    /// [`Self::refresh_cohort`].
+    ///
+    /// # Errors
+    /// Refuses missing, returned or foreign memberships, changed publishers,
+    /// wrong classes or dependency rosters, and uncertain locks/publication.
+    pub fn refresh_quantum_role(
+        loans: [Option<&Self>; 4],
+        role: HostQuantumActionRole,
+    ) -> Result<(), HostSupervisionError> {
+        Self::refresh_selected(loans, Projection::QuantumRole(role))
+    }
+
+    fn refresh_selected(
+        loans: [Option<&Self>; 4],
+        projection: Projection,
+    ) -> Result<(), HostSupervisionError> {
+        let mask = projection.mask(&loans)?;
+        let first = loans[projection.first()].ok_or(HostSupervisionError::Unavailable)?;
         let binding = first.binding;
         let mut owners: [Option<&Shared>; 4] = [None; 4];
         let mut outers: [Option<&Mutex<OuterAuthority>>; 4] = [None; 4];
         let mut owner_count = 0;
         let mut outer_count = 0;
         for (index, loan) in loans.iter().enumerate() {
-            if index >= count as usize {
+            if mask & (1 << index) == 0 {
                 if loan.is_some() {
                     return Err(HostSupervisionError::Unavailable);
                 }
@@ -88,7 +212,10 @@ impl HostActionLoan {
             );
         }
         let mut parents = [ActionParent::default(); 4];
-        for index in 0..count as usize {
+        for index in 0..4 {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
             let loan = loans[index].ok_or(HostSupervisionError::Unavailable)?;
             let owner = loan.supervisor.shared.as_ref();
             let owner_index = owners[..owner_count]
@@ -128,7 +255,15 @@ impl HostActionLoan {
                 }
                 cursor = current.next.as_deref();
             };
-            if !has_outer(&outer.action_subscribers, binding, index as u32) {
+            let mut cursor = outer.action_subscribers.as_deref();
+            let outer_subscriber = loop {
+                let current = cursor.ok_or(HostSupervisionError::Unavailable)?;
+                if current.binding == binding && current.row == index as u32 {
+                    break current;
+                }
+                cursor = current.next.as_deref();
+            };
+            if !outer_subscriber.publisher.same_owner(&subscriber.publisher) {
                 return Err(HostSupervisionError::Unavailable);
             }
             parents[index] = parent_snapshot(
@@ -154,12 +289,12 @@ impl HostActionLoan {
             .and_then(|operation| operation.action_subscribers.as_deref());
         let publisher = loop {
             let current = cursor.ok_or(HostSupervisionError::Unavailable)?;
-            if current.binding == binding && current.row == 0 {
+            if current.binding == binding && current.row == first.row {
                 break &current.publisher;
             }
             cursor = current.next.as_deref();
         };
-        for loan in loans.iter().take(count as usize).flatten() {
+        for loan in loans.iter().flatten() {
             let owner_index = owners[..owner_count]
                 .iter()
                 .position(|owner| {
@@ -184,6 +319,15 @@ impl HostActionLoan {
                 return Err(HostSupervisionError::Unavailable);
             }
         }
-        publisher.publish_cohort(binding, parents, count)
+        match projection {
+            Projection::Cohort(count) => publisher.publish_cohort(binding, parents, count),
+            Projection::QuantumRole(role) => {
+                role.validate(&parents, mask)?;
+                publisher.publish_quantum_role(binding, role, parents, mask)
+            }
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

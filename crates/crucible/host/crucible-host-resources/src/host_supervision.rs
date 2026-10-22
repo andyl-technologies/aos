@@ -17,7 +17,7 @@ use self::deadline::{OperationDecision, decide_operation, operation_status_from_
 mod action_loan;
 pub use action_loan::{
     HostActionLoan, HostActionPublisher, HostActionReturnReceipt,
-    HostActionUnpublishedReturnReceipt, HostParentParkReturnReceipt,
+    HostActionUnpublishedReturnReceipt, HostParentParkReturnReceipt, HostQuantumActionRole,
 };
 
 mod bootstrap;

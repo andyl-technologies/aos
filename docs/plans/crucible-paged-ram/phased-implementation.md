@@ -69,6 +69,45 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Independent Host Quantum-role collection
+
+The action collector now selects either the complete cohort or one actual
+Quantum role. Work retains row zero; independently entered Cleanup retains
+row one. Only that primary's registered Preparation dependency participates.
+The selection validates real intrusive operation and outer memberships and the
+same funded publisher allocation under all selected lender locks. Outer and
+operation memberships must also retain the same publisher. Other rows remain
+zero. Shared supervisors and shared Preparation dependencies retain their
+original identities and use one ordered lock per actual owner.
+
+Cleanup collection selects no Work loan and does not query the Work operation.
+It enters no operation, grants no permission, renews no clock and returns no
+physical debt. A separate callback receives the selected current facts while
+those locks remain held; existing publishers refuse this callback by default.
+The fixed collection recipe additionally prices the forwarding selector and
+both reference rosters before Source birth. A separate behavior-preserving
+commit first moved the original full collector without changing its body.
+
+All Host resource targets pass 320 reported cases, including six new collector
+controls and the explicit unsupported-publisher refusal. Strict all-target,
+all-feature Host resource Clippy passes. The contention control holds both
+ended Work locks in another thread while Cleanup completes; callback controls
+check every selected state and outer lock. Separate, shared and absent
+Preparation layouts, missing/extra/returned/foreign rows, mismatched outer
+publishers and wrong actual classes are covered. These are component-funded
+mechanism fixtures with real entered Host operations and directly seeded
+memberships; they create no authenticated Source purpose or Native borrower.
+The ABI gate registers the seven controls with exact counts and canonical
+names. Required application compilation, all QEMU Host target compilation,
+ABI and license-boundary checks are running. The first hygiene evaluation
+correctly refused the stale review digest for the parent module's changed
+reexport; its unchanged 1,824-line responsibility and focused child boundary
+were reviewed and the exact digest refreshed, without adding a waiver.
+
+The active Source publisher does not yet implement the new callback. Actual
+paired Source publication, independently retained Cleanup ownership, Native
+role issuance and complete physical return remain open.
+
 #### Explicit Quantum transport and plan negotiation
 
 The separate Quantum namespace now encodes and decodes Setup7, Purpose2 and
@@ -98,8 +137,15 @@ their shared test helpers also exercise the new route. Three negotiation,
 three plan and two new socket controls extend the prior six Quantum controls.
 The canonical ABI gate now requires and runs these fourteen cases in three
 explicit groups, checking registration count and canonical names before each
-execution. Engineering hygiene and Nix formatting pass; final application,
-ABI and canonical license-boundary checks are running.
+execution. Engineering hygiene and Nix formatting pass. Mandatory application compilation
+passes at `hb96w9g6bydxay4dislq5rw7j4kmfpl4`; all 5,321 Rust/TOML files from
+committed `d5363733cab74102bc14996d07a000f04ac2c12a` match its frozen source
+with zero differences. The comparison record SHA-256 is
+`13a2040253f7c01d595d774293e5f3d71ea71f2d581af9f8f5b37aa90655c49e`.
+The canonical ABI gate passes at `pzfhrbz3fzpp1iak48wvp27gln82rgnr`, executing
+the fourteen newly registered controls. The canonical license-boundary gate
+still stops at 909 Host-library and 963 Host-test strict Clippy errors; its
+boundary assertions did not run.
 
 These public codecs and the sender do not select the live launch route, install
 a recipient or enter Cleanup. Genuine producer/recipient construction, complete
@@ -131,9 +177,15 @@ and partial consumed-negative journals. Strict protocol Clippy passes without
 exemptions. The first lint run found a single-match test expression, corrected
 to `if let`. An added legacy-refusal fixture initially used an invalid two-primary
 schema-one cohort; its corrected genuine schema-one fixture passes. Both failed
-attempts remain separately retained. Engineering hygiene passes. Required
-application compilation and ABI are running; the canonical license-boundary
-build still fails at the existing 909 Host-library and 963 Host-test Clippy
+attempts remain separately retained. Engineering hygiene passes. Mandatory
+application compilation passes at `nyw4b2z1289ppx2kq7p5grgpy1h5swzk`; all
+5,317 Rust/TOML files from committed `a7f3c2fdb792f953438e22d2a3ad6fda7c451460`
+match its frozen source with zero differences. The comparison record SHA-256
+is `ee7c7a257b508ee473af50be89c9c3414c59b32bca125eab4886a597e8cc82e0`.
+The initial ABI build passes at `8jcflvbv4d8v067sk8hpph5kd0ifg2zb` but only
+compiles these new controls. The subsequent explicitly registered six-case
+build passes at `2dpp04xj8ifhm2qgv5g1cni6lisfcyhb`, executing all six. The
+canonical license-boundary build still fails at the existing 909 Host-library and 963 Host-test Clippy
 errors, before boundary assertions run.
 Actual independently entered Cleanup lending, complete resource admission,
 paired Native role projections and terminal closure remain implementation gaps.

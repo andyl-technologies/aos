@@ -548,6 +548,30 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::quantum_setup \
                 -- --test-threads=1
+              require_test_set 6 host-quantum-role \
+                host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::collector::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::collector::tests:: \
+                -- --test-threads=1
+              require_test_set 1 host-quantum-role-refusal \
+                host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
+                -- --test-threads=1
               require_test_set 3 protocol-doorbell \
                 doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
                 -p crucible-qemu-protocol doorbell_abi

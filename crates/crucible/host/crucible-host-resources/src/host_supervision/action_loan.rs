@@ -13,6 +13,7 @@ use crucible_qemu_protocol::boundary_action::{ActionBinding, ActionParent, Actio
 use crucible_qemu_protocol::parent_park_return::ParentParkReturn;
 
 mod collector;
+pub use collector::HostQuantumActionRole;
 
 /// Publishes a real lender without recursively consulting its supervisor.
 pub trait HostActionPublisher: std::fmt::Debug + Send + Sync {
@@ -54,6 +55,28 @@ pub trait HostActionPublisher: std::fmt::Debug + Send + Sync {
         parents: [ActionParent; 4],
         count: u32,
     ) -> Result<(), HostSupervisionError>;
+
+    /// Observes one actual Quantum role while its selected lenders stay locked.
+    ///
+    /// Only the selected primary and its registered Preparation dependency are
+    /// present in `parents`; `mask` preserves their original row positions.
+    /// Other rows are zero and cannot be treated as current observations.
+    /// Implementations must corroborate their original role membership and
+    /// immutable identities before changing a role's permission. This callback
+    /// issues no owner, replaces no original clock and returns no physical debt.
+    ///
+    /// # Errors
+    /// Refuses unsupported publishers, changed role membership or uncertain
+    /// permission publication. The default implementation always refuses.
+    fn publish_quantum_role(
+        &self,
+        _binding: ActionBinding,
+        _role: HostQuantumActionRole,
+        _parents: [ActionParent; 4],
+        _mask: u32,
+    ) -> Result<(), HostSupervisionError> {
+        Err(HostSupervisionError::Unavailable)
+    }
 
     /// Observes the physical journal retained by this exact Source transport.
     ///
@@ -171,7 +194,8 @@ impl HostActionLoan {
 
     /// Prices the fixed collector and receipt temporaries before Source birth.
     pub const fn cohort_scratch_bytes() -> u64 {
-        (std::mem::size_of::<[Option<&Shared>; 4]>()
+        (collector::selection_scratch_bytes()
+            + std::mem::size_of::<[Option<&Shared>; 4]>()
             + std::mem::size_of::<[Option<&Mutex<OuterAuthority>>; 4]>()
             + std::mem::size_of::<[Option<MutexGuard<'static, SupervisionState>>; 4]>()
             + std::mem::size_of::<[Option<MutexGuard<'static, OuterAuthority>>; 4]>()
