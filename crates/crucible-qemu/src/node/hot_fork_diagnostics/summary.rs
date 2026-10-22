@@ -33,7 +33,7 @@ const MAXIMUM_ROWS: usize = 32;
 const MAXIMUM_ROW_BYTES: usize = 512;
 
 /// Row prefixes that make a line a candidate control diagnostic.
-const CANDIDATE_PREFIXES: [&[u8]; 9] = [
+const CANDIDATE_PREFIXES: [&[u8]; 12] = [
     b"CRUCIBLE-CHECKPOINT-STOP-V1 ",
     b"CRUCIBLE-CONTROL-STAGE-V1 ",
     b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ",
@@ -43,6 +43,19 @@ const CANDIDATE_PREFIXES: [&[u8]; 9] = [
     b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ",
     b"CRUCIBLE-CONTROL-PENDING-V1 ",
     b"crucible_sim_rr_control_",
+    b"CRUCIBLE-ZERO-LENGTH-QUERY-V1 ",
+    b"CRUCIBLE-DEVICE-WAIT-V1 ",
+    b"CRUCIBLE-IDLE-PLAN-V1 ",
+];
+
+/// Opt-in plugin trace schemas whose rows name the child in a `pid=` field.
+///
+/// They are off unless a diagnostic flight forwards their opt-in, and a hot
+/// fork's private stream is the only place its rows can be seen.
+const PLUGIN_TRACE_SCHEMAS: [&str; 3] = [
+    "CRUCIBLE-ZERO-LENGTH-QUERY-V1",
+    "CRUCIBLE-DEVICE-WAIT-V1",
+    "CRUCIBLE-IDLE-PLAN-V1",
 ];
 
 /// Incremental row fold over one child's private diagnostics stream.
@@ -150,6 +163,7 @@ fn valid_row(row: &str, child_process_id: Option<u32>) -> bool {
         || valid_last_callback_row(row, child_process_id)
         || valid_settlement_row(row, child_process_id)
         || valid_pending_row(row, child_process_id)
+        || valid_plugin_trace_row(row, child_process_id)
         || (crate::spawn::valid_control_delivery_row(row)
             && row
                 .split_ascii_whitespace()
@@ -166,6 +180,19 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
     fold.bind_child_process_id(child_process_id);
     fold.ingest(bytes);
     fold.render(bytes.len() as u64)
+}
+
+/// Accepts an opt-in plugin trace row whose `pid=` field names this child.
+fn valid_plugin_trace_row(row: &str, child_process_id: u32) -> bool {
+    let mut fields = row.split_ascii_whitespace();
+    let Some(schema) = fields.next() else {
+        return false;
+    };
+    let expected_pid = child_process_id.to_string();
+    PLUGIN_TRACE_SCHEMAS.contains(&schema)
+        && fields
+            .filter_map(|field| field.strip_prefix("pid="))
+            .any(|pid| pid == expected_pid)
 }
 
 fn value<'a>(fields: &mut std::str::SplitAsciiWhitespace<'a>, key: &str) -> Option<&'a str> {
@@ -465,6 +492,21 @@ mod tests {
         assert!(!summary.contains("unrelated private payload"));
         assert!(!summary.contains("untrusted"));
         assert!(summary.len() <= 32 * MAXIMUM_ROW_BYTES + 256);
+    }
+
+    #[test]
+    fn plugin_trace_rows_are_kept_only_for_this_child() {
+        let zero_length = "CRUCIBLE-ZERO-LENGTH-QUERY-V1 pid=153 reason=already-answered count=64 sequence=30500 ceiling_ps=1853541416016 current_ps=1853541416016 raw=4416718920";
+        let publication = "CRUCIBLE-DEVICE-WAIT-V1 phase=publication pid=153 boundary=sim-publication kind=superseded raw=2 current=100 value=unavailable";
+        let foreign = zero_length.replace("pid=153", "pid=132");
+        let bytes = format!("{zero_length}\n{publication}\n{foreign}\n");
+
+        let summary = control_diagnostics_summary(bytes.as_bytes(), 153);
+
+        assert!(summary.contains("accepted_rows=2 rejected_rows=1"));
+        assert!(summary.contains(zero_length));
+        assert!(summary.contains(publication));
+        assert!(!summary.contains("pid=132"));
     }
 
     #[test]
