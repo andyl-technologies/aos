@@ -63,11 +63,11 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `12fbae747e` imports signed `f9d1c47a9d`, tree `c10be7db`, composing retained receiver/Entry and Native Initial-read custody. Exact atomic reconstruction and the 338-created-file license inventory pass. The independently configured 1,918-object cohort and first normal delivery pass at 55.286 seconds. | Fresh owning Source qualification and ABI pass. The full package completes 4,060 actions and passes 25/26 fixtures; mandatory launched dirty capture remains the failure. The expanded twenty-two-suite custody run is in progress. Genuine paid/selected execution remains unexecuted; the prior license-boundary gate stops at strict controller Clippy. |
+| Native integration | `a6dfafc5ac` imports signed `075832a98a`, tree `6e6ecba6`, adding retained pending lenders and offer observation. Exact atomic reconstruction, the 345-created-file license inventory, owning Source tests and ABI pass. The independently configured 1,918-object cohort passes; corrected first normal delivery passes in 53.514 seconds. | The first 60-second timeout and signed scheduling correction remain explicit. The full package still fails mandatory launched dirty capture. All twenty-four bounded custody suites pass. Genuine paid/selected execution and complete ownership return remain unexecuted; the canonical license-boundary gate still stops at strict controller Clippy. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 386 committed bindings: 367 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 395 committed bindings: 376 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -88,8 +88,8 @@ Exact signed patch reconstruction passes at
 passes at `b9ch1pz611d52sivak2f0x01c1pf9ang`. Fresh owning Source qualification
 passes at `5sjrrsyjp5hkbymmwzjljyfgh62qwq9z`, and ABI conformance passes at
 `gdj14hqq2pfjvlmrhrsx4mpmkjc845h1`. All sixteen prior custody suites and six
-additional suites are selected by the updated independent Native runner; its
-fresh result remains in progress at this checkpoint.
+additional suites pass in the updated independent Native runner at
+`wzka0awsyi1jbwa236pi53zykjpchb0i`.
 
 The first raw reconstruction failed because the signature-header parser stopped
 reading a large signed commit, causing Git SIGPIPE under pipefail. `cb6546b6ee`
@@ -127,11 +127,166 @@ All 5,288 committed Rust/TOML inputs match immutable application-test source
 `sig08w0fs3vfzf3y3crg37bxlmkr9l4m`; the comparison record has SHA-256
 `8baf8032a34710462bac4844a9840aa76629b0a88d0f5b6f020edb4da6336e45`.
 Mandatory application compilation passes at `vf237hxz9r17sqy0mvfarvkq61hz81pg`;
-the final 269-case supervision run remains in progress at this checkpoint.
+all 269 exact supervision cases pass at `bcdf5d4w1gcphxgygmbdrrjjxnd32s3q`
+in nine groups.
 The earlier source snapshots and failed local
 attempts remain separate. Genuine Module construction, Native execution,
 producer consumption, receiver Closed and ticket reuse remain unimplemented.
 The first offer therefore retains real debt through every uncertain path.
+
+#### Bounded peer-return observation
+
+`29c1c400f6` connects the actual Source collector to a bounded return observer
+inside its retained paid publisher session. One ticket/sequence cut copies the
+exact 504-byte return, then independently rechecks both atomic words. The
+observer verifies the original born offer identity, reserved bytes and mask
+bounds, retaining the first exact record and refusing later changes. Negative
+first/post statuses, partial physical-return masks and revoked permission remain
+factual observations. The observer writes no shared word, sends no notification
+and consumes no real Source borrower. It cannot publish a terminal, close the
+receiver or authorize ticket reuse.
+
+All 55 local Source-supervision tests and engineering hygiene pass. Mandatory
+application compilation passes at `1qmpss3i54xpxzm5g6jpvvfaf16m2c7n`.
+All 5,290 committed Rust/TOML files match immutable source
+`i2fjyl7d6fkaq0lkyac8mnz8c3nzmnnd`; the comparison record has SHA-256
+`5b65e9dc858c2a33b65777dda5edb9f75291f753723b6fc5cac892bdfd0ce602`.
+The five added controls exercise actual kernel-backed mappings and descriptors,
+including independent final-cut mutations and zero allocation. Their fixture
+writes do not represent a genuine paid Native peer. All 274 exact supervision
+cases pass in nine groups at `s0akn0gbq17c00q5r9416ph04969l8k6`.
+
+The fresh canonical license-boundary run retains 1,210 Host-library and 1,285
+Host-test strict Clippy errors. Boundary assertions did not run. The larger
+owner-bearing error representations need a funded design; these failures are
+not waived by the passing component or compilation evidence.
+
+#### Typed runtime refusals and channel storage
+
+`7dd88492cb` moves authored channel text into the same enum alternative as typed
+channel causes, eliminating their duplicate storage. Callers borrow authored
+text with `message()`; this intentionally replaces the previous public channel
+field. Existing owned text retains its original allocation through conversion.
+The runtime error keeps its separate authored field because pause rollback
+legitimately retains both the initiating typed cause and a combined diagnostic.
+
+Actual mapped-region access failures now move into the runtime error without
+formatting. Their original typed source and the same Original's independent
+post remain separately queryable; display defers formatting. The new control
+uses a real mapped region and canceled Original and observes zero allocations
+and reallocations while constructing the combined refusal. Nine channel-error,
+two runtime-error, three driver-error, eleven actual-Original, three quiescence,
+six fingerprint, forty-four quantum, nine mapped integration and two control
+channel tests pass alongside that new control. All Host targets compile and
+engineering hygiene passes after the content-bound source review. Mandatory
+application compilation passes at `4gq83s5n8ax5kh1wp3sn0lj1lzj32v6c`; all
+5,290 committed Rust/TOML files match immutable source
+`8sx7fal7v851gybjpa14kys1vvf13nf8`. The comparison record has SHA-256
+`050ff814bb59e790d108c36b29f955f9e1c50f84bfa52e6ae11975242b11e379`.
+All 276 exact supervision cases pass in nine groups at
+`lf4lxnlmfr405mlz0dq73a4a8j6gra0v`. The fresh canonical license-boundary
+check stops before its assertions at strict controller Clippy, with 1,188
+Host-library and 1,260 Host-test errors. Complete diagnostic-owner funding and
+strict controller Clippy qualification remain open.
+
+#### Typed fault transport mapping refusals
+
+`bc3a98338a` extends the retained mapped error to all five fault event/result
+transport access sites. Their operation labels remain unchanged, while the
+original mapped cause replaces eagerly allocated diagnostic text. A real mapped
+runtime control exercises the index and event-drain entry points after actual
+Original cancellation. Both retain the same typed mapping cause and independent
+Original post with zero allocations or reallocations and no staged event.
+All 64 host-runtime regression tests and engineering hygiene pass. Mandatory
+application compilation passes at `qjhdzb87rilykfqpj3ffajjk1rzfw46s`; all
+5,290 committed Rust/TOML files match immutable source
+`hwmcm3na10y4i66nsw75a7lh2s88gasd`. The comparison record has SHA-256
+`01b7784a9b65744c6d563d91376e28a5b1c6784f8c915da6d615c0a7e663ba42`.
+The exact 277-case supervision run remains in progress; its result is separate
+from the preceding checkpoint.
+
+#### Fixed-width Source publication words
+
+`8196e2f1a3` uses fixed eight-byte arrays in actual standing publication,
+command publication and peer-return observation. Endianness, atomic ordering,
+sequence transitions and bounded payload sizes remain unchanged. All 56 local
+Source-supervision tests and engineering hygiene pass. Mandatory application
+compilation passes at `8a0fia46slg85f8k025l7z7kdxga96ll`; all 5,290 committed
+Rust/TOML files match immutable source `xy4mqw0x9vwrqr7klydhmcs876c1bagd`.
+The comparison record has SHA-256
+`c06ab9fd45fdbcc94c9c0bc1a4d9e3de477253a73b904234c29926296f3ad193`.
+The exact supervision run remains in progress. These changes
+remove five fixed-chunk Clippy findings without waiving the remaining strict
+gate failures.
+
+#### Typed control and fingerprint publication refusals
+
+`74cbfe0cf9` retains actual node-slot and fingerprint-sample causes at five
+publication/refusal sites. The causes and independent Original posts remain
+separately queryable; formatting is deferred and keeps the same displayed text.
+A kernel-backed runtime control seeds exhausted generations and proves that
+both real publication paths refuse with zero allocations or reallocations,
+unchanged mapped bytes and an untouched wake descriptor. No Native issuer is
+created by those fixture bytes.
+
+The first broad runtime run passes 63 tests and fails two assertions that still
+expect eager message text. Those assertions and the paired-feature counterpart
+now check the retained typed cause and deferred display. All 65 runtime tests
+pass in the corrected run, including the three actual mapped-refusal controls.
+Engineering hygiene passes. The paired-original checks, final-snapshot mandatory
+application compilation and exact supervision run remain in progress. These
+checks do not establish complete error payload funding or Source activation.
+
+#### Independent revocation and return refusals
+
+`be75007902` runs actual physical offer revocation and bounded return observation
+independently, including when either refuses. `538e23716f` retains each cut's
+own first refusal alongside the unchanged session-wide first cause. Four
+kernel-backed combinations prove that a negative revocation cannot skip the
+return cut and a negative return cannot erase successful revocation. The
+original ticket remains unconsumed and return bytes unchanged.
+
+All 56 local Source-supervision tests and engineering hygiene pass. Mandatory
+application compilation passes at `5hjsihirdn366jnk3w9d6n2frsyiqyil`.
+All 5,290 committed Rust/TOML files match immutable source
+`rsd7nilp1kvqlkm35h8jq8xflw03g5qq`; the comparison record has SHA-256
+`9b2b0e6b701f861ef0a888cd787fa2c4bb76386d6b6b9d7f4034b92da8d6a853`.
+All 275 exact supervision cases pass in nine groups at
+`8303673rvih1c3mljhhplfpicidrw5fk`. Physical terminal
+consumption, actual borrower return, Closed and reuse remain unimplemented.
+
+#### Native pending lender and offer composition
+
+`a6dfafc5ac` imports signed atomic commit `075832a98a`, tree
+`6e6ecba6ed95a7bbbaba681be8640315359e25c8`, retaining upstream base
+`1ed0467509`. The composition adds pending-command custody and nonissuing
+offer observation. The independent verification matches all 984 signed changed
+source files, 11,787 regular evidence files, 312 literal symlinks and three
+artifacts. Its comparison record has SHA-256
+`2519dc27a8fc4485d880ff530c87fbecb9ab1ecabeabff9a1625885e6adcb63a`.
+
+The independently configured 1,918-object cohort passes in 261.582 seconds
+under its unchanged 600-second/6-GiB bound. The first normal delivery attempt
+on `db3a4dba7` times out at 60.021 seconds; that failure remains preserved.
+The signed `d009060d57` scheduling correction uses two workers for the same
+nine independently generated writers, retaining their deterministic proof order
+and joining before the existing seventeen-case access sweep. The generated
+inputs, commands and proof ordering match. Its first normal delivery passes in
+53.514 seconds under the original 60-second/6-GiB bound. Earlier stable
+qualification results are explicitly bridged, rather than relabeled as reruns.
+
+The actual Source is 240,544 bytes. Twenty-seven separate physical getters add
+43,846 bytes, for a complete fixed floor of 284,390 bytes; embedded owners are
+counted once. The updated 345-created-file license inventory passes at
+`x36qci0p0j02d1j58z7fdly2nzfw4mkk`. Exact raw atomic reconstruction passes at
+`1axn9nmvybxzl2xrjwb9z9v4gcnvxzj6`. Fresh owning Source qualification passes
+all 187 tests at `bzmc89qmgxqxgwwlxslzsl55db799n1r`. ABI conformance
+passes at `x9i3502ir12did03rlxqccsvmqi0g7vh`. The twenty-four-suite
+Native runner passes all twenty-four independently bounded custody suites
+at `1hmlbxqk98hdd3hvczj3xn9vlzi1v6av`. The full package still fails
+the genuine launched dirty-iterator lifecycle check. Neither these observations
+nor the passing physical controls supply an actual Module Original, selected
+execution, terminal consumption or callback activation.
 
 #### Physical command publication and revocation
 
