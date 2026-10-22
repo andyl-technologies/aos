@@ -5,6 +5,8 @@
 //! repository authorization or attest a server process incarnation. Each reply
 //! must echo the exact outstanding request and carry one sealed read-only file.
 
+mod runtime;
+
 use super::{
     BackingRequest, ExposureContext, RequestedBacking,
     wire::{MAX_PACKET, invalid},
@@ -70,6 +72,17 @@ impl WorkerClient {
     /// send failures. `WouldBlock` leaves the unsent sequence available for
     /// retry; other transport failures disconnect this channel.
     pub fn request(&mut self, backing: RequestedBacking) -> io::Result<PendingBacking<'_>> {
+        let (next, expected) = self.prepare(backing)?;
+        self.send(&expected)?;
+        self.next_sequence = next;
+        Ok(PendingBacking {
+            client: self,
+            expected,
+            completed: false,
+        })
+    }
+
+    fn prepare(&self, backing: RequestedBacking) -> io::Result<(u64, Vec<u8>)> {
         if !self.active {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
@@ -81,29 +94,26 @@ impl WorkerClient {
             .checked_add(1)
             .ok_or_else(|| invalid("worker sequence exhausted"))?;
         let request = BackingRequest::new(self.context.clone(), self.next_sequence, backing)?;
-        let expected = request.encode();
+        Ok((next, request.encode()))
+    }
+
+    fn send(&mut self, expected: &[u8]) -> io::Result<()> {
         let sent = net::send(
             &self.socket,
-            &expected,
+            expected,
             net::SendFlags::DONTWAIT | net::SendFlags::NOSIGNAL,
         );
         match sent {
-            Ok(count) if count == expected.len() => {}
-            Err(error) if error == rustix::io::Errno::WOULDBLOCK => return Err(error.into()),
+            Ok(count) if count == expected.len() => Ok(()),
+            Err(error) if error == rustix::io::Errno::WOULDBLOCK => Err(error.into()),
             result => {
                 self.abort();
-                return Err(match result {
+                Err(match result {
                     Err(error) => error.into(),
                     Ok(_) => invalid("incomplete worker request"),
-                });
+                })
             }
         }
-        self.next_sequence = next;
-        Ok(PendingBacking {
-            client: self,
-            expected,
-            completed: false,
-        })
     }
 
     fn abort(&mut self) {

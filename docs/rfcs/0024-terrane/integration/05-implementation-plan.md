@@ -14956,3 +14956,37 @@ across two seconds, and release both locks only after supervised SIGTERM.
 These new native assertions and the mandatory application-target build require
 qualification at the resulting committed source. This does not yet qualify
 four-role deployment, GC collection, mounted FUSE or another trunk task.
+
+
+#### Bounded worker backing requests
+
+Independent review of `d8a250bc4b` matches all 8,062 immutable source files,
+5,353 base inputs, 5,337 surface inputs and the actual installed Cargo ELFs
+for both passing native GC transport checks. Every required listener,
+connection-expiry, bounded client and original-owner closure witness occurs
+exactly once. The earlier `5e815dc29f` application build also passes independent
+review of all 8,061 source files and 185 test executables across 59 packages.
+Its domain-isolation gate passes in 1,479.674 seconds with independent review
+of all six exact nonignored cases, the selected SDK image and 5,336 bound crate
+inputs. Its separate read-only/setgid prerequisite remains running.
+
+The worker backing client now offers a reusable asynchronous exchange with
+one deadline covering send backpressure and authenticated descriptor receipt.
+It directly registers the existing pending-request custody with the kernel
+reactor; it duplicates no descriptor and creates no detached task. Successful
+completion advances the original sequence and leaves the connection usable.
+Timeout, cancellation and post-registration failure disconnect every retained
+socket alias without claiming physical or kernel reference closure. Malformed
+paths and invalid deadlines refuse before registration or sending.
+
+All three actual socket controls pass: invalid inputs preserve the unsent
+connection, timeout and cancellation disconnect retained aliases, and a full
+send queue reaches the deadline without consuming its original sequence.
+Strict all-feature Linux lint passes. The native transport fixture uses the
+new path for its first actual sealed reply and requires the second manual
+request to return the same original device/inode. Existing repeated-completion
+and malformed-reply controls remain; the latter now use the bounded client.
+Both supported strict Linux/CLI profiles and final fixture compilation pass.
+Native qualification and the mandatory application-target build remain separate
+requirements. This change does not launch or
+register a production FUSE worker and accepts no trunk task.

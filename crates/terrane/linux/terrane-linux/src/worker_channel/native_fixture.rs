@@ -221,13 +221,24 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
     let expected_uid = u32::from(mode == "reply-wrong-uid");
     let context = ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [3; 32])?;
     let mut client = WorkerClient::bind(socket, context, expected_uid)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     if mode == "valid" {
+        let mut first_inode = None;
         for sequence in 1..=2 {
-            let mut pending = client.request(RequestedBacking::Index)?;
-            let reply = receive_client(&mut pending)?;
-            if pending.receive().is_ok() {
-                return Err("worker client accepted repeated completion".into());
-            }
+            let reply = if sequence == 1 {
+                runtime.block_on(
+                    client.request_bounded(RequestedBacking::Index, Duration::from_secs(5)),
+                )?
+            } else {
+                let mut pending = client.request(RequestedBacking::Index)?;
+                let reply = receive_client(&mut pending)?;
+                if pending.receive().is_ok() {
+                    return Err("worker client accepted repeated completion".into());
+                }
+                reply
+            };
             let file = reply.into_file();
             let mut bytes = vec![0; BODY.len()];
             file.read_exact_at(&mut bytes, 0)?;
@@ -235,6 +246,11 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
             if bytes != BODY || metadata.len() != BODY.len() as u64 {
                 return Err("worker client read another original body".into());
             }
+            let inode = (metadata.dev(), metadata.ino());
+            if first_inode.is_some_and(|first| first != inode) {
+                return Err("bounded and manual worker requests received different inodes".into());
+            }
+            first_inode = Some(inode);
             if sequence == 2 {
                 println!("ORIGINAL {} {}", metadata.dev(), metadata.ino());
             }
@@ -242,8 +258,8 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
         return Ok(());
     }
     let before = descriptors()?;
-    let mut pending = client.request(RequestedBacking::Index)?;
-    let result = receive_client(&mut pending);
+    let result =
+        runtime.block_on(client.request_bounded(RequestedBacking::Index, Duration::from_secs(5)));
     let error = result.err().ok_or("worker client accepted invalid reply")?;
     let expected_kind = match mode {
         "reply-no-fd" | "reply-writable" | "reply-directory" => io::ErrorKind::InvalidData,
@@ -258,7 +274,6 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
     if error.kind() != expected_kind || descriptors()? != before {
         return Err("worker client accepted invalid reply or leaked descriptors".into());
     }
-    drop(pending);
     if client.request(RequestedBacking::Index).is_ok() {
         return Err("worker client reused a faulted channel".into());
     }
