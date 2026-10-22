@@ -817,19 +817,18 @@ impl ForkTargetReservation {
         &self,
         contract: &crate::QemuChildProcessContract,
     ) -> Result<(), OriginalActorAccountError> {
-        let envelope = contract
-            .configured_process_envelope()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
         self.with_slot(|slot| {
-            slot.installed_process
-                .as_ref()
-                .ok_or(OriginalActorAccountError::Unavailable)?
-                .verify_fork_target_envelope(&envelope)
-                .map_err(|_| OriginalActorAccountError::Unavailable)?;
-            let target = &mut slot.fork_target;
+            let target = &slot.fork_target;
             if !target.born || target.envelope.is_some() || target.unsettled.is_some() {
                 return Err(OriginalActorAccountError::Unavailable);
             }
+            let envelope = slot
+                .installed_process
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?
+                .prepare_fork_target_envelope(contract)
+                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            let target = &mut slot.fork_target;
             target.process_binding = Some(contract.retain_process_stage_retirement());
             target.envelope = Some(envelope);
             Ok(())

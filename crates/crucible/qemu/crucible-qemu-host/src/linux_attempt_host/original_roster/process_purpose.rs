@@ -53,6 +53,17 @@ pub(crate) enum InstalledProcessPurposeError {
     Capacity,
 }
 
+/// Preserves fixed Target geometry refusals without carrying unrelated custody.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum ForkTargetEnvelopeError {
+    /// The Source observation, selected contract or containing family differs.
+    #[error("fork target process envelope is stale or unavailable")]
+    Identity,
+    /// The Target's existing process share exceeds the admitted family extent.
+    #[error("fork target process envelope exceeds the containing family")]
+    Capacity,
+}
+
 pub(super) struct InstalledProcessState {
     envelope: ConfiguredProcessEnvelope,
     family: Option<InstalledProcessFamily>,
@@ -196,7 +207,45 @@ impl InstalledProcessState {
     pub(super) fn verify_fork_target_envelope(
         &self,
         target: &ConfiguredProcessEnvelope,
-    ) -> Result<(), InstalledProcessPurposeError> {
+    ) -> Result<(), ForkTargetEnvelopeError> {
+        self.verify_fork_target_geometry(target)?;
+        if target.main_stack_limit() != self.envelope.main_stack_limit() {
+            return Err(ForkTargetEnvelopeError::Identity);
+        }
+        Ok(())
+    }
+
+    /// Binds the actual Target's physical stack policy before retaining it.
+    ///
+    /// The fresh Target already belongs to this family's second process share.
+    /// Copying containment does not issue stack backing or runtime admission.
+    ///
+    /// # Errors
+    /// Refuses foreign geometry, a stale Source, an already selected or started
+    /// Target, or any changed envelope after the once-only physical selection.
+    pub(super) fn prepare_fork_target_envelope(
+        &self,
+        contract: &QemuChildProcessContract,
+    ) -> Result<ConfiguredProcessEnvelope, ForkTargetEnvelopeError> {
+        let before = contract
+            .configured_process_envelope()
+            .ok_or(ForkTargetEnvelopeError::Identity)?;
+        self.verify_fork_target_geometry(&before)?;
+        self.envelope
+            .inherit_main_stack_limit(contract)
+            .map_err(|_| ForkTargetEnvelopeError::Identity)?;
+
+        let selected = contract
+            .configured_process_envelope()
+            .ok_or(ForkTargetEnvelopeError::Identity)?;
+        self.verify_fork_target_envelope(&selected)?;
+        Ok(selected)
+    }
+
+    fn verify_fork_target_geometry(
+        &self,
+        target: &ConfiguredProcessEnvelope,
+    ) -> Result<(), ForkTargetEnvelopeError> {
         if !self.ready
             || !self.sound
             || (target.child_cgroup_device(), target.child_cgroup_inode())
@@ -212,13 +261,15 @@ impl InstalledProcessState {
             || target.maximum_writable_bytes() != self.envelope.maximum_writable_bytes()
             || target.maximum_locked_bytes() != self.envelope.maximum_locked_bytes()
         {
-            return Err(InstalledProcessPurposeError::Identity);
+            return Err(ForkTargetEnvelopeError::Identity);
         }
         self.family
             .as_ref()
-            .ok_or(InstalledProcessPurposeError::Identity)?
-            .verify_envelope(1, target)?;
-        family_extent_from_local_cap(target.maximum_resident_bytes(), self.process_bytes)?;
+            .ok_or(ForkTargetEnvelopeError::Identity)?
+            .verify_envelope(1, target)
+            .map_err(|_| ForkTargetEnvelopeError::Identity)?;
+        family_extent_from_local_cap(target.maximum_resident_bytes(), self.process_bytes)
+            .map_err(|_| ForkTargetEnvelopeError::Capacity)?;
         Ok(())
     }
 

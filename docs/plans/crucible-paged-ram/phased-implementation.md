@@ -377,6 +377,34 @@ establish a passing full Host suite. Strict license qualification again stops
 at controller Clippy (909 library and 963 test errors), before its boundary
 assertions execute.
 
+#### Preserving the physical Main stack policy in fork Targets
+
+The retained Target binding now validates its existing family geometry, copies
+the actual frozen Source's optional Main stack selection into its fresh
+contract, and verifies the refreshed envelope before retaining it. Subsequent
+Target envelope checks require the same selected stack policy. The physical
+copy refuses stale or unlaunched Source observations, the same process binding,
+started Targets and a previously selected Target policy. An unselected Source
+preserves the existing inherited policy. Verification after binding uses the
+saved family facts and does not query an ended Source operation.
+
+This adds no fields, backing allocation or process/stack grant. Identity and
+capacity failures use a small fixed cause; actual Target physical custody stays
+in its existing containing owner, including after a failed bind. The already
+retained host takes its existing quarantine path on refusal.
+
+Four component controls exercise real shared contract selection, duplicates,
+stale observations, already selected or started Targets, same-process refusal
+and the unselected policy. They cannot issue a configured cgroup or process
+purpose. The first three controls fail against the extracted prior no-op copy.
+All 21 process-envelope controls and the four existing Main stack controls pass,
+including the actual child soft/hard limit readback with an unchanged parent.
+Every all-feature Host target compiles and engineering hygiene passes. The ABI
+gate requires the four-case fork-stack set and its canonical inheritance case. Final application,
+ABI and strict-boundary qualification are still running at this checkpoint;
+this physical control does not qualify Native stack/profile admission or a
+complete launched Source/Target family.
+
 #### Sticky terminal decisions from actual lender collection
 
 The collector now saves the actual typed operation disposition under the same

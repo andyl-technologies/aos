@@ -291,6 +291,45 @@ fn page_enforced_limit(requested: u64) -> Option<u64> {
 }
 
 impl ConfiguredProcessEnvelope {
+    /// Copies the live Source's physical stack selection to a fresh Target.
+    ///
+    /// This changes only the retained contract's pre-exec control. The caller
+    /// must separately authenticate the Target family and retain its actual
+    /// stack backing and cleanup; this method issues neither kind of credit.
+    ///
+    /// # Errors
+    /// Refuses stale or unlaunched Source observations, the same process
+    /// binding, a started Target or an already selected Target stack policy.
+    pub(crate) fn inherit_main_stack_limit(
+        &self,
+        target: &QemuChildProcessContract,
+    ) -> std::io::Result<()> {
+        if Weak::ptr_eq(&self.binding, &Arc::downgrade(&target.attempt_binding)) {
+            return Err(super::main_stack::refused(libc::EINVAL));
+        }
+        if !self.same_process_as(self) {
+            return Err(super::main_stack::refused(libc::ESTALE));
+        }
+        let source = self
+            .binding
+            .upgrade()
+            .ok_or_else(|| super::main_stack::refused(libc::ESTALE))?;
+        if source.launch_state.load(Ordering::Acquire) != FROZEN {
+            return Err(super::main_stack::refused(libc::EBUSY));
+        }
+        if target.attempt_binding.launch_state.load(Ordering::Acquire) != OPEN {
+            return Err(super::main_stack::refused(libc::EBUSY));
+        }
+        if target.main_stack_limit().is_some() {
+            return Err(super::main_stack::refused(libc::EALREADY));
+        }
+
+        match self.main_stack_bytes {
+            Some(bytes) => target.configure_main_stack_limit(bytes),
+            None => Ok(()),
+        }
+    }
+
     /// Returns the existing binding allocation retained by this weak witness.
     ///
     /// This extent must be assigned before the real contract allocation; it is
@@ -371,6 +410,11 @@ impl ConfiguredProcessEnvelope {
     pub(crate) const fn maximum_locked_bytes(&self) -> u64 {
         self.maximum_locked_bytes
     }
+
+    /// Returns the selected finite physical limit without issuing stack credit.
+    pub(crate) const fn main_stack_limit(&self) -> Option<u64> {
+        self.main_stack_bytes
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +454,118 @@ mod tests {
         current.main_stack_bytes = Some(2 * 1024 * 1024);
         assert!(current.same_process_as(&current));
         assert!(!earlier.same_process_as(&current));
+    }
+
+    #[test]
+    fn fork_target_inherits_the_actual_shared_stack_selection() {
+        let source_binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        source_binding
+            .configure_main_stack(2 * 1024 * 1024)
+            .unwrap();
+        source_binding.freeze_for_launch().unwrap();
+        let mut source = identity(&source_binding);
+        source.main_stack_bytes = Some(2 * 1024 * 1024);
+        let (control, _) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let target = QemuChildProcessContract::for_test(control.into(), event, 4096);
+        let duplicate = target.try_clone_for_attempt_generation().unwrap();
+
+        source.inherit_main_stack_limit(&target).unwrap();
+
+        assert_eq!(target.main_stack_limit(), Some(2 * 1024 * 1024));
+        assert_eq!(duplicate.main_stack_limit(), target.main_stack_limit());
+        assert_eq!(source.main_stack_limit(), target.main_stack_limit());
+        // These component contracts still cannot authenticate a cgroup or
+        // create an installed Source/Target purpose from the copied limit.
+        assert!(target.configured_process_envelope().is_none());
+    }
+
+    #[test]
+    fn fork_stack_inheritance_rejects_stale_source_and_existing_target_selection() {
+        let source_binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let stale = identity(&source_binding);
+        source_binding
+            .configure_main_stack(2 * 1024 * 1024)
+            .unwrap();
+        source_binding.freeze_for_launch().unwrap();
+        let mut source = identity(&source_binding);
+        source.main_stack_bytes = Some(2 * 1024 * 1024);
+        let (control, _) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let target = QemuChildProcessContract::for_test(control.into(), event, 4096);
+
+        assert_eq!(
+            stale
+                .inherit_main_stack_limit(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ESTALE)
+        );
+        assert_eq!(target.main_stack_limit(), None);
+        target.configure_main_stack_limit(4 * 1024 * 1024).unwrap();
+
+        assert_eq!(
+            source
+                .inherit_main_stack_limit(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EALREADY)
+        );
+        assert_eq!(target.main_stack_limit(), Some(4 * 1024 * 1024));
+    }
+
+    #[test]
+    fn fork_stack_inheritance_refuses_started_or_same_process_bindings() {
+        let (control, _) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let target = QemuChildProcessContract::for_test(control.into(), event, 4096);
+        let same_process = identity(&target.attempt_binding);
+
+        assert_eq!(
+            same_process
+                .inherit_main_stack_limit(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        assert_eq!(target.main_stack_limit(), None);
+
+        let source_binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let source = identity(&source_binding);
+        source_binding.freeze_for_launch().unwrap();
+        target.attempt_binding.freeze_for_launch().unwrap();
+
+        assert_eq!(
+            source
+                .inherit_main_stack_limit(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBUSY)
+        );
+        assert_eq!(target.main_stack_limit(), None);
+    }
+
+    #[test]
+    fn fork_stack_inheritance_preserves_an_unselected_source_policy() {
+        let source_binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let source = identity(&source_binding);
+        let (control, _) = std::os::unix::net::UnixStream::pair().unwrap();
+        let event = rustix::event::eventfd(0, rustix::event::EventfdFlags::NONBLOCK).unwrap();
+        let target = QemuChildProcessContract::for_test(control.into(), event, 4096);
+
+        assert_eq!(
+            source
+                .inherit_main_stack_limit(&target)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EBUSY)
+        );
+        source_binding.freeze_for_launch().unwrap();
+
+        source.inherit_main_stack_limit(&target).unwrap();
+
+        assert_eq!(target.main_stack_limit(), None);
+        assert!(target.configured_process_envelope().is_none());
     }
 
     #[test]
