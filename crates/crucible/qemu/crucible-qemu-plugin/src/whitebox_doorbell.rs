@@ -1927,7 +1927,7 @@ pub trait WhiteboxGuestInputWriter {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("white-box guest input write failed: {message}")]
 pub struct WhiteboxGuestInputWriteError {
-    message: String,
+    message: std::borrow::Cow<'static, str>,
 }
 
 impl WhiteboxGuestInputWriteError {
@@ -1935,7 +1935,15 @@ impl WhiteboxGuestInputWriteError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: std::borrow::Cow::Owned(message.into()),
+        }
+    }
+
+    /// Retains a static backend diagnostic without allocating a string.
+    #[must_use]
+    pub const fn from_static(message: &'static str) -> Self {
+        Self {
+            message: std::borrow::Cow::Borrowed(message),
         }
     }
 

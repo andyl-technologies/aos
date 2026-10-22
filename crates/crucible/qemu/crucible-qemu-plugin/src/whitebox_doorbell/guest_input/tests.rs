@@ -157,4 +157,25 @@ fn borrowed_guest_input_refuses_before_writing_and_preserves_writer_failure() {
     );
     assert_eq!(writer.calls, 1);
     assert!(writer.refusal.is_none());
+
+    let borrowed = WhiteboxGuestInputWriteError::from_static("static native write refusal");
+    let original_address = borrowed.message().as_ptr();
+    writer.refusal = Some(borrowed.clone());
+
+    let refused = doorbell(128)
+        .inject_guest_input_slice(&capability, &mut writer, 88, 88, range, payload)
+        .unwrap_err();
+    let retained = match &refused {
+        WhiteboxDoorbellError::GuestInputWrite { source, .. } => source,
+        other => panic!("expected retained guest write failure, got {other}"),
+    };
+
+    assert_eq!(retained, &borrowed);
+    assert_eq!(retained.message().as_ptr(), original_address);
+    assert_eq!(writer.calls, 2);
+    assert!(writer.refusal.is_none());
+    assert_eq!(
+        refused.to_string(),
+        "white-box guest input at icount 88 write failed: white-box guest input write failed: static native write refusal"
+    );
 }

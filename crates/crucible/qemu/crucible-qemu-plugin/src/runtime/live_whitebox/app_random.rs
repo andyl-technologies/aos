@@ -117,12 +117,12 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
             )));
         }
         if !matches!(range.address_space(), GuestMemoryAddressSpace::Virtual) {
-            return Err(WhiteboxGuestInputWriteError::new(
+            return Err(WhiteboxGuestInputWriteError::from_static(
                 "live white-box writer requires a virtual reply range",
             ));
         }
         if !(self.apis.write_memory_vaddr)(range.guest_address(), payload.as_ptr(), payload.len()) {
-            return Err(WhiteboxGuestInputWriteError::new(
+            return Err(WhiteboxGuestInputWriteError::from_static(
                 "qemu_plugin_crucible_write_memory_vaddr failed",
             ));
         }

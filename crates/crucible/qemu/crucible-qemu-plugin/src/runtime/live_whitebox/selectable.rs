@@ -90,7 +90,7 @@ impl WhiteboxGuestInputWriter for LiveSelectableGuestMemoryWriter {
             range.address_space(),
             crate::GuestMemoryAddressSpace::Virtual
         ) {
-            return Err(crate::WhiteboxGuestInputWriteError::new(
+            return Err(crate::WhiteboxGuestInputWriteError::from_static(
                 "live selectable writer requires a virtual reply range",
             ));
         }

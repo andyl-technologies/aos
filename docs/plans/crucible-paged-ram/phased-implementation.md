@@ -530,6 +530,22 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Borrowed static guest-write diagnostics
+
+Native introspection/app-random writes and selectable virtual-range refusals now
+retain their static diagnostic text directly. The public guest-write error keeps
+its existing explicitly owned constructor and message/display behavior. Its
+static constructor and clone preserve borrowed storage through the actual
+borrowed input-delivery error path. The existing delivery refusal control now
+checks both owned and borrowed backend errors, unchanged delivery coordinates,
+the original diagnostic address and its complete display context.
+
+All 129 white-box tests, compilation of every plugin test target and engineering
+hygiene pass. Mandatory application compilation and the unchanged exact
+325-case supervision run are being collected.
+Dynamic coordinate and native-status formatting, other service error paths and
+complete operation funding remain open. This issues no Native authority.
+
 #### Borrowed initial native trap reads
 
 The live trap dispatcher now retains the original GLib read array and borrows
@@ -581,8 +597,9 @@ sequence overflow. All nine focused router tests, 126 white-box tests and every
 plugin test target's compilation pass. Corrected content-bound engineering
 hygiene passes. ABI conformance passes at `ayl6az368908mjim2njpvym8h1jr56hi`.
 Canonical license checking stops at 909 host-library and 963 host-test Clippy
-errors; boundary assertions do not run. Mandatory application compilation and
-the exact 322-case supervision run are being collected. All 5,308 committed
+errors; boundary assertions do not run. Mandatory application compilation passes
+at `9g8b6qm724w9rn9pgbnk5zcyafl78cln`; the exact 322-case supervision run is
+being collected. All 5,308 committed
 Rust/TOML files at `0b2dc41ac5e3343dfebb98d1d7ebde8a89983c6c` match immutable
 application source `n48s1b82xdjclagrbz1r7z2yl2pirc77`; the comparison record has
 SHA-256 `fe13ce9c055fc63f6dfe8e1b025ad09455c3dccfa512c5e775d703f5e4fcc22e`.
