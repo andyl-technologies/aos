@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (923 host-library and 977 host-test errors after compacting QMP context); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 417 committed bindings: 398 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 419 committed bindings: 400 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -414,6 +414,22 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Checkpoint component lock refusals preserve cleanup
+
+The checkpoint component's live-compiled support now propagates Original status
+failures and poisoned client/observation locks instead of panicking. QMP adapters
+and runtime checks retain typed unavailable causes. Poisoned wire observations
+refuse a begin reply. Final owner destruction still closes its retained aliases
+without clearing poison or admitting more work. Fixed queue reads consume the
+bounded prefix directly instead of relying on an unchecked pop.
+
+Two focused controls cover typed refusal after QMP poison and real locally held
+event-alias cleanup after observation poison. These peers issue no Native Source,
+checkpoint receiver or Stop authority. All six focused retirement controls and
+content-bound engineering hygiene pass. Verification of the final test names,
+all host targets, mandatory application compilation and exact supervision remain
+pending.
+
 #### Complete lazy resource-refusal diagnostics
 
 Fault-result allocation, fault-event record and scenario-resource errors retained
@@ -469,7 +485,7 @@ engineering hygiene pass. Mandatory application compilation passes at
 `908cbce844649982c54f6ef8b08efa2100133901` match immutable source
 `v3jzypjkf51yv2hy5vkz0jv1lrbcivix`. The comparison record has SHA-256
 `22f1361852010a8b5d460d3eec8240fde3b3f97952b0119682007c8c56e3f847`.
-All 298 exact supervision cases remain pending for this checkpoint. These component controls
+All 298 exact supervision cases pass at `kyprn2gnikz2s4zb8xbanvk99pkhm1w6`. These component controls
 do not establish complete dynamic diagnostic funding or Native admission.
 
 #### Typed marker callback refusals

@@ -13,7 +13,7 @@ use crate::{
 use crucible_host_resources::host_services::HostServiceAllocator;
 use crucible_host_resources::host_supervision::{
     HostOperationBudget, HostOperationBudgets, HostOperationClass, HostOperationGuard,
-    HostOperationSupervisor,
+    HostOperationSupervisor, HostSupervisionError,
 };
 use crucible_host_resources::ram_policy::{
     HostRamMode, HostRamPolicy, HostRamTarget, HostResourceVector,
@@ -55,9 +55,19 @@ impl RamControlRegistrar for Registrar {
         &self,
         loan: CheckpointArmLoan<'_>,
     ) -> Result<crate::ram_control::CheckpointArmReceipt, CheckpointOriginalError> {
-        self.observations.lock().unwrap().original_id =
-            Some(loan.original().guard().status().unwrap().operation_id);
-        let mut client = self.client.lock().unwrap();
+        let operation_id = loan
+            .original()
+            .guard()
+            .status()
+            .map_err(|source| {
+                CheckpointOriginalError::before(crate::CheckpointOriginalCause::Original(source))
+            })?
+            .operation_id;
+        self.observations
+            .lock()
+            .map_err(|_| checkpoint_unavailable())?
+            .original_id = Some(operation_id);
+        let mut client = self.client.lock().map_err(|_| checkpoint_unavailable())?;
         let client = client.as_mut().ok_or_else(|| {
             CheckpointOriginalError::before(crate::CheckpointOriginalCause::MissingOwner)
         })?;
@@ -209,7 +219,12 @@ impl Ownership {
     ) -> Result<(), QemuNodeChannelError> {
         self.qmp
             .lock()
-            .unwrap()
+            .map_err(|_| {
+                QemuNodeChannelError::operational_supervision(
+                    "bind checkpoint original",
+                    HostSupervisionError::Unavailable,
+                )
+            })?
             .bind_checkpoint_original(original)
             .map_err(|e| channel("bind checkpoint original", e))
     }
@@ -220,7 +235,12 @@ impl Ownership {
     ) -> Result<(), QemuNodeChannelError> {
         self.qmp
             .lock()
-            .unwrap()
+            .map_err(|_| {
+                QemuNodeChannelError::operational_supervision(
+                    "begin checkpoint receiving",
+                    HostSupervisionError::Unavailable,
+                )
+            })?
             .begin_checkpoint_receiving(receipt)
             .map_err(|e| channel("begin checkpoint receiving", e))
     }
@@ -228,7 +248,12 @@ impl Ownership {
     pub(crate) fn stop(&self) -> Result<(), QemuNodeChannelError> {
         self.qmp
             .lock()
-            .unwrap()
+            .map_err(|_| {
+                QemuNodeChannelError::operational_supervision(
+                    "stop_for_checkpoint",
+                    HostSupervisionError::Unavailable,
+                )
+            })?
             .stop()
             .map(|_| ())
             .map_err(|e| channel("stop_for_checkpoint", e))
@@ -237,7 +262,12 @@ impl Ownership {
     pub(crate) fn resume(&self) -> Result<(), QemuNodeChannelError> {
         self.qmp
             .lock()
-            .unwrap()
+            .map_err(|_| {
+                QemuNodeChannelError::operational_supervision(
+                    "resume_after_checkpoint",
+                    HostSupervisionError::Unavailable,
+                )
+            })?
             .cont()
             .map(|_| ())
             .map_err(|e| channel("resume_after_checkpoint", e))
@@ -249,7 +279,16 @@ impl Ownership {
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         let operation = "scripted checkpoint original";
         if !original.shares_outer_cap(&self.supervisor)
-            || self.observations.lock().unwrap().original_id
+            || self
+                .observations
+                .lock()
+                .map_err(|_| {
+                    QemuAsyncDriverRuntimeError::operational_supervision(
+                        operation,
+                        HostSupervisionError::Unavailable,
+                    )
+                })?
+                .original_id
                 != Some(
                     original
                         .status()
@@ -304,19 +343,34 @@ impl Drop for Ownership {
         {
             // Controller EOF does not return the QMP borrow. The actual
             // received aliases stay here until this final owner is destroyed.
-            let mut observed = self.observations.lock().unwrap();
+            // Poison refuses further observations, but exclusive destruction
+            // must still close the exact aliases already received by this owner.
+            let mut observed = self
+                .observations
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             observed.aliases.clear();
             observed.alias_closed = true;
         }
-        if let Some(result) = joined {
-            if !std::thread::panicking() {
-                assert!(
-                    matches!(result, Ok(Ok(()))),
-                    "checkpoint wire peer failed: {result:?}"
-                );
-            }
+        if let Some(result) = joined
+            && !std::thread::panicking()
+        {
+            assert!(
+                matches!(result, Ok(Ok(()))),
+                "checkpoint wire peer failed: {result:?}"
+            );
         }
     }
+}
+
+fn checkpoint_unavailable() -> CheckpointOriginalError {
+    CheckpointOriginalError::before(crate::CheckpointOriginalCause::Original(
+        HostSupervisionError::Unavailable,
+    ))
+}
+
+fn observations_unavailable() -> io::Error {
+    io::Error::other("checkpoint wire observations are poisoned")
 }
 
 fn channel(operation: &'static str, error: impl std::fmt::Display) -> QemuNodeChannelError {
@@ -424,7 +478,11 @@ fn serve_ram_loop(
             })
             .collect();
         assert_eq!(descriptors.len(), 1);
-        observations.lock().unwrap().aliases.extend(descriptors);
+        observations
+            .lock()
+            .map_err(|_| observations_unavailable())?
+            .aliases
+            .extend(descriptors);
         let mut length = [0; 4];
         length[0] = first[0];
         stream.read_exact(&mut length[1..])?;
@@ -439,7 +497,9 @@ fn serve_ram_loop(
         ));
         let digest = ram_control_request_digest(&arm).map_err(io::Error::other)?;
         {
-            let mut observed = observations.lock().unwrap();
+            let mut observed = observations
+                .lock()
+                .map_err(|_| observations_unavailable())?;
             assert_eq!(observed.arms, 0, "ARM alias must be transferred only once");
             observed.arms += 1;
             observed.arm = Some((digest, arm.sequence));
@@ -487,7 +547,10 @@ impl Wire {
         let response = match request["execute"].as_str() {
             Some("qmp_capabilities") => json!({ "return": {} }),
             Some("crucible-checkpoint-begin") => {
-                let mut observed = self.observations.lock().unwrap();
+                let mut observed = self
+                    .observations
+                    .lock()
+                    .map_err(|_| observations_unavailable())?;
                 let (digest, generation) = observed
                     .arm
                     .ok_or_else(|| io::Error::other("begin before ARM"))?;
@@ -526,8 +589,8 @@ impl Wire {
 impl Read for Wire {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let length = buffer.len().min(self.input.len());
-        for byte in &mut buffer[..length] {
-            *byte = self.input.pop_front().unwrap();
+        for (byte, queued) in buffer[..length].iter_mut().zip(self.input.drain(..length)) {
+            *byte = queued;
         }
         Ok(length)
     }
@@ -734,6 +797,62 @@ mod retirement_tests {
             panic!("the actual client mutex must remain poisoned");
         };
         assert!(poisoned.get_ref().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_observations_refuse_work_but_close_retained_aliases() -> Result<(), Box<dyn Error>>
+    {
+        let owner = Ownership::new(false)?;
+        let observations = owner.observations.clone();
+        let original = owner.supervisor.begin(HostOperationClass::Quiescence)?;
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut held = observations.lock().unwrap();
+            held.aliases.push(owner.cancellation.try_clone().unwrap());
+            panic!("checkpoint observations become uncertain");
+        }));
+        assert!(poisoned.is_err());
+
+        let error = owner.check(&original).unwrap_err();
+        assert_eq!(
+            error.operational_supervision_source(),
+            Some(HostSupervisionError::Unavailable)
+        );
+        let mut wire = Wire::new(observations.clone(), false);
+        let error = wire
+            .reply(json!({"execute": "crucible-checkpoint-begin"}))
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "checkpoint wire observations are poisoned"
+        );
+        assert!(wire.output.is_empty());
+
+        drop(owner);
+        let Err(poisoned) = observations.lock() else {
+            panic!("physical cleanup must not clear observation poison");
+        };
+        assert!(poisoned.get_ref().aliases.is_empty());
+        assert!(poisoned.get_ref().alias_closed);
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_qmp_refuses_without_reentering_the_wire() -> Result<(), Box<dyn Error>> {
+        let owner = Ownership::new(false)?;
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = owner.qmp.lock().unwrap();
+            panic!("checkpoint QMP state becomes uncertain");
+        }));
+        assert!(poisoned.is_err());
+
+        for error in [owner.stop().unwrap_err(), owner.resume().unwrap_err()] {
+            assert_eq!(
+                error.operational_supervision_source(),
+                Some(HostSupervisionError::Unavailable)
+            );
+        }
+        assert_eq!(owner.counts(), (0, 0));
         Ok(())
     }
 
