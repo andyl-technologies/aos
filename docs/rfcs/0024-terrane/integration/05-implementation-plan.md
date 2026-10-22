@@ -14187,3 +14187,38 @@ This transport-only fixture does not qualify the new scoped owner send path,
 production worker launch, worker confinement, privileged broker or mounted FUSE.
 The original-child factory still needs deployment composition. No surface is
 enabled and no trunk task is closed by this component increment.
+
+
+At `79b7477a83`, the isolated worker-channel VM passes in 231.34 seconds.
+Independent review matches all 8,041 immutable source files, 5,318 bound
+inputs, the actual Cargo example record and installed executable digest
+`72e80b5e98a14e97d5d9d5411d9a1bfd9efdec341277f829aa11314ae9c9bce5`.
+All five original valid/wrong-UID/wrong-process/injected-rights/truncation
+witnesses are present exactly once. This qualifies the private socket layer;
+it does not qualify scoped owner Send, deployed launch, confinement or FUSE.
+The earlier `ddd3c52568` owning surface VM fails in 713.87 seconds at the
+sealed-file actor with `Elapsed(())`. Its retained evidence is
+`/scratch/nix-build/nix-1891529-207461497/build/serial.log`; that checkpoint
+predates the successful-removal descriptor-close correction. The corrected
+`79b7477a83` owning surface, full native and application checks remain running.
+
+The worker side now owns a nonblocking private-channel client. One borrowed
+pending request keeps exclusive custody through reply validation; cancellation
+faults the channel. Invalid local paths do not send or consume a sequence, and
+an unsent `WouldBlock` remains retryable. Replies require the launcher's expected
+serve UID in actual kernel credentials, the exact outstanding packet, one
+close-on-exec descriptor, read-only access, a regular inode and actual fs-verity
+measurement. All refused descriptors close, including the full Linux rights
+limit. These checks establish transport custody, not a new repository grant,
+a server-incarnation attestation or a Terrane content-hash measurement.
+
+Formatting, strict Linux all-target Clippy in both feature profiles and all
+seven worker packet/process/client integration cases pass. The ignored child
+helper is executed by its owning pidfd test. The native transport fixture now
+uses the public client for two consecutive successful grants of the same
+original inode and adds ten reply-refusal modes: foreign UID, sequence, hash,
+truncation, absent descriptor, 253 descriptors, unsealed regular file, writable
+file, directory and EOF. Refusals require their expected error class, unchanged
+actual descriptor count and a faulted channel; a fixture timeout cannot count
+as a refusal. These expanded native controls and mandatory application
+compilation remain pending. No trunk acceptance changes.

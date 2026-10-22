@@ -9,7 +9,7 @@ use std::{
 };
 use terrane_format::tree_format::ContentRef;
 use terrane_linux::worker_channel::{
-    BackingRequest, ExposureContext, RequestedBacking, WorkerIdentity, channel_pair,
+    BackingRequest, ExposureContext, RequestedBacking, WorkerClient, WorkerIdentity, channel_pair,
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -141,6 +141,70 @@ fn paths_and_context_are_bounded_before_packet_allocation() -> Result {
         assert!(ExposureContext::new(id, 1, [1; 32]).is_err());
     }
     assert!(ExposureContext::new("0123456789abcdef0123456789abcdef", 0, [1; 32]).is_err());
+    Ok(())
+}
+
+#[test]
+fn client_cancellation_disconnects_and_invalid_selection_does_not_consume_sequence() -> Result {
+    use rustix::net::{self, RecvFlags};
+
+    let (server, worker) = channel_pair()?;
+    let foreign_uid = rustix::process::geteuid().as_raw() ^ 1;
+    let mut client = WorkerClient::bind(worker, context()?, foreign_uid)?;
+    let invalid = RequestedBacking::File {
+        path: b"../escape".to_vec(),
+        content: ContentRef::Inline([1; 32]),
+    };
+    assert!(client.request(invalid).is_err());
+    let mut bytes = [0; 4172];
+    assert_eq!(
+        net::recv(&server, &mut bytes, RecvFlags::DONTWAIT).err(),
+        Some(rustix::io::Errno::WOULDBLOCK)
+    );
+
+    let mut pending = client.request(RequestedBacking::Index)?;
+    let (count, _) = net::recv(&server, &mut bytes, RecvFlags::DONTWAIT)?;
+    assert_eq!(
+        BackingRequest::decode(&bytes[..count], &context()?)?,
+        BackingRequest::new(context()?, 1, RequestedBacking::Index)?
+    );
+    assert_eq!(
+        pending
+            .receive()
+            .err()
+            .ok_or("pending reply completed without data")?
+            .kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    drop(pending);
+    assert_eq!(net::recv(&server, &mut bytes, RecvFlags::DONTWAIT)?.0, 0);
+    assert_eq!(
+        client
+            .request(RequestedBacking::Index)
+            .err()
+            .ok_or("cancelled worker client remained active")?
+            .kind(),
+        std::io::ErrorKind::BrokenPipe
+    );
+    Ok(())
+}
+
+#[test]
+fn client_refuses_shared_role_identity_and_stream_sockets() -> Result {
+    use rustix::net::{self, AddressFamily, SocketFlags, SocketType};
+
+    let (_, worker) = channel_pair()?;
+    assert!(WorkerClient::bind(worker, context()?, rustix::process::geteuid().as_raw()).is_err());
+    let (_server, worker) = net::socketpair(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC,
+        None,
+    )?;
+    assert!(
+        WorkerClient::bind(worker, context()?, rustix::process::geteuid().as_raw() ^ 1).is_err()
+    );
     Ok(())
 }
 

@@ -535,6 +535,17 @@ The final live-generation/deadline check and nonblocking descriptor send MUST
 be serialized with exposure drain transitions. A completed drain therefore
 cannot be followed by an accepted grant from a previously prepared request.
 
+The worker endpoint is supplied through the trusted launcher's private channel
+custody, together with the expected serve UID and exposure context. Before its
+first request, the worker enables reply credentials. It checks the sender's
+kernel UID, exact outstanding request bytes, one close-on-exec descriptor,
+read-only access, regular-file type and actual fs-verity measurement. These
+checks do not turn a public UID or exposure identifier into a channel credential,
+attest the serve process incarnation, or equate the fs-verity digest with the
+Terrane content hash. At most one request remains outstanding. `WouldBlock`
+permits retry without advancing an unsent sequence or completing a reply;
+cancellation and other transport refusals disconnect the channel.
+
 Malformed, unauthorized, out-of-order or failed requests fault and disconnect
 this channel rather than returning an apparent successful empty response.
 Cancellation before acknowledgment also faults it; accepted physical work and

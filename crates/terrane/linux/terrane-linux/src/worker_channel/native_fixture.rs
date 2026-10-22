@@ -4,7 +4,10 @@
 //! exercises the private socket layer; it grants no repository authorization,
 //! exposure lease, production worker sandbox or FUSE mount acceptance.
 
-use super::{BackingRequest, ExposureContext, RequestedBacking, WorkerIdentity, socket::Endpoint};
+use super::{
+    BackingRequest, ExposureContext, RequestedBacking, WorkerClient, WorkerIdentity,
+    socket::Endpoint,
+};
 use rustix::net::{
     self, RecvAncillaryBuffer, RecvAncillaryMessage, SendAncillaryBuffer, SendAncillaryMessage,
 };
@@ -38,9 +41,13 @@ impl Drop for ChildCustody {
 }
 
 fn packet() -> Result<Vec<u8>> {
+    packet_sequence(1)
+}
+
+fn packet_sequence(sequence: u64) -> Result<Vec<u8>> {
     Ok(BackingRequest::new(
         ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [3; 32])?,
-        1,
+        sequence,
         RequestedBacking::Index,
     )?
     .encode())
@@ -88,7 +95,7 @@ fn descriptors() -> io::Result<usize> {
         .len())
 }
 
-fn exercise(setpriv: &Path, file: &File, mode: &str) -> Result {
+fn exercise(setpriv: &Path, file: &File, unsealed: &Path, mode: &str) -> Result {
     let (server, worker) = super::channel_pair()?;
     let mut child = launch(setpriv, mode, Stdio::from(worker))?;
     let mut unrelated = if mode == "wrong-pid" {
@@ -108,11 +115,18 @@ fn exercise(setpriv: &Path, file: &File, mode: &str) -> Result {
     let endpoint = Endpoint::new(server, identity)?;
     let before = descriptors()?;
     let request = receive(&endpoint);
-    if mode == "valid" {
+    if mode == "valid" || mode.starts_with("reply-") {
         if request? != packet()? {
             return Err("actual authenticated request differs from original packet".into());
         }
-        endpoint.send(&packet()?, file.as_fd())?;
+        send_reply(&endpoint, file, unsealed, mode)?;
+        if mode == "valid" {
+            let second = packet_sequence(2)?;
+            if receive(&endpoint)? != second {
+                return Err("worker client did not advance the acknowledged sequence".into());
+            }
+            endpoint.send(&second, file.as_fd())?;
+        }
     } else {
         let error = request
             .err()
@@ -145,6 +159,126 @@ fn exercise(setpriv: &Path, file: &File, mode: &str) -> Result {
     Ok(())
 }
 
+fn send_reply(endpoint: &Endpoint, original: &File, unsealed: &Path, mode: &str) -> Result {
+    if mode == "valid" || mode == "reply-wrong-uid" {
+        endpoint.send(&packet()?, original.as_fd())?;
+        return Ok(());
+    }
+    if mode == "reply-eof" {
+        endpoint.abort();
+        return Ok(());
+    }
+    let mut bytes = packet()?;
+    if mode == "reply-sequence" {
+        bytes[32] = 2;
+    }
+    if mode == "reply-hash" {
+        bytes[40] ^= 1;
+    }
+    if mode == "reply-truncated" {
+        bytes.resize(super::wire::MAX_PACKET + 1, 0);
+    }
+
+    let alternate = if mode == "reply-unsealed" || mode == "reply-writable" {
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(mode == "reply-writable");
+        Some(options.open(unsealed)?)
+    } else if mode == "reply-directory" {
+        Some(File::open("/")?)
+    } else {
+        None
+    };
+    let descriptor = alternate.as_ref().unwrap_or(original).as_fd();
+    let rights = [descriptor; 253];
+    let count = match mode {
+        "reply-no-fd" => 0,
+        "reply-extra-fd" => 253,
+        _ => 1,
+    };
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(253))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    if count != 0 && !ancillary.push(SendAncillaryMessage::ScmRights(&rights[..count])) {
+        return Err("fixture cannot construct reply rights".into());
+    }
+    if net::sendmsg(
+        endpoint,
+        &[IoSlice::new(&bytes)],
+        &mut ancillary,
+        net::SendFlags::NOSIGNAL,
+    )? != bytes.len()
+    {
+        return Err("fixture reply send truncated".into());
+    }
+    Ok(())
+}
+
+fn client_worker(socket: OwnedFd, mode: &str) -> Result {
+    use std::os::unix::fs::FileExt;
+
+    let expected_uid = u32::from(mode == "reply-wrong-uid");
+    let context = ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [3; 32])?;
+    let mut client = WorkerClient::bind(socket, context, expected_uid)?;
+    if mode == "valid" {
+        for sequence in 1..=2 {
+            let mut pending = client.request(RequestedBacking::Index)?;
+            let reply = receive_client(&mut pending)?;
+            if pending.receive().is_ok() {
+                return Err("worker client accepted repeated completion".into());
+            }
+            let file = reply.into_file();
+            let mut bytes = vec![0; BODY.len()];
+            file.read_exact_at(&mut bytes, 0)?;
+            let metadata = file.metadata()?;
+            if bytes != BODY || metadata.len() != BODY.len() as u64 {
+                return Err("worker client read another original body".into());
+            }
+            if sequence == 2 {
+                println!("ORIGINAL {} {}", metadata.dev(), metadata.ino());
+            }
+        }
+        return Ok(());
+    }
+    let before = descriptors()?;
+    let mut pending = client.request(RequestedBacking::Index)?;
+    let result = receive_client(&mut pending);
+    let error = result.err().ok_or("worker client accepted invalid reply")?;
+    let expected_kind = match mode {
+        "reply-no-fd" | "reply-writable" | "reply-directory" => io::ErrorKind::InvalidData,
+        "reply-unsealed" => {
+            if error.raw_os_error() != Some(rustix::io::Errno::NODATA.raw_os_error()) {
+                return Err("worker client did not reach actual unsealed-file refusal".into());
+            }
+            error.kind()
+        }
+        _ => io::ErrorKind::PermissionDenied,
+    };
+    if error.kind() != expected_kind || descriptors()? != before {
+        return Err("worker client accepted invalid reply or leaked descriptors".into());
+    }
+    drop(pending);
+    if client.request(RequestedBacking::Index).is_ok() {
+        return Err("worker client reused a faulted channel".into());
+    }
+    println!("REFUSED");
+    Ok(())
+}
+
+// Only the dedicated native proof uses a wall clock to bound its child.
+#[allow(clippy::disallowed_methods)]
+fn receive_client(pending: &mut super::PendingBacking<'_>) -> io::Result<super::BackingReply> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match pending.receive() {
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            result => return result,
+        }
+    }
+}
+
 fn worker(mode: &str) -> Result {
     if rustix::process::geteuid().as_raw() != WORKER_UID {
         return Err("worker fixture did not enter its independent identity".into());
@@ -155,6 +289,9 @@ fn worker(mode: &str) -> Result {
         return Ok(());
     }
     let socket = std::io::stdin().as_fd().try_clone_to_owned()?;
+    if mode == "valid" || mode.starts_with("reply-") {
+        return client_worker(socket, mode);
+    }
     let bytes = if mode == "truncated" {
         vec![0; super::wire::MAX_PACKET + 1]
     } else {
@@ -257,8 +394,29 @@ pub fn run() -> Result {
     crate::verity::enable(&file)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
     File::open(directory)?.sync_all()?;
-    for mode in ["valid", "wrong-uid", "wrong-pid", "rights", "truncated"] {
-        exercise(Path::new(&arguments[1]), &file, mode)?;
+    let unsealed = directory.join("unsealed");
+    let mut ordinary = File::create_new(&unsealed)?;
+    ordinary.write_all(BODY)?;
+    ordinary.sync_all()?;
+    drop(ordinary);
+    for mode in [
+        "valid",
+        "wrong-uid",
+        "wrong-pid",
+        "rights",
+        "truncated",
+        "reply-wrong-uid",
+        "reply-sequence",
+        "reply-hash",
+        "reply-truncated",
+        "reply-no-fd",
+        "reply-extra-fd",
+        "reply-unsealed",
+        "reply-writable",
+        "reply-directory",
+        "reply-eof",
+    ] {
+        exercise(Path::new(&arguments[1]), &file, &unsealed, mode)?;
         println!("PASS actual worker seqpacket transport: {mode}");
     }
     println!(

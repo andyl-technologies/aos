@@ -9,11 +9,13 @@
 //! This component does not launch a worker, mount FUSE, confer privileges or
 //! install a worker sandbox. Its owner separately supervises the original child.
 
+mod client;
 #[cfg(feature = "native-test-fixtures")]
 pub mod native_fixture;
 mod socket;
 mod wire;
 
+pub use client::{BackingReply, PendingBacking, WorkerClient};
 pub use socket::WorkerIdentity;
 pub use wire::{BackingRequest, ExposureContext, RequestedBacking};
 
