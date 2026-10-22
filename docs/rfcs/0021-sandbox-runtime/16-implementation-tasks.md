@@ -9726,6 +9726,16 @@ boot-preparation package's three unit tests pass; the package is
 `/nix/store/464yprpp8yclg7sva3gmwv80m5caa6la-aos-boot-preparations-0.1.0`.
 Installed qualification of this preparation remains pending.
 
+The next signed Host boot completes initrd overlay preparation but cannot start
+its test control channel: PID1 observes the standalone test-agent fragment as
+`usr_t` and correctly denies service start. That fragment previously appeared
+only through a boot-created `/run` symlink, outside image label planning. The
+fleet module now also installs its unchanged fragment through the canonical
+`/etc/systemd/system` inventory, with a conventional immutable unit layout.
+The existing alias planner can then label the actual target inode. No generic
+`usr_t` service permission is added. This harness repair still requires an
+installed rerun and supplies no Host or public lifecycle qualification itself.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the
