@@ -407,6 +407,35 @@ fn aws_imdsv2_404_user_data_is_none() {
 }
 
 #[test]
+fn aws_imdsv2_rejects_oversized_fact_listings_before_expansion() {
+    let base = "http://169.254.169.254/latest";
+    let listing = (0..=1024)
+        .map(|index| format!("{index}=key-{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut http =
+        RecordedHttp::new().on(RecordedMethod::Put, &format!("{base}/api/token"), 200, b"T");
+    for path in [
+        "meta-data/instance-id",
+        "meta-data/placement/region",
+        "meta-data/placement/availability-zone",
+        "meta-data/local-hostname",
+    ] {
+        http = http.on(RecordedMethod::Get, &format!("{base}/{path}"), 404, b"");
+    }
+    http = http.on(
+        RecordedMethod::Get,
+        &format!("{base}/meta-data/public-keys/"),
+        200,
+        listing.as_bytes(),
+    );
+
+    let error = block_on(super::aws::AwsImdsFetcher::default().fetch_facts(&http)).unwrap_err();
+
+    assert!(error.to_string().contains("entry limit"), "{error:#}");
+}
+
+#[test]
 fn aws_imdsv2_host_pointer_resolved_with_pin() {
     let pin = sha256_hex(b"{ big = true; }");
     let pointer = format!(
@@ -443,6 +472,35 @@ fn aws_imdsv2_host_pointer_resolved_with_pin() {
     let resolved = block_on(ud.resolve(&http)).unwrap();
     assert_eq!(resolved.payload, b"{ big = true; }");
     assert_eq!(resolved.sig.as_deref(), Some("SIG"));
+}
+
+#[test]
+fn pointer_signature_response_is_bounded() {
+    let payload = b"{ bounded = true; }";
+    let digest = sha256_hex(payload);
+    let signature = vec![b'x'; super::http::MAX_SIGNATURE_BYTES as usize + 1];
+    let http = RecordedHttp::new()
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/host.nix",
+            200,
+            payload,
+        )
+        .on(
+            RecordedMethod::Get,
+            "https://cfg.example/host.nix.sig",
+            200,
+            &signature,
+        );
+    let pointer = super::fetcher::PointerDoc {
+        host_nix_url: "https://cfg.example/host.nix".into(),
+        sha256: digest,
+        sig_url: Some("https://cfg.example/host.nix.sig".into()),
+    };
+
+    let error = block_on(UserData::Pointer(pointer).resolve(&http)).unwrap_err();
+
+    assert!(error.to_string().contains("signature download failed"));
 }
 
 #[test]
@@ -589,12 +647,108 @@ fn production_http_timeout_bounds_a_nonresponding_endpoint() {
             .with_timeout(Duration::from_millis(25));
         let started = Instant::now();
         let error = http
-            .get(&format!("http://{address}/black-hole"), &[])
+            .get(&format!("http://{address}/black-hole"), &[], 1024)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(1));
         server.abort();
+    });
+}
+
+#[test]
+fn production_http_bounds_content_length_and_chunked_bodies() {
+    use aos_transfer::transfer::{TransferEngine, TransferEngineConfig};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    use super::http::{EngineHttp, MetadataHttp};
+
+    block_on(async {
+        for (response, maximum, succeeds) in [
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd".as_slice(),
+                4,
+                true,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nabcd".as_slice(),
+                3,
+                false,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n".as_slice(),
+                4,
+                true,
+            ),
+            (
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n".as_slice(),
+                3,
+                false,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let response = response.to_vec();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                stream.read(&mut request).await.unwrap();
+                let _ = stream.write_all(&response).await;
+            });
+            let mut config = TransferEngineConfig::default();
+            config.retry.max_attempts = 1;
+            let http = EngineHttp::new(TransferEngine::new(config));
+
+            let result = http
+                .get(&format!("http://{address}/metadata"), &[], maximum)
+                .await;
+
+            assert_eq!(result.is_ok(), succeeds);
+            server.await.unwrap();
+        }
+    });
+}
+
+#[test]
+fn production_http_bounds_put_success_and_error_bodies() {
+    use aos_transfer::protocol::http::HttpStatusError;
+    use aos_transfer::transfer::{TransferEngine, TransferEngineConfig};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    use super::http::{EngineHttp, MetadataHttp};
+
+    block_on(async {
+        for (status, maximum, succeeds) in [(200, 4, true), (200, 3, false), (500, 3, false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0u8; 1024];
+                stream.read(&mut request).await.unwrap();
+                let response = format!(
+                    "HTTP/1.1 {status} Reply\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n2\r\ncd\r\n0\r\n\r\n"
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+            let mut config = TransferEngineConfig::default();
+            config.retry.max_attempts = 1;
+            let http = EngineHttp::new(TransferEngine::new(config));
+
+            let result = http
+                .put(&format!("http://{address}/token"), Vec::new(), &[], maximum)
+                .await;
+
+            assert_eq!(result.is_ok(), succeeds);
+            if status == 500 {
+                let error = result.unwrap_err();
+                let response = error
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<HttpStatusError>())
+                    .unwrap();
+                assert_eq!(response.body.as_bytes(), b"abc");
+            }
+            server.await.unwrap();
+        }
     });
 }
 
@@ -783,6 +937,27 @@ fn fetch_metadata_offline_returns_exact_typed_result() {
     );
     assert_eq!(acquired.facts.hostname.as_deref(), Some("os-1"));
     assert_eq!(acquired.facts.instance_id.as_deref(), Some("u-1"));
+}
+
+#[test]
+fn fetch_metadata_rejects_oversized_offline_signature_during_acquisition() {
+    let media = tempdir().unwrap();
+    let os = media.path().join("openstack/latest");
+    std::fs::create_dir_all(&os).unwrap();
+    std::fs::write(os.join("user_data"), b"{ ok = true; }").unwrap();
+    std::fs::write(
+        os.join("user_data.sig"),
+        vec![b'x'; super::http::MAX_SIGNATURE_BYTES as usize + 1],
+    )
+    .unwrap();
+
+    let fetcher = ConfigDriveFetcher::new(media.path());
+    let http = RecordedHttp::new();
+    let error = block_on(super::fetch_metadata_with(&fetcher, &http)).unwrap_err();
+    let error_chain = format!("{error:#}");
+
+    assert!(error_chain.contains("fetching user-data"), "{error_chain}");
+    assert!(error_chain.contains("byte limit"), "{error_chain}");
 }
 
 #[test]

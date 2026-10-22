@@ -172,9 +172,10 @@ impl UserData {
                         "bundle pointer requires lowercase SHA-256"
                     );
                     let body = http
-                        .get_pinned_limited(
+                        .get_pinned(
                             &pointer.url,
                             &pointer.sha256,
+                            &[],
                             super::bundle::MAX_BUNDLE_BYTES,
                         )
                         .await
@@ -197,7 +198,7 @@ impl UserData {
                         Some(url) => {
                             validate_bundle_url(&url)?;
                             Some(
-                                http.get(&url, &[])
+                                http.get(&url, &[], super::http::MAX_SIGNATURE_BYTES)
                                     .await
                                     .map_err(|_| anyhow!("bundle signature download failed"))?
                                     .into_ok_string()
@@ -235,9 +236,10 @@ fn validate_bundle_url(value: &str) -> Result<()> {
 
 async fn resolve_pointer(pointer: PointerDoc, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
     let payload = http
-        .get_pinned_limited(
+        .get_pinned(
             &pointer.host_nix_url,
             &pointer.sha256,
+            &[],
             super::bundle::MAX_BUNDLE_BYTES,
         )
         .await
@@ -248,7 +250,7 @@ async fn resolve_pointer(pointer: PointerDoc, http: &dyn MetadataHttp) -> Result
         .ok_or_else(|| anyhow!("host.nix pointer returned no body"))?;
     let sig = match pointer.sig_url {
         Some(url) => Some(
-            http.get(&url, &[])
+            http.get(&url, &[], super::http::MAX_SIGNATURE_BYTES)
                 .await
                 .map_err(|_| anyhow!("configuration signature download failed"))?
                 .into_ok_string()

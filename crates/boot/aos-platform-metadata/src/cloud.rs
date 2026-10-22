@@ -8,7 +8,9 @@ use anyhow::{Context, Result};
 use base64::Engine;
 
 use super::fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
-use super::http::MetadataHttp;
+use super::http::{
+    MAX_ENCODED_USER_DATA_BYTES, MAX_FACT_DOCUMENT_BYTES, MAX_USER_DATA_BYTES, MetadataHttp,
+};
 
 const LINK_LOCAL_BASE: &str = "http://169.254.169.254";
 
@@ -45,7 +47,7 @@ async fn plain_user_data(
     headers: &[(&str, &str)],
 ) -> Result<Option<UserData>> {
     let response = http
-        .get(url, headers)
+        .get(url, headers, MAX_USER_DATA_BYTES)
         .await
         .with_context(|| format!("fetching user-data from {url}"))?;
     if response.status == 404 {
@@ -62,7 +64,7 @@ async fn optional_text(
     headers: &[(&str, &str)],
 ) -> Result<Option<String>> {
     let response = http
-        .get(url, headers)
+        .get(url, headers, MAX_FACT_DOCUMENT_BYTES)
         .await
         .with_context(|| format!("fetching metadata from {url}"))?;
     if response.status == 404 {
@@ -142,7 +144,7 @@ impl PlatformFetcher for AzureFetcher {
             "{LINK_LOCAL_BASE}/metadata/instance/compute/userData?api-version=2021-02-01&format=text"
         );
         let response = http
-            .get(&url, &[("Metadata", "true")])
+            .get(&url, &[("Metadata", "true")], MAX_ENCODED_USER_DATA_BYTES)
             .await
             .context("fetching Azure user-data")?;
         if response.status == 404 {
@@ -154,6 +156,10 @@ impl PlatformFetcher for AzureFetcher {
         let payload = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .context("decoding Azure base64 user-data")?;
+        anyhow::ensure!(
+            payload.len() as u64 <= MAX_USER_DATA_BYTES,
+            "decoded Azure user-data exceeds byte limit"
+        );
         Ok(Some(UserData::Inline { payload, sig: None }))
     }
 
@@ -254,7 +260,7 @@ impl PlatformFetcher for OpenStackImdsFetcher {
     async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts> {
         let url = format!("{LINK_LOCAL_BASE}/openstack/latest/meta_data.json");
         let Some(body) = http
-            .get(&url, &[])
+            .get(&url, &[], MAX_FACT_DOCUMENT_BYTES)
             .await
             .context("fetching OpenStack metadata")?
             .into_ok_body()
@@ -271,6 +277,7 @@ impl PlatformFetcher for OpenStackImdsFetcher {
             .get(
                 &format!("{LINK_LOCAL_BASE}/openstack/latest/network_data.json"),
                 &[],
+                MAX_FACT_DOCUMENT_BYTES,
             )
             .await
             .context("fetching OpenStack network data")?

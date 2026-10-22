@@ -241,6 +241,19 @@ impl TransferEngine {
                 });
                 match proto.execute(&request, credential.as_ref()).await {
                     Ok(result) => {
+                        if let Some(maximum) = request.maximum_bytes {
+                            if result.bytes_transferred > maximum {
+                                let error = anyhow::anyhow!(
+                                    "response from {url} exceeds the {maximum} byte limit"
+                                );
+                                observer.observe(TransferEvent::Failed {
+                                    url: &url,
+                                    error: &error,
+                                });
+                                return Err(error);
+                            }
+                        }
+
                         // Apply bandwidth limiting for the bytes transferred.
                         if let Some(ref limiter) = self.bandwidth {
                             limiter.consume(result.bytes_transferred).await;

@@ -67,6 +67,34 @@ async fn bounded_error_body(mut response: reqwest::Response, maximum_bytes: Opti
     body
 }
 
+async fn bounded_response_body(
+    mut response: reqwest::Response,
+    maximum_bytes: Option<u64>,
+) -> Result<Vec<u8>> {
+    let maximum = maximum_bytes.unwrap_or(u64::MAX);
+    if response
+        .content_length()
+        .is_some_and(|content_length| content_length > maximum)
+    {
+        anyhow::bail!("response exceeds the {maximum} byte limit");
+    }
+
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("reading response body")? {
+        let next = (bytes.len() as u64)
+            .checked_add(chunk.len() as u64)
+            .context("response body size overflow")?;
+        if next > maximum {
+            anyhow::bail!("response exceeds the {maximum} byte limit");
+        }
+        bytes
+            .try_reserve(chunk.len())
+            .context("reserving response body storage")?;
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 /// HTTP/HTTPS protocol handler.
 ///
 /// Wraps a shared [`reqwest::Client`] (connection-pooled, ALPN
@@ -519,9 +547,7 @@ impl HttpProtocol {
         let headers = collect_headers(&response);
         let content_length = response.content_length();
 
-        let body = if status < 400 {
-            response.bytes().await.ok().map(|b| b.to_vec())
-        } else if status == 404 {
+        if status >= 400 {
             let body = bounded_error_body(response, request.maximum_bytes).await;
             return Err(HttpStatusError {
                 status,
@@ -529,10 +555,8 @@ impl HttpProtocol {
                 body,
             }
             .into());
-        } else {
-            let text = response.text().await.unwrap_or_default();
-            anyhow::bail!("HTTP {} for PUT {}: {}", status, request.url, text);
-        };
+        }
+        let body = Some(bounded_response_body(response, request.maximum_bytes).await?);
 
         Ok(TransferResult {
             status,
