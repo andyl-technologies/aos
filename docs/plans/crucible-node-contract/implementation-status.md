@@ -2366,6 +2366,44 @@ Compilation does not execute these targets. No new VM or configured Engine/Daemo
 runtime result is claimed. Genuine Source/Birth funding, model-absent Native18
 policy/ACK, opaque Initial/Recipe and full RFC acceptance remain unfinished.
 
+## Complete Record18 definitions and closed restoration DATA
+
+Commit `315bbf0846` supplies the full canonical Record18 definition and distinct
+closed CommitHeld and FirstObserved DATA shapes. Their scope carries the exact
+fourteen-coordinate target, SourceBirth reference, original Hello pair, recipe,
+import binding, all seven input references and Prepare pair. Held DATA names the
+current Commit request and physical Hold; observed DATA names completed
+Commit/Arm/World pairs, the current first Observe request and native proof.
+The carrying response is excluded to avoid recursive content addressing.
+Old editions, unknown fields and mismatched phase shapes are refused.
+
+Full-definition selection now requires exactly one Import18, Stage18 and
+Record18 reference plus all four features in both provider and selected binding.
+The Daemon validates all three actual compiled bodies and refuses partial
+announcements. Checked construction quotes and exhaustive retained metadata
+cover these definitions and DATA; neither parsing nor equality creates live
+native permission, a phase issuer or a physical witness.
+
+Focused definition, typed-record and inherited-socket suites pass, including
+full-reference substitution, all seven actual Prepare input roles, malformed
+phase shapes and missing/duplicate Record18 declarations. Both complete
+Transport configurations pass 1,938 tests each, with zero failures, no filtering
+and sixteen existing ignores. Configured Daemon and Engine library runs pass
+1,839 and 2,055 tests respectively, with existing ignored populations of 166
+and 34. They use the installed packet/device executables and closed gem5
+profile. Their binaries finished compiling before the subsequent policy edits;
+these runtime results qualify this component only. Preserved unrelated ARM
+Root changes were present during compilation and are not qualified as committed
+by this record.
+
+Affected all-feature/all-target checking, changed-file formatting and all six
+architecture gates pass. The required application gate compiles 180 test
+executables across 58 package identities, including 71 integration targets.
+All 280 owned Rust/Cargo inputs match the commit and its exact captured source.
+This compilation gate does not execute tests. No new funded-Source VM result is
+claimed. Live Native18 policy/ACK and all five native phase consumers, genuine
+Source/Birth funding, opaque Initial/Recipe and full RFC acceptance remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
