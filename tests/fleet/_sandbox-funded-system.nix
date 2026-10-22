@@ -97,6 +97,13 @@ systems.server-secureboot-lockdown.extendModules {
         hostBroker = {
           enable = true;
           componentControl = true;
+          # Host and Controller retain the same Prepare/Accept subdivision;
+          # Launch has its own allowance inside the unchanged Host total.
+          executionReceiving = lib.mkIf includeLifecycleReservations {
+            prepare = map (dimension: config.aos.sandbox.resourceBank.policy.hostExecutionPrepare.${dimension}) config.aos.sandbox.resourceBank._dimensionOrder;
+            accept = map (dimension: config.aos.sandbox.resourceBank.policy.hostExecutionAccept.${dimension}) config.aos.sandbox.resourceBank._dimensionOrder;
+            launch = map (dimension: (envelope (128 * mib) 20000 8 2048).${dimension}) config.aos.sandbox.resourceBank._dimensionOrder;
+          };
           credentials = {
             ownershipLeasePolicy = sharedCredential "ownership-lease-policy.cbor";
             ownershipLeasePublicKey = sharedCredential "ownership-lease-public-key";
