@@ -8,9 +8,12 @@ action results, never execution trees. No remote cache or execution is enabled.
 import argparse
 import fcntl
 import json
+import os
 from pathlib import Path
 import re
+import resource
 import subprocess
+import time
 
 
 def shadow_workspace(source, output_base, lock):
@@ -54,6 +57,7 @@ def main():
     parser.add_argument("--nix-sandbox", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--shadow-workspace", action="store_true")
     parser.add_argument("--lock", type=Path)
+    parser.add_argument("--metrics", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     config = json.loads(options.config.read_text())
@@ -150,9 +154,34 @@ def main():
         "--host_jvm_args=-Dfile.encoding=UTF-8",
         "--nosystem_rc", "--nohome_rc", "--noworkspace_rc",
     ] + arguments
+    started_ns = time.time_ns()
+    started = time.monotonic()
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         status = subprocess.call(command, cwd=workspace, env=environment)
     finally:
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        if options.metrics:
+            options.metrics.write_text(json.dumps({
+                "schema_version": 1,
+                "started_unix_ns": started_ns,
+                "finished_unix_ns": time.time_ns(),
+                "wall_seconds": time.monotonic() - started,
+                "user_seconds": after.ru_utime - before.ru_utime,
+                "system_seconds": after.ru_stime - before.ru_stime,
+                "peak_rss_kib": after.ru_maxrss,
+                "block_inputs": after.ru_inblock - before.ru_inblock,
+                "block_outputs": after.ru_oublock - before.ru_oublock,
+                "uid": os.getuid(),
+                "pid": os.getpid(),
+                "uid_map": Path("/proc/self/uid_map").read_text(),
+                "namespaces": {name: os.readlink("/proc/self/ns/" + name) for name in ["mnt", "pid", "user", "net"]},
+                "output_base_inode": output_base.stat().st_ino,
+                "output_base": str(output_base),
+                "disk_cache": str(options.cache) if options.cache else None,
+                "bazel_version": config["bazel_version"],
+                "command": command,
+            }, indent=2, sort_keys=True) + "\n")
         output_lock.close()
     raise SystemExit(status)
 

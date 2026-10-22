@@ -3,102 +3,174 @@
     "cpp_app": {
       "consumer": {
         "cache_hit": false,
-        "fingerprint": "eb1e84a2585d2a3ee6e20fa9b09b277b4c6d26918e72aaf4b482a32b7b047e4c",
+        "fingerprint": "a80822733fb85bafaa095ed12fc0ed5010730113d418d8817369824167f53c68",
         "runner": "linux-sandbox"
       },
       "producer": {
         "cache_hit": false,
-        "fingerprint": "390313b23b202582419d6175089e27de7be4a8ce6ac01f17223ba2d5c5a32ae7",
+        "fingerprint": "9f0d3d3faa1396c17f0a4ccbb0ab89139d0bd1934a4828b786cb6f1c13c6416c",
         "runner": "linux-sandbox"
       },
       "uncached": {
         "cache_hit": false,
-        "fingerprint": "eb1e84a2585d2a3ee6e20fa9b09b277b4c6d26918e72aaf4b482a32b7b047e4c",
+        "fingerprint": "a80822733fb85bafaa095ed12fc0ed5010730113d418d8817369824167f53c68",
         "runner": "linux-sandbox"
       }
     },
     "cpp_library": {
       "consumer": {
         "cache_hit": true,
-        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "fingerprint": "de3c60a0b26222f0bb20c68220658ff9bfe26df704f7c7aab8b4ad88986f3219",
         "runner": "disk cache hit"
       },
       "producer": {
         "cache_hit": false,
-        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "fingerprint": "de3c60a0b26222f0bb20c68220658ff9bfe26df704f7c7aab8b4ad88986f3219",
         "runner": "linux-sandbox"
       },
       "uncached": {
         "cache_hit": false,
-        "fingerprint": "22b9cbbf610e014dcf192120252e49b87e693848f77f63b824b7a28f79a5516c",
+        "fingerprint": "de3c60a0b26222f0bb20c68220658ff9bfe26df704f7c7aab8b4ad88986f3219",
+        "runner": "linux-sandbox"
+      }
+    },
+    "fixture_macro": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "fed7781d42937bd29291551feadb6d2a5fb2bb67311b18a6b0c9f4f0277463b1",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "fed7781d42937bd29291551feadb6d2a5fb2bb67311b18a6b0c9f4f0277463b1",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "fed7781d42937bd29291551feadb6d2a5fb2bb67311b18a6b0c9f4f0277463b1",
+        "runner": "linux-sandbox"
+      }
+    },
+    "generated": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "b5a4a116b0505192472b5711a50fb6e9efe20794047091815ec4d90e34bd3fd1",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "b5a4a116b0505192472b5711a50fb6e9efe20794047091815ec4d90e34bd3fd1",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "b5a4a116b0505192472b5711a50fb6e9efe20794047091815ec4d90e34bd3fd1",
+        "runner": "linux-sandbox"
+      }
+    },
+    "generated_library": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "e477f58b7eee62ac53a8a8a1b94b7000fd9f5dd93487e61dbf10f55b1ba7c96a",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "e477f58b7eee62ac53a8a8a1b94b7000fd9f5dd93487e61dbf10f55b1ba7c96a",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "e477f58b7eee62ac53a8a8a1b94b7000fd9f5dd93487e61dbf10f55b1ba7c96a",
+        "runner": "linux-sandbox"
+      }
+    },
+    "native_app": {
+      "consumer": {
+        "cache_hit": true,
+        "fingerprint": "865acb1a823276bbb25f4edd8c107fe67ec3eb091d222092a251d197fd814d03",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "cache_hit": false,
+        "fingerprint": "865acb1a823276bbb25f4edd8c107fe67ec3eb091d222092a251d197fd814d03",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "cache_hit": false,
+        "fingerprint": "865acb1a823276bbb25f4edd8c107fe67ec3eb091d222092a251d197fd814d03",
         "runner": "linux-sandbox"
       }
     },
     "rust_app": {
       "consumer": {
         "cache_hit": false,
-        "fingerprint": "90c99d1e8e45265d3d121110f5c812034619d0258aa437c994b81631f650d5b8",
+        "fingerprint": "2fdfd2a664c5252cb40ad4969f1698008828fee63981e43243fe0ab58ce108fc",
         "runner": "linux-sandbox"
       },
       "producer": {
         "cache_hit": false,
-        "fingerprint": "057994d0216dc0c9ea252faf6be9d70226288c605fd741925b6d42dd5322ab2f",
+        "fingerprint": "585d53493c76b315483076f3da91df3b6ea1e617bf6b81ff47401f606e864639",
         "runner": "linux-sandbox"
       },
       "uncached": {
         "cache_hit": false,
-        "fingerprint": "90c99d1e8e45265d3d121110f5c812034619d0258aa437c994b81631f650d5b8",
+        "fingerprint": "2fdfd2a664c5252cb40ad4969f1698008828fee63981e43243fe0ab58ce108fc",
         "runner": "linux-sandbox"
       }
     },
     "rust_library": {
       "consumer": {
         "cache_hit": true,
-        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "fingerprint": "91938574b3238483a9fef59683c3f8f6799210e64581ad2789190e75bb61beac",
         "runner": "disk cache hit"
       },
       "producer": {
         "cache_hit": false,
-        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "fingerprint": "91938574b3238483a9fef59683c3f8f6799210e64581ad2789190e75bb61beac",
         "runner": "linux-sandbox"
       },
       "uncached": {
         "cache_hit": false,
-        "fingerprint": "c1fca0a7ac76fa9e42aee09c2cb571dd22ea2ea3df00a5c4d93f9206b2324824",
+        "fingerprint": "91938574b3238483a9fef59683c3f8f6799210e64581ad2789190e75bb61beac",
         "runner": "linux-sandbox"
       }
     }
   },
   "artifacts": {
-    "bin/cpp-fixture": "db9eaa5ef9c840f7f5ea5a49963a1b447d31536977a9a49434f892b70d3f6041",
-    "bin/rust-fixture": "20f75b40a7da86eab364e203f33ddfe8e0530a64f22704a59a25610146a19034"
+    "bin/cpp-fixture": "63e027f2845c7cfe36a3fb9e8afbc5920193d165941ba0623662eeca621c2434",
+    "bin/native-fixture": "b49e6839c6c9189dfd6d7e5036622aec57df3920857a82bed3fd2559afb79dd0",
+    "bin/rust-fixture": "ccae924cf4de3559a56bae71d68ffbf6dfe20d40616436e2e5ba9eaf61f4f96c"
   },
   "builds": {
-    "consumer": "/nix/store/mxmbzds5kyi3smp3srlvnlwyafp38r69-aos-bazel-cache-consumer-1",
-    "producer": "/nix/store/valrd6082w2zrj0z1fygr4f45ay8az4r-aos-bazel-cache-producer-1",
-    "uncached": "/nix/store/ky6havdd9pc251c1p0d1d1n2d2j08l5x-aos-bazel-cache-uncached-1"
+    "consumer": "/nix/store/8w3s2pcnv2k01b9hjh8ixipjg6blyk8p-aos-bazel-cache-consumer-1",
+    "producer": "/nix/store/lyrri92njz3sf8bpqqncscr7qaczv5n0-aos-bazel-cache-producer-1",
+    "uncached": "/nix/store/c4kampfg4i6n26prlsma3c4i2bwi807x-aos-bazel-cache-uncached-1"
   },
   "schema_version": 1,
   "summary": {
     "consumer": {
+      "AosPythonGenerate:disk cache hit": 1,
       "CppArchive:disk cache hit": 1,
       "CppCompile:disk cache hit": 1,
       "CppCompile:linux-sandbox": 1,
       "CppLink:linux-sandbox": 1,
-      "Rustc:disk cache hit": 3,
+      "Rustc:disk cache hit": 6,
       "Rustc:linux-sandbox": 1
     },
     "producer": {
+      "AosPythonGenerate:linux-sandbox": 1,
       "CppArchive:linux-sandbox": 1,
       "CppCompile:linux-sandbox": 2,
       "CppLink:linux-sandbox": 1,
-      "Rustc:linux-sandbox": 4
+      "Rustc:linux-sandbox": 7
     },
     "uncached": {
+      "AosPythonGenerate:linux-sandbox": 1,
       "CppArchive:linux-sandbox": 1,
       "CppCompile:linux-sandbox": 2,
       "CppLink:linux-sandbox": 1,
-      "Rustc:linux-sandbox": 4
+      "Rustc:linux-sandbox": 7
     }
   }
 }

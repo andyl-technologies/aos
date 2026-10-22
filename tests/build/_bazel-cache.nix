@@ -2,7 +2,13 @@
 {
   pkgs,
   workspace,
-  trial ? builtins.hashString "sha256" (toString workspace.source),
+  trial ?
+    builtins.hashString "sha256" (builtins.toJSON {
+      source = toString workspace.source;
+      builder = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/build.nix;
+      launcher = builtins.hashFile "sha256" ../../tools/bazel/launcher.py;
+      toolchains = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/toolchains.nix;
+    }),
 }: let
   lib = pkgs.lib;
   toolchains = pkgs.mkAosBazelToolchains {identity = "cache-proof:${trial}";};
@@ -48,6 +54,7 @@
       inherit sharedBuildCache;
     };
 in rec {
+  invalidation = import ./_bazel-invalidation.nix {inherit pkgs workspace trial;};
   producer = build "producer" false true;
   consumer = (build "consumer" true true).overrideAttrs (previous: {
     # Establish order without exposing the producer execution tree. The
@@ -55,6 +62,28 @@ in rec {
     buildDeps = previous.buildDeps ++ [producer];
   });
   uncached = build "uncached" true false;
+  concurrent = let
+    isolated = pkgs.mkAosBazelWorkspace {
+      root = ../..;
+      sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
+      toolchains = pkgs.mkAosBazelToolchains {identity = "concurrent:${trial}";};
+    };
+    participant = name: edited:
+      pkgs.mkAosBazelBuild {
+        pname = "aos-bazel-concurrent-${name}";
+        workspace = isolated // {source = snapshot edited;};
+        targets = ["//tools/bazel/tests/fixture:package"];
+        cacheNamespace = "concurrent-${trial}";
+      };
+    left = participant "left" false;
+    right = participant "right" true;
+  in
+    pkgs.runCommand "aos-bazel-concurrent-cache-proof" {buildDeps = [pkgs.python3];} ''
+      cp ${../../tools/bazel/tests/verify_cache.py} verify_cache.py
+      cp ${../../tools/bazel/tests/verify_concurrent.py} verify_concurrent.py
+      ${pkgs.python3}/bin/python3 verify_concurrent.py \
+        --left ${left} --right ${right} --original ${producer} --edited ${uncached} --output "$out"
+    '';
   verify =
     pkgs.runCommand "aos-bazel-cross-derivation-cache-proof" {
       buildDeps = [pkgs.python3];

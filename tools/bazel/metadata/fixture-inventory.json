@@ -37,6 +37,7 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/tests/fixture:generated.h",
         "//tools/bazel/tests/fixture:library.cc",
         "//tools/bazel/tests/fixture:library.h",
         "@@bazel_tools//tools/def_parser:def_parser"
@@ -44,7 +45,9 @@
       "edition": "",
       "external": false,
       "features": [],
-      "generated_inputs": {},
+      "generated_inputs": {
+        "tools/bazel/tests/fixture/generated.h": "//tools/bazel/tests/fixture:generated"
+      },
       "kind": "cc_library",
       "label": "//tools/bazel/tests/fixture:cpp_library",
       "rustc_env": {},
@@ -63,7 +66,151 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/tests/fixture:macro.rs",
+        "@@rules_rust+//ffi/rs:empty_allocator_libraries",
+        "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
+        "@@rules_rust+//rust/settings:collect_cfgs",
+        "@@rules_rust+//rust/settings:error_format",
+        "@@rules_rust+//rust/settings:experimental_per_crate_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_env",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags",
+        "@@rules_rust+//rust/settings:rustc_output_diagnostics",
+        "@@rules_rust+//util/process_wrapper:process_wrapper"
+      ],
+      "edition": "2024",
+      "external": false,
+      "features": [],
+      "generated_inputs": {},
+      "kind": "rust_proc_macro",
+      "label": "//tools/bazel/tests/fixture:fixture_macro",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [
+        "tools/bazel/tests/fixture/macro.rs"
+      ],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
+      "build_file": "tools/bazel/tests/fixture/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "defines": [],
+      "dependencies": [
+        "//tools/bazel/tests/fixture:generate.py",
+        "//tools/bazel/tests/fixture:value.txt",
+        "@@+aos_tools_repository+aos_tools//:closure.json",
+        "@@+aos_tools_repository+aos_tools//:python"
+      ],
+      "edition": "",
+      "external": false,
+      "features": [],
+      "generated_inputs": {},
+      "kind": "aos_python_generator",
+      "label": "//tools/bazel/tests/fixture:generated",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [
+        "tools/bazel/tests/fixture/generate.py",
+        "tools/bazel/tests/fixture/value.txt"
+      ],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
+      "build_file": "tools/bazel/tests/fixture/BUILD.bazel",
+      "copts": [],
+      "crate_name": "fixture_generated",
+      "defines": [],
+      "dependencies": [
+        "//tools/bazel/tests/fixture:generated.rs",
+        "@@rules_rust+//ffi/rs:empty_allocator_libraries",
+        "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
+        "@@rules_rust+//rust/settings:collect_cfgs",
+        "@@rules_rust+//rust/settings:error_format",
+        "@@rules_rust+//rust/settings:experimental_per_crate_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_env",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags",
+        "@@rules_rust+//rust/settings:rustc_output_diagnostics",
+        "@@rules_rust+//util/process_wrapper:process_wrapper"
+      ],
+      "edition": "2024",
+      "external": false,
+      "features": [],
+      "generated_inputs": {
+        "tools/bazel/tests/fixture/generated.rs": "//tools/bazel/tests/fixture:generated"
+      },
+      "kind": "rust_library",
+      "label": "//tools/bazel/tests/fixture:generated_library",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
+      "build_file": "tools/bazel/tests/fixture/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "defines": [],
+      "dependencies": [
+        "//tools/bazel/tests/fixture:cpp_library",
+        "//tools/bazel/tests/fixture:native.rs",
+        "//tools/bazel/tests/fixture:rust_library",
+        "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
+        "@@rules_rust+//ffi/rs:empty_allocator_libraries",
+        "@@rules_rust+//rust/private/cc:empty",
+        "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
+        "@@rules_rust+//rust/settings:collect_cfgs",
+        "@@rules_rust+//rust/settings:error_format",
+        "@@rules_rust+//rust/settings:experimental_per_crate_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_env",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_exec_rustc_flags",
+        "@@rules_rust+//rust/settings:extra_rustc_env",
+        "@@rules_rust+//rust/settings:extra_rustc_flag",
+        "@@rules_rust+//rust/settings:extra_rustc_flags",
+        "@@rules_rust+//rust/settings:rustc_output_diagnostics",
+        "@@rules_rust+//util/process_wrapper:process_wrapper"
+      ],
+      "edition": "2024",
+      "external": false,
+      "features": [],
+      "generated_inputs": {
+        "tools/bazel/tests/fixture/libcpp_library.a": "//tools/bazel/tests/fixture:cpp_library",
+        "tools/bazel/tests/fixture/libcpp_library.so": "//tools/bazel/tests/fixture:cpp_library",
+        "tools/bazel/tests/fixture/libfixture_library-205295380.rlib": "//tools/bazel/tests/fixture:rust_library"
+      },
+      "kind": "rust_binary",
+      "label": "//tools/bazel/tests/fixture:native_app",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [
+        "tools/bazel/tests/fixture/native.rs"
+      ],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
+      "build_file": "tools/bazel/tests/fixture/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "defines": [],
+      "dependencies": [
         "//tools/bazel/tests/fixture:cpp_app",
+        "//tools/bazel/tests/fixture:native_app",
         "//tools/bazel/tests/fixture:rust_app"
       ],
       "edition": "",
@@ -71,6 +218,7 @@
       "features": [],
       "generated_inputs": {
         "tools/bazel/tests/fixture/cpp_app": "//tools/bazel/tests/fixture:cpp_app",
+        "tools/bazel/tests/fixture/native_app": "//tools/bazel/tests/fixture:native_app",
         "tools/bazel/tests/fixture/rust_app": "//tools/bazel/tests/fixture:rust_app"
       },
       "kind": "aos_package",
@@ -88,6 +236,7 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/tests/fixture:fixture_macro",
         "//tools/bazel/tests/fixture:main.rs",
         "//tools/bazel/tests/fixture:rust_library",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -110,7 +259,8 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "tools/bazel/tests/fixture/libfixture_library-205295380.rlib": "//tools/bazel/tests/fixture:rust_library"
+        "tools/bazel/tests/fixture/libfixture_library-205295380.rlib": "//tools/bazel/tests/fixture:rust_library",
+        "tools/bazel/tests/fixture/libfixture_macro-414051833.so": "//tools/bazel/tests/fixture:fixture_macro"
       },
       "kind": "rust_binary",
       "label": "//tools/bazel/tests/fixture:rust_app",
@@ -129,6 +279,7 @@
       "crate_name": "fixture_library",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/tests/fixture:generated_library",
         "//tools/bazel/tests/fixture:lib.rs",
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
         "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
@@ -147,7 +298,9 @@
       "edition": "2024",
       "external": false,
       "features": [],
-      "generated_inputs": {},
+      "generated_inputs": {
+        "tools/bazel/tests/fixture/libfixture_generated-2556390610.rlib": "//tools/bazel/tests/fixture:generated_library"
+      },
       "kind": "rust_library",
       "label": "//tools/bazel/tests/fixture:rust_library",
       "rustc_env": {},
@@ -588,11 +741,12 @@
     "MODULE.bazel": "5c9261b1f336f4ab1182ed5286586ac928cfda8083299484c372d25e1603d66b",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "tools/bazel/metadata/BUILD.bazel": "f22dc5e44a92bca761a1412cc24b2b5da3adfef38c398c53d18c99fc45aca3f8",
-    "tools/bazel/metadata/inventory.bzl": "a792148a2828dc3ca78e77e115e206191f08a0708d96955b8efdbe58c72ad8fc",
-    "tools/bazel/rules/BUILD.bazel": "ccfd3b0c2b27a7ad55ecceffff9f38025863456381f4df4c5ec3958879b04e05",
+    "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
+    "tools/bazel/rules/BUILD.bazel": "0cf6ea34d85fe6806ed572e608853036339788cd54a9eb0ee0b3ba47d5559396",
+    "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/package.bzl": "2635f3a3ec6ab3782458fe29193a9779cb294c8f89dd89de1249427be2c827b5",
     "tools/bazel/rules/test.bzl": "eef2d1fb7dc6c36f949d403781713ed4bd683825635413078b93dbba8540a4d2",
-    "tools/bazel/tests/fixture/BUILD.bazel": "bf16dd14a117dc8efa8a069e468a272d50fc375261f100e2fd8a52af47b4b69f",
+    "tools/bazel/tests/fixture/BUILD.bazel": "294931e1349be2a4c5272a503f474a466162a72f9056a323ed0d36e42d4dd31c",
     "tools/bazel/toolchains/BUILD.bazel": "6ee0fc19651767ca4c64f434f1da544ec4812d40ac8f52b535f25051ef62fb3d",
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "ece5a5a040e571b4aa69f715ba7f413b044c25b392b00def6bbf3779bf89ac7c",
     "tools/bazel/toolchains/repositories.bzl": "276eb076b91a0221f95b3b2b6235e837e50eb5d4577512ec12833731b494f98f"
@@ -601,11 +755,15 @@
   "schema_version": 1,
   "source_directories": [],
   "source_files": [
+    "tools/bazel/tests/fixture/generate.py",
     "tools/bazel/tests/fixture/lib.rs",
     "tools/bazel/tests/fixture/library.cc",
     "tools/bazel/tests/fixture/library.h",
+    "tools/bazel/tests/fixture/macro.rs",
     "tools/bazel/tests/fixture/main.cc",
-    "tools/bazel/tests/fixture/main.rs"
+    "tools/bazel/tests/fixture/main.rs",
+    "tools/bazel/tests/fixture/native.rs",
+    "tools/bazel/tests/fixture/value.txt"
   ],
   "targets": [
     "//tools/bazel/tests/fixture:package"

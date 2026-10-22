@@ -1,0 +1,453 @@
+{
+  "cases": {
+    "cpp-source": {
+      "baseline": "/nix/store/vzcpnbaplvx6mpknqqmx7z9716w1jhqr-aos-bazel-cpp-source-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "cpp-source": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": true,
+              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "runner": "disk cache hit"
+            },
+            "cpp_library": {
+              "cache_hit": false,
+              "fingerprint": "1545c0e23a8bdfce01b1d2cd1151018e37374a5fbb86543f6c0f8a234ccd53fe",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": true,
+              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "cache_hit": true,
+              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "10b449069a88dbe27dd6c49a51e685117c2f6574ac610d2fc21b4eaebbb2c0ee",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": true,
+              "fingerprint": "352cd47e61f631ee703b4954384133451cd695d12364806f35820abcd9de745c",
+              "runner": "disk cache hit"
+            },
+            "rust_library": {
+              "cache_hit": true,
+              "fingerprint": "a5b88304089c51c9a6297ac6ac5bbb09fe2287e8edbcff388b5f173e81139f2b",
+              "runner": "disk cache hit"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b603f25e6a5212f7b5915a54bfa99a120827cfdb5e0fb5e8dce9e393d55b83b7",
+            "bin/native-fixture": "1640643d1e5ddd8eacf5b07a669d6767cf0b84c4ed8ec8f2d7afc1b7aa6a6299",
+            "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
+          },
+          "build": "/nix/store/s8zkd5fhlrzw2kf96d2rg7h1wwn2sh03-aos-bazel-invalidation-cpp-source-1"
+        }
+      }
+    },
+    "feature": {
+      "baseline": "/nix/store/5pvizy8sdvp9k9rqvxcbagipbxnzs3fl-aos-bazel-feature-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "feature": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": true,
+              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "runner": "disk cache hit"
+            },
+            "cpp_library": {
+              "cache_hit": true,
+              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "runner": "disk cache hit"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": true,
+              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "cache_hit": true,
+              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "df8175fb3f05e7c1f6390d9f5c1226941797387a1c423b5d068ee80b2f85b456",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "6f311f66e0add2acc5b40a23a2ddab5f06fcee18ac28e821d2b31b508158c470",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "5d0324c2ecc801e74b8d3422e97d086ba7b44a225764b3c0a470f01f45b0aeaa",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+            "bin/native-fixture": "53edfc29f811e9f487ab8dfe8f53b5dc145ec9828d7a279860e856fa2f5f488b",
+            "bin/rust-fixture": "5ca16aa9033689bb811706566d397b958b4e13c1644bff1170837044bd96bf3e"
+          },
+          "build": "/nix/store/bwryfgc7a25lbhp7azfprdf7cf5403xc-aos-bazel-invalidation-feature-1"
+        }
+      }
+    },
+    "generated-input": {
+      "baseline": "/nix/store/0l3ldlcwl04ikjyn9ka8vcdjqg9d498b-aos-bazel-generated-input-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "generated-input": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": false,
+              "fingerprint": "130a112f6c95d381f18a0012b22ca3db9da4e274e9f94bbd4052c441fd7bc6a7",
+              "runner": "linux-sandbox"
+            },
+            "cpp_library": {
+              "cache_hit": false,
+              "fingerprint": "aa9e15863a8404ffa1642869fe15fabfec86811958c5dc4a0cea6d5ad53c1416",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": false,
+              "fingerprint": "b7f4e0e058d9da749584550300c4d7a34be613d94a66743c06a6f8d8577db95d",
+              "runner": "linux-sandbox"
+            },
+            "generated_library": {
+              "cache_hit": false,
+              "fingerprint": "4ddd7aef252cd8409923930e7f1a3519e6ff98b17a2b8d99006166ab74200cf9",
+              "runner": "linux-sandbox"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "0412f069d272565a81e2507dcabb90a53318a25644fb9a493fbe1a4097ee0c6d",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "bf8a6ecad55a09c9ee65442f9ef4f60cc4dc9e0ae6e9987c5e8ed45b6871463b",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "53cadae1d5ad5f7199323a7a24802186b5841de217a5101e972486c5cc9316d7",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b603f25e6a5212f7b5915a54bfa99a120827cfdb5e0fb5e8dce9e393d55b83b7",
+            "bin/native-fixture": "283cf226bd99b8a0e238c84d360a674a2927ecd3e8bb83dfd8db91d150d2b2e6",
+            "bin/rust-fixture": "46417887d2177cad0243546dd88ae51adf1e3b4b096f3904ebb74e77b6fbe5c2"
+          },
+          "build": "/nix/store/dblf2l7awrj567xq2m2bdj0k7a642msw-aos-bazel-invalidation-generated-input-1"
+        }
+      }
+    },
+    "generator-environment": {
+      "baseline": "/nix/store/343n4j3gvxhkvh3ks4sdcvsz02a75ajz-aos-bazel-generator-environment-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "generator-environment": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": false,
+              "fingerprint": "130a112f6c95d381f18a0012b22ca3db9da4e274e9f94bbd4052c441fd7bc6a7",
+              "runner": "linux-sandbox"
+            },
+            "cpp_library": {
+              "cache_hit": false,
+              "fingerprint": "aa9e15863a8404ffa1642869fe15fabfec86811958c5dc4a0cea6d5ad53c1416",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": false,
+              "fingerprint": "3f0135af4f64e339066457df0c6f52c4d18ee2cd65123f795a5bfc6ff9d5e11d",
+              "runner": "linux-sandbox"
+            },
+            "generated_library": {
+              "cache_hit": false,
+              "fingerprint": "4ddd7aef252cd8409923930e7f1a3519e6ff98b17a2b8d99006166ab74200cf9",
+              "runner": "linux-sandbox"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "0412f069d272565a81e2507dcabb90a53318a25644fb9a493fbe1a4097ee0c6d",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "bf8a6ecad55a09c9ee65442f9ef4f60cc4dc9e0ae6e9987c5e8ed45b6871463b",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "53cadae1d5ad5f7199323a7a24802186b5841de217a5101e972486c5cc9316d7",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b603f25e6a5212f7b5915a54bfa99a120827cfdb5e0fb5e8dce9e393d55b83b7",
+            "bin/native-fixture": "283cf226bd99b8a0e238c84d360a674a2927ecd3e8bb83dfd8db91d150d2b2e6",
+            "bin/rust-fixture": "46417887d2177cad0243546dd88ae51adf1e3b4b096f3904ebb74e77b6fbe5c2"
+          },
+          "build": "/nix/store/2zwf6ikhi32bsd9dcn0d0yyyi4vxnl6n-aos-bazel-invalidation-generator-environment-1"
+        }
+      }
+    },
+    "header": {
+      "baseline": "/nix/store/84djcajlvzwrj3zclpa03b46978p2msz-aos-bazel-header-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "header": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": false,
+              "fingerprint": "23de7ba8efdd7d563f5e57aaef622c4ff826b8ab47b8026e87d9fbfbc4406b2f",
+              "runner": "linux-sandbox"
+            },
+            "cpp_library": {
+              "cache_hit": false,
+              "fingerprint": "ff49eaf044377bebbb099821965aef201b0010aa9a2daf84525adefe2f053e92",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": true,
+              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "cache_hit": true,
+              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "10b449069a88dbe27dd6c49a51e685117c2f6574ac610d2fc21b4eaebbb2c0ee",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": true,
+              "fingerprint": "352cd47e61f631ee703b4954384133451cd695d12364806f35820abcd9de745c",
+              "runner": "disk cache hit"
+            },
+            "rust_library": {
+              "cache_hit": true,
+              "fingerprint": "a5b88304089c51c9a6297ac6ac5bbb09fe2287e8edbcff388b5f173e81139f2b",
+              "runner": "disk cache hit"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b603f25e6a5212f7b5915a54bfa99a120827cfdb5e0fb5e8dce9e393d55b83b7",
+            "bin/native-fixture": "1640643d1e5ddd8eacf5b07a669d6767cf0b84c4ed8ec8f2d7afc1b7aa6a6299",
+            "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
+          },
+          "build": "/nix/store/q1xygg2v3159qj5rhmjd06jcbyw7ahi4-aos-bazel-invalidation-header-1"
+        }
+      }
+    },
+    "rust-flags": {
+      "baseline": "/nix/store/zrrj63qibxfmj0w4bbs3hdina8if51lv-aos-bazel-rust-flags-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "rust-flags": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": true,
+              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "runner": "disk cache hit"
+            },
+            "cpp_library": {
+              "cache_hit": true,
+              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "runner": "disk cache hit"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": true,
+              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "cache_hit": true,
+              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "bcf66243d6872476bf0088024a2289ea2eae299e3b191990537ca642e00ac9e5",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "04408639bcbb181ea9a90ddf1afb8cf77b903ee6d24f6a2cfbff48f84977ef26",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "e4dc7d2a351673d0ec4867df8785e6c4f7dfeb55f3664558f4c3b2603947ea6b",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+            "bin/native-fixture": "097f512137df237e85982dfc14ac1a9fd21ad65c48c11e0960b1bc1a1f9b39d3",
+            "bin/rust-fixture": "b00635f694f885503778729b426f8b712dfd50db06715d5b83f95d2632063aa0"
+          },
+          "build": "/nix/store/njwr2fn85xnc85lnzkgx58d09kbaj7zd-aos-bazel-invalidation-rust-flags-1"
+        }
+      }
+    },
+    "rust-source": {
+      "baseline": "/nix/store/rgvpaaln5274q5vif3m1syi8g7q8g2rb-aos-bazel-rust-source-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "rust-source": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": true,
+              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "runner": "disk cache hit"
+            },
+            "cpp_library": {
+              "cache_hit": true,
+              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "runner": "disk cache hit"
+            },
+            "fixture_macro": {
+              "cache_hit": true,
+              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "cache_hit": true,
+              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "cache_hit": true,
+              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "02240136f66ed39e92d195ad00bece9a915b6475cf3b651198a666136edec25c",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "f47d7f07a5c81d3fa0551857d2f714d3051cb2f82605f2cc62dd11cef0449027",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "dc930f307ab5fddacd0c0d73d1e9df24711942a11c3d1ca044fcf37eda0cab96",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+            "bin/native-fixture": "6faf9d04b164109dccd0c8a9df37f2fa7dc4bb3c22f1cad638efbb1a7a097e4e",
+            "bin/rust-fixture": "dda4371b23d957d32710a047bd6c431a832b2e116656de07b43cc5df17a8525a"
+          },
+          "build": "/nix/store/4lqx3wdqnhjl4fagzis3kyh3n41g3cd8-aos-bazel-invalidation-rust-source-1"
+        }
+      }
+    },
+    "tool-closure": {
+      "baseline": "/nix/store/0mzld2rjj7g44q7inzdyngrb02dg02zz-aos-bazel-tool-closure-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "tool-closure": {
+          "actions": {
+            "cpp_app": {
+              "cache_hit": false,
+              "fingerprint": "e6fabc3c221fcdc2eefd6b30158d718f1aa470cf4585f6239bce57cb4433ef5a",
+              "runner": "linux-sandbox"
+            },
+            "cpp_library": {
+              "cache_hit": false,
+              "fingerprint": "1f5bdc0ea2a9f552e1639731563b6549fb9705879376650462610f2367c4a52f",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "cache_hit": false,
+              "fingerprint": "8871e2d3e2b054d4537519e408693ada40af4b3b406edec1fb26541723c0f8b1",
+              "runner": "linux-sandbox"
+            },
+            "generated": {
+              "cache_hit": false,
+              "fingerprint": "e01628105d57690255bd88ff2c63f585168d8715f4b76d9e6d3b85c557af1356",
+              "runner": "linux-sandbox"
+            },
+            "generated_library": {
+              "cache_hit": false,
+              "fingerprint": "d7bd0d2089f254a3d586d9af5040ed4c806e34d41d56f062216176336535696b",
+              "runner": "linux-sandbox"
+            },
+            "native_app": {
+              "cache_hit": false,
+              "fingerprint": "c48a95ca8b40a64ef49280033a9e292d8feba6e1a18ed51d2e1280b7b0789cc1",
+              "runner": "linux-sandbox"
+            },
+            "rust_app": {
+              "cache_hit": false,
+              "fingerprint": "b845e9c58466caa215fcfe105860a387d6a2a86b47a20abf7062fdcbf91bd8cc",
+              "runner": "linux-sandbox"
+            },
+            "rust_library": {
+              "cache_hit": false,
+              "fingerprint": "08e55466df3d0da00949f58f1ffd70ca028fd7f9fcb95087caf62d1faba86952",
+              "runner": "linux-sandbox"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+            "bin/native-fixture": "b49e6839c6c9189dfd6d7e5036622aec57df3920857a82bed3fd2559afb79dd0",
+            "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
+          },
+          "build": "/nix/store/vw1x1nxi68alzns41hw9mav8i1ybmw05-aos-bazel-invalidation-tool-closure-1"
+        }
+      }
+    }
+  },
+  "schema_version": 1
+}

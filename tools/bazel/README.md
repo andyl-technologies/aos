@@ -21,7 +21,7 @@ build/check labels, and install package targets. A package exports a versioned
 manifest with explicit files, destinations, modes, version, and license domain;
 Nix verifies exported bytes and package identity before ordinary fixup.
 Runtime dependencies remain explicit Nix package inputs. The fixture check
-executes both installed programs after fixup.
+executes the Rust, C++, and Rust/native programs after fixup.
 
 ```sh
 aos-dev --release build check build.bazel.all --no-out-link
@@ -54,12 +54,13 @@ family-specific performance budgets remain required before production cutover.
 ## Local cache evidence
 
 `tests/evidence/native-linux-cache.json` records the first passing native Linux
-cross-derivation trial. An original snapshot executed four Rust compiler
-actions and two C++ compiler actions. In a fresh Nix execution, an
-application-only edit restored three Rust actions and the unchanged C++ library
-compile/archive from disk; the edited Rust and C++ applications rebuilt. The
-edited cached and uncached executables matched byte for byte and both returned
-`answer=43` (the original returned `answer=42`). Each build had an independent
+cross-derivation trial. In a fresh Nix execution, an application-only edit
+restored the declared Python generator, source-built procedural macro, generated
+Rust library, shared Rust/C++ libraries, and Rust/native binary from disk; the
+edited Rust and C++ applications rebuilt. The edited cached and uncached
+executables matched byte for byte and both returned `answer=43` (the original
+returned `answer=42`). The unchanged native-link binary combines the two library
+results and returns `answer=84`. Each build had an independent
 output base. Event fingerprints cover declared arguments, environment, and
 input content hashes; they are not advertised as Bazel's remote Action digest.
 
@@ -76,9 +77,26 @@ The cache-specific checks are exposed only when a shared Bazel cache is
 selected; release `allChecks` includes the uncached infrastructure suite.
 `tests/cache-proof.nix` also accepts a unique `trial` and sandbox `cacheDir`
 for new measurements without substituting a completed qualification output.
-The first proof covers application edits and uncached parity. The broader
-invalidation/concurrency matrix and production performance budgets remain
-required before migrating application families.
+`cache.invalidation.all` tests Rust/C++ implementation edits, headers, generated
+input, generator environment, Rust features/flags, and a tool closure identity
+change with unchanged logical compiler labels. Every case has a separate cold
+namespace and baseline Nix derivation, so equivalent outputs from a different
+case cannot mask a required miss. It checks affected misses, unaffected hits,
+semantic fingerprints, and all three executable results. The passing native
+Linux evidence is in `tests/evidence/native-linux-invalidation.json`.
+
+`cache.concurrent` runs independent Nix builds against the same cache namespace,
+requires overlapping execution intervals, and compares every exported artifact
+with isolated builds. It verifies distinct mount/PID/user namespaces and output
+directory inodes. Sandboxes can have identical visible UIDs/PIDs; those numbers
+alone do not establish shared execution state. The passing evidence is retained
+in `tests/evidence/native-linux-concurrent.json`.
+
+Build evidence also retains launcher wall/CPU time, child peak RSS, block I/O,
+UID mappings, namespaces, command, and cache selection. These are individual execution measurements;
+they do not establish production performance budgets. Foreign-target, CPU,
+linker/sysroot, and PGO invalidation, interrupted/corrupt-cache recovery, and
+family-specific performance baselines remain required before their cutovers.
 
 ## Updating rule dependencies
 
@@ -121,6 +139,13 @@ selection. `source-selection` checks documentation exclusion, new-file
 inclusion, and stale-graph rejection without evaluation-time builds. The
 fixture inventory is an infrastructure contract; production families still
 need their own selected configurations and parity checks.
+
+Generated output labels are followed back to their generating rules. Generator
+scripts and input data therefore remain part of the source selection even when
+consumers depend on an output file rather than the rule label. The fixture uses
+`aos_python_generator` with declared inputs, outputs, environment, and the AOS
+Python closure. It also builds its procedural macro for the execution platform
+and links a Rust binary to the native library through an explicit C ABI.
 
 ## Isolated Rust tests
 

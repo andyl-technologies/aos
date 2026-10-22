@@ -56,7 +56,10 @@ def main():
     evidence = {"schema_version": 1, "builds": {name: str(path) for name, path in builds.items()}, "actions": {}}
     prefix = "//tools/bazel/tests/fixture:"
     for target, mnemonic, unchanged in [
+        ("generated", "AosPythonGenerate", True),
+        ("generated_library", "Rustc", True), ("fixture_macro", "Rustc", True),
         ("rust_library", "Rustc", True), ("cpp_library", "CppCompile", True),
+        ("native_app", "Rustc", True),
         ("rust_app", "Rustc", False), ("cpp_app", "CppCompile", False),
     ]:
         actions = {}
@@ -77,6 +80,8 @@ def main():
             raise ValueError(f"cached and uncached artifacts differ: {destination}")
         for name in builds:
             expected = "answer=42" if name == "producer" else "answer=43"
+            if destination == "bin/native-fixture":
+                expected = "answer=84"
             result = subprocess.run([str(artifacts[name][destination])], check=True, text=True, capture_output=True)
             if result.stdout.strip() != expected:
                 raise ValueError(f"incorrect {name} program output: {destination}")

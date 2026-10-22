@@ -2,7 +2,7 @@
 
 /// Returns the fixture's shared library value.
 pub fn answer() -> u32 {
-    42
+    fixture_generated::answer() + u32::from(cfg!(feature = "extra"))
 }
 
 #[cfg(test)]

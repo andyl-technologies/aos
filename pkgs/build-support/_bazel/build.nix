@@ -10,14 +10,16 @@
   targets,
   command ? "build",
   sharedBuildCache ? true,
+  cacheNamespace ? null,
   requiredSystemFeatures ? [],
 }: let
   cache =
-    if sharedBuildCache
-    then sharedBazelCacheDir
+    if sharedBuildCache && sharedBazelCacheDir != null
+    then sharedBazelCacheDir + lib.optionalString (cacheNamespace != null) "/${cacheNamespace}"
     else null;
 in
   assert builtins.elem command ["build" "test"];
+  assert cacheNamespace == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" cacheNamespace != null;
     pkgs.mkDerivation {
       inherit pname version requiredSystemFeatures;
       src = workspace.source;
@@ -37,6 +39,7 @@ in
                         ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                           --config ${workspace.configuration} --workspace "$PWD/workspace" \
                           --output-base "$TMPDIR/bazel" --nix-sandbox \
+                          --metrics "$TMPDIR/metrics.json" \
                           ${lib.optionalString (cache != null) "--cache ${lib.escapeShellArg cache}"} \
                     -- ${command} ${lib.escapeShellArgs targets} \
                     --aspects=//tools/bazel/metadata:inventory.bzl%aos_inventory_aspect \
@@ -46,6 +49,7 @@ in
                         mkdir -p "$out/evidence"
                         cp "$TMPDIR/execution.json" "$out/evidence/execution.json"
                         cp "$TMPDIR/events.json" "$out/evidence/events.json"
+                        cp "$TMPDIR/metrics.json" "$out/evidence/metrics.json"
                   ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/export_packages.py} \
                     --events "$TMPDIR/events.json" --output "$out/packages"
                   ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/export_inventory.py} \

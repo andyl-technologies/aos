@@ -60,4 +60,7 @@ def _inventory_impl(target, ctx):
 aos_inventory_aspect = aspect(
     implementation = _inventory_impl,
     attr_aspects = ["*"],
+    # A dependency may select an output label rather than its generating rule.
+    # Follow it back to capture generator scripts and data as source inputs.
+    apply_to_generating_rules = True,
 )

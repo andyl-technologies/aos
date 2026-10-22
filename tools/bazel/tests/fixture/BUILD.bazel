@@ -1,12 +1,36 @@
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_proc_macro")
+load("//tools/bazel/rules:generated.bzl", "aos_python_generator")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+aos_python_generator(
+    name = "generated",
+    script = "generate.py",
+    srcs = ["value.txt"],
+    outs = ["generated.h", "generated.rs"],
+    env = {"AOS_FIXTURE_OFFSET": "0"},
+)
+
+rust_library(
+    name = "generated_library",
+    crate_name = "fixture_generated",
+    crate_root = "generated.rs",
+    srcs = ["generated.rs"],
+    edition = "2024",
+)
+
+rust_proc_macro(
+    name = "fixture_macro",
+    srcs = ["macro.rs"],
+    edition = "2024",
+)
 
 rust_library(
     name = "rust_library",
     crate_name = "fixture_library",
     srcs = ["lib.rs"],
+    deps = [":generated_library"],
     edition = "2024",
 )
 
@@ -15,6 +39,15 @@ rust_binary(
     srcs = ["main.rs"],
     edition = "2024",
     deps = [":rust_library"],
+    proc_macro_deps = [":fixture_macro"],
+)
+
+rust_binary(
+    name = "native_app",
+    srcs = ["native.rs"],
+    edition = "2024",
+    deps = [":rust_library"],
+    link_deps = [":cpp_library"],
 )
 
 aos_rust_test(
@@ -26,7 +59,7 @@ aos_rust_test(
 cc_library(
     name = "cpp_library",
     srcs = ["library.cc"],
-    hdrs = ["library.h"],
+    hdrs = ["library.h", "generated.h"],
 )
 
 cc_binary(
@@ -41,6 +74,6 @@ aos_package(
     version = "1",
     license_expression = "Apache-2.0",
     license_domain = "apache-host",
-    artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture"},
-    executables = ["bin/rust-fixture", "bin/cpp-fixture"],
+    artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture", ":native_app": "bin/native-fixture"},
+    executables = ["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"],
 )
