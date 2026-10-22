@@ -4,6 +4,9 @@ use super::*;
 use crate::reference_packet::Native5Policy;
 use crate::transport::original_frames::OriginalFrameReservation;
 
+/// Pairs optional identity history with actor, frame-bank and policy groups.
+pub(crate) type HistoricalIdentityFields17<T> = (Option<T>, (usize, usize, usize));
+
 /// Preserves the complete ack identity DATA without a live connection identity.
 pub(crate) struct HistoricalAckIdentity17 {
     actor_group: usize,
@@ -43,7 +46,7 @@ impl HistoricalAckIdentity17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalIdentityFields17<Self>, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,
@@ -140,7 +143,7 @@ impl HistoricalRestoreIdentity17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalIdentityFields17<Self>, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,

@@ -165,7 +165,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {
         + size_of::<[usize; 2]>() * 4
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<&PacketNative5SourceLaunch>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Option<usize>>() * 3
         + size_of::<Result<usize, ProviderError>>() * 6
         + size_of::<Result<[usize; 3], ProviderError>>() * 4

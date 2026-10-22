@@ -179,7 +179,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<[&str; 11]>()
         + size_of::<std::array::IntoIter<&str, 11>>()
         + size_of::<&str>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Option<usize>>()
         + size_of::<Result<usize, ProviderError>>() * 4
         + size_of::<Result<[usize; 3], ProviderError>>()

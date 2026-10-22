@@ -103,7 +103,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<[usize; 3], ProviderError>>()
         + size_of::<Result<([usize; 3], BootstrapBodyMetadataProfileData), ProviderError>>()
         + size_of::<[u8; 20]>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Option<usize>>()
         + size_of::<Result<usize, ProviderError>>()
         + size_of::<std::array::IntoIter<usize, 3>>()

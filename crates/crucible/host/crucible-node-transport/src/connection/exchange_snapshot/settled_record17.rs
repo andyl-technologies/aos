@@ -13,6 +13,10 @@ use crate::retained_metadata::{
     MetadataObserver, aliases::MetadataSharedKind, records::MetadataRecordKind,
 };
 
+/// Pairs optional constructed history with its independently read actor/frame groups.
+pub(crate) type HistoricalExchangeFields17 =
+    (Option<HistoricalExchangeRecord17>, Option<(usize, usize)>);
+
 /// Retains an exchange's independent planned and decoded historical fields.
 pub(crate) struct HistoricalExchangeRecord17 {
     pub(crate) originals: Vec<Envelope>,
@@ -77,7 +81,7 @@ impl HistoricalExchangeRecord17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, Option<(usize, usize)>), ProviderError> {
+    ) -> Result<HistoricalExchangeFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         let originals = fields.named("originals")?;
         let originals_capacity = quantity(fields.named("originals_capacity")?)?;

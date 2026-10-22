@@ -173,6 +173,12 @@ pub(crate) struct HistoricalCommitToken17 {
     attempt_group: usize,
 }
 
+/// Pairs optional Commit history with actor, frames, boot, policy and attempt groups.
+pub(crate) type HistoricalCommitTokenFields17 = (
+    Option<HistoricalCommitToken17>,
+    (usize, usize, usize, usize, usize),
+);
+
 impl HistoricalCommitToken17 {
     /// Checks exact fields and consumes every actual metadata and shared row.
     ///
@@ -194,7 +200,7 @@ impl HistoricalCommitToken17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalCommitTokenFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,
@@ -293,6 +299,10 @@ pub(crate) struct HistoricalHeldToken17 {
     hold_group: usize,
 }
 
+/// Pairs optional Hold history with boot, mapping, attempt and physical-hold groups.
+pub(crate) type HistoricalHeldTokenFields17 =
+    (Option<HistoricalHeldToken17>, (usize, usize, usize, usize));
+
 impl HistoricalHeldToken17 {
     /// Checks the exact Hold grammar and consumes each actual repeated row.
     ///
@@ -314,7 +324,7 @@ impl HistoricalHeldToken17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalHeldTokenFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,

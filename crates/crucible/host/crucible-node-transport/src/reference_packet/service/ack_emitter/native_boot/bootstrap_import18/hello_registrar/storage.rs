@@ -112,7 +112,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<SharedBackingFields>()
         + size_of::<ConstructorTransientFields>()
         + size_of::<std::slice::Iter<'static, usize>>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Result<usize, ProviderError>>() * 4
         + size_of::<Result<[usize; 3], ProviderError>>()
 }

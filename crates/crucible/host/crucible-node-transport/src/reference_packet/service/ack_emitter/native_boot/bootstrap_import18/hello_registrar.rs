@@ -99,7 +99,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {
         + size_of::<std::ops::Range<usize>>()
         + size_of::<[usize; 3]>() * 2
         + size_of::<[usize; 2]>() * 2
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Result<usize, ProviderError>>() * 3
         + size_of::<Result<[usize; 3], ProviderError>>()
 }

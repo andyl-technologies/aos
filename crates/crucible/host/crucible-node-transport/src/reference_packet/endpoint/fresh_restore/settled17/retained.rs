@@ -239,7 +239,7 @@ impl HistoricalFreshRestoreAttempt17 {
     pub(crate) fn preflight_settled17_fields_data(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
-    ) -> Result<((usize, usize), (usize, usize)), ProviderError> {
+    ) -> Result<FreshRestoreRoleGroupIds17, ProviderError> {
         let mut fields = Fields::object(input)?;
         <u32 as Native17Build>::preflight_data(fields.named("creator")?, ledger)?;
         HistoricalThread17::preflight_data(fields.named("thread")?, ledger)?;

@@ -12,6 +12,15 @@ use crate::envelope::Envelope;
 use crate::reference_packet::service::fresh_restore_allocation::*;
 use base64::Engine as _;
 
+/// Borrows nonce, ACK context, assigned query and completed Admit request/response digests.
+pub(crate) type OriginalNativeFreshQueryCommitmentsData<'a> = (
+    &'a [u8; 32],
+    &'a [u8; 32],
+    &'a [u8; 32],
+    &'a [u8; 32],
+    &'a [u8; 32],
+);
+
 pub(crate) struct OriginalNativeFreshQueryFrontierData<'a> {
     originals: OriginalNativeFreshFrontierData<'a>,
     nonce: [u8; 32],
@@ -25,7 +34,7 @@ impl OriginalNativeFreshQueryFrontierData<'_> {
     /// Lends the exact public nonce, ACK context and original commitments.
     pub(crate) fn commitments_data(
         &self,
-    ) -> Result<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32]), ProviderError> {
+    ) -> Result<OriginalNativeFreshQueryCommitmentsData<'_>, ProviderError> {
         self.originals.authenticate_current_data()?;
         Ok((
             &self.nonce,
@@ -123,7 +132,7 @@ impl OriginalNativeReportStartupAllocation {
             + std::mem::size_of::<[u8; 43]>()
             + std::mem::size_of::<[[u8; 32]; 5]>()
             + std::mem::size_of::<[(&str, &[u8; 32]); 3]>()
-            + std::mem::size_of::<(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32], &[u8; 32])>()
+            + std::mem::size_of::<OriginalNativeFreshQueryCommitmentsData<'static>>()
             // The owner comparison runs before nonce/role hashing and uses the
             // existing bounded object scanner, plus these explicit local views.
             + std::mem::size_of::<std::cell::Ref<'static, NativeAckBoot>>()

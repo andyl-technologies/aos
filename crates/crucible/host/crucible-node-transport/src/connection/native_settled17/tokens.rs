@@ -3,6 +3,16 @@
 use super::*;
 use crate::reference_packet::{Native5Policy, service::ack_emitter::NativeAckBoot};
 
+/// Pairs optional ACK history with actor, frames, boot and policy groups.
+pub(crate) type HistoricalAckTokenFields17 =
+    (Option<HistoricalAckToken17>, (usize, usize, usize, usize));
+
+/// Pairs optional Prepare history with actor, frames, boot, policy and attempt groups.
+pub(crate) type HistoricalPrepareTokenFields17 = (
+    Option<HistoricalPrepareToken17>,
+    (usize, usize, usize, usize, usize),
+);
+
 /// Retains a verified-Admit token's original DATA and checked shared relations.
 pub(crate) struct HistoricalAckToken17 {
     pub(crate) identity: HistoricalAckIdentity17,
@@ -41,7 +51,7 @@ impl HistoricalAckToken17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalAckTokenFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,
@@ -144,7 +154,7 @@ impl HistoricalPrepareToken17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, (usize, usize, usize, usize, usize)), ProviderError> {
+    ) -> Result<HistoricalPrepareTokenFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         exact(
             fields.named("schema")?,

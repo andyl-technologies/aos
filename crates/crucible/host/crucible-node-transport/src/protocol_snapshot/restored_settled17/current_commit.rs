@@ -251,11 +251,15 @@ fn role(input: &[u8], expected: &str) -> Result<(), ProviderError> {
     }
     Ok(())
 }
+// None is validation-only; Some(None) is an explicitly absent encoded field.
+// Some(Some(...)) retains the complete reference and independently owned bytes.
+type GateEvidenceRead17 = Option<Option<(ContentRef, Vec<u8>)>>;
+
 fn read_gate_evidence17(
     input: &[u8],
     ledger: &mut Ledger<'_, '_, '_>,
     build: bool,
-) -> Result<Option<Option<(ContentRef, Vec<u8>)>>, ProviderError> {
+) -> Result<GateEvidenceRead17, ProviderError> {
     if input == b"null" {
         return Ok(build.then_some(None));
     }

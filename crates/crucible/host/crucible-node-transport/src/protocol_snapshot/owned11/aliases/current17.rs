@@ -4,17 +4,18 @@
 
 use super::*;
 
+/// Preserves kind, layout, digest, in-progress state and optional content kind/index DATA.
+pub(crate) type CurrentAliasSummaryFields17 = (
+    Option<u8>,
+    usize,
+    Option<[u8; 32]>,
+    bool,
+    Option<(u8, usize)>,
+);
+
 impl HistoricalAliasSummary {
     /// Borrows all initialized summary fields without resetting decoder progress.
-    pub(crate) fn current17_data(
-        &self,
-    ) -> (
-        Option<u8>,
-        usize,
-        Option<[u8; 32]>,
-        bool,
-        Option<(u8, usize)>,
-    ) {
+    pub(crate) fn current17_data(&self) -> CurrentAliasSummaryFields17 {
         let Self {
             kind,
             layout,

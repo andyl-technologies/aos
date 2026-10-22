@@ -9,6 +9,12 @@ use crate::reference_packet::{
 };
 use crucible_node_format::{ContentRef, Id};
 
+// Borrows the input kind and cut, followed by commit-only ID/receipt fields.
+type InputContextFields17<'a> = (&'a str, &'a [u8], Option<(&'a [u8], &'a [u8])>);
+
+// Non-input actions carry no context fields.
+type InputCommandFields17<'a> = (&'a str, Option<InputContextFields17<'a>>);
+
 #[derive(Default)]
 pub(crate) struct InputCommand17ReadAttempt {
     pub(crate) cut: <CurrentDto17<PacketInputCut> as BuildCurrentField17>::Attempt,
@@ -19,9 +25,7 @@ pub(crate) struct InputCommand17ReadAttempt {
     completed: Option<PacketRestoredInputReactive17Command>,
 }
 
-fn fields17(
-    input: &[u8],
-) -> Result<(&str, Option<(&str, &[u8], Option<(&[u8], &[u8])>)>), ProviderError> {
+fn fields17(input: &[u8]) -> Result<InputCommandFields17<'_>, ProviderError> {
     let mut f = Fields::object(input)?;
     let action = plain_string(f.named("action")?)?;
     let context = if action == "input" {

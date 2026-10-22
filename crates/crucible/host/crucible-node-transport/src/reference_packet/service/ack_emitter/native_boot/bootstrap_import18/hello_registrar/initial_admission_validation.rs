@@ -160,7 +160,7 @@ pub(in super::super) fn closed_value_counter_scratch_data() -> Result<usize, Pro
         size_of::<Result<(), ContractError>>() * 4,
         size_of::<Result<(), ProviderError>>() * 2,
         size_of::<ContractError>() * 2,
-        size_of::<usize>() * 8,
+        size_of::<[usize; 8]>(),
         size_of::<u64>() * 2,
         size_of::<u16>() * 2,
         size_of::<bool>() * 6,

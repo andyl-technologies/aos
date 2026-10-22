@@ -340,7 +340,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<usize, base64::DecodeSliceError>>()
         + size_of::<base64::DecodeSliceError>()
         + size_of::<Result<u64, std::num::ParseIntError>>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<bool>() * 4
         + size_of::<Result<(), ProviderError>>() * 5
 }

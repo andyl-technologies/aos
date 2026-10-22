@@ -146,7 +146,7 @@ pub(crate) fn bootstrap_body_metadata_counter_scratch_data() -> usize {
         >()
         + size_of::<crate::protocol_snapshot::raw_value_reparse::JsonValueReparseConstructionData>()
         + size_of::<(usize, usize, usize)>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<Result<(), ProviderError>>()
         + crate::retained_metadata::retained_native_launch_counter_scratch_data()
 }

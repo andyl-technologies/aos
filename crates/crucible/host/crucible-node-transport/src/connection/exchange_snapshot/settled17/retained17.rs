@@ -282,7 +282,10 @@ pub(crate) struct ReceivedBody17ReadAttempt {
     completed: Option<HistoricalReceivedBody17>,
 }
 
-fn body_fields17(input: &[u8]) -> Result<(&str, &[u8], Option<&[u8]>), ProviderError> {
+// Borrows the body kind, primary fields and optional independent response cache.
+type ReceivedBodyFields17<'a> = (&'a str, &'a [u8], Option<&'a [u8]>);
+
+fn body_fields17(input: &[u8]) -> Result<ReceivedBodyFields17<'_>, ProviderError> {
     let mut f = Fields::array(input)?;
     let kind = plain_string(next(&mut f)?)?;
     let first = next(&mut f)?;

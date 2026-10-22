@@ -35,7 +35,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<&[u8; 256]>()
         + size_of::<bool>()
         + size_of::<DecodePaddingMode>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<std::iter::Enumerate<std::slice::ChunksExact<'static, u8>>>() * 2
         + size_of::<Result<usize, DecodeSliceError>>()
         + size_of::<Result<DecodeMetadata, DecodeSliceError>>()
@@ -64,7 +64,7 @@ fn suffix() -> usize {
         + size_of::<&[u8; 256]>()
         // Input/output indices, morsel/padding counts, first padding offset,
         // leftover index, bad-padding index and output byte count.
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<bool>()
         + size_of::<DecodePaddingMode>()
         + size_of::<[u8; 4]>() // morsels

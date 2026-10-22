@@ -12,6 +12,9 @@ use serde_json::{Map, Value};
 
 pub(crate) const INITIAL_PROOF_BYTES: usize = 65_536;
 
+// Keeps the current transfer position separate from the completed-object count.
+type InitialProofPosition<'a> = (Option<&'a (Id, ContentRef, usize)>, usize);
+
 impl<S: ProviderStream> Connection<S> {
     pub(crate) fn original_host_initial_selection_data(
         &self,
@@ -48,7 +51,7 @@ impl<S: ProviderStream> Connection<S> {
     fn receive_original_host_initial_inner(
         &mut self,
         original: &Envelope,
-        proof: Option<(Option<&(Id, ContentRef, usize)>, usize)>,
+        proof: Option<InitialProofPosition<'_>>,
         completed: &mut Option<ReceivedFrame>,
     ) -> Result<(), ProviderError> {
         if completed.is_some() {

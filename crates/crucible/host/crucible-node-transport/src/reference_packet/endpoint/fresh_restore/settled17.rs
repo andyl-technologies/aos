@@ -407,6 +407,15 @@ historical_struct!(crate::retained_metadata::RetainedProtocolMetadataFacts {
     capacity_records: usize,
 });
 
+/// Preserves report-startup and Prepare-startup boot/policy group pairs in order.
+pub(crate) type FreshRestoreRoleGroupIds17 = ((usize, usize), (usize, usize));
+
+/// Pairs optional fresh-restore history with both independently read startup groups.
+pub(crate) type HistoricalFreshRestoreFields17 = (
+    Option<HistoricalFreshRestoreAttempt17>,
+    FreshRestoreRoleGroupIds17,
+);
+
 impl HistoricalFreshRestoreAttempt17 {
     /// Returns both independently retained startup group pairs in one pass.
     ///
@@ -416,7 +425,7 @@ impl HistoricalFreshRestoreAttempt17 {
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
-    ) -> Result<(Option<Self>, ((usize, usize), (usize, usize))), ProviderError> {
+    ) -> Result<HistoricalFreshRestoreFields17, ProviderError> {
         let mut fields = Fields::object(input)?;
         let creator = ledger.read::<u32>(fields.named("creator")?, build)?;
         let thread = ledger.read::<HistoricalThread17>(fields.named("thread")?, build)?;
