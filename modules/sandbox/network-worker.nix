@@ -567,8 +567,8 @@ in {
         MemoryMax = "64M";
         NoNewPrivileges = true;
         # PrivateNetwork also creates a private mount namespace, hiding
-        # teardown unmounts. AF_UNIX-only syscall policy keeps this worker
-        # from opening network sockets while it shares PID1's mount namespace.
+        # teardown unmounts. Its socket policy permits AF_UNIX, excluding
+        # Internet and netlink families while it shares PID1's mount namespace.
         PrivateNetwork = false;
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;

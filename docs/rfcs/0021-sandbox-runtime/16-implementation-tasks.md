@@ -6438,34 +6438,41 @@ boot path loads the policy, proves enforcing mode before mutable startup, enters
 service domains, or grants the proposed narrow inspection authority.
 `SBX-P0-10` and end-to-end enforcing-host-MAC qualification remain open.
 
-### Network worker bpffs boundary qualification (in progress)
+### Network worker mount publication qualification (in progress)
 
-The production Network worker now receives one validated descriptor-bearing
-request through the root-owned systemd socket, runs each request in a fresh
-service process, and confines BPF mutation to the plan-derived child beneath
-the host-visible `/sys/fs/bpf/aos/sandbox-network` pin parent. The mount unit
-validates an exact root-owned mode-1700 `bpffs` root with `nosuid`, `nodev`,
-and `noexec`, an exact root-owned mode-0700 pin parent, and root-owned mode-0700
-plan children. The
-worker receives read-only `/sys` plus a single writable pin-parent exception;
-the fixed loader independently rejects a writable substitute parent and a
-same-shaped directory on the wrong filesystem.
+The preparation and pin-teardown workers share PID 1's mount namespace so
+namespace bind mounts and unmounts reach netd and later payload launches.
+`PrivateNetwork` implicitly creates a mount namespace and therefore cannot
+provide their isolation. The preparation worker instead creates only a network
+namespace inside its existing paid, Source-bracketed startup, before READY
+custody is captured. Its namespace syscall policy permits only network
+namespaces. The pin-teardown worker permits no namespace creation and only
+AF_UNIX sockets. Capability sets and native resource limits are unchanged.
+Preparation has no read-only sysfs confinement; its filesystem directives must
+not introduce a private mount namespace.
 
-The immutable fleet derivation
-`/nix/store/fhzy14l07sgh8sg7l2xn5vj78dkdksjf-aos-fleet-test-sandbox-network-worker-bpffs-0.drv`
+The development fleet derivation
+`/nix/store/r4cwmsx3mwvlgygs9m27xrdpj71h228p-aos-fleet-test-sandbox-network-worker-bpffs-0.drv`
 passed at
-`/nix/store/gwkzr06vhnxvwbm08yp2575y14xwirdk-aos-fleet-test-sandbox-network-worker-bpffs-0`.
-The guest proved the underlying unmounted sysfs mount point is root-owned mode
-0555, then restarted the mount unit and recovered `bpffs` magic `0xcafe4a11`
-with mode 1700. The mode-0700 pin-parent directory had device and inode identity
-`27:18986` from both the worker and host views, while the worker mount namespace
-`4026532433` remained distinct from host namespace `4026531832`. The worker
-also created a real BPF pin which the host independently opened and inspected
-through the probe. The same gate covers worker hardening, read-only sysfs,
-negative parent and filesystem substitutions, clean unmount, and restart.
+`/nix/store/pqr1vkg14hpxsvnfbs0cx118fzs2hljf-aos-fleet-test-sandbox-network-worker-bpffs-0`.
+Its focused probe replaces the protocol implementation while retaining both
+production service templates' namespace, capability and syscall policies. It
+proves the exact bpffs root and protected pin-parent metadata, rejects wrong
+filesystem and parent-mode substitutions, and creates a real BPF map which the
+host independently opens. It also creates a distinct network namespace and
+bind-pins it. The host observes the same namespace inode on nsfs after the
+preparation child exits, then observes its unmount by the pin-teardown template.
+Both preparation and PID 1 reported mount namespace inode `4026531832`.
+Shared bpffs inodes alone do not establish bind-mount publication.
 
-This gate qualifies the bpffs publication and confinement boundary only. It
-does not yet qualify a complete production Apply transaction from controller
+The native-owner VM at
+`/nix/store/mq9gnlzmww9z7721dps44fwh8a7ql89k-aos-fleet-test-sandbox-native-owner-units-0`
+separately executes the actual Rust single-threaded namespace bootstrap API and
+proves it changes the network namespace while retaining the original mount
+namespace. It also passes all 1,784 component tests and 41 required native cases.
+
+These gates qualify native namespace bootstrap and template mount visibility.
+They do not yet qualify a complete production Apply transaction from controller
 dispatch through namespace mutation, observation, publication, lease arming,
 or rollback. Apply remains unadvertised and the Network closure tasks remain
 open.
