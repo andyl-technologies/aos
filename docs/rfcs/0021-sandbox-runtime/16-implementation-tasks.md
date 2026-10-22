@@ -6480,8 +6480,19 @@ The component tests reject missing explicit routes, unexpected connected routes
 while fenced, and arming with the previous fenced route inventory. Captured
 up-state fixtures retain their real link state instead of relabeling it as down.
 
-These gates qualify native namespace bootstrap and template mount visibility.
-They do not yet qualify a complete production Apply transaction from controller
+The complete development custody fleet test now passes at
+`/nix/store/0k8i1mp39i4wv64yjjgdddacs4mq27s0-aos-fleet-test-sandbox-network-namespace-custody-0`.
+Its five VMs exercise the native fenced kernel observer, including rejection of
+missing, substituted and extra permanent neighbors; immutable-artifact
+substitutions; descriptor-store restart custody, replay and capacity bounds;
+and denied, malformed and oversized manager replies. Activation retains the
+Controller caller identity, and the fixture's control socket and state live
+inside the production broker's writable `broker-state` directory. The test
+does not widen the broker's production filesystem permissions.
+
+These gates qualify native namespace bootstrap, template mount visibility and
+the installed component custody protocol. They do not yet qualify a complete
+production Apply transaction from controller
 dispatch through namespace mutation, observation, publication, lease arming,
 or rollback. Apply remains unadvertised and the Network closure tasks remain
 open.
