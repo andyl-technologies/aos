@@ -268,24 +268,36 @@ fn context_bytes(context: &PacketNativeImport17StageContext) -> Result<Vec<u8>, 
     bounded(context, MAXIMUM_NATIVE_IMPORT17_STAGE_CONTEXT_BYTES)
 }
 
+/// Borrows every signed receipt field for the actual canonical MAC input.
+#[derive(Serialize)]
+pub(super) struct ReceiptInput<'a> {
+    schema: &'a str,
+    algorithm: &'a str,
+    phase: PacketNativeImport17Stage,
+    context_digest: &'a Bytes,
+    assigned_response: &'a Bytes,
+    physical_gate_held: bool,
+}
+
 fn receipt_input(receipt: &PacketNativeImport17StageReceipt) -> Result<Vec<u8>, ProviderError> {
-    #[derive(Serialize)]
-    struct Input<'a> {
-        schema: &'a str,
-        algorithm: &'a str,
-        phase: PacketNativeImport17Stage,
-        context_digest: &'a Bytes,
-        assigned_response: &'a Bytes,
-        physical_gate_held: bool,
-    }
+    let PacketNativeImport17StageReceipt {
+        schema,
+        algorithm,
+        phase,
+        context_digest,
+        assigned_response,
+        physical_gate_held,
+        mac: _,
+    } = receipt;
+
     bounded(
-        &Input {
-            schema: &receipt.schema,
-            algorithm: &receipt.algorithm,
-            phase: receipt.phase,
-            context_digest: &receipt.context_digest,
-            assigned_response: &receipt.assigned_response,
-            physical_gate_held: receipt.physical_gate_held,
+        &ReceiptInput {
+            schema,
+            algorithm,
+            phase: *phase,
+            context_digest,
+            assigned_response,
+            physical_gate_held: *physical_gate_held,
         },
         MAXIMUM_NATIVE_IMPORT17_STAGE_RECEIPT_BYTES,
     )
