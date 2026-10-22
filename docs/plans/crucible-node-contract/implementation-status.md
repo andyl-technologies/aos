@@ -3231,6 +3231,27 @@ transaction completes here. Genuine Initial/Recipe production and the remaining
 full RFC obligations remain unfinished. This checkpoint adds no full-library,
 configured runtime or VM qualification.
 
+## Guarded original Source Bootstrap signing loan
+
+Commit `c85e0596e8` lends the actual reserved unsigned request through the
+Controller under its original creator, Hello, typed-input, SDK-slot and deadline
+guards. The same guards run after either callback outcome. The immutable loan
+accepts only a Copy result; the defining Source independently funds its callback
+and retains signing outputs before returning. Changed request data, renewed time
+and revoked leases refuse without replacing the request or original literal bank.
+
+All 198 affected client and 209 connection controls pass. All fifteen Bootstrap
+cut controls also pass in raw-JSON mode. Transport/Engine/Daemon all-feature/
+all-target checking and all six architecture gates pass. The required application
+gate compiles 180 test executables across 58 package IDs, including 71 integration
+targets. All 382 owned Rust/Cargo inputs match committed `c85e0596e8` and its
+captured source. That gate runs no tests.
+
+The loan issues no Source proof and authenticates no receipt MAC. Complete
+Source funding, genuine Initial/Recipe production, the complete Bootstrap
+transaction and remaining full RFC obligations remain unfinished. No new
+full-library, configured runtime or VM qualification is claimed here.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
