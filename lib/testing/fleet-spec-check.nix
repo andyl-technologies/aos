@@ -15,6 +15,8 @@
 #   5. Image-boot firmware seed/export fields evaluate cleanly.
 #   6. Both firmware fields reject direct-kernel machines.
 #   7. Firmware export rejects a machine name that is unsafe as a basename.
+#   8. CPU counts retain their default or explicit capacity and reject invalid
+#      values before the harness builds its QEMU manifest.
 #
 # Runs via `nix-build -A checks.fleet-spec`.
 {
@@ -159,7 +161,25 @@
     })
     .success;
 
-  allOk =
+  cpuSpec = machine: {
+    name = "cpu-capacity";
+    machines.solo = {system = stubSystem;} // machine;
+    testScript = "true";
+  };
+  cpuOptionsOk =
+    (mkEval (cpuSpec {})).config.spec.machines.solo.vcpuCount
+    == 2
+    && lib.all (bootMode:
+      (mkEval (cpuSpec {
+        inherit bootMode;
+        vcpuCount = 16;
+      }))
+      .config.spec.machines.solo.vcpuCount
+      == 16) ["kernel" "image"]
+    && lib.all (vcpuCount: !(tryEval (cpuSpec {inherit vcpuCount;})).success)
+    [0 (-1) "16" true];
+
+  allOk = assert cpuOptionsOk;
     lib.throwIfNot minimalOk
     "fleet-spec: minimal valid spec failed to evaluate"
     (lib.throwIfNot packagesOk
@@ -200,6 +220,7 @@ in
           echo "  kernel firmware seed rejected: OK"
           echo "  kernel firmware export rejected: OK"
           echo "  unsafe firmware export name rejected: OK"
+          echo "  CPU capacity defaults, explicit counts and invalid values: OK"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

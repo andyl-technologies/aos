@@ -9948,6 +9948,17 @@ It passes at
 The `--release` check produces the same receipt. Core evaluation also passes.
 The installed Host rerun remains pending; the earlier
 DSO comparison is component evidence, not phase-zero or backend readiness.
+The funded Host rerun's actual QEMU argv reveals only two CPUs: the typed fleet
+schema drops `vcpuCount` before manifest generation, despite the harness's
+existing support. The schema now declares a positive CPU count with the original
+two-CPU default; kernel and image overrides must survive evaluation, and invalid
+counts reject. The interactive launcher also uses that selected count. Funded
+Host, Root and offline installed qualification must rerun with actual 16-CPU
+launches; the earlier two-CPU runs cannot qualify the declared physical bank.
+The CPU schema regression passes at
+`/nix/store/kivixbw6iih8rnqhd1zj7xw9g2306bdm-fleet-spec-check-0`;
+core evaluation and formatting also pass. Actual 16-CPU guest checks remain
+pending.
 
 The clean hardware-profile artifact check passes at
 `/nix/store/jwf6bpg4q8qwwv2xs27c4j4mcl0cr5nz-sandbox-nix-offline-hardware-profile-check`.

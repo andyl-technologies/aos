@@ -724,7 +724,7 @@
               -machine q35,accel=kvm \
               -cpu host \
               -m ${toString mb.memoryMiB} \
-              -smp 2 \
+              -smp ${toString mb.vcpuCount} \
               -nographic \
               -kernel "''${VMLINUZ_${mb.name}}" \
               -initrd "''${INITRD_${mb.name}}" \

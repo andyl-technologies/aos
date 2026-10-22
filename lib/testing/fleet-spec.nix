@@ -255,6 +255,17 @@
         '';
       };
 
+      vcpuCount = mkOption {
+        type = positiveInt;
+        default = 2;
+        description = ''
+          Number of virtual CPUs handed to QEMU (`-smp`). Funded-resource
+          tests must provide the physical CPU capacity declared by their bank.
+          Both the sandboxed driver and the interactive launcher honor this
+          value.
+        '';
+      };
+
       memoryMiB = mkOption {
         type = positiveInt;
         default = 2048;
