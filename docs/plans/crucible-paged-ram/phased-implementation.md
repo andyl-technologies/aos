@@ -651,8 +651,14 @@ descriptor refuse before a socket byte is sent. Two real ancillary-transport
 cases join the counted ABI and requirement bindings. All twelve transport cases,
 the full 279-test protocol suite and strict all-target Clippy pass. This sender
 does not authenticate sealed artifact contents, issue receiving custody or
-activate the unavailable profile. The fresh ABI and mandatory application-target
-checks for this transport extension are pending.
+activate the unavailable profile. Refreshed inventory
+`l9dnzq26773nq6pkihy0xh1givxdcvhm` verifies 507 canonical bindings: 475 model,
+thirteen format and nineteen native, with 148 uncovered requirements and no
+execution qualification. The fresh ABI and mandatory application-target checks
+for this transport extension are pending. All 5,359 committed Rust/TOML inputs
+match immutable application-build source `ffjn61mkg8gknydx6r6p0r7k7v4nbr7z`;
+comparison record SHA256 is
+`89e513acc82e4c181b0aec4ce7e359cefb04c0556a80954d8685634fd9a5735d`.
 
 #### Initial loader storage component
 
