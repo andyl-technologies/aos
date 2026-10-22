@@ -248,7 +248,7 @@ in
     ];
 
     passthru = {
-      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate mountExecutableCarrier mountCarrierFirstLauncher;
+      inherit admissionUnit loadedPolicy expectedPolicy expectedPolicyKernel qualificationPostPinGate mountExecutableCarrier mountCarrierFirstLauncher systemd;
       immutablePolicy = aos-selinux-production-policy;
       runtimeRootsProvisioner = aos-selinux-runtime-roots;
     };

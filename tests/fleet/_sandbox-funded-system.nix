@@ -6,6 +6,7 @@
   pkgs,
   systems,
   includeLifecycleReservations ? false,
+  releaseAdmission ? true,
 }:
 systems.server-secureboot-lockdown.extendModules {
   modules = [
@@ -71,16 +72,17 @@ systems.server-secureboot-lockdown.extendModules {
       };
       aos.boot.kernelParams = ["systemd.log_level=info" "rd.systemd.log_level=info" "systemd.log_target=journal-or-kmsg"];
 
-      aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+      aos.boot.initrd.stage0 = lib.mkIf releaseAdmission (lib.mkForce (pkgs.aosSelinuxStage0With {
+        systemd = config.aos.manager.selected.package;
         aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
         aos-selinux-runtime-roots = config.aos.security.selinux._runtimeRootsProvisioner;
         admissionUnit = "";
         expectedPolicy = "${config.aos.security.selinux._canonicalReadback}/policy.33";
         expectedPolicyKernel = config.system.build.kernel;
-      });
+      }));
 
       aos.security.selinux = {
-        _qualificationAdmissionRelease = true;
+        _qualificationAdmissionRelease = releaseAdmission;
         enable = true;
         bootMode = "immutable-stage0";
       };

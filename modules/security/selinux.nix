@@ -362,6 +362,7 @@ in {
         "aos.selinux.root_handoff=1"
       ];
       aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With ({
+          systemd = config.aos.manager.selected.package;
           aos-selinux-production-policy = productionPolicy;
           aos-selinux-runtime-roots = runtimeRootsProvisioner;
           expectedPolicy = canonicalReadbackPath;

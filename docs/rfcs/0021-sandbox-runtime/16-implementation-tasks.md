@@ -10120,6 +10120,18 @@ reexec. The selected stage0 package builds at
 The updated installed run remains pending. These source checks do not qualify
 production startup capture.
 
+The funded Root and Controller installed boots correctly freeze before PID1
+handoff when their stage0 guard pins the default manager package while the
+rootfs installs the configuration-selected manager. Production SELinux stage0
+selection and the funded fixture now pass that same selected package to the
+guard builder. Its package metadata retains the selected input for comparison.
+The regression fails on the old funded selection and passes at
+`/nix/store/nsdv739znjd2d65zhq99xbrz9jfi3nz9-sandbox-selected-manager-stage0-contract`.
+It checks the ordinary immutable image, the funded qualification image and
+the funded production selection with its admission hold retained. Core
+evaluation passes. Corrected installed boots remain required; the failed
+boots perform no Controller startup or lifecycle effect.
+
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
 startup policy. Either an enabled provider or retained namespace-40 state
