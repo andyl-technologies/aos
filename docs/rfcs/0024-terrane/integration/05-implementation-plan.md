@@ -14723,3 +14723,21 @@ The configured actor's error documentation also now describes its refusal and
 native startup conditions. An investigated Nix overlap rewrite was discarded:
 the installed Nix already rejects signed integer overflow, so no unchecked
 arithmetic acceptance was demonstrated and no such fix is included.
+
+
+Checkpoint `7ecbc490ca` reaches the configured-factory guest, but its first
+disabled-policy actor correctly rejects the SDK fixture exposure as
+`UnavailableSurface("sdk")` in the FUSE-only binary. The factory supervisor now
+retains the original store expression and host configuration without declaring a
+presentation endpoint. This preserves compiled-surface validation and tests only
+the intended native factory. The failed 708.34-second run remains retained; no
+configured runtime success is asserted. Its separate surface-owner run also
+fails its unchanged 30-second cancellation/admission actor bound; the last
+reported phase is cancelled-admission. That failure remains under investigation
+and is not converted into a pass by the earlier checkpoint's successful run.
+
+Checkpoint `58081226de` surface-owner qualification passes in 761.23 seconds;
+its complete artifact review matches all 8,057 immutable source files, 5,348
+base and 5,332 surface inputs and all five actual Cargo ELFs. Explicit-resource
+checkpoint `6f07f3c860` full native host-cache qualification also passes in
+1,367.98 seconds. These component results do not accept a trunk task.

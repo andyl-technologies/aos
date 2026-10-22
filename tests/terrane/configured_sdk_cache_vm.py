@@ -294,7 +294,10 @@ def run_surface(driver, image, surface_image):
     actor(driver, image, "surface-source-setup",
           ["configured-sdk-cache-example", "setup", root, 840])
     config = root / "config.toml"
-    original = config.read_text()
+    # This actor qualifies native factory policy, without starting presentation.
+    # The FUSE-only binary must still reject the SDK fixture's exposure endpoint.
+    store = tomllib.loads(config.read_text())["store"]
+    original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
     for mode in ["disabled", "bound", "admit"]:
         text = original + host_configuration(driver)
