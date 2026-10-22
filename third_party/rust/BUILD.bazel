@@ -3,19 +3,47 @@ load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load(":core/aliases.bzl", "CRATES")
 
-alias(
-    name = "core_thiserror",
-    actual = CRATES["thiserror"],
-    visibility = ["//visibility:public"],
-)
+# One canonical instance of shared crates preserves Rust type identity across
+# the protocol, Apache host, and GPL consumers.
+[
+    alias(
+        name = "core_" + name.replace("-", "_"),
+        actual = CRATES[name],
+        visibility = ["//visibility:public"],
+    )
+    for name in sorted(CRATES)
+]
 
-# A small external graph exercises the manifest-free update interface first.
 aos_crate_specifications(
     name = "core_specifications",
     family = "core",
     definition = "BUILD.bazel",
-    packages = {"thiserror": crate.spec(version = "=2.0.18")},
+    packages = {
+        "blake3": crate.spec(version = "=1.8.5", default_features = False, features = ["std", "pure"]),
+        "libc": crate.spec(version = "=0.2.186"),
+        "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+        "serde_json": crate.spec(version = "=1.0.150"),
+        "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+        "thiserror": crate.spec(version = "=2.0.18"),
+        "unicode-normalization": crate.spec(version = "=0.1.25"),
+    },
     platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
+    license_domain = "permissive-protocol",
+    # Each expression offers a permissive alternative suitable for both sides
+    # of the process boundary. Keep upstream spellings; new expressions fail
+    # the explicit update until reviewed here.
+    approved_licenses = [
+        "(MIT OR Apache-2.0) AND Unicode-3.0",
+        "BSD-2-Clause",
+        "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+        "CC0-1.0 OR MIT-0 OR Apache-2.0",
+        "MIT",
+        "MIT OR Apache-2.0",
+        "MIT OR Apache-2.0 OR Zlib",
+        "MIT/Apache-2.0",
+        "Unlicense OR MIT",
+        "Zlib OR Apache-2.0 OR MIT",
+    ],
 )
 
 aos_package(

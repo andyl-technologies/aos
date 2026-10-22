@@ -1,0 +1,4 @@
+exports_files(
+    ["schema-registry.tsv"],
+    visibility = ["//crates/crucible/protocol:__subpackages__"],
+)

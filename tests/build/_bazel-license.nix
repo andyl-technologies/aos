@@ -9,7 +9,7 @@ pkgs.runCommand "aos-bazel-license-boundary-analysis" {buildDeps = [pkgs.python3
   chmod -R u+w workspace
   cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
   mkdir -p "$out"
-  for target in bad_host bad_plugin; do
+  for target in bad_host bad_plugin bad_protocol; do
     if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
       --config ${workspace.configuration} --workspace "$PWD/workspace" \
       --output-base "$TMPDIR/$target/bazel" --nix-sandbox \

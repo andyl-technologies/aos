@@ -53,6 +53,20 @@ class RustUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsafe"):
             updater.publish(self.staged, self.output)
 
+    def test_boundary_sources_require_reviewed_original_license(self):
+        specification = {
+            "license_domain": "permissive-protocol",
+            "approved_licenses": ["MIT OR Apache-2.0"],
+        }
+        crate = {"name": "example", "version": "1.0.0", "license": "MIT OR Apache-2.0"}
+        updater.validate_license(specification, crate)
+
+        for license_expression in ["Apache-2.0", "GPL-3.0-only", "MIT OR Apache-2.0 OR unknown"]:
+            with self.subTest(license=license_expression):
+                crate["license"] = license_expression
+                with self.assertRaisesRegex(ValueError, "unreviewed protocol dependency"):
+                    updater.validate_license(specification, crate)
+
     def test_archive_must_match_both_resolved_locks(self):
         archive = self.root / "cargo-home/registry/cache/example/example-1.0.0.crate"
         archive.parent.mkdir(parents=True)

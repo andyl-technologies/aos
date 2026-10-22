@@ -253,8 +253,10 @@ This pilot does not yet replace the production Crucible package or remove its
 Cargo manifest.
 
 Configured inventories retain loaded first-party BUILD and Starlark definitions,
-including module includes. Declaration discovery queries the configured aspect's
-target set rather than traversing an unconfigured dependency closure. Refresh
+including module includes. Declaration discovery combines the aspect's target set with a configured
+`cquery` dependency graph. This retains original alias labels and the Starlark
+files their BUILD packages load, while avoiding unconfigured dependency walks
+into unused toolchains. Refresh
 combined package/test inventories with `metadata/merge_inventory.py`; it rejects
 stale declaration and exporter fingerprints before merging them.
 
@@ -283,3 +285,40 @@ The invalidation matrix also checks C++ link-action digests and a linker-flag
 change that leaves compile actions reusable. The compiler replacement case
 changes a real executable and its realized Nix closure under the same logical
 Bazel label, preserving program behavior.
+
+## Shared Crucible protocol graph
+
+`checks.build.bazel.protocol.all` builds `crucible-qemu-protocol` and
+`crucible-qemu-shmem`, their unit and 22 integration test binaries, both doctest
+targets, and the shared-memory ABI-header example. The isolated runner executes
+302 native Linux test cases. An offline Cargo oracle runs the same suites,
+compares discovered test names, and checks each resolved dependency feature set
+against the configured Bazel inventory. Distinct compilation variants remain
+distinct sets; a union cannot hide a missing feature configuration.
+
+The shared `core` dependency family retains the versions and features from the
+existing workspace, including BLAKE3's `std,pure` configuration. Its sources keep
+their original license expressions. The updater admits sources to the shared
+protocol scope only when their expression appears in the specification's
+reviewed list; a new expression fails the update before publication. Host and
+plugin consumers can reuse the same canonical crate instances without Rust type
+identity conflicts.
+
+`aos_license_check` applies the existing closure analysis to library/test roots
+which do not export an installed package. Both protocol graphs include it;
+a negative fixture proves protocol code cannot acquire an Apache-host
+implementation dependency. The existing ABI, license, and corresponding-source
+gates remain independently required.
+
+`metadata/protocol-inventory.json` owns configured source selection. Refresh
+from a conservative build when declarations change:
+
+```sh
+nix-build tools/bazel/tests/protocol.nix -A conservative.all --no-out-link
+```
+
+Copy that output's `inventory.json` to the checked-in inventory and rerun
+`checks.build.bazel.protocol.all` with the precise selection. The Cargo oracle
+retains its discovered binaries separately so comparison changes do not rebuild
+the oracle. These checks qualify the native graph; production consumers and
+foreign-target adapters still need the remaining RFC acceptance work.

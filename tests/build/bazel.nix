@@ -12,6 +12,7 @@ in
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
+    protocol = import ./_bazel-protocol.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
     precise = pkgs.mkAosBazelBuild {
@@ -94,7 +95,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all dependencies.all recovery];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

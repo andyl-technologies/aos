@@ -54,3 +54,24 @@ aos_license_aspect = aspect(
     implementation = _license_impl,
     attr_aspects = ["deps", "implementation_deps", "link_deps", "dynamic_deps", "crate", "actual", "proc_macro_deps"],
 )
+
+def _license_check_impl(ctx):
+    dependencies = depset(transitive = [root[AosLicenseInfo].domains for root in ctx.attr.roots])
+    check_domains(ctx.label, ctx.attr.license_domain, dependencies.to_list())
+    report = ctx.actions.declare_file(ctx.label.name + ".json")
+    ctx.actions.write(report, json.encode({
+        "schema_version": 1,
+        "license_domain": ctx.attr.license_domain,
+        "roots": [str(root.label) for root in ctx.attr.roots],
+        "dependency_domains": sorted(dependencies.to_list()),
+    }) + "\n")
+    return [DefaultInfo(files = depset([report]))]
+
+aos_license_check = rule(
+    implementation = _license_check_impl,
+    attrs = {
+        "roots": attr.label_list(mandatory = True, aspects = [aos_license_aspect]),
+        "license_domain": attr.string(mandatory = True, values = DOMAINS),
+    },
+    doc = "Checks compilation roots which do not export an installed package.",
+)

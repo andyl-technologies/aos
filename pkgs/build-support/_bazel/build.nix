@@ -53,8 +53,16 @@ in
               --execution_log_json_file="$TMPDIR/execution.json" \
               --build_event_json_file="$TMPDIR/events.json"
 
+            # cquery follows only the graph just analyzed, including alias nodes
+            # which aspects resolve to their underlying targets.
+            ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
+              --config ${workspace.configuration} --workspace "$PWD/workspace" \
+              --output-base "$TMPDIR/bazel" --nix-sandbox --metrics "$TMPDIR/configured-discovery-metrics.json" \
+              -- cquery ${lib.escapeShellArg ("deps(set(" + lib.concatStringsSep " " targets + "))")} \
+              --output=label > "$TMPDIR/configured-labels.txt"
             ${pkgs.python3}/bin/python3 ${declarationTools}/declaration_query.py \
-              --events "$TMPDIR/events.json" --output "$TMPDIR/declaration-query.txt"
+              --events "$TMPDIR/events.json" --output "$TMPDIR/declaration-query.txt" \
+              --configured-labels "$TMPDIR/configured-labels.txt"
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
               --config ${workspace.configuration} --workspace "$PWD/workspace" \
               --output-base "$TMPDIR/bazel" --nix-sandbox --metrics "$TMPDIR/discovery-metrics.json" \
@@ -67,6 +75,8 @@ in
             cp "$TMPDIR/metrics.json" "$out/evidence/metrics.json"
             cp "$TMPDIR/discovery-metrics.json" "$out/evidence/discovery-metrics.json"
             cp "$TMPDIR/declarations.txt" "$out/evidence/declarations.txt"
+            cp "$TMPDIR/configured-labels.txt" "$out/evidence/configured-labels.txt"
+            cp "$TMPDIR/configured-discovery-metrics.json" "$out/evidence/configured-discovery-metrics.json"
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/export_packages.py} \
               --events "$TMPDIR/events.json" --output "$out/packages"
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/export_inventory.py} \

@@ -52,7 +52,7 @@ rust_proc_macro(
         include = ["**/*.rs"],
     ),
     tags = [
-        "aos-license:apache-host",
+        "aos-license:permissive-protocol",
         "cargo-bazel",
         "crate-name=thiserror-impl",
         "manual",

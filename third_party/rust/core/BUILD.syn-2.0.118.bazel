@@ -60,7 +60,7 @@ rust_library(
         include = ["**/*.rs"],
     ),
     tags = [
-        "aos-license:apache-host",
+        "aos-license:permissive-protocol",
         "cargo-bazel",
         "crate-name=syn",
         "manual",

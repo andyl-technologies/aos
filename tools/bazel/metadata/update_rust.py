@@ -88,6 +88,16 @@ def resolve(specification, tools, scratch, seed_lock):
     return repository
 
 
+def validate_license(specification, crate):
+    """Requires an explicit license review before admitting shared boundary inputs."""
+    if (specification["license_domain"] == "permissive-protocol"
+            and crate["license"] not in specification.get("approved_licenses", [])):
+        raise ValueError(
+            f"unreviewed protocol dependency license: {crate['name']}-{crate['version']}: "
+            + crate["license"]
+        )
+
+
 def prepare_sources(specification, scratch, repository, staged):
     """Checks registry archive hashes and annotates rendered integration scope."""
     context = json.loads((scratch / "context.json").read_text())
@@ -117,13 +127,14 @@ def prepare_sources(specification, scratch, repository, staged):
         checksum = digest(archives[0])
         if checksum != checksums[name, version] or checksum != source["sha256"]:
             raise ValueError(f"source checksum disagrees with resolved locks: {name}-{version}")
+        validate_license(specification, crate)
         filename = f"BUILD.{name}-{version}.bazel"
         rendered = (scratch / "rendered" / filename).read_text()
         marker = "    tags = [\n"
         if marker not in rendered:
             raise ValueError(f"rendered crate lacks expected tag declarations: {filename}")
-        # Integration scope is deliberately conservative. The original SPDX
-        # expression remains in the source inventory and upstream source files.
+        # Scope is checked independently of the original SPDX expression, which
+        # remains in the source inventory and upstream source files.
         rendered = rendered.replace(marker, marker + '        "aos-license:' + specification["license_domain"] + '",\n')
         rendered = "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
         (staged / filename).write_text(rendered)
