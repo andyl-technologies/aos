@@ -121,7 +121,7 @@ fn main() -> Result<()> {
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
     if let Some(launched) = launched {
-        return runtime.block_on(scoped_worker::verify(launched, &owner, &inputs));
+        return scoped_worker::run(launched, &runtime, &owner, &inputs);
     }
     if mode == "cold-closure" {
         return exposure::cold_closure::verify(owner, &runtime, &inputs, policy, confinement);

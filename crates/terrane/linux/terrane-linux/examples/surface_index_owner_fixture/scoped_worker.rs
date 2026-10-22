@@ -163,12 +163,23 @@ fn readable(file: impl AsFd) -> io::Result<()> {
     Ok(())
 }
 
-/// Checks scoped native grants and unchanged obligations after actual draining.
+/// Runs scoped native grants without enlarging other selectors' async frames.
 ///
 /// # Errors
 /// Preserves repository, native owner, process and transport failures and refuses
 /// mismatched original descriptors, lost physical protection or a new drain grant.
-pub(super) async fn verify(
+pub(super) fn run(
+    launched: Launched,
+    runtime: &tokio::runtime::Runtime,
+    owner: &NativeMetadataOwner,
+    inputs: &config::Inputs,
+) -> Result<()> {
+    // Keep this large generic future in its own call frame. Constructing it in
+    // main reserves its stack space even when a different selector runs.
+    runtime.block_on(Box::pin(verify(launched, owner, inputs)))
+}
+
+async fn verify(
     mut launched: Launched,
     owner: &NativeMetadataOwner,
     inputs: &config::Inputs,

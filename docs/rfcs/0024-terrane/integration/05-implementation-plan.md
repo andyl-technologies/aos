@@ -14338,3 +14338,25 @@ and all 184 test compiler records across 59 packages. These passes supersede
 the owning surface failure for that checkpoint, while its earlier failures
 remain retained. They do not qualify the subsequent scoped worker fixture,
 production broker, mounted FUSE or full exposure lifecycle.
+
+The scoped worker VM at `99352cc2db` passes in 593.20 seconds from unchanged
+frozen source. Independent review matches all 8,046 immutable source files,
+5,337 base inputs, 5,321 surface inputs and five actual Cargo ELFs, including
+surface executable digest
+`8fa428754040262748c43c932637e8514f7c8272992591e84ddc65206097d6c4`.
+The actual queued Drain defeats a fully prepared Send, and the original worker
+continues reading its earlier original index mapping and sealed file. Exact
+native binding and durable protection checks pass through child exit. This
+qualifies the exercised scoped channel join, not deployed launch or FUSE.
+
+The owning surface rerun at the same checkpoint fails overall in 576.32
+seconds: the original `run` actor aborts with stack overflow after its existing
+warm-retirement witnesses, before signed-root controls. Evidence remains in
+`/scratch/nix-build/nix-2964279-468670427/build/serial.log`. AOS-built disassembly
+of the actual passing and failing executables shows `main`'s static stack
+frame growing from 659,000 to 783,640 bytes after the new async branch. The
+scoped fixture's future now constructs in a separate synchronous call frame
+and runs boxed, keeping its storage out of unrelated selectors. Stack, VM and
+actor limits are unchanged. Strict Linux all-target Clippy passes; actual
+fixture compilation and owning surface/scoped-worker requalification remain
+pending. The narrower scoped pass does not waive the owning surface failure.
