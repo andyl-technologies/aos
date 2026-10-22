@@ -17,7 +17,8 @@ def digest(path):
 
 
 def main(example="structural_index_fixture", executable_name="structural-index-fixture",
-         scope="Sealed structural mapping component; no worker or exposure authority"):
+         scope="Sealed structural mapping component; no worker or exposure authority",
+         features=("surface-fuse",)):
     """Binds a genuine Cargo launch to one immutable fixture and runtime closure."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
@@ -36,7 +37,7 @@ def main(example="structural_index_fixture", executable_name="structural-index-f
             and artifact["target"]["crate_types"] == ["bin"]
             and Path(artifact["target"]["src_path"]) == workspace / ("terrane/linux/terrane-linux/examples/" + example + ".rs")
             and artifact["package_id"].startswith("path+file://" + str(workspace / "terrane/linux/terrane-linux") + "#")
-            and artifact["features"] == ["surface-fuse"]
+            and artifact["features"] == sorted(features)
             and not profile["test"] and profile["opt_level"] == "0"
             and profile["debuginfo"] == 2 and profile["debug_assertions"],
             "structural mapping fixture source, features or profile mismatch")
@@ -63,7 +64,7 @@ def main(example="structural_index_fixture", executable_name="structural-index-f
     environment["CARGO_TARGET_" + triple + "_RUNNER"] = str(runner)
     with (output / "cargo-discovery.log").open("w") as log:
         subprocess.run(["cargo", "run", "--frozen", "--offline", "-p", "terrane-linux",
-                        "--no-default-features", "--features", "surface-fuse",
+                        "--no-default-features", "--features", ",".join(features),
                         "--example", example, "--", "--discover"],
                        env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
     text = capture.read_text()

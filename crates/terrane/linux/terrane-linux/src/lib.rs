@@ -25,3 +25,5 @@ pub mod quota_confinement;
 #[cfg(feature = "surface-fuse")]
 pub mod structural_index;
 pub mod verity;
+#[cfg(all(feature = "surface-fuse", feature = "tokio"))]
+pub mod worker_channel;

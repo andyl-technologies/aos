@@ -14150,3 +14150,40 @@ qualify subsequent publisher-binding finalization changes. The earlier combined
 retirement checkpoint `d297b9c086` also passes application compilation in
 1,514.51 seconds; review matches all 8,030 source files, 184 records and 59
 packages. Compilation establishes no mounted-surface behavior.
+
+The optional Linux FUSE component now has a bounded serve-side worker channel.
+An original supervised child handle mints a retained kernel pidfd; every packet
+must carry that live incarnation's kernel PID and configured worker UID. Serve
+and worker UIDs differ. Canonical `worker-backing-local-v1` packets bind the
+actual exposure generation, root or exact typed file identity, bounded relative
+path and nonwrapping sequence. One pending request exclusively owns the channel.
+Malformed context, replay, wrong credentials, unexpected ancillary descriptors
+or cancellation faults and disconnects it without discharging durable custody.
+
+The public grant methods accept only original SDK preparations and require their
+fresh scoped Read completion through the existing original-backing bridge. The
+physical owner then remeasures that exact original descriptor against its durable
+backing record, rechecks the live generation and deadline, and sends one descriptor
+nonblockingly in the same serialized turn as drain. This avoids a separately
+checked lease racing with descriptor disclosure. Boxed accepted jobs keep queue
+slots bounded; explicit socket buffers bound queued kernel traffic.
+
+Strict Linux all-target Clippy in all-feature and ordinary Tokio profiles and
+formatting pass. Five integration cases pass for typed packet round trips, every
+truncated prefix, malformed/foreign fields, bounded raw paths, actual child
+pidfd exit handling and original kernel credentials on the first packet queued
+before channel binding. The prelaunch socket-pair factory enables credentials
+and finite buffers before the child can send. One ignored child helper is explicitly executed by that
+pidfd test, not an unexecuted behavior claim. Three actual binding-repair tests
+also pass. Native source inventory remains 128 cases. Nix formatting and Python
+image-helper syntax pass.
+
+The new `terrane.integration.worker-channel` VM exercises a real sealed original
+descriptor across independent Unix identities and rejects wrong UID, wrong live
+process, full-limit 253-descriptor injection and truncated packets while counting
+actual receiver descriptors. Its immutable-image helper retains actual Cargo
+artifact identity and ELF closure. These native cases are not yet executed.
+This transport-only fixture does not qualify the new scoped owner send path,
+production worker launch, worker confinement, privileged broker or mounted FUSE.
+The original-child factory still needs deployment composition. No surface is
+enabled and no trunk task is closed by this component increment.

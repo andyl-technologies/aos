@@ -490,6 +490,62 @@ project setters. The observation itself performs none of these transitions,
 does not identify reference holders, and does not authorize release of any
 different inode or policy obligation.
 
+## `worker-backing-local-v1`
+
+The serve process and one supervised worker use a connected Unix
+`SOCK_SEQPACKET` channel for FUSE-3. The launcher retains the actual child
+process handle and pins its live incarnation with a kernel pidfd before that
+handle can be reaped. Every request MUST carry kernel `SCM_CREDENTIALS`
+matching that exact live process and its configured worker UID. Serve and worker
+UIDs MUST differ. `SO_PASSCRED` MUST be enabled before the child may send;
+packets without original credentials, including prematurely queued packets,
+are refused. A PID, exposure identifier or hash alone is not a credential.
+
+Each request has this exact little-endian layout:
+
+```text
+offset  size  field
+0       4     magic "TBC1"
+4       1     kind: 1=index, 2=inline file, 3=manifest file
+5       3     reserved, all zero
+8       16    exposure identifier, decoded from canonical lowercase hex
+24      8     nonzero exposure generation, naming the retained lease
+32      8     nonzero per-channel request sequence
+40      32    canonical index root or exact typed file content hash
+72      4     relative path byte length
+76      n     relative path bytes, at most 4096
+```
+
+Packets have no padding or trailing data. Index requests have an empty path
+and the exact served root hash. File paths are nonempty, contain no NUL byte,
+and have no empty, `.` or `..` component. Paths preserve raw namespace bytes.
+An empty or absolute path is invalid. Receivers MUST reject unknown versions
+or kinds, reserved fields, malformed lengths, truncation, foreign exposure or
+generation and request-side descriptors. Each channel accepts sequences
+starting at one and increasing by exactly one without wrapping. There is at
+most one in-flight request per channel. Encoded packets are bounded at 4172
+bytes; socket receive and send budgets are explicitly finite.
+
+A successful response echoes the complete request as one packet and carries
+exactly one original read-only backing descriptor through `SCM_RIGHTS`.
+The serve process MUST independently select the requested path and typed hash
+through a fresh scoped repository Read, require the acknowledged exposure's
+actual original inode binding, and finish that same Read before disclosure.
+The final live-generation/deadline check and nonblocking descriptor send MUST
+be serialized with exposure drain transitions. A completed drain therefore
+cannot be followed by an accepted grant from a previously prepared request.
+
+Malformed, unauthorized, out-of-order or failed requests fault and disconnect
+this channel rather than returning an apparent successful empty response.
+Cancellation before acknowledgment also faults it; accepted physical work and
+durable exposure obligations remain owned even when send completion is
+ambiguous. All refused ancillary descriptors MUST close, including full-limit
+and truncated packets. Worker exit, channel closure, successful descriptor send
+and receipt drop never acknowledge kernel closure or release durable custody.
+The caller separately supplies finite operation deadlines, child termination
+and reaping, worker confinement and FUSE connection supervision. This protocol
+does not register a privileged mount or backing-ioctl broker.
+
 ## Common types
 
 ```protobuf

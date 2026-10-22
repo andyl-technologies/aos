@@ -519,6 +519,8 @@ in {
   integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;
   integration.project-census = (import ./project-census.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.project-census-image = (import ./project-census.nix {inherit pkgs lib sourceGateWithInputs;}).image;
+  integration.worker-channel = (import ./worker-channel.nix {inherit pkgs lib sourceGateWithInputs;}).native;
+  integration.worker-channel-image = (import ./worker-channel.nix {inherit pkgs lib sourceGateWithInputs;}).image;
   integration.surface-index-owner =
     (import ./host-cache-proof.nix {
       inherit pkgs lib sourceGateWithInputs;

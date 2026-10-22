@@ -76,9 +76,19 @@ impl NativeExposureLease {
 
 pub(in crate::host_cache::owner) enum Operation {
     Check,
-    ProtectObject { source: NativeSealedObjectLease },
-    Retain { domain: String, expires: u64 },
-    Renew { expires: u64 },
+    Send {
+        disclosure: Box<crate::worker_channel::Disclosure>,
+    },
+    ProtectObject {
+        source: NativeSealedObjectLease,
+    },
+    Retain {
+        domain: String,
+        expires: u64,
+    },
+    Renew {
+        expires: u64,
+    },
     Drain,
 }
 
@@ -89,6 +99,22 @@ pub(in crate::host_cache::owner) struct Request {
 }
 
 impl NativeMetadataOwner {
+    /// Orders the final current-generation check and send with drain transitions.
+    pub(crate) async fn send_worker_backing(
+        &self,
+        lease: &NativeExposureLease,
+        disclosure: crate::worker_channel::Disclosure,
+    ) -> io::Result<()> {
+        self.exposure_request(
+            lease.clone(),
+            Operation::Send {
+                disclosure: Box::new(disclosure),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Durably retains an already checked mapped root before acknowledging a lease.
     ///
     /// This initial lease protects the index only. It grants no file descriptor
@@ -321,12 +347,28 @@ async fn transition(
                     return Err(invalid("exposure lost its original durable index binding"));
                 }
                 match operation {
-                    Operation::Check | Operation::ProtectObject { .. }
+                    Operation::Check | Operation::ProtectObject { .. } | Operation::Send { .. }
                         if !row.accepts_work(lease.generation, now) =>
                     {
                         return Err(read_denied(&lease.id));
                     }
                     Operation::Check => return Ok(lease),
+                    Operation::Send { disclosure } => {
+                        let file = disclosure.file()?;
+                        let (kind, hash) = disclosure.binding();
+                        let binding = super::bindings::capture(&owner, &file, kind, &hash)?;
+                        if !row.backings.contains(&binding) {
+                            return Err(invalid("worker backing lost original durable binding"));
+                        }
+                        if !row.accepts_work(lease.generation, clock::now_seconds()?) {
+                            return Err(read_denied(&lease.id));
+                        }
+                        // Nonblocking send and the final live-generation check
+                        // share this serialized turn. Drain cannot acknowledge
+                        // between them, and no sender waits on worker capacity.
+                        disclosure.send()?;
+                        return Ok(lease);
+                    }
                     Operation::ProtectObject { source } => {
                         let (hashes, expires, binding) = source.exposure_pins(executor, &owner)?;
                         if expires > row.deadline {

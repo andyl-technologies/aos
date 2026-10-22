@@ -51,7 +51,9 @@ present it.
   exposure id, the entry's object hash, and the lease. The serve process MUST
   verify that the object hash is reachable from the exposure's served commit
   before returning a descriptor; a request for an object outside the view
-  MUST be refused. *Gate:* `gate:fuse-object-scope`.
+  MUST be refused. The registered `worker-backing-local-v1` transport is in
+  [`reference/protocol.md`](reference/protocol.md#worker-backing-local-v1).
+  *Gate:* `gate:fuse-object-scope`.
 - **[FUSE-4]** A worker MUST run outside the resource-control and freezer
   domain of the consumers it serves. Freezing a consumer MUST NOT freeze the
   worker that serves its filesystem.

@@ -1,0 +1,268 @@
+//! Qualifies actual message credentials and descriptor custody in a dedicated guest.
+//!
+//! Root launches distinct unprivileged children. This transport-only component
+//! exercises the private socket layer; it grants no repository authorization,
+//! exposure lease, production worker sandbox or FUSE mount acceptance.
+
+use super::{BackingRequest, ExposureContext, RequestedBacking, WorkerIdentity, socket::Endpoint};
+use rustix::net::{
+    self, RecvAncillaryBuffer, RecvAncillaryMessage, SendAncillaryBuffer, SendAncillaryMessage,
+};
+use std::{
+    error::Error,
+    fs::{self, File},
+    io::{self, IoSlice, IoSliceMut, Read, Write},
+    mem::MaybeUninit,
+    os::{
+        fd::{AsFd, OwnedFd},
+        unix::fs::{MetadataExt, PermissionsExt},
+    },
+    path::Path,
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
+const WORKER_UID: u32 = 848;
+const BODY: &[u8] = b"original sealed descriptor through actual worker channel";
+
+struct ChildCustody(Child);
+
+impl Drop for ChildCustody {
+    fn drop(&mut self) {
+        if !matches!(self.0.try_wait(), Ok(Some(_))) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
+fn packet() -> Result<Vec<u8>> {
+    Ok(BackingRequest::new(
+        ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [3; 32])?,
+        1,
+        RequestedBacking::Index,
+    )?
+    .encode())
+}
+
+fn launch(setpriv: &Path, mode: &str, input: Stdio) -> Result<ChildCustody> {
+    Ok(ChildCustody(
+        Command::new(setpriv)
+            .args([
+                "--reuid=848",
+                "--regid=848",
+                "--clear-groups",
+                "--bounding-set=-all",
+                "--inh-caps=-all",
+                "--ambient-caps=-all",
+                "--no-new-privs",
+            ])
+            .arg(std::env::current_exe()?)
+            .args(["--worker", mode])
+            .stdin(input)
+            .stdout(Stdio::piped())
+            .spawn()?,
+    ))
+}
+
+// This clock only bounds the dedicated native proof, never repository state.
+#[allow(clippy::disallowed_methods)]
+fn receive(endpoint: &Endpoint) -> io::Result<Vec<u8>> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match endpoint.receive() {
+            Err(error)
+                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn descriptors() -> io::Result<usize> {
+    Ok(fs::read_dir("/proc/self/fd")?
+        .collect::<io::Result<Vec<_>>>()?
+        .len())
+}
+
+fn exercise(setpriv: &Path, file: &File, mode: &str) -> Result {
+    let (server, worker) = super::channel_pair()?;
+    let mut child = launch(setpriv, mode, Stdio::from(worker))?;
+    let mut unrelated = if mode == "wrong-pid" {
+        Some(launch(setpriv, "idle", Stdio::piped())?)
+    } else {
+        None
+    };
+    let expected = unrelated
+        .as_mut()
+        .map_or(&mut child.0, |other| &mut other.0);
+    let uid = if mode == "wrong-uid" {
+        WORKER_UID + 1
+    } else {
+        WORKER_UID
+    };
+    let identity = WorkerIdentity::from_child(expected, uid)?;
+    let endpoint = Endpoint::new(server, identity)?;
+    let before = descriptors()?;
+    let request = receive(&endpoint);
+    if mode == "valid" {
+        if request? != packet()? {
+            return Err("actual authenticated request differs from original packet".into());
+        }
+        endpoint.send(&packet()?, file.as_fd())?;
+    } else {
+        let error = request
+            .err()
+            .ok_or("invalid native worker request accepted")?;
+        if error.kind() != io::ErrorKind::PermissionDenied || descriptors()? != before {
+            return Err(
+                "worker refusal lost credential checks or leaked received descriptors".into(),
+            );
+        }
+        endpoint.abort();
+    }
+    if !child.0.wait()?.success() {
+        return Err("native worker child failed".into());
+    }
+    let mut output = String::new();
+    child
+        .0
+        .stdout
+        .take()
+        .ok_or("worker stdout absent")?
+        .read_to_string(&mut output)?;
+    if mode == "valid" {
+        let metadata = file.metadata()?;
+        if output != format!("ORIGINAL {} {}\n", metadata.dev(), metadata.ino()) {
+            return Err("worker received another inode incarnation".into());
+        }
+    } else if output != "REFUSED\n" {
+        return Err("worker refusal delivered bytes or descriptors".into());
+    }
+    Ok(())
+}
+
+fn worker(mode: &str) -> Result {
+    if rustix::process::geteuid().as_raw() != WORKER_UID {
+        return Err("worker fixture did not enter its independent identity".into());
+    }
+    if mode == "idle" {
+        let mut byte = [0];
+        let _ = std::io::stdin().read(&mut byte)?;
+        return Ok(());
+    }
+    let socket = std::io::stdin().as_fd().try_clone_to_owned()?;
+    let bytes = if mode == "truncated" {
+        vec![0; super::wire::MAX_PACKET + 1]
+    } else {
+        packet()?
+    };
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(253))];
+    let mut ancillary = SendAncillaryBuffer::new(&mut space);
+    let input = File::open("/dev/null")?;
+    let rights = [input.as_fd(); 253];
+    if mode == "rights" && !ancillary.push(SendAncillaryMessage::ScmRights(&rights)) {
+        return Err("fixture cannot construct complete Linux rights limit".into());
+    }
+    if net::sendmsg(
+        &socket,
+        &[IoSlice::new(&bytes)],
+        &mut ancillary,
+        net::SendFlags::NOSIGNAL,
+    )? != bytes.len()
+    {
+        return Err("fixture worker send truncated".into());
+    }
+
+    let mut reply = [0; super::wire::MAX_PACKET];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(253))];
+    let mut ancillary = RecvAncillaryBuffer::new(&mut space);
+    let received = net::recvmsg(
+        &socket,
+        &mut [IoSliceMut::new(&mut reply)],
+        &mut ancillary,
+        net::RecvFlags::CMSG_CLOEXEC,
+    )?;
+    let mut files: Vec<OwnedFd> = Vec::new();
+    for field in ancillary.drain() {
+        match field {
+            RecvAncillaryMessage::ScmRights(rights) => files.extend(rights),
+            _ => return Err("unexpected worker response ancillary data".into()),
+        }
+    }
+    if mode != "valid" {
+        if received.bytes != 0 || !files.is_empty() {
+            return Err("rejected worker received a disclosure".into());
+        }
+        println!("REFUSED");
+        return Ok(());
+    }
+    if received
+        .flags
+        .intersects(net::ReturnFlags::TRUNC | net::ReturnFlags::CTRUNC)
+        || reply[..received.bytes] != packet()?
+        || files.len() != 1
+    {
+        return Err("worker received a malformed descriptor response".into());
+    }
+    let descriptor = files.pop().ok_or("missing actual original backing")?;
+    let flags = rustix::fs::fcntl_getfl(&descriptor)?;
+    if flags.intersects(
+        rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::PATH,
+    ) {
+        return Err("worker backing is not read-only".into());
+    }
+    let mut file = File::from(descriptor);
+    crate::verity::measure(&file)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    if bytes != BODY {
+        return Err("worker read another original sealed body".into());
+    }
+    let metadata = file.metadata()?;
+    println!("ORIGINAL {} {}", metadata.dev(), metadata.ino());
+    Ok(())
+}
+
+/// Runs the explicitly privileged transport proof or its unprivileged child.
+///
+/// # Errors
+/// Rejects missing native inputs, wrong identities, absent kernel seal support,
+/// failed credential/descriptor controls and native child-process failures.
+pub fn run() -> Result {
+    let arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if arguments.first().is_some_and(|value| value == "--worker") {
+        return worker(
+            arguments
+                .get(1)
+                .and_then(|value| value.to_str())
+                .ok_or("missing worker mode")?,
+        );
+    }
+    if rustix::process::geteuid().as_raw() != 0 || arguments.len() != 2 {
+        return Err(
+            "transport proof requires root, a private ext4 directory and AOS setpriv".into(),
+        );
+    }
+    let directory = Path::new(&arguments[0]);
+    let path = directory.join("backing");
+    let mut writer = File::create_new(&path)?;
+    writer.write_all(BODY)?;
+    writer.sync_all()?;
+    drop(writer);
+    let file = File::open(&path)?;
+    crate::verity::enable(&file)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o400))?;
+    File::open(directory)?.sync_all()?;
+    for mode in ["valid", "wrong-uid", "wrong-pid", "rights", "truncated"] {
+        exercise(Path::new(&arguments[1]), &file, mode)?;
+        println!("PASS actual worker seqpacket transport: {mode}");
+    }
+    println!(
+        "PASS native worker transport component; scoped authorization and production worker remain separately qualified"
+    );
+    Ok(())
+}
