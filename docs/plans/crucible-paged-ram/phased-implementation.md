@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 411 committed bindings: 392 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 415 committed bindings: 396 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -364,8 +364,8 @@ The exact raw patch/bundle reconstruction passes at
 `l3y4q9dpgh08dcfa5bjxpqpk74hb0nxn`; the 351-created-file license inventory passes
 at `62hq7qrc96jk5b7i37sawmwgbfdvv5n9`. An initial descriptor included an extra
 message newline; the failed reconstruction remains recorded and the corrected
-descriptor reconstructs the exact signed subject, body and DCO. Packaged Source,
-all 26 bounded custody components remain in progress. All 187 packaged Source
+descriptor reconstructs the exact signed subject, body and DCO. All 26 bounded
+custody components pass at `3cb9frb6ydjxcv66qpjszpw98fpirl8v`. All 187 packaged Source
 tests pass at `qiky21gqqq0w3c6nljllazw78ayyz3vp`; fresh ABI conformance passes
 at `85lnp7g1sypbwsb3cww4j066qfidnqh4`. Canonical license checking again stops
 before boundary assertions at 1,184 host-library and 1,255 host-test Clippy
@@ -414,6 +414,22 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Borrowed fixed marker refusal diagnostics
+
+Four existing marker publication and coordinate refusals now borrow fixed
+messages. The owned-diagnostic constructor retains its existing signature and
+moves an incoming String without copying. Diagnostic text and ring behavior
+stay unchanged. The existing coordinate and full-ring controls now check that
+clones share fixed message storage; the full ring still yields exactly its two
+original entries. A malformed-capacity control exercises the real ring validator
+and verifies that no entry was published. A separate diagnostic control checks
+both static borrowing and preservation of the incoming owned allocation.
+
+All 115 focused white-box controls, all plugin target compilation and content-bound
+engineering hygiene pass. Mandatory application compilation and all 298 exact
+supervision cases remain pending for this checkpoint. These component controls
+do not establish complete dynamic diagnostic funding or Native admission.
+
 #### Typed marker callback refusals
 
 The live observational marker path retains the actual guest-memory and safe
@@ -447,7 +463,10 @@ and 55 constructor controls. Nine additional dependency edges are structural
 and unexecuted. Its complete configured Source/floor is 243,280/287,454 bytes;
 its exact 216-byte increase is the embedded constructor reciprocal, registration
 and borrower. The separate paid Module/Core journal remains unpriced here.
-No genuine populated Module borrower, RR or cleanup issuer is qualified.
+No genuine populated Module borrower, RR or cleanup issuer is qualified. The
+borrower remains one attempt per process: known physical consumption does not
+authorize clearing its retained attempt or reusing the constructor journal.
+Actual parent retirement and deferred receiver closure remain unjoined.
 
 The earlier signed Main-finish `4d354ac595` has a distinct external consumed
 receipt and separate first/post history. Its first broad cohort stop and omitted
@@ -511,7 +530,8 @@ Mandatory application compilation passes at
 `66bb8fe701b3e681469624c5a1370f873518d0a2` match immutable source
 `s000y3y08k9wxcqha4iy7p5rx5q6lqxm`; the comparison record has SHA-256
 `8a32d76d7bc96ab79005ad5a8e89d0788f8125157270bc11193ce988c150b1c2`.
-All 290 exact supervision cases remain in progress. This component control
+All 290 exact supervision cases pass at `mbhrvsp67nw5g09g5mk84gz8fws8g3if`.
+This component control
 grants no Native Original or activation.
 
 #### Typed network stop refusals

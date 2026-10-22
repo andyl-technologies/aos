@@ -38,6 +38,7 @@ pub use crucible_qemu_protocol::{
     whitebox_doorbell_abi_for_architecture,
 };
 use crucible_qemu_shmem::MAX_FRAME_DATA;
+use std::borrow::Cow;
 use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
@@ -1917,15 +1918,23 @@ pub trait WhiteboxMarkerSink {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("white-box marker sink failed: {message}")]
 pub struct WhiteboxMarkerSinkError {
-    message: String,
+    message: Cow<'static, str>,
 }
 
 impl WhiteboxMarkerSinkError {
-    /// Builds a marker-sink error.
+    /// Builds a marker-sink error retaining the supplied owned diagnostic.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: Cow::Owned(message.into()),
+        }
+    }
+
+    /// Builds a marker-sink error borrowing a fixed diagnostic without allocation.
+    #[must_use]
+    pub const fn from_static(message: &'static str) -> Self {
+        Self {
+            message: Cow::Borrowed(message),
         }
     }
 

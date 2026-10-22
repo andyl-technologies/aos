@@ -1609,3 +1609,23 @@ impl BackendRngEvidenceSource for RecordingAppRandomSource {
         self.result.clone()
     }
 }
+
+#[test]
+fn marker_sink_diagnostics_borrow_fixed_text_and_retain_owned_storage() {
+    let fixed = WhiteboxMarkerSinkError::from_static("fixed marker refusal");
+    assert!(matches!(
+        fixed.message,
+        Cow::Borrowed("fixed marker refusal")
+    ));
+
+    let message = String::from("owned backend marker refusal");
+    let address = message.as_ptr();
+    let owned = WhiteboxMarkerSinkError::new(message);
+    assert!(matches!(owned.message, Cow::Owned(_)));
+    assert_eq!(owned.message().as_ptr(), address);
+    assert_eq!(owned.message(), "owned backend marker refusal");
+    assert_eq!(
+        owned.to_string(),
+        "white-box marker sink failed: owned backend marker refusal"
+    );
+}

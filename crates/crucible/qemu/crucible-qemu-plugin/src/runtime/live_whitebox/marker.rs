@@ -59,9 +59,11 @@ impl LiveWhiteboxMarkerShmemProducer {
             .enqueue_whitebox_marker(entries, entry)
             .map_err(|error| {
                 if matches!(error, SpscRingError::QueueFull { .. }) {
-                    WhiteboxMarkerSinkError::new("live white-box marker queue is full")
+                    WhiteboxMarkerSinkError::from_static("live white-box marker queue is full")
                 } else {
-                    WhiteboxMarkerSinkError::new("live white-box marker queue rejected an entry")
+                    WhiteboxMarkerSinkError::from_static(
+                        "live white-box marker queue rejected an entry",
+                    )
                 }
             })
     }
@@ -91,10 +93,10 @@ impl LiveMarkerSink {
     fn tick_for_raw_marker(&self, marker_raw_icount: u64) -> Result<u64, WhiteboxMarkerSinkError> {
         match self.callback_coordinate {
             Some((raw_icount, tick_ps)) if raw_icount == marker_raw_icount => Ok(tick_ps),
-            Some(_) => Err(WhiteboxMarkerSinkError::new(
+            Some(_) => Err(WhiteboxMarkerSinkError::from_static(
                 "white-box marker raw coordinate differs from its callback",
             )),
-            None => Err(WhiteboxMarkerSinkError::new(
+            None => Err(WhiteboxMarkerSinkError::from_static(
                 "white-box marker has no observed simulation coordinate",
             )),
         }
@@ -127,6 +129,18 @@ impl WhiteboxMarkerSink for LiveMarkerSink {
 mod tests {
     use super::*;
 
+    fn assert_fixed_refusal(error: WhiteboxMarkerSinkError, message: &str) {
+        assert_eq!(error.message(), message);
+
+        let copied = error.clone();
+        assert_eq!(copied, error);
+        assert_eq!(copied.message().as_ptr(), error.message().as_ptr());
+        assert_eq!(
+            error.to_string(),
+            format!("white-box marker sink failed: {message}")
+        );
+    }
+
     #[test]
     fn live_marker_sink_requires_matching_observed_tick() {
         let header = RingHeader::new();
@@ -140,14 +154,23 @@ mod tests {
             )
         };
         let mut sink = LiveMarkerSink::new(output);
-        assert!(sink.tick_for_raw_marker(100).is_err());
+        assert_fixed_refusal(
+            sink.tick_for_raw_marker(100).unwrap_err(),
+            "white-box marker has no observed simulation coordinate",
+        );
 
         sink.bind_callback_coordinate(100, 1_000_037);
         assert_eq!(sink.tick_for_raw_marker(100), Ok(1_000_037));
-        assert!(sink.tick_for_raw_marker(101).is_err());
+        assert_fixed_refusal(
+            sink.tick_for_raw_marker(101).unwrap_err(),
+            "white-box marker raw coordinate differs from its callback",
+        );
 
         sink.clear_callback_coordinate();
-        assert!(sink.tick_for_raw_marker(100).is_err());
+        assert_fixed_refusal(
+            sink.tick_for_raw_marker(100).unwrap_err(),
+            "white-box marker has no observed simulation coordinate",
+        );
     }
 
     #[test]
@@ -206,6 +229,44 @@ mod tests {
             Ok(()) => panic!("full marker ring must reject a third entry"),
             Err(error) => error,
         };
-        assert!(error.message().contains("queue is full"));
+        assert_fixed_refusal(error, "live white-box marker queue is full");
+
+        assert_eq!(
+            header
+                .dequeue_whitebox_marker(&entries)
+                .unwrap()
+                .unwrap()
+                .payload(),
+            b"a"
+        );
+        assert_eq!(
+            header
+                .dequeue_whitebox_marker(&entries)
+                .unwrap()
+                .unwrap()
+                .payload(),
+            b"b"
+        );
+        assert_eq!(header.dequeue_whitebox_marker(&entries).unwrap(), None);
+    }
+
+    #[test]
+    fn live_marker_producer_rejects_invalid_capacity_without_publishing() {
+        let header = RingHeader::new();
+        let mut entries = [WhiteboxMarkerEntry::default(); 3];
+        // SAFETY: the entire deliberately invalid-capacity slice is mapped and
+        // producer-exclusive. The real ring validator must reject its geometry.
+        let mut producer = unsafe {
+            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(&header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        };
+
+        let error = producer.record(3, 0, 4, b"c").unwrap_err();
+        assert_fixed_refusal(error, "live white-box marker queue rejected an entry");
+
+        assert_eq!(header.dequeue_whitebox_marker(&entries[..2]).unwrap(), None);
     }
 }
