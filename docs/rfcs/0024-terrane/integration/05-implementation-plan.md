@@ -14637,3 +14637,38 @@ are unchanged. Both strict Linux all-target feature profiles, all ten existing
 maintenance socket controls, Rust formatting, Python syntax, Nix evaluation and
 formatting, and all 128 base native source declarations pass. Native listener
 runtime and required application qualification remain pending.
+
+
+The private GC channel checkpoint `4d4bfc9e65` passes its dedicated VM in
+550.32 seconds, scoped-worker regression in 545.92 seconds and complete surface
+ownership in 673.44 seconds. All three reviews match all 8,055 immutable source
+files, 5,346 base inputs, 5,330 surface inputs and five installed Cargo ELFs.
+Required application compilation passes in 1,321.27 seconds; its review is
+pending. The full native cache still runs. These GC fixtures use no supplementary
+groups; the deployed GC unit also has state/content groups, so private-state
+access denial here does not qualify deployed GC isolation.
+
+Protected-listener checkpoint `9e9d6857e4` passes its dedicated VM in 551.86
+seconds, private-channel regression in 551.50 seconds and complete surface
+ownership in 676.01 seconds. Dedicated listener and channel reviews match all
+8,056 immutable source files, 5,347 base inputs, 5,331 surface inputs and five
+installed Cargo ELFs. Complete surface review and application compilation are
+pending. No collector, deployed listener startup or production worker is claimed.
+
+Explicit optional `cache.surface_index` TOML resources and corresponding Nix
+`cache.surfaceIndex` options now carry projection-entry, canonical-node, compiled
+payload, separate allocation-cap and future-hold limits into `NativeCachePlan`
+and its actual owner configuration. Omission retains disabled admission. Parsing
+checks finite bounds and checked payload/metadata overlap; configured native
+preflight also refuses an unavailable compiled FUSE implementation before any
+native I/O. This preserves the existing conservative full-project charge test,
+including retired mappings and verity allocation; it introduces no allocation
+or disclosure authority. Six configuration integration cases pass, including
+complete omission, exact operator values, missing fields, unknown fields,
+invalid bounds and unfunded overlap. Both strict Linux all-target feature
+profiles, Rust formatting, Nix formatting and module evaluation pass. Additional
+Nix checks preserve omission, verify exact rendering and refuse nine invalid
+policies. The existing native preflight control additionally checks explicit
+policy support under the actual compiled feature profile. Frozen native and
+mandatory application qualification remain pending; configured surface admission
+has not yet been exercised end to end by a native runtime fixture.

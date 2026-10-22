@@ -63,6 +63,8 @@ pub struct DomainCache {
     pub metadata_sync_hold_bytes: u64,
     /// Optional explicit funded detached-index repair bounds.
     pub index_repair: Option<IndexRepair>,
+    /// Optional explicit funded FUSE metadata-index admission bounds.
+    pub surface_index: Option<SurfaceIndex>,
     /// Publisher request wait, from one through 300000 milliseconds.
     pub publisher_wait_budget_ms: u64,
     /// Consumer grant duration, from one through 300 whole seconds.
@@ -106,6 +108,25 @@ pub struct IndexRepair {
     /// Maximum derived detached-index payload length.
     pub max_index_bytes: usize,
     /// Explicit future hold covering payload and metadata synchronization overlap.
+    pub future_hold_bytes: u64,
+}
+
+/// Bounds derived FUSE indexes without granting disclosure or native readiness.
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurfaceIndex {
+    /// Maximum expanded entries in one canonical projection.
+    pub max_entries: u32,
+    /// Maximum combined canonical node bodies and digest keys per request.
+    pub max_node_bytes: usize,
+    /// Maximum compiled payload bytes in one index.
+    pub max_index_bytes: usize,
+    /// Separate cap on index-inode allocation, including verity data.
+    ///
+    /// Native admission conservatively compares full project charge with this
+    /// cap so retired indexes retained by mappings remain accounted for.
+    pub capacity_bytes: u64,
+    /// Explicit future hold covering payload and metadata synchronization.
     pub future_hold_bytes: u64,
 }
 
@@ -155,6 +176,23 @@ impl DomainCache {
                 return Err(ConfigError::Invalid("invalid funded native index repair"));
             }
         }
+
+        if let Some(index) = self.surface_index {
+            let payload = u64::try_from(index.max_index_bytes).ok();
+            let overlap =
+                payload.and_then(|bytes| bytes.checked_add(self.metadata_sync_hold_bytes));
+            if index.max_entries == 0
+                || index.max_node_bytes < 32
+                || index.max_index_bytes == 0
+                || payload.is_none_or(|bytes| index.capacity_bytes < bytes)
+                || index.capacity_bytes > self.capacity_bytes
+                || overlap.is_none_or(|floor| index.future_hold_bytes < floor)
+                || index.future_hold_bytes > self.capacity_bytes
+            {
+                return Err(ConfigError::Invalid("invalid funded native surface index"));
+            }
+        }
+
         Ok(())
     }
 }

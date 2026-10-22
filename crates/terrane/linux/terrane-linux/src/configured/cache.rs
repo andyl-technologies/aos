@@ -8,7 +8,7 @@ use super::{Preflight, ProcessRole, invalid, preflight_role};
 use crate::{
     host_cache::{
         IndexRepairPolicy, NativeCacheOwnerConfig, NativeContentStore, NativePreparedObject,
-        NativeReady,
+        NativeReady, SurfaceIndexPolicy,
     },
     host_quota::HostQuotaClient,
     publisher_local::client::ClientConfig,
@@ -55,6 +55,8 @@ pub struct NativeCacheDomainSettings {
     pub metadata_sync_hold_bytes: u64,
     /// Optional funded detached-index repair policy.
     pub index_repair: Option<IndexRepairPolicy>,
+    /// Optional funded FUSE metadata-index admission policy.
+    pub surface_index: Option<SurfaceIndexPolicy>,
     /// Finite publisher request wait, from one through 300000 milliseconds.
     pub publisher_wait_budget_ms: u64,
     /// Whole-second consumer grant duration, from one through 300 seconds.
@@ -196,6 +198,13 @@ impl NativeCachePlan {
                     max_index_bytes: repair.max_index_bytes,
                     future_hold_bytes: repair.future_hold_bytes,
                 }),
+                surface_index: cache.surface_index.map(|index| SurfaceIndexPolicy {
+                    max_entries: index.max_entries,
+                    max_node_bytes: index.max_node_bytes,
+                    max_index_bytes: index.max_index_bytes,
+                    capacity_bytes: index.capacity_bytes,
+                    future_hold_bytes: index.future_hold_bytes,
+                }),
                 publisher_wait_budget_ms: cache.publisher_wait_budget_ms,
                 consumer_lease_duration: Duration::from_secs(cache.consumer_lease_seconds),
             };
@@ -293,7 +302,7 @@ impl NativeCachePlan {
                 queued_commands: settings.queued_commands,
                 metadata_sync_hold_bytes: settings.metadata_sync_hold_bytes,
                 index_repair: settings.index_repair,
-                surface_index: None,
+                surface_index: settings.surface_index,
             };
             config.validate()?;
             prepared.push((domain.native.domain, config, settings));
@@ -410,6 +419,17 @@ impl NativeCacheDomainSettings {
         if let Some(repair) = self.index_repair {
             repair.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
         }
+
+        if let Some(index) = self.surface_index {
+            if !cfg!(feature = "surface-fuse") {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "native surface index support is not compiled",
+                ));
+            }
+            index.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
+        }
+
         Ok(())
     }
 }

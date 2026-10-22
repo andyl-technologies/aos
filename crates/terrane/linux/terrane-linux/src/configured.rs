@@ -781,6 +781,7 @@ mod tests {
                         queued_commands: 4,
                         metadata_sync_hold_bytes: 256 * 1024,
                         index_repair: None,
+                        surface_index: None,
                         publisher_wait_budget_ms: 10_000,
                         consumer_lease_duration: Duration::from_secs(30),
                     },
@@ -804,6 +805,22 @@ mod tests {
 
         let (host, domains) = cache_configuration();
         assert!(NativeCachePlan::new(&host, domains).is_ok());
+
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().surface_index =
+            Some(crate::host_cache::SurfaceIndexPolicy {
+                max_entries: 64,
+                max_node_bytes: 131072,
+                max_index_bytes: 65536,
+                capacity_bytes: 1048576,
+                future_hold_bytes: 327680,
+            });
+        let result = NativeCachePlan::new(&host, domains);
+        if cfg!(feature = "surface-fuse") {
+            assert!(result.is_ok());
+        } else {
+            assert_eq!(result.err().unwrap().kind(), io::ErrorKind::Unsupported);
+        }
 
         let (host, mut domains) = cache_configuration();
         domains.get_mut("public").unwrap().portable.root = "/another/domain".into();

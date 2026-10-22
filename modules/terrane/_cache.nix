@@ -25,6 +25,15 @@
       futureHoldBytes = required positive "Explicit future hold covering index payload and metadata synchronization.";
     };
   };
+  surfaceIndexType = types.submodule {
+    options = {
+      maxEntries = required (types.addCheck positive (value: value <= 4294967295)) "Maximum expanded entries in one canonical projection.";
+      maxNodeBytes = required (types.addCheck positive (value: value >= 32)) "Maximum combined canonical node bodies and digest keys per request.";
+      maxIndexBytes = required positive "Maximum compiled payload bytes in one FUSE metadata index.";
+      capacityBytes = required positive "Separate allocation cap, conservatively checked against full project charge including retained mappings and verity data.";
+      futureHoldBytes = required positive "Explicit future hold covering index payload and metadata synchronization.";
+    };
+  };
 in {
   type = types.submodule {
     options = {
@@ -52,6 +61,11 @@ in {
         type = types.nullOr repairType;
         default = null;
         description = "Optional explicit funded detached-index repair policy.";
+      };
+      surfaceIndex = lib.mkOption {
+        type = types.nullOr surfaceIndexType;
+        default = null;
+        description = "Optional explicit funded FUSE metadata-index policy; requires compiled surface-fuse support.";
       };
     };
   };
@@ -85,6 +99,16 @@ in {
               cache.indexRepair.futureHoldBytes
               >= cache.metadataSyncHoldBytes + cache.indexRepair.maxIndexBytes
               && cache.indexRepair.futureHoldBytes <= cache.capacityBytes
+            ))
+          && (cache.surfaceIndex
+            == null
+            || (
+              cache.surfaceIndex.capacityBytes
+              >= cache.surfaceIndex.maxIndexBytes
+              && cache.surfaceIndex.capacityBytes <= cache.capacityBytes
+              && cache.surfaceIndex.futureHoldBytes
+              >= cache.metadataSyncHoldBytes + cache.surfaceIndex.maxIndexBytes
+              && cache.surfaceIndex.futureHoldBytes <= cache.capacityBytes
             ))
         );
       message = "Terrane native cache ${name} requires explicit publisher/quota inputs, private state group and consistent finite resource bounds.";
@@ -129,6 +153,16 @@ in {
         else {
           max_index_bytes = cache.indexRepair.maxIndexBytes;
           future_hold_bytes = cache.indexRepair.futureHoldBytes;
+        };
+      surface_index =
+        if cache.surfaceIndex == null
+        then null
+        else {
+          max_entries = cache.surfaceIndex.maxEntries;
+          max_node_bytes = cache.surfaceIndex.maxNodeBytes;
+          max_index_bytes = cache.surfaceIndex.maxIndexBytes;
+          capacity_bytes = cache.surfaceIndex.capacityBytes;
+          future_hold_bytes = cache.surfaceIndex.futureHoldBytes;
         };
     };
 }

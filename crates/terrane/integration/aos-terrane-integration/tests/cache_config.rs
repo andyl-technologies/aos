@@ -48,6 +48,7 @@ fn explicit_native_cache_resources_preserve_operator_bounds()
     assert_eq!(resources.consumer_lease_seconds, 30);
     assert_eq!(resources.portable.max_files, 4096);
     assert!(resources.index_repair.is_none());
+    assert!(resources.surface_index.is_none());
     Ok(())
 }
 
@@ -100,4 +101,70 @@ fn native_index_repair_requires_explicit_funded_overlap() {
     assert!(Config::parse(&format!("{CONFIG}{repair}")).is_ok());
     let unfunded = repair.replace("future_hold_bytes = 327680", "future_hold_bytes = 262144");
     assert!(Config::parse(&format!("{CONFIG}{unfunded}")).is_err());
+}
+
+const SURFACE_INDEX: &str = r#"
+[host_tier.domains.public.cache.surface_index]
+max_entries = 64
+max_node_bytes = 131072
+max_index_bytes = 65536
+capacity_bytes = 1048576
+future_hold_bytes = 327680
+"#;
+
+#[test]
+fn native_surface_index_preserves_explicit_independent_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::parse(&format!("{CONFIG}{SURFACE_INDEX}"))?;
+    let index = config
+        .host_tier()
+        .and_then(|host| host.domains["public"].cache.as_ref())
+        .and_then(|cache| cache.surface_index)
+        .ok_or("missing explicit surface-index policy")?;
+
+    assert_eq!(index.max_entries, 64);
+    assert_eq!(index.max_node_bytes, 131072);
+    assert_eq!(index.max_index_bytes, 65536);
+    assert_eq!(index.capacity_bytes, 1048576);
+    assert_eq!(index.future_hold_bytes, 327680);
+    Ok(())
+}
+
+#[test]
+fn native_surface_index_refuses_incomplete_unfunded_and_overflowing_bounds() {
+    for field in [
+        "max_entries = 64\n",
+        "max_node_bytes = 131072\n",
+        "max_index_bytes = 65536\n",
+        "capacity_bytes = 1048576\n",
+        "future_hold_bytes = 327680\n",
+    ] {
+        let incomplete = SURFACE_INDEX.replace(field, "");
+        assert!(
+            Config::parse(&format!("{CONFIG}{incomplete}")).is_err(),
+            "{field}"
+        );
+    }
+
+    for (field, invalid) in [
+        ("max_entries = 64", "max_entries = 0"),
+        ("max_entries = 64", "max_entries = 4294967296"),
+        ("max_node_bytes = 131072", "max_node_bytes = 31"),
+        ("max_index_bytes = 65536", "max_index_bytes = 0"),
+        ("capacity_bytes = 1048576", "capacity_bytes = 65535"),
+        ("capacity_bytes = 1048576", "capacity_bytes = 25165825"),
+        ("future_hold_bytes = 327680", "future_hold_bytes = 327679"),
+        ("future_hold_bytes = 327680", "future_hold_bytes = 25165825"),
+        (
+            "max_index_bytes = 65536",
+            "max_index_bytes = 18446744073709551615",
+        ),
+        ("max_entries", "unknown_entries"),
+    ] {
+        let refused = SURFACE_INDEX.replace(field, invalid);
+        assert!(
+            Config::parse(&format!("{CONFIG}{refused}")).is_err(),
+            "{invalid}"
+        );
+    }
 }

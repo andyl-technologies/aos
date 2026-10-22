@@ -255,6 +255,13 @@
     aos.terrane.hostTier.domains.public.cache = cacheFixture;
   });
   cachedFile = cached.environment.etc."terrane/terrane.toml".text;
+  surfaceIndexFixture = {
+    maxEntries = 64;
+    maxNodeBytes = 131072;
+    maxIndexBytes = 65536;
+    capacityBytes = 1048576;
+    futureHoldBytes = 327680;
+  };
   localFixture = {
     aos.terrane = {
       store = lib.mkForce "bucket(file:///var/lib/terrane-bucket)";
@@ -858,6 +865,45 @@
     {
       name = "native-cache-omission-preserved";
       pass = !(lib.hasInfix "[host_tier.domains.public.cache]" nativeFile);
+    }
+    {
+      name = "native-cache-surface-index-omission-preserved";
+      pass = !(lib.hasInfix "surface_index" cachedFile);
+    }
+    {
+      name = "native-cache-surface-index-rendered-exactly";
+      pass = let
+        cfg = evaluate (lib.recursiveUpdate nativeFixture {
+          aos.terrane.hostTier.domains.public.cache = cacheFixture // {surfaceIndex = surfaceIndexFixture;};
+        });
+        text = cfg.environment.etc."terrane/terrane.toml".text;
+      in
+        checksPass cfg
+        && builtins.all (word: lib.hasInfix word text) [
+          "[host_tier.domains.public.cache.surface_index]"
+          "max_entries = 64"
+          "max_node_bytes = 131072"
+          "max_index_bytes = 65536"
+          "capacity_bytes = 1048576"
+          "future_hold_bytes = 327680"
+        ];
+    }
+    {
+      name = "native-cache-surface-index-invalid-bounds-refused";
+      pass = builtins.all (surfaceIndex:
+        rejectedNative {
+          aos.terrane.hostTier.domains.public.cache = cacheFixture // {inherit surfaceIndex;};
+        }) [
+        (builtins.removeAttrs surfaceIndexFixture ["maxEntries"])
+        (surfaceIndexFixture // {maxEntries = 0;})
+        (surfaceIndexFixture // {maxEntries = 4294967296;})
+        (surfaceIndexFixture // {maxNodeBytes = 31;})
+        (surfaceIndexFixture // {maxIndexBytes = 0;})
+        (surfaceIndexFixture // {capacityBytes = 65535;})
+        (surfaceIndexFixture // {capacityBytes = 25165825;})
+        (surfaceIndexFixture // {futureHoldBytes = 327679;})
+        (surfaceIndexFixture // {futureHoldBytes = 25165825;})
+      ];
     }
     {
       name = "native-cache-incomplete-resources-refused";
