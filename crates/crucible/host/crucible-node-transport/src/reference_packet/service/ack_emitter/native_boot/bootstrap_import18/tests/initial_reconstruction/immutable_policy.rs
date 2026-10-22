@@ -6,9 +6,11 @@
 use super::super::super::immutable_policy::OriginalImport18ImmutablePolicyAdmission;
 use super::*;
 use crate::reference_packet::NativeImport18PolicyData;
+use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18BootstrapTypedBirthView;
 use crate::reference_packet::service::complete_restore::import18::{
-    native_import18_declared_features_data, native_import18_restored_record_schema_data,
-    native_import18_schema_data, native_import18_stage_schema_data,
+    PacketNativeImport18PrivateBootWireData, native_import18_declared_features_data,
+    native_import18_restored_record_schema_data, native_import18_schema_data,
+    native_import18_stage_schema_data,
 };
 use crucible_node_format::Validate;
 use std::{cell::Cell, rc::Rc};
@@ -153,6 +155,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             .with_bootstrap_policy_wire_data(|_| Ok(()))
             .is_err()
     );
+    assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
     if case == "initial_policy_selection_revoked" {
         original.selection_authenticated = false;
     }
@@ -214,10 +217,13 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         original
             .with_bootstrap_policy_wire_data(|view| assert_bootstrap_policy_wire(&original, view))
             .unwrap();
+        original
+            .with_bootstrap_birth_wire_data(|view| assert_bootstrap_birth_wire(&original, view))
+            .unwrap();
         if case == "initial_policy_callback_refused" {
             assert!(
                 original
-                    .with_bootstrap_policy_wire_data::<()>(|_| Err(ProviderError::Conflict(
+                    .with_bootstrap_birth_wire_data::<()>(|_| Err(ProviderError::Conflict(
                         "policy inspection refused"
                     )))
                     .is_err()
@@ -227,18 +233,14 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         if case == "initial_policy_substituted_cut" {
             let prior = original.cut;
             original.cut = OperationalDeadline::after(Duration::from_secs(3)).unwrap();
-            assert!(
-                original
-                    .with_bootstrap_policy_wire_data(|_| Ok(()))
-                    .is_err()
-            );
+            assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
             original.cut = prior;
             original.with_immutable_policy_data(|_| Ok(())).unwrap();
         }
         if case == "initial_policy_loan_expired" {
             assert!(
                 original
-                    .with_bootstrap_policy_wire_data(|_| {
+                    .with_bootstrap_birth_wire_data(|_| {
                         std::thread::sleep(Duration::from_secs(5));
                         Ok(())
                     })
@@ -248,11 +250,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         }
         if case == "initial_policy_later_contained" {
             original.hello_registrar.contain_admission_data().unwrap();
-            assert!(
-                original
-                    .with_bootstrap_policy_wire_data(|_| Ok(()))
-                    .is_err()
-            );
+            assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
         }
     } else {
         assert!(outcome.is_err(), "{case}");
@@ -261,6 +259,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .with_bootstrap_policy_wire_data(|_| Ok(()))
                 .is_err()
         );
+        assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
         assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
         assert!(
             original
@@ -446,4 +445,80 @@ fn policy_shape_fields(
         *serialized_value_nodes,
         *serialized_capacity_records,
     ]
+}
+
+/// Compares the original birth loan with the independent retained-Value grammar.
+fn assert_bootstrap_birth_wire(
+    original: &OriginalImport18RawBootstrap,
+    view: &PacketNativeImport18BootstrapTypedBirthView<'_>,
+) -> Result<(), ProviderError> {
+    use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::native_import18_bootstrap_birth_wire_data;
+    use crate::retained_metadata::MetadataObserver;
+    use crate::retained_metadata::serialization_storage::actual_serialization_storage_data;
+
+    let bodies = original.typed_bodies_data()?;
+    let source = bodies.boot.source_binding_data();
+    assert!(std::ptr::eq(view.source_binding_data(), source));
+    let projected = view.serialization_data(usize::MAX).unwrap();
+
+    // Only the independent oracle parses the retained raw body. The production
+    // loan borrows its original typed fields and never allocates this DOM.
+    let mut boot: Value = serde_json::from_slice(&original.bodies[2]).unwrap();
+    let birth: Bytes = serde_json::from_value(boot["birth_id"].clone()).unwrap();
+    let private_launch: Id = serde_json::from_value(boot["private_launch"].clone()).unwrap();
+    let host: crucible_node_format::ContentRef =
+        serde_json::from_value(boot["host_executable"].clone()).unwrap();
+    let expected = native_import18_bootstrap_birth_wire_data(
+        &birth,
+        &private_launch,
+        &host,
+        &boot["source_birth"],
+        &boot["expected_host_registration"],
+    )?;
+    assert_eq!(
+        serde_json::to_value(view).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(view.birth_id_data(), &birth);
+
+    let source_birth = source.declaration_data().source_birth_data();
+    let mut observer = MetadataObserver::new();
+    observer.observe(view.birth_id_data()).unwrap();
+    observer.observe(source_birth).unwrap();
+    let actual = actual_serialization_storage_data(view, observer.finish(), usize::MAX).unwrap();
+    let projected_fields = policy_shape_fields(&projected);
+    let actual_fields = policy_shape_fields(&actual);
+    // Counter implementations and custom formatter admission have independent
+    // defining terms. All DOM, parser, output and population fields must agree.
+    for index in [0, 1, 2, 3, 6, 7, 8, 9, 10] {
+        assert_eq!(
+            projected_fields[index], actual_fields[index],
+            "shape field {index}"
+        );
+    }
+    assert_eq!(
+        projected.serializer_temporary_requested_bytes,
+        Bytes::borrowed_serialization_temporary_bytes_data(source_birth.as_slice())
+            .unwrap()
+            .max(43),
+    );
+    let peak = projected.requested_total().unwrap();
+    for restriction in [peak, peak + 4096] {
+        assert_eq!(
+            policy_shape_fields(&view.serialization_data(restriction).unwrap()),
+            projected_fields
+        );
+    }
+    assert!(view.serialization_data(peak - 1).is_err());
+    assert!(view.serialization_data(1).is_err());
+    assert!(
+        OriginalImport18RawBootstrap::bootstrap_birth_loan_counter_scratch_data::<()>().unwrap()
+            > OriginalImport18RawBootstrap::bootstrap_policy_loan_counter_scratch_data::<()>()
+                .unwrap()
+    );
+
+    boot["birth_id"] = json!(Bytes::new(vec![0; 31]));
+    let malformed: PacketNativeImport18PrivateBootWireData = serde_json::from_value(boot).unwrap();
+    assert!(malformed.bootstrap_birth_wire_data().is_err());
+    Ok(())
 }

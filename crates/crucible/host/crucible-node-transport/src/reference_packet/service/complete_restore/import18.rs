@@ -208,12 +208,12 @@ pub use initial_funding::PacketNativeImport18InitialFundingHistoryData;
 
 pub(in crate::reference_packet) use startup_wire::{
     InitialConstructionData, OriginalImport18DecodedBodies, OriginalImport18DecodedBodyLoans,
-    authenticate_initial_headers_data, initial_construction_counter_scratch_data,
-    initial_construction_from_wire_data, initial_construction_projection_data,
-    initial_quote_formatter_data, private_body_decode_counter_scratch_data,
-    private_body_owner_counter_scratch_data, source_authentication_construction_data,
-    source_authentication_counter_scratch_data, source_authentication_projection_data,
-    source_authentication_quote_construction_data,
+    PacketNativeImport18BootstrapTypedBirthView, authenticate_initial_headers_data,
+    initial_construction_counter_scratch_data, initial_construction_from_wire_data,
+    initial_construction_projection_data, initial_quote_formatter_data,
+    private_body_decode_counter_scratch_data, private_body_owner_counter_scratch_data,
+    source_authentication_construction_data, source_authentication_counter_scratch_data,
+    source_authentication_projection_data, source_authentication_quote_construction_data,
 };
 
 pub use startup_wire::{

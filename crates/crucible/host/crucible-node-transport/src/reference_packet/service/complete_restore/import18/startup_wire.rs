@@ -105,6 +105,10 @@ pub(in crate::reference_packet) use retained::{
     private_body_owner_counter_scratch_data,
 };
 
+#[path = "startup_wire/bootstrap_birth.rs"]
+mod bootstrap_birth;
+pub(in crate::reference_packet) use bootstrap_birth::PacketNativeImport18BootstrapTypedBirthView;
+
 #[path = "startup_wire/policy_projection.rs"]
 mod policy_projection;
 pub(in crate::reference_packet) use policy_projection::{
