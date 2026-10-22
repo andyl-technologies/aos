@@ -122,7 +122,7 @@ impl QuantumStackReservation {
             || !generation(self.cleanup_generation)
             || self.usable_bytes == 0
             || self.usable_bytes == u64::MAX
-            || self.page_bytes == 0
+            || !self.page_bytes.is_power_of_two()
             || self.profile_digest == [0; 32]
         {
             return Err(PublisherDecodeError);

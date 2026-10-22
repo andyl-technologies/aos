@@ -559,7 +559,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::quantum_setup \
                 -- --test-threads=1
-              require_test_set 5 protocol-quantum-stacks \
+              require_test_set 6 protocol-quantum-stacks \
                 publisher_subscription::quantum::stacks::tests::stack_purpose_matches_independent_literal_header_and_both_role_records \
                 -p crucible-qemu-protocol --lib publisher_subscription::quantum::stacks::tests::
               cargo test \

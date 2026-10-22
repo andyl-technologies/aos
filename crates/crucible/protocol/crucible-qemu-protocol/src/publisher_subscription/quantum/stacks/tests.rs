@@ -283,3 +283,37 @@ fn stack_correspondence_refuses_every_changed_parent_coordinate() {
             .is_err()
     );
 }
+
+#[test]
+fn stack_purpose_refuses_non_power_of_two_pages_even_when_all_geometry_matches() {
+    for page in [3_u64, 6144, 12288] {
+        let mut value = purpose();
+        value.main.page_bytes = page;
+        value.main.usable_bytes = page + 1;
+        value.main.mapping_bytes = 2 * page;
+        value.rr.page_bytes = page;
+        value.rr.usable_bytes = 8 * page;
+        value.rr.mapping_bytes = 10 * page;
+
+        let mut wire = purpose().encode().unwrap();
+        for (offset, number) in [
+            (64 + 96, page + 1),
+            (64 + 112, 2 * page),
+            (64 + 136, page),
+            (64 + 144, page + 1),
+            (64 + 152, page + 1),
+            (320 + 96, 8 * page),
+            (320 + 104, 2 * page),
+            (320 + 112, 10 * page),
+            (320 + 136, page),
+        ] {
+            wire[offset..offset + 8].copy_from_slice(&number.to_be_bytes());
+        }
+
+        assert!(
+            QuantumStackPurpose::decode(&wire).is_err(),
+            "decode page {page}"
+        );
+        assert!(value.encode().is_err(), "encode page {page}");
+    }
+}

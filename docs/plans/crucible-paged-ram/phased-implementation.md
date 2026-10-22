@@ -69,6 +69,18 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Stack page geometry parity
+
+The Host stack carrier now rejects non-power-of-two page geometry before
+encoding or accepting the description, matching the independently implemented
+native decoder. A new control first failed at the exact page-three decode
+assertion with all other fields and arithmetic valid. Its unchanged checks now
+refuse independent literal and typed records for page sizes 3, 6,144 and 12,288.
+All fourteen protocol targets pass 295 cases; strict all-target/all-feature
+Clippy passes. The ABI stack group now registers six cases. Actual observed
+page geometry, concrete profiles and nominal owners remain adoption requirements;
+these syntax checks do not grant stack or Cleanup authority.
+
 #### Reserved Host Cleanup with separate actual entry
 
 An actual current Quantum can now reserve one deferred Cleanup control holder
@@ -99,7 +111,8 @@ between birth and post, and identity exhaustion. All Host resource targets
 pass (333 reported cases), as does strict all-target/all-feature Clippy.
 The first all-feature compile exposed a missing private bootstrap initializer;
 that constructor was corrected before final qualification. The ABI gate
-registers the exact eight controls. Required package checks are pending.
+registers the exact eight controls. Hygiene passes. Mandatory application,
+ABI, exact supervision and strict boundary checks are running.
 
 This is genuine local operation-record custody, not a native deferred-entry
 contract, stack loan or Module/Core authority. Actual Source ownership,
@@ -137,7 +150,8 @@ transport controls pass. Mandatory application compilation passes at
 `00r152p2sfc6v479vdnk70fgsp5p0x20`; all 5,329 committed Rust/TOML inputs match
 the frozen source (proof SHA-256
 `9130890e3c6f95f9faf5cc4c9032a78584df0bb88e01d5e368939b298e56195a`).
-Hygiene passes. ABI is running; strict boundary qualification still stops at
+Hygiene and ABI conformance pass (ABI output
+`5dbpjz6p8i70zg2qf26a9v9ml969wa4d`); strict boundary qualification stops at
 controller Clippy (909 library and 963 test errors), before boundary assertions.
 
 These are syntax and transport controls only. Unknown concrete profiles still
