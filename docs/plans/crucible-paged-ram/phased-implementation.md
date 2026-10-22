@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 467 bindings: 448 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 484 bindings: 465 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -612,6 +612,14 @@ actual versioned runtime DSO directly and passes at
 controls with the matching loader and libc. Both original failures remain
 unqualified. These results qualify the installed package component; complete
 launched-profile funding and admission remain incomplete.
+
+The actual registered QEMU bounded-thread consumer also passes against this
+same installed runtime at `m4f73yzplspdiyyvc3x1jynjrxi9hals`: eleven TAP cases,
+zero skips, with the matching installed public header, loader and libc checked.
+The real one-worker build completes in 268.828 seconds of its 600-second limit;
+the tests complete in 0.067 seconds of their 30-second limit. This covers actual
+birth, physical retirement, TSD last-use, no-birth and stale/copied identities
+for the supplied-stack component; it does not admit a full QEMU runtime profile.
 
 #### Installed bounded-pthread QEMU consumer
 
