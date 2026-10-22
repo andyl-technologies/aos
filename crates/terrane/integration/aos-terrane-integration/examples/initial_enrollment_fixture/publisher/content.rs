@@ -353,3 +353,13 @@ pub(super) async fn seed_release(
 pub(super) async fn recovered_release(store: &NativeContentStore, domain: &str) -> io::Result<()> {
     release::recovered(store, domain).await
 }
+
+/// Exercises pressure-driven public retirement alongside private lifetime release.
+pub(super) async fn recovered_pressure(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+    manifest: bool,
+) -> io::Result<()> {
+    release::recovered_pressure(store, profile, domain, manifest).await
+}

@@ -1,8 +1,8 @@
-//! Selects actual recovered private inline bodies without synthesizing producer jobs.
+//! Selects actual recovered inline bodies without synthesizing producer jobs.
 //!
 //! The original physical registry and acknowledged Running barrier supply native
 //! provenance. Durable rows protect these bodies but cannot create candidates.
-//! Private lifetime erasure does not infer their historical FIFO admission age.
+//! Recovered probation order never infers historical FIFO age or popularity.
 
 use super::{Unit, invalid, state};
 use crate::{
@@ -15,7 +15,6 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
-use terrane_format::properties::Domain;
 use terrane_sdk::host::cache::HostDomainLocation;
 
 /// Adds only original inline bodies reconciled before this owner's actual Resume.
@@ -28,13 +27,6 @@ pub(super) fn extend(
     units: &mut Vec<Unit>,
     by_inode: &mut BTreeMap<(u64, u64), usize>,
 ) -> io::Result<()> {
-    if !matches!(
-        Domain::parse(owner.preparation.config.location.domain()),
-        Ok(Domain::Private(_))
-    ) {
-        return Ok(());
-    }
-
     for body in executor.inline_registry() {
         check(executor, owner, body)?;
         let metadata = body.handle().metadata()?;
@@ -46,7 +38,7 @@ pub(super) fn extend(
             let index = units.len();
             by_inode.insert(inode, index);
             units.push(Unit {
-                order: u64::MAX,
+                order: executor.recovered_sealed_order(body.incarnation())?,
                 key: format!("{}:{}", inode.0, inode.1),
                 body: Arc::clone(body),
                 members: Vec::new(),
@@ -91,10 +83,7 @@ pub(in crate::host_cache::owner::publication::eviction) fn check(
     body: &Arc<PeerPublishedObject<HostDomainLocation>>,
 ) -> io::Result<()> {
     executor.check_physical_worker()?;
-    if !matches!(
-        Domain::parse(owner.preparation.config.location.domain()),
-        Ok(Domain::Private(_))
-    ) || !executor
+    if !executor
         .inline_registry()
         .iter()
         .any(|registered| Arc::ptr_eq(registered, body))
@@ -103,7 +92,7 @@ pub(in crate::host_cache::owner::publication::eviction) fn check(
         || body.claim().manifest().is_some()
     {
         return Err(invalid(
-            "private retirement lost original adopted inline custody",
+            "cache retirement lost original adopted inline custody",
         ));
     }
     Ok(())

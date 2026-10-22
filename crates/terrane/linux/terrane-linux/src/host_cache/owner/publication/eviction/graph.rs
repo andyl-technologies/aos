@@ -32,7 +32,7 @@ mod recovered_manifest;
 /// This inventory grants no retirement authority. Producer-funded jobs remain
 /// protected; physical transitions require the separate actual cache permit.
 pub(super) struct Unit {
-    /// Earliest live admission; recovered private units have no reconstructed FIFO age.
+    /// Original live or recovery-cohort admission, without pre-crash historical age.
     pub(super) order: u64,
     /// Process-local allocation identity, never a durable object or namespace key.
     pub(super) key: String,

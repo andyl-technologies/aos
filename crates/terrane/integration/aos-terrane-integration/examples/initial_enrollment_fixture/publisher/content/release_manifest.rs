@@ -93,6 +93,7 @@ pub(super) async fn recovered(
     store: &NativeContentStore,
     profile: &ChunkProfile,
     domain: &str,
+    public_pressure: bool,
 ) -> io::Result<()> {
     let (identity, _, plaintext, _) = material(profile)?;
     let before = super::super::metadata_policy(store).await?;
@@ -108,13 +109,13 @@ pub(super) async fn recovered(
         .map(|pin| pin.owner.clone())
         .collect::<std::collections::BTreeSet<_>>();
     assert!(purposes.len() >= 2);
-    super::recover_material(store, domain, identity, plaintext).await?;
+    super::recover_material(store, domain, identity, plaintext, public_pressure).await?;
     let after = super::super::metadata_policy(store).await?;
     for purpose in purposes {
         let token = purpose
             .strip_prefix("metadata:")
             .ok_or_else(|| io::Error::other("manifest metadata purpose changed"))?;
-        if domain.starts_with("private:") {
+        if domain.starts_with("private:") || public_pressure {
             assert!(!after.pins.iter().any(|row| row.owner == purpose));
             assert!(!after.leases.iter().any(|row| row.owner == purpose));
             assert!(!after.reservations.iter().any(|row| row.id == token));
@@ -123,8 +124,14 @@ pub(super) async fn recovered(
             assert!(after.reservations.iter().any(|row| row.id == token));
         }
     }
-    println!(
-        "PASS actual cold {domain} recovered manifest release preserves public or removes exact old and current metadata custody after original backing closure"
-    );
+    if public_pressure {
+        println!(
+            "PASS actual cold {domain} recovered manifest pressure or private release removes exact old and current metadata custody after original backing closure"
+        );
+    } else {
+        println!(
+            "PASS actual cold {domain} recovered manifest release preserves public or removes exact old and current metadata custody after original backing closure"
+        );
+    }
     Ok(())
 }

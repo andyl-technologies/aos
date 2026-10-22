@@ -472,6 +472,8 @@ in {
   integration.native-private-release = initialEnrollmentProof.privateRelease;
   integration.native-cold-private-release = initialEnrollmentProof.coldPrivateRelease;
   integration.native-cold-manifest-release = initialEnrollmentProof.coldManifestRelease;
+  integration.native-cold-public-pressure = initialEnrollmentProof.coldPublicPressure;
+  integration.native-cold-manifest-pressure = initialEnrollmentProof.coldManifestPressure;
   integration.native-sdk-cache = initialEnrollmentProof.sdk;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;

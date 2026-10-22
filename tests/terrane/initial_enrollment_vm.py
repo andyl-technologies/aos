@@ -196,7 +196,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -215,10 +215,13 @@ def configured_publication():
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
                 wipe_only=SCENARIO == "sdk-wipe")
-        elif SCENARIO in ["cold-private-release", "cold-manifest-release"]:
-            manifest = SCENARIO == "cold-manifest-release"
+        elif SCENARIO in ["cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure"]:
+            manifest = SCENARIO in ["cold-manifest-release", "cold-manifest-pressure"]
+            pressure = SCENARIO in ["cold-public-pressure", "cold-manifest-pressure"]
             seed_selector = "seed-manifest-release-public-private" if manifest else "seed-release-public-private"
             recovered_selector = "recovered-manifest-release-public-private" if manifest else "recovered-release-public-private"
+            if pressure:
+                recovered_selector = "recovered-manifest-pressure-public-private" if manifest else "recovered-pressure-public-private"
             run_case(seed_selector, role_command(seed_selector, 840, [844, 845]))
             seeded = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
             require(len(seeded) == 2 and {row[0] for row in seeded} == {"public", "private"}
@@ -226,9 +229,13 @@ def configured_publication():
                     "cold release seed lacks original sealed inodes in both domains")
             run_case(recovered_selector, role_command(recovered_selector, 840, [844, 845]))
             after = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
-            require(after == [row for row in seeded if row[0] == "public"],
-                    "cold release replaced a public inode or retained private backing")
-            print("PASS root observed cold private erasure and unchanged original public inode across independent owner recovery", flush=True)
+            if pressure:
+                require(after == [], "cold pressure retained original sealed backing")
+                print("PASS root observed original public and private cold inode removal after actual FIFO pressure and private release", flush=True)
+            else:
+                require(after == [row for row in seeded if row[0] == "public"],
+                        "cold release replaced a public inode or retained private backing")
+                print("PASS root observed cold private erasure and unchanged original public inode across independent owner recovery", flush=True)
         elif SCENARIO == "private-release":
             run_case("release-public-private", role_command("release-public-private", 840, [844, 845]))
             files = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
@@ -289,7 +296,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "sdk", "sdk-wipe", "surface"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-wipe", "surface"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix

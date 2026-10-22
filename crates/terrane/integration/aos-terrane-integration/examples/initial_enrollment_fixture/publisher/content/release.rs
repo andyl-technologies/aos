@@ -44,7 +44,24 @@ pub(super) async fn recovered_manifest(
     profile: &ChunkProfile,
     domain: &str,
 ) -> io::Result<()> {
-    manifest::recovered(store, profile, domain).await
+    manifest::recovered(store, profile, domain, false).await
+}
+
+/// Applies real quota pressure after the recovered public consumer's grace.
+pub(super) async fn recovered_pressure(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+    manifest: bool,
+) -> io::Result<()> {
+    if manifest {
+        return manifest::recovered(store, profile, domain, true).await;
+    }
+    let plaintext = vec![61; 1337];
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &plaintext)
+        .map_err(io::Error::other)?;
+    recover_material(store, domain, identity, plaintext, true).await
 }
 
 pub(super) async fn exercise(
@@ -115,6 +132,7 @@ pub(super) async fn exercise(
             plaintext,
             allocated,
         },
+        false,
     )
     .await
 }
@@ -125,7 +143,7 @@ pub(super) async fn recovered(store: &NativeContentStore, domain: &str) -> io::R
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &plaintext)
         .map_err(io::Error::other)?;
-    recover_material(store, domain, identity, plaintext).await
+    recover_material(store, domain, identity, plaintext, false).await
 }
 
 async fn recover_material(
@@ -133,6 +151,7 @@ async fn recover_material(
     domain: &str,
     identity: Identity,
     plaintext: Vec<u8>,
+    public_pressure: bool,
 ) -> io::Result<()> {
     let expires = TokioClock
         .now()
@@ -172,6 +191,7 @@ async fn recover_material(
             plaintext,
             allocated,
         },
+        public_pressure,
     )
     .await?;
     println!(
@@ -247,6 +267,7 @@ async fn release_grants(
     store: &NativeContentStore,
     domain: &str,
     retained: Retained,
+    public_pressure: bool,
 ) -> io::Result<()> {
     let Retained {
         first,
@@ -270,6 +291,9 @@ async fn release_grants(
     let protected = super::metadata_policy(store).await?;
     assert!(protected.pins.iter().any(|pin| pin.owner == second.owner()));
     assert!(first.backing().is_err());
+    if public_pressure && domain == "public" {
+        owner.evict_cached(24 * 1024 * 1024).await?;
+    }
     assert_eq!(descriptor.metadata()?.nlink(), 1);
     check_original(&descriptor, inode, &plaintext)?;
     println!(
@@ -300,6 +324,18 @@ async fn release_grants(
     } else {
         assert_eq!(descriptor.metadata()?.nlink(), 1);
     }
+    if public_pressure && domain == "public" {
+        let deadline = TokioClock.monotonic() + Duration::from_secs(8);
+        while descriptor.metadata()?.nlink() != 0 {
+            owner.evict_cached(24 * 1024 * 1024).await?;
+            if TokioClock.monotonic() >= deadline {
+                return Err(io::Error::other(
+                    "recovered public sealed inode survived actual FIFO pressure",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     check_original(&descriptor, inode, &plaintext)?;
     let retained = quota
         .query(OWNERS[index], domain)?
@@ -314,7 +350,7 @@ async fn release_grants(
     drop(second);
     owner.check_running().await?;
 
-    if domain.starts_with("private:") {
+    if domain.starts_with("private:") || public_pressure {
         let deadline = TokioClock.monotonic() + Duration::from_secs(8);
         loop {
             let actual = quota
@@ -329,14 +365,20 @@ async fn release_grants(
             }
             if TokioClock.monotonic() >= deadline {
                 return Err(io::Error::other(format!(
-                    "private sealed allocation remained charged after actual backing closure: retained={retained} actual={actual} allocated={allocated}"
+                    "retired sealed allocation remained charged after actual backing closure: retained={retained} actual={actual} allocated={allocated}"
                 )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        println!(
-            "PASS actual private sealed inode retires without pressure and original project charge falls only after retained backing closes"
-        );
+        if domain == "public" {
+            println!(
+                "PASS actual recovered public FIFO pressure preserves independent consumers and retained backing charge until original allocation closure"
+            );
+        } else {
+            println!(
+                "PASS actual private sealed inode retires without pressure and original project charge falls only after retained backing closes"
+            );
+        }
     } else {
         let actual = quota
             .query(OWNERS[index], domain)?

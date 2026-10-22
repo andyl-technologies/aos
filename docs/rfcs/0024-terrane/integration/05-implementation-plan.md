@@ -15347,3 +15347,34 @@ pin checks and all original deadlines remain unchanged. The failed receipt is
 retained; a fresh exact-source manifest pass remains required. Warm and
 cold-inline VMs at `230375f940` report actual native success; complete immutable
 reviews and application compilation remain pending. No task is accepted.
+
+
+#### Public recovery cohort joins original pressure eviction
+
+Recovered inline and verified manifest bodies now join the same actual native
+allocation graph for public and private domains. A successful original Resume
+records a bounded, process-local probation cohort from the retained recovery
+registries before subsequent live admissions. It reconstructs neither historical
+age nor pre-crash popularity. Original pointer, domain, layout, incarnation,
+metadata, inode, Running/bootstrap and physical-worker checks remain required;
+these scheduling numbers confer no native authority. Their finite storage is
+included in the owner's checked memory envelope.
+
+Two separate native scenarios apply actual FIFO pressure to independently
+recovered public inline and manifest bodies. A genuine second consumer must
+still protect the original inode under pressure. After its release grace, the
+actual native eviction API must remove the original name, preserve retained
+read-only descriptor bytes and allocation charges, and release those charges
+only after real backing closure. The private-domain control continues lifetime
+erasure without pressure. Manifest controls additionally require exact old and
+current metadata pin, lease and reservation removal. Root supervision requires
+both original sealed names to be absent. Existing no-pressure public-retention
+scenarios, actor/driver/host bounds and original enrollment controls remain.
+
+At `230375f940`, warm and cold-inline release pass in 260.768 and 263.875 seconds;
+independent reviews match all 8,073 immutable source files, 5,353 bound inputs,
+actual installed Cargo ELF and required witnesses. The isolated manifest seed
+correction `b76b94394a` is pushed and exact-source qualification is running. Public
+recovery and its new pressure scenarios require fresh native and mandatory
+application qualification; neither new scenario is an owning-gate prerequisite
+or task acceptance yet.

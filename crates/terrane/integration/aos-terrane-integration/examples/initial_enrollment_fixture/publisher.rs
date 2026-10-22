@@ -129,6 +129,14 @@ pub(super) fn recovered_manifest_release() -> io::Result<()> {
     prepare_with(Preparation::RecoveredManifestRelease)
 }
 
+pub(super) fn recovered_pressure() -> io::Result<()> {
+    prepare_with(Preparation::RecoveredPressure)
+}
+
+pub(super) fn recovered_manifest_pressure() -> io::Result<()> {
+    prepare_with(Preparation::RecoveredManifestPressure)
+}
+
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
@@ -139,6 +147,8 @@ enum Preparation {
     RecoveredRelease,
     SeedManifestRelease,
     RecoveredManifestRelease,
+    RecoveredPressure,
+    RecoveredManifestPressure,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -157,6 +167,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::RecoveredRelease
             | Preparation::SeedManifestRelease
             | Preparation::RecoveredManifestRelease
+            | Preparation::RecoveredPressure
+            | Preparation::RecoveredManifestPressure
     ) {
         1_000
     } else {
@@ -170,6 +182,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::RecoveredRelease
             | Preparation::SeedManifestRelease
             | Preparation::RecoveredManifestRelease
+            | Preparation::RecoveredPressure
+            | Preparation::RecoveredManifestPressure
     ) {
         1
     } else {
@@ -184,6 +198,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::RecoveredRelease
             | Preparation::SeedManifestRelease
             | Preparation::RecoveredManifestRelease
+            | Preparation::RecoveredPressure
+            | Preparation::RecoveredManifestPressure
     ) {
         host.reassembly = Reassembly::Always;
     }
@@ -236,6 +252,13 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             Preparation::RecoveredManifestRelease => {
                 runtime.block_on(content::recovered_manifest_release(store, &profile, domain))?
             }
+            Preparation::RecoveredPressure | Preparation::RecoveredManifestPressure => runtime
+                .block_on(content::recovered_pressure(
+                    store,
+                    &profile,
+                    domain,
+                    matches!(preparation, Preparation::RecoveredManifestPressure),
+                ))?,
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.
                 // Another cold reopen would add an unrelated recovery workload

@@ -51,6 +51,10 @@
         then "terrane-native-cold-private-release-ext4"
         else if scenario == "cold-manifest-release"
         then "terrane-native-cold-manifest-release-ext4"
+        else if scenario == "cold-public-pressure"
+        then "terrane-native-cold-public-pressure-ext4"
+        else if scenario == "cold-manifest-pressure"
+        then "terrane-native-cold-manifest-pressure-ext4"
         else if scenario == "private-release"
         then "terrane-native-private-release-ext4"
         else if scenario == "surface"
@@ -141,6 +145,8 @@ in {
   privateRelease = nativeFor "private-release";
   coldPrivateRelease = nativeFor "cold-private-release";
   coldManifestRelease = nativeFor "cold-manifest-release";
+  coldPublicPressure = nativeFor "cold-public-pressure";
+  coldManifestPressure = nativeFor "cold-manifest-pressure";
   sdk = nativeFor "sdk";
   sdkWipe = nativeFor "sdk-wipe";
   surface = nativeFor "surface";

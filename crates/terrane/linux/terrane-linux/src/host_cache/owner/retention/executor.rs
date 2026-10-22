@@ -15,6 +15,7 @@ mod cache_eviction;
 pub(crate) use cache_eviction::PublisherCacheRetirementTurn;
 mod cache_handoff;
 mod encoded_eviction;
+mod recovered_order;
 use crate::{
     host_cache::CompletedRecovery,
     publisher_local::client::{PublisherRunningContext, ResumeFailureStage},
@@ -36,6 +37,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     allocation_order: u64,
+    recovered_sealed_order: Vec<([u8; 32], u64)>,
     corruption: Mutex<super::super::corruption::Registry>,
     encoded_failures: Arc<std::sync::atomic::AtomicBool>,
     producer_reads: super::super::publication::residence::ProducerReadRegistry,
@@ -85,6 +87,7 @@ impl NativeOwnerExecutor {
             admission_jobs: Vec::new(),
             publications: Vec::new(),
             allocation_order: 0,
+            recovered_sealed_order: Vec::new(),
             corruption: Mutex::new(super::super::corruption::Registry::default()),
             encoded_failures: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             producer_reads: super::super::publication::residence::ProducerReadRegistry::default(),
@@ -759,6 +762,7 @@ impl NativeOwnerExecutor {
                     // Running custody now owns the original bootstrap. Expire
                     // only the original consumer ledger's elapsed promises before
                     // adding imported cache protection to the bounded snapshot.
+                    self.register_recovered_sealed_order()?;
                     super::super::consumer::sweep(self).await?;
                     while let Some(source) = self.recovered_metadata.last().cloned() {
                         super::super::admission::recovery::import_metadata(self, &source).await?;

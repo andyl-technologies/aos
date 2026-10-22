@@ -1,4 +1,4 @@
-//! Correlates original recovered private manifests and their exact metadata custody.
+//! Correlates original recovered manifests and their exact metadata custody.
 //!
 //! Verified registry entries supply real adopted bodies and metadata packs. Old
 //! policy groups are comparison data only; they remain protected unless their
@@ -15,9 +15,8 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::Arc,
 };
-use terrane_format::properties::Domain;
 
-/// Adds original recovered private manifests without inventing publication jobs.
+/// Adds original recovered manifests without inventing publication jobs.
 ///
 /// # Errors
 /// Refuses lost registry custody, changed metadata and conflicting body aliases.
@@ -27,12 +26,6 @@ pub(super) fn extend(
     units: &mut Vec<Unit>,
     by_inode: &mut BTreeMap<(u64, u64), usize>,
 ) -> io::Result<()> {
-    if !matches!(
-        Domain::parse(owner.preparation.config.location.domain()),
-        Ok(Domain::Private(_))
-    ) {
-        return Ok(());
-    }
     for manifest in executor.verified_manifests() {
         check(executor, owner, manifest)?;
         let retained = manifest.body().retained();
@@ -46,7 +39,7 @@ pub(super) fn extend(
             let index = units.len();
             by_inode.insert(inode, index);
             units.push(Unit {
-                order: u64::MAX,
+                order: executor.recovered_sealed_order(body.incarnation())?,
                 key: format!("{}:{}", inode.0, inode.1),
                 body: Arc::clone(&body),
                 members: Vec::new(),
@@ -116,10 +109,7 @@ pub(in crate::host_cache::owner::publication::eviction) fn check(
     executor.check_physical_worker()?;
     let retained = manifest.body().retained();
     let body = retained.body();
-    if !matches!(
-        Domain::parse(owner.preparation.config.location.domain()),
-        Ok(Domain::Private(_))
-    ) || !executor
+    if !executor
         .verified_manifests()
         .iter()
         .any(|registered| Arc::ptr_eq(registered, manifest))
@@ -130,7 +120,7 @@ pub(in crate::host_cache::owner::publication::eviction) fn check(
         || body.claim().canonical_manifest() != manifest.claim().canonical_manifest()
     {
         return Err(invalid(
-            "private retirement lost original recovered manifest custody",
+            "cache retirement lost original recovered manifest custody",
         ));
     }
     retained.backing().check_recovery_registration(owner)

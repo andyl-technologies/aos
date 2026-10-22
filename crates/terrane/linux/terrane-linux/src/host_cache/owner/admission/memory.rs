@@ -249,6 +249,10 @@ fn check_parts(
         + 32 * 128;
     add(jobs, physical)?;
 
+    // Each bounded inline and manifest recovery registry keeps one process-local
+    // incarnation/order pair until its original executor closes.
+    add(records, 2 * size_of::<([u8; 32], u64)>())?;
+
     // Owner-wide consumer read permits bound simultaneous verified plaintext
     // buffers independently of the serialized physical metadata command.
     add(queued, window)?;
