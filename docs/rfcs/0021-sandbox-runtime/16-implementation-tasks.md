@@ -9649,6 +9649,29 @@ rejected when the hardware-profile check forced that option. The canonical
 reference removes that evaluation error; core evaluation passes. Candidate
 creation and stopped-owner readback still require the installed VM receipt.
 
+The following signed Host and offline boots can query the vendor target but
+fail native host activation: creating configuration temporaries triggers an
+`unlabeled_t:filesystem associate` denial on the writable tmpfs upper. The
+native configuration-image writer had produced its additional `/etc` EROFS
+layer without file contexts. The immutable root now supplies its selected
+context database as a direct EROFS inode, independently of either overlay.
+Native preparation retains those exact bytes beside the generated image and
+includes their SHA-256 in its canonical input identity before lookup or reuse.
+EROFS receives that snapshot with the `/etc` mount prefix. Historical receipt
+validation checks its original snapshot and image rather than substituting
+another generation's policy. Legacy inputs without this image feature retain
+their original serialized identity. No unlabeled-object permission is added.
+
+All 24 configuration-image unit tests pass, including changed-policy identity,
+snapshot drift and symlink rejection, immutable-source rejection and legacy
+serialization. The source-built EROFS package passes its generated-inode xattr
+check with SELinux support enabled at
+`/nix/store/jdxzan25pcrqgg7974jlxrs7rvf047q9-erofs-utils-1.9.4`.
+Complete Rust-target and image checks remain pending for this repair. The
+superseded Host, offline, Root, lifecycle and handoff clients were interrupted
+after the installed failure was identified; they provide no qualification
+receipt for the repaired writer.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

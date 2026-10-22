@@ -338,6 +338,15 @@ in
                 chmod 0444 rootfs/usr/lib/aos/configuration-lower-effect
               ''}
               mkdir -p rootfs/nix
+              ${lib.optionalString labelImmutableRoot ''
+                # Native /etc generations read the selected contexts from a
+                # direct signed-root inode, independently of either overlay.
+                install -m 0444 \
+                  ${policyRoot}/contexts/files/file_contexts \
+                  rootfs/usr/lib/aos/selinux-file-contexts
+                cmp ${policyRoot}/contexts/files/file_contexts \
+                  rootfs/usr/lib/aos/selinux-file-contexts
+              ''}
               mkdir -p rootfs/usr/bin rootfs/usr/lib
               ln -sfn bin rootfs/usr/sbin
               ln -sfn usr/bin rootfs/bin

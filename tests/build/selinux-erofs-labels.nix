@@ -145,6 +145,7 @@ in
           assert entries[authored]["kind"] == "regular", entries[authored]
           assert entries[authored]["context"].split(":", 3)[2] == "systemd_unit_t", entries[authored]
           assert "/etc/systemd/system/aos-label-fixture.service" not in entries
+          assert entries["/usr/lib/aos/selinux-file-contexts"]["kind"] == "regular"
           for name, unit_type in (
               ("multi-user.target", "systemd_unit_t"),
               ("reboot.target", "power_unit_t"),

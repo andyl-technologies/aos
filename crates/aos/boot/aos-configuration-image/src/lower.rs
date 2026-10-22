@@ -38,6 +38,8 @@ struct Receipt {
 /// Returns an error for invalid inputs, unsafe paths, inconsistent retained
 /// state, file rendering failures, EROFS tool failures, or durability failures.
 pub fn prepare(input: &Input, effect: &str, revision: &str, tools: &Tools) -> Result<Lower> {
+    let contexts = crate::selinux::Contexts::capture(Path::new("/"))?;
+    let input = &crate::selinux::bind(input, contexts.as_ref())?;
     input.validate()?;
     validate_tool(&tools.mkfs)?;
     validate_tool(&tools.fsck)?;
@@ -85,16 +87,20 @@ pub fn prepare(input: &Input, effect: &str, revision: &str, tools: &Tools) -> Re
         normalize_tree_directory_modes(&tree)?;
         sync_tree(&tree)?;
         let image = stage.join("etc.erofs");
-        let status = Command::new(&tools.mkfs)
-            .env_clear()
-            .args([
-                "--all-root",
-                "-T0",
-                "-U",
-                "44128103-9422-4cf5-97c5-3e29752228bc",
-                "-L",
-                "aos-config",
-            ])
+        let mut command = Command::new(&tools.mkfs);
+        command.env_clear().args([
+            "--all-root",
+            "-T0",
+            "-U",
+            "44128103-9422-4cf5-97c5-3e29752228bc",
+            "-L",
+            "aos-config",
+        ]);
+        if let Some(contexts) = &contexts {
+            contexts.write(&stage)?;
+            contexts.configure_mkfs(&mut command, &stage);
+        }
+        let status = command
             .arg(&image)
             .arg(&tree)
             .stdout(diagnostic_stdout()?)
@@ -252,6 +258,8 @@ pub fn observe(
     revision: &str,
     tools: &Tools,
 ) -> Result<Option<Lower>> {
+    let contexts = crate::selinux::Contexts::capture(Path::new("/"))?;
+    let input = &crate::selinux::bind(input, contexts.as_ref())?;
     input.validate()?;
     let input_sha256 = digest(&serde_json::to_value(input)?)?;
     let key = Sha256Digest::of_canonical(
@@ -298,6 +306,7 @@ pub fn validate_beneath(lower: &Lower, effect: &str, tools: &Tools, root: &Path)
             .context("lower directory is not absolute")?,
     );
     let receipt = read_receipt(&directory, effect)?;
+    crate::selinux::verify_snapshot(&receipt.input, &directory)?;
     ensure!(
         receipt.lower == *lower,
         "retained lower receipt differs from checked native result"
