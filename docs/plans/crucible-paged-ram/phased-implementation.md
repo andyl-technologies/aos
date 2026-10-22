@@ -266,7 +266,7 @@ control because its extracted pending-constructor closure omitted the actual
 reached. The original compiler failure remains retained; a later source stage
 adds the genuine dependency and emits captured compiler diagnostics. Its direct
 positive and all 25 exact omission controls pass, without changing assertions.
-A new complete packaged Native result remains pending. The strict
+The subsequent complete packaged Native rerun is recorded below. The strict
 license-boundary attempt fails during host Clippy compilation with 908 errors;
 the boundary gate therefore remains unqualified. The earlier full-package six-failure result is retained;
 direct fixture repairs do not establish a new full-package pass. The substantive
@@ -297,9 +297,18 @@ in 16.698 seconds, and stack-bank positive and 19 intended omissions in
 180-second compile, 30-second run, CORE zero and six-GiB process and sampled
 process-tree limits. Another 120 source extractions pass in 9.594 seconds
 without compilation. The focused checks use authenticated recovered configured
-inputs and no support archive. The 37-fixture source inventory is an audit;
-a fresh complete Native runtime pass remains required. Canonical atomic
-reconstruction and the unchanged 433-file license ledger pass.
+inputs and no support archive. The 37-fixture source inventory alone is an audit.
+The fresh complete packaged Native check now passes all 37 real-body components,
+including the formerly failing constructor and the RR-parent and stack-bank
+components. The genuine Source unit suite also passes all 187 tests. All
+components return zero within the original 180-second and six-GiB aggregate
+limits; the slowest takes 71.234 seconds and their cumulative runtime is
+712.625 seconds. The independent result review is
+`addba3d24f60c135bd4c78431628d4fad02cc9971f31cd5e6bc05311b8aa994b`.
+This qualification covers standalone real-body components; it does not establish
+launched Source authority or a full QEMU-package pass. Canonical atomic
+reconstruction, engineering hygiene, core evaluation and the unchanged 433-file
+license ledger pass.
 
 #### Installed bounded-pthread QEMU consumer
 
