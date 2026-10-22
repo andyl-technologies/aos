@@ -51,6 +51,8 @@ pub(in crate::reference_packet::service) use bootstrap_import18::{
     hello_initial_admission_retained_backing_data as original_import18_hello_initial_admission_retained_backing_data,
     hello_literal_construction_data as original_import18_hello_literal_construction_data,
     hello_literal_counter_scratch_data as original_import18_hello_literal_counter_scratch_data,
+    hello_publication_construction_data as original_import18_hello_publication_construction_data,
+    hello_publication_counter_scratch_data as original_import18_hello_publication_counter_scratch_data,
     hello_registrar_construction_data as original_import18_hello_registrar_construction_data,
     hello_registrar_counter_scratch_data as original_import18_hello_registrar_counter_scratch_data,
     hello_request_construction_bound_data as original_import18_hello_request_construction_bound_data,

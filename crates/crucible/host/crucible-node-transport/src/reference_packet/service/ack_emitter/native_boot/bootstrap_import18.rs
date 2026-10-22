@@ -99,6 +99,13 @@ pub(in crate::reference_packet::service) use hello_admission::{
     counter_scratch_data as hello_admission_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_publication.rs"]
+mod hello_publication;
+pub(in crate::reference_packet::service) use hello_publication::{
+    construction_data as hello_publication_construction_data,
+    counter_scratch_data as hello_publication_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_response.rs"]
 mod hello_response;
 pub(in crate::reference_packet::service) use hello_response::{
@@ -211,6 +218,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     hello_envelope: hello_envelope::Attempt,
     hello_response: hello_response::Attempt,
     hello_admission: hello_admission::Attempt,
+    hello_publication: hello_publication::Attempt,
     hello_literal: Option<crate::native_hello::OriginalNativeHelloLiteral>,
     hello_literal_row: Option<[usize; 3]>,
     hello_literal_started: bool,
@@ -280,6 +288,7 @@ impl OriginalImport18RawBootstrap {
             hello_envelope: hello_envelope::Attempt::empty_data(),
             hello_response: hello_response::Attempt::empty_data(),
             hello_admission: hello_admission::Attempt::empty_data(),
+            hello_publication: hello_publication::Attempt::empty_data(),
             hello_literal: None,
             hello_literal_row: None,
             hello_literal_started: false,
@@ -416,8 +425,10 @@ impl OriginalImport18RawBootstrap {
         let hello_result_backing = self.hello_result.retained_backing_data()?;
         let hello_envelope_backing = self.hello_envelope.retained_backing_data()?;
         let hello_response_backing = self.hello_response.retained_backing_data()?;
+        let hello_publication_backing = self.hello_publication_backing_data()?;
         retained
-            .checked_add(hello_response_backing)
+            .checked_add(hello_publication_backing)
+            .and_then(|n| n.checked_add(hello_response_backing))
             .and_then(|n| n.checked_add(hello_envelope_backing))
             .and_then(|n| n.checked_add(hello_result_backing))
             .and_then(|n| n.checked_add(hello_sdk_request_backing))
@@ -496,6 +507,7 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<hello_envelope::Attempt>()
         + size_of::<hello_response::Attempt>()
         + size_of::<hello_admission::Attempt>()
+        + size_of::<hello_publication::Attempt>()
         + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + channel_custody::counter_scratch_data()

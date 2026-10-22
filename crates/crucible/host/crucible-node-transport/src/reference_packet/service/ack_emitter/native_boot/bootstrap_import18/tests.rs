@@ -93,6 +93,7 @@ fn child(case: &str, wire: &[u8]) {
         || case.starts_with("initial_hello_response_")
         || case.starts_with("initial_hello_verifier_")
         || case.starts_with("initial_hello_admission_")
+        || case.starts_with("initial_hello_publication_")
     {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
@@ -111,6 +112,7 @@ fn child(case: &str, wire: &[u8]) {
             || case.starts_with("initial_hello_response_")
             || case.starts_with("initial_hello_verifier_")
             || case.starts_with("initial_hello_admission_")
+            || case.starts_with("initial_hello_publication_")
         {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
@@ -146,6 +148,13 @@ fn child(case: &str, wire: &[u8]) {
             peer.write_all(b"unconsumed public Hello DATA").unwrap();
         }
     }
+    if case == "initial_hello_publication_broken_pipe" {
+        public_peer
+            .as_ref()
+            .unwrap()
+            .shutdown(Shutdown::Read)
+            .unwrap();
+    }
     parent.write_all(wire).unwrap();
     if case != "open_writer" {
         parent.shutdown(Shutdown::Write).unwrap();
@@ -163,7 +172,9 @@ fn child(case: &str, wire: &[u8]) {
         "{}",
         String::from_utf8_lossy(&diagnostics)
     );
-    if public_peer.is_some() {
+    if case.starts_with("initial_hello_publication_") {
+        initial_reconstruction::assert_hello_publication_bytes(case, &diagnostics);
+    } else if public_peer.is_some() {
         assert!(
             diagnostics.is_empty(),
             "public birth constructor wrote bytes"
@@ -209,6 +220,7 @@ fn inherited_raw_bootstrap_child() {
         || case.starts_with("initial_hello_response_")
         || case.starts_with("initial_hello_verifier_")
         || case.starts_with("initial_hello_admission_")
+        || case.starts_with("initial_hello_publication_")
     {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }

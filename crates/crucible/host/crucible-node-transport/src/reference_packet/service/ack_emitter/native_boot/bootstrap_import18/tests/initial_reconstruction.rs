@@ -37,6 +37,12 @@ mod hello_registrar;
 #[path = "initial_reconstruction/hello_sdk_request.rs"]
 mod hello_sdk_request;
 
+#[path = "initial_reconstruction/hello_publication.rs"]
+mod hello_publication;
+pub(super) fn assert_hello_publication_bytes(case: &str, bytes: &[u8]) {
+    hello_publication::assert_parent_bytes(case, bytes);
+}
+
 #[path = "initial_reconstruction/hello_admission.rs"]
 mod hello_admission;
 #[path = "initial_reconstruction/hello_envelope.rs"]
@@ -135,6 +141,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_response_reactive"
             | "initial_hello_verifier_reactive"
             | "initial_hello_admission_reactive"
+            | "initial_hello_publication_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -146,11 +153,17 @@ fn operands(case: &str) -> [Value; 3] {
         || case.starts_with("initial_hello_response_")
         || case.starts_with("initial_hello_verifier_")
         || case.starts_with("initial_hello_admission_")
+        || case.starts_with("initial_hello_publication_")
     {
         hello_registrar::prepare_selected(case, &mut selected);
     }
-    if case.starts_with("initial_hello_admission_") {
+    if case.starts_with("initial_hello_admission_")
+        || case.starts_with("initial_hello_publication_")
+    {
         hello_admission::prepare_selected(case, &mut selected);
+    }
+    if case.starts_with("initial_hello_publication_") {
+        hello_publication::prepare_selected(case, &mut selected);
     }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
@@ -407,6 +420,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_publication_") {
+        hello_publication::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_admission_") {

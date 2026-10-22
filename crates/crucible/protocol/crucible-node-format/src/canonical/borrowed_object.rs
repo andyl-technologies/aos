@@ -56,7 +56,7 @@ fn write_object_fields<'a>(
     depth: usize,
 ) -> Result<(), ContractError> {
     if depth >= 64 {
-        return Err(invalid("json_depth", "nesting exceeds 64 containers"));
+        return Err(invalid("json_depth", CANONICAL_DEPTH_REASON));
     }
     let ordered: BTreeMap<Vec<u16>, (&str, &Value)> = fields
         .map(|(key, value)| (key.encode_utf16().collect(), (key, value)))

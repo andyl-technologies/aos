@@ -14,6 +14,25 @@ use crate::{
     values::validate_domain,
 };
 
+const CANONICAL_DEPTH_REASON: &str = "nesting exceeds 64 containers";
+const CANONICAL_ARRAY_REASON: &str = "exceeds 65536 elements";
+const CANONICAL_NUMBER_REASON: &str = "not a finite JCS number";
+
+/// Bounds owned Invalid reason text emitted by the authoritative JCS writer.
+///
+/// This prices String backing only. Caller output, canonical work and transient
+/// serde JSON error ownership remain independent constructor terms.
+pub const CANONICAL_JSON_INVALID_REASON_BYTES_DATA: usize = {
+    let mut maximum = CANONICAL_DEPTH_REASON.len();
+    if CANONICAL_ARRAY_REASON.len() > maximum {
+        maximum = CANONICAL_ARRAY_REASON.len();
+    }
+    if CANONICAL_NUMBER_REASON.len() > maximum {
+        maximum = CANONICAL_NUMBER_REASON.len();
+    }
+    maximum
+};
+
 /// Decodes strict JSON with a byte ceiling and bounded nested arrays.
 ///
 /// # Errors
@@ -122,7 +141,7 @@ fn write_canonical(
             let number = number
                 .as_f64()
                 .filter(|value| value.is_finite())
-                .ok_or_else(|| invalid("number", "not a finite JCS number"))?;
+                .ok_or_else(|| invalid("number", CANONICAL_NUMBER_REASON))?;
             let mut buffer = ryu_js::Buffer::new();
             output
                 .write_all(buffer.format(number).as_bytes())
@@ -130,10 +149,10 @@ fn write_canonical(
         }
         Value::Array(values) => {
             if depth >= 64 {
-                return Err(invalid("json_depth", "nesting exceeds 64 containers"));
+                return Err(invalid("json_depth", CANONICAL_DEPTH_REASON));
             }
             if values.len() > MAX_ARRAY_ELEMENTS {
-                return Err(invalid("array", "exceeds 65536 elements"));
+                return Err(invalid("array", CANONICAL_ARRAY_REASON));
             }
             output.write_all(b"[").map_err(serde_json::Error::io)?;
             for (index, value) in values.iter().enumerate() {

@@ -111,6 +111,46 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
         terminal
     }
 
+    /// Publishes the same prepared proposal without moving the owning exchange.
+    ///
+    /// The enclosing source independently admits the complete response effect.
+    /// Original byte progress and failure remain in the publication and journal.
+    ///
+    /// # Errors
+    /// Refuses incomplete binding, stale creator, publication or terminal custody.
+    pub(crate) fn publish_literal_response_data(
+        &mut self,
+        literal: &OriginalNativeHelloLiteral,
+        body: &[u8],
+        publication: &mut OriginalNativeHelloPublication,
+        cut: crate::operational_time::OperationalDeadline,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        if !self.complete {
+            return Err(refused());
+        }
+        let exchange = self.exchange.as_mut().ok_or_else(refused)?;
+        exchange.journal.owner.ensure_current()?;
+        let outcome = exchange.publish_literal_response_data(literal, body, publication, cut);
+        let terminal = self
+            .owner
+            .ensure_current()
+            .and_then(|()| exchange.journal.owner.ensure_current());
+        outcome?;
+        terminal
+    }
+
+    /// Names the concrete wrapper controls beside the actual byte publisher.
+    pub(crate) fn publication_counter_scratch_data() -> usize {
+        Self::counter_scratch_data()
+            + size_of::<&mut Self>()
+            + size_of::<&OriginalNativeHelloLiteral>()
+            + size_of::<&[u8]>()
+            + size_of::<&mut OriginalNativeHelloPublication>()
+            + size_of::<crate::operational_time::OperationalDeadline>()
+            + size_of::<Result<(), ProviderError>>() * 3
+    }
+
     /// Counts actual binding backing beside the original reservation's own census.
     ///
     /// `stream_backing` counts the surviving actual stream's child allocations.

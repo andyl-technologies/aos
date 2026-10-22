@@ -131,6 +131,19 @@ impl OriginalImport18HelloAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_publication(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_response::construct_for_verifier(owner);
+    let admission = Admission {
+        case: "initial_hello_admission_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        registrar_before: owner.hello_registrar.retained_backing_data().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.admit_hello_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case == "initial_hello_admission_unchecked_response" {
         super::hello_envelope::construct_for_response(owner);

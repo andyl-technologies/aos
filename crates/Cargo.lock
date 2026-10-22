@@ -2984,6 +2984,7 @@ dependencies = [
  "blake3",
  "crucible-node-format",
  "crucible-source-birth-data",
+ "libc",
  "rustix 1.1.4",
  "serde",
  "serde_json",

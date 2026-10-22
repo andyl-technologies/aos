@@ -36,6 +36,10 @@ pub(crate) use literal_publication::OriginalNativeHelloPublication;
 
 #[path = "native_hello/canonical_response.rs"]
 mod canonical_response;
+pub(crate) use canonical_response::{
+    counter_scratch_data as canonical_hello_response_counter_scratch_data,
+    write_response_data as write_canonical_hello_response_data,
+};
 
 const MAXIMUM_HELLO_BYTES: usize = 1024 * 1024;
 

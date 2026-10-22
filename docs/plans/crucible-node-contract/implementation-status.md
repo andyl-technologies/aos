@@ -2234,6 +2234,40 @@ original-root publication/containment transition and
 genuine enclosing Source/Birth funding remain to be connected. This codec grants
 no SDK, Source, policy, Initial/Recipe, ACK or native readiness.
 
+## Original-root admitted Hello publication
+
+The original bootstrap now installs its concrete encoding/publication attempt
+before private receipt. Separate admissions cover the complete pure quote,
+construction/publication and surviving census. Encoding borrows the original
+thirteen-field response into one bounded retained byte bank. The existing SDK
+lease and all original input/response/socket owners stay in place. An actual
+frame overflow refuses before the journal or public socket is written.
+
+The same retained exchange publishes the complete proposal through the original
+literal and journal. Full original SDK/input guards precede the first byte and
+follow publication and the terminal census callback. Terminal refusal contains
+the actual lease while preserving partial bytes, diagnostics, the journal edge
+and physical write progress. Guarded Copy-only inspection lends the completed
+body without moving any owner. Retry cannot re-enter admission or publish again.
+
+Both independent Source Initial formulas include the complete publication row.
+It covers future complete Envelope shape, bounded output, canonical ordering,
+serializer/error work, retained diagnostics and concrete Unix write controls.
+The timeout/send operands use the defining libc ABI types; no extra descriptor
+or deadline owner is constructed. Whole-bootstrap census includes initialized
+publication backing even before binding or after failure. Existing Source caps
+remain unchanged.
+
+All seventeen inherited-socket publication controls pass, including both
+program families, pre-effect admission refusal/expiry, terminal refusal/expiry,
+actual broken pipe, response frame overflow and guarded body loans. The complete
+Format suite passes 67 tests with one existing ignore. The standard Transport
+library passes 1,923 tests with sixteen existing ignores and no filtering.
+Remaining qualification is in progress. Its test admissions remain model controls: they do not create genuine Source/Birth credit or publication
+permission. The genuine enclosing producer, model-absent Native18 policy,
+bootstrap ACK, opaque Initial/Recipe, restoration and full RFC acceptance remain
+unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

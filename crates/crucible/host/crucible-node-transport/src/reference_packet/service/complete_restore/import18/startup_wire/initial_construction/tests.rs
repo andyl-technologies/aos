@@ -150,6 +150,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 envelope: [0; 3],
                 response: [0; 3],
                 admission: [0; 3],
+                publication: [0; 3],
             },
             usize::MAX
         )
@@ -173,6 +174,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 envelope: [0; 3],
                 response: [0; 3],
                 admission: [0; 3],
+                publication: [0; 3],
             },
             usize::MAX
         )
@@ -196,6 +198,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 envelope: [0; 3],
                 response: [0; 3],
                 admission: [0; 3],
+                publication: [0; 3],
             },
             1
         )
@@ -219,6 +222,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 envelope: [0; 3],
                 response: [0; 3],
                 admission: [0; 3],
+                publication: [0; 3],
             },
             usize::MAX
         )
@@ -242,6 +246,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 envelope: [0; 3],
                 response: [0; 3],
                 admission: [0; 3],
+                publication: [0; 3],
             },
             usize::MAX
         )

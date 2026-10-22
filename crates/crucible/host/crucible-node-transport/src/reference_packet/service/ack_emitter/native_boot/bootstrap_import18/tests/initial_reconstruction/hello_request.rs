@@ -34,21 +34,24 @@ pub(super) fn body_data(case: &str) -> Vec<u8> {
         | "initial_hello_result_unsorted_versions"
         | "initial_hello_envelope_unsorted_versions"
         | "initial_hello_response_unsorted_versions"
-        | "initial_hello_admission_unsorted_versions" => {
+        | "initial_hello_admission_unsorted_versions"
+        | "initial_hello_publication_unsorted_versions" => {
             value["body"]["versions"] = json!(["CNP/2", "CNP/1"]);
         }
         "initial_hello_sdk_request_optional_feature"
         | "initial_hello_result_optional_feature"
         | "initial_hello_envelope_optional_feature"
         | "initial_hello_response_optional_feature"
-        | "initial_hello_admission_optional_feature" => {
+        | "initial_hello_admission_optional_feature"
+        | "initial_hello_publication_optional_feature" => {
             value["body"]["optional_features"] = json!(["vendor.unselected/1"]);
         }
         "initial_hello_sdk_request_larger_limits"
         | "initial_hello_result_larger_limits"
         | "initial_hello_envelope_larger_limits"
         | "initial_hello_response_larger_limits"
-        | "initial_hello_admission_larger_limits" => {
+        | "initial_hello_admission_larger_limits"
+        | "initial_hello_publication_larger_limits" => {
             value["body"]["limits"]["requests"] =
                 json!((launch.limits.requests.get() * 2).to_string());
         }

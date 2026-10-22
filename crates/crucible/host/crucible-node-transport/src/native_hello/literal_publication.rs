@@ -45,6 +45,18 @@ impl OriginalNativeHelloPublication {
         }
     }
 
+    /// Counts the empty pre-exchange destination without assuming a journal alias.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or a publication that already started/bound a bank.
+    pub(crate) fn retained_backing_before_exchange_data(&self) -> Result<usize, ProviderError> {
+        self.owner.ensure_current()?;
+        if self.started || self.bank.is_some() || self.failure.is_some() {
+            return Err(refused());
+        }
+        Ok(0)
+    }
+
     /// Counts retained failure backing beside the separately charged journal.
     ///
     /// # Errors

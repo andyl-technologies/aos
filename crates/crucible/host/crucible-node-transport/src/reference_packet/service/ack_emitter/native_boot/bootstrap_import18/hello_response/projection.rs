@@ -121,6 +121,96 @@ pub(super) fn completed_data(
     finish_data(out, maximum)
 }
 
+/// Projects the complete future outer Envelope without reconstructing a response.
+///
+/// # Errors
+/// Refuses original declarations, geometry, overflow or the independent peak.
+pub(in super::super) fn response_frame_data(
+    launch: &PacketNative5SourceLaunch,
+    maximum: usize,
+) -> Result<Shape, ProviderError> {
+    use crate::envelope::Envelope;
+    use crucible_node_format::{MAX_ID_BYTES, U64};
+    const FIELDS: [&str; 13] = [
+        "protocol",
+        "message",
+        "session_id",
+        "incarnation_id",
+        "node_id",
+        "execution_owner_id",
+        "capture_owner_id",
+        "request_id",
+        "operation_id",
+        "sequence",
+        "method",
+        "body",
+        "extensions",
+    ];
+    let _: fn(&Envelope) = |value| {
+        let Envelope {
+            protocol: _,
+            message: _,
+            session_id: _,
+            incarnation_id: _,
+            node_id: _,
+            execution_owner_id: _,
+            capture_owner_id: _,
+            request_id: _,
+            operation_id: _,
+            sequence: _,
+            method: _,
+            body: _,
+            extensions: _,
+        } = value;
+    };
+    let [binding] = launch.selection.realization.bindings.as_slice() else {
+        return Err(refused());
+    };
+    let mut out = Projection::new(maximum)?;
+    out.add_object()?;
+    for field in FIELDS {
+        out.add_field(field)?;
+    }
+    out.add_string("CNP/1")?;
+    out.add_string("response")?;
+    for _ in 0..5 {
+        out.add_value(&Option::<bool>::None)?;
+    }
+    out.add_value(&binding.authority.incarnation_id)?;
+    out.add_unescaped_ascii_extent(MAX_ID_BYTES)?;
+    out.add_value(&U64::new(1))?;
+    out.add_string("hello")?;
+
+    out.add_object()?;
+    out.add_field("status")?;
+    out.add_string("completed")?;
+    out.add_field("operation_state")?;
+    out.add_string("completed")?;
+    out.add_field("result")?;
+    add_result_data(&mut out, launch)?;
+    out.add_field("extensions")?;
+    out.add_object()?;
+
+    out.add_object()?;
+    out.add_field(crate::handshake::EXTENSION_NEGOTIATION_V1)?;
+    out.add_object()?;
+    out.add_field("format")?;
+    out.add_string("1")?;
+    out.add_field("selected")?;
+    out.add_array_extent(0)?;
+    finish_data(out, maximum)
+}
+
+/// Names complete outer-field projection controls beside the existing result DAG.
+pub(in super::super) fn response_frame_counter_scratch_data() -> usize {
+    counter_scratch_data()
+        + size_of::<[&str; 13]>()
+        + size_of::<std::array::IntoIter<&'static str, 13>>()
+        + size_of::<std::ops::Range<usize>>()
+        + size_of::<crucible_node_format::U64>()
+        + size_of::<Option<bool>>()
+}
+
 fn add_result_data(
     out: &mut Projection,
     launch: &PacketNative5SourceLaunch,

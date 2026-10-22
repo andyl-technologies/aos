@@ -22,6 +22,10 @@ pub(super) use serialize_controls::{
 #[path = "hello_response/storage.rs"]
 mod storage;
 pub(super) use attempt::Attempt;
+pub(super) use projection::{
+    response_frame_counter_scratch_data as response_frame_projection_counter_scratch_data,
+    response_frame_data as response_frame_projection_data,
+};
 
 /// Separately admits quote, actual typed construction and surviving ownership.
 pub(in super::super) trait OriginalImport18HelloResponseAdmission {
