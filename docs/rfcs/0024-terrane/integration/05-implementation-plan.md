@@ -15635,3 +15635,23 @@ The corrected SDK fixture passes strict target Clippy, integration-binary
 compilation and Rust formatting. All 2,646 Nix formatting checks and
 `git diff --check` pass. These checks do not execute repository fixtures on
 the host; corrected runtime qualification remains pending.
+
+#### Native enrollment lifetime expectation corrected from measured inode evidence
+
+The diagnostic-only `ac2b218ccd` VM fails in 287.142 seconds under the original
+assertion. Its root observation reports no added or changed inode and exactly
+one removal: the original zero-length private sealed body. Both chunked-object
+actors and native-root checks pass, while the public inode remains unchanged.
+This is the private recovered-inline retirement introduced earlier, not sealed
+output created or overwritten by never-mode chunked reads. The failing result
+and full inode delta remain retained.
+
+The enrollment supervisor now requires exactly that original private inode's
+removal and preserves every other before-snapshot row byte-for-byte. It still
+refuses any new sealed output, replacements, metadata changes, public removal,
+or retained private inline body. Before recovery, it binds each original inline
+inode's digest to actual persisted pins and matching lease deadlines, requires
+publication release grace and rejects unknown or unreleased promises. It waits
+for those original deadlines as well as consumer grace within the unchanged
+30-second grace and 240-second guest limits. A fresh VM must qualify this
+corrected lifecycle expectation; no runtime pass is inferred from preparation.

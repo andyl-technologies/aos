@@ -159,7 +159,7 @@ def broker_ready(process):
     return output
 
 
-def wait_released_consumer_grace():
+def wait_released_consumer_grace(inline_files):
     """Allows original durable deadlines to elapse before reusing the bounded owner."""
     deadlines = []
     for domain in ["public", "private"]:
@@ -169,8 +169,26 @@ def wait_released_consumer_grace():
                     if row["owner"].startswith("consumer-grace:")]
         require(released, "preceding native reads retained no consumer release grace")
         deadlines.extend(released)
+
+        inline = [row for row in inline_files if row[0] == domain]
+        require(len(inline) == 1 and inline[0][5] == 0,
+                "release wait lacks the original empty inline inode")
+        body_hash = pathlib.Path(inline[0][1]).name
+        body_pins = [row for row in state["pins"] if row["hash"] == body_hash]
+        leases = {row["owner"]: row["expires"] for row in state["leases"]}
+        require(body_pins and any(row["owner"].startswith("publication-grace:")
+                                 for row in body_pins),
+                "original inline body lacks durable publication release grace")
+        require(all(row["owner"].startswith(("publication-grace:", "consumer-grace:"))
+                    and leases.get(row["owner"]) == row["expires"] for row in body_pins),
+                "original inline body has an unmatched or unreleased promise")
+        deadlines.extend(row["expires"] for row in body_pins)
+        (ROOT / ("proof-logs/inline-release-grace-" + domain + ".json")).write_text(
+            json.dumps({"inode": inline[0], "pins": body_pins,
+                        "leases": {row["owner"]: leases[row["owner"]] for row in body_pins}},
+                       indent=2) + "\n")
     latest = max(deadlines)
-    require(latest <= time.time() + 31, "consumer grace exceeds configured 30-second bound")
+    require(latest <= time.time() + 31, "release grace exceeds configured 30-second bound")
 
     # Earlier cases retain independent grace promises in this 64-record owner.
     # The native owner must expire its cold grants before another complete object
@@ -179,6 +197,7 @@ def wait_released_consumer_grace():
         require(time.monotonic() < DEADLINE, "fixture deadline while waiting for release grace")
         time.sleep(min(0.25, max(0.01, latest - time.time())))
     print("PASS original consumer release grace elapsed before bounded native object reopening", flush=True)
+    print("PASS original inline inode publication and consumer promises expired before native recovery", flush=True)
 
 
 
@@ -276,7 +295,7 @@ def configured_publication():
                     and all((row[4] & 0o170000) == 0o100000 and row[5] == 0 for row in new_files),
                     "inline sealing lacks exactly one actual empty sealed inode per domain")
             print("PASS root observed actual distinct empty sealed inodes in both native domains", flush=True)
-            wait_released_consumer_grace()
+            wait_released_consumer_grace(new_files)
             # The consumer cannot inspect this publisher-only namespace. Root observes
             # the original sealed inodes around the complete unprivileged operation.
             sealed_before = sealed_snapshot()
@@ -296,9 +315,15 @@ def configured_publication():
                                 if key in current and current[key] != row],
                 }
                 print("SEALED_CHUNKED_TRANSITION " + json.dumps(changes, sort_keys=True), flush=True)
-            require(sealed_after == sealed_before,
-                    "chunked object reads changed the original sealed namespace")
-            print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
+            private_inline = [row for row in new_files if row[0] == "private"]
+            require(len(private_inline) == 1 and private_inline[0] in sealed_before,
+                    "original private inline inode disappeared before recovery")
+            expected = [row for row in sealed_before if row != private_inline[0]]
+            # Recovery must erase the released private inline body. Never-mode
+            # chunked reads still cannot create, replace or modify sealed output.
+            require(sealed_after == expected,
+                    "chunked reads changed sealed custody beyond exact private inline retirement")
+            print("PASS root observed exact private inline retirement and unchanged remaining sealed inodes across native chunked object reads", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)
