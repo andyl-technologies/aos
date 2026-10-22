@@ -10767,3 +10767,22 @@ method-46 helper's former execute denial is replaced by these reexec cuts; it
 could not map its own text under that denial. Shell preparer/tool entry rules,
 foreign process edges, mount transition permissions, credentials and caps are
 unchanged. Installed qualification remains pending for each affected role.
+
+
+### Offline selected limit inheritance (installed execution pending)
+
+The same exact-image audit denies init_t to aos_nix_offline_prepare_t rlimitinh.
+Linux 7.2's credential-commit hook then resets soft limits to the lower of the
+inherited hard limit and init_task's default soft limit. NOFILE becomes 1024,
+whereas hardware startup independently requires both actual limits to be 4096.
+Only that existing PID1-to-preparer edge now retains the selected limits; no
+unit limit, hard-bound authority, capability or process entry is increased.
+The effective checker requires this inheritance and rejects it from foreign
+roles. The fixed-service fixture's 128-FD bound does not need this exception.
+
+The preceding fixed-ELF mapping source passes all 151 checker tests. Its full
+compiled-policy and installed Root/hardware runs remain pending. The audit also
+shows inherited init_t journal sockets being replaced by Linux's unauthorized-FD
+flush because their file mode requests both read and write; the generic socket
+read denial remains intact. Public output delivery still needs an independently
+confined solution and actual candidate-export qualification.

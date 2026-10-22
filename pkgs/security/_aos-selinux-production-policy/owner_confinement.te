@@ -32,7 +32,7 @@ require {
     class dbus send_msg;
     class service { status start stop reload enable disable };
     class system { status start stop reload reboot halt };
-    class process { fork getattr getsched setrlimit sigchld sigkill signal dyntransition setsockcreate };
+    class process { fork getattr getsched rlimitinh setrlimit sigchld sigkill signal dyntransition setsockcreate };
     class tcp_socket { accept bind create getattr getopt listen name_bind name_connect node_bind read recvfrom setopt shutdown write };
     class netif { egress ingress };
     class node { recvfrom sendto };
@@ -55,7 +55,9 @@ type aos_nix_offline_prepare_credential_t;
 type aos_nix_offline_prepare_state_t;
 
 allow init_t aos_nix_offline_prepare_exec_t:file { execute execute_no_trans getattr map open read };
-allow init_t aos_nix_offline_prepare_t:process transition;
+# Preserve the selected hard and soft bounds. Otherwise Linux substitutes
+# init_task soft limits, including NOFILE=1024 instead of the hardware 4096.
+allow init_t aos_nix_offline_prepare_t:process { rlimitinh transition };
 # The immutable /nix overlay remains nosuid. Linux checks both restrictions
 # for this explicit, fixed-label service transition; set-ID bits stay disabled.
 allow init_t aos_nix_offline_prepare_t:process2 { nnp_transition nosuid_transition };

@@ -455,6 +455,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     ))
     positive.extend((
         Access("init_t", OFFLINE_PREPARE, "process", "transition"),
+        Access("init_t", OFFLINE_PREPARE, "process", "rlimitinh"),
         Access("init_t", OFFLINE_PREPARE, "process2", "nnp_transition"),
         Access("init_t", OFFLINE_PREPARE, "process2", "nosuid_transition"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
@@ -542,6 +543,10 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         for target, parent in ((OFFLINE_PREPARE, "init_t"), (OFFLINE_HELPER, OFFLINE_PREPARE)):
             if source != parent:
                 negative.extend(accesses(source, target, "process2", ("nnp_transition", "nosuid_transition")))
+
+    for source in all_roles:
+        if source != "init_t":
+            negative.append(Access(source, OFFLINE_PREPARE, "process", "rlimitinh"))
 
     # The sole measured offline entry, not an additional normal owner or
     # hierarchy service. Only the retained parent can enter or nominate loans.
