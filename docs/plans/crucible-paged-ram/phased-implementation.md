@@ -69,6 +69,23 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Isolated patched-libc build support
+
+The shared hermetic libc builder now applies an ordered list of explicit source
+patches before configuration and retains every patch beside the upstream source
+in its corresponding-source evidence. The current libc tier accepts a separate
+derivation name and defaults to its unchanged production name and empty patch
+list. This permits a matching specialized loader/header/runtime build without
+replacing the production toolchain.
+
+Independent before/after evaluation confirms the production libc and compiler
+output identities are unchanged. Focused evaluation checks patch order, retained
+patch evidence and distinct variant identity; formatting and diff checks pass.
+Core evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`.
+This infrastructure does not yet import or qualify the bounded pthread provider,
+change QEMU's loader, or admit a selected stack profile. The actual provider's
+release reentry correction and immutable source handoff remain separate work.
+
 #### Physical stack/member and genuine fixture-provider composition
 
 The signed atomic patch selects `d1c072e9848e2c06f8d25272e1ae063b65deca61`,
