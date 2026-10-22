@@ -367,57 +367,81 @@ in rec {
       "@python@" = "python";
       "@rustc@" = "rust-compiler";
     };
+    # Assemble the adapter's intermediate tree without recursively validating
+    # each constructor. The packageProbe boundary below validates the complete
+    # tree; public fragment/template/step constructors retain their own checks.
     fragmentFor = value:
       if builtins.isList value
       then fragmentFor (builtins.head value)
       else if builtins.hasAttr value harnesses
-      then harness harnesses.${value}
+      then {
+        kind = "harness";
+        tool = harnesses.${value};
+      }
       else if value == "@out@"
-      then artifactRoot {}
+      then {
+        kind = "artifact-root";
+        artifact = packageOutput {};
+      }
       else let
         namedOutput = builtins.match "@output:([A-Za-z0-9._+-]+)@/(.+)" value;
         outputPath = builtins.match "@out@/(.+)" value;
         work = builtins.match "@work@/(.+)" value;
       in
         if namedOutput != null
-        then
-          artifactPath {
-            artifact = packageOutput {output = builtins.elemAt namedOutput 0;};
-            path = builtins.elemAt namedOutput 1;
-          }
+        then {
+          kind = "artifact-path";
+          artifact = packageOutput {output = builtins.elemAt namedOutput 0;};
+          path = builtins.elemAt namedOutput 1;
+        }
         else if outputPath != null
-        then artifactPath {path = builtins.head outputPath;}
+        then {
+          kind = "artifact-path";
+          artifact = packageOutput {};
+          path = builtins.head outputPath;
+        }
         else if work != null
-        then workPath (builtins.head work)
-        else literal value;
+        then {
+          kind = "work-path";
+          path = builtins.head work;
+        }
+        else {
+          kind = "literal";
+          text = value;
+        };
     stringTemplate = value:
       if value == ""
-      then text ""
-      else template (map fragmentFor (builtins.filter (part: part != "") (builtins.split tokenPattern value)));
+      then {
+        fragments = [
+          {
+            kind = "literal";
+            text = "";
+          }
+        ];
+      }
+      else {fragments = map fragmentFor (builtins.filter (part: part != "") (builtins.split tokenPattern value));};
     optionalExact = step: field:
       if !(builtins.hasAttr field step)
       then null
       else stringTemplate step.${field}.exact;
-    commandStep = step:
-      normalizeStep "command probe step" {
-        argv = map stringTemplate step.argv;
-        stdin =
-          if step ? stdin
-          then stringTemplate step.stdin
-          else null;
-        stdout = optionalExact step "stdout";
-        stderr = optionalExact step "stderr";
-        inherit (step) exit_code;
-        timeout_seconds = step.timeout_seconds or null;
-        observes_rejection = step.observes_rejection or false;
-      };
-    commandOperation = operation:
-      normalizeOperation "command probe operation" {
-        inherit (operation) input operation expected;
-        files = builtins.mapAttrs (_: stringTemplate) operation.files;
-        steps = map commandStep operation.steps;
-        artifacts = map textArtifact operation.artifacts;
-      };
+    commandStep = step: {
+      argv = map stringTemplate step.argv;
+      stdin =
+        if step ? stdin
+        then stringTemplate step.stdin
+        else null;
+      stdout = optionalExact step "stdout";
+      stderr = optionalExact step "stderr";
+      inherit (step) exit_code;
+      timeout_seconds = step.timeout_seconds or null;
+      observes_rejection = step.observes_rejection or false;
+    };
+    commandOperation = operation: {
+      inherit (operation) input operation expected;
+      files = builtins.mapAttrs (_: stringTemplate) operation.files;
+      steps = map commandStep operation.steps;
+      artifacts = map textArtifact operation.artifacts;
+    };
   in
     packageProbe {
       primary = commandOperation primary;

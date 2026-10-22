@@ -52,7 +52,7 @@
       ];
     };
   };
-  commandProbe = qualification.commandProbe {
+  commandProbeInput = {
     primary = {
       input = "An exact artifact and named output.";
       operation = "Run the package-owned command.";
@@ -82,6 +82,36 @@
       artifacts = [];
     };
   };
+  commandProbe = qualification.commandProbe commandProbeInput;
+  rejectsMalformedCommands = let
+    primaryStep = builtins.head commandProbeInput.primary.steps;
+    withStep = changes:
+      commandProbeInput
+      // {primary = commandProbeInput.primary // {steps = [(primaryStep // changes)];};};
+    malformed = [
+      (withStep {argv = [];})
+      (withStep {exit_code = 256;})
+      (withStep {timeout_seconds = 301;})
+      (withStep {argv = ["@out@/../escape"];})
+      (withStep {argv = [(builtins.concatStringsSep " " (builtins.genList (_: "@out@") 65))];})
+      (commandProbeInput
+        // {
+          badInput =
+            commandProbeInput.badInput
+            // {
+              steps = [
+                {
+                  argv = ["probe"];
+                  exit_code = 0;
+                }
+              ];
+            };
+        })
+    ];
+  in
+    builtins.all (input:
+      !(builtins.tryEval (builtins.deepSeq (qualification.commandProbe input) true)).success)
+    malformed;
   commandProjection = qualification.projectPackageProbe {
     owner = "package-qualification-carrier-probe";
     probe = commandProbe;
@@ -259,6 +289,7 @@ in
     }
   ];
   assert rejectsOpenProbe;
+  assert rejectsMalformedCommands;
   assert rejectsMissingOutput;
   assert rejectsUnknownQualification;
   assert (builtins.head (builtins.filter (artifact: artifact.selector.package == "qualification-tool") declaredTool.qualificationDocument.artifacts)).path == builtins.toString firstTool;

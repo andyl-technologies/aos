@@ -1,0 +1,184 @@
+{
+  "change": "The command-probe adapter assembles intermediate fragments, templates, steps and operations directly, retaining complete packageProbe normalization and the public constructors' checks.",
+  "checks": {
+    "evaluation": "/nix/store/qlb2k5h34yfck0kghyqrvfa7mx15sk2i-aos-native-evaluation-checks-0",
+    "package_qualification": "direct strict evaluation returned true, including six malformed command-adapter cases"
+  },
+  "configuration_sha256": {
+    "lib/qualification.nix": "b4bc581ab88019de64b56c2fa1bfdcc823f3f7e4d8854f670e74af055e20bccd",
+    "tests/abilities/package-qualification.nix": "6c1d48f593daa86c6d96fa00692d1dab7497b15585306e04da9ad116633d5a36",
+    "tools/bazel/bench/end_to_end.nix": "92c43b27b2090f57ec00a8dc4e9a7cd20430ff886ec77dd9a1374ebd3e635e69"
+  },
+  "experiment": {
+    "after": [
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          154.32470703125,
+          176.99072265625,
+          162.5283203125
+        ],
+        "mode": "production",
+        "repetition": 0,
+        "wall_seconds": 0.8262653610145207
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          135.58544921875,
+          171.7470703125,
+          161.04443359375
+        ],
+        "mode": "bazel",
+        "repetition": 0,
+        "wall_seconds": 11.129792335996171
+      },
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          135.58544921875,
+          171.7470703125,
+          161.04443359375
+        ],
+        "mode": "production",
+        "repetition": 1,
+        "wall_seconds": 1.6336753530194983
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          129.0693359375,
+          169.15478515625,
+          160.31494140625
+        ],
+        "mode": "bazel",
+        "repetition": 1,
+        "wall_seconds": 11.128851561981719
+      },
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          129.0693359375,
+          169.15478515625,
+          160.31494140625
+        ],
+        "mode": "production",
+        "repetition": 2,
+        "wall_seconds": 0.7020517079799902
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          145.9521484375,
+          171.0947265625,
+          161.1015625
+        ],
+        "mode": "bazel",
+        "repetition": 2,
+        "wall_seconds": 11.511863629013533
+      }
+    ],
+    "before": [
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          248.64794921875,
+          184.46630859375,
+          161.85107421875
+        ],
+        "mode": "production",
+        "repetition": 0,
+        "wall_seconds": 1.8764433989999816
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          272.6474609375,
+          193.27099609375,
+          165.1142578125
+        ],
+        "mode": "bazel",
+        "repetition": 0,
+        "wall_seconds": 18.157585970999207
+      },
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          266.34912109375,
+          193.283203125,
+          165.26953125
+        ],
+        "mode": "production",
+        "repetition": 1,
+        "wall_seconds": 1.0068480819754768
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          247.70849609375,
+          193.01904296875,
+          165.64794921875
+        ],
+        "mode": "bazel",
+        "repetition": 1,
+        "wall_seconds": 14.908241839992115
+      },
+      {
+        "derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          247.70849609375,
+          193.01904296875,
+          165.64794921875
+        ],
+        "mode": "production",
+        "repetition": 2,
+        "wall_seconds": 0.8572444080200512
+      },
+      {
+        "derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv",
+        "load_average": [
+          224.4287109375,
+          189.826171875,
+          164.9013671875
+        ],
+        "mode": "bazel",
+        "repetition": 2,
+        "wall_seconds": 12.400339682993945
+      }
+    ],
+    "command": [
+      "nix-instantiate",
+      "tools/bazel/bench/end_to_end.nix",
+      "--argstr",
+      "root",
+      "<worktree>",
+      "--argstr",
+      "mode",
+      "<production|bazel>",
+      "--argstr",
+      "cacheNamespace",
+      "qualification-normalization-comparison"
+    ],
+    "medians": {
+      "bazel": {
+        "after_seconds": 11.129792335996171,
+        "before_seconds": 14.908241839992115,
+        "identical_derivation": "/nix/store/j8c3gw616mk7lgb0rfwcc1zly0xifz4z-aos-boot-identity-0.1.0.drv"
+      },
+      "production": {
+        "after_seconds": 0.8262653610145207,
+        "before_seconds": 1.0068480819754768,
+        "identical_derivation": "/nix/store/0rkyzhyjmz38nf6sdrxvjihgsshc1nny-aos-boot-identity-0.1.0.drv"
+      }
+    },
+    "nix_version": "nix (Nix) 2.24.12",
+    "scope": "Nix evaluation and derivation instantiation only; no compilation, runtime or cache-restoration timing"
+  },
+  "limitations": [
+    "Samples were collected sequentially on a shared host with materially varying load; these are observations, not an isolated causal speedup estimate.",
+    "The Bazel candidate still has a substantial evaluation gap relative to the production leaf package.",
+    "This check does not establish end-to-end performance budgets or qualify a production package cutover."
+  ],
+  "qualification_base_commit": "8f0f35bd809e9571d4b8e1e330210d91ca0d5a6d",
+  "schema_version": 1
+}
