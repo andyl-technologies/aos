@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `a0651364c1` imports signed `eb298a8e1c`, tree `d940cee8`, adding retained pending-constructor custody. Exact raw atomic reconstruction, the 348-created-file license inventory and 187 owning Source tests pass. The 1,918-object cohort and corrected first normal delivery pass under unchanged bounds. | The missing-helper failure, fixture correction and explicit qualification bridge remain retained. The twenty-five-suite runner and ABI are in progress. Full QEMU still fails launched dirty capture; genuine Module issuance, selected execution and complete return remain open. The canonical license gate still stops at strict controller Clippy. |
+| Native integration | `a0651364c1` imports signed `eb298a8e1c`, tree `d940cee8`, adding retained pending-constructor custody. Exact raw atomic reconstruction, the 348-created-file license inventory and 187 owning Source tests pass. The 1,918-object cohort and corrected first normal delivery pass under unchanged bounds. | The missing-helper failure, fixture correction and explicit qualification bridge remain retained. All twenty-five bounded custody suites and ABI conformance pass. Full QEMU still fails launched dirty capture; genuine Module issuance, selected execution and complete return remain open. The canonical license gate still stops at strict controller Clippy. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -239,8 +239,29 @@ Final-snapshot mandatory application compilation passes at
 `90fmbp0fb2ljfys2rc64q81pvhhbv9ib`; all 5,290 committed Rust/TOML files match
 immutable source `by91dypky1ndbwxcyyax01kizd9apw2c`. The comparison record has
 SHA-256 `d3d186b31267c71f3c48a7b78bcbbfb104a302ca139311dbed2e6ce09563930c`.
-Exact supervision remains in progress. These checks do not establish complete
+All 278 exact supervision cases pass in nine groups at
+`8m5pxppgf921jzaknh799h8fggwyhjdc`. These checks do not establish complete
 error payload funding or Source activation.
+
+#### Typed control preview refusals
+
+`d72549bf86` retains the actual action-decode cause at both control preview
+sites without formatting a diagnostic. `d946be2eec` migrates an existing
+exhaustion assertion to the typed cause and deferred display. The first broad
+run passes 65 cases and fails that eager-text assertion; the corrected run
+passes all 66 runtime cases. The new mapped control covers final-token
+exhaustion, a mismatched frontier and a mismatched pending capture. Each path
+retains the same independent Original post with zero allocations/reallocations,
+all shared bytes unchanged and no wake. The private-domain variant and all nine
+paired-feature fingerprint tests pass. Fixture bytes issue no Native action.
+
+Engineering hygiene passes. Final mandatory application compilation passes at
+`65hsi18j9kpwdxlf8g6wyfir2j6if6p6`; all 5,290 committed Rust/TOML inputs match
+immutable source `5b0zps75v5dq8lgs6y5mv309w99nfnma`. The comparison record has
+SHA-256 `96a1506b28e3dca8a5e22ba9b19828e3cabf255832841548b581a1a82a8c6585`.
+Final-snapshot exact supervision remains in progress. The checkpoint adds one
+component binding; complete diagnostic funding and genuine Native admission
+remain unqualified.
 
 #### Independent revocation and return refusals
 
@@ -336,7 +357,9 @@ recorded separately from their corrected results.
 Exact raw atomic reconstruction passes at `qfg1q9dxgxkw54ypk1aqxnhg78zc854q`.
 The 348-created-file license ledger passes at `2xagzn6cil3pw3jd2l5m4jlqd0f2z92m`;
 all 187 owning Source tests pass at `6bi6czwabzvzrfyk29fxdqbm8rxmnv2l`.
-The twenty-five-suite custody runner and ABI conformance remain in progress.
+All twenty-five bounded custody suites pass at
+`jpa5vrqsrbxj1j6lw2awhwl5j6qc95zf`; ABI conformance passes at
+`wn736jkph0lkgypzf97gwjlcx1wiyl3a`.
 Aggregate regeneration still fails because full QEMU fails the mandatory
 launched dirty-iterator lifecycle fixture. Genuine Module issuance, selected
 execution, deferred RR custody and complete read/cleanup returns remain open.
