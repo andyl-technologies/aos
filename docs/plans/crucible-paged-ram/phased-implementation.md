@@ -636,7 +636,8 @@ thirteen format and nineteen native, with 148 uncovered requirements and none
 fully qualified. The fresh hermetic ABI gate passes at
 `407pgc4zibhjkv5sqhj5vh7b33gmc89x`, including all 277 protocol cases and
 the host/guest compilation matrix. Core evaluation passes at
-`p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`. The application-target check is pending.
+`p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`. Mandatory application compilation passes
+at `asnmgd8pwrrb8jsfdmaydyflfvlsg4rd`.
 All 5,358 committed Rust/TOML inputs match the latter's immutable source
 `6dzf80a82r1894dj4pdfbx2mhs5sh5xg`; comparison record SHA256 is
 `c965bfe66696331a34445f7e2f228324d1747158fb9bd0e112b60270639541d6`. This codec issues no paid landing,
@@ -657,8 +658,8 @@ activate the unavailable profile. Refreshed inventory
 thirteen format and nineteen native, with 148 uncovered requirements and no
 execution qualification. The fresh ABI gate passes at
 `l69dislqbcw37zq46mjmbwkw33a2ma0p`, including all 279 protocol cases and the
-host/guest compilation matrix. The mandatory application-target check remains
-pending. All 5,359 committed Rust/TOML inputs
+host/guest compilation matrix. Mandatory application compilation passes at
+`022yvm54w1yf97jhp3xqn8l2zh3wwjfi`. All 5,359 committed Rust/TOML inputs
 match immutable application-build source `ffjn61mkg8gknydx6r6p0r7k7v4nbr7z`;
 comparison record SHA256 is
 `89e513acc82e4c181b0aec4ce7e359cefb04c0556a80954d8685634fd9a5735d`.
@@ -676,7 +677,11 @@ round trips verify that partial reports never become completed results. All
 281 protocol tests and strict all-target Clippy pass. Refreshed inventory
 `1ka443fkc0ifwagp2pwqwrf8aidhy99r` verifies 509 canonical bindings: 477 model,
 thirteen format and nineteen native; 148 requirements remain uncovered, with
-no execution qualification. Real paid probe issuance remains unavailable.
+no execution qualification. Its ABI gate passes at
+`fnm4bxrwcsk9ziz289c03dzmwf2jw3kp`, and mandatory application compilation
+passes at `35598whrilm72sd6f3pbzgzzmwxglxdw`. All 5,359 committed Rust/TOML
+inputs and both then-existing fixture/license files match that build source.
+Real paid probe issuance remains unavailable.
 
 Independent manifest/probe public data now follows signed
 `4c436f5b9557df0af17c831642e05f55c6715f1b` and compact-data revision
@@ -765,7 +770,17 @@ all-target resource-crate Clippy and engineering hygiene pass. The existing
 quarantine control now waits out its actual retry interval instead of replacing
 a timestamp. Inventory `dil0nl9vx77fri7frchmccc7z9h606g8` verifies 516 canonical
 bindings: 484 model, thirteen format and nineteen native. The same 148
-requirements remain uncovered and none fully qualified.
+requirements remain uncovered and none fully qualified. All 5,362 committed
+Rust/TOML inputs and six fixture/license files match the fresh required
+application build; compilation remains pending. The private-feature Host Clippy
+run reports no disallowed clock method, but still fails on 988 other findings,
+including retained error sizes. This is not a passing license-boundary gate.
+Five direct refusal adapters now pass their existing functions without
+redundant closures, and the fixed-length parent-park identity reader uses
+array chunks after its exact-length check. These changes retain the same
+errors, custody and parser acceptance. Focused receipt tests and a fresh
+mandatory application-target build are running; the remaining strict findings
+remain unresolved.
 
 #### Initial loader storage component
 

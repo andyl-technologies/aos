@@ -2121,7 +2121,7 @@ fn run_guarded_qemu_setup_probe_inner(
     process_contract
         .attempt_binding
         .freeze_for_launch()
-        .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
+        .map_err(QemuGuardedImagePreparationError::local)?;
 
     process_contract.with_spawned_helper(
         command,
@@ -2326,7 +2326,7 @@ fn run_guarded_image_tool_with_original(
     process_contract
         .attempt_binding
         .freeze_for_launch()
-        .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
+        .map_err(QemuGuardedImagePreparationError::local)?;
 
     match purpose {
         GuardedImageToolPurpose::FreshLaunch => {

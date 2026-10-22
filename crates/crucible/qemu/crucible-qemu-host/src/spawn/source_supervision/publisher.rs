@@ -174,7 +174,7 @@ impl PublisherSession {
             node_index,
             node_count,
         };
-        let body = self.body.as_mut().ok_or_else(|| geometry_error())?;
+        let body = self.body.as_mut().ok_or_else(geometry_error)?;
         body.observe_allocation_post(startup)?;
         body.construct(startup, header)
     }

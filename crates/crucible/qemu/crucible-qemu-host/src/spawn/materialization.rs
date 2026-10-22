@@ -351,7 +351,7 @@ impl QemuPreparedRunDirectory {
         }
 
         self.seal_fresh_artifacts()
-            .map_err(|source| super::QemuGuardedImagePreparationError::local(source))
+            .map_err(super::QemuGuardedImagePreparationError::local)
     }
 
     /// Initializes the pinned VMState destination before fresh or exact launch.
@@ -411,7 +411,7 @@ impl QemuPreparedRunDirectory {
                 })?;
                 Ok(())
             });
-        vmstate.map_err(|source| super::QemuGuardedImagePreparationError::local(source))
+        vmstate.map_err(super::QemuGuardedImagePreparationError::local)
     }
 
     /// Begins one sealed exact device-state input for descriptor restore.
