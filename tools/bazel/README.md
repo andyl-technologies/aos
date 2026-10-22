@@ -476,6 +476,12 @@ change fails the update until the declaration is reviewed. Cargo parity still
 compares the distinct compiled feature sets without merging them.
 
 The check also builds Clippy, formatting, documentation, and editor parity.
+The temporary Cargo editor oracle selects the compiled default targets. Cargo
+metadata before and after the selection must retain every other target record;
+only integration tests with disabled required features are omitted. Source code,
+dependency features, and lint settings stay unchanged, and inference statistics
+and diagnostics are compared exactly.
+
 Its installed `crucible-fleet-store` runs the complete built-in store probe and
 rejects an unsupported command after Nix fixup. The check compares the probe's
 full output, apart from its temporary storage root, and invalid-command output
@@ -485,6 +491,12 @@ The native linkage check hashes both selected libraries against the binary's
 declared Rust action inputs and inspects the installed ELF and runtime closure:
 SQLite remains a shared dependency, zstd is static, and the interpreter belongs
 to the declared AOS runtime closure.
+
+`tests/evidence/native-linux-store.json` retains the passing aggregate check,
+all four test/feature inventories, runtime and native-linkage proofs, and the
+cache checks. Each configuration preserves Cargo's single ignored case. Both
+default editor models retain 12 unknown expressions with identical diagnostics;
+this is parity evidence, not a claim of complete inference.
 
 ```sh
 aos-dev build check build.bazel.store.all --no-out-link

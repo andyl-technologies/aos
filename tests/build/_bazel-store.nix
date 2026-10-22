@@ -96,6 +96,9 @@ in
       pname = "aos-bazel-fleet-store";
       workspace = family.workspace;
       targets = ["${store}:package"];
+      # Native linkage qualification retains an actual sandboxed link action.
+      # Test and developer builds can still use the ordinary shared disk cache.
+      sharedBuildCache = false;
     };
     package = pkgs.mkAosBazelPackage {
       pname = "crucible-fleet-store";

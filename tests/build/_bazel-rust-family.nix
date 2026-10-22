@@ -126,6 +126,13 @@ in rec {
       configuration = (vendor / ".cargo/config.toml").read_text().replace("@vendor@", str(vendor))
       (root / ".cargo/config.toml").write_text(configuration)
       PYTHON
+      ${pkgs.lib.optionalString (excludedTests != []) ''
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/select_cargo_editor.py} \
+          --source source --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
+          --cargo ${pkgs.rust}/bin/cargo --rustc ${workspace.toolchains}/bin/rustc \
+          ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--exclude" name]) excludedTests)} \
+          --output "$out/target-selection.json"
+      ''}
       cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
       CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
