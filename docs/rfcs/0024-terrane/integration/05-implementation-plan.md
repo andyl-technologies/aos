@@ -13983,3 +13983,43 @@ existing equality implementation; the fixture now compares all three contract
 fields explicitly. Cold exposure recovery still refuses before mutation, sealed
 file retirement remains unfinished, and no production worker, authenticated
 backing transport or mount broker is enabled. No trunk task is closed.
+
+Frozen corrected native surface qualification at `fc36f370bc` passes in
+701.32 seconds with unchanged tracked-source fingerprints. It executes the
+actual version-3 index/file descriptor comparisons and authenticated census
+refusal controls alongside the original scoped-read, drain, cancellation,
+expiry, mapping, cap and cold-refusal controls. Immutable-source and installed
+artifact review is pending. This pass predates the new retirement operations;
+it does not qualify physical release. The required application and full native
+cache builds at that checkpoint remain running.
+
+The sealed-file retirement increment allows an exact draining exposure promise
+to retain physical custody without indefinitely blocking publisher namespace
+retirement. It applies only to a pin naming this actual body's digest and a
+persisted backing record equal to the measured original inode, ownership,
+project and seal. An active exposure, another incarnation, an ordinary pin or a
+shared-chunk obligation still protects the unit. The physical permit rechecks
+current protection before each actual publisher operation. No exposure record,
+lease or pin is removed during publisher retirement; authenticated closure
+reconciliation remains the only discharge operation.
+
+A separate native actor publishes and scopes a real sealed file, completes the
+original producer cache handoff, and waits out actual producer and consumer
+release grace. It requires active exposure protection under real quota pressure,
+then drains, retires the exact original index and publisher body and observes
+final native unlink. Its actual index mapping and raw sealed-file descriptor
+remain readable while both exposure bindings and all pins survive. Final index
+unmap alone must not discharge the still-open file. Only final file closure and
+fresh authenticated census can remove the exposure obligations. This new actor
+has an explicit 120-second bound to observe both existing 30-second grace
+intervals; all earlier actors retain their original 30-second bounds and the
+owning VM retains its 180-second bound.
+
+Formatting, strict Linux all-target Clippy in all-feature and ordinary Tokio
+profiles, the complete native source inventory and supervisor syntax pass.
+The native file actor and combined retirement implementation still require
+frozen execution, as does mandatory application-target compilation. The small
+fixture output-order correction is pushed as `52a1a6113f`; its clean frozen
+checkout is unused while qualification advances to the combined increment.
+Cold exposure recovery, production worker and backing transport integration
+remain unfinished. No trunk task is closed by these component changes.

@@ -5,6 +5,8 @@
 //! durable protection and the publisher's acknowledged namespace transitions.
 
 mod activity;
+#[cfg(feature = "surface-fuse")]
+mod exposure;
 mod graph;
 mod lifecycle;
 mod permit;

@@ -112,11 +112,11 @@ def main():
         children.append(publisher)
         executable = image / "bin/surface-index-owner-fixture"
 
-        def actor(case, mode):
-            """Preserves actual actor output on failure under the original bound."""
+        def actor(case, mode, timeout=30):
+            """Preserves actor diagnostics under each explicit finite contract."""
             try:
                 result = subprocess.run(support.role_command(840, [executable, mode]),
-                    env=environment(case), text=True, capture_output=True, timeout=30)
+                    env=environment(case), text=True, capture_output=True, timeout=timeout)
             except subprocess.TimeoutExpired as error:
                 # TimeoutExpired retains bytes even when text=True. Publish
                 # those captured diagnostics before the unchanged failure.
@@ -175,6 +175,13 @@ def main():
             else:
                 require(not list(sealed.iterdir()),
                         "metadata-only cap fixture admitted sealed content")
+        # This additional actor observes both actual 30-second release and
+        # publisher retirement grace. Existing actors retain their 30s bound.
+        result = actor("pin", "file-closure", timeout=120)
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS active exposure blocks sealed body retirement after ordinary grace; draining retires the exact publisher inode while preserving exposure pins through final mapping and descriptor closure"],
+            "actual sealed exposure retirement actor failed")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")

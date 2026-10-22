@@ -2,7 +2,7 @@
 
 use super::{
     super::{invalid, residence},
-    graph::Unit,
+    graph::{self, Unit},
 };
 use crate::{
     host_cache::owner::{consumer::state as policy, retention::NativeOwnerExecutor},
@@ -49,7 +49,7 @@ impl<'unit> CachePermit<'unit> {
         policy::check_ready(executor, &owner)?;
         policy::check_bootstrap(&owner, &running)?;
         if !matches!(transition, Transition::Restore(_))
-            && (unit.protected || !unit.shared_chunks.is_empty())
+            && (graph::protected(&owner, unit)? || !unit.shared_chunks.is_empty())
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,

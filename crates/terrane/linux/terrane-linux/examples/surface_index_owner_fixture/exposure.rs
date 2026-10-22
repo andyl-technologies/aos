@@ -31,6 +31,9 @@ mod census;
 #[path = "exposure/closure.rs"]
 mod closure;
 
+#[path = "exposure/file_closure.rs"]
+pub(super) mod file_closure;
+
 fn limits() -> RootNodeLimits {
     RootNodeLimits {
         max_entries: 16,

@@ -8,7 +8,10 @@ use super::super::{PublicationJob, invalid, residence, state};
 use crate::{
     host_cache::{
         RetainedManifest,
-        owner::{consumer::state as policy, retention::NativeOwnerExecutor},
+        owner::{
+            consumer::state as policy,
+            retention::{Custody, NativeOwnerExecutor},
+        },
     },
     publisher_local::client::PeerPublishedObject,
 };
@@ -130,10 +133,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
         }
         for unit in &mut units {
             let hash = state::hex(unit.body.claim().descriptor().digest());
-            unit.protected = owner.state.pins.iter().any(|pin| {
-                (pin.hash == hash || unit.chunks.contains(&pin.hash))
-                    && !(pin.hash == hash && unit.reconstruction.contains(&pin.owner))
-            });
+            unit.protected = protected(&owner, unit)?;
             for (_, chunks) in references.iter().filter(|(object, _)| object != &hash) {
                 unit.shared_chunks
                     .extend(unit.chunks.intersection(chunks).cloned());
@@ -152,4 +152,23 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
     }
     running.check_current().map_err(io::Error::other)?;
     Ok(units)
+}
+
+/// Rechecks live promises while allowing exact draining-body namespace retirement.
+pub(super) fn protected(owner: &Custody, unit: &Unit) -> io::Result<bool> {
+    let hash = state::hex(unit.body.claim().descriptor().digest());
+    for pin in &owner.state.pins {
+        if pin.hash != hash && !unit.chunks.contains(&pin.hash) {
+            continue;
+        }
+        if pin.hash == hash && unit.reconstruction.contains(&pin.owner) {
+            continue;
+        }
+        #[cfg(feature = "surface-fuse")]
+        if super::exposure::allows_retirement(owner, unit, pin)? {
+            continue;
+        }
+        return Ok(true);
+    }
+    Ok(false)
 }

@@ -73,7 +73,10 @@ fn main() -> Result<()> {
         println!("PASS actual surface owner native preparation");
         return Ok(());
     }
-    if !matches!(mode.as_str(), "run" | "cap" | "refuse-cold" | "exposure") {
+    if !matches!(
+        mode.as_str(),
+        "run" | "cap" | "refuse-cold" | "exposure" | "file-closure"
+    ) {
         return Err("unknown surface-owner selector".into());
     }
     eprintln!("SURFACE_STAGE mode={mode} phase=owner-start");
@@ -99,6 +102,9 @@ fn main() -> Result<()> {
     eprintln!("SURFACE_STAGE mode={mode} phase=resume");
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
+    if mode == "file-closure" {
+        return runtime.block_on(exposure::file_closure::verify(&owner, &inputs));
+    }
     if mode == "exposure" {
         runtime.block_on(exposure::verify(&owner, &inputs))?;
         drop(owner);
