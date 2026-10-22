@@ -862,6 +862,10 @@ in {
         for index, role, owner in ((0, "client", 811), (1, "broker", 0)):
             directory = f"/var/lib/method46-offline/{role}"
             state = f"/var/lib/method46-external/endpoint-{index}"
+            journal_root = (
+                "/var/lib/aos/sandboxd/broker-session/storage"
+                if role == "client" else "/var/lib/aos/sandbox-storage/broker-session"
+            )
             machine.succeed(f"install -d -o {owner} -g {owner} -m 0700 {directory}")
             machine.succeed(f"{transport} prepare {index} {state}")
             machine.succeed(
@@ -871,8 +875,13 @@ in {
                 f"chmod 0400 {directory}/salt-name {directory}/deployment-epoch"
             )
             stage = (
-                "${pkgs.util-linux}/bin/setpriv "
-                f"--reuid={owner} --regid={owner} --clear-groups "
+                # Match the installed owners' immutable mode view. The direct
+                # boot test uses writable ext4, so an unconfined host command
+                # must not pass the production read-only mode-pin check.
+                "${pkgs.systemd}/bin/systemd-run --quiet --wait --pipe --collect "
+                f"--property=User={owner} --property=Group={owner} "
+                "--property=ProtectSystem=strict "
+                f"--property='ReadWritePaths={directory} {journal_root}' "
                 "${pkgs.coreutils}/bin/env RUST_MIN_STACK=33554432 "
                 f"AOS_FLOOR_SEED_ROLE={role} AOS_FLOOR_SEED_DIRECTORY={directory} "
                 "${credentialFixture}/bin/broker-session-credential-fixture "
@@ -898,10 +907,6 @@ in {
             machine.fail(f"{transport} initialize {index} {state} {directory}/extend-input")
             machine.succeed(f"{transport} read {index} {state}")
             install = stage.replace("stage_installed_initial_floor", "install_installed_initial_floor")
-            journal_root = (
-                "/var/lib/aos/sandboxd/broker-session/storage"
-                if role == "client" else "/var/lib/aos/sandbox-storage/broker-session"
-            )
             sidecar = f"{journal_root}/session-floor.journal"
             machine.succeed(
                 f"cp {directory}/observed-nv {directory}/observed-nv.saved; "
