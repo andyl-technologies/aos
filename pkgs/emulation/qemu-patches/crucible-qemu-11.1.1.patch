@@ -1,93 +1,17 @@
-From d1c072e9848e2c06f8d25272e1ae063b65deca61 Mon Sep 17 00:00:00 2001
+From 996393eb0e950647b7caf9d57b55d9ace836db38 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] plugins: compose physical stack, member and cleanup provider
- custody
+Subject: [PATCH] crucible: compose canonical stack debt and prebirth storage
 
-Supply the cumulative Crucible Source and Native changes against the pinned
-upstream QEMU base. Preserve public process protocols, private in-process
-interfaces, complete corresponding source and applicable per-file licenses.
+Retain the complete cumulative public Crucible implementation together with
+canonical same-parent Main/RR stack debt, factual constructor return posts,
+and caller-backed prebirth thread wrapper and registry storage. Preserve
+refusal when genuine profile, parent, cleanup or terminal owners are absent.
 
-Retain allocator, task, libc, TLS, placement, thread, backing and static charges;
-bounded journals and registries; control reader and publisher ownership;
-registered callback, Ready and Main custody; native descriptors and groups;
-RAM resize, discard, mapping, retirement, getter and read-child lifetimes;
-clock, interrupt, register, translation and fault observations; and canonical
-publisher codecs, preexec storage and byte validation.
-
-Keep exact Runtime, module, member, constructor and lender identity. Preserve
-independent first, callback, post, attempted, consumed and uncertain facts.
-Require descriptor/frame retirement and Source group terminal receipts before
-component return, followed by registration-owner retirement. Neither negative
-status nor semantic expiry establishes physical closure.
-
-Preserve the reader r2 completed-receipt handoff and enrolled Module storage,
-returning-only parent identity debt guards, complete-journal exclusions,
-canonical output spans, exact observation exceptions and wrapper history.
-Retain the process-wide Original borrower attempted restriction; sequential
-borrower rearm remains unavailable.
-
-Keep metadata-only RR execution and terminal registration distinct from owner
-birth. Retain the permanent physical Core keeper, canonical holder movement,
-uncertain reference custody and independent physical return posts. Join the
-corrected preexec RR sticky refusal with the genuine Source recipient leaf,
-retained Source/Native actor journals, partial returns and terminal-tail facts.
-Keep physical executor recording separate from unwind and semantic cleanup.
-
-Preserve bounded Source/Native metadata sections and their independent posts
-without waiting for contended registry or target locks. Order ordinary atfork
-registry quiescence after RCU locks and release it before child RCU thread
-recreation, preserving the retained hot-fork transaction and ordinary mutexes.
-
-Retain the inline physical resource bank and constructor loan, all independent
-Original registration post-attempt and return facts, and the physical v5
-installing-service view. Add strict schema-two role codecs and matched v7
-membership for Setup7/plan10, preserving all earlier edition restrictions.
-Retain physical pre-CAS reservation and known-no-acquire return debt. Return
-the exact first suspension refusal before later callbacks or posts when
-admission never entered.
-
-Add Setup8/plan11 stack-purpose decoding and factual Main limit observations.
-This edition remains header-only and refuses other observations. Parsing,
-wire fields and physical receipts provide no stack, thread, mapping or typed
-Source-role issuer. Preserve the signed stack proposal separately from any
-future implementation.
-
-Rebuild genuine configured Source providers inside the cleanup component
-checks, retaining ordinary child-null behavior and foreign-child refusal.
-Keep exact production bodies, all original cases and assertions, independent
-causal omissions and intended assertion diagnostics. Authenticate every
-selected input and include actual preexec dependency fragments in Meson.
-Declare the same 27-TU component provider closure as an explicit configured
-build output before the normal delivery deadline. Authenticate its compiler,
-commands, environment, actual source/generated dependencies, utility members
-and object bytes before each compile/link. Authenticate the exact linked case
-binary on execution without rereading provider inputs it does not consume;
-preserve the fresh standalone rebuild. Bind the compiler driver/specs and
-wrapper interpreter, capture compiler-injected environment inputs and refuse
-unsupported process-loader overrides. Retain the actual Native RR overlap
-record and member/service identity dependency bodies in delivery fixtures.
-Start longer independent helper suites first within the same two-worker pool,
-joining before the architecture phase. Correct legacy decoder omission selectors inside schema dispatch and preserve both
-branches. Preserve helper scheduling, the aggregate two-compiler ceiling,
-metadata validation and original time and memory limits.
-
-The complete linked Source measures 254040 bytes. Thirty-one actual getters
-add 44774 bytes, giving a 298814-byte fixed floor. Embedded Source actor 5256,
-Original registration 72 and bank 168 remain fully priced. Native RR 432,
-external Main-finish 96, Core 160 including keeper 72, CPUState 16992 and
-allocation header 888 retain their measured extents. Both architecture
-compilers measure preexec owner 215160, storage 27992, session 17288,
-recipient 3432 and role 80. Reader journals remain 128/112/240/160 and the
-physical v5 view is 72 bytes.
-
-Retain all failed attempts and distinguish changed configured dependency
-closure, genuine links, component controls and exact fixture equivalence from
-historical normal-delivery and whole 1918-object timings. CPU admission remains
-ENOTSUP. No genuine Module/Core semantic issuer, populated reader or RR
-operation, selected activation, sequential borrower rearm or end-to-end
-nonwaiting cleanup is qualified. Preserve the mandatory genuine dirty
-lifecycle refusal and every remaining semantic cleanup boundary.
+Bind composed fixture dependencies and every transitive literal extractor to
+the actual final source bytes. Use authenticated explicit build directories
+for native qualification. Keep ordinary pthread behavior and substantive
+lifecycle refusals intact.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -25443,6 +25367,402 @@ index 0000000000000000000000000000000000000000..468976ef0fed6c7a079ca2f8010dee99
 +exercise actual once-received SCM aliases, strict syntax, foreign/unborn
 +owner refusal and the existing physical syscall journal bodies.  They do
 +not provide an accepting Source or semantic guard.
+diff --git a/docs/devel/crucible-quantum-stack-bank.rst b/docs/devel/crucible-quantum-stack-bank.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..9583f96b43231522226340492a485643cf5e953e
+--- /dev/null
++++ b/docs/devel/crucible-quantum-stack-bank.rst
+@@ -0,0 +1,390 @@
++.. SPDX-License-Identifier: GPL-2.0-or-later
++
++Canonical Main and RR stack debit custody
++========================================
++
++The native bank in ``plugins/crucible-stack-bank.inc.h`` retains two distinct
++role journals in the actual Source control object. Its complete storage is
++part of the Source fixed floor before any selected stack birth. The donor is
++embedded in the actual pre-exec singleton, whose complete storage is already
++charged by its fixed-owner reservation. Neither object is a wire structure.
++This implementation does not admit a complete runtime stack profile or enable
++Quantum execution. Setup 8/plan 11 currently refuse before Source publication.
++
++The local resource parent
++-------------------------
++
++``preexec_stack_resources_reserve`` uses the existing authenticated local
++process Original and ``preexec_setup_provisional_native``. It does not add an
++unrelated resource issuer. The checked aggregate of the Main and RR mapping,
++control and TLS requests is reserved once in the same native prefix, subject
++to the existing guest, fixed-floor, role and workspace protections. The two
++canonical child debit records are published before the independent Original
++post. A failed post preserves the debit and parent custody. Received sizes
++are requests checked against this actual owner; decoding them creates no
++capacity. The initial singleton issues generation one once and corroborates
++the received set and role generations against it; refusal cannot rearm it.
++
++Source adoption requires exact embedded-donor membership established by the
++actual pre-exec owner accessor before reading a nominated donor pointer. The
++accessor must independently check the real parent, profile and cleanup
++children outside gates. Under one nonwaiting partition gate, adoption then
++revalidates the mutable donor, same-prefix transfer and holder state and moves
++the exact two admissions. It does not increase ``native_live`` again. The
++current accessor refuses because complete profile and cleanup producers are
++absent. No public constructor can manufacture those owners from matching
++fields or callbacks.
++
++Borrowers and retained debt
++--------------------------
++
++Main and RR have separate canonical borrower slots. Only the actual inline
++pending constructor or actual RR execution actor, at its exact holder address
++and current actor epoch, can receive the corresponding slot. A borrower epoch
++never wraps. One outstanding borrower prevents another; rearm additionally
++requires factual actor retirement and successful independent birth and return
++posts. Known physical consumption is recorded separately from eligibility to
++retire. A negative or interrupted post preserves debt.
++
++The actual Main constructor saves return-post attempt before entering its
++independent post chain. It release-publishes return-post completion only after
++saving the independent result. Main borrower retirement acquires that fact
++and requires successful physical consumption and the returned post, preserving
++debt after an interrupted or negative post even when consumption is known.
++
++Command closure waits for its borrowers, not destruction of the long-lived
++Main or RR stack. Main has no local stack-refund edge. RR debit retirement
++requires complete attempted, returned, successful and independently posted
++bounded birth, genuine join, identity return, applicable control/TLS return and
++unmap facts. Registry departure and a consumed flag alone are insufficient.
++The actual nonwaiting native retire operation runs after leaving the gate;
++its failure retains the charge and cannot repeat a physical destructor.
++Unwired private leaves are not production registration or execution authority.
++
++Required external process-owner counterpart
++-------------------------------------------
++
++Before exec, the actual process creator must retain the containing process
++reservation, a distinct Main cleanup child, matching process/account/set
++incarnations and the actual once-owned setup endpoint. It must reserve Main's
++pre-exec loader and argument/environment use and independently journal both
++limit-setting and exec/birth outcomes. A local pre-exec suballocation can name
++custody within that existing reservation; it cannot retroactively pay an
++unfunded exec or manufacture the external cleanup owner.
++
++The external owner retains Main custody across exec refusal, setup refusal,
++command completion and disconnected transport. Only its actual matching
++process birth/reap owner may establish terminal consumption. A PID, socket
++close, terminal record or local null holder is insufficient. The terminal
++protocol must bind the authenticated endpoint to the exact process/account/
++stack-set incarnation, distinguish each once-only settlement attempt, and
++retain uncertain debt until the genuine matching reap completes. Any new
++settlement fields require explicit protocol compatibility selection. Native
++pointers, cleanup objects and callbacks stay process-local.
++
++The missing native API is a genuine producer/Current pair for the external
++cleanup child, followed by the actual same-prefix transfer and independent
++adoption post. ``qemu_crucible_preexec_stack_grant_current_v1`` cannot implement
++an accepting branch until these physical owners and the complete runtime
++profile exist. Its current refusal is intentional and is not an adapter for
++received scalar budgets.
++
++Required bounded runtime allocator
++----------------------------------
++
++The configured glibc 2.39 user-supplied-stack path places the pthread descriptor,
++static TLS and first TSD block inside the supplied usable mapping. A complete
++layout must include their actual alignment and minimum remainder; charging
++another copy as separate backing would misdescribe the layout. Nevertheless,
++``_dl_allocate_tls`` allocates the DTV separately. Dynamic TLS and DTV growth,
++second-level ``pthread_setspecific`` blocks and C++ TLS destructor nodes can
++allocate additional memory. Arbitrary TLS/TSD destructor work may allocate too.
++The QEMU bounded control-byte calculation does not cover those allocations.
++
++A complete producer therefore needs either a real bounded allocator for all
++these paths or an independently prepaid containing allocator owner covering
++all permitted allocation and cache lifetimes. It must retain canonical
++allocation/control receipts before ``pthread_create``, bound the admitted
++modules, keys and destructor behavior, reject growth outside that inventory,
++and preserve uncertain cleanup. Merely copying an allocator ceiling into the
++stack record supplies none of this behavior.
++
++Actual thread exit runs TLS destructors, TSD destructors and libc thread
++cleanup before kernel exit. Genuine join follows that tail. With a supplied
++stack, glibc frees TLS bookkeeping without caching or unmapping the caller's
++stack; default stacks instead use its stack cache. The supplied-stack cleanup
++still enters an internal stack-cache lock. The existing nonblocking QEMU join
++interface therefore does not prove globally nonwaiting libc cleanup. A
++complete profile must change that cleanup/allocator path to a genuine bounded
++nonwaiting producer, or transfer its cleanup debt to a retained real owner
++that cannot release the mapping early. The ordinary QEMU bounded registry
++locks require the same audit. Returning an allocation to malloc does not
++prove its arena/cache backing has been unmapped.
++
++Until those producers exist, actual RR mapping/protection, bounded thread
++birth and independent cleanup/post wiring remain unavailable. No accepting
++profile, synthetic callback or borrowed worker stack fills that gap. The
++existing Setup/plan/CRUCSTK1 codecs and original resource bounds are unchanged.
++
++Draft RR application-storage closure
++------------------------------------
++
++This section proposes a bounded-only implementation for review. The initial
++physical wrapper-storage primitive described below is implemented, but the
++application allocator, runtime profile and permission to invoke the existing
++stack bank remain unavailable. Its source audit uses QEMU
++``425ad07de4dd53325ad1311621ebfc58ca4126dc`` and the signed public libc stage
++``ce6644ba7f40ac9436a9cc0bb2c30b69bf8f977a``. Its separately signed
++release/reentry correction is
++``dae19eda3e0ca54dc8198ef83e8ba1a6c187441e``. No libc implementation is
++imported, and neither stage admits QEMU.
++
++Actual application producers
++~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++``qemu_thread_start`` registers the actual hot-fork record, then frees its
++creator-allocated name and argument body before calling RR. Registration uses
++``g_new0`` and ``g_list_prepend``. Ordinary unregister removes the list cell and
++frees the record; the current bounded record instead lasts through join and
++``qemu_thread_bounded_identity_return``. Its list cell still leaves on the
++worker. Merely supplying a stack changes none of these allocations or frees.
++
++System-mode ``tcg_register_thread`` allocates and publishes a ``TCGContext``.
++``tcg_malloc_internal`` allocates translation-pool chunks; pool reset frees
++large chunks and retains normal chunks. ``tcg_constant_internal`` lazily
++creates and fills GLib hash tables. System ``page_find_alloc`` lazily allocates
++page-index and ``PageDesc`` arrays. Page-collection spill can allocate a tree
++and page-entry bodies. Their lifetime is not necessarily one thread lifetime.
++When translation plugins are enabled, ``plugin_gen_tb_start`` and instruction
++generation allocate plugin bodies and containers and invoke actual callbacks.
++
++Seeded ``qemu_guest_random_seed_thread_part2`` allocates a ``GRand``; the TLS
++pointer does not make that application object a dynamic-TLS allocation. This
++file has no paired ``thread_rand`` terminal free. The sim random helper also
++creates and frees a temporary ``GRand``. Sim skips the stock kick-timer
++allocation, so that timer is not a mandatory selected-path request.
++
++The sim event/drain path processes queued CPU work. It invokes callbacks,
++frees work items and returns object references whose last return can execute
++finalizers. Typed Source CPU/TLB and monitor allocation APIs genuinely admit
++their specific requested bodies before allocation, but still call ordinary
++GLib allocation/free. They are not a general caller-backed allocator. A
++monitor owner cannot be reassigned to RR, and another copied payload debit
++does not supply containing allocator backing or terminal custody.
++
++There is no direct resolver or module-loader call in the audited RR birth
++wrapper, RR loop, guest-random and ``tcg.c`` files. This is not a transitive
++absence proof for generated helpers, devices, plugins or work callbacks.
++``plugins/loader.c`` actually opens modules and resolves symbols, but its
++existence does not establish a mandatory RR loader operation. Each supported
++callback closure must identify its own allocator, resolver, loader, error and
++unwind requirements before admission.
++
++Proposed canonical owners and physical layout
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++All objects below are local process-private objects. No pointer, callback,
++native layout or libc receipt enters shared memory. These proposed member
++groups determine responsibilities; they are not measured sizes or new bounds.
++The actual configured compiler must measure their complete layout before an
++owner can be admitted.
++
++``QemuCrucibleRrApplicationOwner`` would be embedded in the paid Source floor,
++with the following members, in this order:
++
++* Exact containing Source/partition identity, canonical preexec donor, actual
++  local resource parent, process/incarnation identity and transferred native
++  admission. Authentication must establish embedded donor membership before
++  dereferencing a nominated owner. No public initializer accepts scalar credit.
++* Exact actor holder, thread identity, nonwrapping operation incarnation, an
++  exclusive-borrow state and first/independent-post statuses.
++* Actual application mapping base/extent and immutable checked subspan layout;
++  actual separate libc metadata mapping base/extent; exact guarded stack child
++  identity. Neither application span nor libc arena overlaps another retained
++  span. The supplied stack already contains TCB/static TLS/first TSD storage.
++* A canonical opaque libc control pointer plus its separately retained expected
++  incarnation, actual ``pthread_t``, configuration and external receipt/result
++  storage. Outputs reside outside every retained libc arena and supplied stack.
++* Complete mapping/protection, init, create, query, stop/drain, application-return,
++  terminal, unmap and debit-return journals. Every effect has attempted,
++  returned, consumed, status and independent-post attempted/returned/status
++  facts. Storage exists before the first birth, including partial failures.
++* A retained application allocation ledger and exact last-use identities for
++  cross-thread jobs, context users, callback references and cache ownership.
++  An aggregate count is an observation, not authorization to release a node.
++
++``QemuThreadBoundedOwner`` would physically reside in the application mapping,
++with immutable header/owner/incarnation, actual ``QemuThreadArgs``, terminated
++name bytes, actual ``QemuHotForkThreadRecord`` and actual ``GList`` cell. The
++creator initializes every byte before clone. A bounded-only registration path
++links that supplied cell under the real existing inventory synchronization;
++its unlink must not call GLib's allocating/freeing list operations on this
++embedded cell. Ordinary registration/unregistration retains its existing
++behavior. No external callback runs inside an accounting gate.
++
++Application storage after that fixed wrapper prefix contains checked aligned
++regions for the actual selected TCG context, finite pools and finite constant
++tables. A pool block has canonical owner/incarnation, kind, complete extent,
++alignment and allocated/released state. All metadata, padding and unused
++reservation remain charged until the containing span actually returns. No
++count/size/alignment is chosen from observed past workload success or raised
++to make a qualification pass. A missing finite request producer refuses.
++
++The context and process-visible page/code/cache objects need separate retained
++last-use custody. ``tcg_ctxs`` publication and hot-fork context adoption make
++thread join alone insufficient. Either a genuine process-lifetime child of
++the same local parent retains them until actual image cleanup, or an actual
++unpublish/drain operation proves all users gone before application return.
++They cannot be moved silently into another parent's budget.
++
++Proposed local API and effect order
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++The proposed process-private surface is deliberately split between the real
++issuer and local physical consumers:
++
++``rr_application_reserve(donor, actor, incarnation, actual_layout, owner_out)``
++  A real Source issuer authenticates the donor and actor before dereference,
++  verifies their current same-parent contract, admits the checked whole extent
++  once before mappings or child birth, and publishes canonical debt before
++  independent posts. A layout measurement alone cannot invoke this operation.
++
++``qemu_thread_bounded_prepare_v1(owner, wrapper_span, name, entry, opaque)``
++  Initializes the actual supplied wrapper storage without ordinary heap use.
++  It consumes the authenticated local loan; it does not issue one. The worker
++  reads args/name without freeing them. Its external owner retains them through
++  actual kernel exit even if the logical last read occurred before RR entry.
++
++``qemu_thread_bounded_create_v1(owner, libc_control, expected_incarnation, attr)``
++  Uses the actual matching ``pthread_bounded_create_np`` and canonical query
++  after uncertain output publication. No returned error implies no birth.
++  Keeps real inventory start/enrollment, signal mask, BQL and RCU ordering.
++  It does not dispatch RR unless the complete selected profile is admitted.
++
++``rr_application_allocate_v1(owner, kind, bytes, alignment, output)``
++  Enforces canonical membership, actual paid subspan, finite request count,
++  checked arithmetic and alignment before publication. No ordinary heap
++  fallback. Existing typed CPU/TLB routes need genuine compatible allocator
++  routing, rather than charging the same payload again. Bounded TCG constants
++  use actual finite tables; pool exhaustion must propagate to a defined
++  pre-effect refusal or real rollback/debt path. Replacing ``g_malloc`` while
++  retaining callers that assume success is incomplete.
++
++``rr_application_release_v1(owner, allocation)``
++  Validates canonical allocation and full prefix/payload extent before access.
++  Busy, malformed, foreign, duplicate or interrupted release retains debt.
++  Logical node release does not return the containing mapping. Cross-thread
++  work keeps a real retained return holder instead of worker ``g_free``.
++
++``rr_bounded_stop_request_v1(owner, actor)``
++  Closes actual new-work admission and requests the real RR boundary stop.
++  The current ``G_NORETURN`` infinite RR loop supplies no such completion.
++  The implementing path must drain/return queued work, revoke execution loans,
++  stop all actual context users, remove the force-RCU notifier and unregister
++  the real reader at their last use, then return from the bounded entry.
++  ``cpu_thread_signal_destroyed`` or registry departure is not thread exit.
++  No BQL/RCU operation may be skipped to make stop appear complete.
++
++``rr_application_tryretire_v1(owner)``
++  First preserves the actual provider's canonical exit-cleanup/kernel-join/
++  list/TLS/registration/stack/backing facts. It never substitutes ordinary join.
++  Only after every application consumer and retained alias closes can it
++  return wrapper/application backing, then unmap/prove physical consumption,
++  then retire the exact debit. Each actual post attempt is saved before its
++  callback, returned only afterward; negative/interrupted posts retain debt.
++  All callbacks occur outside accounting gates. A busy actual inventory lock
++  leaves retryable debt; it must not introduce waiting to terminal cuts.
++
++Libc dependency and strict refusal boundary
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++The runtime needs the actual sealed matching ``pthread-bounded.h``, patched
++libc, ELF interpreter and ``libthread_db``. Stock configured glibc 2.39 does
++not implement this additive downstream API. Matching a version number or
++finding a symbol is insufficient runtime-profile authentication.
++
++The libc arena admits only DTV, dynamic TLS, second-level TSD, C++ TLS destructor
++nodes and priority bookkeeping. Its once-per-process registry backing is a
++separate process-image cost. Strict ordinary allocation returns ``ENOTSUP``;
++nonnull ordinary free preserves foreign-free debt. Resolver/error/loader
++operations refuse before unsupported producers. Those outcomes cannot be
++converted into successful application work or labeled TLS consumption.
++Creation, TLS access and callbacks may wait; bounded terminal lock cuts do
++not establish a whole-operation nonwaiting profile. Cancellation/unwinding,
++destructors, callbacks and selected modules need their own complete closure.
++
++Implementation can first provide the canonical paid wrapper primitive while
++keeping every dispatch/admission seam refusing. A wrapper-only control does
++not qualify TCG or arbitrary workloads. Actual application backing producer,
++bounded TCG/container routing, callback closure, RR stop/drain producer,
++matching corrected libc handoff and external Main reap remain prerequisites.
++
++Initial implemented storage primitive
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++``qemu_thread_bounded_storage_prepare_v1`` initializes actual caller-provided
++args, name, record and list-cell storage without allocating. The existing
++retained native record list authenticates that exact embedded owner before
++subsequent nominated-pointer access. A new actual native serial never wraps;
++its fixed storage is included by the native registry-footprint accessor. No
++new original bound is raised. The caller must still supply the genuine payer
++before this storage can participate in selected creation.
++
++Preparation rejects overlapping retained storage, native records and writable
++outputs before writing. The fixed mutex/registry/list-head/serial/census,
++writer/membership and current-thread control storage is excluded even when
++lists are empty; the actual active membership transaction body is excluded
++under its owning registry lock. A nominated output cannot overwrite a gate
++or the control used to unlink an owner. The existing inventory capacity bounds
++retained preparations. Observe and unstarted return attempt the actual registry mutex
++once, authenticate creator/process/incarnation and keep outputs outside all
++retained storage. A copied owner, stale incarnation or unknown pointer cannot
++return custody. Unstarted return unlinks the actual retained record before
++publishing return; it never frees through the ordinary heap.
++
++Only actual never-entered-creation storage can return through this interface.
++No API here calls a thread creator, dispatches the supplied entry point,
++interprets a caller's birth-status scalar or accepts a provider receipt.
++The actual Source application child and corrected-libc creation/terminal
++connection remain absent. Born/uncertain custody cannot be retired by this
++primitive; kernel exit, application/context last use, physical unmap and
++native debit retirement remain separate facts.
++
++Both preparation and unstarted return refuse during an active native RAM
++membership transaction. The actual pause begin checks the retained bounded
++owner list as well as live census/count/generation. A prepared wrapper lacks
++the separately paused RAM-actor identity, so genuine current producers cannot
++admit a pause over it; an admitted pause in turn prevents preparation. Return
++nevertheless explicitly preserves this freeze rather than relying on that
++present-day mutual exclusion. Changing the retained list while its nominal
++snapshot is active is not justified by unchanged live thread count/generation.
++Read-only observation does not unlink and may proceed with excluded outputs.
++
++Physical component qualification
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++The actual configured native thread and bounded-thread unit objects, complete
++Source object, actual component link/run and complete native-provider private
++control mode passed with one compiler worker. The new unit link was derived
++from the actual Meson dependency closure and retained executed QOM unit vector;
++it is not claimed as a previously executed bounded-thread link or a regenerated
++whole Meson configuration. The physical controls exercise real caller mappings,
++foreign creator, copied owner, stale incarnation, alias rejection and genuine
++membership pause/preparation exclusion. No Source issuer is supplied.
++
++Eighteen literal fixed-control omissions each reached the intended exclusion
++assertion, with the exact actual control-name marker, before an unsafe write.
++A signal alone was insufficient. The complete batch took 64.910 seconds under
++the original 600-second suite, 180-second compile and 30-second run limits,
++CORE 0 and 6 GiB per-process and sampled process-tree address-space ceilings.
++The sampled process-tree peak was 399286272 bytes.
++
++Complete owning-TU passive layouts measured wrapper body 504/alignment 8 plus
++the checked name extent, snapshot 32/alignment 8, args 40/alignment 8 and actual
++hot-fork record 392/alignment 8. The retained head is 8 bytes and the new native
++serial is another 8 bytes. The native fixed-registry footprint accessor includes
++both; the new cost must be included in the enclosing actual getter floor.
++Source remains 255424 bytes and the Main constructor 1600 bytes. Original
++resource bounds are unchanged. These are physical layout/component facts;
++selected creation, born return, application allocator, RR closure and runtime
++profile remain unqualified.
 diff --git a/docs/devel/crucible-quantum-stack-lender-proposal.rst b/docs/devel/crucible-quantum-stack-lender-proposal.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..409e58c30f9237ef57a4943d5ba2e50b15b0d6a9
@@ -89699,6 +90019,82 @@ index 0000000000000000000000000000000000000000..f94d47284978a89d60333d71817c6922
 +    int *descriptors, size_t descriptor_capacity);
 +
 +#endif
+diff --git a/include/qemu/crucible-stack-resource.h b/include/qemu/crucible-stack-resource.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..eb0860a646c65ef030d10e8c73bf21df9c98a278
+--- /dev/null
++++ b/include/qemu/crucible-stack-resource.h
+@@ -0,0 +1,70 @@
++/*
++ * Canonical process-private stack resource transfer journals.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef QEMU_CRUCIBLE_STACK_RESOURCE_H
++#define QEMU_CRUCIBLE_STACK_RESOURCE_H
++
++#include "qemu/crucible-metadata-partition.h"
++
++typedef struct QemuCrucibleExternalStackCleanup QemuCrucibleExternalStackCleanup;
++
++/* A post is independent of the physical call. In particular, known consumption
++ * survives a negative post, whereas interrupted calls never imply consumption.
++ */
++typedef struct QemuCrucibleStackEffect {
++    int status;
++    int post_status;
++    bool attempted;
++    bool returned;
++    bool consumed;
++    bool post_attempted;
++    bool post_returned;
++} QemuCrucibleStackEffect;
++
++/* The real pre-exec issuer must publish these exact records before birth. There
++ * is deliberately no constructor from wire bytes, RLIMIT, addresses or totals.
++ * The resource parent is the actual local process incarnation. Independent
++ * cleanup custody and a complete accepting profile still need real producers.
++ *
++ * prefix_partition is installed only at the actual native-prefix custody move.
++ * Moving the two role debits to Source changes their owner, not native_live.
++ */
++typedef struct QemuCruciblePreexecStackGrant {
++    struct QemuCruciblePreexecStackGrant *canonical_owner;
++    QemuCruciblePreexecPurposeOwner *issuer;
++    QemuCrucibleIncarnationPurposeOwner *resource_parent;
++    QemuCrucibleSourceAssignmentOwner *assignment;
++    QemuCrucibleProcessContractOwner *contract;
++    QemuCrucibleExternalStackCleanup *cleanup[2];
++    QemuCrucibleMetadataPartition *prefix_partition;
++    QemuCrucibleStackPurpose purpose;
++    QemuCrucibleMetadataAdmission role_debit[2];
++    QemuCrucibleStackEffect reservation;
++    uint64_t prefix_bytes;
++    long process;
++    int profile_status;
++    bool profile_attempted;
++    bool profile_returned;
++    bool parent_retained;
++    bool profile_retained;
++    bool prefix_transferred;
++    bool source_transferred;
++} QemuCruciblePreexecStackGrant;
++
++/* Returns no grant until complete profile and independent cleanup custody
++ * have producers. Failure leaves the caller's holder untouched. This is a
++ * private native edge, never a service-table edition or a wire capability.
++ */
++int qemu_crucible_preexec_stack_grant_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant **holder);
++
++/* Authenticates exact embedded-donor membership before dereference, then the
++ * real retained grant/profile/cleanup Current. No accepting producer exists.
++ */
++int qemu_crucible_preexec_stack_grant_current_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant *grant);
++
++#endif
 diff --git a/include/qemu/event_notifier.h b/include/qemu/event_notifier.h
 index 8a4ff308e191b21307eff0d6f46cc37c5faef7f2..d2b5bc31af63bcbd648ad3ce19b5175ff6bf9e76 100644
 --- a/include/qemu/event_notifier.h
@@ -90663,7 +91059,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..05189a7919e528df30462e95a188795a
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..300354b013317b0b70eacbc1b836730ff39a448a 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..44e5e6869630ca859013312cb782977b5f29bab8 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -9,6 +9,7 @@ typedef struct QemuCond QemuCond;
@@ -90713,7 +91109,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..300354b013317b0b70eacbc1b836730f
  void qemu_rec_mutex_init(QemuRecMutex *mutex);
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex);
  void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line);
-@@ -218,6 +251,451 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +251,483 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -90727,6 +91123,38 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..300354b013317b0b70eacbc1b836730f
 + * floor. Individual actual records remain in the dynamic bounded geometry. */
 +size_t qemu_thread_bounded_registry_fixed_storage_bytes(void);
 +size_t qemu_thread_bounded_control_bytes(size_t name_bytes);
++
++/* Actual caller-backed startup storage, separate from stack and libc TLS.
++ * Preparation reserves args, name, inventory record and list cell without
++ * ordinary allocation. It grants no Source enrollment or thread dispatch. */
++typedef struct QemuThreadBoundedStorage QemuThreadBoundedStorage;
++
++typedef struct QemuThreadBoundedStorageSnapshot {
++    uintptr_t backing;
++    size_t backing_bytes;
++    uint64_t incarnation;
++    bool prepared;
++    bool creation_attempted;
++    bool birth_uncertain;
++    bool return_attempted;
++    bool custody_returned;
++} QemuThreadBoundedStorageSnapshot;
++
++size_t qemu_thread_bounded_storage_bytes_v1(size_t name_bytes);
++int qemu_thread_bounded_storage_prepare_v1(
++    void *backing, size_t bytes, const char *name,
++    void *(*entry)(void *), void *opaque,
++    QemuThreadBoundedStorage **out, uint64_t *incarnation);
++int qemu_thread_bounded_storage_observe_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedStorageSnapshot *out);
++/* Only a canonical preparation that never entered any creation operation can
++ * return here. This is not kernel join, libc retirement, unmap or debit return.
++ * A born or uncertain birth requires the genuine provider terminal producer,
++ * which is deliberately not connected by this storage-only interface. */
++int qemu_thread_bounded_storage_return_unstarted_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedStorageSnapshot *out);
 +
 +/* Joinable thread on an already retained stack mapping. The receipt starts
 + * zeroed and remains caller-owned through actual registry departure and join.
@@ -94496,6 +94924,103 @@ index 0000000000000000000000000000000000000000..7fdbaf05a28166efade32274a1e3845b
 +bool crucible_sim_preemption_apply_due(CPUState **cpu);
 +
 +#endif /* SYSTEM_CRUCIBLE_SIM_PREEMPTION_H */
+diff --git a/include/system/crucible-stack-bank.h b/include/system/crucible-stack-bank.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..34889459e60f5be394c6c945011dbeee98135fc8
+--- /dev/null
++++ b/include/system/crucible-stack-bank.h
+@@ -0,0 +1,91 @@
++/*
++ * Retained Main/RR stack custody beneath the actual local native prefix.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef SYSTEM_CRUCIBLE_STACK_BANK_H
++#define SYSTEM_CRUCIBLE_STACK_BANK_H
++
++#include "qemu/crucible-stack-resource.h"
++#include "qemu/thread.h"
++
++typedef enum QemuCrucibleStackRole {
++    CRUCIBLE_STACK_MAIN,
++    CRUCIBLE_STACK_RR,
++    CRUCIBLE_STACK_ROLE_COUNT,
++} QemuCrucibleStackRole;
++
++typedef struct QemuCrucibleStackBank QemuCrucibleStackBank;
++
++/* The holder is in the genuine constructor/RR owner, never on its call stack.
++ * Resource borrowing supplies no semantic operation or cleanup interval.
++ */
++typedef struct QemuCrucibleStackBorrower {
++    QemuCrucibleStackBank *bank;
++    struct QemuCrucibleStackBorrower **holder;
++    const void *actor;
++    uint64_t actor_epoch;
++    uint64_t epoch;
++    QemuThread thread;
++    QemuCrucibleStackEffect birth;
++    QemuCrucibleStackEffect release;
++    bool held;
++    bool uncertain;
++    bool retired;
++} QemuCrucibleStackBorrower;
++
++/* Complete journals exist before mmap, pthread creation or any borrower birth.
++ * Main's external reap is distinct from RR's join, TSD completion and unmap.
++ */
++typedef struct QemuCrucibleStackBankRole {
++    QemuCrucibleStackRolePurpose purpose;
++    QemuCrucibleExternalStackCleanup *cleanup;
++    QemuCrucibleMetadataAdmission admission;
++    QemuCrucibleStackBorrower borrower;
++    const void *actor;
++    uint64_t actor_epoch;
++    uint64_t retired_borrowers;
++    void *mapping;
++    void *usable;
++    QemuThread thread;
++    QemuThreadBoundedCreateReceipt thread_birth;
++    QemuCrucibleStackEffect mapping_birth;
++    QemuCrucibleStackEffect protection;
++    QemuCrucibleStackEffect bounded_birth;
++    QemuCrucibleStackEffect join;
++    QemuCrucibleStackEffect identity_return;
++    QemuCrucibleStackEffect control_return;
++    QemuCrucibleStackEffect tls_return;
++    QemuCrucibleStackEffect unmap;
++    QemuCrucibleStackEffect process_reap;
++    QemuCrucibleStackEffect debit_return;
++    bool physical_live;
++    bool uncertain;
++} QemuCrucibleStackBankRole;
++
++/* This storage is included in the actual sizeof(Source) floor before birth.
++ * fixed_backing is a subextent of that floor; the physical role charges are
++ * transferred from their canonical preexec debits and are never charged twice.
++ */
++struct QemuCrucibleStackBank {
++    QemuCrucibleStackBank *canonical_owner;
++    QemuCrucibleMetadataPartition *partition;
++    QemuCruciblePreexecPurposeOwner *issuer;
++    QemuCruciblePreexecStackGrant *grant;
++    QemuCrucibleMetadataCharge fixed_backing;
++    QemuCrucibleStackBankRole roles[CRUCIBLE_STACK_ROLE_COUNT];
++    uint64_t generation;
++    uint64_t process_generation;
++    uint64_t account_generation;
++    uint64_t lender_generation;
++    uint64_t native_bytes;
++    int64_t process;
++    int first_status;
++    int post_status;
++    bool backing_retained;
++    bool adoption_attempted;
++    bool adopted;
++    bool adoption_post_attempted;
++    bool adoption_post_returned;
++};
++
++#endif
 diff --git a/include/system/dma.h b/include/system/dma.h
 index 82e7ad54374f1b200edbc7b06ff08bddd5ec8b15..68eaf51eefc7de83834cdb5bb6d2352a6eca2faa 100644
 --- a/include/system/dma.h
@@ -95818,10 +96343,10 @@ index e7479084726c661e75447fd1330ee7cdba888e88..db6fbd5c8a924de2dfe36f8033694076
  }
  
 diff --git a/meson.build b/meson.build
-index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..2ec126104cf624be7898e4056af98c06222fe4fd 100644
+index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..033e5e5f46e849e54b25f909ba995cbc628e5e37 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -3434,6 +3434,32 @@ foreach target: target_dirs
+@@ -3434,6 +3434,33 @@ foreach target: target_dirs
    target_configs_h += config_target_h[target]
    target_configs_h += config_devices_h.get(target, [])
  endforeach
@@ -95841,6 +96366,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..2ec126104cf624be7898e4056af98c06
 +                 'system/crucible-preexec-publisher-recipient.inc.h',
 +                 'system/crucible-preexec-publisher-offer.inc.h',
 +                 'include/qemu/crucible-publisher-protocol.h',
++                 'include/qemu/crucible-stack-resource.h',
 +                 'include/qemu/crucible-process-purpose.h',
 +                 'plugins/crucible-device-workspace.c',
 +                 'include/qemu/crucible-device-workspace.h',
@@ -95854,7 +96380,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..2ec126104cf624be7898e4056af98c06
  genh += custom_target('config-poison.h',
                        input: [target_configs_h],
                        output: 'config-poison.h',
-@@ -4410,10 +4436,14 @@ foreach target : target_dirs
+@@ -4410,10 +4437,14 @@ foreach target : target_dirs
                   build_by_default: false)
  
    if target.endswith('-softmmu')
@@ -192623,10 +193149,10 @@ index 0000000000000000000000000000000000000000..67b4fa81766a1f5a9efdbf364f954fec
 +}
 diff --git a/plugins/crucible-pending-constructor.inc.h b/plugins/crucible-pending-constructor.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..999da2983eca9313fd5dcd9c043d38e4ccb8d85a
+index 0000000000000000000000000000000000000000..28c7106b63f97f38e6bfaf578e830ee4164341a2
 --- /dev/null
 +++ b/plugins/crucible-pending-constructor.inc.h
-@@ -0,0 +1,760 @@
+@@ -0,0 +1,762 @@
 +/*
 + * Registered lifetime of the actual pending Quantum constructor.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -192641,7 +193167,7 @@ index 0000000000000000000000000000000000000000..999da2983eca9313fd5dcd9c043d38e4
 +        &startup_source.command_member.pending_constructor;
 +    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
 +
-+    return quantum_bank_resources_closed() &&
++    return quantum_bank_resources_closed() && stack_bank_borrowers_closed() &&
 +        quantum_rr_parent_closed() && quantum_original_closed() &&
 +        quantum_wrapper_closed() && pending_deferred_closed() &&
 +        !registration->active_child && !lender->constructor &&
@@ -193371,6 +193897,7 @@ index 0000000000000000000000000000000000000000..999da2983eca9313fd5dcd9c043d38e4
 +    }
 +    /* Post observes retained Runtime/lender/session journals, never the Core
 +     * Original or a released wrapper. Negative post cannot resurrect a child. */
++    child->return_post_attempted = true;
 +    resource_post = quantum_bank_resource_post_begin(child, true);
 +    post = pending_constructor_post(child);
 +    quantum_bank_resource_post(child, post, true);
@@ -193380,6 +193907,7 @@ index 0000000000000000000000000000000000000000..999da2983eca9313fd5dcd9c043d38e4
 +    }
 +    child->return_first_status = first ? first : physical;
 +    child->return_post_status = post;
++    qatomic_store_release(&child->return_post_returned, true);
 +    quantum_wrapper_terminal_record();
 +    pending_constructor_disposition(child, out, child->return_first_status, post);
 +    return child->return_first_status ? child->return_first_status : post;
@@ -213404,12 +213932,523 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +    object_unref(OBJECT(retained_chardev));
 +    return transferred;
 +}
+diff --git a/plugins/crucible-stack-bank.inc.h b/plugins/crucible-stack-bank.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..56af4f0f563adbe761bdbdf83e1c7e62f9a1d98e
+--- /dev/null
++++ b/plugins/crucible-stack-bank.inc.h
+@@ -0,0 +1,505 @@
++/*
++ * Canonical stack debit moves and factual borrower retirement.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++/* Command closure concerns only its borrower, never destruction of the Main
++ * process or the long-lived shared RR stack needed to perform that closure.
++ */
++static bool stack_bank_borrowers_closed(void)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++
++    if (startup_source.pending_constructor.stack_resources ||
++        startup_source.quantum_rr_execution.stack_resources) {
++        return false;
++    }
++    for (size_t index = 0; index < CRUCIBLE_STACK_ROLE_COUNT; index++) {
++        const QemuCrucibleStackBorrower *borrower = &bank->roles[index].borrower;
++
++        if (borrower->held || borrower->uncertain ||
++            (borrower->birth.attempted && !borrower->retired)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* Only the actual preexec Source constructor calls this after its complete
++ * fixed floor was reserved. This records existing backing, not new capacity.
++ */
++static int stack_bank_backing_prepare(void)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++
++    if (bank->backing_retained || bank->canonical_owner) {
++        return -EALREADY;
++    }
++    if (!startup_source.custody_retained || !startup_source.preexec_purpose_owner ||
++        !partition->published || !partition->controller_retained ||
++        partition->fixed_native_extent !=
++            qemu_crucible_startup_source_fixed_control_extent() ||
++        partition->fixed_native_extent < sizeof(startup_source)) {
++        return -EPERM;
++    }
++    bank->canonical_owner = bank;
++    bank->partition = partition;
++    bank->issuer = startup_source.preexec_purpose_owner;
++    bank->process = startup_source.owner_process;
++    bank->process_generation = startup_source.process_purpose_record.process_generation;
++    bank->account_generation = startup_source.process_purpose_record.account_generation;
++    bank->fixed_backing = (QemuCrucibleMetadataCharge) { sizeof(*bank), true };
++    bank->backing_retained = true;
++    return 0;
++}
++
++static int stack_bank_identity_locked(QemuCrucibleStackBank *bank)
++{
++    if (bank != &startup_source.stack_bank || bank->canonical_owner != bank ||
++        bank->partition != &startup_source.metadata_partition ||
++        bank->issuer != startup_source.preexec_purpose_owner ||
++        bank->process != getpid() || !bank->backing_retained ||
++        !bank->fixed_backing.held || bank->fixed_backing.bytes != sizeof(*bank) ||
++        bank->process_generation !=
++            startup_source.process_purpose_record.process_generation ||
++        bank->account_generation !=
++            startup_source.process_purpose_record.account_generation) {
++        return -EPERM;
++    }
++    return 0;
++}
++
++/* The genuine preexec transfer must already have moved this donor's complete
++ * prefix into this partition. A canonical role debit is moved once; importing
++ * an equal scalar charge or incrementing native_live here would double debit.
++ * This private cut has no accepting caller until the actual parent is supplied.
++ */
++static int G_GNUC_UNUSED stack_bank_adopt_preexec(
++    QemuCruciblePreexecStackGrant *grant)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleMetadataPartition *partition = &startup_source.metadata_partition;
++    const QemuCrucibleStackRolePurpose *purposes[2];
++    uint64_t total = 0;
++    int status = stack_bank_identity_locked(bank);
++
++    if (status) {
++        return status;
++    }
++    /* This real owner leaf proves exact embedded membership before any donor
++     * dereference. Its genuine grant/profile/cleanup reciprocals run outside
++     * the accounting gate; the current tree refuses their absent producers.
++     */
++    status = qemu_crucible_preexec_stack_grant_current_v1(bank->issuer, grant);
++    if (status) {
++        return status;
++    }
++    if (!crucible_metadata_partition_enter(partition)) {
++        return -EAGAIN;
++    }
++    if (!grant || grant->canonical_owner != grant ||
++        grant->issuer != bank->issuer ||
++        grant->resource_parent != startup_source.incarnation_purpose_owner ||
++        grant->assignment != startup_source.source_assignment_owner ||
++        grant->contract != startup_source.process_contract_owner ||
++        !grant->reservation.attempted || !grant->reservation.returned ||
++        !grant->reservation.consumed || grant->reservation.status ||
++        !grant->reservation.post_attempted || !grant->reservation.post_returned ||
++        grant->reservation.post_status ||
++        !grant->parent_retained || !grant->profile_attempted ||
++        !grant->profile_returned || !grant->profile_retained ||
++        grant->profile_status || grant->process != bank->process ||
++        grant->purpose.process_generation != bank->process_generation ||
++        grant->purpose.account_generation != bank->account_generation ||
++        !grant->purpose.generation || grant->purpose.generation == UINT64_MAX ||
++        !grant->purpose.lender_generation ||
++        grant->purpose.lender_generation == UINT64_MAX ||
++        grant->prefix_partition != partition || !grant->prefix_transferred ||
++        grant->prefix_bytes != startup_source.preexec_native_extent ||
++        grant->source_transferred) {
++        status = -ENOKEY;
++        goto out;
++    }
++    if (bank->adoption_attempted) {
++        status = -EALREADY;
++        goto out;
++    }
++    status = crucible_metadata_partition_admission_status(partition);
++    if (status) {
++        goto out;
++    }
++    purposes[0] = &grant->purpose.main;
++    purposes[1] = &grant->purpose.rr;
++    for (size_t index = 0; index < CRUCIBLE_STACK_ROLE_COUNT; index++) {
++        const QemuCrucibleStackRolePurpose *purpose = purposes[index];
++        const QemuCrucibleMetadataAdmission *debit = &grant->role_debit[index];
++        uint64_t bytes = purpose->mapping_bytes;
++
++        if (!purpose->loan_generation || purpose->loan_generation == UINT64_MAX ||
++            !purpose->cleanup_generation || purpose->cleanup_generation == UINT64_MAX ||
++            purpose->process_generation != bank->process_generation ||
++            purpose->account_generation != bank->account_generation ||
++            !grant->cleanup[index] || !bytes ||
++            purpose->control_bytes > UINT64_MAX - bytes) {
++            status = -ESTALE;
++            goto out;
++        }
++        bytes += purpose->control_bytes;
++        if (purpose->tls_bytes > UINT64_MAX - bytes) {
++            status = -EOVERFLOW;
++            goto out;
++        }
++        bytes += purpose->tls_bytes;
++        if (bytes > UINT64_MAX - total) {
++            status = -EOVERFLOW;
++            goto out;
++        }
++        total += bytes;
++        if (!debit->charge.held || debit->charge.bytes != bytes ||
++            !debit->post_attempted || debit->first_status || debit->post_status) {
++            status = -ESTALE;
++            goto out;
++        }
++    }
++    if (total != grant->purpose.native_inventory ||
++        total > grant->prefix_bytes || total > partition->native_live) {
++        status = -ESTALE;
++        goto out;
++    }
++
++    /* All fallible checks precede this callback-free ownership move. The
++     * donor's consumed disposition and Source custody publish together before
++     * any later independent post. Main is already live; RR is not born yet.
++     */
++    bank->adoption_attempted = true;
++    bank->grant = grant;
++    bank->generation = grant->purpose.generation;
++    bank->lender_generation = grant->purpose.lender_generation;
++    bank->native_bytes = total;
++    for (size_t index = 0; index < CRUCIBLE_STACK_ROLE_COUNT; index++) {
++        QemuCrucibleStackBankRole *role = &bank->roles[index];
++        QemuCrucibleMetadataAdmission *debit = &grant->role_debit[index];
++
++        role->purpose = *purposes[index];
++        role->cleanup = grant->cleanup[index];
++        crucible_metadata_admission_transfer(debit, &role->admission,
++                                             debit->charge.bytes);
++    }
++    bank->roles[CRUCIBLE_STACK_MAIN].physical_live = true;
++    grant->source_transferred = true;
++    bank->adopted = true;
++
++out:
++    crucible_metadata_partition_leave(partition);
++    return status;
++}
++
++static int stack_bank_available_locked(QemuCrucibleStackBank *bank)
++{
++    int status = stack_bank_identity_locked(bank);
++
++    if (status) {
++        return status;
++    }
++    if (!bank->adopted || !bank->grant || !bank->grant->source_transferred ||
++        bank->grant->prefix_partition != bank->partition ||
++        bank->grant->resource_parent !=
++            startup_source.incarnation_purpose_owner ||
++        !bank->grant->parent_retained ||
++        !bank->grant->profile_retained) {
++        return -ENOKEY;
++    }
++    if (!bank->adoption_post_attempted || !bank->adoption_post_returned) {
++        return -EINPROGRESS;
++    }
++    return bank->first_status ? bank->first_status : bank->post_status;
++}
++
++/* Consumption precedes the actual Main return post. Acquire the producer's
++ * completion fact before inspecting that post's saved result; default zero or
++ * an interrupted callback cannot permit another borrower incarnation.
++ */
++static bool stack_bank_main_retired(
++    const QemuCrucibleSourcePendingQuantumConstructor *child)
++{
++    if (!qatomic_load_acquire(&child->return_post_returned)) {
++        return false;
++    }
++    return !child->held && child->consumed && child->return_attempted &&
++        child->return_post_attempted && !child->physical_status &&
++        !child->return_post_status;
++}
++
++/* Only actual inline Source actors can nominate these fixed holders. This
++ * checks physical identity, not a Main Current callback from an RR thread.
++ */
++static int stack_bank_actor_identity_locked(
++    QemuCrucibleStackRole index, const void *actor, uint64_t epoch,
++    QemuCrucibleStackBorrower **holder, bool retired)
++{
++    if (index == CRUCIBLE_STACK_MAIN) {
++        QemuCrucibleSourcePendingQuantumConstructor *child =
++            &startup_source.pending_constructor;
++
++        if (actor != child || holder != &child->stack_resources ||
++            child->canonical_owner != child || child->serial != epoch ||
++            child->process != getpid() || !child->attempted ||
++            child->uncertain || child->observing ||
++            (!retired && (!child->held || !qemu_thread_is_self(&child->thread))) ||
++            (retired && !stack_bank_main_retired(child))) {
++            return -ESTALE;
++        }
++        return 0;
++    }
++    if (index == CRUCIBLE_STACK_RR) {
++        QemuCrucibleSourceQuantumRRExecution *rr = &startup_source.quantum_rr_execution;
++
++        if (actor != rr || holder != &rr->stack_resources ||
++            rr->canonical_owner != rr || rr->serial != epoch ||
++            rr->process != getpid() || !rr->attempted || rr->uncertain ||
++            (!retired && (!rr->held || !qemu_thread_is_self(&rr->thread))) ||
++            (retired && (rr->held || !rr->physical_return_attempted ||
++                         !rr->physical_consumed || !rr->physical_post_attempted ||
++                         !rr->physical_post_returned || rr->physical_post_status ||
++                         rr->physical_first_status ||
++                         !rr->allocation_link_return_attempted ||
++                         !rr->allocation_link_consumed ||
++                         !rr->allocation_link_post_attempted ||
++                         !rr->allocation_link_post_returned ||
++                         rr->allocation_link_post_status))) {
++            return -ESTALE;
++        }
++        return 0;
++    }
++    return -EINVAL;
++}
++
++/* Commands metadata is held by the real Main/RR producer. That producer must
++ * bind role->actor from its canonical actor before invoking this private leaf;
++ * no API accepts a caller-supplied Current callback or actor registration.
++ */
++static int G_GNUC_UNUSED stack_bank_borrow_locked(
++    QemuCrucibleStackRole index, const void *actor, uint64_t actor_epoch,
++    QemuCrucibleStackBorrower **holder)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleStackBankRole *role;
++    QemuCrucibleStackBorrower *borrower;
++    uint64_t epoch;
++    int status = stack_bank_available_locked(bank);
++
++    if (status) {
++        return status;
++    }
++    if ((index != CRUCIBLE_STACK_MAIN && index != CRUCIBLE_STACK_RR) ||
++        !holder || *holder) {
++        return -EINVAL;
++    }
++    status = stack_bank_actor_identity_locked(index, actor, actor_epoch,
++                                               holder, false);
++    if (status) {
++        return status;
++    }
++    role = &bank->roles[index];
++    borrower = &role->borrower;
++    if (!actor || role->actor != actor || !actor_epoch || actor_epoch == UINT64_MAX ||
++        role->actor_epoch != actor_epoch || !role->cleanup ||
++        !role->admission.charge.held || !role->physical_live || role->uncertain) {
++        return -EPERM;
++    }
++    if (borrower->held || borrower->uncertain ||
++        (borrower->birth.attempted && !borrower->retired)) {
++        return -EBUSY;
++    }
++    if (borrower->epoch >= UINT64_MAX - 1) {
++        return -EOVERFLOW;
++    }
++    epoch = borrower->epoch + 1;
++    *borrower = (QemuCrucibleStackBorrower) {
++        .bank = bank,
++        .holder = holder,
++        .actor = actor,
++        .actor_epoch = actor_epoch,
++        .epoch = epoch,
++        .birth = { .attempted = true, .returned = true },
++        .held = true,
++    };
++    qemu_thread_get_self(&borrower->thread);
++    *holder = borrower;
++    return 0;
++}
++
++/* These pure leaves record local consumption, independently of the later real
++ * actor/identity post. A refused post cannot resurrect or rearm this borrower.
++ * They return no stack backing and do not join, unmap or reap anything.
++ */
++static int G_GNUC_UNUSED stack_bank_return_locked(
++    QemuCrucibleStackRole index, QemuCrucibleStackBorrower **holder,
++    const void *actor, uint64_t actor_epoch, uint64_t epoch)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleStackBorrower *borrower;
++    int status = stack_bank_identity_locked(bank);
++
++    if (status) {
++        return status;
++    }
++    if ((index != CRUCIBLE_STACK_MAIN && index != CRUCIBLE_STACK_RR) || !holder) {
++        return -EINVAL;
++    }
++    status = stack_bank_actor_identity_locked(index, actor, actor_epoch,
++                                               holder, false);
++    if (status) {
++        return status;
++    }
++    borrower = &bank->roles[index].borrower;
++    if (borrower->holder != holder || *holder != borrower ||
++        borrower->bank != bank || borrower->actor != actor ||
++        borrower->actor_epoch != actor_epoch || borrower->epoch != epoch ||
++        !qemu_thread_is_self(&borrower->thread) || !borrower->held) {
++        return -ESTALE;
++    }
++    if (borrower->release.attempted) {
++        return -EALREADY;
++    }
++    borrower->release.attempted = true;
++    borrower->held = false;
++    *holder = NULL;
++    borrower->release.consumed = true;
++    borrower->release.returned = true;
++    return 0;
++}
++
++/* Called only after the owning actor's factual retirement producer has closed
++ * its real holder and independently published both posts. Default zero status,
++ * a null holder or command-number change cannot establish those return facts.
++ */
++static int G_GNUC_UNUSED stack_bank_retire_locked(
++    QemuCrucibleStackRole index, const void *actor, uint64_t actor_epoch,
++    uint64_t epoch)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleStackBankRole *role;
++    QemuCrucibleStackBorrower *borrower;
++    int status = stack_bank_identity_locked(bank);
++
++    if (status) {
++        return status;
++    }
++    if ((index != CRUCIBLE_STACK_MAIN && index != CRUCIBLE_STACK_RR)) {
++        return -EINVAL;
++    }
++    role = &bank->roles[index];
++    borrower = &role->borrower;
++    if (borrower->bank != bank || borrower->actor != actor ||
++        borrower->actor_epoch != actor_epoch || borrower->epoch != epoch ||
++        !borrower->holder || *borrower->holder || borrower->held ||
++        borrower->uncertain || role->uncertain || borrower->retired ||
++        !borrower->birth.attempted || !borrower->birth.returned ||
++        !borrower->birth.post_attempted ||
++        !borrower->birth.post_returned || borrower->birth.status ||
++        borrower->birth.post_status || !borrower->release.attempted ||
++        !borrower->release.returned || !borrower->release.consumed ||
++        !borrower->release.post_attempted || !borrower->release.post_returned ||
++        borrower->release.status || borrower->release.post_status) {
++        return -EBUSY;
++    }
++    status = stack_bank_actor_identity_locked(index, actor, actor_epoch,
++                                               borrower->holder, true);
++    if (status) {
++        return status;
++    }
++    if (role->retired_borrowers == UINT64_MAX) {
++        return -EOVERFLOW;
++    }
++    role->retired_borrowers++;
++    borrower->retired = true;
++    return 0;
++}
++
++/* Private entry for a future paired constructor, using the same real one-shot
++ * metadata primitive as other RR terminal routes. All owner/semantic posts
++ * belong after metadata_end; this section runs no reciprocal or destructor.
++ */
++static int G_GNUC_UNUSED stack_bank_try_borrow(
++    QemuCrucibleStackRole index, const void *actor, uint64_t actor_epoch,
++    QemuCrucibleStackBorrower **holder)
++{
++    QemuMutexMetadataSection metadata = { 0 };
++    int status;
++
++    if (!qatomic_load_acquire(&startup_source.commands.initialized)) {
++        return -EPERM;
++    }
++    status = qemu_mutex_metadata_trybegin(&startup_source.commands.mutex, &metadata);
++    if (status) {
++        return status;
++    }
++    status = stack_bank_borrow_locked(index, actor, actor_epoch, holder);
++    qemu_mutex_metadata_end(&metadata);
++    return status;
++}
++
++static bool stack_effect_return_complete(const QemuCrucibleStackEffect *effect)
++{
++    return effect->attempted && effect->returned && !effect->status &&
++        effect->post_attempted && effect->post_returned && !effect->post_status;
++}
++
++static bool stack_effect_consumed(const QemuCrucibleStackEffect *effect)
++{
++    return stack_effect_return_complete(effect) && effect->consumed;
++}
++
++/* This is accounting after factual RR consumption, not physical destruction.
++ * A busy accounting lane retains the charge; no join or unmap is repeated.
++ * Main has no corresponding local refund: its external reap owner survives
++ * this process and is solely responsible for that containing resource return.
++ */
++static int G_GNUC_UNUSED stack_bank_rr_debit_return(void)
++{
++    QemuCrucibleStackBank *bank = &startup_source.stack_bank;
++    QemuCrucibleStackBankRole *rr = &bank->roles[CRUCIBLE_STACK_RR];
++    QemuMutexMetadataSection metadata = { 0 };
++    int status;
++
++    if (!qatomic_load_acquire(&startup_source.commands.initialized)) {
++        return -EPERM;
++    }
++    status = qemu_mutex_metadata_trybegin(&startup_source.commands.mutex, &metadata);
++    if (status) {
++        return status;
++    }
++    status = stack_bank_identity_locked(bank);
++    if (!status && (!bank->adopted || rr->borrower.held || rr->borrower.uncertain ||
++        (rr->borrower.birth.attempted && !rr->borrower.retired) ||
++        rr->uncertain || !rr->cleanup || !rr->admission.charge.held ||
++        !stack_effect_return_complete(&rr->bounded_birth) ||
++        !rr->thread_birth.birth_attempted || !rr->thread_birth.born ||
++        rr->thread_birth.first_status || rr->thread_birth.create_status ||
++        rr->thread_birth.mask_restore_status || rr->thread_birth.attr_destroy_status ||
++        !rr->thread_birth.joined || !rr->thread_birth.registry_returned ||
++        !rr->thread_birth.identity_returned ||
++        !stack_effect_consumed(&rr->join) ||
++        !stack_effect_consumed(&rr->identity_return) ||
++        !stack_effect_consumed(&rr->unmap) ||
++        (rr->purpose.control_bytes && !stack_effect_consumed(&rr->control_return)) ||
++        (rr->purpose.tls_bytes && !stack_effect_consumed(&rr->tls_return)) ||
++        rr->debit_return.attempted)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        rr->debit_return.attempted = true;
++    }
++    qemu_mutex_metadata_end(&metadata);
++    if (status) {
++        return status;
++    }
++
++    status = crucible_metadata_native_retire(bank->partition, &rr->admission.charge);
++    rr->debit_return.status = status;
++    rr->debit_return.consumed = !rr->admission.charge.held;
++    qatomic_store_release(&rr->debit_return.returned, true);
++    return status;
++}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf3d167dfa
+index 0000000000000000000000000000000000000000..fc4ada023184ae9d9ec4bbfe43387b13623a86eb
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8807 @@
+@@ -0,0 +1,8827 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -213480,6 +214519,8 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +    } while (0)
 +
 +static int quantum_bank_backing_prepare(void);
++static int stack_bank_backing_prepare(void);
++static bool stack_bank_borrowers_closed(void);
 +static bool pending_deferred_closed(void);
 +static int pending_deferred_handoff(QemuCrucibleSourceAdvanceReceiver *receiver);
 +static bool pending_constructor_closed(void);
@@ -213790,6 +214831,18 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +        startup_source.acquisition_attempted) {
 +        return -EALREADY;
 +    }
++    if (borrowed.plan->schema == 11) {
++        QemuCruciblePreexecStackGrant *grant = NULL;
++
++        status = qemu_crucible_preexec_stack_grant_borrow_v1(owner, &grant);
++        if (status) {
++            return status;
++        }
++        /* No accepting external stack/profile producer exists in this tree.
++         * Even an inconsistent success without a grant cannot publish Source.
++         */
++        return -ENOTSUP;
++    }
 +    /* Install actual Source custody before any fallible accounting/post cut.
 +     * The containing owner remains the same executable singleton on refusal.
 +     */
@@ -213822,6 +214875,7 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +    startup_source.preexec_purpose_owner = owner;
 +    startup_source.process_contract_owner = borrowed.contract;
 +    startup_source.incarnation_purpose_owner = borrowed.incarnation;
++    startup_source.source_assignment_owner = borrowed.source_assignment;
 +    startup_source.ram_endpoint_purpose_owner = borrowed.ram_endpoint;
 +    startup_preexec_copy(&startup_source.original, &borrowed.plan->startup,
 +                         sizeof(startup_source.original));
@@ -213859,6 +214913,10 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +    qatomic_store_release(&partition->published, true);
 +    status = crucible_metadata_control7_reserve(partition,
 +                                               borrowed.plan->purpose.requests);
++    if (status) {
++        return startup_failure(status);
++    }
++    status = stack_bank_backing_prepare();
 +    if (status) {
 +        return startup_failure(status);
 +    }
@@ -222192,6 +223250,7 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +#include "crucible-advance-receiver.inc.h"
 +#include "crucible-pending-command.inc.h"
 +#include "crucible-quantum-bank.inc.h"
++#include "crucible-stack-bank.inc.h"
 +#include "crucible-pending-constructor.inc.h"
 +#include "crucible-pending-offer.inc.h"
 +#include "crucible-ram-reader.inc.h"
@@ -222219,10 +223278,10 @@ index 0000000000000000000000000000000000000000..1852d5921f18fffe728b9e683e318aaf
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e045623562661
+index 0000000000000000000000000000000000000000..e52a14e6f5e58b8ed1471b7ee3da9021662643d8
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,4376 @@
+@@ -0,0 +1,4383 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -222254,6 +223313,7 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 +#include "qemu/crucible-register-workspace.h"
 +#include "system/crucible-native-park-request.h"
 +#include "system/crucible-quantum-bank.h"
++#include "system/crucible-stack-bank.h"
 +#include "io/channel-socket.h"
 +#include "plugin.h"
 +
@@ -222632,6 +223692,7 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 +/* One actual registered child survives partial Core entry and Original moves.
 + * All storage is inline and charged by the complete Source floor before birth. */
 +struct QemuCrucibleSourcePendingQuantumConstructor {
++    QemuCrucibleStackBorrower *stack_resources;
 +    QemuCrucibleCoreQuantumResourceLoan *resources;
 +    uint64_t resource_serial;
 +    QemuCrucibleSourceQuantumOriginalBorrow *quantum_original;
@@ -222689,6 +223750,8 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 +    bool module_owner_seen;
 +    bool observing;
 +    bool return_attempted;
++    bool return_post_attempted;
++    bool return_post_returned;
 +    bool consumed;
 +    bool uncertain;
 +    struct qemu_plugin_crucible_pending_constructor_receipt_v1 construction;
@@ -225663,6 +226726,7 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 + * Its canonical Core keeper owns the one QOM pin; no RR stack coordinate is
 + * retained here. Actor identity is distinct from a Module work/cleanup guard. */
 +struct QemuCrucibleSourceQuantumRRExecution {
++    QemuCrucibleStackBorrower *stack_resources;
 +    QemuCrucibleSourceQuantumRRExecution *canonical_owner;
 +    QemuCrucibleSourceQuantumRRExecution **holder;
 +    uint64_t *epoch;
@@ -225907,6 +226971,7 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 +    QemuCrucibleSourcePendingCommandLender pending_command_lender;
 +    QemuCrucibleSourcePendingQuantumConstructor pending_constructor;
 +    QemuCrucibleCoreQuantumBank quantum_bank;
++    QemuCrucibleStackBank stack_bank;
 +    QemuCrucibleQuantumOriginalRegistration quantum_original_registration;
 +    QemuCrucibleSourceQuantumOriginalBorrow quantum_original;
 +    QemuCrucibleSourcePendingOfferRead pending_offer_read;
@@ -225925,6 +226990,7 @@ index 0000000000000000000000000000000000000000..bcff63c6b44e5fe702b09faee78e0456
 +    QemuCrucibleWorkspacePurposeOwner *workspace_role;
 +    QemuCrucibleProcessContractOwner *process_contract_owner;
 +    QemuCrucibleIncarnationPurposeOwner *incarnation_purpose_owner;
++    QemuCrucibleSourceAssignmentOwner *source_assignment_owner;
 +    QemuCrucibleRamEndpointPurposeOwner *ram_endpoint_purpose_owner;
 +    QemuCrucibleProcessPurposeRecord process_purpose_record;
 +    bool process_purpose_complete;
@@ -238093,10 +239159,10 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b6336ad1727bc679f67679a9f986c38580bb3a2e
+index 0000000000000000000000000000000000000000..25856316e2ae8d7df23b05286b159e66d85654b1
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,132 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind literal pure record bodies for the executable's raw preinit owner."""
 +
@@ -238106,6 +239172,8 @@ index 0000000000000000000000000000000000000000..b6336ad1727bc679f67679a9f986c385
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'include/qemu/crucible-stack-resource.h':
++        'c9478df9fa684fd6c94af0f8f5b611a089f9e684c4cd41acea834b3bacc62f6f',
 +    'system/crucible-preexec-publisher-session.inc.h':
 +        '278a0cf7664a1cd4ad66fe7f4d3e714016c1af4a8b63d7f8a3367d55f4ede7ea',
 +    'include/qemu/crucible-publisher-protocol.h':
@@ -238113,7 +239181,7 @@ index 0000000000000000000000000000000000000000..b6336ad1727bc679f67679a9f986c385
 +    'system/crucible-preexec-publisher-storage.inc.h':
 +        '96a969ce38fe12130b831aa6d6d9c438b9fe7fb6361748d1a98b07cb1cea92c1',
 +    'system/crucible-preexec-setup.c':
-+        '5c51517b3925113734e63682dea3a53ff35e134bb5530adf16d36d18dd7119dc',
++        '035717d9d1d059ecbffe504ec36e495d53e0d8d31a212c3708b8a55206124f76',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2cac13a08923088235e7ab53f199bdf8e545b38b81d6458489e340fc28fcd189',
 +    'plugins/crucible-process-purpose.c':
@@ -238127,7 +239195,7 @@ index 0000000000000000000000000000000000000000..b6336ad1727bc679f67679a9f986c385
 +    'include/plugins/qemu-plugin.h':
 +        'bbe8a30e142658fc95bf9ec0f6b3e9cc895065753f77fdff1eb869c1ec4f12f6',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '4fc497cdceb476fcc1d16e7c5fa60d467357dba0e0afa1207c475b7d35d5b2c5',
++        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        'a1e251802b959f2917a36953a136124e48453a27384da90c3725a6f25f2ebc86',
 +}
@@ -255167,10 +256235,10 @@ index 0000000000000000000000000000000000000000..3cb51497be75d9cf6d39e450176282e9
 +}
 diff --git a/system/crucible-preexec-setup.c b/system/crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b722d7f2b2aba532044f9932cedd941bec496a0f
+index 0000000000000000000000000000000000000000..1a232446e57f45d20e555d93c13a999622e4f17a
 --- /dev/null
 +++ b/system/crucible-preexec-setup.c
-@@ -0,0 +1,3162 @@
+@@ -0,0 +1,3354 @@
 +/*
 + * Fixed selected executable preinit Setup custody.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -255200,6 +256268,7 @@ index 0000000000000000000000000000000000000000..b722d7f2b2aba532044f9932cedd941b
 +#include "qemu/crucible-preexec-setup.h"
 +#include "qemu/crucible-process-purpose.h"
 +#include "qemu/crucible-publisher-protocol.h"
++#include "qemu/crucible-stack-resource.h"
 +
 +#if !defined(__linux__) || !defined(__x86_64__) || defined(__ILP32__)
 +#error This selected receiver requires the Linux LP64 x86-64 syscall ABI
@@ -255437,6 +256506,7 @@ index 0000000000000000000000000000000000000000..b722d7f2b2aba532044f9932cedd941b
 +    uint8_t stack_wire[QEMU_CRUCIBLE_STACK_PURPOSE_BYTES];
 +    QemuCrucibleStackPurpose stack_purpose;
 +    PreexecStackLimitReceipt stack_limit;
++    QemuCruciblePreexecStackGrant stack_grant;
 +    uint8_t subscription_wire[QEMU_CRUCIBLE_PUBLISHER_PURPOSE_BYTES];
 +    uint8_t startup_wire[QEMU_CRUCIBLE_ORIGINAL_STARTUP_WIRE_BYTES];
 +    uint8_t workspace_wire[QEMU_CRUCIBLE_PROCESS_WORKSPACE_BYTES];
@@ -257534,6 +258604,190 @@ index 0000000000000000000000000000000000000000..b722d7f2b2aba532044f9932cedd941b
 +    return receipt->first_status ? receipt->first_status : receipt->post_status;
 +}
 +
++/* The actual authenticated local process Original is the resource parent.
++ * Reserve both role requests in one checked native-prefix operation, retaining
++ * canonical children before the independent post. This is not profile or
++ * cleanup admission and does not permit a mapping, thread or Module callback.
++ */
++static int preexec_stack_resources_reserve(void)
++{
++    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
++    QemuCruciblePreexecStackGrant *grant = &owner->stack_grant;
++    const QemuCrucibleStackRolePurpose *roles[2] = {
++        &owner->stack_purpose.main, &owner->stack_purpose.rr,
++    };
++    uint64_t bytes[2];
++    uint64_t total = 0;
++    int status;
++
++    if (owner->selected_edition != 8 || owner->plan.schema != 11 ||
++        !owner->plan_validated || !owner->peer_validated ||
++        !owner->fixed_owner_retained || !owner->fixed_family.retained ||
++        !owner->fixed_family.source.retained ||
++        owner->incarnation.assignment != &owner->fixed_family.source ||
++        owner->incarnation.process != owner->process_id ||
++        owner->incarnation.local_extent != owner->plan.purpose.local_extent ||
++        owner->incarnation.generation != owner->plan.purpose.process_generation ||
++        owner->contract.process != owner->process_id ||
++        !owner->limits_corroborated || !owner->cgroup_corroborated ||
++        !owner->family_corroborated || !owner->identity_corroborated ||
++        !owner->artifact_verified || owner->source_published ||
++        owner->process_id != preexec_setup_syscall5(SYS_getpid, 0, 0, 0, 0, 0) ||
++        owner->thread_id != preexec_setup_syscall5(SYS_gettid, 0, 0, 0, 0, 0)) {
++        return -EPERM;
++    }
++    if (grant->reservation.attempted || grant->canonical_owner) {
++        return -EALREADY;
++    }
++    /* This actual initial Source-only producer has one local incarnation.
++     * Corroborate its independently issued generation; never choose one from
++     * the received section or rearm this process singleton after a refusal.
++     */
++    if (owner->stack_purpose.generation != 1) {
++        return -ESTALE;
++    }
++    for (size_t index = 0; index < 2; index++) {
++        const QemuCrucibleStackRolePurpose *role = roles[index];
++
++        if (role->loan_generation != 1 || !role->mapping_bytes ||
++            role->control_bytes > UINT64_MAX - role->mapping_bytes) {
++            return -ESTALE;
++        }
++        bytes[index] = role->mapping_bytes + role->control_bytes;
++        if (role->tls_bytes > UINT64_MAX - bytes[index]) {
++            return -EOVERFLOW;
++        }
++        bytes[index] += role->tls_bytes;
++        if (bytes[index] > UINT64_MAX - total) {
++            return -EOVERFLOW;
++        }
++        total += bytes[index];
++    }
++    if (total != owner->stack_purpose.native_inventory) {
++        return -ESTALE;
++    }
++
++    grant->canonical_owner = grant;
++    grant->issuer = owner;
++    grant->resource_parent = &owner->incarnation;
++    grant->assignment = &owner->fixed_family.source;
++    grant->contract = &owner->contract;
++    grant->process = owner->process_id;
++    preexec_setup_copy(&grant->purpose, &owner->stack_purpose, sizeof(grant->purpose));
++    grant->reservation.attempted = true;
++    status = preexec_setup_original_live();
++    if (!status) {
++        status = preexec_setup_provisional_native(total);
++    }
++    grant->reservation.status = status;
++    if (!status) {
++        for (size_t index = 0; index < 2; index++) {
++            grant->role_debit[index].charge.bytes = bytes[index];
++            grant->role_debit[index].charge.held = true;
++        }
++        grant->prefix_bytes = owner->provisional_native_extent;
++        grant->parent_retained = true;
++        grant->reservation.consumed = true;
++    }
++    grant->reservation.returned = true;
++
++    /* Always run and save the independent real Original post, even after a
++     * negative first cut. Its refusal retains the actual debits and parent.
++     */
++    grant->reservation.post_attempted = true;
++    grant->reservation.post_status = preexec_setup_original_live();
++    grant->reservation.post_returned = true;
++    for (size_t index = 0; index < 2; index++) {
++        grant->role_debit[index].first_status = status;
++        grant->role_debit[index].post_attempted = true;
++        grant->role_debit[index].post_status = grant->reservation.post_status;
++    }
++    return status ? status : grant->reservation.post_status;
++}
++
++/* No received description can install independent cleanup custody or profile.
++ * Keep the failed admission in prebirth-paid storage, and stop before stack
++ * mapping and thread effects. The two physical limit observations above remain
++ * independently useful evidence, including when this admission refuses.
++ */
++static int preexec_stack_grant_admit(void)
++{
++    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
++    QemuCruciblePreexecStackGrant *grant = &owner->stack_grant;
++
++    if (owner->selected_edition != 8 || owner->plan.schema != 11 ||
++        !owner->plan_validated || !owner->peer_validated ||
++        !owner->fixed_owner_retained || !owner->stack_limit.first_returned ||
++        !owner->stack_limit.post_returned || owner->stack_limit.first_status ||
++        owner->stack_limit.post_status || !grant->parent_retained ||
++        !grant->reservation.attempted || !grant->reservation.returned ||
++        !grant->reservation.consumed || grant->reservation.status ||
++        !grant->reservation.post_attempted || !grant->reservation.post_returned ||
++        grant->reservation.post_status || grant->profile_attempted) {
++        return -EPERM;
++    }
++    grant->profile_attempted = true;
++    /* Independent process-reap/stack cleanup custody and a reviewed complete
++     * runtime stack/control/TLS profile have no producers here. Reserving the
++     * genuine local subloan above does not supply those missing owners.
++     */
++    grant->profile_status = -ENOTSUP;
++    grant->profile_returned = true;
++    return grant->profile_status;
++}
++
++int qemu_crucible_preexec_stack_grant_current_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant *grant)
++{
++    /* Establish actual singleton membership before reading any nominated
++     * donor. Equal fields in a foreign allocation cannot authenticate custody.
++     */
++    if (owner != &preexec_setup_owner ||
++        grant != &preexec_setup_owner.stack_grant ||
++        owner->process_id !=
++            preexec_setup_syscall5(SYS_getpid, 0, 0, 0, 0, 0) ||
++        owner->thread_id !=
++            preexec_setup_syscall5(SYS_gettid, 0, 0, 0, 0, 0)) {
++        return -EPERM;
++    }
++    if (grant->reservation.attempted && grant->reservation.returned &&
++        grant->reservation.status) {
++        return grant->reservation.status;
++    }
++    if (grant->reservation.post_attempted && grant->reservation.post_returned &&
++        grant->reservation.post_status) {
++        return grant->reservation.post_status;
++    }
++    /* A future paired leaf must independently check the real same-parent
++     * grant, complete profile and each cleanup child outside Source gates.
++     * None has a producer here, even if all description fields match.
++     */
++    return grant->profile_attempted && grant->profile_returned &&
++        grant->profile_status ? grant->profile_status : -ENOTSUP;
++}
++
++int qemu_crucible_preexec_stack_grant_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant **holder)
++{
++    QemuCruciblePreexecStackGrant *grant = &preexec_setup_owner.stack_grant;
++
++    if (owner != &preexec_setup_owner || !holder || *holder ||
++        owner->process_id !=
++            preexec_setup_syscall5(SYS_getpid, 0, 0, 0, 0, 0) ||
++        owner->thread_id !=
++            preexec_setup_syscall5(SYS_gettid, 0, 0, 0, 0, 0) ||
++        owner->selected_edition != 8 || owner->plan.schema != 11) {
++        return -EPERM;
++    }
++    /* There is deliberately no accepting adapter behind this edge. Only the
++     * real paired producer may publish an authentic nominal parent and move
++     * its same-prefix debit; wire/profile flags never populate the holder.
++     */
++    return qemu_crucible_preexec_stack_grant_current_v1(owner, grant);
++}
++
 +/* Use the runtime's retained kernel vector, not mutable environ adjacency.
 + * The existing helper isolates system ELF declarations in its own TU. */
 +static int preexec_setup_mapping_page_size(uint64_t *out)
@@ -258278,6 +259532,12 @@ index 0000000000000000000000000000000000000000..b722d7f2b2aba532044f9932cedd941b
 +         */
 +        status = preexec_contract_current(owner, &owner->preinit_observation,
 +                                          &descriptor_limit);
++        if (!status && owner->plan.schema == 11) {
++            status = preexec_stack_resources_reserve();
++            if (!status) {
++                status = preexec_stack_grant_admit();
++            }
++        }
 +        if (!status) {
 +            status = preexec_publisher_access_begin(PREEXEC_PUBLISHER_ACCESS_STORAGE_CONSTRUCT);
 +            if (!status) {
@@ -290636,10 +291896,10 @@ index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2
 +}
 diff --git a/tests/unit/crucible-net-stop-support.py b/tests/unit/crucible-net-stop-support.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..406939aa2fad9f17523a3e1834df99bbc39eda52
+index 0000000000000000000000000000000000000000..9b878a50ef331edd9c368ef6e4671da21ae09f6f
 --- /dev/null
 +++ b/tests/unit/crucible-net-stop-support.py
-@@ -0,0 +1,631 @@
+@@ -0,0 +1,656 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Select literal dependencies for the ordinary serialized stop fixtures.
 +
@@ -291199,6 +292459,7 @@ index 0000000000000000000000000000000000000000..406939aa2fad9f17523a3e1834df99bb
 +    return "\n\n".join(prototypes + bodies)
 +
 +
++_native_configured_build = None
 +_native_link_snapshot = None
 +_native_link_provider = None
 +_native_link_provider_inputs = None
@@ -291214,11 +292475,35 @@ index 0000000000000000000000000000000000000000..406939aa2fad9f17523a3e1834df99bb
 +            status.st_size, status.st_mtime_ns, status.st_ctime_ns)
 +
 +
++def configure_native_build(build_dir):
++    """Bind the explicit configured directory before any native provider lookup."""
++    global _native_configured_build
++
++    nominated = Path(build_dir).absolute()
++    canonical = nominated.resolve(strict=True)
++    status = canonical.stat()
++    if not canonical.is_dir():
++        raise ValueError("configured native build is not a directory")
++    identity = (nominated, canonical, status.st_dev, status.st_ino)
++    if _native_configured_build is not None and _native_configured_build != identity:
++        raise ValueError("configured native build changed")
++    if _native_link_snapshot is not None:
++        raise ValueError("configured native build must precede provider lookup")
++    _native_configured_build = identity
++
++
 +def native_link_arguments():
 +    """Reauthenticate the complete provider using process-local metadata decoding."""
 +    global _native_link_provider, _native_link_provider_inputs, _native_link_snapshot
 +
-+    build_dir = (ROOT / "build").resolve(strict=True)
++    if _native_configured_build is None:
++        build_dir = (ROOT / "build").resolve(strict=True)
++    else:
++        nominated, build_dir, device, inode = _native_configured_build
++        status = nominated.stat()
++        if (nominated.resolve(strict=True) != build_dir or
++                (status.st_dev, status.st_ino) != (device, inode)):
++            raise ValueError("configured native build identity changed")
 +    compiler = tuple(shlex.split(os.environ["CC"]))
 +    status = build_dir.stat()
 +    identity = (build_dir, status.st_dev, status.st_ino, compiler)
@@ -291962,10 +293247,10 @@ index 0000000000000000000000000000000000000000..beb942425ca43e2405a32ed527c2a027
 +}
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6cc8d05d3f93edc8e2844ffe7ae45b64c89fddb0
+index 0000000000000000000000000000000000000000..5c6e7f17209e07a9bc50cf11453f7dd7efa17c09
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,909 @@
+@@ -0,0 +1,930 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -292875,6 +294160,27 @@ index 0000000000000000000000000000000000000000..6cc8d05d3f93edc8e2844ffe7ae45b64
 +        qemu_crucible_ram_metadata_fixed_storage_bytes() +
 +        startup_source.standing.construction_storage.fixed_charge.bytes);
 +}
++
++/* This modeled preexec fixture has no external stack parent/profile producer.
++ * Even a schema-eleven description cannot lend canonical stack capacity.
++ */
++int qemu_crucible_preexec_stack_grant_borrow_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant **holder)
++{
++    (void)owner;
++    (void)holder;
++    return -ENOTSUP;
++}
++
++int qemu_crucible_preexec_stack_grant_current_v1(
++    QemuCruciblePreexecPurposeOwner *owner,
++    QemuCruciblePreexecStackGrant *grant)
++{
++    (void)owner;
++    (void)grant;
++    return -ENOTSUP;
++}
 diff --git a/tests/unit/crucible-timer-stream.h b/tests/unit/crucible-timer-stream.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612c9d3207e
@@ -293162,7 +294468,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ce2c9ace40c170ba6b8c62100b7094fb9f461409
+index 0000000000000000000000000000000000000000..31f6f9015171ec7bed74faed262baf1afe854970
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,361 @@
@@ -293183,11 +294489,11 @@ index 0000000000000000000000000000000000000000..ce2c9ace40c170ba6b8c62100b7094fb
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        '4cebf5c9aed3bd0b00d8e4902389502b67b1464416fc52b93e811e22f094b2c3',
++        'aeb8909c81ceba7bde123bbf38cf9d95d2af785d50984c3cd483c078370d30b3',
 +    'util/oslib-posix.c':
 +        '3844eb962eac164dd29f0eb9ca7e48ec830d8aaf8281c2b2a0915d041eaaac38',
 +    'include/qemu/thread.h':
-+        'a8eaf56760648484007818fe8488a08eed5e9eb108890e825898fb34b40e41a2',
++        '72ec6eab9c03c6f9416b8b12acad7381fa68dad3aee6aceb27922bc8736563ac',
 +    'include/qemu/thread-posix.h':
 +        '72d5cf709bbe89ccbc621c0bb0de9d56df2eb3c11210e9abd58fcf6e65c3baaa',
 +    'include/system/memory_cached.h':
@@ -293529,7 +294835,7 @@ index 0000000000000000000000000000000000000000..ce2c9ace40c170ba6b8c62100b7094fb
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8b64143b205abd573d721cc6d59bf88f342e94d2
+index 0000000000000000000000000000000000000000..49d787e3fc2794ad8365e69d023bb52ae38c1280
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -293547,7 +294853,7 @@ index 0000000000000000000000000000000000000000..8b64143b205abd573d721cc6d59bf88f
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '4fc497cdceb476fcc1d16e7c5fa60d467357dba0e0afa1207c475b7d35d5b2c5',
++        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
 +}
 +
 +FUNCTIONS = (
@@ -293635,7 +294941,7 @@ index 0000000000000000000000000000000000000000..8b64143b205abd573d721cc6d59bf88f
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..73c0f546437787b99d7c5d4d118855989ceeb19f
+index 0000000000000000000000000000000000000000..a742be7eb3de077ff075dbf3d547f8604478727e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -293656,9 +294962,9 @@ index 0000000000000000000000000000000000000000..73c0f546437787b99d7c5d4d11885598
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '3985d9488b976bc15c054633d5d4ece0140077a8663a8e34faa4908e148f474b',
++        'eca35c4225879d530b0e8f25f8511611847685ccdc9a9e18256825afe87739a6',
 +    'plugins/crucible-startup-source.h':
-+        '07ab37af5203e0d83846018602a4dd4a770e3b8fb1750d964813fcfb8ee3e8ff',
++        'f95d6649d24e8d16e7e8f15af36ba163039b22c5df5b3d9550958b9f671b2fba',
 +    'include/plugins/qemu-plugin.h':
 +        'bbe8a30e142658fc95bf9ec0f6b3e9cc895065753f77fdff1eb869c1ec4f12f6',
 +    'system/crucible-hot-fork-coordinator.c':
@@ -293666,7 +294972,7 @@ index 0000000000000000000000000000000000000000..73c0f546437787b99d7c5d4d11885598
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '4fc497cdceb476fcc1d16e7c5fa60d467357dba0e0afa1207c475b7d35d5b2c5',
++        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
 +}
 +
 +FUNCTIONS = (
@@ -293882,7 +295188,7 @@ index 0000000000000000000000000000000000000000..73c0f546437787b99d7c5d4d11885598
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..572c80e5d5f8e9fb65bfba051d170087e63111c4
+index 0000000000000000000000000000000000000000..e692e4ec2c860fa530d1e4a20e65006b5efff008
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -293906,7 +295212,7 @@ index 0000000000000000000000000000000000000000..572c80e5d5f8e9fb65bfba051d170087
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '4fc497cdceb476fcc1d16e7c5fa60d467357dba0e0afa1207c475b7d35d5b2c5',
++        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
 +}
 +
 +FUNCTIONS = (
@@ -294000,10 +295306,10 @@ index 0000000000000000000000000000000000000000..572c80e5d5f8e9fb65bfba051d170087
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fdb9d81a6dc73a54267727d9104fb35fde623194
+index 0000000000000000000000000000000000000000..9cc8cc6d11dabe91f6aa2c80bf486ce558886d05
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
-@@ -0,0 +1,746 @@
+@@ -0,0 +1,748 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind literal preinit bodies and classify their causal transport controls."""
 +
@@ -294016,6 +295322,8 @@ index 0000000000000000000000000000000000000000..fdb9d81a6dc73a54267727d9104fb35f
 +import sys
 +
 +SOURCE_HASHES = {
++    'include/qemu/crucible-stack-resource.h':
++        'c9478df9fa684fd6c94af0f8f5b611a089f9e684c4cd41acea834b3bacc62f6f',
 +    'tests/unit/crucible-quantum-schema-two-fixture.inc.h':
 +        '1dd09cfe5641937a6fd5b4c65c237bc5b19585411bb3aab36ab48a29ca522d24',
 +    'system/crucible-preexec-publisher-session.inc.h':
@@ -294025,7 +295333,7 @@ index 0000000000000000000000000000000000000000..fdb9d81a6dc73a54267727d9104fb35f
 +    'system/crucible-preexec-publisher-storage.inc.h':
 +        '96a969ce38fe12130b831aa6d6d9c438b9fe7fb6361748d1a98b07cb1cea92c1',
 +    'system/crucible-preexec-setup.c':
-+        '5c51517b3925113734e63682dea3a53ff35e134bb5530adf16d36d18dd7119dc',
++        '035717d9d1d059ecbffe504ec36e495d53e0d8d31a212c3708b8a55206124f76',
 +    'system/crucible-preexec-family.inc.h':
 +        '6d055fe2604fc3d7b2977b98d4b5843d65ba5df00c7efe34770d375fe05e6d59',
 +    'system/crucible-preexec-contract.inc.h':
@@ -294049,15 +295357,15 @@ index 0000000000000000000000000000000000000000..fdb9d81a6dc73a54267727d9104fb35f
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '4fc497cdceb476fcc1d16e7c5fa60d467357dba0e0afa1207c475b7d35d5b2c5',
++        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'ed42bfab9e4e44a059e978d80c44b4701cac8c34456f1648b6f50731bf5fcfa6',
++        'ad1e38b852e75e9f0b54e9fa8017b55aaba496b570df0af04cbfb8e45ee812e7',
 +    'meson.build':
-+        'd0d6f1bc9cb36c31726695f886b82a55eb4ba86a4d12bfbc9fea8acb7ddda67e',
++        '5c4f403edad97e4cdff755e0084f29056e6aaceed78637e04b3e5fdfdee9e844',
 +    'tests/unit/test-crucible-preexec-setup.c':
-+        '906c677a1b2afb88586d6db2eb31e21b5b2ce29e8a02bdfea84af4e7baebf0dc',
++        '827e92ca85512b2cd891b93ebe3741e1a163b02364affde97a378e28e2b627eb',
 +    'tests/unit/meson.build':
-+        '118fb90046ca83cc9daa58ddd458a55c9d02c32dfbe8df37c201425d804c467b',
++        '6a32d2eefdf7e35e2b225eaf03be3ef0fac08d09de6c0e79087a3b9af136d653',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        'a1e251802b959f2917a36953a136124e48453a27384da90c3725a6f25f2ebc86',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -294752,10 +296060,10 @@ index 0000000000000000000000000000000000000000..fdb9d81a6dc73a54267727d9104fb35f
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a6ce52438
+index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054adda0a84
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1638 @@
+@@ -0,0 +1,1646 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -294767,6 +296075,14 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +SOURCE_HASHES = {
 +    'system/runstate.c':
 +        '0ca5882f51fcb6d2731cc4e759b54cb132ab725ffa427679a9b825f40a830ca7',
++    'tests/unit/test-crucible-stack-bank.py':
++        '42e6c8e0f24e35e88561341884cab76719ddbba15c4ae11a45babae449dbda91',
++    'plugins/crucible-stack-bank.inc.h':
++        'bdf1672e1621735afbedb603ea95bee68aec9c280be630cbde2a89ab37db192c',
++    'include/system/crucible-stack-bank.h':
++        '201bfcbe08191147e79b4cf680fae1f2c991ef8011e5520e66d79797221d5133',
++    'include/qemu/crucible-stack-resource.h':
++        'c9478df9fa684fd6c94af0f8f5b611a089f9e684c4cd41acea834b3bacc62f6f',
 +    'tests/unit/test-crucible-quantum-installing-service.py':
 +        'e517c2d371b8861bca005b33285fd23a8c7df64c9574f45099ebc53859d0fd87',
 +    'tests/unit/crucible-quantum-installing-service-fixture.inc.h':
@@ -294797,7 +296113,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +        'a93251afd41ff3626b581ed3269dbceff2ef7f30e37541a17726589130b31fa5',
 +
 +    'tests/unit/test-crucible-quantum-keeper.py':
-+        '595109e878270e5a6ff4413764723c2edc3ee4c1397688445840459221ee87a6',
++        '971c908f38f22d5e8d3dd762e78496ee4278b45f1577c3f7e849d150a65bc390',
 +    'accel/tcg/crucible-quantum-core.inc.h':
 +        '28d514901cad7ab25e49f8f0d789657bb4304486937043edf739ab49e9e8a34d',
 +    'plugins/crucible-ram-reader.inc.h':
@@ -294860,11 +296176,11 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'tests/unit/test-crucible-publisher-service-transfer.py':
 +        '8de3c350c1fc401073336e20c662fa28fa6cf915da80a6bf047b1645b0f29a26',
 +    'tests/unit/test-crucible-stopped-control-rearm.py':
-+        'ada404b3ea2fe8a991df233e39eb3d523d8aa170b55d5fa8c5546e092ef79e01',
++        '00b2c457e1052b453a83a39d5ee2a0db551b70874f4ae483922bd2fc8d19820f',
 +    'tests/unit/test-crucible-cold-fault-predicates.py':
 +        'bd654835e6f136c2b8bf193db7b0bb8d0c69272d9f54e83fad63b4e72206c167',
 +    'tests/unit/test-crucible-control-delivery.py':
-+        '568c91a90452fbe8db3c321f6136bef012c6b6c78454329bb91c2a62a0a8b794',
++        '457090878f304aa9115ca4ec883322a5a3e0ae472599ebcf824bf003813264cf',
 +    'tests/unit/test-crucible-tcg-fast-paths.py':
 +        '38c292f7018023e861711b0a8c9a89d7f66e404dee3d8f688aaf79eb45d59f67',
 +    'tests/unit/test-crucible-fault-rule-presence.py':
@@ -294872,11 +296188,11 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'tests/unit/test-crucible-publisher-member-return.py':
 +        'f0706bf29a198822e4f2e82095e60f47530e2f23727c5073ac2e7adfb5b1c104',
 +    'tests/unit/test-crucible-control-deferred.py':
-+        '98b6ef3507174b34ff9ba5732a74650cd92270193356b4b11b9e2bcf5cfb52fb',
++        'f166ab4a0064514f39c2f41e1f09e41825b2e5e43aad657d3ca64405ada1c6e2',
 +    'tests/unit/test-crucible-provider-metadata.py':
 +        'ec96e53fc9f7c491c38f8fed3d30a8169e731991d367fba74d697f6b0b041406',
 +    'tests/unit/crucible-net-stop-support.py':
-+        'f8077df6040109d4b154d11bb806870fde9493277b4fb1b4517860771449cae2',
++        '675e1063f7dc3a38b0f756971f696246a0326155631768a9d7725459f37a2e4e',
 +    'tests/unit/test-crucible-memory-discard-custody.py':
 +        '6a22e84960bae9d283a0b72f68064e7786743b55c91ba08275474fca388fdd1d',
 +    'stubs/crucible-clock-custody.c':
@@ -294914,7 +296230,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'include/qobject/qobject-lifetime.h':
 +        'f590ea63b6b7cb11069922f0fad9169652d1970d13c36e39076e0e0ebb1bb846',
 +    'meson.build':
-+        'd0d6f1bc9cb36c31726695f886b82a55eb4ba86a4d12bfbc9fea8acb7ddda67e',
++        '5c4f403edad97e4cdff755e0084f29056e6aaceed78637e04b3e5fdfdee9e844',
 +    'plugins/crucible-apic-getter.inc.h':
 +        '3f37a0e86d175b719f4cfc7bdc87fbf0db1061f5b7fc805e103a26114dda6ab6',
 +    'plugins/crucible-clock-custody.inc.h':
@@ -294976,7 +296292,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '118fb90046ca83cc9daa58ddd458a55c9d02c32dfbe8df37c201425d804c467b',
++        '6a32d2eefdf7e35e2b225eaf03be3ef0fac08d09de6c0e79087a3b9af136d653',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -294998,7 +296314,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'tests/unit/test-crucible-memory-region-custody.py':
 +        'db27ae30e802307a7ccdd1220828bf49bcd2f39156caf7056492a5eada66887f',
 +    'tests/unit/test-crucible-preexec-setup.c':
-+        '906c677a1b2afb88586d6db2eb31e21b5b2ce29e8a02bdfea84af4e7baebf0dc',
++        '827e92ca85512b2cd891b93ebe3741e1a163b02364affde97a378e28e2b627eb',
 +    'tests/unit/test-crucible-process-purpose.c':
 +        'aabb4eaeb243d480b4d84704c7879d24d616c97ada64d64f967683e2a7fb9fcc',
 +    'tests/unit/test-crucible-publisher-protocol.c':
@@ -295124,7 +296440,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'plugins/crucible-ram-owner-diagnostic.h':
 +        '437aa8ed61c184163b7a6b0fb5e36c799d6d748410b32166a02e43eb44e2bf1e',
 +    'tests/unit/test-crucible-ram-worker-inventory.py':
-+        '09d5108bcc2967d79cfc5ee2186452a54d94c7ccb55760590e32dc002920848f',
++        'df3bb43bec22dcf9e6834fec804b0b4a159b443e65bb938f41fc80dcdc471687',
 +    'tests/unit/test-crucible-checkpoint-receiving.c':
 +        'c566ba5524cccb7e5fded88101e457c2ee18d998119c450b8d3121b7fd0561f2',
 +    'plugins/crucible-parent-park.inc.h':
@@ -295146,7 +296462,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'plugins/crucible-device-workspace.inc.h':
 +        '46a3bf873eac5d3f3e6fce4c344416c13749f6a24f1b098605dd214c684e56c7',
 +    'system/crucible-preexec-setup.c':
-+        '5c51517b3925113734e63682dea3a53ff35e134bb5530adf16d36d18dd7119dc',
++        '035717d9d1d059ecbffe504ec36e495d53e0d8d31a212c3708b8a55206124f76',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2cac13a08923088235e7ab53f199bdf8e545b38b81d6458489e340fc28fcd189',
 +    'plugins/crucible-control-invocation.inc.h':
@@ -295158,7 +296474,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'tests/unit/test-crucible-startup-source.c':
 +        'e33c5c8962a6202dd1a4d0cfc2fa91467696f8b8f00d26e57f496237ab2c99ee',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        'f9644c41b4f5d91e7d91f82d72e25e3c6ecb49e917580e6f68587ef7b0559425',
++        '9d1124b3c9b8b756aeb2103bccb2994435147c94371bbd694039dc5a2fe5b9df',
 +    'system/physmem.c':
 +        'cb2dd4fe7c114fb15876000da1d8e1307f5a6fe45b7b1bac6804df29a069cd02',
 +    'include/system/ramlist.h':
@@ -295184,9 +296500,9 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '3985d9488b976bc15c054633d5d4ece0140077a8663a8e34faa4908e148f474b',
++        'eca35c4225879d530b0e8f25f8511611847685ccdc9a9e18256825afe87739a6',
 +    'plugins/crucible-startup-source.h':
-+        '07ab37af5203e0d83846018602a4dd4a770e3b8fb1750d964813fcfb8ee3e8ff',
++        'f95d6649d24e8d16e7e8f15af36ba163039b22c5df5b3d9550958b9f671b2fba',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -295266,9 +296582,9 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        'a8eaf56760648484007818fe8488a08eed5e9eb108890e825898fb34b40e41a2',
++        '72ec6eab9c03c6f9416b8b12acad7381fa68dad3aee6aceb27922bc8736563ac',
 +    'util/qemu-thread-posix.c':
-+        '4cebf5c9aed3bd0b00d8e4902389502b67b1464416fc52b93e811e22f094b2c3',
++        'aeb8909c81ceba7bde123bbf38cf9d95d2af785d50984c3cd483c078370d30b3',
 +    'include/qemu/crucible-process-purpose.h':
 +        'd11de5b49fc8c145fa5f94c8366f0930dbf4d7863db5f09c08dfe93216d67b03',
 +    'include/qemu/crucible-paged-ram.h':
@@ -295338,7 +296654,7 @@ index 0000000000000000000000000000000000000000..0fdf75c8e78b3653d6d20411f33a295a
 +    'plugins/crucible-pending-offer.inc.h':
 +        '86a3bab24544c2584a4ae1e1f3154c99442cb74b2c04ae7b5ee880bf1b982d60',
 +    'plugins/crucible-pending-constructor.inc.h':
-+        'b214fed10748d9fb4bf65e9a3d7bf7c940f8914d734186c78a9fd1931f75ed56',
++        'f53d88ecf464bed110cb580a29309bbfe833a0da1a348a6125c531ce19ad8d44',
 +    'tests/unit/test-crucible-pending-constructor.py':
 +        'b50dc7a0ed43c36f00edd21b2af6d163fa1f8f773449d3e15bf8a4281a836e84',
 +    'plugins/crucible-pending-deferred.inc.h':
@@ -296493,7 +297809,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..94bbb7e14f60282641640ac800fc46cd9133f401 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..65e2729d5158238669edfd96b2a4fadebd495b62 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -296568,7 +297884,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..94bbb7e14f60282641640ac800fc46cd
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1522 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1527 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -297350,6 +298666,10 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..94bbb7e14f60282641640ac800fc46cd
 +                        '../../include/system/crucible-quantum-bank.h',
 +                        '../../plugins/crucible-quantum-bank.inc.h',
 +                        'test-crucible-quantum-bank.py',
++                        '../../include/qemu/crucible-stack-resource.h',
++                        '../../include/system/crucible-stack-bank.h',
++                        '../../plugins/crucible-stack-bank.inc.h',
++                        'test-crucible-stack-bank.py',
 +                        '../../plugins/crucible-pending-constructor.inc.h',
 +                        'test-crucible-pending-constructor.py',
 +                        '../../include/qemu/crucible-register-read.h',
@@ -297880,6 +299200,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..94bbb7e14f60282641640ac800fc46cd
 +    '../../system/crucible-preexec-ram.inc.h',
 +    '../../system/crucible-preexec-workspace.inc.h',
 +    '../../include/qemu/crucible-preexec-setup.h',
++    '../../include/qemu/crucible-stack-resource.h',
 +    '../../plugins/crucible-process-purpose.c',
 +    '../../include/qemu/crucible-process-purpose.h',
 +    '../../plugins/crucible-device-workspace.c',
@@ -309120,10 +310441,10 @@ index 0000000000000000000000000000000000000000..9a8e608e99b032b061575c8c2c97d7d2
 +    main()
 diff --git a/tests/unit/test-crucible-bounded-thread.c b/tests/unit/test-crucible-bounded-thread.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b118eb4dcf2989aee45533c8a7b886a471366381
+index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fdcaf3a606
 --- /dev/null
 +++ b/tests/unit/test-crucible-bounded-thread.c
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,623 @@
 +/*
 + * Real bounded birth and native registry enrollment component controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -309135,6 +310456,13 @@ index 0000000000000000000000000000000000000000..b118eb4dcf2989aee45533c8a7b886a4
 +#include "qemu/thread.h"
 +#include <sys/mman.h>
 +#include <sys/wait.h>
++
++/* A separately compiled component mode includes the complete actual native
++ * provider, so controls can nominate its private gates without exporting a
++ * production address accessor or any accepting issuer. */
++#ifdef QEMU_BOUNDED_STORAGE_INTERNAL_CONTROLS
++#include "../../util/qemu-thread-posix.c"
++#endif
 +
 +#define BOUNDED_TEST_STACK_BYTES (1024 * 1024)
 +
@@ -309505,6 +310833,216 @@ index 0000000000000000000000000000000000000000..b118eb4dcf2989aee45533c8a7b886a4
 +    owner_dispose(&owner);
 +}
 +
++static void *unstarted_storage_entry(void *opaque)
++{
++    int *entered = opaque;
++
++    (*entered)++;
++    return opaque;
++}
++
++typedef struct StorageForeignObserver {
++    QemuThreadBoundedStorage *storage;
++    uint64_t incarnation;
++    int observe_status;
++    int return_status;
++} StorageForeignObserver;
++
++static void *storage_foreign_observer(void *opaque)
++{
++    StorageForeignObserver *observer = opaque;
++    QemuThreadBoundedStorageSnapshot facts;
++
++    observer->observe_status = qemu_thread_bounded_storage_observe_v1(
++        observer->storage, observer->incarnation, &facts);
++    observer->return_status = qemu_thread_bounded_storage_return_unstarted_v1(
++        observer->storage, observer->incarnation, &facts);
++    return NULL;
++}
++
++static void test_caller_backed_unstarted_storage(void)
++{
++    const char name[] = "paid-wrapper";
++    size_t bytes = qemu_thread_bounded_storage_bytes_v1(sizeof(name));
++    QemuThreadBoundedStorage *storage = NULL;
++    QemuThreadBoundedStorage *unchanged = (void *)1;
++    QemuThreadBoundedStorageSnapshot facts = { 0 };
++    uint64_t incarnation = 0, next = 0, unchanged_incarnation = 42;
++    void *backing, *copy;
++    StorageForeignObserver observer;
++    pthread_t foreign;
++    int entered = 0;
++
++    /* These are real caller spans, not Source or stack grants. The physical
++     * preparation API must never dispatch the supplied entry point. */
++    g_assert_cmpuint(bytes, >, sizeof(name));
++    backing = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
++                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    copy = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
++                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    g_assert_true(backing != MAP_FAILED);
++    g_assert_true(copy != MAP_FAILED);
++    memset(backing, 0xa5, bytes);
++    memcpy(copy, backing, bytes);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes - 1,
++        name, unstarted_storage_entry, &entered, &unchanged,
++        &unchanged_incarnation), ==, -EINVAL);
++    g_assert_cmpmem(backing, bytes, copy, bytes);
++    g_assert_true(unchanged == (void *)1);
++    g_assert_cmpuint(unchanged_incarnation, ==, 42);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes, name,
++        unstarted_storage_entry, &entered, &storage, &incarnation), ==, 0);
++    g_assert_true(storage == backing);
++    g_assert_cmpuint(incarnation, >, 0);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage, incarnation,
++                                                         &facts), ==, 0);
++    g_assert_true(facts.prepared);
++    g_assert_false(facts.creation_attempted);
++    g_assert_false(facts.birth_uncertain);
++    g_assert_false(facts.custody_returned);
++    g_assert_cmpuint(facts.backing, ==, (uintptr_t)backing);
++    g_assert_cmpuint(facts.backing_bytes, ==, bytes);
++
++    observer = (StorageForeignObserver) {
++        .storage = storage,
++        .incarnation = incarnation,
++    };
++    g_assert_cmpint(pthread_create(&foreign, NULL, storage_foreign_observer,
++                                   &observer), ==, 0);
++    g_assert_cmpint(pthread_join(foreign, NULL), ==, 0);
++    g_assert_cmpint(observer.observe_status, ==, -EPERM);
++    g_assert_cmpint(observer.return_status, ==, -EPERM);
++
++    /* Exact copied bytes and a copied incarnation cannot register an owner. */
++    memcpy(copy, backing, bytes);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(copy, incarnation,
++                                                         &facts), ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1((void *)1, incarnation,
++                                                         &facts), ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes, name,
++        unstarted_storage_entry, &entered, &unchanged, &unchanged_incarnation),
++                    ==, -EADDRINUSE);
++    g_assert_true(unchanged == (void *)1);
++    g_assert_cmpuint(unchanged_incarnation, ==, 42);
++    g_assert_cmpmem(backing, bytes, copy, bytes);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage, incarnation,
++                                                         backing),
++                    ==, -EADDRINUSE);
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(
++        storage, incarnation, &facts), ==, 0);
++    g_assert_true(facts.return_attempted);
++    g_assert_true(facts.custody_returned);
++    g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage, incarnation,
++                                                         &facts), ==, -ESTALE);
++
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes, name,
++        unstarted_storage_entry, &entered, &storage, &next), ==, 0);
++    g_assert_cmpuint(next, >, incarnation);
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(
++        storage, incarnation, &facts), ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(
++        storage, next, &facts), ==, 0);
++    g_assert_cmpint(entered, ==, 0);
++    g_assert_cmpint(munmap(copy, bytes), ==, 0);
++    g_assert_cmpint(munmap(backing, bytes), ==, 0);
++}
++
++#ifdef QEMU_BOUNDED_STORAGE_INTERNAL_CONTROLS
++static void test_storage_fixed_control_aliases(void)
++{
++    struct {
++        const char *name;
++        void *address;
++    } controls[] = {
++#define CONTROL_ALIAS(control) { #control, &(control) }
++        CONTROL_ALIAS(qemu_hot_fork_thread_lock),
++        CONTROL_ALIAS(qemu_hot_fork_threads),
++        CONTROL_ALIAS(qemu_hot_fork_bounded_threads),
++        CONTROL_ALIAS(qemu_hot_fork_bounded_storage_serial),
++        CONTROL_ALIAS(qemu_hot_fork_thread_count),
++        CONTROL_ALIAS(qemu_hot_fork_thread_overflow),
++        CONTROL_ALIAS(qemu_hot_fork_thread_starts_in_flight),
++        CONTROL_ALIAS(qemu_hot_fork_thread_generation),
++        CONTROL_ALIAS(qemu_hot_fork_coordinator_thread_id),
++        CONTROL_ALIAS(qemu_hot_fork_current_thread),
++        CONTROL_ALIAS(ram_membership_resume),
++        CONTROL_ALIAS(ram_membership_owner),
++        CONTROL_ALIAS(ram_writer_lock),
++        CONTROL_ALIAS(ram_writer_owner),
++        CONTROL_ALIAS(crucible_hot_fork_mutex_registry_guard),
++        CONTROL_ALIAS(crucible_hot_fork_mutexes),
++        CONTROL_ALIAS(crucible_hot_fork_mutex_addresses),
++        CONTROL_ALIAS(crucible_hot_fork_mutex_free_slots),
++#undef CONTROL_ALIAS
++    };
++    const char name[] = "fixed-alias";
++    size_t bytes = qemu_thread_bounded_storage_bytes_v1(sizeof(name));
++    QemuThreadBoundedStorage *storage = NULL, *unchanged = (void *)1;
++    QemuThreadBoundedStorageSnapshot facts;
++    QemuThreadRamPauseTransaction pause = { 0 };
++    QemuRamPauseEndDisposition end;
++    bool active_owner_excluded;
++    uint64_t incarnation = 0, unchanged_incarnation = 42;
++    void *backing, *fresh;
++    int entered = 0;
++
++    backing = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
++                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    fresh = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
++                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    g_assert_true(backing != MAP_FAILED);
++    g_assert_true(fresh != MAP_FAILED);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(backing, bytes, name,
++        unstarted_storage_entry, &entered, &storage, &incarnation), ==, 0);
++
++    for (size_t i = 0; i < G_N_ELEMENTS(controls); i++) {
++        void *address = controls[i].address;
++
++        g_test_message("actual fixed control: %s", controls[i].name);
++        /* The causal omission must fail this intended predicate before an
++         * unsafe nominated write could damage an actual gate or list head. */
++        g_assert_true(bounded_storage_fixed_conflict(address, 1));
++        g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage,
++            incarnation, address), ==, -EADDRINUSE);
++        g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(storage,
++            incarnation, address), ==, -EADDRINUSE);
++        g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(fresh, bytes, name,
++            unstarted_storage_entry, &entered, address, &unchanged_incarnation),
++                        ==, -EADDRINUSE);
++        g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(fresh, bytes, name,
++            unstarted_storage_entry, &entered, &unchanged, address),
++                        ==, -EADDRINUSE);
++        g_assert_cmpuint(unchanged_incarnation, ==, 42);
++        g_assert_true(unchanged == (void *)1);
++        g_assert_cmpint(qemu_thread_bounded_storage_observe_v1(storage,
++            incarnation, &facts), ==, 0);
++        g_assert_false(facts.return_attempted);
++        g_assert_false(facts.custody_returned);
++    }
++
++    /* The genuine producers cannot admit a pause over prepared storage, or
++     * prepare storage during a retained pause. No active owner is fabricated. */
++    g_assert_cmpint(qemu_thread_ram_pause_begin(&pause), ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(storage,
++        incarnation, &facts), ==, 0);
++    g_assert_cmpint(qemu_thread_ram_pause_begin(&pause), ==, 0);
++    g_assert_true(ram_membership_owner == &pause);
++    g_assert_cmpint(pthread_mutex_trylock(&qemu_hot_fork_thread_lock), ==, 0);
++    active_owner_excluded = bounded_storage_conflict_locked(&pause, sizeof(pause));
++    g_assert_cmpint(pthread_mutex_unlock(&qemu_hot_fork_thread_lock), ==, 0);
++    g_assert_true(active_owner_excluded);
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(fresh, bytes, name,
++        unstarted_storage_entry, &entered, &unchanged, &unchanged_incarnation),
++                    ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_ram_pause_validate(&pause), ==, 0);
++    g_assert_cmpint(qemu_thread_ram_pause_end_v2(&pause, &end), ==, 0);
++    g_assert_true(end.complete);
++    g_assert_cmpint(entered, ==, 0);
++    g_assert_cmpint(munmap(fresh, bytes), ==, 0);
++    g_assert_cmpint(munmap(backing, bytes), ==, 0);
++}
++#endif
++
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
@@ -309522,6 +311060,12 @@ index 0000000000000000000000000000000000000000..b118eb4dcf2989aee45533c8a7b886a4
 +                    test_reuse_after_actual_join);
 +    g_test_add_func("/crucible/bounded/copied-process",
 +                    test_copied_process_refusal);
++    g_test_add_func("/crucible/bounded/caller-backed-unstarted",
++                    test_caller_backed_unstarted_storage);
++#ifdef QEMU_BOUNDED_STORAGE_INTERNAL_CONTROLS
++    g_test_add_func("/crucible/bounded/storage-fixed-controls",
++                    test_storage_fixed_control_aliases);
++#endif
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-cached-writer.c b/tests/unit/test-crucible-cached-writer.c
@@ -315078,7 +316622,7 @@ index 0000000000000000000000000000000000000000..bc7fd3347b8aeb4f2764f5afba38f924
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3f08583ff66f49e3e43255d431ac8a5295b95264
+index 0000000000000000000000000000000000000000..027a3d8d9a6b5ead794c8b69ace123ffff90dec1
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -315118,7 +316662,7 @@ index 0000000000000000000000000000000000000000..3f08583ff66f49e3e43255d431ac8a52
 +    "accel/tcg/icount-common.c":
 +        "580137f73146ba656ab7ca0b1f0c6ed18c88765d6e0115b871a31a1673eb51dd",
 +    "accel/tcg/tcg-accel-ops-rr.c":
-+        'beefa18dc508e4f90017728e3dc87000bfc89b97b95613fed503cb819fd0639a',
++        '952bc3a430d91177817581af557f4c11ffdc0443a11e7c1f5e8677ba97262d73',
 +    "accel/tcg/tcg-accel-ops-rr.h":
 +        "93b2e3a3b4b395e98733317e8411420b7ef1331f84d59af6a0ab87ad9c884d98",
 +    "monitor/qmp-cmds.c":
@@ -315126,7 +316670,7 @@ index 0000000000000000000000000000000000000000..3f08583ff66f49e3e43255d431ac8a52
 +    "plugins/api-system.c":
 +        "54ee79e0bbdd0ef085b6f1e67f3393f67dd568f73be7b26f0062111783b60e5a",
 +    "plugins/crucible-native-invocation.c":
-+        '2774d8220624f310206173fed54cc96c55a6014fcf78873747efb9056f8e6701',
++        '9fe37c2342876ec82f81f5637d7fd7cc2706a692308ee31e226235e8d05a71ee',
 +    "plugins/crucible-callback-publication.inc.h":
 +        "5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a",
 +}
@@ -315829,10 +317373,10 @@ index 0000000000000000000000000000000000000000..3f08583ff66f49e3e43255d431ac8a52
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c4c3bbeb2674bad0d09b5537ee5d2f24d007525e
+index 0000000000000000000000000000000000000000..980d2ef97cb52419491810796c0c011799238375
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2489 @@
+@@ -0,0 +1,2490 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -318210,6 +319754,7 @@ index 0000000000000000000000000000000000000000..c4c3bbeb2674bad0d09b5537ee5d2f24
 +        "publisher-child-pin", "publisher-child-return", "publisher-publication-post",
 +        "publisher-terminal-pin", "publisher-semantic-status"])
 +    arguments = parser.parse_args()
++    SUPPORT["configure_native_build"](arguments.build_dir)
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
 +    sys.path.insert(0, str(ROOT / "scripts"))
@@ -349991,10 +351536,10 @@ index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe776
 +}
 diff --git a/tests/unit/test-crucible-preexec-setup.c b/tests/unit/test-crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5512261163d5540ccb52fee42265b457ed441910
+index 0000000000000000000000000000000000000000..fbce56a252f1dae35d34b4be8af72de410e2358c
 --- /dev/null
 +++ b/tests/unit/test-crucible-preexec-setup.c
-@@ -0,0 +1,1755 @@
+@@ -0,0 +1,1808 @@
 +/*
 + * Physical preinit receipt controls; no namespace or original issuer fixture.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -351463,6 +353008,7 @@ index 0000000000000000000000000000000000000000..5512261163d5540ccb52fee42265b457
 +    printf("owner.%s=%zu/%zu\n", #member, \
 +           offsetof(QemuCruciblePreexecSetupOwner, member), \
 +           sizeof(preexec_setup_owner.member))
++    REPORT_OWNER_FIELD(stack_grant);
 +    REPORT_OWNER_FIELD(process_id);
 +    REPORT_OWNER_FIELD(thread_id);
 +    REPORT_OWNER_FIELD(attempted);
@@ -351632,6 +353178,55 @@ index 0000000000000000000000000000000000000000..5512261163d5540ccb52fee42265b457
 +    g_assert_cmpint(preexec_stack_limit_corroborate(page), ==, -EPERM);
 +}
 +
++/* A matched limit remains insufficient: this fixture supplies no actual
++ * external stack owner or complete control/TLS admission profile.
++ */
++static void test_stack_grant_refusal(void)
++{
++    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
++    QemuCruciblePreexecStackGrant *holder = NULL;
++    uint64_t prefix;
++
++    if (!fixture_isolated()) {
++        g_test_trap_subprocess(NULL, 1000000, 0);
++        g_test_trap_assert_passed();
++        return;
++    }
++    owner->selected_edition = 8;
++    owner->plan.schema = 11;
++    owner->plan_validated = true;
++    owner->peer_validated = true;
++    owner->fixed_owner_retained = true;
++    owner->process_id = getpid();
++    owner->thread_id = syscall(SYS_gettid);
++    owner->stack_limit.first_returned = true;
++    owner->stack_limit.post_returned = true;
++    prefix = owner->provisional_native_extent;
++
++    /* Membership must be checked before touching a nominated donor/issuer. */
++    g_assert_cmpint(qemu_crucible_preexec_stack_grant_current_v1(
++        owner, (QemuCruciblePreexecStackGrant *)(uintptr_t)1), ==, -EPERM);
++    g_assert_cmpint(qemu_crucible_preexec_stack_grant_current_v1(
++        (QemuCruciblePreexecPurposeOwner *)(uintptr_t)1,
++        &owner->stack_grant), ==, -EPERM);
++    g_assert_cmpint(preexec_stack_resources_reserve(), ==, -EPERM);
++    g_assert_cmpint(preexec_stack_grant_admit(), ==, -EPERM);
++    g_assert_false(owner->stack_grant.profile_attempted);
++    g_assert_false(owner->stack_grant.profile_returned);
++    g_assert_false(owner->stack_grant.parent_retained);
++    g_assert_false(owner->stack_grant.profile_retained);
++    g_assert_false(owner->stack_grant.source_transferred);
++    g_assert_null(owner->stack_grant.resource_parent);
++    g_assert_cmpuint(owner->provisional_native_extent, ==, prefix);
++    for (size_t index = 0; index < 2; index++) {
++        g_assert_false(owner->stack_grant.role_debit[index].charge.held);
++    }
++    g_assert_cmpint(qemu_crucible_preexec_stack_grant_borrow_v1(owner, &holder),
++                    ==, -ENOTSUP);
++    g_assert_null(holder);
++    g_assert_cmpint(preexec_stack_grant_admit(), ==, -EPERM);
++}
++
 +int main(int argc, char **argv)
 +{
 +    static const char *refusals[] = {
@@ -351668,6 +353263,8 @@ index 0000000000000000000000000000000000000000..5512261163d5540ccb52fee42265b457
 +            test_publisher_observation();
 +        } else if (!strcmp(argv[2], "/preexec/publisher-module-facts")) {
 +            test_publisher_module_facts();
++        } else if (!strcmp(argv[2], "/preexec/stack-grant/refusal")) {
++            test_stack_grant_refusal();
 +        } else if (!strcmp(argv[2], "/preexec/quantum-reservation-refusal")) {
 +            test_quantum_reservation_refusal();
 +        } else if (!strcmp(argv[2], "/preexec/publisher-storage")) {
@@ -351732,6 +353329,7 @@ index 0000000000000000000000000000000000000000..5512261163d5540ccb52fee42265b457
 +#ifdef PREEXEC_TEST_RECV_EINTR
 +    g_test_add_func("/preexec/injected-eintr", test_injected_eintr);
 +#endif
++    g_test_add_func("/preexec/stack-grant/refusal", test_stack_grant_refusal);
 +    g_test_add_data_func("/preexec/stack-frame/base", GINT_TO_POINTER(0),
 +                         test_stack_frame_receipt);
 +    g_test_add_data_func("/preexec/stack-frame/workspace", GINT_TO_POINTER(1),
@@ -358123,7 +359721,7 @@ index 0000000000000000000000000000000000000000..9c5714416db9af4c924d815cbf552ded
 +    main()
 diff --git a/tests/unit/test-crucible-quantum-keeper.py b/tests/unit/test-crucible-quantum-keeper.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..cce97fd362312382dbbbcdb429342ab3a5672536
+index 0000000000000000000000000000000000000000..0bbd6f95c06555757101a5fbff0afb6c3fd9c3a5
 --- /dev/null
 +++ b/tests/unit/test-crucible-quantum-keeper.py
 @@ -0,0 +1,488 @@
@@ -358206,7 +359804,7 @@ index 0000000000000000000000000000000000000000..cce97fd362312382dbbbcdb429342ab3
 +            sizeof(rr_quantum_frame) + sizeof(rr_quantum_keeper),
 +            "real Core getter prices whole keeper");
 +        rr_probe_require(qemu_crucible_startup_source_fixed_control_extent() ==
-+            UINT64_C(298742) + sizeof(rr_quantum_keeper),
++            UINT64_C(300134) + sizeof(rr_quantum_keeper),
 +            "real composed fixed floor includes keeper storage");
 +        geometry_reported = true;
 +    }
@@ -362426,10 +364024,10 @@ index 0000000000000000000000000000000000000000..3b5b3d59cb745cf4ca8a037937dd8e1d
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..98cbee197d62bf1ba9802c1ff6d2b19c4f810db8
+index 0000000000000000000000000000000000000000..21a81593b33076fe2fcfdec08893b3fd0342a967
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,1095 @@
+@@ -0,0 +1,1101 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -362495,6 +364093,12 @@ index 0000000000000000000000000000000000000000..98cbee197d62bf1ba9802c1ff6d2b19c
 +    declarations = EXTRACT["body_cut"](
 +        startup, "static QemuCrucibleStartupSourceControl startup_source = {",
 +        "static int startup_failure(")
++    # The real membership predicates also inspect this permanent RR frame.
++    # Extract its complete canonical storage without issuing an actor.
++    declarations += EXTRACT["body_cut"](
++        native, "#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)\n"
++        "struct QemuCrucibleNativeQuantumRRActor {",
++        "static bool native_quantum_rr_debt_locked(")
 +    bodies = []
 +    # These continuations require selected ownership, absent in this fixture.
 +    for text, signature in (
@@ -369582,10 +371186,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..224ea1539bfc4459fd631aebe632dd944748af35
+index 0000000000000000000000000000000000000000..c2ccd8ad24878e70761897b91548278b826491fd
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,738 @@
+@@ -0,0 +1,744 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -369681,6 +371285,12 @@ index 0000000000000000000000000000000000000000..224ea1539bfc4459fd631aebe632dd94
 +    declarations += EXTRACT["body_cut"](
 +        source, "static QemuCrucibleStartupSourceControl startup_source = {",
 +        "static int startup_failure(")
++    # The real membership predicates also inspect this permanent RR frame.
++    # Extract its complete canonical storage without issuing an actor.
++    declarations += EXTRACT["body_cut"](
++        native, "#if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)\n"
++        "struct QemuCrucibleNativeQuantumRRActor {",
++        "static bool native_quantum_rr_debt_locked(")
 +    declarations += "\nstruct qemu_plugin_state plugin;\n"
 +    names = (
 +        "qemu_plugin_crucible_native_group_member_count_v1",
@@ -371779,6 +373389,214 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +    g_test_add_func("/sparc/ordinary", test_ordinary);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-stack-bank.py b/tests/unit/test-crucible-stack-bank.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..99a1d5eb979e11e465be75f9efeaa75f2cfa5e00
+--- /dev/null
++++ b/tests/unit/test-crucible-stack-bank.py
+@@ -0,0 +1,202 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check literal stack debt predicates with actual configured Source inputs.
++
++No funded bank, accepting profile, cleanup owner or execution actor is issued.
++Each causal omission must reach its specific assertion, not merely SIGABRT.
++"""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++import time
++
++
++CHECKS = r'''
++int main(void)
++{
++    QemuCrucibleStackBorrower *borrower = &startup_source.stack_bank.roles[0].borrower;
++    QemuCrucibleStackEffect effect = { 0 };
++    QemuCrucibleSourcePendingQuantumConstructor *child =
++        &startup_source.pending_constructor;
++
++    assert(stack_bank_borrowers_closed());
++    startup_source.pending_constructor.stack_resources = borrower;
++    assert(!stack_bank_borrowers_closed());
++    startup_source.pending_constructor.stack_resources = NULL;
++    startup_source.quantum_rr_execution.stack_resources = borrower;
++    assert(!stack_bank_borrowers_closed());
++    startup_source.quantum_rr_execution.stack_resources = NULL;
++    borrower->held = true;
++    assert(!stack_bank_borrowers_closed());
++    borrower->held = false;
++    borrower->uncertain = true;
++    assert(!stack_bank_borrowers_closed());
++    borrower->uncertain = false;
++    borrower->birth.attempted = true;
++    assert(!stack_bank_borrowers_closed());
++    borrower->retired = true;
++    assert(stack_bank_borrowers_closed());
++
++    assert(!stack_effect_return_complete(&effect));
++    effect.attempted = true;
++    effect.returned = true;
++    effect.post_attempted = true;
++    effect.post_returned = true;
++    assert(stack_effect_return_complete(&effect));
++    assert(!stack_effect_consumed(&effect));
++    effect.consumed = true;
++    assert(stack_effect_consumed(&effect));
++#define REQUIRE_EFFECT_FIELD(field) \
++    effect.field = false; \
++    assert(!stack_effect_consumed(&effect)); \
++    effect.field = true
++    REQUIRE_EFFECT_FIELD(attempted);
++    REQUIRE_EFFECT_FIELD(returned);
++    REQUIRE_EFFECT_FIELD(post_attempted);
++    REQUIRE_EFFECT_FIELD(post_returned);
++    effect.status = -EIO;
++    assert(!stack_effect_consumed(&effect));
++    assert(effect.consumed);
++    effect.status = 0;
++    effect.post_status = -ECANCELED;
++    assert(!stack_effect_consumed(&effect));
++    assert(effect.consumed);
++    assert(!stack_bank_main_retired(child));
++    child->consumed = true;
++    child->return_attempted = true;
++    child->return_post_attempted = true;
++    qatomic_store_release(&child->return_post_returned, true);
++    assert(stack_bank_main_retired(child));
++    child->held = true;
++    assert(!stack_bank_main_retired(child));
++    child->held = false;
++#define REQUIRE_MAIN_FIELD(field) \
++    child->field = false; \
++    assert(!stack_bank_main_retired(child)); \
++    child->field = true
++    REQUIRE_MAIN_FIELD(consumed);
++    REQUIRE_MAIN_FIELD(return_attempted);
++    REQUIRE_MAIN_FIELD(return_post_attempted);
++    REQUIRE_MAIN_FIELD(return_post_returned);
++    child->physical_status = -EIO;
++    assert(!stack_bank_main_retired(child));
++    child->physical_status = 0;
++    child->return_post_status = -ECANCELED;
++    assert(!stack_bank_main_retired(child));
++    assert(child->consumed);
++    assert(!startup_source.stack_bank.adopted);
++    assert(!startup_source.stack_bank.backing_retained);
++    return 0;
++}
++'''
++
++
++def limit():
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("source", type=Path)
++    parser.add_argument("compile_database", type=Path)
++    parser.add_argument("environment", type=Path)
++    parser.add_argument("output", type=Path)
++    args = parser.parse_args()
++    source = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    entries = json.loads(args.compile_database.read_text())
++    entry = next(row for row in entries if row["file"] ==
++                 str(source / "plugins/crucible-startup-source.c"))
++    environment = dict(os.environ, **json.loads(args.environment.read_text()))
++    extract = runpy.run_path(str(source /
++        "tests/unit/extract-crucible-startup-source-controls.py"))["function"]
++    production = (source / "plugins/crucible-stack-bank.inc.h").read_text()
++    body = "\n\n".join(extract(production, opening) for opening in (
++        "static bool stack_bank_borrowers_closed(",
++        "static bool stack_effect_return_complete(",
++        "static bool stack_effect_consumed(",
++        "static bool stack_bank_main_retired(",
++    ))
++    before = ('#include "qemu/osdep.h"\n'
++              '#include "plugins/crucible-startup-source.h"\n'
++              'static QemuCrucibleStartupSourceControl startup_source;\n')
++    omissions = {
++        "main-post-return": ("!qatomic_load_acquire(&child->return_post_returned)", "false"),
++        "main-held": ("!child->held &&", "true &&"),
++        "main-consumed": ("child->consumed &&", "true &&"),
++        "main-return-attempt": ("child->return_attempted &&", "true &&"),
++        "main-post-attempt": ("child->return_post_attempted &&", "true &&"),
++        "main-physical-status": ("!child->physical_status &&", "true &&"),
++        "main-post-status": ("!child->return_post_status;", "true;"),
++        "main-holder": ("startup_source.pending_constructor.stack_resources ||", "false ||"),
++        "rr-holder": ("startup_source.quantum_rr_execution.stack_resources)", "false)"),
++        "held": ("borrower->held ||", "false ||"),
++        "uncertain": ("borrower->uncertain ||", "false ||"),
++        "retirement": ("borrower->birth.attempted &&", "false &&"),
++        "attempt": ("effect->attempted &&", "true &&"),
++        "return": ("effect->returned &&", "true &&"),
++        "status": ("!effect->status &&", "true &&"),
++        "post-attempt": ("effect->post_attempted &&", "true &&"),
++        "post-return": ("effect->post_returned &&", "true &&"),
++        "post-status": ("!effect->post_status", "true"),
++        "consumption": ("effect->consumed;", "true;"),
++    }
++    variants = {"inventory": body}
++    for name, (old, new) in omissions.items():
++        assert body.count(old) == 1, (name, body.count(old))
++        variants[name] = body.replace(old, new)
++    results = []
++    began = time.monotonic()
++    for name, actual in variants.items():
++        assert time.monotonic() - began < 600
++        path = output / (name + ".c")
++        binary = output / name
++        path.write_text(before + actual + CHECKS)
++        command = shlex.split(entry["command"])
++        command.remove("-c")
++        command[command.index(entry["file"])] = str(path)
++        for flag in ("-o", "-MF", "-MQ"):
++            command[command.index(flag) + 1] = str(binary) + (
++                ".d" if flag == "-MF" else "")
++        command.append("-UNDEBUG")
++        (output / (name + ".command.json")).write_text(
++            json.dumps(command, indent=2) + "\n")
++        compiled = subprocess.run(command, cwd=entry["directory"],
++            env=environment, capture_output=True, preexec_fn=limit, timeout=180)
++        (output / (name + ".compile.log")).write_bytes(
++            compiled.stdout + compiled.stderr)
++        compiled.check_returncode()
++        result = subprocess.run([str(binary)], capture_output=True,
++            preexec_fn=limit, timeout=30)
++        (output / (name + ".run.log")).write_bytes(result.stdout + result.stderr)
++        assertion = (b"!stack_bank_main_retired(child)" if name.startswith("main-") and name != "main-holder"
++                     else b"!stack_bank_borrowers_closed()" if name in
++                     {"main-holder", "rr-holder", "held", "uncertain", "retirement"}
++                     else b"!stack_effect_consumed(&effect)")
++        if name == "inventory":
++            assert result.returncode == 0, (name, result.returncode)
++        else:
++            assert result.returncode == -signal.SIGABRT, (name, result.returncode)
++            assert b"Assertion" in result.stderr and assertion in result.stderr, (
++                name, result.stderr)
++        results.append(dict(variant=name, returncode=result.returncode,
++                            intended_assertion=assertion.decode()))
++    (output / "results.json").write_text(json.dumps(dict(
++        results=results, elapsed_seconds=time.monotonic() - began,
++        source_sha256=hashlib.sha256(production.encode()).hexdigest(),
++        compiler_workers=1, core_bytes=0, address_space_bytes=6 * 1024**3,
++        suite_seconds=600, compile_seconds=180, run_seconds=30,
++        genuine_grant_or_execution=False), indent=2) + "\n")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-stack-proposal-geometry.py b/tests/unit/test-crucible-stack-proposal-geometry.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..ac1d9474ef9653b0f32b1b8ceeae42bccd458944
@@ -379058,10 +380876,10 @@ index 0000000000000000000000000000000000000000..6e04017762b6144d758422da84b78c7a
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1750e62cb153c3db62e599442c99e8d87558c1c0
+index 0000000000000000000000000000000000000000..00a091083f46b937357fb2e40640bf07ce5fa908
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,274 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -379243,9 +381061,12 @@ index 0000000000000000000000000000000000000000..1750e62cb153c3db62e599442c99e8d8
 +def main():
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--build-dir", type=Path)
 +    parser.add_argument("--negative-control", action="store_true")
 +    parser.add_argument("--negative-transfer", action="store_true")
 +    arguments = parser.parse_args()
++    if arguments.build_dir is not None:
++        NETWORK["SUPPORT"]["configure_native_build"](arguments.build_dir)
 +    production_sources = SUPPORT["validated_sources"]()
 +    qom_header = (ROOT / "include/qom/object.h").read_bytes()
 +    if hashlib.sha256(qom_header).hexdigest() != QOM_OBJECT_HEADER_SHA256:
@@ -390881,7 +392702,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3a128f240 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e509827064407950 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -391774,7 +393595,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,44 +1162,2274 @@ typedef struct {
+@@ -379,44 +1162,2286 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -391802,6 +393623,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
 +    pthread_t bounded_thread;
 +    uint64_t bounded_birth_generation;
 +    struct QemuHotForkThreadRecord *bounded_next;
++    QemuThreadBoundedStorage *prepared_storage;
 +    bool bounded_departed;
 +    bool bounded_joined;
 +    /* Whole record geometry includes these fields. A constructor must retain
@@ -391815,10 +393637,21 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
 +    int64_t ram_writer_admission_thread_id;
 +} QemuHotForkThreadRecord;
 +
++struct QemuThreadBoundedStorage {
++    QemuThreadBoundedStorageSnapshot facts;
++    QemuThread creator;
++    int64_t process_id;
++    QemuThreadArgs arguments;
++    QemuHotForkThreadRecord record;
++    GList inventory_link;
++    char name[];
++};
++
 +static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
 +static GList *qemu_hot_fork_threads;
 +/* Exact actual bounded records, retained independently of live census rows. */
 +static QemuHotForkThreadRecord *qemu_hot_fork_bounded_threads;
++static uint64_t qemu_hot_fork_bounded_storage_serial;
 +static size_t qemu_hot_fork_thread_count;
 +static size_t qemu_hot_fork_thread_overflow;
 +static size_t qemu_hot_fork_thread_starts_in_flight;
@@ -394080,7 +395913,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
  }
  
  void qemu_thread_create(QemuThread *thread, const char *name,
-@@ -450,18 +3463,178 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3475,486 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
@@ -394103,7 +395936,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
  
 +size_t qemu_thread_bounded_registry_fixed_storage_bytes(void)
 +{
-+    return sizeof(qemu_hot_fork_bounded_threads);
++    return sizeof(qemu_hot_fork_bounded_threads) +
++           sizeof(qemu_hot_fork_bounded_storage_serial);
 +}
 +
 +size_t qemu_thread_hot_fork_record_storage_bytes(void)
@@ -394120,6 +395954,313 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..ce8bb40982f79ef8912b3cec9c17a6e3
 +    }
 +    return sizeof(QemuThreadArgs) + name_bytes +
 +           qemu_thread_hot_fork_record_storage_bytes();
++}
++
++size_t qemu_thread_bounded_storage_bytes_v1(size_t name_bytes)
++{
++    if (!name_bytes || name_bytes > QEMU_HOT_FORK_THREAD_NAME_MAX + 1 ||
++        name_bytes > SIZE_MAX - sizeof(QemuThreadBoundedStorage)) {
++        return 0;
++    }
++    return sizeof(QemuThreadBoundedStorage) + name_bytes;
++}
++
++static bool bounded_storage_intersects(const void *left, size_t left_bytes,
++                                       const void *right, size_t right_bytes)
++{
++    uintptr_t a = (uintptr_t)left;
++    uintptr_t b = (uintptr_t)right;
++
++    if (!a || !b || !left_bytes || !right_bytes ||
++        left_bytes > UINTPTR_MAX - a || right_bytes > UINTPTR_MAX - b) {
++        return true;
++    }
++    return a < b + right_bytes && b < a + left_bytes;
++}
++
++static bool bounded_storage_fixed_conflict(const void *span, size_t bytes)
++{
++#define EXCLUDE_NATIVE_CONTROL(control) \
++    if (bounded_storage_intersects(span, bytes, &(control), sizeof(control))) { \
++        return true; \
++    }
++
++    /* Protect the actual gates and indices even when their lists are empty. */
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_registry_guard);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutexes);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_addresses);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_free_slots);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_count);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_free_count);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_address_tombstones);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_next_id);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_generation);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_overflowed);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_inconsistent);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_slots_initialized);
++    EXCLUDE_NATIVE_CONTROL(crucible_hot_fork_mutex_registry_held);
++#ifdef __linux__
++    EXCLUDE_NATIVE_CONTROL(crucible_mutex_owner_cache_once);
++    EXCLUDE_NATIVE_CONTROL(crucible_mutex_owner_cache_enabled);
++    EXCLUDE_NATIVE_CONTROL(crucible_mutex_owner_cached_thread_id);
++    EXCLUDE_NATIVE_CONTROL(crucible_mutex_owner_cache_suspended);
++#endif
++    EXCLUDE_NATIVE_CONTROL(namebuf);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_thread_lock);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_threads);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_bounded_threads);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_bounded_storage_serial);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_thread_count);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_thread_overflow);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_thread_starts_in_flight);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_thread_generation);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_coordinator_thread_id);
++    EXCLUDE_NATIVE_CONTROL(qemu_hot_fork_current_thread);
++    EXCLUDE_NATIVE_CONTROL(thread_exit);
++
++    /* These fixed writer and membership controls share this native provider;
++     * taking their addresses does not inspect state behind another gate. */
++    EXCLUDE_NATIVE_CONTROL(ram_writer_lock);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_resume);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_generation);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_cpus);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_io);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_aliases);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_owner);
++    EXCLUDE_NATIVE_CONTROL(ram_writer_scopes);
++    EXCLUDE_NATIVE_CONTROL(ram_cpu_construction_owner);
++    EXCLUDE_NATIVE_CONTROL(ram_cpu_construction_generation);
++    EXCLUDE_NATIVE_CONTROL(ram_cpu_execution_generation);
++    EXCLUDE_NATIVE_CONTROL(ram_cpu_execution_witness);
++    EXCLUDE_NATIVE_CONTROL(ram_membership_resume);
++    EXCLUDE_NATIVE_CONTROL(ram_membership_owner);
++
++#undef EXCLUDE_NATIVE_CONTROL
++    return false;
++}
++
++/* The actual registry lock protects retained storage and ordinary records.
++ * Refuse before any write if the finite inventory cannot be inspected fully. */
++static bool bounded_storage_conflict_locked(const void *span, size_t bytes)
++{
++    QemuHotForkThreadRecord *record;
++    GList *node;
++    size_t inspected = 0;
++
++    if (!span || !bytes || bytes > UINTPTR_MAX - (uintptr_t)span ||
++        bounded_storage_fixed_conflict(span, bytes) ||
++        (ram_membership_owner && bounded_storage_intersects(
++            span, bytes, ram_membership_owner, sizeof(*ram_membership_owner)))) {
++        return true;
++    }
++    for (record = qemu_hot_fork_bounded_threads; record;
++         record = record->bounded_next) {
++        QemuThreadBoundedStorage *storage = record->prepared_storage;
++
++        if (++inspected > QEMU_HOT_FORK_THREAD_INVENTORY_MAX ||
++            bounded_storage_intersects(span, bytes, record, sizeof(*record))) {
++            return true;
++        }
++        if (storage && bounded_storage_intersects(
++                span, bytes, (void *)storage->facts.backing,
++                storage->facts.backing_bytes)) {
++            return true;
++        }
++        if (record->bounded && bounded_storage_intersects(
++                span, bytes, record->bounded, sizeof(*record->bounded))) {
++            return true;
++        }
++    }
++    inspected = 0;
++    for (node = qemu_hot_fork_threads; node; node = node->next) {
++        record = node->data;
++        if (++inspected > QEMU_HOT_FORK_THREAD_INVENTORY_MAX ||
++            bounded_storage_intersects(span, bytes, node, sizeof(*node)) ||
++            bounded_storage_intersects(span, bytes, record, sizeof(*record))) {
++            return true;
++        }
++    }
++    return false;
++}
++
++static int bounded_storage_find_locked(QemuThreadBoundedStorage *candidate,
++                                       uint64_t incarnation,
++                                       QemuHotForkThreadRecord ***found)
++{
++    QemuHotForkThreadRecord **link = &qemu_hot_fork_bounded_threads;
++    size_t inspected = 0;
++
++    while (*link) {
++        QemuHotForkThreadRecord *record = *link;
++
++        if (++inspected > QEMU_HOT_FORK_THREAD_INVENTORY_MAX) {
++            return -ENOSPC;
++        }
++        /* Compare the known embedded member before nominated owner access. */
++        if (record->prepared_storage == candidate && candidate &&
++            candidate == container_of(record, QemuThreadBoundedStorage, record)) {
++            if (candidate->facts.incarnation != incarnation) {
++                return -ESTALE;
++            }
++            if (candidate->process_id != getpid() ||
++                !qemu_thread_is_self(&candidate->creator) ||
++                !candidate->facts.prepared || candidate->facts.custody_returned) {
++                return -EPERM;
++            }
++            *found = link;
++            return 0;
++        }
++        link = &record->bounded_next;
++    }
++    return -ESTALE;
++}
++
++static bool bounded_storage_capacity_locked(void)
++{
++    QemuHotForkThreadRecord *record;
++    size_t retained = 0;
++
++    for (record = qemu_hot_fork_bounded_threads; record;
++         record = record->bounded_next) {
++        if (++retained >= QEMU_HOT_FORK_THREAD_INVENTORY_MAX) {
++            return false;
++        }
++    }
++    return true;
++}
++
++int qemu_thread_bounded_storage_prepare_v1(
++    void *backing, size_t bytes, const char *name,
++    void *(*entry)(void *), void *opaque,
++    QemuThreadBoundedStorage **out, uint64_t *incarnation)
++{
++    QemuThreadBoundedStorage *storage = backing;
++    size_t name_bytes, required;
++    bool name_valid;
++    int status;
++
++    if (!backing || !name || !entry || !opaque || !out || !incarnation ||
++        (uintptr_t)backing % _Alignof(QemuThreadBoundedStorage)) {
++        return -EINVAL;
++    }
++    name_bytes = strnlen(name, QEMU_HOT_FORK_THREAD_NAME_MAX + 1) + 1;
++    required = qemu_thread_bounded_storage_bytes_v1(name_bytes);
++    if (!required || bytes < required || bytes > UINTPTR_MAX - (uintptr_t)backing ||
++        bounded_storage_intersects(backing, bytes, name, name_bytes) ||
++        bounded_storage_intersects(backing, bytes, out, sizeof(*out)) ||
++        bounded_storage_intersects(backing, bytes, incarnation,
++                                    sizeof(*incarnation)) ||
++        bounded_storage_intersects(out, sizeof(*out), incarnation,
++                                    sizeof(*incarnation))) {
++        return -EINVAL;
++    }
++    name_valid = g_utf8_validate(name, name_bytes - 1, NULL);
++    status = pthread_mutex_trylock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        return -status;
++    }
++    if (ram_membership_owner) {
++        status = -EBUSY;
++    } else if (!bounded_storage_capacity_locked()) {
++        status = -ENOSPC;
++    } else if (bounded_storage_conflict_locked(backing, bytes) ||
++               bounded_storage_conflict_locked(out, sizeof(*out)) ||
++               bounded_storage_conflict_locked(incarnation, sizeof(*incarnation))) {
++        status = -EADDRINUSE;
++    } else if (qemu_hot_fork_bounded_storage_serial == UINT64_MAX) {
++        status = -EOVERFLOW;
++    } else {
++        memset(storage, 0, required);
++        storage->facts = (QemuThreadBoundedStorageSnapshot) {
++            .backing = (uintptr_t)backing,
++            .backing_bytes = bytes,
++            .incarnation = ++qemu_hot_fork_bounded_storage_serial,
++            .prepared = true,
++        };
++        storage->process_id = getpid();
++        qemu_thread_get_self(&storage->creator);
++        memcpy(storage->name, name, name_bytes);
++        storage->arguments = (QemuThreadArgs) {
++            .start_routine = entry,
++            .arg = opaque,
++            .name = storage->name,
++            .mode = QEMU_THREAD_JOINABLE,
++        };
++        storage->record.prepared_storage = storage;
++        storage->record.joinable = true;
++        storage->record.name_valid = name_valid;
++        storage->record.disposition = QEMU_THREAD_HOT_FORK_UNCLASSIFIED;
++        if (name_valid) {
++            memcpy(storage->record.name, name, name_bytes);
++        } else {
++            memcpy(storage->record.name, "<invalid>", sizeof("<invalid>"));
++        }
++        storage->record.bounded_next = qemu_hot_fork_bounded_threads;
++        storage->inventory_link.data = &storage->record;
++        qemu_hot_fork_bounded_threads = &storage->record;
++        *out = storage;
++        *incarnation = storage->facts.incarnation;
++    }
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return status;
++}
++
++static int bounded_storage_snapshot(QemuThreadBoundedStorage *storage,
++                                    uint64_t incarnation,
++                                    QemuThreadBoundedStorageSnapshot *out,
++                                    bool return_unstarted)
++{
++    QemuHotForkThreadRecord **link = NULL;
++    int status;
++
++    if (!out) {
++        return -EINVAL;
++    }
++    status = pthread_mutex_trylock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        return -status;
++    }
++    status = bounded_storage_find_locked(storage, incarnation, &link);
++    if (!status && bounded_storage_conflict_locked(out, sizeof(*out))) {
++        status = -EADDRINUSE;
++    }
++    if (!status && return_unstarted) {
++        /* This interface never calls a creator. A future actual birth route
++         * must save its attempt before calling libc and retain unknown birth.
++         * A copied no-birth status can never clear these canonical facts.
++         * A retained membership snapshot also freezes this list: its begin
++         * checked exact bounded owners, not just the active census count. */
++        if (ram_membership_owner ||
++            storage->facts.creation_attempted || storage->facts.birth_uncertain ||
++            storage->record.tracked || storage->record.bounded ||
++            storage->record.thread_id) {
++            status = -EBUSY;
++        } else {
++            storage->facts.return_attempted = true;
++            *link = storage->record.bounded_next;
++            storage->record.bounded_next = NULL;
++            storage->facts.custody_returned = true;
++        }
++    }
++    if (!status) {
++        *out = storage->facts;
++    }
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return status;
++}
++
++int qemu_thread_bounded_storage_observe_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedStorageSnapshot *out)
++{
++    return bounded_storage_snapshot(storage, incarnation, out, false);
++}
++
++int qemu_thread_bounded_storage_return_unstarted_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedStorageSnapshot *out)
++{
++    return bounded_storage_snapshot(storage, incarnation, out, true);
 +}
 +
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,

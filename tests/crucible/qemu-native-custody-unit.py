@@ -32,6 +32,7 @@ COMPONENTS = (
     "executor-cleanup", "quantum-execution", "outcome-boundary",
     "quantum-rr-parent", "quantum-wrapper",
     "quantum-rr-execution", "quantum-rr-terminal",
+    "stack-bank",
 )
 POSITIONAL_ARGUMENTS = {
     "advance-content", "advance-post-refusal", "advance-recipient-leaves",
@@ -186,6 +187,25 @@ def retain_text(cases, output, digest, write_json):
     write_json(output / "generated-files.json", records)
 
 
+def stack_bank_arguments(entries, source, build, output, cases, write_json):
+    """Retains the actual owning command with its source coordinate canonicalized."""
+    owning_source = source / "plugins/crucible-startup-source.c"
+    entry, = [row for row in entries
+              if (Path(row["directory"]) / row["file"]).resolve() == owning_source]
+    configured_flags(entry, build, owning_source)
+    command = shlex.split(entry["command"])
+    source_index = command.index("-c") + 1
+    command[source_index] = str(owning_source)
+
+    # The public control uses exact source names when selecting its command.
+    # Keep the original alongside the derived entry; flags and outputs agree.
+    canonical = dict(entry, file=str(owning_source), command=shlex.join(command))
+    database = output / "stack-bank-compile-database.json"
+    write_json(output / "stack-bank-original-compilation.json", entry)
+    write_json(database, [canonical])
+    return [str(source), str(database), str(output / "environment.json"), str(cases)]
+
+
 def main():
     index = sys.argv.index("--base-runner")
     base_runner = Path(sys.argv[index + 1])
@@ -238,7 +258,10 @@ def main():
         if name in TARGET_FLAGS:
             settings["CFLAGS"] = shlex.join(flags + target_flags)
         argv = [sys.executable, str(source / f"tests/unit/test-crucible-{name}.py")]
-        if name in POSITIONAL_ARGUMENTS:
+        if name == "stack-bank":
+            argv.extend(stack_bank_arguments(entries, source, build, case_output,
+                                             cases, base["write_json"]))
+        elif name in POSITIONAL_ARGUMENTS:
             argv.extend((str(source), str(cases)))
         elif name in NAMED_SOURCE_ARGUMENTS:
             argv.extend(("--source-root", str(source),

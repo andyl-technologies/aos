@@ -189,9 +189,86 @@ creation/TLS/callback claim or stack profile admission follows from these
 packages. The ordinary public-ABI worker is distinct from QEMU's still-missing
 application and thread-lifetime closure.
 
+#### Canonical stack debt and caller-backed wrapper storage
+
+The current signed atomic patch selects
+`996393eb0e950647b7caf9d57b55d9ace836db38`, conventional source
+`f5220fe98053a2b504d88f4b236c079afb2bd471`, tree
+`303b8b33bfdbec44035ec3255374de6ee5486e78`. It adds canonical same-parent
+Main/RR stack-debit journals and caller-backed prebirth thread wrapper storage.
+The actual wrapper, arguments, copied name and hot-fork registry node are
+retained together; preparation and unstarted return authenticate real retained
+membership and exclude active metadata and borrower spans. These operations
+create no pthread, application lender or selected runtime profile. Main
+retirement now requires the actual independent return-post completion rather
+than accepting an untouched zero status.
+
+The physical source stage passes 64 storage/native/Source/layout steps,
+including eighteen exact fixed-control omissions. All 27 genuine owning getter
+translation units compile; 31 direct getters resolve through 38 compiled
+bodies. The measured Source is 255,424 bytes and getters contribute 44,782,
+giving a 300,206-byte floor. Preexec is 215,760 bytes, including its embedded
+600-byte grant and 16-byte effect. The separate preexec inventory passes all
+403 steps and 99 literal omission controls within its original 600-second
+bound. Twenty stack-debt variants include one healthy baseline and nineteen
+intended assertion failures. These are physical and predicate observations.
+
+The same production bytes are retained in the final fixture composition.
+The following runtime measurements belong to the preceding physical and fixture
+stages; the final extractor correction changes only nine SHA-256 literals in
+six Python files and introduces no new owning execution.
+Five ordinary fixture dependency repairs and six exact CLI omission controls
+pass. Delivery and stopped-control fixtures now honor the actual nominated
+build directory, retaining and rechecking its canonical path, device and inode
+before native-provider lookup. The first source stage's normal entry failed in
+0.435 seconds because its helper ignored the nominated directory. That failure
+remains separate from the corrected source's single passing normal entry:
+57.075220144 seconds within the unchanged 60-second bound, two compiler workers,
+CORE zero and six-GiB per-process and sampled process-tree address-space limits.
+Fresh genuine provider preparation passes separately in 51.585 seconds.
+
+Independent verification matches all 78,240 signed source entries, including
+72 literal links, nineteen sealed artifacts and both complete evidence
+archives: 10,117 regular files plus six links for the earlier physical source
+and 9,162 regular files plus six links for the final fixture source. Every
+production identity agrees between those stages. The conventional review is
+`897a331fff5c79df6d17d58d2d34b347ac7238a852ea82d99a0db488a6a5856a`;
+the separate signed atomic review is
+`48ca44036aa43eee11191afce736bf9c8780b2c813a60b719dddbe1d99ea2bd1`.
+The initial atomic candidate used current commit dates and was withheld; its
+replacement preserves the tree and sole upstream parent with both required
+fixed dates. Five new explicitly GPL-compatible files bring the created-file
+ledger to 433, with no deletions.
+
+Packaged validation exposed three separate failures before the final correction.
+The first Source build stopped at target 896 of 909 when its extractor rejected
+a stale stopped-control fixture fingerprint. The first atomic reconstruction
+rejected a full bundle without the required pinned-base prerequisite; the next
+rejected a patch whose diffstat disagreed with canonical `--no-stat` regeneration.
+The corrected handoff contains a single-prerequisite delivery bundle and the
+byte-exact canonical patch. All 120 final-source extraction invocations pass,
+with zero compiler processes. Independent verification matches all nineteen
+payloads, 78,240 source identities and 72 literal links, both signatures, fixed
+raw dates, tree equivalence, canonical patch and bundle. Its proof is
+`f53d965b03500ba28602f0cc964aa23b46fe48350a9b43b55bb8e10e3e843aa5`.
+
+The packaged Native harness now includes the genuine stack-bank component as
+its 37th component. It authenticates the actual Source owning compile command
+and preserves every flag while canonicalizing its source operand for the
+component's compile-database lookup. The original and derived commands remain
+in evidence. Its original 180-second component and six-GiB process-tree bounds
+remain unchanged. Fresh packaged Source qualification passes all 187 tests.
+Canonical atomic reconstruction, the 433-file license ledger, engineering hygiene and ABI
+conformance pass. Packaged Native qualification and the strict license-boundary
+gate remain in progress. The earlier full-package six-failure result is retained;
+direct fixture repairs do not establish a new full-package pass. The substantive
+dirty-iterator launched lifecycle refusal remains. Genuine matched Module/Core/Source construction,
+post-Main terminal ownership, application and stack grants, worker last use,
+external reap, physical debit return and profile admission remain unqualified.
+
 #### Physical stack/member and genuine fixture-provider composition
 
-The signed atomic patch selects `d1c072e9848e2c06f8d25272e1ae063b65deca61`,
+The preceding signed atomic patch selects `d1c072e9848e2c06f8d25272e1ae063b65deca61`,
 conventional source `a994efb547b925f7c8b0457a2204a04cb10c73e0`, tree
 `79cdafeec4443b7315848ca393601a2f8d6b4250`. Its sole atomic parent remains
 the pinned upstream source. This checkpoint composes physical stack-recipient
