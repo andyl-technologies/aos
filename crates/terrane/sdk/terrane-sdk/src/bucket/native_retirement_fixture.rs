@@ -15,7 +15,9 @@ use super::content_tests::{chunk_identity, raw, upload};
 use super::*;
 use crate::gc::runner::{Collection, fixture::Fixture};
 use crate::pack::{EntryKind, PackClass, PackId, PackIndexSnapshot, PackWriter, RecordState};
-use crate::store::{ChunkPosition, Clock, ContentStore, ContentUpload, MetaUpload, TokioClock};
+use crate::store::{
+    ChunkPosition, Clock, ContentStore, ContentUpload, IndexedContent, MetaUpload, TokioClock,
+};
 use terrane_format::bucket::PackExclusion;
 use terrane_format::gc::{Tombstone, Windows};
 use terrane_format::identity::{IdentityKind, TERRANE_V1};
@@ -185,6 +187,17 @@ pub(super) async fn physical_retirement_survives_fresh_readmission_and_exact_res
             .unwrap(),
         vec![false; 5]
     );
+    assert_eq!(
+        bucket
+            .indexed_presence(&[
+                first_id.terrane_v1_digest().unwrap(),
+                other_id.terrane_v1_digest().unwrap(),
+                bad_id.terrane_v1_digest().unwrap(),
+            ])
+            .await
+            .unwrap(),
+        vec![false; 3]
+    );
     for identity in [&first_id, &pack_id, &index_id] {
         assert!(matches!(
             bucket.get(identity, None).await.unwrap_err().kind(),
@@ -284,6 +297,17 @@ pub(super) async fn physical_retirement_survives_fresh_readmission_and_exact_res
             .await
             .unwrap(),
         vec![true, true, false, true, true]
+    );
+    assert_eq!(
+        reopened
+            .indexed_presence(&[
+                first_id.terrane_v1_digest().unwrap(),
+                other_id.terrane_v1_digest().unwrap(),
+                bad_id.terrane_v1_digest().unwrap(),
+            ])
+            .await
+            .unwrap(),
+        vec![true, true, false]
     );
     assert_eq!(reopened.get(&first_id, None).await.unwrap(), raw(first));
     assert_eq!(reopened.get(&other_id, None).await.unwrap(), raw(other));

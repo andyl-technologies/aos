@@ -12549,3 +12549,39 @@ outputs retain compiler and execution records rather than executable bytes.
 Required application-target compilation at `2389aedc6b` passes in 1,536.97
 seconds with 184 compiler artifact records across 59 packages and the same
 7,944 immutable source files. This is compilation evidence only.
+
+
+#### Committed index membership for bounded negotiation
+
+`IndexedContent::indexed_presence` now answers at most 4,096 ordered digests
+from one complete selected FileBucket catalog. Only Live merged-index entries
+whose physical packs remain unexcluded count as present. Active exclusions,
+permanent burns and legacy tombstones are combined once per request. The native
+writable path retains read exclusion throughout; a closing complete capability
+record comparison also refuses a changed selected generation. Empty and excessive
+requests are decided before storage I/O. Ordinary `ContentStore::has` retains
+its verified-body contract, including its distinct virtual empty-chunk behavior.
+Index presence grants no disclosure permission, Original custody or admission.
+
+All seven actual native integration cases pass under the existing thirty-second
+selector bound: ordering and duplicate digests across reopen, virtual empty
+chunks, zero-I/O request bounds, the maximum batch and quarantine, damaged bodies,
+malformed selected indexes and container inventory without member admission.
+The first container fixture used a metadata-only validator that explicitly
+rejects binary packs; the corrected fixture configures a pack-format validator
+and retains the backend's independent member verification. The failed diagnostic
+remains separate. Both extended actual retirement witnesses also pass: exact
+restore restores eligible membership, and stale Live rows cannot override the
+retained physical exclusion. Strict SDK/Linux/CLI all-target Clippy, native
+portable and actual WebAssembly checking, Rust/Nix formatting and evaluation
+pass. Frozen index-presence integration, owning index-generation checks and
+required application compilation remain pending. No task acceptance changes.
+
+Frozen range-client qualification at `1d46c92b88` passes all eleven socket cases
+in 124.53 seconds; the repeated ten bundle-client cases pass in 123.55 seconds.
+Independent review matches 7,953 immutable source files and 5,248 bound inputs.
+These source integration outputs retain compiler and execution records rather
+than executable bytes. Required application-target compilation at `73797c43f9`
+passes in 1,552.64 seconds, independently matching 7,948 immutable source files
+and 184 compiler artifact records across 59 packages. This is compilation
+evidence only; its output does not retain application executable bytes.

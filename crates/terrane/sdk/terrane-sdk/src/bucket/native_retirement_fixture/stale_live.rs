@@ -157,6 +157,17 @@ pub(in crate::bucket) async fn physical_exclusion_overrides_live_rows_during_fre
             .unwrap(),
         vec![false; 5]
     );
+    assert_eq!(
+        bucket
+            .indexed_presence(&[
+                identity.terrane_v1_digest().unwrap(),
+                other_identity.terrane_v1_digest().unwrap(),
+                quarantined_identity.terrane_v1_digest().unwrap(),
+            ])
+            .await
+            .unwrap(),
+        vec![false; 3]
+    );
     for unavailable in [&identity, &other_identity, &pack_identity, &index_identity] {
         assert!(matches!(
             bucket.get(unavailable, None).await.unwrap_err().kind(),

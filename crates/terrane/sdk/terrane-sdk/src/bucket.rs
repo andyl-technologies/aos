@@ -15,6 +15,7 @@ mod copy;
 /// Checks opaque owner references under an independently retained exclusion.
 #[cfg(unix)]
 pub(crate) mod existing_references;
+mod indexed_content;
 
 #[cfg(all(feature = "std", unix))]
 pub(crate) use crate::store::native_domain_deletion as domain_deletion;

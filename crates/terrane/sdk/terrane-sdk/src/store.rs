@@ -3,7 +3,10 @@
 //! Backends and combinators implement the interfaces in specification 11.
 //! Runtime bindings are selected through features (CRATE-6 to CRATE-8).
 
+mod indexed_content;
 mod ref_inventory;
+
+pub use indexed_content::{IndexedContent, MAX_INDEXED_HASHES};
 
 pub use ref_inventory::RefInventory;
 
