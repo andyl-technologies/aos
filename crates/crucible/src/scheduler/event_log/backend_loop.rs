@@ -11,6 +11,7 @@ mod device_group;
 mod dispatch_boundary;
 mod fixed_input;
 mod held_boundary;
+mod held_catchup;
 mod held_delivery;
 mod held_lineage;
 mod held_stop;
@@ -106,6 +107,8 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     continuation_poisoned: bool,
     pause_before_live_network_choice: bool,
     parallel_choice_free_boot: bool,
+    /// Host worker bound of the latest RUN set, reused by its catch-up RUNs.
+    host_worker_limit: usize,
     preselection: Option<BackendPendingPreselection>,
     held_host_continuation: Option<HeldHostContinuation>,
     failed_input_resolution: Option<FailedInputResolution>,
@@ -132,6 +135,7 @@ impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
             continuation_poisoned: self.continuation_poisoned,
             pause_before_live_network_choice: self.pause_before_live_network_choice,
             parallel_choice_free_boot: self.parallel_choice_free_boot,
+            host_worker_limit: self.host_worker_limit,
             preselection: self.preselection.clone(),
             held_host_continuation: self.held_host_continuation.clone(),
             failed_input_resolution: self.failed_input_resolution.clone(),
@@ -232,6 +236,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,
@@ -290,6 +295,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,
@@ -329,6 +335,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             continuation_poisoned: false,
             pause_before_live_network_choice: false,
             parallel_choice_free_boot: false,
+            host_worker_limit: 1,
             preselection: None,
             held_host_continuation: None,
             failed_input_resolution: None,

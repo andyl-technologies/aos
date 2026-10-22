@@ -39,7 +39,7 @@ use crucible::NodeId;
 use crate::supervision::host_wait_counters::{self, HostWaitTotals};
 
 /// Wall-clock length of one progress window.
-pub(crate) const PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
+pub(super) const PROGRESS_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Upper bound on rows from one node set, about four days at the interval.
 const MAX_ROWS: u32 = 12_000;
@@ -47,21 +47,21 @@ const MAX_ROWS: u32 = 12_000;
 /// Reads wall time exclusively for noncanonical progress attribution.
 // crucible-lint: allow clippy-disallowed-method -- private host-cost observations do not drive guest clocks, deadlines, or results.
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn progress_clock() -> Instant {
+pub(super) fn progress_clock() -> Instant {
     Instant::now()
 }
 
 /// One node's completed RUN within a dispatched set.
 #[derive(Clone, Debug)]
-pub(crate) struct NodeRunSample {
+pub(super) struct NodeRunSample {
     /// Node that ran.
-    pub(crate) node: NodeId,
+    pub(super) node: NodeId,
     /// Scheduler ceiling the RUN was bounded by.
-    pub(crate) horizon_ticks: u64,
+    pub(super) horizon_ticks: u64,
     /// Node clock when the RUN returned, when it completed.
-    pub(crate) reached_ticks: Option<u64>,
+    pub(super) reached_ticks: Option<u64>,
     /// Wall time inside this node's RUN.
-    pub(crate) wall: Duration,
+    pub(super) wall: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -88,7 +88,7 @@ struct Window {
 
 /// Accumulates and prints progress rows for one node set.
 #[derive(Debug)]
-pub(crate) struct AttemptProgress {
+pub(super) struct AttemptProgress {
     enabled: bool,
     emitted: u32,
     window: Option<Window>,
@@ -98,7 +98,7 @@ pub(crate) struct AttemptProgress {
 
 impl AttemptProgress {
     /// Builds accounting that prints rows.
-    pub(crate) const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             enabled: true,
             emitted: 0,
@@ -109,7 +109,7 @@ impl AttemptProgress {
     }
 
     /// Builds accounting that records nothing, for per-RUN worker sets.
-    pub(crate) const fn disabled() -> Self {
+    pub(super) const fn disabled() -> Self {
         Self {
             enabled: false,
             emitted: 0,
@@ -120,14 +120,14 @@ impl AttemptProgress {
     }
 
     /// Returns a start instant when the set should be measured.
-    pub(crate) fn begin(&self) -> Option<Instant> {
+    pub(super) fn begin(&self) -> Option<Instant> {
         (self.enabled && self.emitted < MAX_ROWS).then(progress_clock)
     }
 
     /// Records one dispatched RUN set and prints a row when the window is due.
     ///
     /// `realized` is the peak number of RUNs of the set that executed at once.
-    pub(crate) fn finish(
+    pub(super) fn finish(
         &mut self,
         started: Option<Instant>,
         samples: &[NodeRunSample],
@@ -150,7 +150,7 @@ impl AttemptProgress {
     }
 
     /// Records one RUN dispatched through the single-node path.
-    pub(crate) fn finish_serial(
+    pub(super) fn finish_serial(
         &mut self,
         started: Option<Instant>,
         node: &NodeId,

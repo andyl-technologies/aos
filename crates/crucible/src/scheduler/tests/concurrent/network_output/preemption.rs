@@ -301,6 +301,9 @@ fn omitted_producer_keeps_future_command_pending_until_its_natural_horizon() {
         assert_eq!(applications.len(), 1);
         assert_eq!(applications[0].decision, decision);
         assert!(adapter.loop_impl().preemption_requests.is_empty());
+        // The peer runs in the first set toward its natural horizon, stops at
+        // its own output at 25, and carries the unapplied command again in
+        // its continuation, which applies it once at 80.
         assert_eq!(
             adapter
                 .backend()
@@ -309,7 +312,7 @@ fn omitted_producer_keeps_future_command_pending_until_its_natural_horizon() {
                 .flat_map(|run| &run.preemptions)
                 .filter(|command| *command == &decision)
                 .count(),
-            1
+            2
         );
         let log = adapter.loop_impl().event_log().retained_entries().to_vec();
         let offset = adapter.loop_impl().event_log_offset();

@@ -744,7 +744,8 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
                 usize::MAX,
             )
             .expect("actual no-input PICK fixes original Run horizon");
-        assert_eq!(prepared.runs.len(), 1);
+        // Both nodes run in one set, each to its own horizon.
+        assert_eq!(prepared.runs.len(), 2);
         prepared.next.pending_events.extend([
             event(30, &input, &producer, 0, b"first"),
             event(50, &input, &producer, 1, b"last"),
@@ -856,10 +857,13 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
         }
     }
 
-    let mut expected = vec!["input:z-input:30", "output:a-output:40", "input:z-input:46"];
-    if chain {
-        expected.push("input:z-input:50");
-    }
+    // The final input wave completes inside the same concurrent drive.
+    let expected = vec![
+        "input:z-input:30",
+        "output:a-output:40",
+        "input:z-input:46",
+        "input:z-input:50",
+    ];
     assert_eq!(*trace.borrow(), expected);
     let delivered = &actor.backend().inner.state().delivered_inputs;
     assert_eq!(delivered.len(), 3);

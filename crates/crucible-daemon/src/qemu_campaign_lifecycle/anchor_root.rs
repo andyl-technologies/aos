@@ -395,8 +395,9 @@ fn replay_to_anchor<F, D>(
     if !exact_ready {
         return Ok(Err("anchor-boundary-not-exact-ready"));
     }
-    // A descendant's thin replay groups RUNs as this replay did only once
-    // choice-free parallel boot has ended before the anchor.
+    // RUN grouping is identical with or without the choice-free boot mark.
+    // Anchors still stay outside the audited boot prefix, whose replay
+    // re-arms that mark's fail-closed choice check.
     if crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(input, &replay.event_log)
         .unwrap_or(true)
     {

@@ -1402,41 +1402,50 @@ pub fn network_horizon_from_lookahead(
 ///
 /// The exact-local term is used as an absolute virtual-time point with no
 /// conservative slack. The network term is derived only from the conservative
-/// guest-to-guest [`NetworkLookahead`].
+/// guest-to-guest [`NetworkLookahead`]. This is the common-clock special case
+/// of [`horizon_from_network_bound`].
 #[must_use]
 pub fn horizon_from_network_lookahead(
     current_time: SimInstant,
     network_lookahead: NetworkLookahead,
     exact_local_event: ExactLocalEvent,
 ) -> SchedulerHorizon {
-    let network_limit = network_horizon_from_lookahead(current_time, network_lookahead);
-    let exact_time = exact_local_event.virtual_time();
-    match (exact_time, network_limit) {
-        (None, SchedulerHorizonLimit::Infinite) => SchedulerHorizon::infinite_network(),
-        (None, SchedulerHorizonLimit::Finite { virtual_time, .. }) => {
-            SchedulerHorizon::finite(virtual_time, SchedulerHorizonSource::NetworkLookahead)
+    let network_bound = match network_horizon_from_lookahead(current_time, network_lookahead) {
+        SchedulerHorizonLimit::Finite { virtual_time, .. } => Some(virtual_time),
+        SchedulerHorizonLimit::Infinite => None,
+    };
+    horizon_from_network_bound(network_bound, exact_local_event)
+}
+
+/// Computes `horizon(n) = min(next_exact_local_event(n), net(n))`.
+///
+/// `network_bound` is the absolute earliest-influence bound `net(n)` from the
+/// node's inbound edge guarantees (RFC-0010 [SCHED-9]), or `None` when no
+/// coupling path reaches the node. An exact local event at or before the
+/// network bound wins the tie, as in [`horizon_from_network_lookahead`].
+#[must_use]
+pub fn horizon_from_network_bound(
+    network_bound: Option<SimInstant>,
+    exact_local_event: ExactLocalEvent,
+) -> SchedulerHorizon {
+    match (exact_local_event.virtual_time(), network_bound) {
+        (None, None) => SchedulerHorizon::infinite_network(),
+        (None, Some(network_time)) => {
+            SchedulerHorizon::finite(network_time, SchedulerHorizonSource::NetworkLookahead)
         }
-        (Some(virtual_time), SchedulerHorizonLimit::Infinite) => SchedulerHorizon::finite(
+        (Some(virtual_time), None) => SchedulerHorizon::finite(
             virtual_time,
             exact_local_event_horizon_source(&exact_local_event),
         ),
-        (
-            Some(virtual_time),
-            SchedulerHorizonLimit::Finite {
-                virtual_time: network_time,
-                ..
-            },
-        ) if virtual_time <= network_time => SchedulerHorizon::finite(
-            virtual_time,
-            exact_local_event_horizon_source(&exact_local_event),
-        ),
-        (
-            Some(_),
-            SchedulerHorizonLimit::Finite {
-                virtual_time: network_time,
-                ..
-            },
-        ) => SchedulerHorizon::finite(network_time, SchedulerHorizonSource::NetworkLookahead),
+        (Some(virtual_time), Some(network_time)) if virtual_time <= network_time => {
+            SchedulerHorizon::finite(
+                virtual_time,
+                exact_local_event_horizon_source(&exact_local_event),
+            )
+        }
+        (Some(_), Some(network_time)) => {
+            SchedulerHorizon::finite(network_time, SchedulerHorizonSource::NetworkLookahead)
+        }
     }
 }
 

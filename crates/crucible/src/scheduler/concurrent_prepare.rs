@@ -377,7 +377,8 @@ impl SingleScheduler {
                 SchedulerNodeActivity::Idle
                     | SchedulerNodeActivity::Halted
                     | SchedulerNodeActivity::Done
-            ) {
+            ) || self.network_blocked(node)?
+            {
                 return Ok(None);
             }
             return Err(SchedulerError::BoundaryViolation {
@@ -387,7 +388,13 @@ impl SingleScheduler {
                 ),
             });
         };
-        let candidate = self.prepare_host_candidate_for_contract(candidate, dispatch_contract)?;
+        // A node whose strict delivery clamp leaves no advance waits for an
+        // upstream node; the publisher catches that node up first.
+        let Some(candidate) =
+            self.clamp_host_candidate_for_contract(candidate, dispatch_contract)?
+        else {
+            return Ok(None);
+        };
         let draft = self.advance_plan_draft(&candidate)?;
         // A completed catch-up ends at its settled endpoint; the node's clock
         // may have stopped below it.
@@ -533,6 +540,21 @@ impl SingleScheduler {
         Ok(run)
     }
 
+    /// Reports whether upstream guarantees leave `node` no representable advance.
+    ///
+    /// The minimum-clock node is never blocked: every upstream node is at or
+    /// beyond its clock and every coupling has positive latency. A blocked
+    /// node advances once the publisher catches its upstream nodes up.
+    fn network_blocked(&self, node: &RuntimeSchedulerNode) -> Result<bool, SchedulerError> {
+        let Some(bound) = self.graph_network_bound(node)? else {
+            return Ok(false);
+        };
+        let strict = SimInstant {
+            ticks: bound.ticks.saturating_sub(1),
+        };
+        Ok(self.node_counter_for_time_floor(node, strict)? <= node.settled)
+    }
+
     fn retained_preemption_horizon(
         &self,
         node: &SchedulerNodeId,
@@ -597,11 +619,33 @@ impl SingleScheduler {
         let topology_recomputed = next.apply_topology_changes_at_boundary()?;
         next.last_topology_recompute = topology_recomputed;
 
-        let mut candidates = next
-            .advance_candidates()?
-            .into_iter()
-            .map(|candidate| next.prepare_host_candidate_for_contract(candidate, dispatch_contract))
-            .collect::<Result<Vec<_>, _>>()?;
+        // A candidate blocked by the strict control-3 clamp waits for its
+        // upstream nodes; it is not a failure of the whole RUN set. If every
+        // candidate is blocked, no node can progress, which fails closed.
+        let mut candidates = Vec::new();
+        let mut first_blocked = None;
+        for candidate in next.advance_candidates()? {
+            if !next.candidate_has_representable_advance(&candidate)? {
+                continue;
+            }
+            let index = candidate.index;
+            match next.clamp_host_candidate_for_contract(candidate, dispatch_contract)? {
+                Some(candidate) => candidates.push(candidate),
+                None => {
+                    first_blocked.get_or_insert(index);
+                }
+            }
+        }
+        if candidates.is_empty()
+            && let Some(index) = first_blocked
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "control 3 has no strictly safe representable RUN for `{}`",
+                    next.nodes[index].id.node.name,
+                ),
+            });
+        }
         candidates.sort_by(|left, right| {
             left.target_time
                 .cmp(&right.target_time)
@@ -670,50 +714,43 @@ impl SingleScheduler {
 
     fn prepare_host_candidate_for_contract(
         &self,
-        mut candidate: AdvanceCandidate,
+        candidate: AdvanceCandidate,
         dispatch_contract: crate::BackendDispatchContract,
     ) -> Result<AdvanceCandidate, SchedulerError> {
+        let index = candidate.index;
+        self.clamp_host_candidate_for_contract(candidate, dispatch_contract)?
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "control 3 has no strictly safe representable RUN for `{}`",
+                    self.nodes[index].id.node.name,
+                ),
+            })
+    }
+
+    /// Applies the control-3 strict delivery clamp.
+    ///
+    /// Returns `None` when the clamped RUN has no representable advance: the
+    /// node is blocked until an upstream node advances.
+    fn clamp_host_candidate_for_contract(
+        &self,
+        mut candidate: AdvanceCandidate,
+        dispatch_contract: crate::BackendDispatchContract,
+    ) -> Result<Option<AdvanceCandidate>, SchedulerError> {
         if dispatch_contract != crate::BackendDispatchContract::BoundedControl {
-            return Ok(candidate);
+            return Ok(Some(candidate));
         }
         let consumer = &self.nodes[candidate.index];
-        for edge in self.effective_topology.edges() {
-            if edge.to != consumer.id {
-                continue;
-            }
-            let producer = self
-                .nodes
-                .iter()
-                .find(|node| node.id == edge.from)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("control 3 incoming edge lost its actual producer"),
-                })?;
-            // A runnable producer may still emit at its actual clock, so
-            // lookahead starts there. An idle-parked producer settled its
-            // ceiling without a pending emission; its next output is not
-            // before that ceiling (SCHED-28).
-            let mut producer_time = if producer.idle_parked {
-                self.node_scheduler_time(producer)?.ticks
-            } else {
-                self.node_physical_time(producer)?.ticks
-            };
-            if producer.campaign_parked {
-                // A parked producer emits nothing until its all-VM join, which
-                // anchors it at or beyond the live frontier. Its frozen clock
-                // would otherwise pin every consumer one latency past the park.
-                producer_time = producer_time.max(self.frontier.ticks);
-            }
-            let earliest_delivery = producer_time
-                .checked_add(edge.minimum_latency.ticks)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("control 3 earliest delivery overflowed shared ticks"),
-                })?;
+        // The inbound edge guarantees already start from each producer's
+        // actual emission floor: a runnable producer's clock, an idle-parked
+        // producer's settled ceiling (SCHED-28), and a campaign-parked
+        // producer's all-VM join at or beyond the frontier.
+        if let Some(earliest_delivery) = self.graph_network_bound(consumer)? {
             // Control 3 completes physical ceilings; it cannot retain a native
             // Source dispatch stop at an inclusive possible-delivery boundary.
             // `earliest_delivery - 1` is a bound, never a landing target: the
             // node stops at its last retirement strictly before the delivery
             // and settles through this tick (SCHED-12).
-            let strict_tick = earliest_delivery.checked_sub(1).ok_or_else(|| {
+            let strict_tick = earliest_delivery.ticks.checked_sub(1).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("control 3 has no strictly safe delivery tick"),
                 }
@@ -724,56 +761,30 @@ impl SingleScheduler {
             }
         }
         if !self.candidate_has_representable_advance(&candidate)? {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "control 3 has no strictly safe representable RUN for `{}`",
-                    consumer.id.node.name,
-                ),
-            });
+            return Ok(None);
         }
-        Ok(candidate)
+        Ok(Some(candidate))
     }
 
+    /// Admits every node whose own horizon lies beyond its clock.
+    ///
+    /// Each candidate's target is its own graph horizon (SCHED-9), computed
+    /// from the actual clocks of the nodes that can reach it, so nodes on
+    /// different clocks run together (SCHED-40). The set needs no common
+    /// frontier or common target: no node's RUN can be influenced by another
+    /// RUN of the set before its own target. RESOLVE and EMIT for the set are
+    /// published afterwards in canonical order by the held-run publisher.
     pub(super) fn concurrent_run_set_from_candidates(
         &self,
         candidates: &[AdvanceCandidate],
     ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
         let mut selected = Vec::new();
-        let frontier = SimInstant {
-            ticks: self.frontier.ticks,
-        };
-        let target_time = candidates.first().map(|candidate| candidate.target_time);
-
-        // A parked peer can hold the global frontier behind the canonical
-        // global-minimum candidate. Batching frontier peers in that state would
-        // reorder PICK relative to the authoritative serial path. Advance only
-        // that canonical first candidate; normal independent batches resume
-        // once the common frontier is restored.
-        if let Some(candidate) = candidates.first() {
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
-            if current_time != frontier {
-                selected.push(SchedulerConcurrentRunCandidate {
-                    node: draft.node,
-                    current_time,
-                    target_time: candidate.target_time,
-                    max_advance_icount: draft.target_counter,
-                });
-                return Ok(SchedulerConcurrentRunSet {
-                    candidates: selected,
-                });
-            }
-        }
-
         for candidate in candidates {
-            if Some(candidate.target_time) != target_time {
-                break;
-            }
-            let draft = self.advance_plan_draft(candidate)?;
-            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
-            if current_time != frontier {
+            if !self.candidate_has_representable_advance(candidate)? {
                 continue;
             }
+            let draft = self.advance_plan_draft(candidate)?;
+            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
             selected.push(SchedulerConcurrentRunCandidate {
                 node: draft.node,
                 current_time,
@@ -789,8 +800,8 @@ impl SingleScheduler {
 
     /// Returns the deterministic RUN set eligible for host-level concurrency.
     ///
-    /// The set contains every same-boundary RUN admitted by the scheduler's
-    /// conservative horizon computation. Host worker limits are deliberately
+    /// The set contains every RUN admitted by the scheduler's conservative
+    /// per-node horizon computation, whatever the nodes' clocks. Host worker limits are deliberately
     /// absent from this semantic projection. RESOLVE and EMIT are not performed
     /// by this read-only query.
     ///

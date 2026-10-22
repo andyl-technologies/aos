@@ -456,7 +456,9 @@ fn replayed_guest_reply_retains_the_settled_scheduler_coordinate() -> TestResult
 }
 
 fn replayed_guest_reply_at_start(already_held: bool) -> TestResult {
-    let expected_quanta = if already_held { 3 } else { 2 };
+    // The source and its peer publish together; the peer's catch-up
+    // commits within the same replayed reply.
+    let expected_quanta = 3;
     let source_input = held_source_input()?;
     let input = input_for_scenario(
         source_input.scenario().clone(),

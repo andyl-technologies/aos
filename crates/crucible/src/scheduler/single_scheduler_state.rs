@@ -199,6 +199,7 @@ impl SingleScheduler {
             lock_held: false,
             last_advance: None,
             last_topology_recompute: false,
+            held_emission_floors: BTreeMap::new(),
         };
         // Trigger matchers exist before the first console byte, so no
         // trigger ever needs console history.

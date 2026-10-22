@@ -96,8 +96,10 @@ pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedH
 mod campaign_park;
 mod control_state;
 mod device_group_selection;
+mod edge_guarantee;
 mod event_codec;
 mod event_log;
+mod graph_horizon;
 mod inactive_time;
 mod io_inventory;
 mod liveness;
@@ -115,6 +117,7 @@ pub use device_group_selection::{
     BackendDeviceGroupObservation, BackendDeviceGroupOwner, DeviceGroupSelectionPublication,
     PreparedDeviceGroupSelection,
 };
+pub use edge_guarantee::*;
 pub(crate) use event_codec::*;
 pub(crate) use event_codec::{
     recorded_assertion_log_from_schedule_for_search, scheduler_event_log_empty_prefix,

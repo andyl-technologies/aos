@@ -1,8 +1,9 @@
 //! Audited choice-free prefix for the five-node Envoy guest fixture.
 //!
-//! The authenticated fixture token and topology permit concurrent QEMU RUNs
-//! only until west's convergence marker reaches the scheduler event log. Any
-//! choice during that prefix aborts the unpublished attempt continuation.
+//! The authenticated fixture token and topology prove that no choice occurs
+//! until west's convergence marker reaches the scheduler event log. RUN sets
+//! are concurrent before and after the marker; during that prefix any choice
+//! aborts the unpublished attempt continuation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -28,13 +29,12 @@ pub(super) fn envoy_choice_free_boot_eligible(input: &CrucibleAttemptExecution) 
         && audited_envoy_boot_graph(input)
 }
 
-/// Reports whether start replay must reproduce the concurrent Envoy boot prefix.
+/// Reports whether start replay must re-arm the audited Envoy boot prefix.
 ///
-/// Every original attempt on this boot graph ran the prefix with concurrent
-/// RUNs: a fresh choice search under the audited capability, and any other
-/// attempt without a choice pause. Replay reaches the same decisions one RUN
-/// at a time only over more quanta, so its retained event log would outgrow
-/// the parent it reconstructs. Replay ignores its own attempt's stop and
+/// Every attempt runs concurrent RUN sets, so replay groups RUNs exactly as
+/// the original did whether or not this holds. While it holds, replay arms
+/// the choice-free mark so a choice before west's convergence marker fails
+/// closed, as in the original. Replay ignores its own attempt's stop and
 /// network branches because neither existed when the prefix was first run.
 ///
 /// # Errors
@@ -152,7 +152,7 @@ fn is_west_convergence_marker(entry: &SchedulerEventLogEntry) -> bool {
     )
 }
 
-/// Owns the audited concurrent prefix before west reports route convergence.
+/// Owns the audited choice-free prefix before west reports route convergence.
 pub(super) struct EnvoyParallelBoot {
     active: bool,
     next_progress_quanta: u64,
@@ -194,7 +194,7 @@ fn boot_stage(marker: &str) -> Option<(u8, &'static str)> {
 }
 
 impl EnvoyParallelBoot {
-    /// Arms parallel RUNs only for a fresh, not-yet-converged Envoy attempt.
+    /// Arms the choice-free mark only for a fresh, not-yet-converged Envoy attempt.
     pub(super) fn arm(
         input: &CrucibleAttemptExecution,
         fresh_start: bool,
@@ -310,7 +310,7 @@ impl EnvoyParallelBoot {
         self.next_progress_quanta = completed_quanta.saturating_add(64);
     }
 
-    /// Stops parallel RUNs after the west marker and refuses an earlier choice.
+    /// Clears the choice-free mark after the west marker and refuses an earlier choice.
     ///
     /// # Errors
     ///

@@ -26,8 +26,10 @@ pub(super) struct BackendPendingPreselection {
 impl<L, B, I> BackendQuantumLoop<L, B, I> {
     /// Enables an exact preselection stop for the current choice-search attempt.
     ///
-    /// The backend prepares one canonical RUN at a time while this is enabled,
-    /// so no other QEMU worker can advance beyond the offered parent.
+    /// RUN sets stay concurrent while this is enabled. A choice is offered at
+    /// the canonical publication cut: peers whose RUNs completed physically
+    /// but publish after the choice stay held, and the choice cannot reach
+    /// them before their settled endpoints.
     pub fn set_live_network_choice_pause(&mut self, enabled: bool) {
         self.pause_before_live_network_choice = enabled;
         if !enabled {
@@ -35,11 +37,11 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         }
     }
 
-    /// Allows concurrent boot RUNs while retaining live-network choice interception.
+    /// Marks an audited choice-free prefix while retaining choice interception.
     ///
-    /// A choice found in a parallel batch aborts the unpublished continuation.
-    /// The caller must arm ordinary single-RUN pauses before its first permitted
-    /// choice boundary.
+    /// RUN sets are concurrent with or without this mark. While it is set, a
+    /// choice found in a RUN set aborts the unpublished continuation, because
+    /// the caller proved that the prefix contains no choice.
     pub fn set_choice_free_parallel_boot(&mut self, enabled: bool) {
         self.parallel_choice_free_boot = enabled && self.pause_before_live_network_choice;
     }

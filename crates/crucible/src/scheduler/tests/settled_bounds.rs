@@ -225,11 +225,18 @@ fn runnable_producers_hold_strict_lookahead_to_their_actual_clock() {
     };
 
     // `b` stops strictly before runnable `a`'s actual clock plus the latency;
-    // `a`'s settled ceiling does not widen that bound.
-    assert_eq!(first_ceiling(false), vec![(String::from("b"), 119)]);
+    // `a`'s settled ceiling does not widen that bound. Both nodes run in one
+    // set, each to its own strict bound.
+    assert_eq!(
+        first_ceiling(false),
+        vec![(String::from("b"), 119), (String::from("a"), 124)]
+    );
     // Once `a` is parked idle, its settled ceiling bounds its next output:
-    // `b` may run to 129, so `a`'s own strict 124 becomes the first RUN.
-    assert_eq!(first_ceiling(true), vec![(String::from("a"), 124)]);
+    // `b` may run to 129, and `a`'s own strict 124 comes first.
+    assert_eq!(
+        first_ceiling(true),
+        vec![(String::from("a"), 124), (String::from("b"), 129)]
+    );
 }
 
 fn prepared_single_run(scheduler: &SingleScheduler) -> (SingleScheduler, PreparedHostRun) {

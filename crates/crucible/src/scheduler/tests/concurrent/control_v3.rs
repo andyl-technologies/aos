@@ -139,7 +139,9 @@ fn control_v3_preserves_bounded_deadlines_and_serial_parallel_canonical_order() 
         .iter()
         .map(|run| (run.node().name.as_str(), run.ceiling().ticks))
         .collect::<Vec<_>>();
-    assert_eq!(ceilings, vec![("a", 5), ("b", 5)]);
+    // Each node runs to its own bound: `a` strictly before `b`'s earliest
+    // delivery, `b` to its timer. `a` then catches up to `b`'s publication.
+    assert_eq!(ceilings, vec![("a", 5), ("b", 10), ("a", 10)]);
     assert!(
         parallel.backend().run_history[0]
             .admission

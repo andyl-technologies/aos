@@ -43,9 +43,10 @@ use crucible::{
     ConcurrentBackendRunResult, ConcurrentQuantumLoop, ConcurrentSimulationBackend, Decision,
     FingerprintSample, Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan,
     Properties, QuantumRequest, ReadyPoint, RunCeilingStop, ScenarioDefForm, ScheduledEvent,
-    SchedulerLivenessScenario, SchedulerLookaheadEdgeEndpoint, SchedulerNodeId,
-    SchedulerTopologyChange, SchedulingNodeKind, Seed, SimDuration, SimInstant, SimulationBackend,
-    SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    SchedulerEventLogEntry, SchedulerLivenessScenario, SchedulerLookaheadEdgeEndpoint,
+    SchedulerNodeId, SchedulerTopologyChange, SchedulingNodeKind, Seed, SimDuration, SimInstant,
+    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode,
 };
 
 const MICROSECOND: u64 = 1_000_000;
@@ -142,6 +143,8 @@ struct CostedNode {
     arrivals: u64,
     inbound: BTreeMap<(u64, u64), u64>,
     trace: Vec<TraceEvent>,
+    /// A RUN result produced on a host thread, awaiting canonical return.
+    completed: Option<(StepObservation, Vec<BackendNetworkOutput>)>,
 }
 
 /// Comparable final node state.
@@ -172,6 +175,7 @@ impl CostedNode {
             arrivals: 0,
             inbound: BTreeMap::new(),
             trace: Vec::new(),
+            completed: None,
             program,
         }
     }
@@ -419,9 +423,13 @@ struct CostedBackend {
     tamper: Option<Tamper>,
     /// Negative control: run exact-event ceilings as bounds.
     ignore_exact_events: bool,
+    /// Runs each RUN set on host threads that finish in scrambled wall order.
+    threaded_delays: bool,
     runs: u64,
     settled_below_ceiling: u64,
     idle_parks: u64,
+    /// Largest gap between node clocks after any dispatched RUN set.
+    max_clock_spread: u64,
 }
 
 impl SimulationBackend for CostedBackend {
@@ -506,6 +514,9 @@ impl ConcurrentSimulationBackend for CostedBackend {
         runs: Vec<ConcurrentBackendRun>,
         _max_host_workers: usize,
     ) -> Result<Vec<ConcurrentBackendRunResult>, BackendError> {
+        if self.threaded_delays {
+            self.execute_on_delayed_threads(&runs)?;
+        }
         let mut results = Vec::with_capacity(runs.len());
         for run in runs {
             if !run.preemptions.is_empty() {
@@ -524,7 +535,10 @@ impl ConcurrentSimulationBackend for CostedBackend {
             } else {
                 run.ceiling_stop()
             };
-            let (mut step, mut network_outputs) = node.run(run.ceiling().ticks, stop);
+            let (mut step, mut network_outputs) = match node.completed.take() {
+                Some(completed) => completed,
+                None => node.run(run.ceiling().ticks, stop),
+            };
             if step.reached < step.settled_through
                 && let Some(tamper) = self.tamper
             {
@@ -547,7 +561,68 @@ impl ConcurrentSimulationBackend for CostedBackend {
                 },
             ));
         }
+        let clocks = self.nodes.values().map(|node| node.now);
+        if let (Some(low), Some(high)) = (clocks.clone().min(), clocks.max()) {
+            self.max_clock_spread = self.max_clock_spread.max(high - low);
+        }
         Ok(results)
+    }
+}
+
+impl CostedBackend {
+    /// Executes one RUN set on host threads with scrambled wall delays.
+    ///
+    /// Each RUN first spins for a wall delay chosen so that later canonical
+    /// RUNs often finish first. Results stay on their nodes and return in input order,
+    /// so the scheduler sees only canonical evidence. Wall time and host
+    /// completion order must not change any result (RFC-0010 PERF-5).
+    fn execute_on_delayed_threads(
+        &mut self,
+        runs: &[ConcurrentBackendRun],
+    ) -> Result<(), BackendError> {
+        let stop_for = |run: &ConcurrentBackendRun| {
+            if self.ignore_exact_events {
+                RunCeilingStop::Bound
+            } else {
+                run.ceiling_stop()
+            }
+        };
+        let mut owned = Vec::with_capacity(runs.len());
+        for (position, run) in runs.iter().enumerate() {
+            let node = self
+                .nodes
+                .remove(run.node())
+                .ok_or_else(|| BackendError::Rejected {
+                    message: format!("costed fixture has no node `{}`", run.node().name),
+                })?;
+            let delay = (runs.len() - position) as u64 * 150 + (self.runs % 7) * 40;
+            owned.push((node, run.ceiling().ticks, stop_for(run), delay));
+        }
+
+        let finished = std::thread::scope(|scope| {
+            let handles = owned
+                .into_iter()
+                .map(|(mut node, ceiling, stop, delay)| {
+                    scope.spawn(move || {
+                        // Busy work, not a timed wait: it only skews wall
+                        // completion order between the RUN threads.
+                        for _ in 0..delay * 256 {
+                            std::hint::spin_loop();
+                        }
+                        node.completed = Some(node.run(ceiling, stop));
+                        node
+                    })
+                })
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("costed RUN thread"))
+                .collect::<Vec<_>>()
+        });
+        for node in finished {
+            self.nodes.insert(node.id.clone(), node);
+        }
+        Ok(())
     }
 }
 
@@ -588,6 +663,9 @@ struct Trajectory {
     states: BTreeMap<String, NodeState>,
     resolved: Vec<ScheduledEvent>,
     decisions: Vec<Decision>,
+    /// The canonical event log. Ceiling schedules change its RUN records, so
+    /// only runs of one schedule compare it.
+    event_log: Vec<SchedulerEventLogEntry>,
 }
 
 impl Trajectory {
@@ -605,6 +683,10 @@ struct DriveStats {
     runs: u64,
     settled_below_ceiling: u64,
     idle_parks: u64,
+    /// Largest RUN set dispatched in one round.
+    max_set: usize,
+    /// Largest gap between node clocks after any dispatched RUN set.
+    max_clock_spread: u64,
 }
 
 fn node_id(name: &str) -> NodeId {
@@ -665,8 +747,8 @@ struct LinkFault {
 /// A complete costed scenario, independent of its ceiling schedule.
 struct Scenario {
     nodes: Vec<NodeSpec>,
-    links: Vec<(&'static str, &'static str)>,
-    latency: u64,
+    /// Symmetric links with their one-way latency in picoseconds.
+    links: Vec<(&'static str, &'static str, u64)>,
     time_limit: u64,
     fault: Option<LinkFault>,
 }
@@ -687,8 +769,7 @@ fn two_node_scenario(latency: u64, time_limit: u64) -> Scenario {
                 program: variable,
             },
         ],
-        links: vec![("vm-a", "vm-b")],
-        latency,
+        links: vec![("vm-a", "vm-b", latency)],
         time_limit,
         fault: None,
     }
@@ -698,13 +779,11 @@ fn scheduler(scenario: &Scenario, schedule: &CeilingSchedule) -> SingleScheduler
     let links = scenario
         .links
         .iter()
-        .map(|(left, right)| {
+        .map(|(left, right, latency)| {
             LinkDef::with_transport(
                 node_id(left),
                 node_id(right),
-                SimDuration {
-                    ticks: scenario.latency,
-                },
+                SimDuration { ticks: *latency },
                 SimDuration::default(),
                 LinkLossProbability::from_millionths(0).unwrap(),
                 None,
@@ -796,6 +875,9 @@ fn refresh_caps(
 struct Faults {
     tamper: Option<Tamper>,
     ignore_exact_events: bool,
+    /// Host worker bound; `None` admits one worker per node.
+    workers: Option<usize>,
+    threaded_delays: bool,
 }
 
 fn drive(
@@ -826,7 +908,7 @@ fn drive_with(
         schedule,
         Faults {
             tamper,
-            ignore_exact_events: false,
+            ..Faults::default()
         },
     )
 }
@@ -850,6 +932,8 @@ fn drive_scenario(
             .collect(),
         tamper: faults.tamper,
         ignore_exact_events: faults.ignore_exact_events,
+        threaded_delays: faults.threaded_delays,
+        max_clock_spread: 0,
         runs: 0,
         settled_below_ceiling: 0,
         idle_parks: 0,
@@ -864,6 +948,7 @@ fn drive_scenario(
         .map(|(interval, offset)| interval + offset);
     let mut resolved = Vec::new();
     let mut decisions = Vec::new();
+    let mut max_set = 0;
 
     for _ in 0..1_000_000 {
         refresh_caps(
@@ -876,7 +961,9 @@ fn drive_scenario(
             configuration: adapter.loop_impl().configuration().clone(),
             control: Vec::new(),
         };
-        let round = adapter.drive_concurrent_quantum(request, scenario.nodes.len())?;
+        let workers = faults.workers.unwrap_or(scenario.nodes.len());
+        let round = adapter.drive_concurrent_quantum(request, workers)?;
+        max_set = max_set.max(round.run_set.candidates.len());
         let progressed = round
             .outcomes
             .iter()
@@ -918,11 +1005,14 @@ fn drive_scenario(
             .collect(),
         resolved,
         decisions,
+        event_log: adapter.loop_impl().event_log().retained_entries().to_vec(),
     };
     let stats = DriveStats {
         runs: backend.runs,
         settled_below_ceiling: backend.settled_below_ceiling,
         idle_parks: backend.idle_parks,
+        max_set,
+        max_clock_spread: backend.max_clock_spread,
     };
     Ok((trajectory, stats))
 }
@@ -1173,8 +1263,11 @@ fn partition_scenario(fault: Option<LinkFault>) -> Scenario {
                 },
             },
         ],
-        links: vec![("vm-a", "vm-b"), ("vm-a", "vm-c"), ("vm-b", "vm-c")],
-        latency: FAULT_LATENCY,
+        links: vec![
+            ("vm-a", "vm-b", FAULT_LATENCY),
+            ("vm-a", "vm-c", FAULT_LATENCY),
+            ("vm-b", "vm-c", FAULT_LATENCY),
+        ],
         time_limit: FAULT_TIME_LIMIT,
         fault,
     }
@@ -1259,8 +1352,8 @@ fn settling_below_an_exact_topology_swap_is_refused() {
         &partition_scenario(Some(A_B_PARTITION)),
         &CeilingSchedule::rendezvous(250 * MICROSECOND),
         Faults {
-            tamper: None,
             ignore_exact_events: true,
+            ..Faults::default()
         },
     )
     .map(|_| ())
@@ -1438,6 +1531,208 @@ fn seeded_random_ceiling_schedules_match_the_unconstrained_baseline() {
             PROPERTY_TIME_LIMIT,
             &schedule,
         );
+        assert_same_trajectory(&baseline, &trajectory, &format!("case {case} {schedule:?}"));
+    }
+}
+
+// T1: nodes on different graph horizons, and a disconnected component
+
+const GRAPH_TIME_LIMIT: u64 = 900 * MICROSECOND;
+const CHAIN_NEAR_LATENCY: u64 = 40 * MICROSECOND + 3;
+const CHAIN_FAR_LATENCY: u64 = 170 * MICROSECOND + 11;
+const PAIR_LATENCY: u64 = 25 * MICROSECOND + 7;
+
+/// A chain `a - b - c` with unequal latencies.
+fn chain_nodes() -> Vec<NodeSpec> {
+    let (fixed, variable) = programs();
+    vec![
+        NodeSpec {
+            name: "vm-a",
+            peer: "vm-b",
+            program: fixed.clone(),
+        },
+        NodeSpec {
+            name: "vm-b",
+            peer: "vm-c",
+            program: variable,
+        },
+        NodeSpec {
+            name: "vm-c",
+            peer: "vm-b",
+            program: Program {
+                timer_phase: 4 * MICROSECOND + 13,
+                emit_every: 900_011,
+                ..fixed
+            },
+        },
+    ]
+}
+
+/// A pair `d - e` that shares no path with the chain.
+fn pair_nodes() -> Vec<NodeSpec> {
+    let (fixed, variable) = programs();
+    vec![
+        NodeSpec {
+            name: "vm-d",
+            peer: "vm-e",
+            program: Program {
+                emit_every: 300_007,
+                ..variable
+            },
+        },
+        NodeSpec {
+            name: "vm-e",
+            peer: "vm-d",
+            program: Program {
+                timer_phase: MICROSECOND + 3,
+                ..fixed
+            },
+        },
+    ]
+}
+
+const CHAIN_LINKS: [(&str, &str, u64); 2] = [
+    ("vm-a", "vm-b", CHAIN_NEAR_LATENCY),
+    ("vm-b", "vm-c", CHAIN_FAR_LATENCY),
+];
+const PAIR_LINKS: [(&str, &str, u64); 1] = [("vm-d", "vm-e", PAIR_LATENCY)];
+
+fn graph_scenario() -> Scenario {
+    Scenario {
+        nodes: chain_nodes().into_iter().chain(pair_nodes()).collect(),
+        links: CHAIN_LINKS.into_iter().chain(PAIR_LINKS).collect(),
+        time_limit: GRAPH_TIME_LIMIT,
+        fault: None,
+    }
+}
+
+fn drive_graph(
+    scenario: &Scenario,
+    schedule: &CeilingSchedule,
+    faults: Faults,
+) -> (Trajectory, DriveStats) {
+    drive_scenario(StopModel::Bound, scenario, schedule, faults)
+        .unwrap_or_else(|error| panic!("graph {schedule:?}: {error}"))
+}
+
+#[test]
+fn nodes_on_different_graph_horizons_are_independent_of_the_schedule() {
+    let scenario = graph_scenario();
+    let (baseline, stats) = drive_graph(
+        &scenario,
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+
+    // Every addressed node received frames, and nodes ran on clocks further
+    // apart than the shortest link latency.
+    for spec in &scenario.nodes {
+        if !scenario.nodes.iter().any(|sender| sender.peer == spec.name) {
+            continue;
+        }
+        assert!(
+            baseline.traces[spec.name]
+                .iter()
+                .any(|event| matches!(event.kind, TraceKind::Receive { .. })),
+            "{} must receive frames",
+            spec.name
+        );
+    }
+    assert!(stats.max_set >= 3, "{stats:?}");
+    assert!(stats.max_clock_spread > PAIR_LATENCY, "{stats:?}");
+
+    for (label, schedule) in t1_schedules() {
+        let (trajectory, _) = drive_graph(&scenario, &schedule, Faults::default());
+        assert_same_trajectory(&baseline, &trajectory, label);
+    }
+}
+
+#[test]
+fn a_disconnected_component_never_bounds_or_changes_the_other() {
+    let (together, stats) = drive_graph(
+        &graph_scenario(),
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+    let chain = Scenario {
+        nodes: chain_nodes(),
+        links: CHAIN_LINKS.to_vec(),
+        time_limit: GRAPH_TIME_LIMIT,
+        fault: None,
+    };
+    let pair = Scenario {
+        nodes: pair_nodes(),
+        links: PAIR_LINKS.to_vec(),
+        time_limit: GRAPH_TIME_LIMIT,
+        fault: None,
+    };
+    let (alone_chain, _) =
+        drive_graph(&chain, &CeilingSchedule::unconstrained(), Faults::default());
+    let (alone_pair, _) = drive_graph(&pair, &CeilingSchedule::unconstrained(), Faults::default());
+
+    // Nodes run more than a whole near-link latency apart. Publication in
+    // canonical time order keeps the spread within one horizon window.
+    assert!(stats.max_clock_spread > CHAIN_NEAR_LATENCY, "{stats:?}");
+    for (alone, names) in [
+        (&alone_chain, &["vm-a", "vm-b", "vm-c"][..]),
+        (&alone_pair, &["vm-d", "vm-e"][..]),
+    ] {
+        for name in names {
+            assert_eq!(together.traces[*name], alone.traces[*name], "{name} trace");
+            assert_eq!(together.states[*name], alone.states[*name], "{name} state");
+        }
+    }
+}
+
+#[test]
+fn serialized_parallel_and_wall_delayed_runs_are_bit_identical() {
+    let scenario = graph_scenario();
+    for (label, schedule) in [
+        ("unconstrained", CeilingSchedule::unconstrained()),
+        t1_schedules()[1].clone(),
+    ] {
+        let (parallel, _) = drive_graph(&scenario, &schedule, Faults::default());
+        let (serialized, _) = drive_graph(
+            &scenario,
+            &schedule,
+            Faults {
+                workers: Some(1),
+                ..Faults::default()
+            },
+        );
+        let (delayed, _) = drive_graph(
+            &scenario,
+            &schedule,
+            Faults {
+                threaded_delays: true,
+                ..Faults::default()
+            },
+        );
+
+        // PERF-5: worker count, wall delays and host completion order change
+        // neither the guest nor the canonical event log.
+        for (variant, trajectory) in [("serialized", &serialized), ("delayed", &delayed)] {
+            assert_same_trajectory(&parallel, trajectory, &format!("{label} {variant}"));
+            assert_eq!(
+                parallel.event_log, trajectory.event_log,
+                "{label} {variant}: event log"
+            );
+        }
+    }
+}
+
+#[test]
+fn seeded_random_ceiling_schedules_match_on_different_graph_horizons() {
+    let scenario = graph_scenario();
+    let (baseline, _) = drive_graph(
+        &scenario,
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+    let mut rng = Xorshift(0x9a7b_1e5d_0c4f_2a61);
+    for case in 0..32 {
+        let schedule = random_schedule(&mut rng);
+        let (trajectory, _) = drive_graph(&scenario, &schedule, Faults::default());
         assert_same_trajectory(&baseline, &trajectory, &format!("case {case} {schedule:?}"));
     }
 }

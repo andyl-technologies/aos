@@ -932,22 +932,26 @@ impl SingleScheduler {
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = self.effective_exact_local_event(node)?;
-        let horizon = horizon_from_network_lookahead(
-            current_time,
-            node.network_lookahead,
-            exact_local_event.clone(),
-        );
+        // A live topology bounds the node by its inbound edge guarantees,
+        // computed from each upstream node's own clock (SCHED-9). Without live
+        // edges the per-node lookahead is a pre-supplied fixed parking point.
+        let network_bound = if self.effective_topology.edges().is_empty() {
+            match node.network_lookahead {
+                NetworkLookahead::Finite(duration) => Some(current_time + duration),
+                NetworkLookahead::Infinite => None,
+            }
+        } else {
+            self.graph_network_bound(node)?
+        };
+        let horizon = horizon_from_network_bound(network_bound, exact_local_event.clone());
         let finite_horizon = horizon.virtual_time().unwrap_or(self.time_limit);
         let mut icount_rounding = horizon
             .virtual_time()
             .map_or(SchedulerIcountRounding::ConservativeFloor, |_| {
                 horizon_source_icount_rounding(horizon.source)
             });
-        if let NetworkLookahead::Finite(duration) = node.network_lookahead {
-            let network_target = current_time + duration;
-            if network_target <= finite_horizon {
-                icount_rounding = SchedulerIcountRounding::ConservativeFloor;
-            }
+        if network_bound.is_some_and(|network_target| network_target <= finite_horizon) {
+            icount_rounding = SchedulerIcountRounding::ConservativeFloor;
         }
         let mut requested_target = min_instant(finite_horizon, self.time_limit);
         if self.time_limit <= finite_horizon {

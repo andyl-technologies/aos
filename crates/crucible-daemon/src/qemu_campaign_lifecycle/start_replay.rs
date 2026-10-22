@@ -172,8 +172,9 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
     }
 
     lifecycle.set_live_network_choice_pause(replay_pauses_before_live_network_choice(target));
-    // The parent ran the audited Envoy boot prefix with concurrent RUNs; replay
-    // must group them the same way to retain the parent's event log.
+    // RUN grouping no longer depends on this mark: every attempt runs each
+    // node to its own graph horizon. Replay re-arms it so a choice inside the
+    // audited Envoy boot prefix still fails closed, as it did in the parent.
     let mut parallel_boot = crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
         input,
         &replay.event_log,

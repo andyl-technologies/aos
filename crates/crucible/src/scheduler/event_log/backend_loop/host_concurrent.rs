@@ -2,7 +2,10 @@
 
 use super::cap_boundary::resolve_cap_boundary;
 use super::dispatch_boundary::resolve_dispatch_boundary;
-use super::held_boundary::{HeldBoundaryRun, backend_run, hold_run_result};
+use super::held_boundary::{HeldBoundaryRun, hold_run_result};
+use super::held_catchup::{
+    CatchupKind, execute_host_runs, held_emission_floors, require_caught_up,
+};
 use super::held_lineage::HeldCommitBefore;
 use super::held_stop::{CommittedHostStop, HeldHostStopKind};
 use super::host_run_validation::validate_held_network_lookahead;
@@ -32,25 +35,7 @@ pub(super) struct HeldHostContinuation {
     pub(super) lineage: HeldRunLineage,
 }
 
-fn execute_one_host_run<B: ConcurrentSimulationBackend>(
-    backend: &mut B,
-    run: &PreparedHostRun,
-) -> Result<ConcurrentBackendRunResult, SchedulerError> {
-    if backend.dispatch_contract() != run.dispatch_contract {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from("backend dispatch contract changed before physical RUN"),
-        });
-    }
-    let mut results = backend.execute_concurrent_runs(vec![backend_run(run)], 1)?;
-    if results.len() != 1 {
-        return Err(SchedulerError::BoundaryViolation {
-            message: String::from("host worker continuation changed cardinality"),
-        });
-    }
-    Ok(results.remove(0))
-}
-
-fn refresh_held_host_run_boundary(
+pub(super) fn refresh_held_host_run_boundary(
     scheduler: &mut SingleScheduler,
     topology: &SchedulerLookaheadGraph,
 ) -> Result<(), SchedulerError> {
@@ -126,12 +111,11 @@ where
                 message: String::from("held union generation exhausted before RUN dispatch"),
             });
         }
-        let maximum_runs =
-            if self.pause_before_live_network_choice && !self.parallel_choice_free_boot {
-                1
-            } else {
-                usize::MAX
-            };
+        // Every node runs to its own graph horizon, also while a live choice
+        // may be offered. A choice found while publishing the set is offered
+        // at the deterministic cut described on `publish_held_host_continuation`;
+        // its held peers cannot be influenced by the choice before they stop.
+        let maximum_runs = usize::MAX;
         let maximum_consumers = self
             .loop_impl
             .borrow()
@@ -174,6 +158,7 @@ where
                 next.drive_concurrent_authoritative_quantum_limited(request, maximum_runs)?;
             return self.complete_host_control_only(next, outcome);
         }
+        self.host_worker_limit = max_host_workers;
         let mut runs = Vec::with_capacity(prepared.runs.len());
         for planned in &prepared.runs {
             runs.push(ConcurrentBackendRun {
@@ -294,6 +279,36 @@ where
         })
     }
 
+    /// Publishes held RUN evidence in canonical order, stopping at a choice cut.
+    ///
+    /// # Canonical order
+    ///
+    /// The RUNs of one set ran on different clocks to their own graph
+    /// horizons. Their evidence publishes in increasing settled-endpoint time,
+    /// ties broken by node identity. Before a held RUN publishes at time `t`,
+    /// every other live node reaches `t` through a fresh catch-up RUN bounded
+    /// by its own graph horizon; that horizon uses each held peer's proven
+    /// emission floor, so a node waiting on a held peer is never stuck behind
+    /// stale state. Outputs therefore reach EMIT, routing, and each link's RNG
+    /// stream in RFC-0010 Section 8.6 key order, whatever the host completion
+    /// order or worker count (PERF-5).
+    ///
+    /// # Choice cut
+    ///
+    /// When committing a RUN offers a live choice for a frame emitted by node
+    /// `A` at `e`, publication stops. The offered parent is the cut formed by
+    /// every node's published clock and the in-flight frames held in pending
+    /// events and link queues. Each still-held peer `n` settled strictly before
+    /// any delivery from `A` (checked against every direct edge by
+    /// `validate_held_network_lookahead`, and transitively by the graph
+    /// horizon), so no selection can change its evidence; it publishes after
+    /// the selection.
+    ///
+    /// The cut is a pure function of the event-log prefix: the RUN set and
+    /// every RUN target depend only on scheduler state, and the publication
+    /// order only on guest-determined endpoints. Replay reproduces it by
+    /// running the same policy from a settled boundary in the log, never from
+    /// inside a held set, which `final_boundary_refusal` refuses to capture.
     pub(super) fn publish_held_host_continuation(
         &mut self,
         mut staged_scheduler: SingleScheduler,
@@ -351,6 +366,9 @@ where
                     ),
                 }));
             }
+            let held_floors = held_emission_floors(&staged_scheduler, &held_runs, &boundary_runs)
+                .map_err(|error| self.poison_continuation(error))?;
+            staged_scheduler.set_held_emission_floors(held_floors);
             // Physical completion order and registration order are not PICK
             // order. Release equal-time evidence by canonical node identity.
             // A completed RUN publishes at its settled endpoint, the scheduler
@@ -385,182 +403,84 @@ where
                 break;
             };
 
-            let mut omitted_run = None;
-            let mut omitted_nodes = staged_scheduler
-                .nodes
-                .iter()
-                .enumerate()
-                .map(|(index, runtime)| (runtime.id.node.clone(), index))
-                .collect::<Vec<_>>();
-            omitted_nodes.sort_by(|left, right| left.0.cmp(&right.0));
-            for (node, index) in omitted_nodes {
-                if original_runs.contains_key(&node) {
-                    continue;
-                }
-                let current = staged_scheduler
-                    .node_scheduler_time(&staged_scheduler.nodes[index])
-                    .map_err(|error| self.poison_continuation(error))?;
-                if current.ticks >= next_time.ticks {
-                    continue;
-                }
-                refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
-                    .map_err(|error| self.poison_continuation(error))?;
-                let run = staged_scheduler
-                    .prepare_host_catchup_run_for_contract(
-                        index,
-                        SimInstant {
-                            ticks: next_time.ticks,
-                        },
-                        self.selected_dispatch_contract()
-                            .map_err(|error| self.poison_continuation(error))?,
-                    )
-                    .map_err(|error| self.poison_continuation(error))?;
-                if let Some(run) = run {
-                    omitted_run = Some((node, current, run));
-                    break;
-                }
-            }
-            if let Some((node, current, mut run)) = omitted_run {
-                run.dispatch_contract = self
-                    .selected_dispatch_contract()
-                    .map_err(|error| self.poison_continuation(error))?;
-                run.canonical_lineage = Some(lineage.clone());
-                validate_held_network_lookahead(
-                    &staged_scheduler,
-                    &run.plan.node,
-                    VirtualTime {
-                        ticks: current.ticks,
-                    },
+            // Every unheld live node behind `next_time` catches up before the
+            // held RUN publishes there. The catch-up RUNs are independent:
+            // each is bounded by its own graph horizon over the held floors,
+            // so they run together as one host-concurrent batch.
+            let catchups = self
+                .plan_held_catchups(
+                    &mut staged_scheduler,
+                    next_time,
+                    &initial_topology,
+                    &original_runs,
                     &held_runs,
                     &boundary_runs,
                 )
                 .map_err(|error| self.poison_continuation(error))?;
-                let completed = execute_one_host_run(&mut self.backend, &run)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if held_runs.len() + boundary_runs.len() >= held_limit {
-                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "held host RUN evidence exceeded scheduler node count",
-                        ),
-                    }));
-                }
-                original_runs.insert(node.clone(), run.clone());
-                generations.insert(node.clone(), 0);
-                hold_run_result(run, completed, 0, &mut held_runs, &mut boundary_runs)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if let Some(held) = held_runs.get(&node)
-                    && !held.completed.network_outputs.is_empty()
-                {
-                    let at = staged_scheduler
-                        .backend_network_output_time(
-                            &node,
-                            Icount {
-                                retired: held.completed.step.reached.ticks,
-                            },
-                        )
+            if !catchups.is_empty() {
+                let mut planned = Vec::with_capacity(catchups.len());
+                for mut catchup in catchups {
+                    catchup.run.dispatch_contract = self
+                        .selected_dispatch_contract()
                         .map_err(|error| self.poison_continuation(error))?;
+                    catchup.run.canonical_lineage = Some(lineage.clone());
                     validate_held_network_lookahead(
                         &staged_scheduler,
-                        &held.run.plan.node,
-                        at,
+                        &catchup.run.plan.node,
+                        VirtualTime {
+                            ticks: catchup.current.ticks,
+                        },
                         &held_runs,
                         &boundary_runs,
                     )
                     .map_err(|error| self.poison_continuation(error))?;
-                }
-                continue;
-            }
-
-            let mut lagging = None;
-            for (node, original) in &original_runs {
-                if held_runs.contains_key(node) || boundary_runs.contains_key(node) {
-                    continue;
-                }
-                let runtime = &staged_scheduler.nodes[original.plan.index];
-                if runtime.campaign_parked {
-                    // A parked VM abandons the rest of its RUN at the marker;
-                    // it receives a fresh RUN only after the all-VM join.
-                    continue;
-                }
-                let current = staged_scheduler
-                    .node_scheduler_time(runtime)
-                    .map_err(|error| self.poison_continuation(error))?;
-                let before = runtime.counter;
-                let settled = runtime.settled;
-                if current.ticks < next_time.ticks {
-                    refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
-                        .map_err(|error| self.poison_continuation(error))?;
-                    // Only an earlier authenticated stop leaves part of the
-                    // original RUN unsettled. A settled RUN whose clock stopped
-                    // below its ceiling has no remainder to republish.
-                    let run = if settled.ticks < original.plan.target_counter {
-                        Some(
-                            staged_scheduler
-                                .prepare_host_run_continuation(original, before)
-                                .map_err(|error| self.poison_continuation(error))?,
-                        )
-                    } else {
-                        staged_scheduler
-                            .prepare_host_catchup_run_after(
-                                original,
-                                SimInstant {
-                                    ticks: next_time.ticks,
-                                },
-                            )
-                            .map_err(|error| self.poison_continuation(error))?
+                    let generation = match catchup.kind {
+                        CatchupKind::Omitted => 0,
+                        CatchupKind::Lagging => generations
+                            .get(&catchup.node)
+                            .copied()
+                            .and_then(|value| value.checked_add(1))
+                            .ok_or_else(|| {
+                                self.poison_continuation(SchedulerError::BoundaryViolation {
+                                    message: String::from(
+                                        "held RUN generation is absent or exhausted",
+                                    ),
+                                })
+                            })?,
                     };
-                    if let Some(run) = run {
-                        lagging = Some((node.clone(), run, current));
-                        break;
+                    planned.push((catchup.node, catchup.run, generation));
+                }
+
+                let completed = execute_host_runs(
+                    &mut self.backend,
+                    planned.iter().map(|(_, run, _)| run),
+                    self.host_worker_limit,
+                )
+                .map_err(|error| self.poison_continuation(error))?;
+                for ((node, run, generation), completed) in planned.into_iter().zip(completed) {
+                    if held_runs.len() + boundary_runs.len() >= held_limit {
+                        return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "held host RUN evidence exceeded scheduler node count",
+                            ),
+                        }));
                     }
-                }
-            }
-            if let Some((node, mut run, current)) = lagging {
-                run.dispatch_contract = self
-                    .selected_dispatch_contract()
+                    generations.insert(node.clone(), generation);
+                    original_runs.insert(node.clone(), run.clone());
+                    hold_run_result(
+                        run,
+                        completed,
+                        generation,
+                        &mut held_runs,
+                        &mut boundary_runs,
+                    )
                     .map_err(|error| self.poison_continuation(error))?;
-                run.canonical_lineage = Some(lineage.clone());
-                validate_held_network_lookahead(
-                    &staged_scheduler,
-                    &run.plan.node,
-                    VirtualTime {
-                        ticks: current.ticks,
-                    },
-                    &held_runs,
-                    &boundary_runs,
-                )
-                .map_err(|error| self.poison_continuation(error))?;
-                let generation = generations
-                    .get(&node)
-                    .copied()
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or_else(|| {
-                        self.poison_continuation(SchedulerError::BoundaryViolation {
-                            message: String::from("held RUN generation is absent or exhausted"),
-                        })
-                    })?;
-                let completed = execute_one_host_run(&mut self.backend, &run)
-                    .map_err(|error| self.poison_continuation(error))?;
-                if held_runs.len() + boundary_runs.len() >= held_limit {
-                    return Err(self.poison_continuation(SchedulerError::BoundaryViolation {
-                        message: String::from(
-                            "held host RUN evidence exceeded selected node count",
-                        ),
-                    }));
                 }
-                generations.insert(node.clone(), generation);
-                original_runs.insert(node.clone(), run.clone());
-                hold_run_result(
-                    run,
-                    completed,
-                    generation,
-                    &mut held_runs,
-                    &mut boundary_runs,
-                )
-                .map_err(|error| self.poison_continuation(error))?;
-                if let Some(held) = held_runs.get(&node)
-                    && !held.completed.network_outputs.is_empty()
-                {
+                // Each new output must still precede every peer's endpoint.
+                for held in held_runs.values() {
+                    if held.completed.network_outputs.is_empty() {
+                        continue;
+                    }
                     let at = staged_scheduler
                         .backend_network_output_time(
                             &held.completed.node,
@@ -580,6 +500,11 @@ where
                 }
                 continue;
             }
+
+            // Publishing at `next_time` releases outputs in canonical time
+            // order only if no other node can still emit before it.
+            require_caught_up(&staged_scheduler, next_time, &held_runs, &boundary_runs)
+                .map_err(|error| self.poison_continuation(error))?;
 
             if let Some(mut held_boundary) = boundary_runs.remove(&next_node) {
                 lineage
@@ -832,6 +757,8 @@ where
             }
         }
 
+        // Held evidence stays with the continuation, never with the scheduler.
+        staged_scheduler.set_held_emission_floors(BTreeMap::new());
         let offer_configuration = staged_scheduler.configuration().clone();
         let offer_log_offset = staged_scheduler.event_log_offset();
         *self.loop_impl.borrow_mut() = staged_scheduler;

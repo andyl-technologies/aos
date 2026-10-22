@@ -550,4 +550,9 @@ pub struct SingleScheduler {
     pub(super) lock_held: bool,
     pub(super) last_advance: Option<NodeAdvance>,
     pub(super) last_topology_recompute: bool,
+    /// Proven emission floors of host RUNs held outside this staged scheduler.
+    ///
+    /// Only a publishing host-concurrent RUN set fills this, and it is empty
+    /// again before the scheduler is published. It is never checkpointed.
+    pub(super) held_emission_floors: BTreeMap<NodeId, SimInstant>,
 }
