@@ -1,5 +1,7 @@
 //! Portable authentication grants and identity-provider configuration.
 
+use sha2::{Digest as _, Sha256};
+
 /// An org's OIDC identity-provider configuration (system-of-record row).
 ///
 /// Mirrors the `org_idp_configs` row one-to-one. The client secret is held
@@ -47,6 +49,30 @@ pub struct IdpConfigRecord {
     pub incarnation_id: Option<String>,
     /// Reviewed plan that produced the current state, when any.
     pub mutation_plan_id: Option<String>,
+}
+
+/// Returns the stable identity of the verifier that accepts an OIDC token.
+///
+/// The identity covers every configuration value used to decide whether a
+/// token is authentic: the expected issuer, audience, key source, and pinned
+/// signature algorithm. Configurations with the same verifier deliberately
+/// share linked identities, while changing any verifier input creates a new
+/// identity namespace.
+#[must_use]
+pub fn oidc_verifier_id(record: &IdpConfigRecord) -> String {
+    let mut digest = Sha256::new();
+
+    for value in [
+        "RS256",
+        record.issuer.as_str(),
+        record.client_id.as_str(),
+        record.jwks_uri.as_str(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+
+    hex::encode(digest.finalize())
 }
 
 /// A validated provisioning token: who owns it and what it may do.

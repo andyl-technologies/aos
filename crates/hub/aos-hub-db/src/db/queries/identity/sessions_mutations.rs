@@ -26,18 +26,56 @@ impl Database {
         ttl_secs: i64,
         auth_level: i64,
     ) -> Result<String> {
+        self.create_session_with_authentication(
+            user_id,
+            ttl_secs,
+            auth_level,
+            &SessionAuthentication::LegacyLocal,
+        )
+        .await
+    }
+
+    /// Creates a session and retains the evidence that authenticated it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the evidence is malformed or on database failure.
+    pub async fn create_session_with_authentication(
+        &self,
+        user_id: i64,
+        ttl_secs: i64,
+        auth_level: i64,
+        authentication: &SessionAuthentication,
+    ) -> Result<String> {
         let secret = aos_hub_model::auth::session::new_session_secret();
         let hash = aos_hub_model::auth::token::sha256_hex(&secret);
         let now = unix_now();
+        let (method, provider) = authentication.database_values();
+        if let Some(provider) = provider {
+            anyhow::ensure!(
+                !provider.is_empty()
+                    && provider.len() <= 2048
+                    && !provider.chars().any(char::is_control),
+                "session authentication provider is invalid"
+            );
+        }
         let affected = self
             .backend
             .execute(
                 "INSERT INTO sessions
              (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
-              last_authenticated_at)
-             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3 FROM users u
+              last_authenticated_at, authentication_method, authentication_provider)
+             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3, ?6, ?7 FROM users u
               WHERE u.id = ?2 AND u.deleted_at IS NULL",
-                &vals![hash, user_id, now, now + ttl_secs, auth_level],
+                &vals![
+                    hash,
+                    user_id,
+                    now,
+                    now + ttl_secs,
+                    auth_level,
+                    method,
+                    provider
+                ],
             )
             .await?;
         if affected != 1 {
@@ -128,11 +166,38 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn elevate_session(&self, secret: &str) -> Result<()> {
+        self.elevate_session_with_authentication(secret, &SessionAuthentication::LegacyLocal)
+            .await
+    }
+
+    /// Elevates a session and replaces its retained authentication evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the evidence is malformed or on database failure.
+    pub async fn elevate_session_with_authentication(
+        &self,
+        secret: &str,
+        authentication: &SessionAuthentication,
+    ) -> Result<()> {
         let hash = aos_hub_model::auth::token::sha256_hex(secret);
+        let (method, provider) = authentication.database_values();
+        if let Some(provider) = provider {
+            anyhow::ensure!(
+                !provider.is_empty()
+                    && provider.len() <= 2048
+                    && !provider.chars().any(char::is_control),
+                "session authentication provider is invalid"
+            );
+        }
         self.backend
             .execute(
-                "UPDATE sessions SET auth_level = 1, last_authenticated_at = ?2 WHERE id_hash = ?1",
-                &vals![hash, unix_now()],
+                "UPDATE sessions
+                    SET auth_level = 1, last_authenticated_at = ?2,
+                        authentication_method = ?3, authentication_provider = ?4,
+                        reauthentication_generation = reauthentication_generation + 1
+                  WHERE id_hash = ?1",
+                &vals![hash, unix_now(), method, provider],
             )
             .await?;
         Ok(())

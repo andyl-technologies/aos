@@ -62,6 +62,7 @@ pub mod sign;
 pub mod store;
 pub mod tls;
 pub mod tokens;
+mod upload_session;
 pub mod views;
 
 use std::path::PathBuf;

@@ -7,6 +7,7 @@ description = "Typed client for AOS build server, Nix cache, garbage collection,
 
 [dependencies]
 aos-nar.workspace = true
+aos-nix.workspace = true
 aos-build-api = { workspace = true }
 anyhow = { workspace = true }
 connectrpc = { workspace = true }
@@ -17,3 +18,7 @@ webpki-roots = { workspace = true }
 rustls-native-certs = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+
+[dev-dependencies]
+rustls-pemfile = { workspace = true }
+webpki = { package = "rustls-webpki", version = "0.103.16" }

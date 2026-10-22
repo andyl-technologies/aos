@@ -38,6 +38,17 @@ pub struct InvitationRecord {
     pub expires_at: i64,
 }
 
+/// One organization whose current identity-provider policy applies to a user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnforcedSsoProvider {
+    /// Database identity of the organization that owns the policy.
+    pub org_id: i64,
+    /// Human-facing organization slug used to begin its sign-in flow.
+    pub org_slug: String,
+    /// Current issuer identifier accepted for the organization.
+    pub issuer: String,
+}
+
 /// An in-flight OIDC authorization-code request (system-of-record row).
 ///
 /// Created at the hub's `auth::oidc::begin_login` and consumed exactly once at
@@ -49,6 +60,8 @@ pub struct OidcFlowRecord {
     pub state: String,
     /// The org whose IdP this flow targets.
     pub org_id: i64,
+    /// Verifier configuration that was trusted when the flow began.
+    pub verifier_id: String,
     /// The nonce bound into the authorization request; the id_token's `nonce`
     /// claim must equal it.
     pub nonce: String,
@@ -111,13 +124,42 @@ pub struct WebauthnChallengeRecord {
     pub kind: String,
     /// Unix time the challenge expires; a verify after this is rejected.
     pub expires_at: i64,
+    /// Browser-session state that authorized a registration ceremony.
+    pub registration_binding: Option<WebauthnChallengeBinding>,
+}
+
+/// Browser-session state bound to a passkey registration ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebauthnChallengeBinding {
+    /// Hash of the browser-session secret that began the ceremony.
+    pub(in crate::db) session_id_hash: String,
+    /// Monotonic session generation observed when the ceremony began.
+    pub(in crate::db) reauthentication_generation: i64,
+}
+
+impl WebauthnChallengeBinding {
+    /// Captures one browser session's current reauthentication generation.
+    #[must_use]
+    pub fn for_session(secret: &str, reauthentication_generation: i64) -> Self {
+        Self {
+            session_id_hash: aos_hub_model::auth::token::sha256_hex(secret),
+            reauthentication_generation,
+        }
+    }
+
+    /// Reports whether this binding still matches the browser session.
+    #[must_use]
+    pub fn matches_session(&self, secret: &str, reauthentication_generation: i64) -> bool {
+        self.session_id_hash == aos_hub_model::auth::token::sha256_hex(secret)
+            && self.reauthentication_generation == reauthentication_generation
+    }
 }
 
 /// The outcome of [`Database::link_or_create_identity`]: the resolved user and
 /// how the identity was reconciled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityLink {
-    /// An existing `(iss, sub)` identity resolved to this user id.
+    /// An existing verifier and subject identity resolved to this user id.
     Existing(i64),
     /// A verified email on a captured domain linked to an existing user.
     Linked(i64),
@@ -169,6 +211,57 @@ pub struct SessionAuth {
     pub last_authenticated_at: i64,
     /// Unix time the session expires.
     pub expires_at: i64,
+    /// Evidence that established or most recently elevated the session.
+    pub authentication: SessionAuthentication,
+    /// Monotonic generation advanced by each in-place reauthentication.
+    pub reauthentication_generation: i64,
+}
+
+/// Authentication evidence retained with a browser session.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "method", content = "provider", rename_all = "snake_case")]
+pub enum SessionAuthentication {
+    /// A session created before authentication evidence was recorded.
+    LegacyLocal,
+    /// A local password was verified.
+    Password,
+    /// A single-use email link was verified.
+    MagicLink,
+    /// A registered passkey assertion was verified.
+    Passkey,
+    /// An OpenID Connect token from the named issuer was verified.
+    Oidc(String),
+}
+
+impl Default for SessionAuthentication {
+    fn default() -> Self {
+        Self::LegacyLocal
+    }
+}
+
+impl SessionAuthentication {
+    /// Converts authentication evidence into its persisted columns.
+    pub(in crate::db) fn database_values(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::LegacyLocal => ("legacy_local", None),
+            Self::Password => ("password", None),
+            Self::MagicLink => ("magic_link", None),
+            Self::Passkey => ("passkey", None),
+            Self::Oidc(issuer) => ("oidc", Some(issuer)),
+        }
+    }
+
+    /// Reconstructs authentication evidence from its persisted columns.
+    pub(in crate::db) fn from_database(method: &str, provider: Option<String>) -> Result<Self> {
+        match (method, provider) {
+            ("legacy_local", None) => Ok(Self::LegacyLocal),
+            ("password", None) => Ok(Self::Password),
+            ("magic_link", None) => Ok(Self::MagicLink),
+            ("passkey", None) => Ok(Self::Passkey),
+            ("oidc", Some(issuer)) if !issuer.is_empty() => Ok(Self::Oidc(issuer)),
+            _ => anyhow::bail!("session authentication evidence is malformed"),
+        }
+    }
 }
 
 /// The outcome of polling a device-authorization grant (RFC 8628).

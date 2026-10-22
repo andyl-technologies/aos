@@ -19,7 +19,8 @@ use aos_hub_native::auth::session::COOKIE_NAME;
 use aos_hub_native::auth::webauthn::{
     self, AssertionResponse, RegistrationResponse, KIND_ASSERTION, TYPE_CREATE, TYPE_GET,
 };
-use aos_hub_native::db::{Database, IdpConfigRecord};
+use aos_hub_native::db::value::Value;
+use aos_hub_native::db::{Database, IdpConfigRecord, SessionAuthentication};
 use aos_hub_native::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -32,6 +33,8 @@ const TEST_JWT_SECRET: &[u8] = b"webauthn-test-secret-32-byte-key!";
 const EXTERNAL_URL: &str = "http://127.0.0.1:8420";
 const RP_ID: &str = "127.0.0.1";
 const ORIGIN: &str = "http://127.0.0.1:8420";
+const REGISTRATION_SESSION_SECRET: &str = "direct-registration-session";
+const REGISTRATION_REAUTHENTICATION_GENERATION: i64 = 4;
 
 async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     let auth = Arc::new(AuthState {
@@ -198,6 +201,19 @@ fn attestation_object(auth_data: &[u8], fmt: &str) -> Vec<u8> {
     out
 }
 
+fn registration_finish_body(auth: &SoftAuthenticator, challenge: &str, csrf: &str) -> String {
+    let authenticator_data = auth.authenticator_data(0, true);
+    let client_data = client_data_json(TYPE_CREATE, challenge, ORIGIN);
+
+    serde_json::json!({
+        "csrf": csrf,
+        "label": "laptop",
+        "client_data_json": B64URL.encode(&client_data),
+        "attestation_object": B64URL.encode(attestation_object(&authenticator_data, "none")),
+    })
+    .to_string()
+}
+
 // -- direct verifier round-trips (in-process) -------------------------------
 
 async fn register_direct(
@@ -205,14 +221,32 @@ async fn register_direct(
     user: i64,
     auth: &SoftAuthenticator,
 ) -> anyhow::Result<String> {
-    let challenge = webauthn::begin_registration(db, user, "u@x.com", RP_ID, "Hub")
-        .await?
-        .challenge;
+    let challenge = webauthn::begin_registration(
+        db,
+        user,
+        "u@x.com",
+        RP_ID,
+        "Hub",
+        REGISTRATION_SESSION_SECRET,
+        REGISTRATION_REAUTHENTICATION_GENERATION,
+    )
+    .await?
+    .challenge;
     let response = RegistrationResponse {
         client_data_json: client_data_json(TYPE_CREATE, &challenge, ORIGIN),
         attestation_object: attestation_object(&auth.authenticator_data(0, true), "none"),
     };
-    webauthn::finish_registration(db, user, RP_ID, ORIGIN, &response, Some("test")).await
+    webauthn::finish_registration(
+        db,
+        user,
+        RP_ID,
+        ORIGIN,
+        REGISTRATION_SESSION_SECRET,
+        REGISTRATION_REAUTHENTICATION_GENERATION,
+        &response,
+        Some("test"),
+    )
+    .await
 }
 
 async fn assert_direct(
@@ -357,20 +391,13 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
     let opts: serde_json::Value = serde_json::from_str(&begin.body).unwrap();
     let challenge = opts["challenge"].as_str().unwrap();
 
-    let ad = auth.authenticator_data(0, true);
-    let cdj = client_data_json(TYPE_CREATE, challenge, ORIGIN);
-    let finish_body = serde_json::json!({
-        "csrf": csrf,
-        "label": "laptop",
-        "client_data_json": B64URL.encode(&cdj),
-        "attestation_object": B64URL.encode(attestation_object(&ad, "none")),
-    });
+    let finish_body = registration_finish_body(&auth, challenge, &csrf);
     let finish = send_json(
         &app,
         "POST",
         "/-/account/passkeys/finish",
         Some(&cookie),
-        Some(finish_body.to_string()),
+        Some(finish_body),
         None,
     )
     .await;
@@ -415,6 +442,154 @@ async fn http_register_then_login(auth: SoftAuthenticator) {
         .unwrap();
     let resolved = db.validate_session(value).await.unwrap().unwrap();
     assert_eq!(resolved.user_id, user);
+}
+
+#[tokio::test]
+async fn stale_session_cannot_begin_or_remove_passkeys() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db.create_user("stale@x.com", None).await.unwrap();
+    let session_secret = db
+        .create_session_with_authentication(user, 3_600, 0, &SessionAuthentication::MagicLink)
+        .await
+        .unwrap();
+    let cookie = format!("{COOKIE_NAME}={session_secret}");
+    let csrf = mint_csrf_token(&session_secret);
+    let credential_id = db
+        .add_webauthn_credential(user, "stale-credential", "unused", 0, None, None)
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let begin = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/begin",
+        Some(&cookie),
+        None,
+        Some(format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(begin.status, StatusCode::FORBIDDEN, "{}", begin.body);
+
+    let remove = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/remove",
+        Some(&cookie),
+        None,
+        Some(format!("csrf={csrf}&id={credential_id}")),
+    )
+    .await;
+    assert_eq!(remove.status, StatusCode::FORBIDDEN, "{}", remove.body);
+    assert_eq!(db.list_user_credentials(user).await.unwrap().len(), 1);
+
+    db.elevate_session_with_authentication(&session_secret, &SessionAuthentication::Password)
+        .await
+        .unwrap();
+    let remove = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/remove",
+        Some(&cookie),
+        None,
+        Some(format!("csrf={csrf}&id={credential_id}")),
+    )
+    .await;
+    assert_eq!(remove.status, StatusCode::SEE_OTHER, "{}", remove.body);
+    assert!(db.list_user_credentials(user).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn registration_requires_same_recent_reauthentication() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let user = db.create_user("phase@x.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = login_session(&app, &db, "phase@x.com").await;
+    let session_secret = cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap();
+    let csrf = mint_csrf_token(session_secret);
+    let authenticator = SoftAuthenticator::p256(b"phase-bound");
+
+    let begin = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/begin",
+        Some(&cookie),
+        None,
+        Some(format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+    let options: serde_json::Value = serde_json::from_str(&begin.body).unwrap();
+    let challenge = options["challenge"].as_str().unwrap();
+    let finish_body = registration_finish_body(&authenticator, challenge, &csrf);
+
+    let session_hash = aos_hub_native::auth::token::sha256_hex(session_secret);
+    db.fixture_backend()
+        .execute(
+            "UPDATE sessions SET last_authenticated_at = 0 WHERE id_hash = ?1",
+            &[Value::Text(session_hash)],
+        )
+        .await
+        .unwrap();
+    let expired_finish = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/finish",
+        Some(&cookie),
+        Some(finish_body.clone()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        expired_finish.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        expired_finish.body
+    );
+
+    db.elevate_session_with_authentication(session_secret, &SessionAuthentication::Password)
+        .await
+        .unwrap();
+    let changed_generation = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/finish",
+        Some(&cookie),
+        Some(finish_body),
+        None,
+    )
+    .await;
+    assert_eq!(
+        changed_generation.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        changed_generation.body
+    );
+    assert!(db.list_user_credentials(user).await.unwrap().is_empty());
+
+    let begin = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/begin",
+        Some(&cookie),
+        None,
+        Some(format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(begin.status, StatusCode::OK, "{}", begin.body);
+    let options: serde_json::Value = serde_json::from_str(&begin.body).unwrap();
+    let challenge = options["challenge"].as_str().unwrap();
+    let finish = send_json(
+        &app,
+        "POST",
+        "/-/account/passkeys/finish",
+        Some(&cookie),
+        Some(registration_finish_body(&authenticator, challenge, &csrf)),
+        None,
+    )
+    .await;
+    assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+    assert_eq!(db.list_user_credentials(user).await.unwrap().len(), 1);
 }
 
 /// A passkey is a local credential, so it must not bypass `enforce_sso` (H-4).
@@ -569,19 +744,34 @@ async fn non_none_attestation_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     let user = db.create_user("u@x.com", None).await.unwrap();
     let auth = SoftAuthenticator::ed25519(b"neg-att");
-    let challenge = webauthn::begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
-        .await
-        .unwrap()
-        .challenge;
+    let challenge = webauthn::begin_registration(
+        &db,
+        user,
+        "u@x.com",
+        RP_ID,
+        "Hub",
+        REGISTRATION_SESSION_SECRET,
+        REGISTRATION_REAUTHENTICATION_GENERATION,
+    )
+    .await
+    .unwrap()
+    .challenge;
     let response = RegistrationResponse {
         client_data_json: client_data_json(TYPE_CREATE, &challenge, ORIGIN),
         attestation_object: attestation_object(&auth.authenticator_data(0, true), "packed"),
     };
-    assert!(
-        webauthn::finish_registration(&db, user, RP_ID, ORIGIN, &response, None)
-            .await
-            .is_err()
-    );
+    assert!(webauthn::finish_registration(
+        &db,
+        user,
+        RP_ID,
+        ORIGIN,
+        REGISTRATION_SESSION_SECRET,
+        REGISTRATION_REAUTHENTICATION_GENERATION,
+        &response,
+        None,
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
@@ -597,7 +787,7 @@ async fn sign_count_rollback_rejected() {
 #[tokio::test]
 async fn challenge_single_use_consumed() {
     let db = Database::open_in_memory().await.unwrap();
-    db.create_webauthn_challenge("xyz", None, KIND_ASSERTION, 300)
+    db.create_webauthn_challenge("xyz", None, KIND_ASSERTION, 300, None)
         .await
         .unwrap();
     assert!(db
