@@ -18,7 +18,9 @@
     src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
     cargoDeps = pkgs.aos-netd.passthru.cargoDeps;
     cargoRoot = "crates";
-    buildType = "debug";
+    # This executable is also the measured enforcement artifact. Keep the
+    # production reader's finite artifact bound; debug code exceeds it.
+    buildType = "release";
     cargoFlags = "-p aos-sandbox-network-systemd-custody-fixture --bin aos-netd-custody-fixture";
     doCheck = false;
     buildDeps = [pkgs.protobuf];
