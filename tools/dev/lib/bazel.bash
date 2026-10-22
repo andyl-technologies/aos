@@ -5,13 +5,13 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && $1 == core ]] || aos_dev_error 'usage: aos-dev bazel update-deps core'
-    local updater specifications
+    [[ $# == 1 && ( $1 == core || $1 == device ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device>'
+    local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
-    specifications=$(aos_dev_nix_build_ordinary -A checks.build.bazel.dependencies.specifications --no-out-link)
+    specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
     "$updater/bin/aos-bazel-rust-update" \
       --root "$aos_dev_root" --specifications "$specifications/specifications.json" \
-      --output "$aos_dev_root/third_party/rust/core"
+      --output "$aos_dev_root/third_party/rust/$family"
     return
   fi
 

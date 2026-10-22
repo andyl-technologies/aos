@@ -170,6 +170,8 @@ def main():
     if arguments[0] in {"build", "test", "run", "cquery", "aquery"}:
         if config.get("target_platform"):
             policy.append(f"--platforms={config['target_platform']}")
+        if config.get("dependency_profile"):
+            policy.append(f"--//tools/bazel/rules:dependency_profile={config['dependency_profile']}")
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
             "--sandbox_block_path=/bin/sh",

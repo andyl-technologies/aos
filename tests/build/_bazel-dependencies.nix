@@ -11,12 +11,20 @@ in rec {
     inherit workspace;
     targets = ["//third_party/rust:core_specification_package"];
   };
-  specifications = pkgs.mkAosBazelPackage {
-    pname = "aos-rust-core-specifications";
-    version = "1";
-    inherit build;
-    packageLabel = "//third_party/rust:core_specification_package";
-  };
+  specifications = specification-packages.core;
+  specification-packages = builtins.listToAttrs (map (family: {
+    name = family;
+    value = pkgs.mkAosBazelPackage {
+      pname = "aos-rust-${family}-specifications";
+      version = "1";
+      build = pkgs.mkAosBazelBuild {
+        pname = "aos-bazel-${family}-rust-specifications";
+        inherit workspace;
+        targets = ["//third_party/rust:${family}_specification_package"];
+      };
+      packageLabel = "//third_party/rust:${family}_specification_package";
+    };
+  }) ["core" "device"]);
   core = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {

@@ -94,6 +94,24 @@ class LauncherTests(unittest.TestCase):
         arguments = json.loads(self.capture.read_text())["args"]
         self.assertFalse(any(argument.startswith("--platforms=") for argument in arguments))
 
+    def test_configured_dependency_profile_applies_to_every_analysis_command(self):
+        configuration = json.loads(self.config.read_text())
+        configuration["dependency_profile"] = "device"
+        self.config.write_text(json.dumps(configuration))
+
+        for command in ["build", "test", "run", "cquery", "aquery"]:
+            with self.subTest(command=command):
+                result = self.invoke([command, "//:example", "--//tools/bazel/rules:dependency_profile=core"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(self.capture.read_text())["args"]
+                self.assertGreater(arguments.index("--//tools/bazel/rules:dependency_profile=device"),
+                                   arguments.index("--//tools/bazel/rules:dependency_profile=core"))
+
+        result = self.invoke(["query", "//:example"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertFalse(any(argument.startswith("--//tools/bazel/rules:dependency_profile=") for argument in arguments))
+
     def test_private_server_is_opt_in_and_has_bounded_idle_and_heap(self):
         configuration = json.loads(self.config.read_text())
         configuration["batch"] = False

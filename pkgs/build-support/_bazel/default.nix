@@ -23,6 +23,11 @@
       root = ../../..;
       family = "core";
     };
+    device = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "device";
+    };
   };
   mkAosBazelWorkspace = import ./workspace.nix {
     inherit pkgs lib;
@@ -36,7 +41,7 @@
   aosBazelWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates" "native" "tools/bazel" "third_party/rust"];
-    repositories = aosBazelRepositories // aosBazelRustRepositories.core;
+    repositories = aosBazelRepositories // aosBazelRustRepositories.core // aosBazelRustRepositories.device;
   };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;

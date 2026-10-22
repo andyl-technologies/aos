@@ -261,7 +261,8 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps core` to resolve third-party dependencies explicitly.
+`aos-dev bazel update-deps core` or `aos-dev bazel update-deps device` to resolve
+the selected third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
 commands retain download denial and immutable repository overrides.
@@ -279,6 +280,44 @@ archives, using the BUILD files in the pinned rules_rust source. Compilation use
 Rust rules directly. The first-party toolchain's Cargo entry point fails if a
 build script attempts a nested Cargo invocation; the explicit updater receives
 the actual source-built Cargo separately.
+
+Dependency profiles preserve Cargo's distinct feature configurations. The
+`core` profile remains the default for the qualified boot, shared, and protocol
+families. The `device` profile adds Ciborium, Serde's `alloc` feature, and Syn's
+`full` feature for the deterministic device models. Every first-party alias in
+one configuration selects the same resolved profile, preserving Serde's Rust
+type identity across the device and protocol libraries. The existing core
+feature graph remains unchanged. Both profiles retain exact versions and
+archive checksums from the temporary workspace lock.
+
+```sh
+aos-dev bazel test //crates/crucible/engine/crucible-device:unit \
+  --//tools/bazel/rules:dependency_profile=device
+aos-dev build check build.bazel.device.all --no-out-link
+```
+
+The Nix device workspace pins this setting for compilation and configured
+discovery. Using a device-only dependency under the core profile fails analysis.
+`tools/bazel/tests/device.nix` provides conservative inventory-refresh and
+precise qualification entry points. The connected family includes determinism,
+device, protocol, and shared-memory tests, doctests, examples, Clippy, formatting,
+and documentation; Cargo remains its execution and feature-parity oracle.
+
+The source updater separately reviews shared and host-only SPDX expressions.
+Ciborium, `ciborium-io`, and `ciborium-ll` retain their Apache-2.0-only ownership
+as `apache-host` dependencies, even though their dependencies share the same
+profile. Actual analysis probes allow that closure under an Apache host root
+and reject it under protocol or GPL roots. This classification does not change
+the process boundary or admit Apache-only code into QEMU.
+
+`tests/evidence/native-linux-device-profiles.json` retains the passing combined
+suite, precise configured inventory, 642 cases across 33 libtest artifacts, the
+item-qualified compile-only doctest, and all feature/example comparisons. It
+also records 58 policy tests, fresh cross-derivation restoration, nine cache
+invalidation cases, and 11 seconds of overlap between independent cache writers.
+These are native Linux conversion checks. Production cutover, full-family
+editor/foreign-target workflows, and larger-family performance acceptance remain
+open; the whole-workspace ABI and license gates are recorded separately.
 
 `checks.build.bazel.dependencies.all` exercises this path with Crucible's
 `crucible-determinism` library, unit tests, and doctests. Its `thiserror` dependency
@@ -335,8 +374,9 @@ existing workspace, including BLAKE3's `std,pure` configuration. Its sources kee
 their original license expressions. The updater admits sources to the shared
 protocol scope only when their expression appears in the specification's
 reviewed list; a new expression fails the update before publication. Host and
-plugin consumers can reuse the same canonical crate instances without Rust type
-identity conflicts.
+plugin consumers within a dependency profile reuse the same canonical crate
+instances without Rust type identity conflicts. A different profile retains its
+own resolved feature configuration instead of widening this one.
 
 `aos_license_check` applies the existing closure analysis to library/test roots
 which do not export an installed package. Both protocol graphs include it;
@@ -573,9 +613,10 @@ a benchmark-only Bazel candidate. Invoke it with the AOS-built Python and Nix:
   --nix-tools "$AOS_BENCH_NIX_BIN" --trial UNIQUE-TRIAL
 ```
 
-Both scratch and output paths must be new. Keep the repository unchanged during
-the experiment: each mode and repetition copies the source before applying the
-same trial-specific edits. Three repetitions rotate the candidate order. Each
+Both scratch and output paths must be new, and scratch must be outside the
+repository. The harness freezes one repository snapshot before running any
+mode, then applies the same trial-specific edits to private copies. Three
+repetitions rotate the candidate order. Each
 records evaluation and realisation separately, verifies valid and invalid CLI
 behavior, and checks the installed runtime closure. The production recipe uses
 `rustc` directly; the Cargo compile-loop baseline above is a separate workload.
@@ -590,6 +631,11 @@ evaluation-plus-realisation times in seconds are:
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Production | 2.163 | 0.832 | 2.035 | 2.221 | 1.022 | 1.702 |
 | Bazel candidate | 25.846 | 12.587 | 20.903 | 21.267 | 11.908 | 20.367 |
+
+That retained baseline used the earlier per-mode snapshots with an unchanged
+checkout. The current driver freezes one source tree for all repetitions and
+also records the CPU model, affinity, and available-memory snapshots. The
+recorded harness hashes identify the version used for each experiment.
 
 Warm and second-worktree samples reuse the Nix output in both modes. The Bazel
 warm delay is overwhelmingly evaluation, before action-cache lookup or compiler

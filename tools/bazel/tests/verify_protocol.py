@@ -19,8 +19,8 @@ def doctest_cases(log, package_path):
     cases = {}
     for match in re.finditer(r"^test (.+?) \.\.\. (ok|ignored(?:, [^\n]*)?|FAILED)$", log, re.MULTILINE):
         name, status = match.groups()
-        source, separator, location = name.partition(" - (line ")
-        if not separator:
+        source, separator, location = name.partition(" - ")
+        if not separator or not re.fullmatch(r"(?:.+ )?\(line \d+\)(?: - compile(?: fail)?)?", location):
             raise ValueError(f"unrecognized rustdoc case: {name}")
         for prefix in [package_path, package_path.removeprefix("crates/")]:
             marker = prefix + "/"
@@ -32,7 +32,7 @@ def doctest_cases(log, package_path):
                 break
         if not source.startswith(("src/", "tests/", "examples/")):
             raise ValueError(f"rustdoc case is outside the package: {name}")
-        key = source + " - (line " + location
+        key = source + " - " + location
         if key in cases:
             raise ValueError(f"duplicate rustdoc case: {key}")
         cases[key] = "ignored" if status.startswith("ignored") else status
@@ -128,7 +128,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None):
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_core_crates__(.+)-(\d[^/]*)//", report["label"])
+        match = re.search(r"aos_(?:core|device)_crates__(.+)-(\d[^/]*)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             bazel_features.setdefault(match.groups(), set()).add(tuple(sorted(report["features"])))
     if bazel_features != cargo_features:

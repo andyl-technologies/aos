@@ -90,12 +90,15 @@ def resolve(specification, tools, scratch, seed_lock):
 
 def validate_license(specification, crate):
     """Requires an explicit license review before admitting shared boundary inputs."""
+    if crate["license"] in specification.get("host_only_licenses", []):
+        return "apache-host"
     if (specification["license_domain"] == "permissive-protocol"
             and crate["license"] not in specification.get("approved_licenses", [])):
         raise ValueError(
             f"unreviewed protocol dependency license: {crate['name']}-{crate['version']}: "
             + crate["license"]
         )
+    return specification["license_domain"]
 
 
 def prepare_sources(specification, scratch, repository, staged):
@@ -127,7 +130,7 @@ def prepare_sources(specification, scratch, repository, staged):
         checksum = digest(archives[0])
         if checksum != checksums[name, version] or checksum != source["sha256"]:
             raise ValueError(f"source checksum disagrees with resolved locks: {name}-{version}")
-        validate_license(specification, crate)
+        license_domain = validate_license(specification, crate)
         filename = f"BUILD.{name}-{version}.bazel"
         rendered = (scratch / "rendered" / filename).read_text()
         marker = "    tags = [\n"
@@ -135,14 +138,14 @@ def prepare_sources(specification, scratch, repository, staged):
             raise ValueError(f"rendered crate lacks expected tag declarations: {filename}")
         # Scope is checked independently of the original SPDX expression, which
         # remains in the source inventory and upstream source files.
-        rendered = rendered.replace(marker, marker + '        "aos-license:' + specification["license_domain"] + '",\n')
+        rendered = rendered.replace(marker, marker + '        "aos-license:' + license_domain + '",\n')
         rendered = "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
         (staged / filename).write_text(rendered)
         label = f"{repository}__{name}-{version}"
         sources[label] = {
             "name": name, "version": version, "url": source["url"], "sha256": checksum,
             "strip_prefix": f"{name}-{version}", "build_file": filename,
-            "license": crate["license"], "license_domain": specification["license_domain"],
+            "license": crate["license"], "license_domain": license_domain,
         }
         declarations.append(f'aos_crate(name = "{label}")')
     (staged / "repositories.MODULE.bazel").write_text("\n".join(declarations) + "\n")

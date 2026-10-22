@@ -1,58 +1,79 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
-load(":core/aliases.bzl", "CRATES")
+load(":core/aliases.bzl", CORE_CRATES = "CRATES")
+load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
 
-# One canonical instance of shared crates preserves Rust type identity across
-# the protocol, Apache host, and GPL consumers.
+# Every first-party dependency in one configuration selects the same resolved
+# family. This preserves Rust type identity without globally unioning features.
 [
     alias(
         name = "core_" + name.replace("-", "_"),
-        actual = CRATES[name],
+        actual = select({
+            "//tools/bazel/rules:device_dependencies": DEVICE_CRATES.get(name, CORE_CRATES.get(name)),
+            "//conditions:default": CORE_CRATES.get(name, "//tools/bazel/rules:device_profile_required"),
+        }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(CRATES)
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items()))
 ]
 
-aos_crate_specifications(
-    name = "core_specifications",
-    family = "core",
-    definition = "BUILD.bazel",
-    packages = {
-        "anyhow": crate.spec(version = "=1.0.102"),
-        "base64": crate.spec(version = "=0.22.1"),
-        "blake3": crate.spec(version = "=1.8.5", default_features = False, features = ["std", "pure"]),
-        "libc": crate.spec(version = "=0.2.186"),
-        "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
-        "serde_json": crate.spec(version = "=1.0.150"),
-        "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
-        "thiserror": crate.spec(version = "=2.0.18"),
-        "unicode-normalization": crate.spec(version = "=0.1.25"),
-    },
-    platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
-    license_domain = "permissive-protocol",
+CORE_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "base64": crate.spec(version = "=0.22.1"),
+    "blake3": crate.spec(version = "=1.8.5", default_features = False, features = ["std", "pure"]),
+    "libc": crate.spec(version = "=0.2.186"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "unicode-normalization": crate.spec(version = "=0.1.25"),
+}
+
+APPROVED_LICENSES = [
     # Each expression offers a permissive alternative suitable for both sides
     # of the process boundary. Keep upstream spellings; new expressions fail
     # the explicit update until reviewed here.
-    approved_licenses = [
-        "(MIT OR Apache-2.0) AND Unicode-3.0",
-        "BSD-2-Clause",
-        "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
-        "CC0-1.0 OR MIT-0 OR Apache-2.0",
-        "MIT",
-        "MIT OR Apache-2.0",
-        "MIT OR Apache-2.0 OR Zlib",
-        "MIT/Apache-2.0",
-        "Unlicense OR MIT",
-        "Zlib OR Apache-2.0 OR MIT",
-    ],
-)
+    "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "BSD-2-Clause",
+    "BSD-2-Clause OR Apache-2.0 OR MIT",
+    "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+    "CC0-1.0 OR MIT-0 OR Apache-2.0",
+    "MIT",
+    "MIT OR Apache-2.0",
+    "MIT OR Apache-2.0 OR Zlib",
+    "MIT/Apache-2.0",
+    "Unlicense OR MIT",
+    "Zlib OR Apache-2.0 OR MIT",
+]
 
-aos_package(
-    name = "core_specification_package",
-    package_name = "aos-rust-core-specifications",
-    version = "1",
-    license_expression = "Apache-2.0",
-    license_domain = "apache-host",
-    artifacts = {":core_specifications": "specifications.json"},
-)
+[
+    aos_crate_specifications(
+        name = family + "_specifications",
+        family = family,
+        definition = "BUILD.bazel",
+        packages = packages,
+        platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
+        license_domain = "permissive-protocol",
+        approved_licenses = APPROVED_LICENSES,
+        # Ciborium's Apache-only sources serve the host device models. Sharing
+        # Serde's canonical instance must not admit those sources into QEMU.
+        host_only_licenses = ["Apache-2.0"],
+    )
+    for family, packages in [
+        ("core", CORE_PACKAGES),
+        ("device", dict(CORE_PACKAGES, ciborium = crate.spec(version = "=0.2.2"))),
+    ]
+]
+
+[
+    aos_package(
+        name = family + "_specification_package",
+        package_name = "aos-rust-" + family + "-specifications",
+        version = "1",
+        license_expression = "Apache-2.0",
+        license_domain = "apache-host",
+        artifacts = {":" + family + "_specifications": "specifications.json"},
+    )
+    for family in ["core", "device"]
+]

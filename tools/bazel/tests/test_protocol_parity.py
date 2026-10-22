@@ -91,6 +91,14 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
 
+    def test_device_profile_dependencies_keep_exact_feature_parity(self):
+        self.reports[0]["label"] = self.reports[0]["label"].replace("aos_core_crates__", "aos_device_crates__")
+        self.assertEqual(self.compare()["features"], {"serde@1.0.228": [("default", "derive")]})
+
+        self.reports[0]["features"].append("alloc")
+        with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
+            self.compare()
+
     def test_unexpected_bazel_dependency_fails(self):
         unknown = self.reports[0]["label"].replace("serde-1.0.228", "unknown-1.0.0")
         self.reports.append({**self.reports[0], "label": unknown})
@@ -99,6 +107,15 @@ class ProtocolParityTests(unittest.TestCase):
 
 
 class DoctestParityTests(unittest.TestCase):
+    def test_item_qualified_doctests_preserve_the_item_and_compile_status(self):
+        cargo = "test crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
+        bazel = "test /build/workspace/crates/crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        expected = {"src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile": "ok"}
+        package = "crates/crucible/engine/crucible-device"
+        self.assertEqual(verify_protocol.doctest_cases(cargo + summary, package), expected)
+        self.assertEqual(verify_protocol.doctest_cases(bazel + summary, package), expected)
+
     def test_cargo_and_bazel_source_roots_normalize_with_compile_only_status(self):
         cargo = "test shared/example/src/lib.rs - (line 12) - compile ... ok\n"
         bazel = "test /build/workspace/crates/shared/example/src/lib.rs - (line 12) - compile ... ok\n"

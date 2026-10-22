@@ -19,6 +19,7 @@ def _specifications_impl(ctx):
         "platforms": ctx.attr.platforms,
         "license_domain": ctx.attr.license_domain,
         "approved_licenses": ctx.attr.approved_licenses,
+        "host_only_licenses": ctx.attr.host_only_licenses,
     }) + "\n")
     contracts = [ctx.file.definition, ctx.file._rules, ctx.file._exporter]
     arguments = ctx.actions.args()
@@ -47,6 +48,7 @@ aos_crate_specifications = rule(
         "packages": attr.string_dict(mandatory = True),
         "annotations": attr.string_dict(),
         "approved_licenses": attr.string_list(),
+        "host_only_licenses": attr.string_list(),
         "platforms": attr.string_list(mandatory = True),
         "license_domain": attr.string(default = "apache-host", values = ["apache-host", "permissive-protocol", "gpl-qemu"]),
         "_python": attr.label(default = "@aos_tools//:python", allow_single_file = True, cfg = "exec"),

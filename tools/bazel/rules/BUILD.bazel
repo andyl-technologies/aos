@@ -1,4 +1,22 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
+load(":profiles.bzl", "dependency_profile", "device_profile_required")
+
+device_profile_required(
+    name = "device_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+dependency_profile(
+    name = "dependency_profile",
+    build_setting_default = "core",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "device_dependencies",
+    flag_values = {":dependency_profile": "device"},
+    visibility = ["//visibility:public"],
+)
 
 exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "test.bzl", "generated.bzl"])
 
