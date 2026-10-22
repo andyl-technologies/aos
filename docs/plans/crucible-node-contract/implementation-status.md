@@ -3351,6 +3351,34 @@ whole Source funding, genuine Initial/Recipe production and the remaining full
 RFC obligations remain unfinished at this checkpoint. No new full-library,
 configured runtime or VM qualification is claimed.
 
+## Retained Controller Bootstrap typed response and SDK settlement
+
+Commit `cdd23d7980` saves the typed settlement attempt and exact row before
+fallible guards. It decodes the same retained raw tree and moves the actual SDK
+pending request into the Controller owner. Terminal checks authenticate the
+unchanged literal, raw/typed correspondence, moved request and actual post-move
+SDK state under the original cut. Failed attempts retain every initialized
+output and cannot restart settlement.
+
+The defining decoder census now joins an enclosing observer directly. Its nine
+trees and twenty-five entries are priced at the actual SDK entry layout; moved
+request backing, possible containment clones and guard construction remain
+independent terms. Real-socket controls cover altered receipt data, raw framing,
+foreign moved requests, actual fencing and deadline replacement without losing
+retained outputs. Response tests moved into a focused Session module.
+
+All 209 affected client, 218 connection and 31 Bootstrap ACK controls pass in
+standard mode. Raw-JSON runs pass 21 original-cut, 31 Bootstrap ACK, seven
+raw-response module and one settlement-row controls. Transport/Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including 71
+integration targets. All 403 owned Rust/Cargo inputs match committed `cdd23d7980`
+and its actual captured source. That gate runs no tests.
+
+Private Source receipt verification, whole Source funding, genuine Initial/Recipe
+production and the remaining full RFC obligations remain unfinished. No new
+full-library, configured runtime or VM qualification is claimed.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
