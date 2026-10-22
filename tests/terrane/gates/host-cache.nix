@@ -20,6 +20,8 @@
     test "$(cat ${initialEnrollmentProof.privateRelease}/result)" = PASS
     test "$(cat ${initialEnrollmentProof.coldPrivateRelease}/result)" = PASS
     test "$(cat ${initialEnrollmentProof.coldManifestRelease}/result)" = PASS
+    test "$(cat ${initialEnrollmentProof.coldPublicPressure}/result)" = PASS
+    test "$(cat ${initialEnrollmentProof.coldManifestPressure}/result)" = PASS
     mkdir -p "$out/nix-support"
     printf '%s\n' \
       ${hostCacheProof.native} \
@@ -29,7 +31,9 @@
       ${initialEnrollmentProof.sdkWipe} \
       ${initialEnrollmentProof.privateRelease} \
       ${initialEnrollmentProof.coldPrivateRelease} \
-      ${initialEnrollmentProof.coldManifestRelease} > "$out/nix-support/native-proofs"
+      ${initialEnrollmentProof.coldManifestRelease} \
+      ${initialEnrollmentProof.coldPublicPressure} \
+      ${initialEnrollmentProof.coldManifestPressure} > "$out/nix-support/native-proofs"
   '';
   gate = name: module: names: message:
     nativeSdkGate name ''

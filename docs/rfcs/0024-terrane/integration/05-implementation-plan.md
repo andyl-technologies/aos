@@ -15413,3 +15413,28 @@ runs the complete original enrollment and final root controls. Actor limits,
 the aggregate now explicitly requires both completed native lifecycles and
 retains their output paths. No previous assertion or refusal control is removed.
 The split aggregate and final owning gates require exact-source qualification.
+
+
+#### Complete cold pressure and no-pressure release qualification
+
+All four `f82429a92d` cold native VMs pass: public-inline pressure in 276.467
+seconds, public-manifest pressure in 280.001 seconds, no-pressure manifest release
+in 279.089 seconds and no-pressure inline release in 276.517 seconds. Complete
+independent reviews match all 8,074 immutable source files, 5,354 bound inputs,
+the actual installed Cargo ELF and every required runtime witness in each run.
+
+Under pressure, both public body forms preserve the independent second consumer,
+then retire through the original native FIFO and publisher protocol. Actual
+read-only retained backing remains readable and charged after namespace removal;
+the measured project charge falls after its closure. Both manifest forms also
+remove the exact old/current metadata promises. Without pressure, both public
+original inodes remain unchanged while both private original bodies retire after
+real final-consumer release. All original enrollment, final root verification
+and native-fence refusal controls finish within unchanged bounds.
+
+Owning host-cache gates now require both cold public pressure proofs as well as
+both cold no-pressure release proofs. These are source-linked prerequisites,
+not substituted policy tests. The SDK lifecycle split at `bd59758797` is pushed;
+Python syntax, all 2,645 Nix formatting checks and the actual two-VM aggregate
+Nix dry run pass. Required application compilation and final SDK/owning-gate
+qualification remain running or required. No additional task is accepted.
