@@ -8,7 +8,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{self, Read},
+    io::{self, Read, Write},
     os::fd::AsFd,
     path::PathBuf,
     sync::{
@@ -248,6 +248,13 @@ fn run_connection(
             {
                 Ok(result) => Ok::<_, Error>(Some(result)),
                 Err(_) => {
+                    let _ = writeln!(
+                        io::stderr().lock(),
+                        "publisher-local request={} operation={} exceeded wait budget {}ms",
+                        header.request_id,
+                        header.operation,
+                        header.wait_budget_ms,
+                    );
                     let sent = connection.send(
                         &error_response(&header, ResultCode::Unavailable),
                         &[],
@@ -256,7 +263,9 @@ fn run_connection(
                     // A timed-out request cannot be reused while its accepted
                     // native effect is still active. Finish waiting before
                     // accepting another command; late result files close here.
-                    drop(execution.await);
+                    if let Err(error) = execution.await {
+                        report_native_failure(&header, "after wait deadline", &error);
+                    }
                     sent?;
                     Ok(None)
                 }
@@ -265,6 +274,7 @@ fn run_connection(
         let result = match outcome {
             Some(Ok(result)) => result,
             Some(Err(error)) => {
+                report_native_failure(&header, "before response", &error);
                 connection.send(
                     &error_response(&header, io_error_code(&error)),
                     &[],
@@ -538,6 +548,18 @@ fn native_response(
         }
     }
     Ok((packet, files))
+}
+
+// Keep the native cause in publisher-local diagnostics. The bounded protocol
+// result intentionally does not disclose these details to the requesting role.
+fn report_native_failure(header: &Packet, stage: &str, error: &io::Error) {
+    let _ = writeln!(
+        io::stderr().lock(),
+        "publisher-local request={} operation={} failed {stage}: kind={:?} cause={error}",
+        header.request_id,
+        header.operation,
+        error.kind(),
+    );
 }
 
 fn error_response(header: &Packet, result: ResultCode) -> Packet {

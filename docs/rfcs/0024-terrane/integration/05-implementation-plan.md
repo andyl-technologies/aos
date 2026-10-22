@@ -13034,3 +13034,12 @@ Frozen registry and plan-coverage checks at `00f7bad8fc` pass with all 9,313
 tracked files unchanged. They establish 292 unique gates, all 69 T0/T1 floor
 gates, and ownership of 1,082 mandatory requirements across 97 plan tasks. They
 do not establish implementation or runtime acceptance of those requirements.
+
+Publisher-local diagnostics now retain the native I/O kind and cause alongside
+the connection-local request and operation numbers. A wait-budget expiry is
+reported separately, and an accepted native effect that fails after that expiry
+also retains its actual cause. Reply codes, custody retention, late descriptor
+closure and all wait budgets remain unchanged. This makes future `Unavailable`
+failures diagnosable at the publisher without putting native error details in
+the protocol. Strict native all-target Clippy and formatting pass; the earlier
+failed runs contain no such diagnostics and retain their unresolved causes.
