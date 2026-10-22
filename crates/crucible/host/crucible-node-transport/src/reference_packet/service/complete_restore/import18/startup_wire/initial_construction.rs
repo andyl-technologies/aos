@@ -10,6 +10,8 @@ use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_bootstrap_codec_construction_data,
     original_import18_bootstrap_codec_counter_scratch_data,
+    original_import18_bootstrap_correlation_construction_data,
+    original_import18_bootstrap_correlation_counter_scratch_data,
     original_import18_bootstrap_kernel_construction_data,
     original_import18_bootstrap_kernel_counter_scratch_data,
     original_import18_bootstrap_literal_construction_data,
@@ -130,6 +132,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         original_import18_bootstrap_value_construction_data(launch, maximum)?,
         original_import18_bootstrap_codec_construction_data(launch, maximum)?,
+        original_import18_bootstrap_correlation_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -192,6 +195,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         original_import18_bootstrap_value_construction_data(launch, maximum)?,
         original_import18_bootstrap_codec_construction_data(launch, maximum)?,
+        original_import18_bootstrap_correlation_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -240,6 +244,7 @@ fn combine(
     bootstrap_literal: [usize; 3],
     bootstrap_value: [usize; 3],
     bootstrap_codec: [usize; 3],
+    bootstrap_correlation: [usize; 3],
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
@@ -380,6 +385,7 @@ fn combine(
             bootstrap_literal,
             bootstrap_value,
             bootstrap_codec,
+            bootstrap_correlation,
         )?,
     )?;
     row[1] = row[1].max(normalizations[1]);
@@ -393,6 +399,9 @@ fn combine(
     // Typed Envelope/body/proof outputs coexist with the raw bank and strict tree.
     row[1] = row[1].max(bootstrap_codec[1]);
     row[2] = row[2].max(add(raw[2], bootstrap_codec[2])?);
+    // The SDK retains negotiated parameters and the original incoming request.
+    row[1] = row[1].max(bootstrap_correlation[1]);
+    row[2] = row[2].max(add(raw[2], bootstrap_correlation[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -424,7 +433,8 @@ pub fn native_import18_initial_quote_formatter_data(
         normalizations[2]
             .max(initial_construction_counter_scratch_data())
             .max(original_import18_bootstrap_value_counter_scratch_data()?)
-            .max(original_import18_bootstrap_codec_counter_scratch_data()?),
+            .max(original_import18_bootstrap_codec_counter_scratch_data()?)
+            .max(original_import18_bootstrap_correlation_counter_scratch_data()?),
     )?;
     Ok(row)
 }
@@ -444,6 +454,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The actual SDK correlation constructor row.
         + size_of::<[usize; 3]>() // The typed post-Hello decoder constructor row.
         + size_of::<[usize; 3]>() // The strict post-Hello parser constructor row.
         + size_of::<[usize; 3]>() // The first post-Hello literal constructor row.

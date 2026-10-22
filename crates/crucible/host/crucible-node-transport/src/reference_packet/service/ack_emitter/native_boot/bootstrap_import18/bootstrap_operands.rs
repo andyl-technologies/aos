@@ -34,6 +34,33 @@ pub(in super::super) struct BootstrapAckOperands<'a> {
 }
 
 impl BootstrapAckOperands<'_> {
+    /// Retains a fresh transport guard from this actual admitted SDK's parameters.
+    ///
+    /// The caller admits all cloned backing and partials before entry. The slot
+    /// survives a terminal SDK refusal. This creates no native phase permission.
+    ///
+    /// # Errors
+    /// Refuses a nonempty slot, invalid request credit or stale authority.
+    pub(super) fn retain_bootstrap_correlation_into_data(
+        &self,
+        slot: &mut Option<crate::session::CorrelationGuard>,
+    ) -> Result<(), ProviderError> {
+        if slot.is_some() {
+            return Err(refused());
+        }
+        self.authority.ensure_live()?;
+        let maximum_requests =
+            usize::try_from(self.authority.limits().requests.get()).map_err(|_| refused())?;
+        let guard = crate::session::CorrelationGuard::new(
+            self.authority.session_id().clone(),
+            self.authority.incarnation_id().clone(),
+            maximum_requests,
+            self.authority.envelope_extensions().clone(),
+        )?;
+        *slot = Some(guard);
+        self.authority.ensure_live()
+    }
+
     /// Compares bootstrap target DATA with the actual current SDK registration.
     ///
     /// This comparison neither assigns a request nor authenticates its proof.

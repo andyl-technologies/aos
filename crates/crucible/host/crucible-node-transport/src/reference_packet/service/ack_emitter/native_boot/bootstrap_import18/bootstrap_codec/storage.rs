@@ -126,7 +126,11 @@ pub(super) fn construction_data(maximum: usize) -> Result<[usize; 3], ProviderEr
     Ok(row)
 }
 
-fn envelope_text_data() -> Result<usize, ProviderError> {
+/// Quotes all closed Envelope string backing before any typed decoder runs.
+///
+/// # Errors
+/// Refuses checked accumulation overflow.
+pub(in super::super) fn envelope_text_data() -> Result<usize, ProviderError> {
     let mut text = sum(&[
         "CNP/1".len(),
         mul(7, MAX_ID_BYTES)?,

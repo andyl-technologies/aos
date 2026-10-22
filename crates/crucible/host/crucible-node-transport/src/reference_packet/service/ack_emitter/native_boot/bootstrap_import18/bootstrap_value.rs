@@ -363,23 +363,26 @@ pub(in crate::reference_packet::service) fn retained_schedule_data(
     literal: [usize; 3],
     value: [usize; 3],
     codec: [usize; 3],
+    correlation: [usize; 3],
 ) -> Result<usize, ProviderError> {
     let normalizing = normalizations[0]
         .checked_add(size_of::<Literal>())
         .and_then(|sum| sum.checked_add(size_of::<Attempt>()))
         .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_codec::Attempt>()))
+        .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_correlation::Attempt>()))
         .ok_or_else(exhausted)?;
     let decoding = size_of::<Normalizations>()
         .checked_add(literal[0])
         .and_then(|sum| sum.checked_add(value[0]))
         .and_then(|sum| sum.checked_add(codec[0]))
+        .and_then(|sum| sum.checked_add(correlation[0]))
         .ok_or_else(exhausted)?;
     Ok(normalizing.max(decoding))
 }
 
 /// Names the fixed retained-lifetime calculation and checked sum controls.
 pub(in crate::reference_packet::service) fn schedule_counter_scratch_data() -> usize {
-    size_of::<[usize; 3]>() * 4
+    size_of::<[usize; 3]>() * 5
         + size_of::<usize>() * 4
         + size_of::<Option<usize>>()
         + size_of::<Result<usize, ProviderError>>()

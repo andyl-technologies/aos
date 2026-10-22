@@ -31,6 +31,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
             | "initial_policy_kernel_normalizations_host_frame_reactive"
             | "initial_policy_kernel_normalizations_host_value_reactive"
             | "initial_policy_kernel_normalizations_host_codec_reactive"
+            | "initial_policy_kernel_normalizations_host_correlation_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -852,6 +853,34 @@ fn original_bootstrap_codec_retains_each_typed_prefix_before_validation() {
     ] {
         flight(&format!(
             "initial_policy_kernel_normalizations_host_codec_{suffix}"
+        ));
+    }
+}
+
+#[test]
+fn original_bootstrap_correlation_retains_actual_sdk_requests_through_fencing() {
+    for suffix in [
+        "complete",
+        "reactive",
+        "reject_construction",
+        "expire_construction",
+        "revoke_construction",
+        "reject_constructed",
+        "expire_constructed",
+        "revoke_constructed",
+        "reject_receive",
+        "expire_receive",
+        "revoke_receive",
+        "reject_received",
+        "expire_received",
+        "revoke_received",
+        "changed_cut",
+        "missing_codec",
+        "callback_refused",
+        "loan_expired",
+    ] {
+        flight(&format!(
+            "initial_policy_kernel_normalizations_host_correlation_{suffix}"
         ));
     }
 }

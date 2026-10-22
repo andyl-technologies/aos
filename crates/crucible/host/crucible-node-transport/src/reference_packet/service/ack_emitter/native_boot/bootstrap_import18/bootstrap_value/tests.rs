@@ -413,6 +413,11 @@ fn closed_parser_bound_covers_escaped_input_without_charging_whitespace_as_nodes
 
 #[test]
 fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser() {
+    let correlation = [
+        size_of::<super::super::bootstrap_correlation::Attempt>() + 1000,
+        1,
+        1,
+    ];
     let normalizations = [size_of::<Normalizations>() + 1_000_000, 1, 1];
     let literal = [size_of::<Literal>() + 65540, 1, 1];
     let value = [size_of::<Attempt>() + 10000, 1, 1];
@@ -422,20 +427,26 @@ fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser(
         1,
     ];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value, codec).unwrap(),
+        retained_schedule_data(normalizations, literal, value, codec, correlation).unwrap(),
         normalizations[0]
             + size_of::<Literal>()
             + size_of::<Attempt>()
             + size_of::<super::super::bootstrap_codec::Attempt>()
+            + size_of::<super::super::bootstrap_correlation::Attempt>()
     );
     let value = [size_of::<Attempt>() + 2_000_000, 1, 1];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value, codec).unwrap(),
-        size_of::<Normalizations>() + literal[0] + value[0] + codec[0]
+        retained_schedule_data(normalizations, literal, value, codec, correlation).unwrap(),
+        size_of::<Normalizations>() + literal[0] + value[0] + codec[0] + correlation[0]
     );
-    assert!(retained_schedule_data([usize::MAX; 3], literal, value, codec).is_err());
-    assert!(retained_schedule_data(normalizations, [usize::MAX; 3], value, codec).is_err());
-    assert!(retained_schedule_data(normalizations, literal, [usize::MAX; 3], codec).is_err());
+    assert!(retained_schedule_data([usize::MAX; 3], literal, value, codec, correlation).is_err());
+    assert!(
+        retained_schedule_data(normalizations, [usize::MAX; 3], value, codec, correlation).is_err()
+    );
+    assert!(
+        retained_schedule_data(normalizations, literal, [usize::MAX; 3], codec, correlation)
+            .is_err()
+    );
 }
 
 /// Completes strict DATA without spending another full original loan.
@@ -465,5 +476,10 @@ pub(in super::super::super) fn complete_for_codec(
 
 #[test]
 fn retained_schedule_refuses_typed_codec_overflow() {
-    assert!(retained_schedule_data([1; 3], [1; 3], [1; 3], [usize::MAX; 3]).is_err());
+    assert!(retained_schedule_data([1; 3], [1; 3], [1; 3], [usize::MAX; 3], [1; 3]).is_err());
+}
+
+#[test]
+fn retained_schedule_refuses_sdk_correlation_overflow() {
+    assert!(retained_schedule_data([1; 3], [1; 3], [1; 3], [1; 3], [usize::MAX; 3]).is_err());
 }

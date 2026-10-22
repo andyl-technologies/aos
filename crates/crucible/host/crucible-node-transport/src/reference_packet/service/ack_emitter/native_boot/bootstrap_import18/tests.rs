@@ -125,7 +125,13 @@ fn child(case: &str, wire: &[u8]) {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
-            if case.contains("_normalizations_host_codec_") {
+            if case.contains("_normalizations_host_correlation_") {
+                super::bootstrap_codec::tests::write_parent_frame(
+                    "initial_policy_kernel_normalizations_host_codec_complete",
+                    peer,
+                    wire,
+                );
+            } else if case.contains("_normalizations_host_codec_") {
                 super::bootstrap_codec::tests::write_parent_frame(case, peer, wire);
             } else if case.contains("_normalizations_host_value_") {
                 super::bootstrap_value::tests::write_parent_frame(case, peer);

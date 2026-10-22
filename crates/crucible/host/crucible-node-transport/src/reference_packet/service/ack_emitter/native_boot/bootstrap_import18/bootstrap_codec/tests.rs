@@ -458,3 +458,29 @@ fn closed_maximum_covers_actual_nullable_ids_maps_and_three_decoded_banks() {
     value["extensions"]["extra"] = serde_json::json!({});
     assert!(prewalk::inspect_data(&value).is_err());
 }
+
+/// Completes typed DATA without opening another full original loan.
+pub(in super::super::super) fn complete_for_correlation(
+    original: &mut OriginalImport18RawBootstrap,
+) -> (Normalizations, Literal, Parsed, Attempt) {
+    let (normalizations, literal, parsed) =
+        super::super::bootstrap_value::tests::complete_for_codec(original);
+    let mut attempt = Attempt::empty_data();
+    let model = Model {
+        suffix: "complete",
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+            parsed.retained_requested_bytes_data(original).unwrap(),
+        ],
+        calls: Cell::new(0),
+    };
+    original
+        .decode_bootstrap_codec_data(&normalizations, &literal, &parsed, &mut attempt, &model)
+        .unwrap();
+    assert_eq!(model.calls.get(), 4);
+    (normalizations, literal, parsed, attempt)
+}

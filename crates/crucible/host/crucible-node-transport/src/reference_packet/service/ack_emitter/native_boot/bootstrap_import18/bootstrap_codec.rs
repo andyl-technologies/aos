@@ -24,6 +24,7 @@ mod prewalk;
 #[path = "bootstrap_codec/storage.rs"]
 mod storage;
 pub(in super::super) use attempt::{Attempt, Step};
+pub(super) use storage::envelope_text_data;
 
 /// Admits complete typed decoding and observes every surviving prefix.
 pub(in super::super) trait Admission {
@@ -235,8 +236,8 @@ impl Attempt {
                     ProviderError,
                 >,
             >(),
-            size_of::<R>() * 2,
-            size_of::<Result<R, ProviderError>>() * 2,
+            size_of::<R>() * 3,
+            size_of::<Result<R, ProviderError>>() * 3,
             size_of::<Result<(), ProviderError>>() * 2,
         ]
         .into_iter()
@@ -265,10 +266,38 @@ impl Attempt {
             &PacketNativeImport18BootstrapAckProof,
         ) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_request_and_operands_data(
+            original,
+            normalizations,
+            literal,
+            parsed,
+            |envelope, request, proof, _| inspect(envelope, request, proof),
+        )
+    }
+
+    /// Lends completed typed DATA with the same original borrowed live SDK.
+    ///
+    /// Callback allocation and concrete Copy results require separate credit.
+    ///
+    /// # Errors
+    /// Refuses incomplete DTOs, stale original custody/SDK or either outcome.
+    pub(in super::super) fn with_request_and_operands_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        normalizations: &Normalizations,
+        literal: &Literal,
+        parsed: &Parsed,
+        inspect: impl FnOnce(
+            &Envelope,
+            &PacketNativeImport18BootstrapRequest,
+            &PacketNativeImport18BootstrapAckProof,
+            &BootstrapAckOperands<'_>,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         parsed.with_value_and_operands_data(original, normalizations, literal, |_, operands| {
             self.guard(original, operands)?;
             let (envelope, request, proof) = self.data()?;
-            let outcome = inspect(envelope, request, proof);
+            let outcome = inspect(envelope, request, proof, operands);
             let terminal = self
                 .guard(original, operands)
                 .and_then(|()| self.data().map(|_| ()));
