@@ -44,6 +44,9 @@ mod schema_migration;
 #[cfg(feature = "postgres")]
 mod postgres_locks;
 
+#[cfg(feature = "postgres")]
+mod postgres_pool;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -204,7 +207,8 @@ impl SqlxBackend {
     #[cfg(feature = "postgres")]
     pub async fn connect_postgres(url: &str) -> Result<Self> {
         let redacted = super::redact_db_url(url);
-        let pool = sqlx::PgPool::connect(url)
+        let pool = postgres_pool::options()
+            .connect(url)
             .await
             .with_context(|| format!("connecting to postgres {redacted}"))?;
         Ok(Self::Postgres(pool))
