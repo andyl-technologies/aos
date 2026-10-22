@@ -27,6 +27,19 @@ pub(super) use attempt::observe_envelope_data;
 pub(in super::super) use attempt::{Attempt, Step};
 pub(super) use storage::envelope_text_data;
 
+/// Borrows the four actual predecessors without granting decoding or funding.
+#[derive(Clone, Copy)]
+pub(in super::super) struct Inputs<'a> {
+    /// Borrows the original private receiver and its current SDK custody.
+    pub(in super::super) original: &'a OriginalImport18RawBootstrap,
+    /// Borrows the five completed normalization outputs.
+    pub(in super::super) normalizations: &'a Normalizations,
+    /// Borrows the same retained public frame and failed read prefixes.
+    pub(in super::super) literal: &'a Literal,
+    /// Borrows the strict Value owner decoded from that frame.
+    pub(in super::super) parsed: &'a Parsed,
+}
+
 /// Admits complete typed decoding and observes every surviving prefix.
 pub(in super::super) trait Admission {
     /// Admits the stored closed codec row before any typed allocation.
@@ -37,10 +50,7 @@ pub(in super::super) trait Admission {
     /// Refuses missing original credit or incomplete whole-owner custody.
     fn construct_data(
         &self,
-        original: &OriginalImport18RawBootstrap,
-        normalizations: &Normalizations,
-        literal: &Literal,
-        parsed: &Parsed,
+        inputs: &Inputs<'_>,
         attempt: &Attempt,
         row: [usize; 3],
     ) -> Result<(), ProviderError>;
@@ -53,10 +63,7 @@ pub(in super::super) trait Admission {
     /// Refuses incomplete actual-owner observation or unavailable credit.
     fn observe_data(
         &self,
-        original: &OriginalImport18RawBootstrap,
-        normalizations: &Normalizations,
-        literal: &Literal,
-        parsed: &Parsed,
+        inputs: &Inputs<'_>,
         attempt: &Attempt,
         step: Option<Step>,
         actual: usize,
@@ -113,6 +120,12 @@ impl OriginalImport18RawBootstrap {
     ) -> Result<(), ProviderError> {
         attempt.cut = Some(self.cut);
         attempt.launch = Some(Rc::downgrade(self.parsed.shared_launch_data()?));
+        let inputs = Inputs {
+            original: self,
+            normalizations,
+            literal,
+            parsed,
+        };
         parsed.with_value_and_operands_data(self, normalizations, literal, |value, operands, _| {
             attempt.guard(self, operands)?;
             self.admit_source_row(self.initial_construction.as_ref().ok_or_else(refused)?.row)?;
@@ -133,79 +146,50 @@ impl OriginalImport18RawBootstrap {
                 .ok_or_else(exhausted)?;
             let retained = retained.checked_add(row[0]).ok_or_else(exhausted)?;
             self.admit_source_row([retained, row[1], row[2]])?;
-            admission.construct_data(self, normalizations, literal, parsed, attempt, row)?;
+            admission.construct_data(&inputs, attempt, row)?;
             attempt.guard(self, operands)?;
 
             let closed = match prewalk::inspect_data(value) {
                 Ok(closed) => closed,
                 Err(error) => {
-                    return self.observe_bootstrap_codec_step(
-                        normalizations,
-                        literal,
-                        parsed,
-                        attempt,
-                        admission,
-                        operands,
-                        None,
-                        Err(error),
-                    );
+                    return observe_step(&inputs, attempt, admission, operands, None, Err(error));
                 }
             };
             for step in [Step::Envelope, Step::Request, Step::Proof] {
                 let outcome = attempt.construct_step(step, self, operands, value, &closed);
-                self.observe_bootstrap_codec_step(
-                    normalizations,
-                    literal,
-                    parsed,
-                    attempt,
-                    admission,
-                    operands,
-                    Some(step),
-                    outcome,
-                )?;
+                observe_step(&inputs, attempt, admission, operands, Some(step), outcome)?;
             }
             Ok(())
         })
     }
+}
 
-    fn observe_bootstrap_codec_step(
-        &self,
-        normalizations: &Normalizations,
-        literal: &Literal,
-        parsed: &Parsed,
-        attempt: &Attempt,
-        admission: &dyn Admission,
-        operands: &BootstrapAckOperands<'_>,
-        step: Option<Step>,
-        outcome: Result<(), ProviderError>,
-    ) -> Result<(), ProviderError> {
-        let terminal = attempt.guard(self, operands);
-        let census = attempt
-            .retained_requested_bytes_data(self)
-            .and_then(|actual| {
-                let observation = admission.observe_data(
-                    self,
-                    normalizations,
-                    literal,
-                    parsed,
-                    attempt,
-                    step,
-                    actual,
-                );
-                let coverage = if actual <= attempt.row.ok_or_else(refused)?[0] {
-                    Ok(())
-                } else {
-                    Err(exhausted())
-                };
-                observation?;
-                coverage
-            });
-        let observed = attempt.guard(self, operands);
-        outcome?;
-        terminal?;
-        census?;
-        observed
-    }
+fn observe_step(
+    inputs: &Inputs<'_>,
+    attempt: &Attempt,
+    admission: &dyn Admission,
+    operands: &BootstrapAckOperands<'_>,
+    step: Option<Step>,
+    outcome: Result<(), ProviderError>,
+) -> Result<(), ProviderError> {
+    let terminal = attempt.guard(inputs.original, operands);
+    let census = attempt
+        .retained_requested_bytes_data(inputs.original)
+        .and_then(|actual| {
+            let observation = admission.observe_data(inputs, attempt, step, actual);
+            let coverage = if actual <= attempt.row.ok_or_else(refused)?[0] {
+                Ok(())
+            } else {
+                Err(exhausted())
+            };
+            observation?;
+            coverage
+        });
+    let observed = attempt.guard(inputs.original, operands);
+    outcome?;
+    terminal?;
+    census?;
+    observed
 }
 
 impl Attempt {
@@ -351,7 +335,9 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked counter-layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 27] = [
+    let fields: [usize; 28] = [
+        // The local view survives its closure, step-observer and admission borrows.
+        size_of::<Inputs<'static>>() + size_of::<&Inputs<'static>>() * 3,
         prewalk::counter_scratch_data(),
         storage::counter_scratch_data(),
         size_of::<&Envelope>(),
@@ -371,8 +357,8 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Result<[usize; 3], ProviderError>>(),
         size_of::<[Step; 3]>(),
         size_of::<std::array::IntoIter<Step, 3>>(),
-        size_of::<[usize; 27]>(),
-        size_of::<std::array::IntoIter<usize, 27>>(),
+        size_of::<[usize; 28]>(),
+        size_of::<std::array::IntoIter<usize, 28>>(),
         size_of::<Option<Step>>(),
         size_of::<Step>(),
         size_of::<Result<(), ProviderError>>() * 6,

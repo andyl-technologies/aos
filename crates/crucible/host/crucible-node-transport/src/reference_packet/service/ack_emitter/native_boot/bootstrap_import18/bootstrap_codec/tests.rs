@@ -132,13 +132,16 @@ impl Model<'_> {
 impl Admission for Model<'_> {
     fn construct_data(
         &self,
-        original: &OriginalImport18RawBootstrap,
-        normalizations: &Normalizations,
-        literal: &Literal,
-        parsed: &Parsed,
+        inputs: &Inputs<'_>,
         attempt: &Attempt,
         row: [usize; 3],
     ) -> Result<(), ProviderError> {
+        let Inputs {
+            original,
+            normalizations,
+            literal,
+            parsed,
+        } = *inputs;
         assert_eq!(self.calls.replace(1), 0);
         self.census(original, normalizations, literal, parsed);
         assert!(original.bootstrap_codec_started && attempt.started);
@@ -153,14 +156,17 @@ impl Admission for Model<'_> {
 
     fn observe_data(
         &self,
-        original: &OriginalImport18RawBootstrap,
-        normalizations: &Normalizations,
-        literal: &Literal,
-        parsed: &Parsed,
+        inputs: &Inputs<'_>,
         attempt: &Attempt,
         step: Option<Step>,
         actual: usize,
     ) -> Result<(), ProviderError> {
+        let Inputs {
+            original,
+            normalizations,
+            literal,
+            parsed,
+        } = *inputs;
         println!(
             "bootstrap fixture codec observe {step:?} before census: remaining={:?}",
             original.cut.remaining()
