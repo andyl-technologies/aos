@@ -9593,10 +9593,14 @@ rejection of the fixed phase-0 target's `PrivateUsers=managed` combined with
 explicit `User=root`/`Group=root`. The target now leaves those two assignments
 to managed namespace setup while retaining its closed capability set and
 hardening. The module contract rejects that invalid combination and passes;
-all 144 checker regressions also pass. These repairs still require
-compiled-policy and enforcing installed-VM qualification. The other VM runs
+all 144 checker regressions also pass. The repaired base policy passes its
+complete compiled-policy gate at
+`/nix/store/14b4q16sii6pqiplzbwpngr635j2ay0x-aos-selinux-production-policy-1`,
+including all narrow and broad-attribute negative policies. Core evaluation
+also passes after the startup repairs. Selected Host/online policy variants
+and enforcing installed-VM qualification remain pending. The other VM runs
 embedding the same known-denied policy were interrupted before qualification
-and will be replaced with these repairs; interruption is not a test pass.
+and replaced with these repairs; interruption is not a test pass.
 
 The phase-0 target also explicitly requires and follows the selected manager's
 `systemd-nsresourced.socket`. The packaged unit is on that manager's compiled
