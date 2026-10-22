@@ -3324,6 +3324,33 @@ Bootstrap transaction. Whole Source funding, genuine Initial/Recipe production,
 private receipt verification and the remaining full RFC obligations remain
 unfinished. No new full-library, configured runtime or VM qualification is claimed.
 
+## Retained Controller Bootstrap raw response
+
+Commit `6d0d035992` retains the concrete incoming body bank, framing cursors,
+closed-preflight progress and strict parsed tree in the same Controller owner.
+Every refusal keeps initialized read prefixes. An allocation-free scanner checks
+the exact Bootstrap grammar before generic JSON parsing; valid whitespace and
+ASCII escapes do not expand the closed tree population. The original SDK request
+stays pending for a separately admitted typed settlement.
+
+The row separately prices actual body capacity, the closed parsed tree under the
+SDK's largest entry layout, parser intermediates, real containment clones and
+fixed controls. Actual socket receipt and combined raw/SDK/incident census tests
+pass without turning a frame limit into a JSON population allowance.
+
+All 207 affected client, 217 connection and 30 Bootstrap ACK controls pass in
+standard mode. Raw-JSON runs pass four scanner, eight raw-response, one receive-row
+and two Envelope-projection controls. Transport/Engine/Daemon all-feature/all-target
+checking, owned-file formatting and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including 71
+integration targets. All 399 owned Rust/Cargo inputs match committed `6d0d035992`
+and its actual captured source. That gate runs no tests.
+
+Typed SDK settlement, private Source receipt verification, independently admitted
+whole Source funding, genuine Initial/Recipe production and the remaining full
+RFC obligations remain unfinished at this checkpoint. No new full-library,
+configured runtime or VM qualification is claimed.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
