@@ -685,6 +685,10 @@ fn has_duplicate<T: Ord + Clone>(values: &[T]) -> bool {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "invalid fixtures must fail the test immediately"
+)]
 mod tests {
     use crate::document::PlatformIdentity;
     use crate::{
