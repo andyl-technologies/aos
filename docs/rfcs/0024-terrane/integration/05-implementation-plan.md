@@ -14409,3 +14409,14 @@ inputs. A diagnostic against the actual old immutable image accepts its complete
 recorded list and still rejects omission of the original helper with the exact
 unexpected path; Python syntax passes. This does not convert the old aggregate
 to a pass or qualify the current owning gate. Its hermetic rerun remains pending.
+
+
+The forced-crash VM at `a448149095` fails overall in 569.39 seconds after
+actual owner SIGKILL, at cold refusal. Evidence is retained in
+`/scratch/nix-build/nix-1310220-2168083718/build/serial.log`. Its helper lacked
+the explicit authenticated census configuration already required by the owning
+cold-recovery proof. The crash supervisor now enables that same bounded service
+(512 retained inodes, 4,096 directory entries, depth 16) before provisioning.
+The actor also preserves unexpected actual recovery errors instead of hiding
+them in a generic assertion. No closure, quota or runtime bound is weakened.
+Python syntax passes; exact-source native and application reruns are pending.

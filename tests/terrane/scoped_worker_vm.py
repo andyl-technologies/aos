@@ -136,6 +136,12 @@ def main():
     support.scaffold()
     support.administrative_preflight("after")
     quota_config, publisher_config = support.configurations()
+    if crash:
+        # Cold physical closure uses the same explicitly configured native
+        # census as the owning surface proof. A peer cannot enable traversal.
+        quota_config.write_text(
+            "project_census = { retained_inodes = 512, directory_entries = 4096, depth = 16 }\n"
+            + quota_config.read_text())
     helper = image / "bin/aos-terrane-host"
     support.run(support.admin_command(support.PROVISION_CAPS,
         [helper, "provision", "--config", quota_config,

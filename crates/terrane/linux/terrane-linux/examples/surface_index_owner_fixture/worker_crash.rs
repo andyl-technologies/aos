@@ -169,11 +169,15 @@ pub(super) fn recover(
         return Err("crash recovery found a resurrected canonical index".into());
     }
     if mode == "crash-refuse" {
-        if !matches!(runtime.block_on(owner.recover()), Err(error)
-            if error.kind() == io::ErrorKind::WouldBlock)
-            || fs::read(&path)? != bytes
-        {
-            return Err("owner death discarded custody of a surviving worker mapping".into());
+        match runtime.block_on(owner.recover()) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                return Err("owner death discarded custody of a surviving worker mapping".into());
+            }
+        }
+        if fs::read(&path)? != bytes {
+            return Err("cold refusal changed original durable policy bytes".into());
         }
         println!(
             "PASS forced owner death preserves exact policy while original worker mapping survives"
