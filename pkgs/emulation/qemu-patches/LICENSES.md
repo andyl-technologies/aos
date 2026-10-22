@@ -10,6 +10,13 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-pending-quantum-lender.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-pending-quantum-offer.rst` | GPL-2.0-or-later | QEMU default |
+| `plugins/crucible-pending-command.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-pending-offer.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-offer.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-pending-command.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-pending-offer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-advance-receiver.rst` | GPL-2.0-or-later | QEMU default |
 | `docs/devel/crucible-quantum-handoff-proposal.rst` | GPL-2.0-or-later | QEMU default |
 | `plugins/crucible-advance-receiver.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

@@ -26,11 +26,11 @@ COMPONENTS = (
     "shmem-callback-return", "publisher-service-transfer",
     "initial-register-read", "ram-mapping-journal", "initial-native-read",
     "advance-content", "advance-post-refusal", "advance-recipient-leaves",
-    "advance-registration", "publisher-initial-state",
+    "advance-registration", "publisher-initial-state", "pending-command", "pending-offer",
 )
 POSITIONAL_ARGUMENTS = {
     "advance-content", "advance-post-refusal", "advance-recipient-leaves",
-    "advance-registration", "publisher-initial-state",
+    "advance-registration", "publisher-initial-state", "pending-command", "pending-offer",
 }
 FULL_LINK = {
     "action-edge-post", "apic-timer-storage", "clock-storage-return",

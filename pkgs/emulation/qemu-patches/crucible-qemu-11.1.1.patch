@@ -1,8 +1,8 @@
-From f9d1c47a9ddaa3af28c4af45577b557f81d4f2ce Mon Sep 17 00:00:00 2001
+From 075832a98a67ed1768360156c793ea920d5c7a4b Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose receiver Entry and Native Initial read
- custody
+Subject: [PATCH] plugins: retain pending command custody and nonissuing offer
+ reads
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -979,6 +979,87 @@ receiver/Native-read files and their per-file license facts. Preserve all sealed
 predecessor artifacts and source/evidence manifests unchanged. This source
 artifact does not replace independent packaged/native/raw-ABI/license and full
 mandatory qualification.
+
+Current cumulative pending-command and offer scope
+
+Join the exact signed pending lender 03734f44ee50d2cfc76169b0ad5d69b9be245afe
+and nonissuing selector 5c48b36435fb0a2a5861d148d5984a1b83d544b7 with the
+signed cumulative receiver/Initial-read source. Retain both signed parent
+histories. Preserve immutable recipient copies, actual Runtime/member/session
+identity, callback ordering, interrupted read debt and independent first/post,
+attempted/consumed, producer-returned and local-consumption facts. Retain all
+eleven Source group closure checks. The selector adds busy-debt exclusion to
+member/service/root retirement and pending prepare/lend; no Original, accepting
+issuer, selected activation or CPU admission is added.
+
+The complete joined declarations measure Source 240544 and fixed floor 284390,
+with Native registry 10856, frame 288 and Initial child 88. Independently observe
+the same full floor through the exact complete configured x86 provider link in
+a separate pure-storage diagnostic executable. Preexec owner 202136, session
+15912, storage 16024 and recipient 3248 remain unchanged. Preserve every actual
+registry, mapping, retirement, resize and discard charge; no branch-local sum
+or diagnostic geometry observation grants runtime authority.
+
+Add exact Meson dependencies for the actual pending fragment, selector fragment,
+selector fixture and preexec offer fragment. Authenticate all 247 Source paths,
+248 public Ninja inputs and all 319 current literal inventory rows. Actual Meson
+selects the original 69 preexec omission classifiers; 23 new selector classifiers
+are independently rebuilt standalone evidence. Twenty-five authenticated
+standalone script sweeps are not executed by the 187 owning Source scenarios or
+the unchanged delivery helper selection. Preserve complete generated closure
+and every original detector.
+
+Rebuild all 1918 affected configured objects against the actual cumulative
+headers in 261.582446959 seconds within the existing 600-second/6 GiB bound.
+Reconstruct the genuine utility archive and 17 normal targets, including both
+system ELFs, and match 47 strong provider definitions to their actual owning
+objects. Record all 3163 materialized outputs, plus 225 explicitly unmaterialized
+other-target compile-database entries. The latter are outside the fresh cohort;
+unchanged retained objects provide link support rather than layout qualification.
+
+Complete all 18 independent validation stages on signed db3: owning units,
+25 standalone script sweeps, pending lender positive plus 28 omissions, selector
+positive plus 10 omissions, Runtime positive plus 97 omissions, 92 independently
+rebuilt preexec omissions, 47 original causal assertions, four late controls,
+three auxiliary owning positives plus 15 omissions, 19 journal cases, five
+factual QMP variants, publisher protocol and nine same-process metadata controls.
+Keep raw ordinary results distinct: 23 of 25 pass; raw deferred linkage requires
+the separately passing authenticated boundary closure, and the genuine dirty
+lifecycle mandatory refusal remains. No skipped assertion or fabricated capture
+converts either raw failure to a positive.
+
+Retain the first actual normal entry on db3a4dba7eda085062cd93beb575db16b4ad333d:
+timeout at 60.021212773 seconds under the unchanged 60-second/6 GiB body. No
+unchanged retry qualifies that tree. Separate signed correction d009060d5 bounds
+the original nine architecture writer cases to two compilers, keeps private
+outputs and deterministic proof order, and joins before the unchanged 17-case
+access sweep. All 26 generated cases, exact compiler commands, assertion
+classifiers and 30-second case limits match the original helper under the same
+configured environment. Refresh only six necessary authentication inventories.
+All 97 owning/standalone generated inputs remain byte-identical to the compiled
+cohort; the complete final-tree qualification bridge records this limited delta.
+
+The first and only unmodified normal entry on signed d009060d5 passes in
+53.514005650 seconds with normal support/provider loading, no monkeypatch or
+precomputed link arguments, and the unchanged 60-second/6 GiB limits. The sampled
+complete descendant tree peaks at RSS 339136512 bytes, virtual 728621056 bytes
+and two compilers. Compare all 103 generated normal cases: 101 are identical to
+the sealed receiver sample after exact path normalization; only the two genuine
+Main/publisher pending callback-return ordering bodies differ. Preserve all
+prior timeout, compile, diagnostic and mutation evidence separately.
+
+The cumulative source adds 345 paths, changes 984 paths and deletes none against
+the pinned upstream base. Seven additions since the prior receiver checkpoint
+are fully inventoried: five explicit GPL-2.0-or-later headers/fixtures and two
+unmarked documentation files with the QEMU GPL-2.0-or-later default. Retain every
+existing per-file license and notice; exclude generated protocol inputs, build
+outputs and evidence directories from the signed tree and atomic patch.
+
+Genuine paid Source/Runtime/receiver/module-issued children, Original producers,
+external invocation, selected activation and CPU/getter/read producer success
+remain unexecuted or unavailable. CPU admission remains ENOTSUP. Independent
+packaged/native/ABI/license and full mandatory qualification are separate from
+this configured component handoff. Exclude later CoreRR and return-post work.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -19298,6 +19379,322 @@ index 0000000000000000000000000000000000000000..25bf5c2abee0d993355e54ac9b985e61
 +This source binding alone does not prove that an external writer publishes
 +CRUCPRR2 correctly, that a matched consumer authenticates its journal, or that
 +the complete system links and runs with the supplied include directory.
+diff --git a/docs/devel/crucible-pending-quantum-lender.rst b/docs/devel/crucible-pending-quantum-lender.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..068d41a3f572282681c59380fde07c7f7113e197
+--- /dev/null
++++ b/docs/devel/crucible-pending-quantum-lender.rst
+@@ -0,0 +1,192 @@
++Pending Quantum command lender
++==============================
++
++This separate dependency extends the receiver/Entry checkpoint at
++``6f597003260a33822b0226061e0c3eeb0ae695f6``. The v6 callback tables, their
++signatures and synchronous fingerprint action remain unchanged. The new lender
++is a nominal child of the actual admitted Source, registered Runtime/member
++and installed Setup6 session. It issues no Original, Advance, execution
++permission, fresh origin, replacement guard or timer. CPU admission still
++returns ENOTSUP and selected activation remains unavailable.
++
++Actual caller and constructor contract
++-------------------------------------
++
++The genuine module's ordinary registered control callback first selects its
++actual pending Quantum branch under its retained immutable command owner. A
++preparation, reset or fingerprint branch cannot be relabelled. While that
++callback is entered it calls::
++
++    int qemu_plugin_crucible_advance_pending_command_lend_v1(
++        QemuCrucibleCommandConsumerMember *member,
++        QemuCrucibleSourcePendingCommandLender **holder, uint64_t *serial,
++        uint32_t version, size_t bytes,
++        struct qemu_plugin_crucible_pending_command_disposition_v1 *out);
++
++``holder`` and ``serial`` are distinct, initially empty canonical fields inside
++that actual paid Runtime's complete retained extent. The pending command owns
++those fields through its real Runtime relationship. Passing an arbitrary
++allocation, matching identity or decoded capacity cannot create this parent.
++The adapter selects the actual dispatch Main/control field addresses; the module
++cannot nominate copied tickets. Source independently authenticates the entered
++registration, canonical member/Runtime, process/thread and nonwrapping serial.
++It retains the receiver's actual member/service cleanup debts before the one
++recipient acquire CAS. It authenticates the complete live class-one Host cohort
++and immutable command under that installed endpoint.
++
++Only after that genuine recipient exists does Source publish the nominal
++lender into the exact Runtime fields, before any fallible copy/post. Every born
++negative remains accessible through those fields. No module Original is issued
++by this publication, its CAS or the copied cohort. If acquisition is unavailable
++before local lender birth, the fields remain empty; an acquired protocol child
++and its independent cleanup parents remain in Source even if its post refused.
++
++The module constructor must retain this nominal lender before entering or
++retaining any operation view. Its real pending Quantum branch supplies semantic
++class; the independently authenticated Source cohort supplies the existing Host
++operation's complete lender contract. The genuine Core constructor must borrow
++that same operation, preserving its existing origin, clock contract, policy and
++all cohort memberships. It must not construct an operation from an observation
++copy, a slot flag, matching command fields, the physical Main or Setup's expired
++clock. Its own independent first/post and partial Original/view birth remain
++module-owned facts, with actual cleanup authority retained before fallible
++entry. This Core/module constructor is not implemented by this QEMU dependency.
++
++Existing wake and delivery order
++--------------------------------
++
++The actual Native path is the original registered node wake descriptor:
++``qemu_plugin_register_wake_fd`` installs ``qemu_plugin_wake_fd_read`` in
++``plugins/api-system.c``. After draining, that reader publishes the RR control
++request; settled RR acknowledges at idle, and the two main-loop barrier passes
++call ``qemu_plugin_fire_control_boundary_cb`` under BQL. Its retained registered
++group enters ``control_stop_dispatch`` and the ordinary callback. That callback
++must retain this lender before physical return and the subsequent receiver.
++The immutable publication and Issued ticket must precede the wake that delivers
++this constructor. A scheduler futex wake alone requests no such Main boundary.
++
++Setup6 producer/receiver event aliases are physically retained and identified;
++this dependency supplies no event handler for them. Ringing the receiver event
++cannot substitute for the registered node wake in this implementation. The
++paired producer's protocol notifications and actual pending-command parser
++remain separate integration requirements. ENOKEY for a missing constructor is
++refusal, never proof of semantic absence or permission to execute a command.
++
++Bounded nominal borrowing
++------------------------
++
++The actual pending constructor observes its held nominal lender with::
++
++    int qemu_plugin_crucible_advance_pending_command_observe_v1(
++        QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++        uint32_t version, size_t bytes,
++        struct qemu_plugin_crucible_pending_command_observation_v1 *out);
++
++Version is 1 and size is exactly the corresponding C structure. The observation
++contains version/size, five 64-bit lender/recipient/publication/loan/ticket
++incarnations, the entire canonical 896-byte CRUCACT2 cohort and 128-byte publisher
++command. LP64 size is 1072 bytes, alignment 8. These remain public protocol bytes,
++not a QEMU private layout or an operation issuer. The nominal lender owns the
++retained recipient and its actual row views; decoding or retaining bytes alone
++retains none of those owners.
++
++Source checks complete output extents, alignment, overflow and disjointness
++from Source/preexec/session journals, mapping and canonical holder fields before
++mutation. Its exclusive inline scratch receives the bytes retained before the
++original acquire CAS. Physical Native entry, complete Source/cohort current and
++final immutable command/ticket observations bracket the copy. Each independent
++post runs after negative first; all stage statuses remain separate. An actual
++registered masked callback uses its own canonical suppression receipt rather
++than bypassing the outer Main predicate. Failed first/post withholds the usable
++observation, while the creation holder and debts remain accessible.
++
++The ordinary callback must physically return before the later receiver invokes
++its registered acquire. That receiver reuses this exact recipient; it never
++performs another acquire CAS or creates a missing pending producer. Missing
++pending construction refuses before a new child. The module's acquire retains
++its already genuine Quantum view in its true ModuleCommand and the existing
++Enter moves that exact view; Enter still creates only Advance.
++
++Physical return and retained cleanup
++------------------------------------
++
++Local return uses::
++
++    int qemu_plugin_crucible_advance_pending_command_return_v1(
++        QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++        uint32_t version, size_t bytes,
++        struct qemu_plugin_crucible_pending_command_disposition_v1 *out);
++
++The 32-byte disposition (alignment 4) contains version/size, attempted,
++retained, return_attempted and consumed 32-bit facts, then signed first/post.
++Every fact describes this local lender only, not peer consumption or completion.
++The module must return its dependent Core views/children first. Source also
++refuses while any registered module acquisition output remains, during an
++exclusive read or after an uncertain return attempt. The actual entered
++physical callback frame authenticates local consumption even when semantic
++current/Original post has failed. The sole attempt clears the exact holder and
++serial, records consumed separately, and then independently observes the
++retained Source/recipient/cohort/command. Negative post never resurrects the
++child or permits another release. Repeated consumed return in the same authentic
++physical scope reports the saved result without repeating consumption.
++
++The recipient, member/service and session cleanup parents outlive this local
++return. A held lender blocks receiver retirement and no-birth protocol return.
++An acquired protocol recipient returns its actual row views and readers before
++ReturnRequested, waits for authenticated producer consumption, then closes
++locally before parent debt is consumed, as in the separate receiver contract.
++No local lender return or copied disposition can prove any of those edges.
++
++After Main returns this implementation supplies no new cleanup frame or runtime
++operation permission. An outstanding lender remains retained until the real
++module cleanup operation and its actual Source/Native frame are integrated.
++Known id/thread, a replacement Main, callback success or an expired Setup guard
++cannot issue that authority. Missing physical joins fail closed without a
++second acquire, fabricated return or retry of a consumed destructor.
++
++Prebirth and qualification
++-------------------------
++
++The complete pending journal and its exclusive 1072-byte observation scratch
++are inline in the actual Source singleton and included by the real Source
++fixed-floor getter before birth. No preinit scratch, dynamic allocator or
++new protocol backing object is inferred as payment. Existing receiver/session
++parents retain the actual mapping, aliases and cleanup; their inventories
++remain distinct from this local child. Exact source-built complete-layout
++measurements against exact signed receiver base
++``6f597003260a33822b0226061e0c3eeb0ae695f6`` give Source 233208 bytes
++(previously 231944), a 1264-byte increase in the real fixed floor. The pending
++journal is 1264 bytes, including its 1072-byte scratch at offset 192; the journal
++starts at Source offset 12912. Member 696, service 256, receiver 1768, recipient
++3248, session 15912 and purpose storage 16024 bytes remain unchanged. No new
++Native dispatcher storage is introduced. These are process-private LP64 facts,
++not a public wire edition or evidence that a selected payer has issued them.
++A later union with other custody histories requires a new complete measurement.
++
++Actual configured Source, Native and x86/AArch64 preexec object compilation and
++literal causal controls establish only their stated component scope. Local
++geometry, immutable-byte and physical field-move leaves are not accepting owner
++fixtures. The genuine paid module constructor/Core operation, successful pending
++lender acquisition, enrolled module callbacks, deferred cleanup, RR/CPU/read
++children and class-one outcome remain unexecuted until their actual producers
++and payers join. The frozen receiver reconstruction remains unchanged.
++
++The configured object cohort has four actual objects (Source, Native, x86 and
++AArch64 preexec), compiled with the source-built configured compiler and GLib,
++at most two compilers concurrently, with 1536 observed inputs unchanged across
++the cohort. The literal preinit body passes 33 cases; its pending-copy reciprocal
++aborts if unexpectedly reached, since that fixture cannot own Source scratch.
++The legacy purpose extraction is byte-identical to the signed receiver body.
++The new controls rebuild 28 independent omissions covering span geometry,
++same-callback retry exclusion, local field consumption, complete immutable bytes
++and all independent refusing post cuts. Their positive spans and moves are local
++physical leaves, not a canonical Runtime, recipient or Original. The prior 109
++receiver omissions and separate capacity restriction also pass in this layout.
++
++The historical receiver extractor recorded one stale test hash. Independent
++comparison of all 266 signed extractor inputs reproduced the mismatch solely
++by adding back one trailing space on line 157 of the recipient-leaf test. The
++signed source and its manifests remain untouched. This checkpoint binds the
++actual signed test bytes and then the new production bytes; no historical test
++claim is strengthened by that correction. Initial compiler/command failures
++and all negative-control executions are retained in the private evidence.
+diff --git a/docs/devel/crucible-pending-quantum-offer.rst b/docs/devel/crucible-pending-quantum-offer.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..ebf82954bf30e69facfa86750edd45b033d3ad08
+--- /dev/null
++++ b/docs/devel/crucible-pending-quantum-offer.rst
+@@ -0,0 +1,112 @@
++Pending Quantum offer selection
++===============================
++
++This process-private selector supplies branch dispatch before the ordinary
++control callback attempts the nominal pending-command lender. It supplies no
++operation, Original, subscription membership, child, timer, event notification
++or ticket transition. A successful hint expires as an observation: a later
++``qemu_plugin_crucible_advance_pending_command_lend_v1`` independently checks
++and acquires the actual current recipient/cohort. The v6 receiver/Entry tables
++and v2--v5 interfaces are unchanged.
++
++Interface and owner
++-------------------
++
++``qemu_plugin_crucible_advance_pending_offer_select_v1(member, version, bytes,
++out)`` accepts version 1 and the exact 32-byte, eight-byte-aligned
++``qemu_plugin_crucible_pending_offer_selection_v1``. Its fields are two u32
++version/size words, u32 state, zero u32 reserved, u64 publication sequence and
++u64 ticket serial. State 1 selects an observed immutable class-one Issued offer
++for dispatch. State 0 reports a transient observed no-offer cut; its sequence
++and serial are zero. A refusal leaves output untouched. Neither state grants
++permission, guarantees a later lend or certifies completed work.
++
++The Native adapter supplies its actual canonical Main/control ticket fields.
++Source authenticates the registered member, transferred service Runtime,
++installed publisher lender and actually entered callback frame. The charged
++Source root contains one exclusive observation journal. Exact output geometry
++is checked against the complete Runtime, Source, preexec and mapped session
++journals, including the canonical pending lender holder/serial fields, before
++any caller output changes. Busy observation excludes member/service/root
++retirement and recipient preparation/lend. It creates no new physical child;
++the actual calling Main retains its parent Runtime throughout this local read.
++
++The journal binds canonical addresses, process, thread, nonwrapping local
++serial and the same Main/control serials. Source and Native observations run
++outside the Source registry mutex. The preexec reciprocal accepts only that
++exact canonical journal and installed session; this is not an arbitrary
++mapped-buffer public reader.
++
++Bounded observation and return
++------------------------------
++
++One observation loads publication sequence and ticket, refuses an odd
++publication sequence, then copies all 512 naturally aligned atomic words of
++the actual 4096-byte session region once. It performs no retry. Literal public
++codecs validate immutable header and state-specific records. Header identity
++must corroborate the actual retained purpose/session. The final reserved span
++2816..4095 remains zero. The independent final cut rereads every copied word
++and the original sequence/ticket, including after a refused decode; an early
++odd read still gets the final sequence/ticket cut. Failed parent identity
++prevents further mapping access.
++
++An Issued offer requires a clean complete cohort, class-one primary,
++positive one-unit required inventory with no completed required work,
++permission phase 1 and the actual purpose account/process/capability/
++reservation correlation. Those checks classify bytes under existing service
++custody; they do not issue that operation. Acquired, ReturnRequested,
++Consumed and Withdrawn phases refuse. Busy, malformed, stale or refused
++observations never become absence.
++
++An empty mutable span reports no-offer only when the actual session has no
++recipient acquisition history or live recipient debt. Closed bytes report
++no-offer only with the actual retained recipient's acquired/returned/
++consumed/closed journal, closed row-view inventory, once-only return facts,
++matching immutable publication and return words, and actual cached terminal
++consumption. A syntactically valid Closed vector without that journal refuses.
++
++The local read records attempted, entered, physically returned and consumed
++separately. Independent Native, Source, installed-session and final statuses
++remain separate from first refusal. Local return uses physical identity,
++without requiring a successful semantic post. A returned local read may be
++consumed after a negative post, but publishes no usable selection. An entered
++read without a known physical return or a failed identity retains busy debt;
++there is no retry destructor or later cleanup authority inferred from Main
++identity. A second local return is refused. Neither reader consumption nor a
++Closed ticket establishes producer membership or semantic progress.
++
++Actual layout and evidence scope
++--------------------------------
++
++The exact signed baseline is
++``03734f44ee50d2cfc76169b0ad5d69b9be245afe`` (tree
++``6a7bbc0353ea3b26b7732dc0fb5cae34bd9f9f81``). Its Source root is 233208
++bytes. The configured layout with this reader is 238600 bytes: +5392 in the
++actual Source fixed floor, which already begins with ``sizeof(startup_source)``
++before preexec births. The journal starts at Source offset 14176 and contains
++5288-byte observation storage at offset 104, including the full 4096-byte
++atomic word copy and complete decoded views. All these layouts align to eight
++bytes. The public selection is 32 bytes. No dynamic allocator or inferred
++capacity payer is added.
++
++The existing 1264-byte pending lender, 696-byte member, 256-byte module
++service, 1768-byte receiver, 3248-byte preexec recipient, 15912-byte session
++and 16024-byte session storage purpose remain unchanged relative to that
++baseline. This is branch-local geometry, not a measurement of a later union
++with independent Runtime/construction changes. Every complete union must
++remeasure its actual Source root/floor before birth.
++
++Configured production checks compile actual Source, Native and both x86_64
++and AArch64 preexec objects using their source-built compiler/GLib inputs.
++The literal preinit tests exercise local mutable-span copy/final/decode leaves,
++including positive Issued and empty byte vectors, and refuse bare Closed
++bytes. They never enter a canonical paid Source/session/Main constructor.
++Separately rebuilt omissions retain unchanged assertions. A separate literal
++Source test exercises local return facts and independent posts whose every
++owner dependency refuses; it accepts no owner or Original.
++
++Genuine installed paid Source/member/session selector invocation, the actual
++external module pending constructor and retained Quantum Original remain
++unexecuted. RR/CPU admission remains ENOTSUP. No selected activation,
++producer-operation membership, semantic outcome or completed work-unit
++publication is qualified by these component checks.
 diff --git a/docs/devel/crucible-publisher-construction.rst b/docs/devel/crucible-publisher-construction.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..f9bec08b9355cfe5648f268bdc3ea4b741b5a05d
@@ -69865,7 +70262,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..721f211a3fd911162abd96c3a5fc0d726a14474c 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..4e41791279a4a896a8d7599c919425c2b30c900e 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -72644,7 +73041,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..721f211a3fd911162abd96c3a5fc0d72
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3237,4416 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3237,4498 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -76323,6 +76720,88 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..721f211a3fd911162abd96c3a5fc0d72
 +typedef struct QemuCrucibleSourceAdvanceEntry QemuCrucibleSourceAdvanceEntry;
 +typedef struct QemuCrucibleSourceAdvanceUse QemuCrucibleSourceAdvanceUse;
 +typedef struct QemuCrucibleNativeAdvanceOutcome QemuCrucibleNativeAdvanceOutcome;
++
++/* Retained process-private lender for the actual pending Quantum constructor.
++ * The ordinary registered control callback acquires this child before it
++ * returns. The actual admitted Source/session owns its immutable command and
++ * cohort. Neither this lender nor its copied observations issue an Original.
++ */
++typedef struct QemuCrucibleSourcePendingCommandLender
++    QemuCrucibleSourcePendingCommandLender;
++
++/* Nonissuing, transient dispatch hint under the real entered control frame.
++ * State0 is proven no-offer, state1 a class-one Issued offer. Refusal never
++ * publishes output. Every later nominal lend independently validates anew.
++ */
++struct qemu_plugin_crucible_pending_offer_selection_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint32_t state;
++    uint32_t reserved;
++    uint64_t publication_sequence;
++    uint64_t ticket_serial;
++};
++
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_pending_offer_select_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_offer_selection_v1 *out);
++
++struct qemu_plugin_crucible_pending_command_disposition_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint32_t attempted;
++    uint32_t retained;
++    uint32_t return_attempted;
++    uint32_t consumed;
++    int32_t first_status;
++    int32_t post_status;
++};
++
++/* Canonical public protocol bytes, not native cohort layouts. These copies
++ * corroborate the operation independently retained under the nominal lender.
++ * Retaining bytes, matching them or decoding class 1 issues no operation.
++ */
++struct qemu_plugin_crucible_pending_command_observation_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t lender_serial;
++    uint64_t recipient_serial;
++    uint64_t publication_sequence;
++    uint64_t loan_generation;
++    uint64_t ticket_serial;
++    uint8_t cohort[896];            /* complete CRUCACT2 */
++    uint8_t command[128];           /* complete publisher command v1 */
++};
++
++/* Both empty output fields must lie in the actual retained callback Runtime.
++ * Every born output is published before the independent post, including a
++ * negative post. The module retains that exact holder before its genuine Core
++ * Quantum constructor enters the existing class-one operation; no new origin,
++ * replacement guard or timer may be inferred from this API.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_pending_command_lend_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleSourcePendingCommandLender **holder, uint64_t *serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_pending_command_observe_v1(
++    QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_observation_v1 *out);
++/* Factual local return requires the actual entered callback frame. It may
++ * consume a born-negative lender without a fresh Original query. No cleanup
++ * frame is fabricated after Main returns: that debt remains retained until a
++ * genuine entered cleanup producer is joined. Consumed return never repeats.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_pending_command_return_v1(
++    QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out);
 +
 +struct qemu_plugin_crucible_advance_disposition_v1 {
 +    uint32_t schema_version;       /* 1 */
@@ -80928,10 +81407,10 @@ index 0000000000000000000000000000000000000000..64ef5e8fafd14be09356edde9f5edf1e
 +#endif /* QEMU_CRUCIBLE_PREEXEC_SETUP_H */
 diff --git a/include/qemu/crucible-process-purpose.h b/include/qemu/crucible-process-purpose.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b0159cb17a120b330dca4914c18c34a2a6383d30
+index 0000000000000000000000000000000000000000..54909d31e1e967a7435c1f50aa2339490af3341d
 --- /dev/null
 +++ b/include/qemu/crucible-process-purpose.h
-@@ -0,0 +1,887 @@
+@@ -0,0 +1,902 @@
 +/*
 + * Fixed process-purpose carrier syntax and selected Setup edition
 + *
@@ -81617,6 +82096,21 @@ index 0000000000000000000000000000000000000000..b0159cb17a120b330dca4914c18c34a2
 +    QemuCruciblePublisherSessionLender *lender,
 +    QemuCruciblePublisherRecipient *recipient,
 +    QemuCrucibleSourceAdvanceReceiver *receiver, const void *output, size_t bytes);
++/* Exact charged Source pending-lender scratch only, under the same retained
++ * recipient. The reciprocal authenticates every writable field before copy.
++ */
++int qemu_crucible_preexec_publisher_recipient_pending_copy_v1(
++    QemuCruciblePublisherSessionLender *session,
++    QemuCruciblePublisherRecipient *recipient,
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    uint8_t *cohort, uint8_t *command, uint64_t *recipient_serial,
++    int *first, int *post);
++int qemu_crucible_source_advance_pending_copy_current_v1(
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    uint8_t *cohort, uint8_t *command, uint64_t *recipient_serial,
++    int *first, int *post);
++int qemu_crucible_preexec_publisher_pending_output_v1(
++    QemuCruciblePublisherSessionLender *lender, const void *output, size_t bytes);
 +int qemu_crucible_preexec_publisher_recipient_current_v1(
 +    QemuCruciblePublisherSessionLender *lender,
 +    QemuCruciblePublisherRecipient *recipient,
@@ -81843,10 +82337,10 @@ index 0000000000000000000000000000000000000000..aa8fa71be9f5904b9e6329a79f9b40c5
 +#endif /* QEMU_CRUCIBLE_PROCESS_H */
 diff --git a/include/qemu/crucible-publisher-protocol.h b/include/qemu/crucible-publisher-protocol.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc464a6d96266b05c6077794a37f5f3984c421c0
+index 0000000000000000000000000000000000000000..031dbf6d99c5952cb56cbce2e7e8aa9ef45a24b5
 --- /dev/null
 +++ b/include/qemu/crucible-publisher-protocol.h
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,136 @@
 +/*
 + * Proposed publisher-region syntax; decoded views issue no ownership.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -81936,6 +82430,37 @@ index 0000000000000000000000000000000000000000..fc464a6d96266b05c6077794a37f5f39
 +    uint32_t consumed_mask;
 +    uint32_t born_mask;
 +} QemuCruciblePublisherTerminalView;
++
++/* Process-private selector scratch inside the prepaid Source. No public wire
++ * region contains this C layout, and no copy here owns an operation or view.
++ */
++typedef struct QemuCruciblePublisherOfferObservation {
++    uint64_t words[QEMU_CRUCIBLE_PUBLISHER_REGION_BYTES / sizeof(uint64_t)];
++    QemuCruciblePublisherHeaderView header;
++    QemuCruciblePublisherPublicationView publication;
++    QemuCruciblePublisherReturnView returned;
++    QemuCruciblePublisherTerminalView terminal;
++    uint64_t sequence;
++    uint64_t ticket;
++    uint32_t state;
++    int first_status;
++    int post_status;
++    int identity_status;
++    int final_status;
++    bool attempted;
++    bool entered;
++    bool read_returned;
++    bool copied;
++} QemuCruciblePublisherOfferObservation;
++
++int qemu_crucible_preexec_publisher_offer_observe_v1(
++    QemuCruciblePublisherSessionLender *lender,
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCruciblePublisherOfferObservation *observation);
++int qemu_crucible_source_pending_offer_current_v1(
++    QemuCruciblePublisherSessionLender *lender,
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCruciblePublisherOfferObservation *observation);
 +
 +/* Bounded canonical byte validation only. Input must be caller-owned stable
 + * copied bytes, not a concurrently written mapped span. Exact input lengths,
@@ -89021,10 +89546,10 @@ index e7479084726c661e75447fd1330ee7cdba888e88..db6fbd5c8a924de2dfe36f8033694076
  }
  
 diff --git a/meson.build b/meson.build
-index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..5d6e6e00447a0353fad54a603d4a4e7d992b14b6 100644
+index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..46ec6215423333f4d8e252171e5f8ceff145a61a 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -3434,6 +3434,27 @@ foreach target: target_dirs
+@@ -3434,6 +3434,28 @@ foreach target: target_dirs
    target_configs_h += config_target_h[target]
    target_configs_h += config_devices_h.get(target, [])
  endforeach
@@ -89038,6 +89563,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..5d6e6e00447a0353fad54a603d4a4e7d
 +                 'system/crucible-preexec-publisher-storage.inc.h',
 +                 'system/crucible-preexec-publisher-session.inc.h',
 +                 'system/crucible-preexec-publisher-recipient.inc.h',
++                 'system/crucible-preexec-publisher-offer.inc.h',
 +                 'include/qemu/crucible-publisher-protocol.h',
 +                 'include/qemu/crucible-process-purpose.h',
 +                 'plugins/crucible-device-workspace.c',
@@ -89052,7 +89578,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..5d6e6e00447a0353fad54a603d4a4e7d
  genh += custom_target('config-poison.h',
                        input: [target_configs_h],
                        output: 'config-poison.h',
-@@ -4410,10 +4431,14 @@ foreach target : target_dirs
+@@ -4410,10 +4432,14 @@ foreach target : target_dirs
                   build_by_default: false)
  
    if target.endswith('-softmmu')
@@ -108360,10 +108886,10 @@ index 0000000000000000000000000000000000000000..2b5716bbb4899deb976ee9e58f597ced
 +#endif
 diff --git a/plugins/crucible-advance-receiver.inc.h b/plugins/crucible-advance-receiver.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836340a413a
+index 0000000000000000000000000000000000000000..08c4ae60426a93d4f9dc4d6997ef2f0ad215f24b
 --- /dev/null
 +++ b/plugins/crucible-advance-receiver.inc.h
-@@ -0,0 +1,1025 @@
+@@ -0,0 +1,1103 @@
 +/*
 + * Separate retained receiver for an asynchronous scheduler command.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -109058,7 +109584,8 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +    if (status) {
 +        return status;
 +    }
-+    if (receiver->recipient ||
++    if (startup_source.pending_command_lender.held ||
++        receiver->recipient ||
 +        (receiver->acquire_entered && !receiver->recipient_closed) ||
 +        receiver->enter_attempted || !advance_module_outputs_absent(receiver) ||
 +        (receiver->callback.entered && !receiver->callback.returned)) {
@@ -109138,12 +109665,15 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +}
 +#endif
 +
-+int qemu_crucible_source_advance_receive_v1(
++int qemu_crucible_source_advance_pending_prepare_v1(
++    QemuCrucibleCommandConsumerMember *requested_member,
 +    QemuCrucibleNativeInvocationTicket *main,
 +    QemuCrucibleNativeInvocationTicket *control)
 +{
 +#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
 +    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    QemuCrucibleSourcePendingCommandLender *pending =
++        &startup_source.pending_command_lender;
 +    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
 +    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
 +    QemuCruciblePublisherModuleService *service = &startup_source.publisher_module;
@@ -109152,16 +109682,28 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +    int first;
 +    int post;
 +
-+    /* Old editions have no asynchronous receiver, without any fallback issuer. */
++    if (requested_member != member) {
++        return -EPERM;
++    }
++    /* A registered callback must request its genuine pending constructor. */
 +    if (command_member_advance_callbacks_absent(&member->advance)) {
-+        return 0;
++        return -ENOTSUP;
 +    }
 +    first = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
 +    if (first) {
 +        return first;
 +    }
-+    if (receiver->held) {
-+        return advance_receiver_observe_no_birth_terminal(receiver, main, control);
++    if (pending->canonical_owner != pending ||
++        !pending->attempted ||
++        pending->held ||
++        pending->consumed ||
++        pending->receiver != receiver ||
++        pending->main_serial != main->serial ||
++        pending->control_serial != control->serial) {
++        return -EPERM;
++    }
++    if (receiver->held || startup_source.pending_offer_read.busy) {
++        return -EBUSY;
 +    }
 +    qemu_thread_get_self(&thread);
 +    qemu_mutex_lock(&commands->mutex);
@@ -109212,32 +109754,92 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +    if (!first) {
 +        first = advance_binding_install(receiver);
 +    }
-+    if (!first) {
-+        first = advance_module_acquire(receiver);
-+    } else if (receiver->recipient) {
-+        receiver->module_not_entered = true;
-+    }
-+    if (!first) {
-+        first = advance_module_enter(receiver);
-+    }
 +    /* This physical Main post neither substitutes for module Original post nor
 +     * erases the acquired protocol borrower if any semantic check refused. */
 +    if (receiver->recipient) {
 +        post = advance_receiver_protocol_post(receiver,
-+            &receiver->receive_native_post_status,
-+            &receiver->receive_recipient_post_status,
-+            &receiver->receive_cohort_post_status,
-+            &receiver->receive_publication_final_status);
++            &pending->prepare_native_post_status,
++            &pending->prepare_recipient_post_status,
++            &pending->prepare_cohort_post_status,
++            &pending->prepare_publication_final_status);
 +    } else {
 +        post = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
-+        receiver->receive_native_post_status = post;
++        pending->prepare_native_post_status = post;
 +    }
++    pending->prepare_first_status = first;
++    pending->prepare_post_status = post;
 +    receiver->first_status = first;
 +    receiver->post_status = post;
 +    if (!receiver->recipient && !receiver->acquire_entered && !receiver->enter_attempted) {
 +        receiver->physical_status = advance_receiver_drop_read(receiver);
 +    }
 +    return first ? first : post ? post : receiver->physical_status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_advance_receive_v1(
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    QemuCrucibleSourcePendingCommandLender *pending =
++        &startup_source.pending_command_lender;
++    int first;
++    int post;
++
++    if (command_member_advance_callbacks_absent(&startup_source.command_member.advance)) {
++        return 0;
++    }
++    first = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
++    if (first) {
++        return first;
++    }
++    if (receiver->held && receiver->main_returned) {
++        return advance_receiver_observe_no_birth_terminal(receiver, main, control);
++    }
++    /* A missing pending constructor is known before any new physical child.
++     * The earlier ordinary callback alone can acquire this recipient; receive
++     * never substitutes a later CAS or creates a semantic operation. */
++    if (!receiver->held) {
++        return -ENOKEY;
++    }
++    if (receiver->main != main || receiver->control != control ||
++        pending->receiver != receiver || !pending->attempted ||
++        !pending->producer_returned || receiver->acquire_entered) {
++        return -EPERM;
++    }
++    first = receiver->first_status ? receiver->first_status : receiver->post_status;
++    if (!first) {
++        first = pending->first_status ? pending->first_status : pending->post_status;
++    }
++    if (!first && pending->held && !pending->return_attempted && !pending->consumed) {
++        first = advance_module_acquire(receiver);
++        if (!first) {
++            first = advance_module_enter(receiver);
++        }
++    } else {
++        /* No registered acquire body ran. A held pending lender still blocks
++         * factual protocol return; this fact cannot erase its module debt. */
++        receiver->module_not_entered = true;
++        if (!first) {
++            first = -ENOKEY;
++        }
++    }
++    post = advance_receiver_protocol_post(receiver,
++        &receiver->receive_native_post_status,
++        &receiver->receive_recipient_post_status,
++        &receiver->receive_cohort_post_status,
++        &receiver->receive_publication_final_status);
++    if (!receiver->first_status) {
++        receiver->first_status = first;
++    }
++    if (!receiver->post_status) {
++        receiver->post_status = post;
++    }
++    return first ? first : post;
 +#else
 +    return -ENOTSUP;
 +#endif
@@ -109258,7 +109860,8 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +        return status;
 +    }
 +    tail = &receiver->no_birth_tail;
-+    if (lender != receiver->lender || recipient != receiver->recipient || !recipient ||
++    if (startup_source.pending_command_lender.held ||
++        lender != receiver->lender || recipient != receiver->recipient || !recipient ||
 +        first != receiver->first_status || post != receiver->post_status ||
 +        tail->receiver != receiver || !tail->main || !tail->control ||
 +        !tail->entered || tail->returned ||
@@ -109356,7 +109959,8 @@ index 0000000000000000000000000000000000000000..f6ff93d892e96453a9397bbfa3b37836
 +        }
 +        receiver->entry.held = false;
 +    }
-+    if (receiver->recipient && !receiver->enter_attempted &&
++    if (receiver->recipient && !startup_source.pending_command_lender.held &&
++        !receiver->enter_attempted &&
 +        (receiver->module_not_entered || receiver->acquire_absent)) {
 +        QemuCrucibleAdvanceNoBirthTail *tail = &receiver->no_birth_tail;
 +
@@ -119639,10 +120243,10 @@ index 0000000000000000000000000000000000000000..e127890106b42778422ee1a28f97090d
 +}
 diff --git a/plugins/crucible-command-membership.inc.h b/plugins/crucible-command-membership.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..d7f122f18baa3931392258e8c4dea516239d0356
+index 0000000000000000000000000000000000000000..aedbcba920a4e38db07fd97b69d5579ba420ab26
 --- /dev/null
 +++ b/plugins/crucible-command-membership.inc.h
-@@ -0,0 +1,684 @@
+@@ -0,0 +1,685 @@
 +/*
 + * Nominal membership of the actual contained command consumer.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -120269,7 +120873,8 @@ index 0000000000000000000000000000000000000000..d7f122f18baa3931392258e8c4dea516
 +    if (!status && *holder != member) {
 +        status = -ESTALE;
 +    }
-+    if (!status && (member->transition_active || member->action_users ||
++    if (!status && (startup_source.pending_offer_read.busy ||
++        member->transition_active || member->action_users ||
 +        member->advance_users || member->receive_users ||
 +        member->park_request_users || member->park_writer_users ||
 +        member->park_writer.invoking || member->park_writer.uncertain)) {
@@ -122144,10 +122749,10 @@ index 0000000000000000000000000000000000000000..c59aa6c7a3c1078aa88a3019b2104cca
 +#endif
 diff --git a/plugins/crucible-control-stop.inc.h b/plugins/crucible-control-stop.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9573fc1d6bd918d72ebf19885d2b924e4a1777a5
+index 0000000000000000000000000000000000000000..ac29e6198470fefd6e6b5c238b4e7c430cf1b0d2
 --- /dev/null
 +++ b/plugins/crucible-control-stop.inc.h
-@@ -0,0 +1,605 @@
+@@ -0,0 +1,636 @@
 +/*
 + * Actual control invocation and Stop effect journals
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -122332,6 +122937,30 @@ index 0000000000000000000000000000000000000000..9573fc1d6bd918d72ebf19885d2b924e
 +    return qemu_plugin_crucible_source_control_dispatch_current_v1(
 +        control_stop_storage.dispatch.callback,
 +        control_stop_storage.dispatch.userdata);
++}
++
++int qemu_plugin_crucible_advance_pending_offer_select_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_offer_selection_v1 *out)
++{
++    return qemu_crucible_source_pending_offer_select_v1(
++        member, &control_stop_storage.main.ticket,
++        &control_stop_storage.dispatch.callback_ticket, version, bytes, out);
++}
++
++int qemu_plugin_crucible_advance_pending_command_lend_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleSourcePendingCommandLender **holder, uint64_t *serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out)
++{
++    /* Select the actual dispatch fields here. A module cannot nominate a
++     * copied Main ticket or prolong a returned callback by passing one. */
++    return qemu_crucible_source_advance_pending_lend_v1(
++        member, &control_stop_storage.main.ticket,
++        &control_stop_storage.dispatch.callback_ticket,
++        holder, serial, version, bytes, out);
 +}
 +
 +int qemu_plugin_crucible_source_action_call_current_v1(QemuCrucibleMainControlBorrow *main)
@@ -122708,9 +123337,16 @@ index 0000000000000000000000000000000000000000..9573fc1d6bd918d72ebf19885d2b924e
 +             * command. The distinct async receiver then authenticates that
 +             * actual owner while the same Main remains CALLING. */
 +            control_stop_storage.dispatch.advance_status =
-+                qemu_crucible_source_advance_receive_v1(
++                qemu_crucible_source_advance_pending_callback_return_v1(
 +                    &control_stop_storage.main.ticket,
 +                    &control_stop_storage.dispatch.callback_ticket);
++            int receive_status = qemu_crucible_source_advance_receive_v1(
++                    &control_stop_storage.main.ticket,
++                    &control_stop_storage.dispatch.callback_ticket);
++
++            if (!control_stop_storage.dispatch.advance_status) {
++                control_stop_storage.dispatch.advance_status = receive_status;
++            }
 +            control_stop_storage.dispatch.advance_handoff_status =
 +                qemu_crucible_source_advance_handoff_v1(
 +                    &control_stop_storage.main.ticket,
@@ -183586,6 +184222,668 @@ index 0000000000000000000000000000000000000000..56e7923907c8519e4999fb98608e1136
 +    return -ENOTSUP;
 +#endif
 +}
+diff --git a/plugins/crucible-pending-command.inc.h b/plugins/crucible-pending-command.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bd0eb595fc204ba66f06f4cba25687f2da77a68d
+--- /dev/null
++++ b/plugins/crucible-pending-command.inc.h
+@@ -0,0 +1,443 @@
++/*
++ * Actual pending-command cohort lender under the registered callback Runtime.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static bool pending_runtime_field(uintptr_t base, uint64_t extent,
++                                  const void *field, size_t bytes, size_t alignment)
++{
++    uintptr_t address = (uintptr_t)field;
++
++    return base && extent && extent <= UINTPTR_MAX - base && field && bytes &&
++        address % alignment == 0 && bytes <= UINTPTR_MAX - address &&
++        address >= base && bytes <= extent && address - base <= extent - bytes;
++}
++
++static bool pending_span_geometry(uint32_t version, size_t bytes,
++                                   const void *out, size_t expected, size_t alignment,
++                                   const void *holder, const void *serial)
++{
++    uintptr_t address = (uintptr_t)out;
++
++    return version == 1 && bytes == expected && out && address % alignment == 0 &&
++        bytes <= UINTPTR_MAX - address &&
++        !callback_child_output_overlap(out, bytes, holder, sizeof(void *)) &&
++        !callback_child_output_overlap(out, bytes, serial, sizeof(uint64_t));
++}
++
++static bool pending_attempt_same_frame(QemuCrucibleSourcePendingCommandLender *lender,
++                                       uint64_t main_serial, uint64_t control_serial)
++{
++    return lender->attempted && lender->main_serial == main_serial &&
++        lender->control_serial == control_serial;
++}
++
++static int pending_output_geometry(uint32_t version, size_t bytes,
++                                    const void *out, size_t expected, size_t alignment,
++                                    const void *holder, const void *serial)
++{
++    int status;
++
++    if (!pending_span_geometry(version, bytes, out, expected, alignment, holder, serial)) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = callback_child_output_conflicts_locked(out, bytes) ? -EINVAL : 0;
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (!status) {
++        status = qemu_crucible_preexec_publisher_pending_output_v1(
++            startup_source.publisher_lender, out, bytes);
++    }
++    return status;
++}
++
++static int pending_lender_identity(QemuCrucibleSourcePendingCommandLender *lender,
++                                   uint64_t serial, bool consumed)
++{
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    int status;
++
++    if (lender != &startup_source.pending_command_lender ||
++        lender->canonical_owner != lender || !lender->attempted ||
++        lender->receiver != receiver || !serial || serial == UINT64_MAX ||
++        serial != lender->serial || lender->process != getpid() ||
++        !qemu_thread_is_self(&lender->thread) ||
++        lender->receiver_serial != receiver->serial ||
++        (consumed ? (!lender->consumed || lender->held || !lender->return_attempted) :
++                    (!lender->held || lender->consumed || lender->return_attempted))) {
++        return -ESTALE;
++    }
++    status = advance_receiver_identity(receiver);
++    if (status) {
++        return status;
++    }
++    if (!pending_runtime_field(member->runtime_base, member->runtime_extent,
++                               lender->holder, sizeof(*lender->holder),
++                               _Alignof(*lender->holder)) ||
++        !pending_runtime_field(member->runtime_base, member->runtime_extent,
++                               lender->serial_holder, sizeof(*lender->serial_holder),
++                               _Alignof(*lender->serial_holder))) {
++        return -ESTALE;
++    }
++    if (consumed) {
++        return *lender->holder || *lender->serial_holder ? -ESTALE : 0;
++    }
++    return *lender->holder == lender && *lender->serial_holder == serial ? 0 : -ESTALE;
++}
++
++static int pending_physical_current(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    QemuCrucibleSourceAdvanceReceiver *receiver = lender->receiver;
++    int status;
++
++    if (receiver->main_returned) {
++        return -EPERM;
++    }
++    if (receiver->callback.entered && !receiver->callback.returned) {
++        status = qemu_plugin_crucible_native_advance_callback_current_v1(
++            receiver->main, receiver->control, &receiver->callback.mask);
++    } else {
++        status = qemu_plugin_crucible_native_advance_entry_current_v1(
++            receiver->main, receiver->control);
++    }
++    if (!status && (lender->main_serial != receiver->main->serial ||
++        lender->control_serial != receiver->control->serial)) {
++        status = -ESTALE;
++    }
++    return status;
++}
++
++static void pending_preserve_status(int *saved, int status)
++{
++    if (!*saved) {
++        *saved = status;
++    }
++}
++
++/* Every real cut runs independently; a masked callback uses its exact
++ * physical producer rather than calling and bypassing the outer Main check. */
++static int pending_protocol_cut(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    QemuCrucibleSourceAdvanceReceiver *receiver = lender->receiver;
++
++    lender->cut_native_status = pending_physical_current(lender);
++    lender->cut_recipient_status = qemu_crucible_preexec_publisher_recipient_current_v1(
++        receiver->lender, receiver->recipient, receiver);
++    lender->cut_cohort_status = advance_receiver_identity(receiver);
++    if (!lender->cut_cohort_status) {
++        lender->cut_cohort_status = advance_publication_current(receiver);
++    }
++    lender->cut_final_status = qemu_crucible_preexec_publisher_recipient_current_v1(
++        receiver->lender, receiver->recipient, receiver);
++    pending_preserve_status(&lender->native_post_status, lender->cut_native_status);
++    pending_preserve_status(&lender->recipient_post_status, lender->cut_recipient_status);
++    pending_preserve_status(&lender->cohort_post_status, lender->cut_cohort_status);
++    pending_preserve_status(&lender->publication_final_status, lender->cut_final_status);
++    return lender->cut_native_status ? lender->cut_native_status :
++        lender->cut_recipient_status ? lender->cut_recipient_status :
++        lender->cut_cohort_status ? lender->cut_cohort_status : lender->cut_final_status;
++}
++
++static int pending_lender_current(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    int first = pending_lender_identity(lender, lender->serial, false);
++    int post;
++
++    if (first) {
++        return first;
++    }
++    post = pending_protocol_cut(lender);
++    return post ? post : lender->first_status ? lender->first_status : lender->post_status;
++}
++
++static void pending_disposition(QemuCrucibleSourcePendingCommandLender *lender,
++                                struct qemu_plugin_crucible_pending_command_disposition_v1 *out,
++                                int first, int post)
++{
++    *out = (struct qemu_plugin_crucible_pending_command_disposition_v1) {
++        .schema_version = 1,
++        .struct_size = sizeof(*out),
++        .attempted = lender->attempted,
++        .retained = lender->held,
++        .return_attempted = lender->return_attempted,
++        .consumed = lender->consumed,
++        .first_status = first,
++        .post_status = post,
++    };
++}
++
++static void pending_consume_local(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    lender->return_attempted = true;
++    *lender->holder = NULL;
++    *lender->serial_holder = 0;
++    lender->held = false;
++    lender->consumed = true;
++}
++
++static int pending_copy(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    int first;
++
++    if (lender->observing) {
++        return -EBUSY;
++    }
++    lender->observing = true;
++    lender->scratch.schema_version = 1;
++    lender->scratch.struct_size = sizeof(lender->scratch);
++    lender->scratch.lender_serial = lender->serial;
++    lender->scratch.publication_sequence = lender->receiver->publication.sequence;
++    lender->scratch.loan_generation = lender->receiver->publication.loan_generation;
++    lender->scratch.ticket_serial = lender->receiver->publication.ticket_serial;
++    first = qemu_crucible_preexec_publisher_recipient_pending_copy_v1(
++        lender->receiver->lender, lender->receiver->recipient, lender->receiver,
++        lender->scratch.cohort, lender->scratch.command, &lender->scratch.recipient_serial,
++        &lender->copy_first_status, &lender->copy_post_status);
++    lender->observing = false;
++    return first;
++}
++#endif
++
++int qemu_crucible_source_advance_pending_copy_current_v1(
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    uint8_t *cohort, uint8_t *command, uint64_t *recipient_serial,
++    int *first, int *post)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
++    int status = pending_lender_identity(lender, lender->serial, false);
++
++    if (status) {
++        return status;
++    }
++    if (receiver != lender->receiver || !lender->observing ||
++        cohort != lender->scratch.cohort || command != lender->scratch.command ||
++        recipient_serial != &lender->scratch.recipient_serial ||
++        first != &lender->copy_first_status || post != &lender->copy_post_status) {
++        return -EPERM;
++    }
++    return pending_physical_current(lender);
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_advance_pending_lend_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control,
++    QemuCrucibleSourcePendingCommandLender **holder, uint64_t *serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
++    int first;
++    int post;
++
++    if (member != &startup_source.command_member) {
++        return -EPERM;
++    }
++    first = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
++    if (first) {
++        return first;
++    }
++    first = pending_output_geometry(version, bytes, out, sizeof(*out),
++                                     _Alignof(*out), holder, serial);
++    if (first) {
++        return first;
++    }
++    first = qemu_crucible_preexec_publisher_pending_output_v1(
++        startup_source.publisher_lender, holder, sizeof(*holder));
++    if (!first) {
++        first = qemu_crucible_preexec_publisher_pending_output_v1(
++            startup_source.publisher_lender, serial, sizeof(*serial));
++    }
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first && (!command_member_advance_callbacks_valid(&member->advance) ||
++        !command_member_advance_receiver_callbacks_valid(&member->advance_receiver) ||
++        !pending_runtime_field(member->runtime_base, member->runtime_extent, holder,
++                               sizeof(*holder), _Alignof(*holder)) ||
++        !pending_runtime_field(member->runtime_base, member->runtime_extent, serial,
++                               sizeof(*serial), _Alignof(*serial)) ||
++        callback_child_output_overlap(holder, sizeof(*holder), serial, sizeof(*serial)) ||
++        callback_child_output_conflicts_locked(holder, sizeof(*holder)) ||
++        callback_child_output_conflicts_locked(serial, sizeof(*serial)))) {
++        first = -EINVAL;
++    }
++    if (!first && (*holder || *serial || lender->held || lender->observing ||
++        startup_source.pending_offer_read.busy || startup_source.advance_holder ||
++        lender->serial >= UINT64_MAX - 1 ||
++        pending_attempt_same_frame(lender, main->serial, control->serial))) {
++        first = -EBUSY;
++    }
++    if (!first) {
++        uint64_t next_serial = lender->serial + 1;
++
++        *lender = (QemuCrucibleSourcePendingCommandLender) {
++            .canonical_owner = lender,
++            .holder = holder,
++            .serial_holder = serial,
++            .receiver = &startup_source.advance_receiver,
++            .process = getpid(),
++            .serial = next_serial,
++            .main_serial = main->serial,
++            .control_serial = control->serial,
++            .attempted = true,
++        };
++        qemu_thread_get_self(&lender->thread);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    first = qemu_crucible_source_advance_pending_prepare_v1(member, main, control);
++    lender->receiver_serial = lender->receiver->serial;
++    if (!first) {
++        /* Publish real local custody before copy or independent post. The
++         * receiver already holds its own Runtime/session cleanup parents. */
++        lender->held = true;
++        *holder = lender;
++        *serial = lender->serial;
++        first = pending_copy(lender);
++        lender->recipient_serial = lender->scratch.recipient_serial;
++        post = pending_lender_current(lender);
++    } else {
++        post = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
++    }
++    lender->first_status = first;
++    lender->post_status = post;
++    pending_disposition(lender, out, first, post);
++    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_advance_pending_callback_return_v1(
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    int status;
++
++    if (!receiver->held || receiver->main_returned) {
++        return 0;
++    }
++    if (receiver->main != main || receiver->control != control ||
++        lender->receiver != receiver || lender->receiver_serial != receiver->serial ||
++        !lender->attempted || lender->producer_returned) {
++        return -EPERM;
++    }
++    status = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
++    lender->callback_return_status = status;
++    if (!status) {
++        lender->producer_returned = true;
++    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_advance_pending_command_observe_v1(
++    QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_observation_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    int first = pending_lender_identity(lender, serial, false);
++    int post;
++
++    if (first) {
++        return first;
++    }
++    first = pending_output_geometry(version, bytes, out, sizeof(*out), _Alignof(*out),
++                                     lender->holder, lender->serial_holder);
++    if (!first) {
++        first = qemu_crucible_preexec_publisher_recipient_output_v1(
++            lender->receiver->lender, lender->receiver->recipient, lender->receiver,
++            out, bytes);
++    }
++    if (first) {
++        return first;
++    }
++    first = pending_lender_current(lender);
++    if (!first) {
++        first = pending_copy(lender);
++        if (!first && lender->scratch.recipient_serial != lender->recipient_serial) {
++            first = -ESTALE;
++        }
++    }
++    post = pending_lender_current(lender);
++    pending_preserve_status(&lender->observe_first_status, first);
++    pending_preserve_status(&lender->observe_post_status, post);
++    if (!first && !post) {
++        *out = lender->scratch;
++    }
++    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_advance_pending_command_return_v1(
++    QemuCrucibleSourcePendingCommandLender *lender, uint64_t serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    int first;
++    int post;
++
++    if (lender != &startup_source.pending_command_lender) {
++        return -EPERM;
++    }
++    first = pending_lender_identity(lender, serial, lender->consumed);
++    if (!first) {
++        first = pending_output_geometry(version, bytes, out, sizeof(*out),
++                                         _Alignof(*out), lender->holder,
++                                         lender->serial_holder);
++    }
++    if (!first) {
++        first = qemu_crucible_preexec_publisher_recipient_output_v1(
++            lender->receiver->lender, lender->receiver->recipient, lender->receiver,
++            out, bytes);
++    }
++    if (!first) {
++        first = pending_physical_current(lender);
++    }
++    if (first) {
++        return first;
++    }
++    if (lender->consumed) {
++        pending_disposition(lender, out, lender->return_first_status,
++                             lender->return_post_status);
++        return lender->return_first_status ? lender->return_first_status :
++            lender->return_post_status;
++    }
++    if (lender->observing || lender->return_attempted ||
++        !advance_module_outputs_absent(lender->receiver)) {
++        return -EBUSY;
++    }
++    first = pending_lender_current(lender);
++    /* No semantic permission is needed to consume this exact physical loan.
++     * Keep its receiver/session and external post journal after local return. */
++    pending_consume_local(lender);
++    post = pending_protocol_cut(lender);
++    lender->return_first_status = first;
++    lender->return_post_status = post;
++    pending_disposition(lender, out, first, post);
++    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-pending-offer.inc.h b/plugins/crucible-pending-offer.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..41066e8b3804da07bdf63284679f4cd413f62421
+--- /dev/null
++++ b/plugins/crucible-pending-offer.inc.h
+@@ -0,0 +1,207 @@
++/*
++ * Nonissuing dispatch observation under the actual entered control frame.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static int pending_offer_identity(QemuCrucibleSourcePendingOfferRead *read)
++{
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    QemuCruciblePublisherModuleService *service = &startup_source.publisher_module;
++    int status;
++
++    if (read != &startup_source.pending_offer_read || read->canonical_owner != read ||
++        !read->busy || !read->attempted || read->consumed || read->member != member ||
++        read->lender != startup_source.publisher_lender || !read->lender ||
++        read->process != getpid() || !qemu_thread_is_self(&read->thread) ||
++        !read->serial || read->serial == UINT64_MAX) {
++        return -ESTALE;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = command_member_identity_locked(member);
++    if (!status) {
++        status = publisher_service_runtime_identity_locked(service);
++    }
++    if (!status && (member->child_owner != service->runtime_owner ||
++        member->runtime_base != service->runtime_base ||
++        member->runtime_extent != service->runtime_extent ||
++        member->publisher_lender != read->lender || !member->runtime_holder ||
++        *member->runtime_holder != member)) {
++        status = -ESTALE;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++/* Semantic-current refusal withholds dispatch, while physical identity above
++ * remains available to return the exact local read after such a refusal. */
++static int pending_offer_source_current(QemuCrucibleSourcePendingOfferRead *read)
++{
++    int status = pending_offer_identity(read);
++
++    if (status) {
++        return status;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = command_member_live_locked(read->member);
++    if (!status && startup_source.publisher_module.closing) {
++        status = -ESTALE;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return status;
++}
++
++static int pending_offer_native_current(QemuCrucibleSourcePendingOfferRead *read)
++{
++    int status = qemu_plugin_crucible_native_advance_entry_current_v1(
++        read->main, read->control);
++
++    if (!status && (read->main->serial != read->main_serial ||
++        read->control->serial != read->control_serial)) {
++        status = -ESTALE;
++    }
++    return status;
++}
++
++static bool pending_offer_read_returnable(const QemuCrucibleSourcePendingOfferRead *read)
++{
++    return !read->return_attempted &&
++        (!read->observation.entered || read->observation.read_returned);
++}
++
++static void pending_offer_consume_read(QemuCrucibleSourcePendingOfferRead *read)
++{
++    read->return_attempted = true;
++    read->consumed = true;
++    read->busy = false;
++}
++
++static int pending_offer_return_read(QemuCrucibleSourcePendingOfferRead *read)
++{
++    int status = pending_offer_identity(read);
++
++    if (status || !pending_offer_read_returnable(read)) {
++        return status ? status : -EBUSY;
++    }
++    pending_offer_consume_read(read);
++    return 0;
++}
++
++static int pending_offer_post(QemuCrucibleSourcePendingOfferRead *read, int first)
++{
++    read->first_status = first;
++    read->native_post_status = pending_offer_native_current(read);
++    read->source_post_status = pending_offer_source_current(read);
++    read->session_post_status = qemu_crucible_preexec_publisher_pending_output_v1(
++        read->lender, &read->observation, sizeof(read->observation));
++    read->return_status = pending_offer_return_read(read);
++    return read->native_post_status ? read->native_post_status :
++        read->source_post_status ? read->source_post_status :
++        read->session_post_status ? read->session_post_status : read->return_status;
++}
++
++#endif
++
++int qemu_crucible_source_pending_offer_current_v1(
++    QemuCruciblePublisherSessionLender *lender,
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCruciblePublisherOfferObservation *observation)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourcePendingOfferRead *read = &startup_source.pending_offer_read;
++    int status = pending_offer_source_current(read);
++
++    if (status) {
++        return status;
++    }
++    if (lender != read->lender || member != read->member ||
++        observation != &read->observation || read->return_attempted) {
++        return -EPERM;
++    }
++    return pending_offer_native_current(read);
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_crucible_source_pending_offer_select_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_offer_selection_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleSourcePendingOfferRead *read = &startup_source.pending_offer_read;
++    QemuCrucibleSourcePendingCommandLender *pending = &startup_source.pending_command_lender;
++    int first;
++    int post;
++
++    if (member != &startup_source.command_member) {
++        return -EPERM;
++    }
++    first = qemu_plugin_crucible_native_advance_entry_current_v1(main, control);
++    if (first) {
++        return first;
++    }
++    first = pending_output_geometry(version, bytes, out, sizeof(*out), _Alignof(*out),
++                                     pending->holder, pending->serial_holder);
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first) {
++        first = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!first && (read->busy || startup_source.advance_holder || pending->held ||
++        startup_source.publisher_module.closing || member->transition_active ||
++        member->publisher_lender != startup_source.publisher_lender)) {
++        first = -EBUSY;
++    }
++    if (!first && read->serial >= UINT64_MAX - 1) {
++        first = -EOVERFLOW;
++    }
++    if (!first) {
++        uint64_t serial = read->serial + 1;
++
++        *read = (QemuCrucibleSourcePendingOfferRead) {
++            .canonical_owner = read,
++            .member = member,
++            .lender = startup_source.publisher_lender,
++            .main = main,
++            .control = control,
++            .process = getpid(),
++            .serial = serial,
++            .main_serial = main->serial,
++            .control_serial = control->serial,
++            .busy = true,
++            .attempted = true,
++        };
++        qemu_thread_get_self(&read->thread);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    first = qemu_crucible_preexec_publisher_offer_observe_v1(
++        read->lender, member, &read->observation);
++    /* These cuts and local physical return are independent of read/decode.
++     * A negative post withholds output but cannot recreate a returned read. */
++    post = pending_offer_post(read, first);
++    if (!first && !post) {
++        *out = (struct qemu_plugin_crucible_pending_offer_selection_v1) {
++            .schema_version = 1,
++            .struct_size = sizeof(*out),
++            .state = read->observation.state,
++            .publication_sequence = read->observation.state ?
++                read->observation.publication.sequence : 0,
++            .ticket_serial = read->observation.state ?
++                read->observation.publication.ticket_serial : 0,
++        };
++    }
++    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
 diff --git a/plugins/crucible-plugin-worker.inc.h b/plugins/crucible-plugin-worker.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..285bcb3d2bfe4f61b54d877cbb931c9830a35411
@@ -186073,10 +187371,10 @@ index 0000000000000000000000000000000000000000..d7191d36b2ba102026cd429d944bd027
 +}
 diff --git a/plugins/crucible-publisher-service.inc.h b/plugins/crucible-publisher-service.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..aa62483b80ade1fc7fd3c030c1aaca881dc3e537
+index 0000000000000000000000000000000000000000..12ca622782005458901a297cdd1d40e5d96a5a0a
 --- /dev/null
 +++ b/plugins/crucible-publisher-service.inc.h
-@@ -0,0 +1,426 @@
+@@ -0,0 +1,427 @@
 +/*
 + * Retained transfer and physical return of the actual Setup6 service child.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -186267,7 +187565,8 @@ index 0000000000000000000000000000000000000000..aa62483b80ade1fc7fd3c030c1aaca88
 + * It neither consumes them nor asks any callback to perform cleanup work. */
 +static bool publisher_service_users_drained(void)
 +{
-+    return !startup_source.advance_holder &&
++    return !startup_source.pending_offer_read.busy &&
++        !startup_source.advance_holder &&
 +        !startup_source.advance_receiver.held &&
 +        !startup_source.publisher_module.advance_users &&
 +        !startup_source.command_member.advance_users &&
@@ -195197,10 +196496,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2136ee0edea168c7e83cf2fcd010a9a6d10ecc09
+index 0000000000000000000000000000000000000000..9a709669c22b8572fb09d282d8f812ca73c3c925
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8661 @@
+@@ -0,0 +1,8664 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -195494,7 +196793,8 @@ index 0000000000000000000000000000000000000000..2136ee0edea168c7e83cf2fcd010a9a6
 +        }
 +        return returning && (startup_source.module_custody_published || member->held ||
 +                             startup_source.publisher_module.held ||
-+                             startup_source.advance_holder) ?
++                             startup_source.advance_holder ||
++                             startup_source.pending_offer_read.busy) ?
 +            -EBUSY : 0;
 +    }
 +    if (child != member || member->canonical_owner != member || !member->attempted ||
@@ -203850,6 +205150,8 @@ index 0000000000000000000000000000000000000000..2136ee0edea168c7e83cf2fcd010a9a6
 +
 +#include "crucible-publisher-service.inc.h"
 +#include "crucible-advance-receiver.inc.h"
++#include "crucible-pending-command.inc.h"
++#include "crucible-pending-offer.inc.h"
 +
 +#include "crucible-device-workspace.inc.h"
 +
@@ -203864,10 +205166,10 @@ index 0000000000000000000000000000000000000000..2136ee0edea168c7e83cf2fcd010a9a6
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..57595fd32a813fef0f63f708811692c048b9d2db
+index 0000000000000000000000000000000000000000..2cc57570d3d8a52e1a49e0e5eb5693f2346c7521
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,3134 @@
+@@ -0,0 +1,3230 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -204115,6 +205417,80 @@ index 0000000000000000000000000000000000000000..57595fd32a813fef0f63f708811692c0
 +    bool main_returned;
 +    bool uncertain;
 +};
++
++/* The registered Runtime's exact field owns this nominal cohort lender.
++ * Observation scratch is exclusive, inline and included in Source's floor.
++ * Physical consumption is independent of operation currentness and posts.
++ */
++struct QemuCrucibleSourcePendingCommandLender {
++    QemuCrucibleSourcePendingCommandLender *canonical_owner;
++    QemuCrucibleSourcePendingCommandLender **holder;
++    uint64_t *serial_holder;
++    QemuCrucibleSourceAdvanceReceiver *receiver;
++    QemuThread thread;
++    pid_t process;
++    uint64_t serial;
++    uint64_t receiver_serial;
++    uint64_t recipient_serial;
++    uint64_t main_serial;
++    uint64_t control_serial;
++    int first_status;
++    int post_status;
++    int prepare_first_status;
++    int prepare_post_status;
++    int prepare_native_post_status;
++    int prepare_recipient_post_status;
++    int prepare_cohort_post_status;
++    int prepare_publication_final_status;
++    int native_post_status;
++    int recipient_post_status;
++    int cohort_post_status;
++    int publication_final_status;
++    int cut_native_status;
++    int cut_recipient_status;
++    int cut_cohort_status;
++    int cut_final_status;
++    int callback_return_status;
++    int observe_first_status;
++    int observe_post_status;
++    int copy_first_status;
++    int copy_post_status;
++    int return_first_status;
++    int return_post_status;
++    bool attempted;
++    bool held;
++    bool producer_returned;
++    bool observing;
++    bool return_attempted;
++    bool consumed;
++    struct qemu_plugin_crucible_pending_command_observation_v1 scratch;
++};
++
++/* One callback-scoped, nonissuing read. Unproved physical return keeps this
++ * inline journal busy and gates every actual member/service/session parent.
++ */
++typedef struct QemuCrucibleSourcePendingOfferRead {
++    struct QemuCrucibleSourcePendingOfferRead *canonical_owner;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCruciblePublisherSessionLender *lender;
++    QemuCrucibleNativeInvocationTicket *main;
++    QemuCrucibleNativeInvocationTicket *control;
++    QemuThread thread;
++    pid_t process;
++    uint64_t serial;
++    uint64_t main_serial;
++    uint64_t control_serial;
++    int first_status;
++    int native_post_status;
++    int source_post_status;
++    int session_post_status;
++    int return_status;
++    bool busy;
++    bool attempted;
++    bool return_attempted;
++    bool consumed;
++    QemuCruciblePublisherOfferObservation observation;
++} QemuCrucibleSourcePendingOfferRead;
 +
 +/* Source-owned runtime-prefix holder. The embedded charge is nonrefundable
 + * until actual process retirement, including a failed publication postcheck.
@@ -206354,6 +207730,8 @@ index 0000000000000000000000000000000000000000..57595fd32a813fef0f63f708811692c0
 +    QemuCruciblePublisherModuleService publisher_module;
 +    QemuCrucibleSourceAdvanceReceiver *advance_holder;
 +    QemuCrucibleSourceAdvanceReceiver advance_receiver;
++    QemuCrucibleSourcePendingCommandLender pending_command_lender;
++    QemuCrucibleSourcePendingOfferRead pending_offer_read;
 +    QemuCrucibleWorkspacePurposeOwner *workspace_role;
 +    QemuCrucibleProcessContractOwner *process_contract_owner;
 +    QemuCrucibleIncarnationPurposeOwner *incarnation_purpose_owner;
@@ -206588,6 +207966,26 @@ index 0000000000000000000000000000000000000000..57595fd32a813fef0f63f708811692c0
 +int qemu_plugin_crucible_source_action_native_holder_current_v1(
 +    QemuCrucibleNativeInvocationTicket *main,
 +    QemuCrucibleNativeInvocationTicket *callback);
++int qemu_crucible_source_pending_offer_select_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_offer_selection_v1 *out);
++int qemu_crucible_source_advance_pending_prepare_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control);
++int qemu_crucible_source_advance_pending_lend_v1(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control,
++    QemuCrucibleSourcePendingCommandLender **holder, uint64_t *serial,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_command_disposition_v1 *out);
++int qemu_crucible_source_advance_pending_callback_return_v1(
++    QemuCrucibleNativeInvocationTicket *main,
++    QemuCrucibleNativeInvocationTicket *control);
 +int qemu_crucible_source_advance_receive_v1(
 +    QemuCrucibleNativeInvocationTicket *main,
 +    QemuCrucibleNativeInvocationTicket *control);
@@ -218496,7 +219894,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a7edb41117ec04e2bc351b6dbc8e1a0295523d4
+index 0000000000000000000000000000000000000000..4e2b008ee537778d9d0a7b43b26d83044cac8a15
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,111 @@
@@ -218510,29 +219908,29 @@ index 0000000000000000000000000000000000000000..1a7edb41117ec04e2bc351b6dbc8e1a0
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-publisher-session.inc.h':
-+        '6934682d32ea6741200fd0d79d37f2034c12d23d54d798d6076b0a9be494e357',
++        'f3c4ff001c47ddbc3fe5a783abb9983810b73f2977cb7480bbfbc75dfa11b5d0',
 +    'include/qemu/crucible-publisher-protocol.h':
-+        'c1d236b8c1af05fda406ceefef18000750278b59cd2c82dc8594f62afc2b1403',
++        'dbed1450f136ef41da3fad48ead6e26a77e4a76c5f9e4a72a993a7ff7c239c06',
 +    'system/crucible-preexec-publisher-storage.inc.h':
 +        '415b121f09df8ca646cf60376af8870f3f302cfd5675bd22483ab00f3653658b',
 +    'system/crucible-preexec-setup.c':
-+        '62ce5ec72ef48a7efa3cbfaab4d3a1a64a4a12e68b08e6edda09030e44b1d177',
++        '956a4c60a76479878751932ad7b9f425f7ca5202a12cf3f54e1bd73426cfec57',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '018c18016aaa62fcd25878ac8810726c02e8bb8e24e9e46d3eea42bf8b7cce75',
 +    'plugins/crucible-process-purpose.c':
 +        '71bfd2c2b7817d1bf6563e18eb679a07ac3a5d63149b81a9ccfdc8905ef6f8d1',
 +    'include/qemu/crucible-process-purpose.h':
-+        'dc992491e20be48488fe0470704e145a155357c5743fa961af106c3ff3929497',
++        '35bf5eec7adff29428b200772aeb37e02f58c66d74810e5bbdc5f36a093c8674',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '2e1f0a69ca8f5a71ded09c97f81e555afb34f10c9f1424336b43e1fab1e7e646',
++        '4ebee225e1f4ba52146e31e3f1476812bd7d4e40529f8a16e7567552819823c3',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a917bec8b43d5fa3788a076a98c9d2cadb1b3d7c3c759ef7db954b45fd94227e',
++        '387caac943be9af23127cbbae90921b5b3df17c181dd5d877f5f1c87091e23b5',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
-+        'd83e11fefa7cf72a6d1ee994106a95485709b4ad5d79b2b9204e9c8082a18648',
++        '950f7a14aca04211755bb8dca985efc147c90a3f78aab06d02ea3819551cb809',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -230955,12 +232353,267 @@ index 0000000000000000000000000000000000000000..1e7bd5fda36f2865818311e7173f1827
 +    owner->family_corroborated = true;
 +    return 0;
 +}
+diff --git a/system/crucible-preexec-publisher-offer.inc.h b/system/crucible-preexec-publisher-offer.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..22bd3d8b1e3dedf138e041287f05bef5f4f440e3
+--- /dev/null
++++ b/system/crucible-preexec-publisher-offer.inc.h
+@@ -0,0 +1,249 @@
++/*
++ * One nonissuing atomic offer observation on the actual installed session.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static int preexec_publisher_offer_copy(
++    const uint64_t *mapping, QemuCruciblePublisherOfferObservation *observation)
++{
++    size_t publication = QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8;
++    size_t receiver = QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFFSET / 8;
++
++    observation->sequence = __atomic_load_n(mapping + publication, __ATOMIC_SEQ_CST);
++    observation->ticket = __atomic_load_n(mapping + receiver, __ATOMIC_SEQ_CST);
++    if (preexec_setup_be64((const uint8_t *)&observation->sequence) & 1) {
++        return -EBUSY;
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(observation->words); index++) {
++        observation->words[index] = __atomic_load_n(mapping + index, __ATOMIC_SEQ_CST);
++    }
++    observation->copied = true;
++    return observation->words[publication] == observation->sequence &&
++        observation->words[receiver] == observation->ticket ? 0 : -ESTALE;
++}
++
++static int preexec_publisher_offer_final(
++    const uint64_t *mapping, const QemuCruciblePublisherOfferObservation *observation)
++{
++    int status = 0;
++
++    if (observation->copied) {
++        for (size_t index = 0; index < G_N_ELEMENTS(observation->words); index++) {
++            if (__atomic_load_n(mapping + index, __ATOMIC_SEQ_CST) !=
++                observation->words[index]) {
++                status = -ESTALE;
++            }
++        }
++    }
++    if (__atomic_load_n(mapping + QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFFSET / 8,
++                        __ATOMIC_SEQ_CST) != observation->ticket ||
++        __atomic_load_n(mapping + QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8,
++                        __ATOMIC_SEQ_CST) != observation->sequence) {
++        status = -ESTALE;
++    }
++    return status;
++}
++
++/* Closed wire bytes corroborate a previously consumed real recipient. They
++ * cannot substitute for that actual process-private physical-return journal. */
++static bool preexec_publisher_offer_recipient_closed(
++    const QemuCruciblePublisherSessionLender *session,
++    const QemuCruciblePublisherOfferObservation *observation)
++{
++    const QemuCruciblePublisherRecipient *recipient = &session->recipient;
++    const QemuCruciblePublisherTerminalView *terminal = &observation->terminal;
++    const QemuCruciblePublisherTerminalView *saved = &session->terminal;
++
++    if (recipient->canonical_owner != recipient ||
++        recipient->holder != &session->recipient_holder || !recipient->source_holder ||
++        *recipient->source_holder || session->recipient_holder || session->live_operations ||
++        !recipient->acquire_attempted || !recipient->acquired || !recipient->return_attempted ||
++        !recipient->return_requested || !recipient->close_attempted ||
++        !recipient->consumed || !recipient->closed || recipient->held || recipient->uncertain ||
++        !recipient->view_born_mask || recipient->view_born_mask != recipient->view_returned_mask ||
++        observation->publication.sequence != recipient->publication_sequence ||
++        observation->publication.loan_generation != recipient->loan_generation ||
++        observation->publication.ticket_serial != recipient->ticket_serial ||
++        observation->returned.sequence != recipient->return_sequence ||
++        observation->returned.local_serial != recipient->serial ||
++        terminal->ticket_serial != recipient->ticket_serial ||
++        terminal->loan_generation != recipient->loan_generation ||
++        terminal->command_sequence != recipient->publication_sequence ||
++        terminal->return_sequence != recipient->return_sequence ||
++        terminal->born_mask != recipient->view_born_mask ||
++        terminal->consumed_mask != terminal->born_mask ||
++        !terminal->command_consumption_generation) {
++        return false;
++    }
++    if (terminal->sequence != saved->sequence ||
++        terminal->ticket_serial != saved->ticket_serial ||
++        terminal->loan_generation != saved->loan_generation ||
++        terminal->command_sequence != saved->command_sequence ||
++        terminal->return_sequence != saved->return_sequence ||
++        terminal->command_consumption_generation != saved->command_consumption_generation ||
++        terminal->first_status != saved->first_status ||
++        terminal->post_status != saved->post_status ||
++        terminal->consumed_mask != saved->consumed_mask ||
++        terminal->born_mask != saved->born_mask) {
++        return false;
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(recipient->publication_words); index++) {
++        if (index != 3 && observation->words[
++                QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8 + index] !=
++            recipient->publication_words[index]) {
++            return false;
++        }
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(recipient->return_words); index++) {
++        if (observation->words[(QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFFSET + 8) / 8 + index] !=
++            recipient->return_words[index]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static int preexec_publisher_offer_classify(
++    const QemuCruciblePublisherSessionLender *session,
++    QemuCruciblePublisherOfferObservation *observation)
++{
++    const uint8_t *wire = (const uint8_t *)observation->words;
++    const QemuCruciblePublisherPurpose *purpose = &preexec_setup_owner.plan.subscription;
++    const QemuCrucibleBoundaryActionRecord *cohort = &observation->publication.cohort;
++    uint64_t ticket = preexec_setup_be64(wire + QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFFSET);
++    uint64_t serial = ticket >> 3;
++    uint64_t phase = ticket & 7;
++    bool empty = true;
++    int status = preexec_literal_qemu_crucible_publisher_header_decode_v1(
++        wire, QEMU_CRUCIBLE_PUBLISHER_HEADER_BYTES, &observation->header);
++
++    if (status) {
++        return status;
++    }
++    if (observation->header.lender_generation != purpose->lender_generation ||
++        observation->header.account_generation != purpose->account_generation ||
++        observation->header.process_generation != purpose->process_generation ||
++        observation->header.node_index != session->header.node_index ||
++        observation->header.node_count != session->header.node_count ||
++        preexec_setup_compare(observation->header.source_capability, purpose->capability, 32) ||
++        preexec_setup_compare(observation->header.source_reservation, purpose->reservation, 32)) {
++        return -ESTALE;
++    }
++    for (size_t index = 2816 / 8; index < G_N_ELEMENTS(observation->words); index++) {
++        if (observation->words[index]) {
++            return -EPROTO;
++        }
++    }
++    for (size_t index = QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8;
++         index < QEMU_CRUCIBLE_PUBLISHER_TERMINAL_OFFSET / 8 +
++                 QEMU_CRUCIBLE_PUBLISHER_TERMINAL_BYTES / 8; index++) {
++        empty &= observation->words[index] == 0;
++    }
++    if (empty) {
++        if (session->recipient.canonical_owner || session->recipient.acquire_attempted ||
++            session->recipient_holder || session->live_operations) {
++            return -ESTALE;
++        }
++        observation->state = 0;
++        return 0;
++    }
++    if (!serial || serial > QEMU_CRUCIBLE_PUBLISHER_TICKET_SERIAL_MAX ||
++        (phase != 1 && phase != 5)) {
++        return -EBUSY;
++    }
++    status = preexec_literal_qemu_crucible_publisher_publication_decode_v1(
++        wire + QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET,
++        QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_BYTES, &observation->publication);
++    if (status) {
++        return status;
++    }
++    if (observation->publication.ticket_serial != serial) {
++        return -ESTALE;
++    }
++    if (phase == 5) {
++        status = preexec_literal_qemu_crucible_publisher_return_decode_v1(
++            wire + QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFFSET + 8,
++            QEMU_CRUCIBLE_PUBLISHER_RETURN_BYTES, &observation->returned);
++        if (!status) {
++            status = preexec_literal_qemu_crucible_publisher_terminal_decode_v1(
++                wire + QEMU_CRUCIBLE_PUBLISHER_TERMINAL_OFFSET,
++                QEMU_CRUCIBLE_PUBLISHER_TERMINAL_BYTES, &observation->terminal);
++        }
++        if (!status && !preexec_publisher_offer_recipient_closed(session, observation)) {
++            status = -ESTALE;
++        }
++        if (!status) {
++            observation->state = 0;
++        }
++        return status;
++    }
++    if (session->recipient_holder || session->live_operations || session->recipient.held ||
++        !observation->publication.command_present ||
++        observation->publication.permission_phase != 1 ||
++        !cohort->present || cohort->dirty || cohort->primary_count != 1 ||
++        !cohort->planned_count || cohort->planned_count > QEMU_CRUCIBLE_ACTION_PARENT_CAPACITY ||
++        cohort->born_mask != (UINT32_C(1) << cohort->planned_count) - 1 ||
++        cohort->projected_mask != cohort->born_mask || cohort->rows[0].role ||
++        cohort->rows[0].producing_class != 1 || cohort->rows[0].required_units != 1 ||
++        cohort->rows[0].completed_required_units ||
++        cohort->binding.account_incarnation != purpose->account_generation ||
++        cohort->binding.process_incarnation != purpose->process_generation ||
++        preexec_setup_compare(cohort->binding.source_capability, purpose->capability, 32) ||
++        preexec_setup_compare(cohort->binding.source_reservation, purpose->reservation, 32)) {
++        return -ENOKEY;
++    }
++    observation->state = 1;
++    return 0;
++}
++
++int qemu_crucible_preexec_publisher_offer_observe_v1(
++    QemuCruciblePublisherSessionLender *session,
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCruciblePublisherOfferObservation *observation)
++{
++    int first = qemu_crucible_source_pending_offer_current_v1(session, member, observation);
++    int post;
++    int identity;
++    int final = 0;
++
++    if (first) {
++        return first;
++    }
++    observation->attempted = true;
++    first = preexec_publisher_lender_identity(session);
++    if (!first) {
++        first = preexec_publisher_observation_parent(session);
++    }
++    if (!first && (session->member != member || !session->module_service ||
++        session->closing || preexec_publisher_observation_busy(session) ||
++        !preexec_publisher_module_output_disjoint(observation, sizeof(*observation)))) {
++        first = -EBUSY;
++    }
++    if (!first && (!session->mapping.address ||
++        QEMU_CRUCIBLE_PUBLISHER_REGION_BYTES >
++            UINTPTR_MAX - (uintptr_t)session->mapping.address ||
++        (uintptr_t)session->mapping.address % sizeof(uint64_t) ||
++        !__atomic_is_lock_free(8, session->mapping.address))) {
++        first = -ENOTSUP;
++    }
++    if (!first) {
++        observation->entered = true;
++        first = preexec_publisher_offer_copy(session->mapping.address, observation);
++        observation->read_returned = true;
++    }
++    if (!first) {
++        first = preexec_publisher_offer_classify(session, observation);
++    }
++    /* A refused first/read/decode never skips independent parent/frame/final.
++     * Failed parent identity prevents any further mapping access. */
++    post = qemu_crucible_source_pending_offer_current_v1(session, member, observation);
++    identity = preexec_publisher_observation_parent(session);
++    if (observation->entered && !identity) {
++        final = preexec_publisher_offer_final(session->mapping.address, observation);
++    }
++    observation->first_status = first;
++    observation->post_status = post;
++    observation->identity_status = identity;
++    observation->final_status = final;
++    return first ? first : post ? post : identity ? identity : final;
++}
 diff --git a/system/crucible-preexec-publisher-recipient.inc.h b/system/crucible-preexec-publisher-recipient.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a721eb21753f74885cca851331234b2aef4f7857
+index 0000000000000000000000000000000000000000..985fadbb6beddd01811e2ff28562793d220c89fe
 --- /dev/null
 +++ b/system/crucible-preexec-publisher-recipient.inc.h
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,587 @@
 +/*
 + * Bounded recipient acquisition on the actual installed publisher session.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -231127,6 +232780,43 @@ index 0000000000000000000000000000000000000000..a721eb21753f74885cca851331234b2a
 +        }
 +    }
 +    return preexec_publisher_recipient_final(session, recipient, false, 2);
++}
++
++static void preexec_publisher_pending_copy_words(
++    const QemuCruciblePublisherRecipient *recipient,
++    uint8_t *cohort, uint8_t *command, uint64_t *serial)
++{
++    memcpy(cohort, (const uint8_t *)recipient->publication_words +
++           QEMU_CRUCIBLE_PUBLISHER_COHORT_OFFSET, QEMU_CRUCIBLE_ACTION_BYTES);
++    memcpy(command, (const uint8_t *)recipient->publication_words +
++           QEMU_CRUCIBLE_PUBLISHER_COMMAND_OFFSET,
++           QEMU_CRUCIBLE_PUBLISHER_COMMAND_BYTES);
++    *serial = recipient->serial;
++}
++
++int qemu_crucible_preexec_publisher_recipient_pending_copy_v1(
++    QemuCruciblePublisherSessionLender *session,
++    QemuCruciblePublisherRecipient *recipient,
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    uint8_t *cohort, uint8_t *command, uint64_t *recipient_serial,
++    int *first, int *post)
++{
++    int status = qemu_crucible_source_advance_pending_copy_current_v1(
++        receiver, cohort, command, recipient_serial, first, post);
++
++    if (status) {
++        return status;
++    }
++    *first = qemu_crucible_preexec_publisher_recipient_current_v1(
++        session, recipient, receiver);
++    if (!*first) {
++        /* These are the immutable bytes retained before the one acquire CAS,
++         * not another snapshot or a caller-supplied cohort reconstruction. */
++        preexec_publisher_pending_copy_words(recipient, cohort, command, recipient_serial);
++    }
++    *post = qemu_crucible_preexec_publisher_recipient_current_v1(
++        session, recipient, receiver);
++    return *first ? *first : *post;
 +}
 +
 +int qemu_crucible_preexec_publisher_recipient_acquire_v1(
@@ -231513,10 +233203,10 @@ index 0000000000000000000000000000000000000000..a721eb21753f74885cca851331234b2a
 +}
 diff --git a/system/crucible-preexec-publisher-session.inc.h b/system/crucible-preexec-publisher-session.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f256879fea3edf43ec17d8604b302f130fe80b6
+index 0000000000000000000000000000000000000000..6e73bd7573c0a679e52a4891fd4d5f28a07fc21f
 --- /dev/null
 +++ b/system/crucible-preexec-publisher-session.inc.h
-@@ -0,0 +1,1207 @@
+@@ -0,0 +1,1216 @@
 +/*
 + * Actual once-owner publisher mapping and independent physical cleanup.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -232457,6 +234147,15 @@ index 0000000000000000000000000000000000000000..4f256879fea3edf43ec17d8604b302f1
 +            output, bytes, mapping->address, mapping->requested_bytes));
 +}
 +
++int qemu_crucible_preexec_publisher_pending_output_v1(
++    QemuCruciblePublisherSessionLender *lender, const void *output, size_t bytes)
++{
++    int status = preexec_publisher_lender_identity(lender);
++
++    return status ? status : preexec_publisher_module_output_disjoint(output, bytes) ?
++        0 : -EINVAL;
++}
++
 +static int preexec_publisher_module_memory_current(void)
 +{
 +    QemuCruciblePreexecSetupOwner *owner = &preexec_setup_owner;
@@ -233102,10 +234801,10 @@ index 0000000000000000000000000000000000000000..e1eda5efbd1c2db8ce485fce38f76bbe
 +}
 diff --git a/system/crucible-preexec-setup.c b/system/crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b285f9d76b811961072994b470cc8740371346b2
+index 0000000000000000000000000000000000000000..aad855f1eb00064c0702a24a0cee20f17989aeac
 --- /dev/null
 +++ b/system/crucible-preexec-setup.c
-@@ -0,0 +1,2875 @@
+@@ -0,0 +1,2876 @@
 +/*
 + * Fixed selected executable preinit Setup custody.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -235548,6 +237247,7 @@ index 0000000000000000000000000000000000000000..b285f9d76b811961072994b470cc8740
 +
 +#include "crucible-preexec-publisher-session.inc.h"
 +#include "crucible-preexec-publisher-recipient.inc.h"
++#include "crucible-preexec-publisher-offer.inc.h"
 +
 +int qemu_crucible_preexec_purpose_check_v3(QemuCruciblePreexecPurposeOwner *held)
 +{
@@ -270853,7 +272553,7 @@ index 0000000000000000000000000000000000000000..25aafdfc06f195785e3c99f5a6847c71
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f37e14a40efab946d7b130dfc3827dc36ab5a32f
+index 0000000000000000000000000000000000000000..6f0652ed55d0027395cb5e025481fe4de3e3ee26
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -270871,7 +272571,7 @@ index 0000000000000000000000000000000000000000..f37e14a40efab946d7b130dfc3827dc3
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a917bec8b43d5fa3788a076a98c9d2cadb1b3d7c3c759ef7db954b45fd94227e',
++        '387caac943be9af23127cbbae90921b5b3df17c181dd5d877f5f1c87091e23b5',
 +}
 +
 +FUNCTIONS = (
@@ -270959,7 +272659,7 @@ index 0000000000000000000000000000000000000000..f37e14a40efab946d7b130dfc3827dc3
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..04c09971f2c6f832b3a704c470603b82cb3a67ce
+index 0000000000000000000000000000000000000000..91badfb7bb5555d14492045222e68d12fa5644ee
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -270980,17 +272680,17 @@ index 0000000000000000000000000000000000000000..04c09971f2c6f832b3a704c470603b82
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'c8392efa52460c2c7495e52c9bc3adfefe1b2a0ad2825c1ce4aa992ded9d03ed',
++        '013c73679669ace7f5a740be873af5052f2d1d7f86d4250ad63ebb552a726181',
 +    'plugins/crucible-startup-source.h':
-+        '65bda850b8171a2733f6dcc297749494075a63ae208a8fdf55bdbf2197c72546',
++        '651df24bb84e00938c4f21852b71734c355d9fcc819e4798ffaaf198eb2b2777',
 +    'include/plugins/qemu-plugin.h':
-+        '2e1f0a69ca8f5a71ded09c97f81e555afb34f10c9f1424336b43e1fab1e7e646',
++        '4ebee225e1f4ba52146e31e3f1476812bd7d4e40529f8a16e7567552819823c3',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a917bec8b43d5fa3788a076a98c9d2cadb1b3d7c3c759ef7db954b45fd94227e',
++        '387caac943be9af23127cbbae90921b5b3df17c181dd5d877f5f1c87091e23b5',
 +}
 +
 +FUNCTIONS = (
@@ -271206,7 +272906,7 @@ index 0000000000000000000000000000000000000000..04c09971f2c6f832b3a704c470603b82
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f30887e8e3e2814d1532241aed3464c2419d5a03
+index 0000000000000000000000000000000000000000..4747e7786c109ed4e97ff45f1e73816e9891c5f0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -271230,7 +272930,7 @@ index 0000000000000000000000000000000000000000..f30887e8e3e2814d1532241aed3464c2
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a917bec8b43d5fa3788a076a98c9d2cadb1b3d7c3c759ef7db954b45fd94227e',
++        '387caac943be9af23127cbbae90921b5b3df17c181dd5d877f5f1c87091e23b5',
 +}
 +
 +FUNCTIONS = (
@@ -271324,10 +273024,10 @@ index 0000000000000000000000000000000000000000..f30887e8e3e2814d1532241aed3464c2
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..aa3d8480f83044dc6535e508f23b355714dda1fe
+index 0000000000000000000000000000000000000000..c43dedb6d54fd6f4270b93487cb7254a03abea48
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,699 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind literal preinit bodies and classify their causal transport controls."""
 +
@@ -271341,13 +273041,13 @@ index 0000000000000000000000000000000000000000..aa3d8480f83044dc6535e508f23b3557
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-publisher-session.inc.h':
-+        '6934682d32ea6741200fd0d79d37f2034c12d23d54d798d6076b0a9be494e357',
++        'f3c4ff001c47ddbc3fe5a783abb9983810b73f2977cb7480bbfbc75dfa11b5d0',
 +    'include/qemu/crucible-publisher-protocol.h':
-+        'c1d236b8c1af05fda406ceefef18000750278b59cd2c82dc8594f62afc2b1403',
++        'dbed1450f136ef41da3fad48ead6e26a77e4a76c5f9e4a72a993a7ff7c239c06',
 +    'system/crucible-preexec-publisher-storage.inc.h':
 +        '415b121f09df8ca646cf60376af8870f3f302cfd5675bd22483ab00f3653658b',
 +    'system/crucible-preexec-setup.c':
-+        '62ce5ec72ef48a7efa3cbfaab4d3a1a64a4a12e68b08e6edda09030e44b1d177',
++        '956a4c60a76479878751932ad7b9f425f7ca5202a12cf3f54e1bd73426cfec57',
 +    'system/crucible-preexec-family.inc.h':
 +        '6d055fe2604fc3d7b2977b98d4b5843d65ba5df00c7efe34770d375fe05e6d59',
 +    'system/crucible-preexec-contract.inc.h':
@@ -271361,32 +273061,110 @@ index 0000000000000000000000000000000000000000..aa3d8480f83044dc6535e508f23b3557
 +    'include/qemu/crucible-preexec-setup.h':
 +        '4ea19199377ce87376d99e9287f676462213559d411ac82fae5a32275f779ccd',
 +    'include/qemu/crucible-process-purpose.h':
-+        'dc992491e20be48488fe0470704e145a155357c5743fa961af106c3ff3929497',
++        '35bf5eec7adff29428b200772aeb37e02f58c66d74810e5bbdc5f36a093c8674',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '2e1f0a69ca8f5a71ded09c97f81e555afb34f10c9f1424336b43e1fab1e7e646',
++        '4ebee225e1f4ba52146e31e3f1476812bd7d4e40529f8a16e7567552819823c3',
 +    'plugins/crucible-process-purpose.c':
 +        '71bfd2c2b7817d1bf6563e18eb679a07ac3a5d63149b81a9ccfdc8905ef6f8d1',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a917bec8b43d5fa3788a076a98c9d2cadb1b3d7c3c759ef7db954b45fd94227e',
++        '387caac943be9af23127cbbae90921b5b3df17c181dd5d877f5f1c87091e23b5',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '1df54763db4e31aadae31325a457ed918921f6bb9d83215fcb333f259018f562',
++        '2b595d5986246d8a83b05ae673a07a4cdc1c0ffc5f966c29b89ab301e65439f7',
 +    'meson.build':
-+        'a0f45ba0218c7510ab6c6eab2ab38661995a90b378f9ee102a8e65ff488f18c1',
++        '589d136b1cfb1d178307cf90114e6c057cbe2d86796f3c3767afa1f76ef09d2d',
 +    'tests/unit/test-crucible-preexec-setup.c':
-+        '7a08d8fdfa978764ebcb97479d23ae4fa5564e177bb2411fd39c77ef489c66dc',
++        '9fda0d3a1da3a8e5819744cae3cd2e8913ca7d9afdd5fe5a50933867e25423d7',
 +    'tests/unit/meson.build':
-+        'af2dbc791403e460aa82cbdd482e7328470b12f3f67c3eab834b5f765ca53fc3',
++        '7503b8b67acefbfec320f2f1ab16ec6f4baf6e1b5188414415340c49e91af830',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
-+        'd83e11fefa7cf72a6d1ee994106a95485709b4ad5d79b2b9204e9c8082a18648',
++        '950f7a14aca04211755bb8dca985efc147c90a3f78aab06d02ea3819551cb809',
++    'system/crucible-preexec-publisher-offer.inc.h':
++        'a4cfd9c79eec35dbc6cdb363ca6535f787a1ad4aef7908401b45ef3046214f35',
 +}
 +
-+PRIVATE_INCLUDES = ('publisher-storage', 'publisher-session', 'publisher-recipient', 'family', 'contract', 'artifact',
++PRIVATE_INCLUDES = ('publisher-storage', 'publisher-session', 'publisher-recipient',
++                    'publisher-offer', 'family', 'contract', 'artifact',
 +                    'ram', 'workspace')
 +CONTROL_CASES = {
++    'offer-odd': (
++        '/preexec/publisher-offer',
++        ('preexec_publisher_offer_copy((uint64_t *)wire, &observation) == -E'
++         'BUSY')),
++    'offer-copy-first': (
++        '/preexec/publisher-offer',
++        'memcmp(observation.words, wire, sizeof(wire)) == 0'),
++    'offer-copy-last': (
++        '/preexec/publisher-offer',
++        'memcmp(observation.words, wire, sizeof(wire)) == 0'),
++    'offer-copied-fact': (
++        '/preexec/publisher-offer',
++        'observation.copied == true'),
++    'offer-final-first': (
++        '/preexec/publisher-offer',
++        ('preexec_publisher_offer_final((uint64_t *)wire, &observation) == -'
++         'ESTALE')),
++    'offer-final-last': (
++        '/preexec/publisher-offer',
++        ('preexec_publisher_offer_final((uint64_t *)wire, &observation) == -'
++         'ESTALE')),
++    'offer-final-ticket': (
++        '/preexec/publisher-offer',
++        ('preexec_publisher_offer_final((uint64_t *)wire, &observation) == -'
++         'ESTALE')),
++    'offer-final-sequence': (
++        '/preexec/publisher-offer',
++        ('preexec_publisher_offer_final((uint64_t *)wire, &observation) == -'
++         'ESTALE')),
++    'offer-reserved-first': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -EPROTO'),
++    'offer-reserved-last': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -EPROTO'),
++    'offer-empty-first': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -EBUSY'),
++    'offer-empty-last': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -EBUSY'),
++    'offer-empty-history': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ESTALE'),
++    'offer-empty-debt': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ESTALE'),
++    'offer-phase': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -EBUSY'),
++    'offer-closed-journal': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ESTALE'),
++    'offer-permission': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ENOKEY'),
++    'offer-required': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ENOKEY'),
++    'offer-completed': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ENOKEY'),
++    'offer-account': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ENOKEY'),
++    'offer-capability': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ENOKEY'),
++    'offer-node': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ESTALE'),
++    'offer-header-account': (
++        '/preexec/publisher-offer',
++        'preexec_publisher_offer_classify(&session, &observation) == -ESTALE'),
++
 +    'omit-observation-zero': ('/preexec/publisher-observation',
 +        'preexec_publisher_observation_copy(&session, offset, bytes) == -ENODATA'),
 +    'omit-observation-odd': ('/preexec/publisher-observation',
@@ -271597,6 +273375,107 @@ index 0000000000000000000000000000000000000000..aa3d8480f83044dc6535e508f23b3557
 +                              (args.root / 'system' / name).read_text())
 +
 +    module_cuts = {
++        'offer-odd': (
++            'static int preexec_publisher_offer_copy(',
++            'preexec_setup_be64((const uint8_t *)&observation->sequence) & 1',
++            'false'),
++        'offer-copy-first': (
++            'static int preexec_publisher_offer_copy(',
++            'size_t index = 0;',
++            'size_t index = 1;'),
++        'offer-copy-last': (
++            'static int preexec_publisher_offer_copy(',
++            'index < G_N_ELEMENTS(observation->words);',
++            'index + 1 < G_N_ELEMENTS(observation->words);'),
++        'offer-copied-fact': (
++            'static int preexec_publisher_offer_copy(',
++            'observation->copied = true;',
++            'observation->copied = false;'),
++        'offer-final-first': (
++            'static int preexec_publisher_offer_final(',
++            'size_t index = 0;',
++            'size_t index = 1;'),
++        'offer-final-last': (
++            'static int preexec_publisher_offer_final(',
++            'index < G_N_ELEMENTS(observation->words);',
++            'index + 1 < G_N_ELEMENTS(observation->words);'),
++        'offer-final-ticket': (
++            'static int preexec_publisher_offer_final(',
++            ('__atomic_load_n(mapping + QEMU_CRUCIBLE_PUBLISHER_RECEIVER_OFF'
++             'SET / 8,\n                        __ATOMIC_SEQ_CST) != observat'
++             'ion->ticket'),
++            'false'),
++        'offer-final-sequence': (
++            'static int preexec_publisher_offer_final(',
++            ('__atomic_load_n(mapping + QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_'
++             'OFFSET / 8,\n                        __ATOMIC_SEQ_CST) != obser'
++             'vation->sequence'),
++            'false'),
++        'offer-reserved-first': (
++            'static int preexec_publisher_offer_classify(',
++            'size_t index = 2816 / 8;',
++            'size_t index = 2816 / 8 + 1;'),
++        'offer-reserved-last': (
++            'static int preexec_publisher_offer_classify(',
++            'index < G_N_ELEMENTS(observation->words);',
++            'index + 1 < G_N_ELEMENTS(observation->words);'),
++        'offer-empty-first': (
++            'static int preexec_publisher_offer_classify(',
++            'size_t index = QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8;',
++            ('size_t index = QEMU_CRUCIBLE_PUBLISHER_PUBLICATION_OFFSET / 8 '
++             '+ 1;')),
++        'offer-empty-last': (
++            'static int preexec_publisher_offer_classify(',
++            'QEMU_CRUCIBLE_PUBLISHER_TERMINAL_BYTES / 8; index++',
++            'QEMU_CRUCIBLE_PUBLISHER_TERMINAL_BYTES / 8 - 1; index++'),
++        'offer-empty-history': (
++            'static int preexec_publisher_offer_classify(',
++            'session->recipient.acquire_attempted',
++            'false'),
++        'offer-empty-debt': (
++            'static int preexec_publisher_offer_classify(',
++            'session->recipient_holder || session->live_operations) {',
++            'session->recipient_holder) {'),
++        'offer-phase': (
++            'static int preexec_publisher_offer_classify(',
++            'phase != 1 && phase != 5',
++            'phase != 1 && phase != 2 && phase != 5'),
++        'offer-closed-journal': (
++            'static int preexec_publisher_offer_classify(',
++            '!preexec_publisher_offer_recipient_closed(session, observation)',
++            'false'),
++        'offer-permission': (
++            'static int preexec_publisher_offer_classify(',
++            'observation->publication.permission_phase != 1',
++            'false'),
++        'offer-required': (
++            'static int preexec_publisher_offer_classify(',
++            'cohort->rows[0].required_units != 1',
++            'false'),
++        'offer-completed': (
++            'static int preexec_publisher_offer_classify(',
++            'cohort->rows[0].completed_required_units',
++            'false'),
++        'offer-account': (
++            'static int preexec_publisher_offer_classify(',
++            ('cohort->binding.account_incarnation != purpose->account_genera'
++             'tion'),
++            'false'),
++        'offer-capability': (
++            'static int preexec_publisher_offer_classify(',
++            ('preexec_setup_compare(cohort->binding.source_capability, purpo'
++             'se->capability, 32)'),
++            'false'),
++        'offer-node': (
++            'static int preexec_publisher_offer_classify(',
++            'observation->header.node_index != session->header.node_index',
++            'false'),
++        'offer-header-account': (
++            'static int preexec_publisher_offer_classify(',
++            ('observation->header.account_generation != purpose->account_gen'
++             'eration'),
++            'false'),
++
 +        'omit-observation-zero': (
 +            'static int preexec_publisher_observation_copy(',
 +            '!observation->sequence', 'false'),
@@ -271850,10 +273729,10 @@ index 0000000000000000000000000000000000000000..aa3d8480f83044dc6535e508f23b3557
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20a240c3c6
+index 0000000000000000000000000000000000000000..e61930b339d97843b20dc361bb5dad0fd29d6d2c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1493 @@
+@@ -0,0 +1,1501 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -271884,7 +273763,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'tests/unit/test-crucible-ram-mapping-qmp.py':
 +        'f0bfafb54bdcf635764c09af4d6a5781116bd5a1a253a8b2827c4e8118094a8e',
 +    'plugins/crucible-publisher-service.inc.h':
-+        'ea63aa0a0edb140a361a8270c5527264351e2e49e779933092c80a6f9276e601',
++        '707fcba5c723ed6d2a62432e58b1b329ba541639ab1cf6b5c62b90fe5f2120cc',
 +    'tests/unit/test-crucible-publisher-service-transfer.py':
 +        '47a8571b614713e448fa7945e80d802526ce3a5881b26a198719efe599a995b2',
 +    'tests/unit/test-crucible-stopped-control-rearm.py':
@@ -271936,13 +273815,13 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'include/qemu/crucible-preexec-setup.h':
 +        '4ea19199377ce87376d99e9287f676462213559d411ac82fae5a32275f779ccd',
 +    'include/qemu/crucible-publisher-protocol.h':
-+        'c1d236b8c1af05fda406ceefef18000750278b59cd2c82dc8594f62afc2b1403',
++        'dbed1450f136ef41da3fad48ead6e26a77e4a76c5f9e4a72a993a7ff7c239c06',
 +    'include/qemu/timer.h':
 +        '5a03e5bce2affd81f70f46e72ade11c3cfc4d6db2b00a9efff334600d05f4589',
 +    'include/qobject/qobject-lifetime.h':
 +        'f590ea63b6b7cb11069922f0fad9169652d1970d13c36e39076e0e0ebb1bb846',
 +    'meson.build':
-+        'a0f45ba0218c7510ab6c6eab2ab38661995a90b378f9ee102a8e65ff488f18c1',
++        '589d136b1cfb1d178307cf90114e6c057cbe2d86796f3c3767afa1f76ef09d2d',
 +    'plugins/crucible-apic-getter.inc.h':
 +        '3f37a0e86d175b719f4cfc7bdc87fbf0db1061f5b7fc805e103a26114dda6ab6',
 +    'plugins/crucible-clock-custody.inc.h':
@@ -271972,7 +273851,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'qobject/qstring.c':
 +        'f77be2f2de04f1895cb0e4d5b377926b6f528b6950e1549c7d3432ce352ed667',
 +    'system/crucible-preexec-publisher-session.inc.h':
-+        '6934682d32ea6741200fd0d79d37f2034c12d23d54d798d6076b0a9be494e357',
++        'f3c4ff001c47ddbc3fe5a783abb9983810b73f2977cb7480bbfbc75dfa11b5d0',
 +    'system/crucible-preexec-publisher-storage.inc.h':
 +        '415b121f09df8ca646cf60376af8870f3f302cfd5675bd22483ab00f3653658b',
 +    'system/memory-internal.h':
@@ -272004,7 +273883,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        'af2dbc791403e460aa82cbdd482e7328470b12f3f67c3eab834b5f765ca53fc3',
++        '7503b8b67acefbfec320f2f1ab16ec6f4baf6e1b5188414415340c49e91af830',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -272026,7 +273905,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'tests/unit/test-crucible-memory-region-custody.py':
 +        'db27ae30e802307a7ccdd1220828bf49bcd2f39156caf7056492a5eada66887f',
 +    'tests/unit/test-crucible-preexec-setup.c':
-+        '7a08d8fdfa978764ebcb97479d23ae4fa5564e177bb2411fd39c77ef489c66dc',
++        '9fda0d3a1da3a8e5819744cae3cd2e8913ca7d9afdd5fe5a50933867e25423d7',
 +    'tests/unit/test-crucible-process-purpose.c':
 +        '11e29ae1acbdd306a91fbc3a88b42ee3103d7491863b5eb54fac841424dbb011',
 +    'tests/unit/test-crucible-publisher-protocol.c':
@@ -272072,7 +273951,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'tests/unit/test-crucible-register-workspace.py':
 +        '198a3649d11878b5fd69238e3c2f41dfd2373e82f936b9d2ae70569b133c57d0',
 +    'tests/unit/test-crucible-register-description.py':
-+        'ad50c4634f10136b9f9c4fb1f87c161ac66134db597e6eed1a31806c9f38cec4',
++        'a469054b1f1f37e6e73cc5972b183c75a34645fb0bb45e85234e730c04fcfcd1',
 +    'include/hw/core/crucible-register-helpers.h':
 +        '3b757bad9dbf7df5d30686b1fd1198afd9284b10a64114f861e53e0421e7d5cd',
 +    'target/arm/helper.c':
@@ -272166,7 +274045,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'plugins/crucible-device-workspace.inc.h':
 +        '46a3bf873eac5d3f3e6fce4c344416c13749f6a24f1b098605dd214c684e56c7',
 +    'system/crucible-preexec-setup.c':
-+        '62ce5ec72ef48a7efa3cbfaab4d3a1a64a4a12e68b08e6edda09030e44b1d177',
++        '956a4c60a76479878751932ad7b9f425f7ca5202a12cf3f54e1bd73426cfec57',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '018c18016aaa62fcd25878ac8810726c02e8bb8e24e9e46d3eea42bf8b7cce75',
 +    'plugins/crucible-control-invocation.inc.h':
@@ -272204,15 +274083,15 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'c8392efa52460c2c7495e52c9bc3adfefe1b2a0ad2825c1ce4aa992ded9d03ed',
++        '013c73679669ace7f5a740be873af5052f2d1d7f86d4250ad63ebb552a726181',
 +    'plugins/crucible-startup-source.h':
-+        '65bda850b8171a2733f6dcc297749494075a63ae208a8fdf55bdbf2197c72546',
++        '651df24bb84e00938c4f21852b71734c355d9fcc819e4798ffaaf198eb2b2777',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '2e1f0a69ca8f5a71ded09c97f81e555afb34f10c9f1424336b43e1fab1e7e646',
++        '4ebee225e1f4ba52146e31e3f1476812bd7d4e40529f8a16e7567552819823c3',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -272248,7 +274127,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'system/cpus.c':
 +        '879b690f3c11615c7096688b75e8a94e2430aeeb2ba845747f42c44868105fb1',
 +    'plugins/crucible-control-stop.inc.h':
-+        '6ea22bc466180d0a405e0c73663d37269f5f65b56503840afdd4b2a0cf7cc1d9',
++        '3384d996e21dd437d441d0e0c16be9612bb4701504117819c58aa5673cbaf13a',
 +    'plugins/crucible-socket-ingress.inc.h':
 +        '405891558960960b7f4379405e2c7628ce21a679b4b62e1e7ec223df1c9811ad',
 +    'plugins/crucible-qmp-allocation.inc.h':
@@ -272290,7 +274169,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'util/qemu-thread-posix.c':
 +        '042fcc3882531278beb9bf121b95069087f7f6cd4f266face56854d8b0f3489d',
 +    'include/qemu/crucible-process-purpose.h':
-+        'dc992491e20be48488fe0470704e145a155357c5743fa961af106c3ff3929497',
++        '35bf5eec7adff29428b200772aeb37e02f58c66d74810e5bbdc5f36a093c8674',
 +    'include/qemu/crucible-paged-ram.h':
 +        '388bdd0f63b1a7ed67105b224390298f1aba6ff54b4653dab95387427c216c71',
 +    'include/qom/object.h':
@@ -272322,7 +274201,7 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'hw/virtio/virtio-crucible-accelerator.c':
 +        'fe8e88375876d4783b36639ea98ca4465764be8182ecd7978b17bdeba444c6cc',
 +    'plugins/crucible-command-membership.inc.h':
-+        'aeb94105d350a21594b0ca91207f514fd2e8bfbbd72e38d713f33f26e209f419',
++        'ae7a473eb466a8ec67f972729c43aae70038316b9f21ec2e05318191d5da7c3f',
 +    'plugins/crucible-action-original.inc.h':
 +        '34ea0bd0642eabc092cabd4c4123ed0ad5d873ad7b4a4573cf0dfb293558da60',
 +    'tests/unit/crucible-publisher-subscription-fixture.inc.h':
@@ -272338,9 +274217,9 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +    'tests/unit/test-crucible-advance-post-refusal.py':
 +        '8a6cf8321208279a7419ef8cd009107afb3dfcacb712a4db4fb47c5d9a528a14',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
-+        'd83e11fefa7cf72a6d1ee994106a95485709b4ad5d79b2b9204e9c8082a18648',
++        '950f7a14aca04211755bb8dca985efc147c90a3f78aab06d02ea3819551cb809',
 +    'plugins/crucible-advance-receiver.inc.h':
-+        'f92b6aeb15e1562deb877db472bb4400ceb870973020574e53ebed3e831cb38c',
++        '27759f7849141b1234b4a788230317903ea25ee3e2c2e7d0390bcecfb5cb2af6',
 +    'tests/unit/test-crucible-advance-registration.py':
 +        'e9d9f845bacab68c09314fc37ce2da393a6614b69ffe83f329fc9eb6066a6ff9',
 +    'tests/unit/test-crucible-advance-recipient-leaves.py':
@@ -272349,6 +274228,14 @@ index 0000000000000000000000000000000000000000..9f83a2c2601d2761a942a209f1771b20
 +        '6c1b936efd0b348b7098893ed6c9d33f326d292ecb081a83a696462b2cb39119',
 +    'tests/unit/test-crucible-publisher-initial-state.py':
 +        '7ca3c57da0ae5a116b76e1b268f1a8ae1c1be7aab730ff5fb36f9c9c64ed4f34',
++    'plugins/crucible-pending-command.inc.h':
++        '9fc90a8061dd6d1af8833911140bf3ad5a8c596cc311319c7aed0eb55d52d28c',
++    'tests/unit/test-crucible-pending-command.py':
++        '44eff36c0344a232f543d65184936e74908508af6948285125682390338ca81f',
++    'tests/unit/test-crucible-pending-offer.py':
++        '82b92c985482ca4623f0d814dc460db89de5e29de4a02afec83b258d30ddade7',
++    'plugins/crucible-pending-offer.inc.h':
++        '86a3bab24544c2584a4ae1e1f3154c99442cb74b2c04ae7b5ee880bf1b982d60',
 +}
 +
 +
@@ -273446,7 +275333,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3827f244d10c45dd12a24edafa337febf75972da 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d7f5d3e9f226d89cbfe7ca3ca6fc7c21b030ebe7 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -273521,7 +275408,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3827f244d10c45dd12a24edafa337feb
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1398 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1403 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -274340,6 +276227,9 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3827f244d10c45dd12a24edafa337feb
 +                        '../../plugins/crucible-callback-owner.inc.h',
 +                        '../../plugins/crucible-publisher-service.inc.h',
 +                        '../../plugins/crucible-advance-receiver.inc.h',
++                        '../../plugins/crucible-pending-command.inc.h',
++                        '../../plugins/crucible-pending-offer.inc.h',
++                        'test-crucible-pending-offer.py',
 +                        '../../plugins/crucible-callback-child.inc.h',
 +                        '../../plugins/crucible-callback-publication.inc.h',
 +                        '../../plugins/crucible-callback-groups.inc.h',
@@ -274497,6 +276387,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3827f244d10c45dd12a24edafa337feb
 +                        'test-crucible-advance-recipient-leaves.py',
 +                        'test-crucible-advance-content.py',
 +                        'test-crucible-advance-post-refusal.py',
++                        'test-crucible-pending-command.py',
 +                        'test-crucible-control-delivery.py',
 +                        'test-crucible-tcg-fast-paths.py',
 +                        'test-crucible-fault-rule-presence.py',
@@ -274707,6 +276598,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3827f244d10c45dd12a24edafa337feb
 +    '../../system/crucible-preexec-publisher-storage.inc.h',
 +    '../../system/crucible-preexec-publisher-session.inc.h',
 +    '../../system/crucible-preexec-publisher-recipient.inc.h',
++    '../../system/crucible-preexec-publisher-offer.inc.h',
 +    '../../include/qemu/crucible-publisher-protocol.h',
 +    '../../system/crucible-preexec-setup.c',
 +    '../../system/crucible-preexec-family.inc.h',
@@ -320712,6 +322604,367 @@ index 0000000000000000000000000000000000000000..1ba2a64a8846c9d33c82b340038f0e8f
 +                    test_parallel_mutable_state);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-pending-command.py b/tests/unit/test-crucible-pending-command.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6ba342c2bd2289c5bc00348ef845210584fa3a06
+--- /dev/null
++++ b/tests/unit/test-crucible-pending-command.py
+@@ -0,0 +1,216 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise actual pending-lender physical/content leaves and refusal-only posts.
++
++Local spans and field consumption never construct an admitted Source, Runtime,
++recipient or Core Original. Every protocol dependency in the post fixture
++refuses. Each causal omission is rebuilt independently with unchanged checks.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import subprocess
++
++
++CHECKS = r'''
++int main(void)
++{
++    _Alignas(8) uint8_t storage[256] = { 0 };
++    uintptr_t base = (uintptr_t)storage;
++    void *holder = storage + 16;
++    void *serial_field = storage + 160;
++    void *out = storage + 64;
++
++    assert(pending_runtime_field(base, 256, storage, 8, 8));
++    assert(pending_runtime_field(base, 256, storage + 248, 8, 8));
++    assert(pending_runtime_field(base, 256, storage + 255, 1, 1));
++    assert(!pending_runtime_field(0, 256, (void *)8, 8, 8));
++    assert(!pending_runtime_field(base, 0, storage, 8, 8));
++    assert(!pending_runtime_field(UINTPTR_MAX - 15, 32, (void *)(UINTPTR_MAX - 15), 8, 8));
++    assert(!pending_runtime_field(base, 256, NULL, 8, 8));
++    assert(!pending_runtime_field(base, 256, storage, 0, 8));
++    assert(!pending_runtime_field(base, 256, storage + 1, 8, 8));
++    assert(!pending_runtime_field(base, 256, (void *)(base - 8), 8, 8));
++    assert(!pending_runtime_field(base, 256, storage, 264, 8));
++    assert(!pending_runtime_field(base, 256, storage + 256, 8, 8));
++    assert(!pending_runtime_field(base, 256, (void *)(UINTPTR_MAX - 7), 16, 8));
++
++    assert(pending_span_geometry(1, 32, out, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(2, 32, out, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(1, 31, out, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(1, 32, (uint8_t *)out + 1, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(1, 32, NULL, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(1, 32, (void *)(UINTPTR_MAX - 7), 32, 8,
++                                   holder, serial_field));
++    assert(!pending_span_geometry(1, 32, holder, 32, 8, holder, serial_field));
++    assert(!pending_span_geometry(1, 32, serial_field, 32, 8, holder, serial_field));
++
++    QemuCruciblePublisherRecipient recipient = { .serial = 107 };
++    uint8_t cohort[QEMU_CRUCIBLE_ACTION_BYTES];
++    uint8_t command[QEMU_CRUCIBLE_PUBLISHER_COMMAND_BYTES];
++    uint64_t recipient_serial = 0;
++    uint8_t *words = (uint8_t *)recipient.publication_words;
++
++    for (size_t index = 0; index < sizeof(recipient.publication_words); index++) {
++        words[index] = (uint8_t)(index * 13 + index / 7 + 3);
++    }
++    memset(cohort, 0xa5, sizeof(cohort));
++    memset(command, 0xa5, sizeof(command));
++    preexec_publisher_pending_copy_words(&recipient, cohort, command, &recipient_serial);
++    assert(!memcmp(cohort, words + 128, 896));
++    assert(!memcmp(command, words + 1024, 128));
++    assert(recipient_serial == 107);
++
++    QemuCrucibleSourcePendingCommandLender lender = { .held = true };
++    QemuCrucibleSourcePendingCommandLender *local_holder = &lender;
++    uint64_t local_serial = 9;
++
++    lender.holder = &local_holder;
++    lender.serial_holder = &local_serial;
++    pending_consume_local(&lender);
++    assert(lender.return_attempted && lender.consumed && !lender.held);
++    assert(!local_holder && !local_serial);
++
++    lender.attempted = true;
++    lender.main_serial = 17;
++    lender.control_serial = 19;
++    assert(pending_attempt_same_frame(&lender, 17, 19));
++    assert(!pending_attempt_same_frame(&lender, 18, 19));
++    assert(!pending_attempt_same_frame(&lender, 17, 20));
++    lender.attempted = false;
++    assert(!pending_attempt_same_frame(&lender, 17, 19));
++
++    QemuCrucibleSourceAdvanceReceiver receiver = { 0 };
++    lender.receiver = &receiver;
++    assert(pending_protocol_cut(&lender) == -EPERM);
++    assert(native_calls == 1 && recipient_calls == 2 && identity_calls == 1);
++    assert(lender.cut_native_status == -EPERM && lender.native_post_status == -EPERM);
++    assert(lender.cut_recipient_status == -ENOKEY && lender.recipient_post_status == -ENOKEY);
++    assert(lender.cut_cohort_status == -ESTALE && lender.cohort_post_status == -ESTALE);
++    assert(lender.cut_final_status == -ENOKEY && lender.publication_final_status == -ENOKEY);
++    puts("PASS local pending-lender leaves and refusal-only post order; no owner or Original admitted");
++    return 0;
++}
++'''
++
++
++REFUSALS = r'''
++static unsigned native_calls, recipient_calls, identity_calls;
++static int pending_physical_current(QemuCrucibleSourcePendingCommandLender *lender)
++{
++    native_calls++;
++    return -EPERM;
++}
++static int qemu_crucible_preexec_publisher_recipient_current_v1(
++    QemuCruciblePublisherSessionLender *session,
++    QemuCruciblePublisherRecipient *recipient, QemuCrucibleSourceAdvanceReceiver *receiver)
++{
++    recipient_calls++;
++    return -ENOKEY;
++}
++static int advance_receiver_identity(QemuCrucibleSourceAdvanceReceiver *receiver)
++{
++    identity_calls++;
++    return -ESTALE;
++}
++static int advance_publication_current(QemuCrucibleSourceAdvanceReceiver *receiver)
++{
++    abort();
++}
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("source", type=Path)
++    parser.add_argument("output", type=Path)
++    args = parser.parse_args()
++    source = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    pending = (source / "plugins/crucible-pending-command.inc.h").read_text()
++    recipient = (source / "system/crucible-preexec-publisher-recipient.inc.h").read_text()
++    overlap = (source / "plugins/crucible-callback-child.inc.h").read_text()
++    prefixes = [
++        "static bool pending_runtime_field(", "static bool pending_span_geometry(",
++        "static bool pending_attempt_same_frame(",
++        "static void pending_preserve_status(", "static void pending_consume_local(",
++        "static int pending_protocol_cut(",
++    ]
++    bodies = "\n\n".join(extract["function"](pending, prefix) for prefix in prefixes)
++    bodies += "\n" + extract["function"](recipient, "static void preexec_publisher_pending_copy_words(")
++    before = ('#include "qemu/osdep.h"\n'
++              '#include "plugins/crucible-startup-source.h"\n'
++              '#include "system/crucible-preexec-publisher-storage.inc.h"\n' +
++              extract["function"](overlap, "static bool callback_child_output_overlap(") + "\n" + REFUSALS)
++    # The refusing fixture has no definition of the external recipient method.
++    before = before.replace("qemu_crucible_preexec_publisher_recipient_current_v1(", "refuse_recipient(")
++    bodies = bodies.replace("qemu_crucible_preexec_publisher_recipient_current_v1(", "refuse_recipient(")
++    controls = {"positive": bodies}
++    substitutions = {
++        "omit-runtime-base": ("return base && extent", "return true && extent"),
++        "omit-runtime-overflow": ("extent <= UINTPTR_MAX - base", "true"),
++        "omit-runtime-width": ("field && bytes &&", "field && true &&"),
++        "omit-runtime-alignment": ("address % alignment == 0 && bytes", "true && bytes"),
++        "omit-runtime-capacity": ("bytes <= extent", "true"),
++        "omit-runtime-upper": ("address - base <= extent - bytes", "true"),
++        "omit-output-version": ("version == 1", "true"),
++        "omit-output-size": ("bytes == expected", "true"),
++        "omit-output-alignment": ("address % alignment == 0 &&\n        bytes", "true &&\n        bytes"),
++        "omit-holder-overlap": ("!callback_child_output_overlap(out, bytes, holder, sizeof(void *))", "true"),
++        "omit-serial-overlap": ("!callback_child_output_overlap(out, bytes, serial, sizeof(uint64_t))", "true"),
++        "omit-attempt-fact": ("return lender->attempted && lender->main_serial", "return true && lender->main_serial"),
++        "omit-attempt-main": ("lender->main_serial == main_serial", "true"),
++        "omit-attempt-control": ("lender->control_serial == control_serial", "true"),
++        "omit-return-attempt": ("lender->return_attempted = true;", ";"),
++        "omit-holder-consumption": ("*lender->holder = NULL;", ";"),
++        "omit-serial-consumption": ("*lender->serial_holder = 0;", ";"),
++        "omit-held-return": ("lender->held = false;", ";"),
++        "omit-consumed-fact": ("lender->consumed = true;", ";"),
++        "omit-native-post": ("lender->cut_native_status = pending_physical_current(lender);", "lender->cut_native_status = 0;"),
++        "omit-recipient-post": ("lender->cut_recipient_status = refuse_recipient(\n        receiver->lender, receiver->recipient, receiver);", "lender->cut_recipient_status = 0;"),
++        "omit-cohort-post": ("lender->cut_cohort_status = advance_receiver_identity(receiver);", "lender->cut_cohort_status = -EPERM;"),
++        "omit-final-post": ("lender->cut_final_status = refuse_recipient(\n        receiver->lender, receiver->recipient, receiver);", "lender->cut_final_status = 0;"),
++        "omit-copy-cohort-first": ("QEMU_CRUCIBLE_PUBLISHER_COHORT_OFFSET,", "QEMU_CRUCIBLE_PUBLISHER_COHORT_OFFSET + 1,"),
++        "omit-copy-cohort-last": ("QEMU_CRUCIBLE_ACTION_BYTES);", "QEMU_CRUCIBLE_ACTION_BYTES - 1);"),
++        "omit-copy-command-first": ("QEMU_CRUCIBLE_PUBLISHER_COMMAND_OFFSET,", "QEMU_CRUCIBLE_PUBLISHER_COMMAND_OFFSET + 1,"),
++        "omit-copy-command-last": ("QEMU_CRUCIBLE_PUBLISHER_COMMAND_BYTES);", "QEMU_CRUCIBLE_PUBLISHER_COMMAND_BYTES - 1);"),
++        "omit-recipient-serial": ("*serial = recipient->serial;", ";"),
++    }
++    for name, (old, new) in substitutions.items():
++        if bodies.count(old) != 1:
++            raise ValueError(f"nonunique literal for {name}: {bodies.count(old)}")
++        controls[name] = bodies.replace(old, new)
++
++    proof = {}
++    for name, body in controls.items():
++        c_file = output / (name + ".c")
++        binary = output / name
++        c_file.write_text(before + "\n" + body + "\n" + CHECKS)
++        command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(c_file), "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / (name + ".command.json")).write_text(json.dumps(command, indent=2) + "\n")
++        compiled = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
++        (output / (name + ".compile.log")).write_text(compiled.stdout)
++        compiled.check_returncode()
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30)
++        (output / (name + ".log")).write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"{name}: expected {expected}, got {result.returncode}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print(f"PASS {len(controls) - 1} independently rebuilt omissions")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-pending-offer.py b/tests/unit/test-crucible-pending-offer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f34ca580f6da97b12884c865560f8eeaf2d00c7
+--- /dev/null
++++ b/tests/unit/test-crucible-pending-offer.py
+@@ -0,0 +1,133 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check literal local read facts and all-refusing independent post cuts.
++
++The local field checks supply no owner. Every post dependency refuses; no
++canonical Source, Runtime, Main, publisher session or Original is accepted.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import subprocess
++
++
++REFUSALS = r'''
++static unsigned native_calls, source_calls, session_calls, return_calls;
++static int pending_offer_native_current(QemuCrucibleSourcePendingOfferRead *read)
++{
++    native_calls++;
++    return -EPERM;
++}
++static int pending_offer_source_current(QemuCrucibleSourcePendingOfferRead *read)
++{
++    source_calls++;
++    return -ESTALE;
++}
++static int refuse_session(QemuCruciblePublisherSessionLender *lender,
++                          const void *out, size_t bytes)
++{
++    session_calls++;
++    return -ENOKEY;
++}
++static int refuse_return(QemuCrucibleSourcePendingOfferRead *read)
++{
++    return_calls++;
++    return -EBUSY;
++}
++'''
++
++CHECKS = r'''
++int main(void)
++{
++    QemuCrucibleSourcePendingOfferRead read = { .busy = true };
++
++    assert(pending_offer_read_returnable(&read));
++    read.observation.entered = true;
++    assert(!pending_offer_read_returnable(&read));
++    read.observation.read_returned = true;
++    assert(pending_offer_read_returnable(&read));
++    read.return_attempted = true;
++    assert(!pending_offer_read_returnable(&read));
++    read.return_attempted = false;
++    pending_offer_consume_read(&read);
++    assert(read.return_attempted && read.consumed && !read.busy);
++    assert(!pending_offer_read_returnable(&read));
++
++    read = (QemuCrucibleSourcePendingOfferRead) { .busy = true };
++    assert(pending_offer_post(&read, -EIO) == -EPERM);
++    assert(read.first_status == -EIO);
++    assert(read.native_post_status == -EPERM);
++    assert(read.source_post_status == -ESTALE);
++    assert(read.session_post_status == -ENOKEY);
++    assert(read.return_status == -EBUSY);
++    assert(native_calls == 1 && source_calls == 1 && session_calls == 1 && return_calls == 1);
++    assert(read.busy && !read.return_attempted && !read.consumed);
++    puts("PASS local read facts and all-refusing posts; no canonical owner accepted");
++    return 0;
++}
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("source", type=Path)
++    parser.add_argument("output", type=Path)
++    args = parser.parse_args()
++    source = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    production = (source / "plugins/crucible-pending-offer.inc.h").read_text()
++    body = "\n\n".join(extract["function"](production, prefix) for prefix in (
++        "static bool pending_offer_read_returnable(",
++        "static void pending_offer_consume_read(", "static int pending_offer_post("))
++    # No accepting replacement: all four dependencies return distinct failures.
++    body = body.replace("qemu_crucible_preexec_publisher_pending_output_v1(", "refuse_session(")
++    body = body.replace("pending_offer_return_read(read)", "refuse_return(read)")
++    controls = {"positive": body}
++    substitutions = {
++        "omit-once-return": ("!read->return_attempted", "true"),
++        "omit-physical-return": ("read->observation.read_returned", "true"),
++        "omit-attempted-fact": ("read->return_attempted = true;", ";"),
++        "omit-consumed-fact": ("read->consumed = true;", ";"),
++        "omit-busy-return": ("read->busy = false;", ";"),
++        "omit-first-status": ("read->first_status = first;", "read->first_status = 0;"),
++        "omit-native-post": ("read->native_post_status = pending_offer_native_current(read);", "read->native_post_status = 0;"),
++        "omit-source-post": ("read->source_post_status = pending_offer_source_current(read);", "read->source_post_status = 0;"),
++        "omit-session-post": ("read->session_post_status = refuse_session(\n        read->lender, &read->observation, sizeof(read->observation));", "read->session_post_status = 0;"),
++        "omit-local-return": ("read->return_status = refuse_return(read);", "read->return_status = 0;"),
++    }
++    for name, (before, after) in substitutions.items():
++        if body.count(before) != 1:
++            raise ValueError(f"nonunique literal: {name}")
++        controls[name] = body.replace(before, after)
++    results = {}
++    for name, current in controls.items():
++        path = output / (name + ".c")
++        binary = output / name
++        path.write_text('#include "qemu/osdep.h"\n'
++                        '#include "plugins/crucible-startup-source.h"\n' +
++                        REFUSALS + current + CHECKS)
++        command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(path), "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / (name + ".command.json")).write_text(json.dumps(command, indent=2) + "\n")
++        compiled = subprocess.run(command, capture_output=True, text=True)
++        (output / (name + ".compile.log")).write_text(compiled.stdout + compiled.stderr)
++        compiled.check_returncode()
++        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
++        (output / (name + ".log")).write_text(result.stdout + result.stderr)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"{name}: expected {expected}, got {result.returncode}")
++        results[name] = {"status": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
++    (output / "proof.json").write_text(json.dumps(results, indent=2) + "\n")
++    print("PASS local facts/all-refusing posts and 10 independently rebuilt omissions")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-pit-timer-wide-clock.c b/tests/unit/test-crucible-pit-timer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..5de510d543012b6ea7ad7f47bb04643115ad65fd
@@ -323230,10 +325483,10 @@ index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe776
 +}
 diff --git a/tests/unit/test-crucible-preexec-setup.c b/tests/unit/test-crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..96b9ea14a88bb28bbebefbaa5c68279ebb23f291
+index 0000000000000000000000000000000000000000..51c771cdefb357cdca32b0dc3db2814af72089b9
 --- /dev/null
 +++ b/tests/unit/test-crucible-preexec-setup.c
-@@ -0,0 +1,1412 @@
+@@ -0,0 +1,1556 @@
 +/*
 + * Physical preinit receipt controls; no namespace or original issuer fixture.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -323348,6 +325601,24 @@ index 0000000000000000000000000000000000000000..96b9ea14a88bb28bbebefbaa5c68279e
 +{
 +    (void)owner;
 +    return -ENOKEY;
++}
++
++/* Source-owned pending scratch cannot exist in this preinit fixture. */
++int qemu_crucible_source_advance_pending_copy_current_v1(
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    uint8_t *cohort, uint8_t *command, uint64_t *recipient_serial,
++    int *first, int *post)
++{
++    abort();
++}
++
++/* The canonical Source-owned observation is never supplied by this fixture. */
++int qemu_crucible_source_pending_offer_current_v1(
++    QemuCruciblePublisherSessionLender *lender,
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCruciblePublisherOfferObservation *observation)
++{
++    abort();
 +}
 +
 +unsigned long qemu_getauxval(unsigned long type)
@@ -324304,6 +326575,129 @@ index 0000000000000000000000000000000000000000..96b9ea14a88bb28bbebefbaa5c68279e
 +    fixture_be64(terminal + 56, 6);
 +}
 +
++/* These are local mutable spans and physical read/decode leaves only. No
++ * Source/member/Main/session constructor is accepted or manufactured here. */
++static void test_publisher_offer(void)
++{
++    _Alignas(uint64_t) uint8_t wire[4096];
++    QemuCruciblePublisherOfferObservation observation = { 0 };
++    PreexecPublisherSessionJournal session = { 0 };
++    QemuCruciblePublisherPurpose saved = preexec_setup_owner.plan.subscription;
++    static const size_t changed[] = { 0, 256, 1792, 2304, 4088 };
++    uint8_t *publication = wire + 256;
++    uint8_t *row = publication + 256;
++    uint8_t *command = publication + 1024;
++
++    fixture_observation_bytes(wire);
++    fixture_be32(row + 48, 1);
++    fixture_be64(publication + 40, 1);
++    fixture_be32(publication + 60, 128);
++    memcpy(command, "CRUCQCM1", 8);
++    fixture_be32(command + 8, 1);
++    fixture_be32(command + 12, 128);
++    fixture_be64(command + 16, 8);
++    fixture_be64(command + 32, UINT64_MAX);
++    fixture_be32(command + 56, 1);
++    fixture_be64(command + 64, 13);
++    fixture_be64(wire + 1792, (4 << 3) | 1);
++    preexec_setup_owner.plan.subscription.lender_generation = 3;
++    preexec_setup_owner.plan.subscription.account_generation = 4;
++    preexec_setup_owner.plan.subscription.process_generation = 5;
++    memset(preexec_setup_owner.plan.subscription.capability, 0x11, 32);
++    memset(preexec_setup_owner.plan.subscription.reservation, 0x22, 32);
++    session.header.node_count = 1;
++    memset(observation.words, 0xa5, sizeof(observation.words));
++
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(observation.copied, ==, true);
++    g_assert_cmpint(memcmp(observation.words, wire, sizeof(wire)), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_final((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, 0);
++    g_assert_cmpuint(observation.state, ==, 1);
++    for (size_t index = 0; index < G_N_ELEMENTS(changed); index++) {
++        wire[changed[index]] ^= 1;
++        g_assert_cmpint(preexec_publisher_offer_final((uint64_t *)wire, &observation), ==, -ESTALE);
++        wire[changed[index]] ^= 1;
++    }
++    fixture_be64(publication, 3);
++    observation.copied = false;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, -EBUSY);
++    g_assert_false(observation.copied);
++    g_assert_cmpint(preexec_publisher_offer_final((uint64_t *)wire, &observation), ==, 0);
++    fixture_be64(publication, 4);
++    g_assert_cmpint(preexec_publisher_offer_final((uint64_t *)wire, &observation), ==, -ESTALE);
++    fixture_be64(publication, 3);
++    fixture_be64(wire + 1792, (5 << 3) | 1);
++    g_assert_cmpint(preexec_publisher_offer_final((uint64_t *)wire, &observation), ==, -ESTALE);
++    fixture_be64(publication, 2);
++    fixture_be64(wire + 1792, (4 << 3) | 1);
++
++    for (unsigned int phase = 2; phase <= 6; phase++) {
++        fixture_be64(wire + 1792, (4 << 3) | phase);
++        g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++        if (phase == 5) {
++            /* Valid Closed bytes cannot issue a consumed recipient journal. */
++            g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ESTALE);
++        } else {
++            g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -EBUSY);
++        }
++    }
++    fixture_be64(wire + 1792, (4 << 3) | 1);
++    fixture_be64(publication + 24, 2);
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ENOKEY);
++    fixture_be64(publication + 24, 1);
++    fixture_be64(row + 144, 2);
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ENOKEY);
++    fixture_be64(row + 144, 1);
++    fixture_be64(row + 136, 1);
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ENOKEY);
++    fixture_be64(row + 136, 0);
++    fixture_be64(publication + 128 + 80, 9);
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ENOKEY);
++    fixture_be64(publication + 128 + 80, 4);
++    publication[128 + 16] ^= 1;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ENOKEY);
++    publication[128 + 16] ^= 1;
++    session.header.node_index = 1;
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ESTALE);
++    session.header.node_index = 0;
++    preexec_setup_owner.plan.subscription.account_generation = 9;
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ESTALE);
++    preexec_setup_owner.plan.subscription.account_generation = 4;
++
++    memset(wire + 256, 0, 2816 - 256);
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, 0);
++    g_assert_cmpuint(observation.state, ==, 0);
++    session.recipient.acquire_attempted = true;
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ESTALE);
++    session.recipient.acquire_attempted = false;
++    session.live_operations = 1;
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -ESTALE);
++    session.live_operations = 0;
++    wire[256] = 1;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -EBUSY);
++    wire[256] = 0;
++    wire[2815] = 1;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -EBUSY);
++    wire[2815] = 0;
++    wire[2816] = 1;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -EPROTO);
++    wire[2816] = 0;
++    wire[4095] = 1;
++    g_assert_cmpint(preexec_publisher_offer_copy((uint64_t *)wire, &observation), ==, 0);
++    g_assert_cmpint(preexec_publisher_offer_classify(&session, &observation), ==, -EPROTO);
++    preexec_setup_owner.plan.subscription = saved;
++}
++
 +static void test_publisher_observation(void)
 +{
 +    PreexecPublisherSessionJournal session = { 0 };
@@ -324585,6 +326979,8 @@ index 0000000000000000000000000000000000000000..96b9ea14a88bb28bbebefbaa5c68279e
 +            test_receipt(GINT_TO_POINTER(0));
 +        } else if (!strcmp(argv[2], "/preexec/six")) {
 +            test_receipt(GINT_TO_POINTER(1));
++        } else if (!strcmp(argv[2], "/preexec/publisher-offer")) {
++            test_publisher_offer();
 +        } else if (!strcmp(argv[2], "/preexec/publisher-observation")) {
 +            test_publisher_observation();
 +        } else if (!strcmp(argv[2], "/preexec/publisher-module-facts")) {
@@ -324618,6 +327014,7 @@ index 0000000000000000000000000000000000000000..96b9ea14a88bb28bbebefbaa5c68279e
 +    g_test_add_func("/preexec/empty-ancillary", test_empty_ancillary);
 +    g_test_add_func("/preexec/selection", test_selection);
 +    g_test_add_func("/preexec/nonissuing-dependencies", test_nonissuing_dependencies);
++    g_test_add_func("/preexec/publisher-offer", test_publisher_offer);
 +    g_test_add_func("/preexec/publisher-observation", test_publisher_observation);
 +    g_test_add_func("/preexec/publisher-module-facts", test_publisher_module_facts);
 +    g_test_add_func("/preexec/publisher-storage", test_publisher_storage);
@@ -332051,10 +334448,10 @@ index 0000000000000000000000000000000000000000..06f28b20984bed4d5ecd308bcaa3d0ff
 +}
 diff --git a/tests/unit/test-crucible-register-description.py b/tests/unit/test-crucible-register-description.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b401128fe67d2dd670f06978fe4633d622b473f
+index 0000000000000000000000000000000000000000..9105058763a8c59ff5390c2885eec7101256ef9e
 --- /dev/null
 +++ b/tests/unit/test-crucible-register-description.py
-@@ -0,0 +1,840 @@
+@@ -0,0 +1,853 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise literal architecture writers with caller-owned component storage.
 +
@@ -332843,6 +335240,29 @@ index 0000000000000000000000000000000000000000..1b401128fe67d2dd670f06978fe4633d
 +          "no selected runtime")
 +
 +
++def writer_case(output, architecture, name, definitions):
++    generated = output / f"{architecture}-{name}.c"
++    binary = output / f"{architecture}-{name}"
++    generated.write_text(definitions)
++    command = [*shlex.split(os.environ.get("CC", "cc")),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (output / f"{architecture}-{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++    compilation = subprocess.run(command, text=True, stdout=subprocess.PIPE,
++                                 stderr=subprocess.STDOUT)
++    (output / f"{architecture}-{name}.compile.log").write_text(
++        compilation.stdout)
++    compilation.check_returncode()
++    result = subprocess.run([str(binary)], cwd=output, text=True,
++                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
++    (output / f"{architecture}-{name}.log").write_text(result.stdout)
++    expected = 0 if name == "positive" else -6
++    if result.returncode != expected:
++        raise RuntimeError(f"unexpected {architecture}/{name}: {result.returncode}\n{result.stdout}")
++    return f"{architecture}/{name}", {"returncode": result.returncode, "output": result.stdout}
++
++
 +def main():
 +    parser = argparse.ArgumentParser(description=__doc__)
 +    parser.add_argument("--source-root", type=Path, default=Path(__file__).resolve().parents[2])
@@ -332852,6 +335272,7 @@ index 0000000000000000000000000000000000000000..1b401128fe67d2dd670f06978fe4633d
 +    output = arguments.output_dir.resolve()
 +    output.mkdir(parents=True, exist_ok=True)
 +    proof = {}
++    cases = []
 +    for architecture in ("arm", "i386"):
 +        literal = translation_unit(source, architecture)
 +        variants = {"positive": literal,
@@ -332868,26 +335289,15 @@ index 0000000000000000000000000000000000000000..1b401128fe67d2dd670f06978fe4633d
 +        for name, definitions in variants.items():
 +            if name != "positive" and definitions == literal:
 +                raise ValueError(f"ineffective {architecture}/{name} mutation")
-+            generated = output / f"{architecture}-{name}.c"
-+            binary = output / f"{architecture}-{name}"
-+            generated.write_text(definitions)
-+            command = [*shlex.split(os.environ.get("CC", "cc")),
-+                       *shlex.split(os.environ.get("CFLAGS", "")),
-+                       str(generated), "-o", str(binary),
-+                       *shlex.split(os.environ.get("LDFLAGS", ""))]
-+            (output / f"{architecture}-{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
-+            compilation = subprocess.run(command, text=True, stdout=subprocess.PIPE,
-+                                         stderr=subprocess.STDOUT)
-+            (output / f"{architecture}-{name}.compile.log").write_text(
-+                compilation.stdout)
-+            compilation.check_returncode()
-+            result = subprocess.run([str(binary)], cwd=output, text=True,
-+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
-+            (output / f"{architecture}-{name}.log").write_text(result.stdout)
-+            expected = 0 if name == "positive" else -6
-+            if result.returncode != expected:
-+                raise RuntimeError(f"unexpected {architecture}/{name}: {result.returncode}\n{result.stdout}")
-+            proof[f"{architecture}/{name}"] = {"returncode": result.returncode, "output": result.stdout}
++            cases.append((architecture, name, definitions))
++
++    # Each writer case owns its source, executable and diagnostic files.
++    # Join both compilers before starting the independent access sweep.
++    with ThreadPoolExecutor(max_workers=2) as executor:
++        futures = [executor.submit(writer_case, output, *case) for case in cases]
++        for future in futures:
++            key, record = future.result()
++            proof[key] = record
 +    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
 +    print("PASS both literal architecture writers and seven capacity/geometry/order/eligibility omission controls; no constructor authority")
 +    check_access_bodies(source, output)
