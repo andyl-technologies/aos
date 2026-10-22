@@ -102,6 +102,101 @@ impl HostCpuSample {
     }
 }
 
+/// One QEMU thread's identity, scheduler state and CPU ticks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct QemuThreadSample {
+    pid: u32,
+    tid: u32,
+    name: String,
+    state: char,
+    ticks: u64,
+}
+
+/// Reads every thread of the service's QEMU descendants.
+fn qemu_thread_samples(service_pid: u32) -> Vec<QemuThreadSample> {
+    let mut samples = Vec::new();
+    for (pid, arguments) in descendant_process_commands(service_pid).unwrap_or_default() {
+        let is_qemu = arguments
+            .first()
+            .is_some_and(|binary| binary.contains("qemu-system"));
+        if !is_qemu {
+            continue;
+        }
+        let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for task in tasks.filter_map(Result::ok) {
+            let Some(tid) = task.file_name().to_str().and_then(|name| name.parse().ok()) else {
+                continue;
+            };
+            let Ok(stat) = fs::read_to_string(task.path().join("stat")) else {
+                continue;
+            };
+            if let Some(sample) = parse_thread_sample(pid, tid, &stat) {
+                samples.push(sample);
+            }
+        }
+    }
+    samples
+}
+
+/// Parses a thread's name, state and CPU ticks from its stat line.
+fn parse_thread_sample(pid: u32, tid: u32, stat: &str) -> Option<QemuThreadSample> {
+    let (head, tail) = stat.rsplit_once(") ")?;
+    let name = head.split_once(" (")?.1.replace(' ', "_");
+    let state = tail.chars().next()?;
+    Some(QemuThreadSample {
+        pid,
+        tid,
+        name,
+        state,
+        ticks: parse_cpu_ticks(stat)?,
+    })
+}
+
+/// Names the QEMU threads that used CPU across a one-second window.
+///
+/// A livelocked node spins one thread at a fixed coordinate; its name tells
+/// a vCPU loop from the main loop, and its syscall field tells a busy loop
+/// (`running`) from a wait. Rows are `pid/tid:name:state:ticks:syscall`.
+fn qemu_thread_report(service_pid: u32) -> String {
+    let before = qemu_thread_samples(service_pid);
+    std::thread::sleep(Duration::from_secs(1));
+    let after = qemu_thread_samples(service_pid);
+
+    let mut busy = after
+        .iter()
+        .map(|thread| {
+            let earlier = before
+                .iter()
+                .find(|old| old.pid == thread.pid && old.tid == thread.tid)
+                .map_or(0, |old| old.ticks);
+            (thread.ticks.saturating_sub(earlier), thread)
+        })
+        .filter(|(delta, _thread)| *delta > 0)
+        .collect::<Vec<_>>();
+    busy.sort_by(|left, right| right.0.cmp(&left.0));
+
+    let rows = busy
+        .iter()
+        .take(8)
+        .map(|(delta, thread)| {
+            let syscall = fs::read_to_string(format!(
+                "/proc/{}/task/{}/syscall",
+                thread.pid, thread.tid
+            ))
+            .ok()
+            .and_then(|text| text.split_whitespace().next().map(str::to_owned))
+            .unwrap_or_else(|| "unavailable".to_owned());
+            format!(
+                "{}/{}:{}:{}:{delta}:{syscall}",
+                thread.pid, thread.tid, thread.name, thread.state
+            )
+        })
+        .collect::<Vec<_>>();
+    format!("CRUCIBLE-QEMU-THREADS-V1 busy={}", rows.join(","))
+}
+
 /// Returns a process's user plus system CPU ticks from `/proc/<pid>/stat`.
 fn process_cpu_ticks(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -266,10 +361,11 @@ impl AttemptProgressWatch {
         let idle = now.duration_since(self.last_progress);
         if idle >= self.limits.stall {
             return Err(format!(
-                "{} made no progress for {}s; {}",
+                "{} made no progress for {}s; {}; {}",
                 self.label,
                 idle.as_secs(),
-                self.progress_row(now)
+                self.progress_row(now),
+                qemu_thread_report(self.service_pid)
             )
             .into());
         }
@@ -346,6 +442,22 @@ fn host_progress_requires_near_full_service_work_or_replaced_guests() {
         ..before
     };
     assert!(host_progressed(before, replaced, window));
+}
+
+#[test]
+fn thread_samples_keep_spaced_names_and_scheduler_state() {
+    let stat = "4243 (CPU 0/TCG) R 1 2 3 4 5 6 7 8 9 10 1200 34 0 0 20 0 9 0 100";
+
+    assert_eq!(
+        parse_thread_sample(4242, 4243, stat),
+        Some(QemuThreadSample {
+            pid: 4242,
+            tid: 4243,
+            name: "CPU_0/TCG".to_owned(),
+            state: 'R',
+            ticks: 1234,
+        })
+    );
 }
 
 #[test]
