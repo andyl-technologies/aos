@@ -109,6 +109,7 @@ RECOVERABLE_ENCODED_QUARANTINE = {
 CASES += QUARANTINE_CASES
 CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure"]
 CASES += ["read-through"]
+CASES += ["sealed-consumer"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1495,6 +1496,17 @@ def main():
                         and value.st_uid == 841 and value.st_mode & 0o7777 == 0o700,
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
+        sealed_consumer = actor("sealed-consumer", "sealed-consumer", uuid)
+        require("PASS actual whole inline inode, bounded backing ownership, held-policy access, renewal, release and independent cache handoff" in sealed_consumer
+                and "PASS actual whole manifest inode, metadata/range refusal, expiry and retained delegated descriptor lifetime" in sealed_consumer,
+                "missing actual sealed whole-file consumer witnesses")
+        sealed_files = list((root("sealed-consumer") / "sealed").glob("*/*"))
+        require(len(sealed_files) == 2
+                and any(path.read_bytes() == b"whole sealed-file consumer backing" for path in sealed_files)
+                and all(path.stat().st_uid == 841 and path.stat().st_gid == 841
+                        and path.stat().st_nlink == 1 and path.stat().st_mode & 0o7777 == 0o400
+                        for path in sealed_files),
+                "whole-file consumers lack their two actual immutable publisher-owned inodes")
         # This isolated domain has no dependency on the other component cases.
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)

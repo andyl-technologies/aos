@@ -12,8 +12,9 @@ pub(in crate::host_cache::owner) mod state;
 mod sweep;
 mod view;
 
-pub(in crate::host_cache::owner) use lifecycle::{acquire, release, renew};
+pub(in crate::host_cache::owner) use lifecycle::{acquire, acquire_object, release, renew};
 pub(in crate::host_cache::owner) use sweep::{background as sweep_background, run as sweep};
+pub use view::NativeSealedBacking;
 pub(in crate::host_cache::owner) use view::{ReadBudget, ReadView};
 
 use super::retention::{Command, Custody, NativeMetadataOwner};
@@ -48,6 +49,56 @@ pub struct NativeLeaseAccounting {
 pub struct NativeConsumerLease {
     view: Arc<ReadView>,
     initial_accounting: NativeLeaseAccounting,
+}
+
+/// Holds a durable consumer pin over one complete original sealed file.
+///
+/// This grant is separate from chunk and metadata reads. Clones share one lease
+/// and at most one active backing registration. Dropping the grant leaves its
+/// durable pin to ordinary expiry. The trusted descriptor transport must retain
+/// its backing owner until the worker and kernel have released that backing.
+#[derive(Clone)]
+pub struct NativeSealedObjectLease {
+    lease: NativeConsumerLease,
+}
+
+impl NativeSealedObjectLease {
+    /// Borrows the original whole-object identity, including its content kind.
+    pub fn identity(&self) -> &Identity {
+        self.lease.identity()
+    }
+
+    /// Borrows this exact durable consumer's owner name.
+    pub fn owner(&self) -> &str {
+        self.lease.owner()
+    }
+
+    /// Returns the currently acknowledged live expiry in Unix seconds.
+    ///
+    /// # Errors
+    /// Refuses revoked, expired or concurrently changing grants.
+    pub fn expires_at(&self) -> io::Result<u64> {
+        self.lease.expires_at()
+    }
+
+    /// Borrows independent accounting at the original synchronized grant boundary.
+    pub fn initial_accounting(&self) -> &NativeLeaseAccounting {
+        self.lease.initial_accounting()
+    }
+
+    /// Retains one read-only whole-file descriptor through delegated backing use.
+    ///
+    /// The finite physical consumer registry bounds retained backing owners.
+    /// A lease permits only one active backing owner, shared by all its clones;
+    /// reopening is allowed after that owner closes. Descriptor preparation uses
+    /// the temporary read budget but does not occupy it for the backing's life.
+    ///
+    /// # Errors
+    /// Refuses revoked or expired grants, an existing backing owner, exhausted
+    /// preparation capacity, changed native custody or seal, and descriptor IO.
+    pub fn backing(&self) -> io::Result<NativeSealedBacking> {
+        self.lease.view.begin_backing()
+    }
 }
 
 /// Retains the exact state expected for this original physical lease operation.
@@ -112,6 +163,12 @@ impl ConsumerJob {
 
 /// Transfers complete consumer command ownership to the native physical worker.
 pub(in crate::host_cache::owner) enum ConsumerCommand {
+    /// Pins only a complete sealed publication for whole-file descriptor access.
+    PinObject {
+        identity: Identity,
+        expires: u64,
+        response: oneshot::Sender<io::Result<NativeSealedObjectLease>>,
+    },
     /// Synchronizes a new pin before returning its original opaque read view.
     Pin {
         identity: Identity,
@@ -141,6 +198,16 @@ pub(in crate::host_cache::owner) async fn execute(
     command: ConsumerCommand,
 ) {
     match command {
+        ConsumerCommand::PinObject {
+            identity,
+            expires,
+            response,
+        } => {
+            let result = acquire_object(executor, identity, expires)
+                .await
+                .map(|lease| NativeSealedObjectLease { lease });
+            let _ = response.send(result);
+        }
         ConsumerCommand::Pin {
             identity,
             expires,
@@ -165,6 +232,68 @@ pub(in crate::host_cache::owner) async fn execute(
 }
 
 impl NativeMetadataOwner {
+    /// Synchronizes a consumer pin over an actual complete sealed publication.
+    ///
+    /// The current physical owner must retain the original completed inline or
+    /// manifest publication. A chunk's range in another object, an encoded
+    /// admission, canonical Manifest bytes or an unverified cold record cannot
+    /// substitute for the exact whole sealed file. Accepted work survives waiter
+    /// cancellation. This grants neither exposure scope nor lasting caller Read.
+    ///
+    /// # Errors
+    /// Refuses another identity kind or profile, an expired deadline, absent
+    /// actual publication or Resume, exhausted bounds and native durability,
+    /// integrity, custody or quota failures.
+    pub async fn pin_sealed_object(
+        &self,
+        identity: Identity,
+        expires: u64,
+    ) -> io::Result<NativeSealedObjectLease> {
+        if !matches!(
+            identity.kind(),
+            IdentityKind::Chunk | IdentityKind::Manifest
+        ) {
+            return Err(invalid("sealed object grant requires a content identity"));
+        }
+        Deadline::new(expires)?;
+        let (response, receive) = oneshot::channel();
+        self.send_consumer_command(ConsumerCommand::PinObject {
+            identity,
+            expires,
+            response,
+        })?;
+        receive.await.map_err(|_| stopped())?
+    }
+
+    /// Renews this exact sealed-file consumer after native durable synchronization.
+    ///
+    /// # Errors
+    /// Refuses foreign, released or expired grants, a nonincreasing deadline,
+    /// unavailable queues, changed native backing and durability or quota errors.
+    pub async fn renew_sealed_object_lease(
+        &self,
+        lease: &NativeSealedObjectLease,
+        expires: u64,
+    ) -> io::Result<NativeLeaseAccounting> {
+        self.renew_consumer_lease(&lease.lease, expires).await
+    }
+
+    /// Revokes new backing requests and synchronizes the original release grace.
+    ///
+    /// An existing backing owner retains its exact native source until it closes;
+    /// dropping the lease or revoking its view cannot acknowledge descriptor
+    /// quiescence early.
+    ///
+    /// # Errors
+    /// Refuses foreign grants, unavailable queues, changed native custody and
+    /// failed durable release or quota reconciliation.
+    pub async fn release_sealed_object_lease(
+        &self,
+        lease: &NativeSealedObjectLease,
+    ) -> io::Result<NativeLeaseAccounting> {
+        self.release_consumer_lease(&lease.lease).await
+    }
+
     /// Synchronizes a new consumer pin over this owner's verified resident chunk.
     ///
     /// The absolute Unix expiry must remain live through acknowledgment. Source

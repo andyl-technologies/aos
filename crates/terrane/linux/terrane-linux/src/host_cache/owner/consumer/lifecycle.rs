@@ -33,6 +33,32 @@ pub(in crate::host_cache::owner) async fn acquire(
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
     let source = Arc::new(ConsumerSource::prepare(executor, identity).await?);
+    acquire_source(executor, source, deadline, running).await
+}
+
+/// Selects an exact whole sealed file before using the common durable pin path.
+///
+/// # Errors
+/// Refuses elapsed deadlines, absent completed publication or Running custody,
+/// exhausted resources and native synchronization, integrity or quota failures.
+pub(in crate::host_cache::owner) async fn acquire_object(
+    executor: &mut NativeOwnerExecutor,
+    identity: Identity,
+    expires: u64,
+) -> io::Result<NativeConsumerLease> {
+    let deadline = Deadline::new(expires)?;
+    let running = executor.admission_context()?;
+    running.check_current().map_err(io::Error::other)?;
+    let source = Arc::new(ConsumerSource::prepare_object(executor, identity).await?);
+    acquire_source(executor, source, deadline, running).await
+}
+
+async fn acquire_source(
+    executor: &mut NativeOwnerExecutor,
+    source: Arc<ConsumerSource>,
+    deadline: Deadline,
+    running: Arc<crate::publisher_local::client::PublisherRunningContext>,
+) -> io::Result<NativeConsumerLease> {
     let custody = Arc::clone(executor.custody());
     let (token, hold) = {
         let owner = custody
@@ -41,7 +67,10 @@ pub(in crate::host_cache::owner) async fn acquire(
         state::check_ready(executor, &owner)?;
         source.check_protected(&owner)?;
         deadline.check_live()?;
-        clock::grace_end(Some(expires), owner.preparation.config.policy.release_grace)?;
+        clock::grace_end(
+            Some(deadline.expires),
+            owner.preparation.config.policy.release_grace,
+        )?;
         (
             state::fresh_token(&owner)?,
             owner.preparation.config.metadata_sync_hold_bytes,

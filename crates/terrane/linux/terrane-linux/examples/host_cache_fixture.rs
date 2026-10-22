@@ -36,6 +36,8 @@ mod read_through;
 mod recovery;
 #[path = "host_cache_fixture/running_retention.rs"]
 mod running_retention;
+#[path = "host_cache_fixture/sealed_consumer.rs"]
+mod sealed_consumer;
 #[path = "host_cache_fixture/source_cleanup.rs"]
 mod source_cleanup;
 
@@ -81,6 +83,7 @@ fn main() -> std::process::ExitCode {
             "recover-mixed-manifest",
             "refuse-mixed-manifest",
             "consumer-leases",
+            "sealed-consumer",
             "publish-inline",
             "publish-inline-read-failure",
             "publish-inline-prepare-failure",

@@ -28,6 +28,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         mode,
         "prepare"
             | "consumer-leases"
+            | "sealed-consumer"
             | "empty"
             | "refuse"
             | "late-refuse"
@@ -185,6 +186,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
                 Arc::clone(&confinement),
                 original,
             )?;
+        }
+        "sealed-consumer" => {
+            super::sealed_consumer::run(&owner, &runtime, &inputs, original)?;
         }
         "publish-manifest"
         | "publish-manifest-cancel"

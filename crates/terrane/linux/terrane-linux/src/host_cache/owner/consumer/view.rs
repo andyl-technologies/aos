@@ -7,6 +7,7 @@ use super::{NativeConsumerLease, clock::Deadline, source::ConsumerSource};
 use crate::host_cache::NativeLeaseAccounting;
 use std::{
     io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -200,6 +201,48 @@ impl ReadView {
         Ok(deadline)
     }
 
+    /// Owns one backing registration without occupying a transient read window.
+    ///
+    /// # Errors
+    /// Refuses unavailable capacity, inactive grants, an existing backing owner,
+    /// changed native backing and descriptor IO.
+    pub(super) fn begin_backing(self: &Arc<Self>) -> io::Result<NativeSealedBacking> {
+        let _permit = self.budget.acquire()?;
+        let custody = {
+            let slot = self
+                .source
+                .lock()
+                .map_err(|_| io::Error::other("consumer backing slot poisoned"))?;
+            self.live_deadline()?;
+            let source = slot
+                .as_ref()
+                .ok_or_else(|| io::Error::other("consumer backing revoked"))?;
+            self.active_reads
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "sealed object lease already has an active backing owner",
+                    )
+                })?;
+            BackingCustody {
+                source: Some(Arc::clone(source)),
+                view: Arc::clone(self),
+            }
+        };
+
+        let file = custody
+            .source
+            .as_ref()
+            .ok_or_else(|| io::Error::other("sealed backing lost its source"))?
+            .duplicate_object_backing()?;
+        self.live_deadline()?;
+        Ok(NativeSealedBacking {
+            file,
+            _custody: custody,
+        })
+    }
+
     fn begin_read(&self) -> io::Result<ActiveRead<'_>> {
         let permit = self.budget.acquire()?;
         let source = self
@@ -220,6 +263,42 @@ impl ReadView {
             active: &self.active_reads,
             _permit: permit,
         })
+    }
+}
+
+/// Owns one delegated read-only whole-file backing and its actual source lifetime.
+///
+/// A trusted descriptor transport may pass this descriptor to a worker. It must
+/// retain this owner until the worker has acknowledged closing every delegated
+/// copy and kernel backing reference. The physical owner does not infer that
+/// acknowledgment from a sent message, a dropped lease or elapsed release grace.
+///
+/// New backing requests require a live lease. An already delegated backing
+/// remains retained through release and expiry until this owner closes. Each
+/// lease permits only one such owner, bounding retained descriptors by the
+/// physical owner's finite consumer registry. This type cannot be constructed
+/// from an arbitrary file or detached seal measurement.
+pub struct NativeSealedBacking {
+    // Field drop order closes the duplicate before custody reports quiescence.
+    file: OwnedFd,
+    _custody: BackingCustody,
+}
+
+impl AsFd for NativeSealedBacking {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
+    }
+}
+
+struct BackingCustody {
+    source: Option<Arc<ConsumerSource>>,
+    view: Arc<ReadView>,
+}
+
+impl Drop for BackingCustody {
+    fn drop(&mut self) {
+        drop(self.source.take());
+        self.view.active_reads.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

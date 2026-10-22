@@ -54,7 +54,9 @@ pub use admission::{
     NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
-pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};
+pub use consumer::{
+    NativeConsumerLease, NativeLeaseAccounting, NativeSealedBacking, NativeSealedObjectLease,
+};
 pub use fetch::{NativeChunkFetchRequest, NativeFetchedChunk};
 #[cfg(feature = "native-test-fixtures")]
 pub use policy_stall_fixture::NativePolicyStall;

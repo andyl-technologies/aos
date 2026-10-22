@@ -8,6 +8,7 @@
 use super::{NativeChunkedObject, NativeContentStore, native_failure};
 use crate::host_cache::{
     NativeCacheHandoffReport, NativeInlinePublication, NativeManifestPublication,
+    NativeSealedObjectLease,
 };
 use std::{fs::File, io};
 use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
@@ -140,6 +141,28 @@ impl NativeSealedObject<'_> {
             Publication::Inline(publication) => publication.handle(),
             Publication::Manifest(publication) => publication.handle(),
         }
+    }
+
+    /// Synchronizes an independent consumer pin over this complete sealed file.
+    ///
+    /// The acknowledged grant can retain delegated backing while this producer
+    /// completes [`Self::into_cache`]. The consumer must separately renew or
+    /// release its lease and retain its backing owner through actual worker and
+    /// kernel closure. This operation grants no repository Read permission.
+    ///
+    /// # Errors
+    /// Refuses an elapsed deadline, unavailable owner, exhausted resources,
+    /// changed publication or native durability, integrity and quota failures.
+    pub async fn pin_consumer(
+        &self,
+        expires: u64,
+    ) -> Result<NativeSealedObjectLease, StoreFailure> {
+        self.store
+            .ready
+            .owner()
+            .pin_sealed_object(self.identity.clone(), expires)
+            .await
+            .map_err(|error| native_failure(error, &self.identity))
     }
 
     /// Finishes genuine source cleanup and transfers producer custody to the cache.

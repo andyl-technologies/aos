@@ -12766,3 +12766,44 @@ also passes and independently matches 7,970 source files and 184 compiler
 artifact records across 59 packages. Those compilation outputs retain no ELF
 bytes and establish no application runtime, FUSE mount, index cache pin or task
 acceptance.
+
+
+#### Whole-file consumer custody
+
+The native owner now synchronizes independent consumer pins for exact complete
+inline and assembled sealed publications. These grants expose a retained
+read-only descriptor owner separately from existing chunk and metadata reads.
+A cloned lease shares its single backing slot; native source retention ends
+only after that backing descriptor closes. Descriptor preparation uses the
+short read budget without occupying it throughout delegated use. Release and
+expiry refuse new descriptors while retaining already delegated custody.
+Trusted transports must keep the backing owner until worker copies and kernel
+backing registrations actually close. The native content-store sealed-object
+API exposes the same separately synchronized consumer pin before cache handoff.
+
+Strict feature-enabled Linux all-target Clippy and formatting pass. The real
+ext4 fixture passes both inline and assembled whole-file checks, including exact
+inodes, read-only close-on-exec descriptors, shared lease bounds, access with
+embedded policy held, independent cache handoff, renewal, release and expiry.
+Metadata consumers require actual cache handoff; canonical Manifest metadata
+and a chunk's range cannot substitute for the complete assembled file. The
+fixture also retains an already delegated descriptor through release and expiry
+while refusing new backing requests. All 128 native library cases pass on ext4.
+Independent pre-commit review matches the exact implementation snapshot to the
+four retained compiler artifacts. The remaining full native component run is
+pending; its 89 selectors, existing controls and all runtime bounds stay fixed.
+
+These grants currently select actual completed registered publications. Cold
+whole-file recovery, structural-index cache ownership, exposure leases, worker
+transport and the FUSE mount remain open. A physical consumer pin grants no
+repository Read permission, authenticated exposure scope or BKT-15 readiness.
+No FUSE task or gate is accepted from this handoff component.
+
+Frozen complete-root policy qualification at `223fb8726b` passes all ten cases
+in 1,281.60 seconds, independently matching 7,976 immutable source files and
+5,263 bound crate inputs. Required application-target compilation at that
+commit passes in 1,376.47 seconds, independently matching those source files
+and 184 compiler artifact records across 59 packages. Those outputs retain
+compilation and execution records rather than ELF bytes. Qualification and
+required application compilation for the new consumer implementation remain
+pending; task acceptance is unchanged.

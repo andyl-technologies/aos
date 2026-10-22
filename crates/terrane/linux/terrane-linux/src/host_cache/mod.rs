@@ -54,7 +54,8 @@ pub use owner::{
     NativeConsumerLease, NativeFetchedChunk, NativeIndexRepairReport, NativeInlinePublication,
     NativeLeaseAccounting, NativeManifestPublication, NativeMetadataAdmission,
     NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure, NativeReadChunk,
-    NativeResidentChunkSource, NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
+    NativeResidentChunkSource, NativeResumeError, NativeSealedBacking, NativeSealedObjectLease,
+    NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 #[cfg(feature = "tokio")]

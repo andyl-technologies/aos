@@ -11,6 +11,7 @@ use crate::host_cache::{
         publication::{
             self,
             eviction::{ReadActivities, ReadActivity},
+            object_source::SealedObjectSource,
         },
         retention::{Custody, NativeOwnerExecutor},
     },
@@ -39,6 +40,7 @@ pub(in crate::host_cache::owner) struct ConsumerSource {
 
 enum Backing {
     Sealed(NativeResidentChunkSource),
+    Object(Box<SealedObjectSource>),
     Metadata {
         source: Box<AdmittedMetadataRead>,
         activity: ReadActivities,
@@ -58,6 +60,37 @@ pub(super) struct Allocation {
 }
 
 impl ConsumerSource {
+    /// Selects a complete sealed file independently of chunk and metadata reads.
+    ///
+    /// # Errors
+    /// Refuses unsupported identities, absent completed publication custody,
+    /// failed restoration and native integrity errors.
+    pub(in crate::host_cache::owner) async fn prepare_object(
+        executor: &mut NativeOwnerExecutor,
+        identity: Identity,
+    ) -> io::Result<Self> {
+        let source = SealedObjectSource::prepare(executor, identity).await?;
+        let hashes = vec![super::state::hex(source.identity().digest())];
+        Ok(Self {
+            backing: Backing::Object(Box::new(source)),
+            hashes,
+        })
+    }
+
+    /// Duplicates only a complete sealed-object source for an owning read guard.
+    ///
+    /// # Errors
+    /// Refuses other source kinds, changed native backing and descriptor IO.
+    pub(super) fn duplicate_object_backing(&self) -> io::Result<std::os::fd::OwnedFd> {
+        let Backing::Object(source) = &self.backing else {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "consumer grant does not protect a complete sealed object",
+            ));
+        };
+        source.duplicate_backing()
+    }
+
     /// Binds a shared residence to its actual sealed source before reading bytes.
     ///
     /// # Errors
@@ -143,6 +176,7 @@ impl ConsumerSource {
     pub(super) fn identity(&self) -> &Identity {
         match &self.backing {
             Backing::Sealed(source) => source.identity(),
+            Backing::Object(source) => source.identity(),
             Backing::Encoded { source, .. } => source.identity(),
             Backing::Metadata { source, .. } => source.identity(),
         }
@@ -160,6 +194,7 @@ impl ConsumerSource {
     pub(super) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
         match &self.backing {
             Backing::Sealed(source) => source.check_protected(owner),
+            Backing::Object(source) => source.check_protected(owner),
             Backing::Encoded { source, .. } => source.check_protected(owner),
             Backing::Metadata { source, .. } => source.check_protected(owner),
         }
@@ -172,6 +207,7 @@ impl ConsumerSource {
     pub(super) fn check_consumer_backing(&self, owner: &Custody) -> io::Result<()> {
         match &self.backing {
             Backing::Sealed(source) => source.check_consumer_backing(owner),
+            Backing::Object(source) => source.check_consumer_backing(owner),
             Backing::Encoded { source, .. } => source.check_consumer_backing(owner),
             Backing::Metadata { source, .. } => source.check_consumer_backing(owner),
         }
@@ -184,6 +220,10 @@ impl ConsumerSource {
     pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_verified(),
+            Backing::Object(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "whole-object grants expose sealed backing, not metadata or chunk bytes",
+            )),
             Backing::Metadata { source, activity } => {
                 let bytes = source.read_verified()?;
                 activity.record()?;
@@ -205,6 +245,10 @@ impl ConsumerSource {
     pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_encoded(),
+            Backing::Object(_) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "whole-object grants do not expose encoded content",
+            )),
             Backing::Metadata { source, activity } => {
                 let bytes = source.read_verified()?;
                 activity.record()?;
@@ -231,6 +275,13 @@ impl ConsumerSource {
                     backing: allocated,
                 })
             }
+            Backing::Object(source) => {
+                let allocated = source.synchronize_pin_backing()?;
+                Ok(Allocation {
+                    sealed: allocated,
+                    backing: allocated,
+                })
+            }
             Backing::Metadata { source, .. } => Ok(Allocation {
                 sealed: 0,
                 backing: source.synchronize_pin_backing()?,
@@ -245,7 +296,7 @@ impl ConsumerSource {
     /// Recognizes original admitted resources until the consumer job is reclaimed.
     pub(super) fn retains(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
         match &self.backing {
-            Backing::Sealed(_) => false,
+            Backing::Sealed(_) | Backing::Object(_) => false,
             Backing::Encoded { source, .. } => source.retains(job),
             Backing::Metadata { source, .. } => source.retains(job),
         }
@@ -264,9 +315,13 @@ pub(in crate::host_cache::owner) fn storage_bytes(
 ) -> io::Result<usize> {
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(
-            AdmittedRead::storage_bytes(domain)?.max(AdmittedMetadataRead::storage_bytes()?),
+            AdmittedRead::storage_bytes(domain)?
+                .max(AdmittedMetadataRead::storage_bytes()?)
+                .max(SealedObjectSource::storage_bytes()),
         )
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
+        // Each whole-object lease can retain one delegated descriptor owner.
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::NativeSealedBacking>()))
         // A verified encoded read records both actual body and dictionary units.
         .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Arc<ReadActivity>>()))
         // The consumer view owns one additional verified identity clone.

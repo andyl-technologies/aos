@@ -12,6 +12,7 @@ pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;
 mod io;
 mod manifest;
+pub(in crate::host_cache::owner) mod object_source;
 mod producer_reads;
 pub(super) mod residence;
 mod resident;
