@@ -233,11 +233,8 @@ impl LiveVcpuTimeCallbackState {
             return Err(LiveVcpuTimeCallbackError::ResumeWhileIdleAdvancePending);
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
-        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount).map_err(|source| {
-            LiveVcpuTimeCallbackError::WhiteboxCallback {
-                message: source.to_string(),
-            }
-        })?;
+        deliver_selectable_reply_on_vcpu_resume(vcpu_index, current_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::WhiteboxCallback { source })?;
         if control_boundary_requested {
             // The exact resume callback remains the sole authority for a
             // host-selected guest-memory write. Settle that reply before the

@@ -68,10 +68,10 @@ pub enum LiveVcpuTimeCallbackError {
         source: crate::CoverageError,
     },
     /// The live white-box adapter failed preflight, registration, or dispatch.
-    #[error("live white-box callback failed: {message}")]
+    #[error("live white-box callback failed: {source}")]
     WhiteboxCallback {
-        /// Stable boundary diagnostic.
-        message: String,
+        /// Original typed refusal, retained without eager diagnostic formatting.
+        source: crate::LiveWhiteboxError,
     },
     /// Exact virtual-deadline introspection was unavailable during preflight.
     #[error("required exact-deadline capability failed: {source}")]

@@ -22,7 +22,7 @@ pub(super) fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Reports a failure at the live QEMU white-box ABI boundary.
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveWhiteboxError {
     /// The host did not provide the architecture's collision-free attestation.
     #[error("live white-box registration requires a matching architecture setup attestation")]

@@ -1702,13 +1702,27 @@ fn enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_ef
     .unwrap_or_else(|| panic!("missing white-box ABI must fail preflight"));
 
     assert!(matches!(
-        error,
+        &error,
         PluginRuntimeInstallError::OwnedCallbacks {
             source: OwnedCallbackRegistrationError::LiveVcpuTime {
-                source: LiveVcpuTimeCallbackError::WhiteboxCallback { .. },
+                source: LiveVcpuTimeCallbackError::WhiteboxCallback {
+                    source: live_whitebox::LiveWhiteboxError::CapabilityUnavailable {
+                        symbol: "qemu_plugin_register_vcpu_tb_trans_cb",
+                    },
+                },
             },
         }
     ));
+    let cause = std::error::Error::source(&error)
+        .and_then(|error| error.source())
+        .and_then(|error| error.source())
+        .and_then(|error| error.downcast_ref::<live_whitebox::LiveWhiteboxError>())
+        .expect("the installation error retains the original typed capability refusal");
+    assert_eq!(
+        cause.to_string(),
+        "required live white-box capability `qemu_plugin_register_vcpu_tb_trans_cb` is unavailable"
+    );
+
     fixture.assert_control_silent();
     assert_eq!(live_registration_counts(), registrations_before);
     assert_eq!(time_control_request_count(), 0);

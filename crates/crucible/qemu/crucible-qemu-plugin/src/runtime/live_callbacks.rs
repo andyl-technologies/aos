@@ -367,11 +367,10 @@ impl LiveVcpuTimeCallbackRegistrar {
             },
         )?;
         let whitebox = if args.whitebox().is_on() {
-            Some(LiveWhiteboxApis::resolve().map_err(|source| {
-                LiveVcpuTimeCallbackError::WhiteboxCallback {
-                    message: source.to_string(),
-                }
-            })?)
+            Some(
+                LiveWhiteboxApis::resolve()
+                    .map_err(|source| LiveVcpuTimeCallbackError::WhiteboxCallback { source })?,
+            )
         } else {
             None
         };
@@ -718,18 +717,14 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                     )
                     .map_err(|source| {
                         live_callback_registration_error(
-                            LiveVcpuTimeCallbackError::WhiteboxCallback {
-                                message: source.to_string(),
-                            },
+                            LiveVcpuTimeCallbackError::WhiteboxCallback { source },
                         )
                     })?;
                 whitebox_state
                     .register(self.plugin_id, !args.coverage().is_on())
                     .map_err(|source| {
                         live_callback_registration_error(
-                            LiveVcpuTimeCallbackError::WhiteboxCallback {
-                                message: source.to_string(),
-                            },
+                            LiveVcpuTimeCallbackError::WhiteboxCallback { source },
                         )
                     })?;
                 vcpu_init_callback = crucible_qemu_plugin_live_vcpu_and_whitebox_init_cb;
@@ -2149,11 +2144,8 @@ impl LiveVcpuTimeCallbackState {
             };
             self.notice_claimed_stop(boundary, raw_icount, current_icount);
             if kind == DeferredVmstopKind::Selectable {
-                rebind_selectable_pending_boundary(raw_icount, current_icount).map_err(
-                    |source| LiveVcpuTimeCallbackError::WhiteboxCallback {
-                        message: source.to_string(),
-                    },
-                )?;
+                rebind_selectable_pending_boundary(raw_icount, current_icount)
+                    .map_err(|source| LiveVcpuTimeCallbackError::WhiteboxCallback { source })?;
             }
             PluginShmemOrdering::publish_pause_quiesced(
                 self.slot.get(),

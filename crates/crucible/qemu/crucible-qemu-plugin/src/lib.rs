@@ -264,9 +264,9 @@ pub use round_robin::{
 };
 #[cfg(unix)]
 pub use runtime::{
-    LiveDeviceCallbackError, OwnedCallbackRegistrationError, PluginRuntimeInstallError,
-    PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES, RequiredOwnedCallbacksRegistered,
-    active_runtime_is_published,
+    LiveDeviceCallbackError, LiveWhiteboxError, OwnedCallbackRegistrationError,
+    PluginRuntimeInstallError, PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES,
+    RequiredOwnedCallbacksRegistered, active_runtime_is_published,
 };
 pub use setup::PluginReadySetupAck;
 pub use setup::{
