@@ -334,11 +334,6 @@
   };
   substrateEnvironment = {
     variables = {
-      AOS_CONFIGURATION_SELINUX_LABELS =
-        if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
-        then "true"
-        else "false";
-      AOS_SETFILES = "${dependencies.policycoreutils.path}/sbin/setfiles";
       AOS_PROTECTED_VAR =
         if protectedSandboxRoots
         then "true"
@@ -390,6 +385,7 @@
     dependencies,
     conditions ? null,
     logging ? null,
+    environment ? substrateEnvironment,
   }:
     {
       activationOwner = "manager";
@@ -419,7 +415,7 @@
         signal_scope = "none";
         timeout_millis = 90000;
       };
-      environment = substrateEnvironment;
+      inherit environment;
     }
     // lib.optionalAttrs (conditions != null) {inherit conditions;}
     // lib.optionalAttrs (logging != null) {inherit logging;};
@@ -535,6 +531,21 @@
   etcOverlaySetup = substrateService {
     key = "etc-overlay-setup";
     description = "Set Up /etc Overlay Filesystem";
+    # These image-only inputs belong to initrd overlay setup. Host bootstrap
+    # services must also render identically from retained native host policy.
+    environment =
+      substrateEnvironment
+      // {
+        variables =
+          substrateEnvironment.variables
+          // {
+            AOS_CONFIGURATION_SELINUX_LABELS =
+              if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+              then "true"
+              else "false";
+            AOS_SETFILES = "${dependencies.policycoreutils.path}/sbin/setfiles";
+          };
+      };
     dependencies =
       emptyDependencies
       // {

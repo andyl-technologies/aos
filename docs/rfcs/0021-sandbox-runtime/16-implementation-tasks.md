@@ -9736,6 +9736,19 @@ The existing alias planner can then label the actual target inode. No generic
 `usr_t` service permission is added. This harness repair still requires an
 installed rerun and supplies no Host or public lifecycle qualification itself.
 
+The following Host boot eventually starts its test agent during native
+activation, but fails the exact image-service comparison for
+`aos-host-store-seed`. Replaying the actual retained evaluation descriptor
+shows the new configuration-labeling environment flag is false there and true
+in the image bootstrap unit. That initrd-only input now belongs exclusively
+to `etc-overlay-setup`, rather than every substrate service. The authenticated
+service comparison remains strict. Native stage replay now also compares the
+host store-seed image projection with its retained native definition, and the
+profile replay includes an immutable-SELinux signed lockdown configuration.
+Both checks pass, including the expanded profile check at
+`/nix/store/fg5vak7ndcf4a3y1cx3hh573cklf838w-aos-native-profile-replay`.
+An installed rerun still determines whether host activation completes.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

@@ -2032,6 +2032,7 @@ in rec {
         checks = import ./tests/build/native-profile-replay.nix {
           inherit lib;
           system = serverSystem;
+          secureBootSystem = discoverSystems.server-secureboot-lockdown;
         };
         checkAll = value:
           if builtins.isAttrs value

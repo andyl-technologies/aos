@@ -2,6 +2,7 @@
 {
   lib,
   system,
+  secureBootSystem,
 }: let
   debug = system.extendModules {
     modules = [
@@ -19,6 +20,17 @@
   localeOverride = system.extendModules {
     runtimeModules = [./_native-locale-override.nix];
   };
+  immutableSelinux = secureBootSystem.extendModules {
+    modules = [
+      ../../systems/_server-test-packages.nix
+      {
+        aos.security.selinux = {
+          enable = true;
+          bootMode = "immutable-stage0";
+        };
+      }
+    ];
+  };
   localeEffects = localeOverride.config.aos.abilities.configuration.operations.file.effects;
   localeSession = localeOverride.config.environment.sessionVariables;
   replay = selected:
@@ -30,6 +42,7 @@ in {
   debug = replay debug;
   localeOverride = replay localeOverride;
   crucible = replay crucible;
+  immutableSelinux = replay immutableSelinux;
   debugPolicy = assert debug.config.aos.getty.autologin.enable;
   assert debug.config.aos.security.level == "debug"; true;
   localeOverridePolicy = assert localeOverride.config.aos.system.locale == "de_DE.UTF-8";
