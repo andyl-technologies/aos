@@ -1248,6 +1248,7 @@ def verify_image():
         "host_cache_pending_packs_vm.py",
         "encoded_eviction_vm.py",
         "shared_reextract_vm.py",
+        "sealed_consumer_cold_vm.py",
         "native_feature_units_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),

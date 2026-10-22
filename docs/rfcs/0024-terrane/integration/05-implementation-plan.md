@@ -12842,3 +12842,10 @@ library cases; its committed-source qualification and application-target build
 remain in progress. Structural-index cache ownership, exposure authorization,
 worker transport, actual kernel backing drain and the FUSE mount remain open.
 This change supplies no task acceptance or BKT-15 readiness.
+
+
+The first cold whole-file VM stopped during exact supervisor-helper inventory
+validation, before native case execution: the installed new observer was absent
+from the supervisor's expected helper list. The list now names the same twelve
+helpers as the image installer, with all previous hash and source checks intact.
+This is a fixture startup correction, not a successful cold runtime result.
