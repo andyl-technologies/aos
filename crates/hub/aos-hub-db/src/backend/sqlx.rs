@@ -41,6 +41,9 @@
 
 mod schema_migration;
 
+#[cfg(feature = "postgres")]
+mod postgres_locks;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -881,7 +884,24 @@ mod postgres {
 
         use futures_util::TryStreamExt as _;
 
-        for checked in stmts {
+        let mut remaining = stmts;
+        while let Some((checked, tail)) = remaining.split_first() {
+            if let Some(group) = super::postgres_locks::compile(remaining)? {
+                let row = bind(sqlx::query(&group.sql), &group.parameters, &group.sql)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .context("acquiring ordered PostgreSQL row locks")?;
+                for (index, expected) in group.expected.iter().enumerate() {
+                    let actual: i64 = row.try_get(index)?;
+                    anyhow::ensure!(
+                        u64::try_from(actual)? == *expected,
+                        "checked lock group expected {expected} rows at position {index}, got {actual}"
+                    );
+                }
+                remaining = &remaining[group.expected.len()..];
+                continue;
+            }
+
             let (sql, params) = if let Some(lock) = &checked.postgres_lock_sql {
                 (
                     Cow::Borrowed(lock.translated_sql()?),
@@ -920,6 +940,7 @@ mod postgres {
                     "checked batch expected {expected} affected rows, got {affected} for {sql}"
                 );
             }
+            remaining = tail;
         }
         Ok(())
     }

@@ -18,11 +18,13 @@ use crate::direct_upload::DirectPlacement;
 use crate::value::Value;
 
 fn lock(table: &str, column: &str, predicate: &str, values: Vec<Value>) -> CheckedStatement {
-    Statement::new(
-        format!("UPDATE {table} SET {column} = {column} WHERE {predicate}"),
-        values,
-    )
-    .expecting(1)
+    // Most selectors bind a complete primary key. The authority selector uses
+    // desired topology instead, so retain its independent set-lock snapshot.
+    if table == "surface_write_authorities" {
+        CheckedStatement::row_lock(table, column, predicate, values, 1)
+    } else {
+        CheckedStatement::point_lock(table, column, predicate, values)
+    }
 }
 
 impl Database {

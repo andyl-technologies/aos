@@ -139,6 +139,7 @@ pub struct CheckedStatement {
 #[derive(Debug, Clone)]
 pub struct PostgresLockSql {
     inner: std::sync::Arc<PostgresLockSqlInner>,
+    groupable_point: bool,
 }
 
 #[derive(Debug)]
@@ -150,7 +151,7 @@ struct PostgresLockSqlInner {
 
 impl PartialEq for PostgresLockSql {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.source == other.inner.source
+        self.inner.source == other.inner.source && self.groupable_point == other.groupable_point
     }
 }
 
@@ -166,6 +167,7 @@ impl PostgresLockSql {
                 #[cfg(not(target_arch = "wasm32"))]
                 translated: std::sync::OnceLock::new(),
             }),
+            groupable_point: false,
         }
     }
 
@@ -186,6 +188,25 @@ impl PostgresLockSql {
 }
 
 impl CheckedStatement {
+    /// Locks one row selected by its complete unique key and optional tuple pins.
+    ///
+    /// The predicate must contain no cross-row eligibility reads. PostgreSQL may
+    /// group these locks in one statement: waiting rechecks the selected tuple,
+    /// while a missing tuple always fails the required one-row count. Set locks
+    /// and eligibility predicates retain separate statement snapshots.
+    pub(crate) fn point_lock(
+        table: &str,
+        column: &str,
+        predicate: &str,
+        params: Vec<Value>,
+    ) -> Self {
+        let mut checked = Self::row_lock(table, column, predicate, params, 1);
+        if let Some(lock) = &mut checked.postgres_lock_sql {
+            lock.groupable_point = true;
+        }
+        checked
+    }
+
     /// Locks exactly the rows matching a trusted SQL predicate.
     ///
     /// PostgreSQL uses `SELECT FOR UPDATE`; other engines use a checked no-op
