@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
 use crucible_qemu_protocol::{
-    WHITEBOX_DOORBELL_KIND_LIFECYCLE, WhiteboxDoorbellFrameView,
+    SELECTABLE_MESSAGE_MAX_BYTES, WHITEBOX_DOORBELL_KIND_LIFECYCLE, WhiteboxDoorbellFrameView,
     decode_whitebox_marker_payload_view,
 };
 use crucible_qemu_shmem::MAX_FRAME_DATA;
@@ -132,7 +132,12 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
             vcpu_index,
             current_icount,
         );
-        selectable.deliver_reply(current_icount, vcpu_index, &mut writer)
+        selectable.deliver_reply(
+            current_icount,
+            vcpu_index,
+            &mut writer,
+            &mut state.selectable_reply_buffer,
+        )
     })?;
     if let Some(reply) = completed {
         state
@@ -273,6 +278,8 @@ pub(crate) struct LiveWhiteboxState {
     campaign_marker_parking: bool,
     app_random: Option<LiveAppRandomState>,
     selectable: Option<selectable::LiveSelectableState>,
+    // Serialized trap and resume callbacks borrow this containing paid body.
+    selectable_reply_buffer: [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     guest_introspection: guest_introspection::LiveGuestIntrospectionState,
 }
 
@@ -527,6 +534,7 @@ impl LiveWhiteboxState {
             campaign_marker_parking: launch_plans.campaign_marker_parking,
             app_random,
             selectable,
+            selectable_reply_buffer: [0; SELECTABLE_MESSAGE_MAX_BYTES],
             guest_introspection: guest_introspection::LiveGuestIntrospectionState::new(
                 shmem.guest_introspection_rings,
                 guest_input_capability,
@@ -686,7 +694,12 @@ impl LiveWhiteboxState {
             // Pending selection can defer VMStop. Release the native snapshot
             // after complete decode and before entering that service.
             drop(buffer);
-            let outcome = selectable.handle(prepared, self.apis, event)?;
+            let outcome = selectable.handle(
+                prepared,
+                self.apis,
+                event,
+                &mut self.selectable_reply_buffer,
+            )?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>

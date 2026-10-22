@@ -1,8 +1,8 @@
 //! Selectable callback authority and writeback tests.
 
 use crucible_qemu_protocol::{
-    SELECTABLE_DIGEST_BYTES, SelectableRegister, SelectionReply, SelectionReplyStatus,
-    SelectionRequest,
+    SELECTABLE_DIGEST_BYTES, SELECTABLE_MESSAGE_MAX_BYTES, SelectableRegister, SelectionReply,
+    SelectionReplyStatus, SelectionRequest,
 };
 
 use super::*;
@@ -220,6 +220,43 @@ fn request_writes_one_sequence_bound_zero_padded_reply_at_trap()
     assert_eq!(&written[..reply_bytes.len()], reply_bytes);
     assert!(written[reply_bytes.len()..].iter().all(|byte| *byte == 0));
     assert_eq!(written.len(), 160);
+    let mut reply_buffer = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let mut buffered_writer = Memory::new(Vec::new());
+    for value_len in [3, 1] {
+        service.reply = SelectionReply::selected(
+            9,
+            [1; SELECTABLE_DIGEST_BYTES],
+            [2; SELECTABLE_DIGEST_BYTES],
+            vec![3; value_len],
+        )?;
+        let expected = service.reply.encode()?;
+        let prepared = PreparedSelectableTrap::decode(
+            &doorbell,
+            event(request_bytes.len()),
+            SelectableCallbackCoordinate::new(77, 3_850, 2),
+            &request_bytes,
+        )?;
+
+        prepared.serve_with_reply_buffer(
+            &capability(&doorbell)?,
+            &mut service,
+            &mut buffered_writer,
+            &mut reply_buffer,
+        )?;
+
+        assert_eq!(&reply_buffer[..expected.len()], expected);
+        assert!(
+            reply_buffer[expected.len()..160]
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        assert!(reply_buffer[160..].iter().all(|byte| *byte == 0xa5));
+        let (icount, range, written) = buffered_writer.writes.last().unwrap();
+        assert_eq!(*icount, 77);
+        assert_eq!(*range, event(160).payload_range());
+        assert_eq!(written, &reply_buffer[..160]);
+    }
+    assert_eq!(buffered_writer.writes.len(), 2);
     Ok(())
 }
 
@@ -243,7 +280,13 @@ fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
     assert!(service.request.is_none());
     assert!(writer.writes.is_empty());
 
-    let outcome = prepared.serve(&capability(&doorbell)?, &mut service, &mut writer)?;
+    let mut reply_buffer = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let outcome = prepared.serve_with_reply_buffer(
+        &capability(&doorbell)?,
+        &mut service,
+        &mut writer,
+        &mut reply_buffer,
+    )?;
 
     assert_eq!(
         outcome,
@@ -261,6 +304,7 @@ fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
     );
     assert!(writer.writes.is_empty());
     assert_eq!(guest_memory, request.encode()?);
+    assert!(reply_buffer.iter().all(|byte| *byte == 0xa5));
     Ok(())
 }
 

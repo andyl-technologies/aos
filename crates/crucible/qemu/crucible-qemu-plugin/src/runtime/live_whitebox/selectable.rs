@@ -207,6 +207,7 @@ impl LiveSelectableState {
         current_icount: u64,
         vcpu_index: u32,
         writer: &mut W,
+        reply_buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<Option<SelectionReply>, LiveWhiteboxError>
     where
         W: WhiteboxGuestInputWriter + ?Sized,
@@ -215,7 +216,7 @@ impl LiveSelectableState {
             return Ok(None);
         }
 
-        self.deliver_available_reply(current_icount, vcpu_index, writer)
+        self.deliver_available_reply(current_icount, vcpu_index, writer, reply_buffer)
     }
 
     // Keep entry-sized return values and decoding buffers off the empty resume
@@ -227,6 +228,7 @@ impl LiveSelectableState {
         current_icount: u64,
         vcpu_index: u32,
         writer: &mut W,
+        reply_buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<Option<SelectionReply>, LiveWhiteboxError>
     where
         W: WhiteboxGuestInputWriter + ?Sized,
@@ -297,10 +299,15 @@ impl LiveSelectableState {
                 pending.reply_range().len()
             )));
         }
-        let mut bytes = vec![0; pending.reply_range().len()];
-        reply.encode_into(&mut bytes).map_err(callback_error)?;
+        let bytes = reply_buffer
+            .get_mut(..pending.reply_range().len())
+            .ok_or_else(|| {
+                callback_error("selectable reservation exceeds its fixed reply workspace")
+            })?;
+        bytes.fill(0);
+        reply.encode_into(bytes).map_err(callback_error)?;
         writer
-            .write_whitebox_input(current_icount, pending.reply_range(), &bytes)
+            .write_whitebox_input(current_icount, pending.reply_range(), bytes)
             .map_err(|error| {
                 callback_error(format!(
                     "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
@@ -320,11 +327,12 @@ impl LiveSelectableState {
         prepared: crate::whitebox_doorbell::PreparedSelectableTrap,
         apis: LiveWhiteboxApis,
         event: WhiteboxDoorbellTrapEvent,
+        reply_buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<SelectableDoorbellOutcome, LiveWhiteboxError> {
         let capability = self.capability;
         let mut writer = app_random::LiveGuestMemoryWriter::new(apis, event.current_icount());
         prepared
-            .serve(&capability, self, &mut writer)
+            .serve_with_reply_buffer(&capability, self, &mut writer, reply_buffer)
             .map_err(callback_error)
     }
 

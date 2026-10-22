@@ -199,9 +199,15 @@ fn empty_reply_resume_leaves_later_publication_for_exactly_one_delivery()
     let mut state = live_state(&restored_plan()?, ring.consumer())?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
+    let mut reply_buffer = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
 
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
+    assert!(reply_buffer.iter().all(|byte| *byte == 0xa5));
     assert!(state.catalog().pending_request().is_some());
     assert_eq!(state.catalog().total_completed_requests(), 1);
 
@@ -217,14 +223,25 @@ fn empty_reply_resume_leaves_later_publication_for_exactly_one_delivery()
     std::thread::scope(|scope| scope.spawn(|| ring.publish(entry)).join())
         .map_err(|_| std::io::Error::other("reply producer panicked"))??;
 
-    assert_eq!(state.deliver_reply(1_000_137, 2, &mut writer)?, Some(reply));
+    assert_eq!(
+        state.deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?,
+        Some(reply)
+    );
     assert_eq!(writer.delivery_icount, Some(1_000_137));
+    assert_eq!(&reply_buffer[..160], writer.payload);
+    assert!(reply_buffer[160..].iter().all(|byte| *byte == 0xa5));
+    let delivered_buffer = reply_buffer;
     assert!(state.catalog().pending_request().is_none());
     assert_eq!(state.catalog().total_completed_requests(), 2);
     writer.delivery_icount = None;
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_reply(1_000_137, 2, &mut writer, &mut reply_buffer)?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
     assert_eq!(ring.header.read_index(), 1);
+    assert_eq!(reply_buffer, delivered_buffer);
     Ok(())
 }
 
@@ -243,7 +260,14 @@ fn available_reply_keeps_kind_and_unsolicited_errors_before_consumption()
         ring.publish(WhiteboxMarkerEntry::new(50, 0, kind, b"bad reply")?)?;
         let mut writer = RecordingWriter::default();
 
-        let error = state.deliver_reply(50, 0, &mut writer).err();
+        let error = state
+            .deliver_reply(
+                50,
+                0,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+            )
+            .err();
         assert!(error.is_some_and(|error| error.to_string().contains(expected)));
         assert_eq!(writer.delivery_icount, None);
         assert_eq!(ring.header.read_index(), 0);
@@ -262,7 +286,16 @@ fn available_reply_rereads_the_ring_after_an_advisory_observation()
     ring.header.dequeue_whitebox_marker(&ring.entries)?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_available_reply(50, 0, &mut writer)?.is_none());
+    assert!(
+        state
+            .deliver_available_reply(
+                50,
+                0,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )?
+            .is_none()
+    );
     assert_eq!(writer.delivery_icount, None);
     assert_eq!(state.catalog().total_completed_requests(), 0);
     Ok(())
@@ -282,11 +315,29 @@ fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
     )?)?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_reply(1_000_086, 2, &mut writer).is_err());
+    assert!(
+        state
+            .deliver_reply(
+                1_000_086,
+                2,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )
+            .is_err()
+    );
     assert_eq!(ring.header.read_index(), 0);
     assert!(state.catalog().pending_request().is_some());
 
-    assert!(state.deliver_reply(1_000_137, 2, &mut writer).is_err());
+    assert!(
+        state
+            .deliver_reply(
+                1_000_137,
+                2,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )
+            .is_err()
+    );
     assert_eq!(ring.header.read_index(), 1);
     assert_eq!(writer.delivery_icount, None);
     assert!(state.catalog().pending_request().is_some());
@@ -322,7 +373,12 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
     )?)?;
 
     let error = state
-        .deliver_reply(1_000_137, 2, &mut RejectingWriter)
+        .deliver_reply(
+            1_000_137,
+            2,
+            &mut RejectingWriter,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
         .err();
     assert!(error.is_some_and(|error| error.to_string().contains("injected write failure")));
     assert_eq!(ring.header.read_index(), 1);
@@ -465,10 +521,20 @@ fn resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation(
     let mut state = live_state(&plan, reply_input)?;
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(1_000_137, 1, &mut writer)?;
+    state.deliver_reply(
+        1_000_137,
+        1,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
-    state.deliver_reply(1_000_137, 2, &mut writer)?;
+    state.deliver_reply(
+        1_000_137,
+        2,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
 
     assert_eq!(writer.delivery_icount, Some(1_000_137));
     assert_eq!(
@@ -542,7 +608,12 @@ fn live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundar
     );
 
     let mut writer = RecordingWriter::default();
-    state.deliver_reply(2_600, 1, &mut writer)?;
+    state.deliver_reply(
+        2_600,
+        1,
+        &mut writer,
+        &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+    )?;
 
     assert_eq!(writer.delivery_icount, Some(2_600));
     assert!(state.catalog().pending_request().is_none());
@@ -618,7 +689,16 @@ fn stale_reply_coordinate_fails_before_guest_write_or_catalog_completion()
     state.restore_continuation()?;
     let mut writer = RecordingWriter::default();
 
-    assert!(state.deliver_reply(700, 2, &mut writer).is_err());
+    assert!(
+        state
+            .deliver_reply(
+                700,
+                2,
+                &mut writer,
+                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
+            )
+            .is_err()
+    );
     assert!(writer.payload.is_empty());
     assert!(state.catalog().pending_request().is_some());
     assert_eq!(state.catalog().total_completed_requests(), 1);

@@ -4,6 +4,8 @@
 //! callback coordinates. Service starts after the encoded snapshot is released,
 //! so a pending boundary cannot retain a native guest-read allocation.
 
+use crucible_qemu_protocol::SELECTABLE_MESSAGE_MAX_BYTES;
+
 use super::*;
 
 /// Retains a validated selectable message without borrowing its encoded bytes.
@@ -73,6 +75,42 @@ impl PreparedSelectableTrap {
         S: SelectableDoorbellService + ?Sized,
         W: WhiteboxGuestInputWriter + ?Sized,
     {
+        self.serve_with_storage(capability, service, writer, None)
+    }
+
+    /// Services a trap using the containing runtime's fixed reply workspace.
+    ///
+    /// The exact protocol maximum makes every valid guest reservation fit.
+    /// Pending and registration paths leave the workspace unchanged. Replies
+    /// clear their full reservation and preserve all bytes outside that prefix.
+    ///
+    /// # Errors
+    /// Preserves the same service, protocol and delivery refusals as `serve`.
+    pub(crate) fn serve_with_reply_buffer<S, W>(
+        self,
+        capability: &WhiteboxGuestInputCapability,
+        service: &mut S,
+        writer: &mut W,
+        buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
+    ) -> Result<SelectableDoorbellOutcome, SelectableDoorbellError>
+    where
+        S: SelectableDoorbellService + ?Sized,
+        W: WhiteboxGuestInputWriter + ?Sized,
+    {
+        self.serve_with_storage(capability, service, writer, Some(buffer))
+    }
+
+    fn serve_with_storage<S, W>(
+        self,
+        capability: &WhiteboxGuestInputCapability,
+        service: &mut S,
+        writer: &mut W,
+        buffer: Option<&mut [u8; SELECTABLE_MESSAGE_MAX_BYTES]>,
+    ) -> Result<SelectableDoorbellOutcome, SelectableDoorbellError>
+    where
+        S: SelectableDoorbellService + ?Sized,
+        W: WhiteboxGuestInputWriter + ?Sized,
+    {
         let Self {
             doorbell,
             event,
@@ -110,15 +148,33 @@ impl PreparedSelectableTrap {
                         capacity: request.reply_capacity(),
                     });
                 }
-                let mut full_buffer = vec![0; request.reply_capacity()];
-                reply.encode_into(&mut full_buffer)?;
-                let input = WhiteboxGuestInput::new(
-                    event.current_icount(),
-                    event.payload_range(),
-                    full_buffer,
-                );
+                let mut owned_buffer;
+                let full_buffer = match buffer {
+                    Some(buffer) => {
+                        let full_buffer = buffer.get_mut(..request.reply_capacity()).ok_or(
+                            SelectableProtocolError::ReplyCapacityTooSmall {
+                                capacity: SELECTABLE_MESSAGE_MAX_BYTES,
+                                minimum: request.reply_capacity(),
+                            },
+                        )?;
+                        full_buffer.fill(0);
+                        full_buffer
+                    }
+                    None => {
+                        owned_buffer = vec![0; request.reply_capacity()];
+                        owned_buffer.as_mut_slice()
+                    }
+                };
+                reply.encode_into(full_buffer)?;
                 let injection = match doorbell
-                    .inject_guest_input(capability, writer, event.current_icount(), &input)
+                    .inject_guest_input_slice(
+                        capability,
+                        writer,
+                        event.current_icount(),
+                        event.current_icount(),
+                        event.payload_range(),
+                        full_buffer,
+                    )
                     .map_err(SelectableDoorbellError::Doorbell)?
                 {
                     WhiteboxGuestInputOutcome::Delivered(injection) => injection,

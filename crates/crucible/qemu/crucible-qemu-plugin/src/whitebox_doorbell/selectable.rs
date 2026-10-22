@@ -12,9 +12,8 @@ use thiserror::Error;
 
 use super::{
     GuestMemoryRange, GuestMemoryReader, PluginWhiteboxDoorbell, WhiteboxDoorbellError,
-    WhiteboxDoorbellTrapEvent, WhiteboxGuestInput, WhiteboxGuestInputCapability,
-    WhiteboxGuestInputInjection, WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter,
-    read_doorbell_payload,
+    WhiteboxDoorbellTrapEvent, WhiteboxGuestInputCapability, WhiteboxGuestInputInjection,
+    WhiteboxGuestInputOutcome, WhiteboxGuestInputWriter, read_doorbell_payload,
 };
 
 mod prepared;

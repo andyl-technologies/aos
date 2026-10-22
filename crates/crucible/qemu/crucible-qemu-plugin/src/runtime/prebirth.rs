@@ -146,6 +146,12 @@ mod tests {
             sampled.layouts()[0],
             Layout::new::<OwnedCallbackRuntimeState>()
         );
+        eprintln!(
+            "containing callback runtime: {} bytes, alignment {}; inline white-box state: {} bytes",
+            sampled.layouts()[0].size(),
+            sampled.layouts()[0].align(),
+            size_of::<super::super::live_whitebox::LiveWhiteboxState>(),
+        );
         assert!(
             sampled.layouts()[WORKER_CONTROL_ALLOCATION].size() > size_of::<std::sync::Arc<()>>()
         );
