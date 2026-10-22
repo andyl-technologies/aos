@@ -345,10 +345,14 @@ fn installed_storage_rpc_client() {
             ));
             let envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
             assert_eq!(envelope.method, method);
-            assert!(matches!(
-                exchange(method, envelope),
-                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
-            ));
+            match exchange(method, envelope) {
+                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid) => {}
+                Err(cause) => panic!("unexpected unavailable {method:?} refusal: {cause:?}"),
+                Ok(outcome) => panic!(
+                    "unavailable {method:?} returned a signed outcome: {:?}",
+                    outcome.result(),
+                ),
+            }
             b"unavailable-method-rejected-v1".to_vec()
         }
         "reject-wrong-cgroup" => {
