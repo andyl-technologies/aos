@@ -293,8 +293,10 @@ def main():
                 "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"]
             if listener:
                 expected.insert(1, "PASS bounded maintenance runtime expires actual idle GC connection without changing owner policy")
+                expected.insert(2, "PASS bounded GC client times out against actual unserved connection without changing owner policy")
                 expected.append("PASS protected GC listener preserves its original mode-0660 inode and refuses unsafe ancestors, existing names and wrong-role connections")
                 expected.append("PASS bounded maintenance runtime serves actual original-owner reconciliation and shuts down without replacing its protected listener")
+                expected.append("PASS bounded GC client receives actual original-owner closure reports through kernel readiness")
             support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
                 "actual distinct-role GC maintenance failed")
             support.verify_image()

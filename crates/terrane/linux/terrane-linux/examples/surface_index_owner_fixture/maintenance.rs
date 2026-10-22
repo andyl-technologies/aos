@@ -16,6 +16,7 @@ use std::{
     os::fd::AsFd,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
+    pin::Pin,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -139,6 +140,16 @@ pub(super) fn run(
                 return Err("idle GC connection changed actual owner policy".into());
             }
             println!("PASS bounded maintenance runtime expires actual idle GC connection without changing owner policy");
+            launched.control.write_all(&[4])?;
+            if launched.receive_packet::<1>().await? != [4] {
+                return Err("GC request timeout acknowledgment differs".into());
+            }
+            let expired = listener.accept()?.ok_or("timed-out GC connection absent")?;
+            drop(expired);
+            if fs::read(&policy)? != before {
+                return Err("unserved GC request changed actual owner policy".into());
+            }
+            println!("PASS bounded GC client times out against actual unserved connection without changing owner policy");
             with_service(
                 &listener,
                 owner,
@@ -148,10 +159,10 @@ pub(super) fn run(
                     connection_timeout: Duration::from_secs(30),
                     request_timeout: Duration::from_secs(20),
                 },
-                exposure::verify_index_closure(owner, inputs, Some(launched)),
+                index_closure(owner, inputs, launched),
             ).await?;
         } else {
-            exposure::verify_index_closure(owner, inputs, Some(launched)).await?;
+            index_closure(owner, inputs, launched).await?;
         }
         launched.control.write_all(&[0])?;
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -184,9 +195,23 @@ pub(super) fn run(
             println!(
                 "PASS bounded maintenance runtime serves actual original-owner reconciliation and shuts down without replacing its protected listener"
             );
+            println!("PASS bounded GC client receives actual original-owner closure reports through kernel readiness");
         }
         Ok(())
     }))
+}
+
+// Keep the large closure proof out of the service join's nested future frames.
+fn index_closure<'owner>(
+    owner: &'owner NativeMetadataOwner,
+    inputs: &'owner config::Inputs,
+    launched: &'owner mut Launched,
+) -> Pin<Box<dyn Future<Output = Result<()>> + 'owner>> {
+    Box::pin(exposure::verify_index_closure(
+        owner,
+        inputs,
+        Some(launched),
+    ))
 }
 
 impl Launched {
@@ -331,6 +356,13 @@ pub(super) fn child(listener: bool) -> Result<()> {
     };
     let mut control = File::from(io::stderr().as_fd().try_clone_to_owned()?);
     let mut idle = None;
+    let runtime = listener
+        .then(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+        })
+        .transpose()?;
     loop {
         wait_readable(&control, 25)?;
         let mut operation = [0];
@@ -352,6 +384,20 @@ pub(super) fn child(listener: bool) -> Result<()> {
             control.write_all(&[3])?;
             continue;
         }
+        if listener && operation == [4] {
+            let connection = MaintenanceClient::connect(&listener_path()?, ROLES)?;
+            let result = runtime
+                .as_ref()
+                .ok_or("GC client runtime absent")?
+                .block_on(connection.reconcile_draining_once(Duration::from_millis(100)));
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => return Err("unserved native GC request succeeded".into()),
+            }
+            control.write_all(&[4])?;
+            continue;
+        }
         if operation != [1] {
             return Err("invalid fixture maintenance operation".into());
         }
@@ -362,22 +408,24 @@ pub(super) fn child(listener: bool) -> Result<()> {
         {
             return Err("GC could open serve-private cache state".into());
         }
-        if client.is_none() {
-            client = Some(MaintenanceClient::connect(&listener_path()?, ROLES)?);
-        }
-        let mut pending = client
-            .as_mut()
-            .ok_or("GC channel absent")?
-            .reconcile_draining()?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let report = loop {
-            if let Some(report) = pending.try_receive()? {
-                break report;
+        let report = if let Some(runtime) = &runtime {
+            let connection = MaintenanceClient::connect(&listener_path()?, ROLES)?;
+            runtime.block_on(connection.reconcile_draining_once(Duration::from_secs(5)))?
+        } else {
+            let mut pending = client
+                .as_mut()
+                .ok_or("GC channel absent")?
+                .reconcile_draining()?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(report) = pending.try_receive()? {
+                    break report;
+                }
+                if Instant::now() >= deadline {
+                    return Err("GC reconciliation reply exceeded fixture deadline".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
             }
-            if Instant::now() >= deadline {
-                return Err("GC reconciliation reply exceeded fixture deadline".into());
-            }
-            std::thread::sleep(Duration::from_millis(1));
         };
         let mut packet = [0; 24];
         for (target, value) in packet.as_chunks_mut::<8>().0.iter_mut().zip([

@@ -14884,3 +14884,40 @@ The longer aggregate and current native runtime checks remain separate.
 Full GC-25 collection is assigned by this plan to optional T-TOPO-2; it is
 not substituted for T2's actual periodic lease-expiry obligation (HOST-24),
 which remains owned by the native physical worker.
+
+
+#### Bounded GC client and maintenance proof frames
+
+The `5e815dc29f` enrollment VM passes in 345.025 seconds. Independent
+review matches all 8,061 immutable source files, 5,341 bound inputs and the
+installed Cargo fixture. Both actual enrolled Original opens reach the native
+fence refusal with selected state, original registration and physical custody
+unchanged. `capabilities-update` remains explicitly unqualified; this result
+does not turn that refusal into a successful capability publication. The
+earlier `30296ebd32` application-target build passes in 1,685.544 seconds;
+review matches all 8,060 source files and 185 test executables across 59
+packages. Its failed native capability experiment remains retained.
+
+The `5e815dc29f` maintenance-listener VM fails in 707.941 seconds after
+successful native recovery, acknowledged Resume and actual idle connection
+expiry. The parent then overflows its stack while entering the unchanged
+index-closure proof. Actual installed ELF prologues retain a `0x112000 +
+0xf78` byte enclosing maintenance poll frame and a `0xd4000 + 0xe58` byte
+nested service-join frame. The fixture now boxes that large closure future
+before passing it into the join. No assertion, stack limit, actor deadline or
+VM deadline is relaxed; the failed run remains a failure pending a new native
+qualification.
+
+The public maintenance client now offers one consuming asynchronous request
+with a positive timeout of at most 300 seconds. Kernel readiness drives both
+send and receive under one whole-operation deadline. Every result and
+cancellation explicitly shut down the connection, including retained
+descriptor aliases; queued physical work keeps its original owner and funded
+obligations. All 14 actual socket cases pass, including authenticated counts,
+remote refusal, forged sequence rejection, timeout, cancellation with retained
+aliases and refusal of invalid limits before sending. Both strict Linux
+all-target feature profiles pass. The existing native listener fixture now
+uses this client for genuine closure reports and requires a real unserved
+request to time out without changing owner policy. Native requalification
+and the current application-target build remain required. This component
+does not implement configured role startup or accept another trunk task.

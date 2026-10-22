@@ -8,6 +8,7 @@
 //! Socket operations are nonblocking; callers supply event loops and deadlines.
 //! Configured role startup separately owns connection limits and deadlines.
 
+mod client_runtime;
 mod listener;
 mod runtime;
 mod socket;

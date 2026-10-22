@@ -224,6 +224,132 @@ fn authenticated_remote_refusal_preserves_the_next_exact_sequence() {
     assert_eq!(pending.try_receive().unwrap(), Some(report));
 }
 
+#[test]
+fn bounded_client_receives_authenticated_counts_and_remote_refusals() {
+    let report = NativeExposureReconciliation {
+        checked: 3,
+        completed: 1,
+        blocked: 2,
+    };
+    runtime().block_on(async {
+        for result in [Ok(report), Err(io::ErrorKind::WouldBlock.into())] {
+            let (client, peer) = client_endpoint();
+            let request = client.reconcile_draining_once(std::time::Duration::from_secs(1));
+            let responder = async {
+                wait_for_request(&peer).await;
+                let packet = wire::reply(1, &result).unwrap();
+                net::send(&peer, &packet, net::SendFlags::NOSIGNAL).unwrap();
+            };
+
+            let (received, ()) = tokio::join!(request, responder);
+
+            match result {
+                Ok(expected) => assert_eq!(received.unwrap(), expected),
+                Err(expected) => assert_eq!(received.unwrap_err().kind(), expected.kind()),
+            }
+            assert!(net::send(&peer, b"late", net::SendFlags::NOSIGNAL).is_err());
+        }
+    });
+}
+
+#[test]
+fn bounded_client_timeout_and_cancellation_close_the_actual_connection() {
+    use std::time::Duration;
+
+    runtime().block_on(async {
+        let (client, peer) = client_endpoint();
+        let _retained_alias = client.endpoint.descriptor().try_clone_to_owned().unwrap();
+
+        let error = client
+            .reconcile_draining_once(Duration::from_millis(20))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        receive_request(&peer, 1);
+        assert!(net::send(&peer, b"late", net::SendFlags::NOSIGNAL).is_err());
+
+        let (client, peer) = client_endpoint();
+        let _retained_cancelled_alias = client.endpoint.descriptor().try_clone_to_owned().unwrap();
+        let mut request = Box::pin(client.reconcile_draining_once(Duration::from_secs(1)));
+        tokio::select! {
+            result = &mut request => panic!("unserved request completed: {result:?}"),
+            () = wait_for_request(&peer) => {},
+        }
+
+        drop(request);
+
+        assert!(net::send(&peer, b"late", net::SendFlags::NOSIGNAL).is_err());
+    });
+}
+
+#[test]
+fn bounded_client_refuses_forged_reply_without_returning_counts() {
+    runtime().block_on(async {
+        let (client, peer) = client_endpoint();
+        let request = client.reconcile_draining_once(std::time::Duration::from_secs(1));
+        let responder = async {
+            wait_for_request(&peer).await;
+            let packet = wire::reply(2, &Ok(NativeExposureReconciliation::default())).unwrap();
+            net::send(&peer, &packet, net::SendFlags::NOSIGNAL).unwrap();
+        };
+
+        let (received, ()) = tokio::join!(request, responder);
+
+        assert_eq!(received.unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(net::send(&peer, b"late", net::SendFlags::NOSIGNAL).is_err());
+    });
+}
+
+#[test]
+fn bounded_client_refuses_invalid_limits_before_sending() {
+    use std::time::Duration;
+
+    runtime().block_on(async {
+        for timeout in [Duration::ZERO, Duration::from_secs(301)] {
+            let (client, peer) = client_endpoint();
+
+            let error = client.reconcile_draining_once(timeout).await.unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            let mut bytes = [0; 24];
+            assert_eq!(
+                net::recv(&peer, &mut bytes, net::RecvFlags::DONTWAIT)
+                    .unwrap()
+                    .0,
+                0
+            );
+        }
+    });
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+async fn wait_for_request(peer: impl AsFd) {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let mut bytes = [0; 24];
+            match net::recv(&peer, &mut bytes, net::RecvFlags::DONTWAIT) {
+                Ok((length, _)) => {
+                    wire::request(&bytes[..length], 1).unwrap();
+                    return;
+                }
+                Err(error) if error == rustix::io::Errno::WOULDBLOCK => {
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("actual request failed: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+}
+
 /// Exercises client state below the separately checked public role binding.
 fn client_endpoint() -> (MaintenanceClient, std::os::fd::OwnedFd) {
     let (receiver, peer) = super::channel_pair().unwrap();

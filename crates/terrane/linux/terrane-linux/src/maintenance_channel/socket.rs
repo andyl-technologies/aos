@@ -127,7 +127,7 @@ impl Endpoint {
         }
     }
 
-    fn abort(&mut self) {
+    pub(super) fn abort(&mut self) {
         self.active = false;
         let _ = net::shutdown(&self.socket, net::Shutdown::Both);
     }
