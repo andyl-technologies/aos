@@ -125,7 +125,11 @@ fn child(case: &str, wire: &[u8]) {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
-            peer.write_all(b"literal suffix").unwrap();
+            if case.contains("_normalizations_host_frame_") {
+                super::bootstrap_literal::tests::write_parent_frame(case, peer);
+            } else {
+                peer.write_all(b"literal suffix").unwrap();
+            }
         } else if case.starts_with("initial_hello_value_") {
             let body = initial_reconstruction::hello_value_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();

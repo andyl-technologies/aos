@@ -10,6 +10,7 @@ use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_bootstrap_kernel_construction_data,
     original_import18_bootstrap_kernel_counter_scratch_data,
+    original_import18_bootstrap_literal_construction_data,
     original_import18_controller_measurement_construction_data,
     original_import18_hello_envelope_construction_bound_data,
     original_import18_hello_envelope_counter_scratch_data,
@@ -120,6 +121,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         native_import18_launch_identity_construction_data(launch, maximum)?,
         original_import18_launch_validation_construction_data(launch, maximum)?,
         super::initial_normalizations::construction_data(launch, private, maximum)?,
+        original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -179,6 +181,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         native_import18_launch_identity_construction_data(launch, maximum)?,
         original_import18_launch_validation_construction_data(launch, maximum)?,
         super::initial_normalizations::construction_data(launch, &private, maximum)?,
+        original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -224,6 +227,7 @@ fn combine(
     launch_identity: (usize, usize),
     launch_validation: [usize; 3],
     normalizations: [usize; 3],
+    bootstrap_literal: [usize; 3],
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
@@ -360,6 +364,10 @@ fn combine(
     row[0] = add(row[0], normalizations[0])?;
     row[1] = row[1].max(normalizations[1]);
     row[2] = row[2].max(add(raw[2], normalizations[2])?);
+    // The completed hashes remain retained beside the first post-Hello raw frame.
+    row[0] = add(row[0], bootstrap_literal[0])?;
+    row[1] = row[1].max(bootstrap_literal[1]);
+    row[2] = row[2].max(add(raw[2], bootstrap_literal[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -407,6 +415,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The first post-Hello literal constructor row.
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
         + size_of::<[usize; 3]>() // The retained complete initial SDK row.
         + original_import18_hello_request_counter_scratch_data()

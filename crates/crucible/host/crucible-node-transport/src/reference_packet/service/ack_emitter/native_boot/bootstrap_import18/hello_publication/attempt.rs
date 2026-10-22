@@ -221,6 +221,52 @@ impl Attempt {
         self.publication.completed_frame_digests_data(exchange, cut)
     }
 
+    /// Borrows the original stream only after this exact completed publication.
+    ///
+    /// The caller admits effects and retains every partial before entry.
+    ///
+    /// # Errors
+    /// Refuses incomplete publication, changed original pair/cut, callback or
+    /// terminal owner correspondence.
+    pub(in super::super) fn with_completed_stream_data<S: Read + Write, R: Copy>(
+        &self,
+        exchange: &mut RetainedOriginalNativeHelloExchange<S>,
+        cut: OperationalDeadline,
+        inspect: impl FnOnce(&mut S) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.body_data(cut)?;
+        let outcome =
+            exchange.with_completed_publication_stream_data(&self.publication, cut, inspect);
+        let terminal = self.body_data(cut).map(|_| ());
+        let result = outcome?;
+        terminal?;
+        Ok(result)
+    }
+
+    /// Quotes the actual completed-publication adapter and nested stream loan.
+    ///
+    /// # Errors
+    /// Refuses checked accumulation overflow.
+    pub(in super::super) fn completed_stream_counter_scratch_data<S: Read + Write, R: Copy>()
+    -> Result<usize, ProviderError> {
+        [
+            Self::counter_scratch_data::<S>(),
+            size_of::<&Self>(),
+            size_of::<&mut RetainedOriginalNativeHelloExchange<S>>(),
+            size_of::<OperationalDeadline>(),
+            size_of::<Result<&[u8], ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<(), ProviderError>>(),
+        ]
+        .into_iter()
+        .try_fold(
+            RetainedOriginalNativeHelloExchange::<S>::publication_stream_counter_scratch_data::<R>(
+            )?,
+            |sum, field| sum.checked_add(field).ok_or_else(refused),
+        )
+    }
+
     /// Counts initialized backing independently of phase completion and expiry.
     ///
     /// # Errors

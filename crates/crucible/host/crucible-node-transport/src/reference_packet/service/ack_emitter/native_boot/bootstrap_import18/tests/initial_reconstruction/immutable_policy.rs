@@ -28,6 +28,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
             | "initial_policy_kernel_operands_reactive"
             | "initial_policy_kernel_normalizations_reactive"
             | "initial_policy_kernel_normalizations_host_reactive"
+            | "initial_policy_kernel_normalizations_host_frame_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -752,6 +753,31 @@ fn completed_hash_loans_check_the_actual_host_plan_and_original_live_sdk() {
     ] {
         flight(&format!(
             "initial_policy_kernel_normalizations_host_{suffix}"
+        ));
+    }
+}
+
+#[test]
+fn original_post_hello_literal_retains_every_partial_and_terminal_owner() {
+    for suffix in [
+        "complete",
+        "reactive",
+        "partial_header",
+        "partial_body",
+        "zero",
+        "oversized",
+        "timeout",
+        "missing_normalizations",
+        "reject_construction",
+        "reject_finish",
+        "expire_finish",
+        "revoke_finish",
+        "changed_cut",
+        "callback_refused",
+        "loan_expired",
+    ] {
+        flight(&format!(
+            "initial_policy_kernel_normalizations_host_frame_{suffix}"
         ));
     }
 }

@@ -268,6 +268,35 @@ impl OriginalNativePublicBirthChannel {
             + size_of::<io::Result<usize>>() * 2
     }
 
+    /// Names original-cut timeout and actual Unix receive controls.
+    ///
+    /// The pinned standard library sets SO_RCVTIMEO, then calls recv through a
+    /// BorrowedBuf holding a slice and two lengths and a cursor holding one
+    /// mutable reference. These private library fields are priced individually.
+    pub(crate) fn read_counter_scratch_data() -> usize {
+        Self::counter_scratch_data()
+            + size_of::<Duration>()
+            + size_of::<Option<Duration>>()
+            + size_of::<&mut UnixStream>()
+            + size_of::<&UnixStream>()
+            + size_of::<&mut &UnixStream>()
+            + size_of::<&mut [u8]>()
+            + size_of::<libc::timeval>() * 2
+            + size_of::<libc::time_t>()
+            + size_of::<libc::suseconds_t>()
+            + size_of::<libc::socklen_t>()
+            + size_of::<libc::c_int>() * 5
+            + size_of::<libc::ssize_t>()
+            + size_of::<*mut libc::c_void>()
+            + size_of::<u64>()
+            + size_of::<usize>() * 2
+            + size_of::<io::Result<()>>() * 2
+            + size_of::<io::Result<usize>>() * 2
+            + size_of::<&mut [std::mem::MaybeUninit<u8>]>()
+            + size_of::<[usize; 2]>()
+            + size_of::<&mut ()>()
+    }
+
     /// Borrows the retained descriptor number for test correspondence only.
     ///
     /// # Errors

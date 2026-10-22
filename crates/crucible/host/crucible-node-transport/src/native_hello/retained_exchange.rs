@@ -140,6 +140,63 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
         terminal
     }
 
+    /// Borrows the original stream after independently completed Hello publication.
+    ///
+    /// The caller admits every effect and retains its partial I/O owner before
+    /// entry. No descriptor moves or duplicates and the original literal pair
+    /// stays unchanged. This loan creates no SDK request or native permission.
+    ///
+    /// # Errors
+    /// Refuses incomplete/stale publication, callback refusal, changed literal
+    /// pair, original creator or terminal cut correspondence.
+    pub(crate) fn with_completed_publication_stream_data<R: Copy>(
+        &mut self,
+        publication: &OriginalNativeHelloPublication,
+        cut: crate::operational_time::OperationalDeadline,
+        inspect: impl FnOnce(&mut S) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.owner.ensure_current()?;
+        if !self.complete {
+            return Err(refused());
+        }
+        let exchange = self.exchange.as_mut().ok_or_else(refused)?;
+        let before = publication.completed_frame_digests_data(exchange, cut)?;
+        let outcome = inspect(exchange.reader.stream_mut());
+        let terminal = self
+            .owner
+            .ensure_current()
+            .and_then(|()| publication.completed_frame_digests_data(exchange, cut));
+        let result = outcome?;
+        if terminal? != before {
+            return Err(refused());
+        }
+        Ok(result)
+    }
+
+    /// Quotes actual completed-publication, stream and concrete result controls.
+    ///
+    /// # Errors
+    /// Refuses checked accumulation overflow.
+    pub(crate) fn publication_stream_counter_scratch_data<R: Copy>() -> Result<usize, ProviderError>
+    {
+        [
+            OriginalNativeHelloPublication::completed_frame_digests_counter_scratch_data::<S>(),
+            size_of::<&mut Self>(),
+            size_of::<&OriginalNativeHelloPublication>(),
+            size_of::<&mut S>(),
+            size_of::<crate::operational_time::OperationalDeadline>(),
+            size_of::<crate::hello_frames::OriginalHelloFrameDigests>() * 2,
+            size_of::<Result<crate::hello_frames::OriginalHelloFrameDigests, ProviderError>>(),
+            size_of::<R>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+        ]
+        .into_iter()
+        .try_fold(Self::counter_scratch_data(), |sum, field| {
+            sum.checked_add(field).ok_or_else(refused)
+        })
+    }
+
     /// Names the concrete wrapper controls beside the actual byte publisher.
     pub(crate) fn publication_counter_scratch_data() -> usize {
         Self::counter_scratch_data()

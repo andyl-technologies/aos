@@ -368,7 +368,7 @@ fn retained_value_bound_covers_actual_strings_empty_maps_and_unhinted_arrays() {
 }
 
 /// Retains a complete attempt using the independent existing role/census oracles.
-pub(super) fn complete_for_host(original: &mut OriginalImport18RawBootstrap) -> Attempt {
+pub(in super::super) fn complete_for_host(original: &mut OriginalImport18RawBootstrap) -> Attempt {
     let model = Model {
         case: "initial_policy_kernel_normalizations_complete",
         original_retained: original.retained_requested_bytes().unwrap(),
