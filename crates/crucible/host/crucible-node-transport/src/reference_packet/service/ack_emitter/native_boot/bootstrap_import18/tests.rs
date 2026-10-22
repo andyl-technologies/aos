@@ -126,7 +126,9 @@ fn child(case: &str, wire: &[u8]) {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
-            if case.contains("_normalizations_host_proof_") {
+            if case.contains("_normalizations_host_proof_")
+                || case.contains("_normalizations_host_reply_")
+            {
                 proof_hello = Some(body);
             } else if case.contains("_normalizations_host_correlation_") {
                 super::bootstrap_codec::tests::write_parent_frame(
@@ -186,7 +188,11 @@ fn child(case: &str, wire: &[u8]) {
     }
     let proof_publication = if let Some(hello) = proof_hello {
         super::bootstrap_proof::tests::write_parent_frame(
-            case,
+            if case.contains("_normalizations_host_reply_") {
+                "initial_policy_kernel_normalizations_host_proof_complete"
+            } else {
+                case
+            },
             public_peer.as_mut().unwrap(),
             wire,
             process.id(),

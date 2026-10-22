@@ -193,7 +193,9 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 });
         }
         assert_eq!(admission.calls.get(), 2);
-        if case.contains("_normalizations_host_proof_") {
+        if case.contains("_normalizations_host_reply_") {
+            super::super::super::bootstrap_reply::tests::assert_child(case, original);
+        } else if case.contains("_normalizations_host_proof_") {
             super::super::super::bootstrap_proof::tests::assert_child(case, original);
         } else if case.contains("_normalizations_host_correlation_") {
             super::super::super::bootstrap_correlation::tests::assert_child(case, original);

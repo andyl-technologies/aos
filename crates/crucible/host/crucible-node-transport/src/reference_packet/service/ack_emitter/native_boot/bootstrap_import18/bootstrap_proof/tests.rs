@@ -318,3 +318,95 @@ fn proof_quote_refuses_short_credit_and_prices_concrete_copy_results() {
             >= Attempt::verified_loan_counter_scratch_data::<()>().unwrap() + 4096
     );
 }
+
+/// Completes actual correlation while leaving the new verification slot empty.
+pub(in super::super::super) fn complete_for_reply(
+    original: &mut OriginalImport18RawBootstrap,
+) -> (
+    super::super::bootstrap_normalizations::Attempt,
+    super::super::bootstrap_literal::Attempt,
+    super::super::bootstrap_value::Attempt,
+    super::super::bootstrap_codec::Attempt,
+    super::super::bootstrap_correlation::Attempt,
+    Attempt,
+) {
+    let (normalizations, literal, parsed, codec, correlation) =
+        super::super::bootstrap_correlation::tests::complete_for_proof(original, true);
+    (
+        normalizations,
+        literal,
+        parsed,
+        codec,
+        correlation,
+        Attempt::empty_data(),
+    )
+}
+
+/// Runs actual verification/reply construction with its separately observed proof.
+pub(in super::super::super) fn verify_and_construct_reply(
+    original: &mut OriginalImport18RawBootstrap,
+    normalizations: &super::super::bootstrap_normalizations::Attempt,
+    literal: &super::super::bootstrap_literal::Attempt,
+    parsed: &super::super::bootstrap_value::Attempt,
+    codec: &super::super::bootstrap_codec::Attempt,
+    correlation: &mut super::super::bootstrap_correlation::Attempt,
+    verified: &mut Attempt,
+    reply: &mut super::super::bootstrap_reply::Attempt,
+    reply_admission: &dyn super::super::bootstrap_reply::Admission,
+) -> Result<(), ProviderError> {
+    let model = Model {
+        suffix: "complete",
+        calls: Cell::new(0),
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+            parsed.retained_requested_bytes_data(original).unwrap(),
+            codec.retained_requested_bytes_data(original).unwrap(),
+            correlation.retained_requested_bytes_data(original).unwrap(),
+        ],
+    };
+    original.verify_and_construct_bootstrap_reply_data(
+        normalizations,
+        literal,
+        parsed,
+        codec,
+        correlation,
+        verified,
+        &model,
+        reply,
+        reply_admission,
+    )
+}
+
+/// Checks that completed-proof loans stay closed during the enclosing reply work.
+pub(in super::super::super) fn assert_reply_verification_pending(proof: &Attempt) {
+    assert!(proof.started && proof.verified && !proof.complete && !proof.failed);
+}
+
+/// Checks that aggregate completion was withheld on either operation's refusal.
+pub(in super::super::super) fn assert_reply_aggregate_outcome(proof: &Attempt, success: bool) {
+    assert!(proof.started);
+    assert_eq!(proof.complete, success);
+    assert_eq!(proof.failed, !success);
+}
+
+/// Checks the actual reply receipt against this retained verified context.
+pub(in super::super::super) fn assert_reply_receipt(
+    proof: &Attempt,
+    original: &OriginalImport18RawBootstrap,
+    assigned: &[u8; 32],
+    receipt: &crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapAckReceipt,
+) {
+    assert!(proof.started && proof.verified && !proof.failed);
+    let expected = original
+        .parsed
+        .bodies_data()
+        .unwrap()
+        .boot
+        .bootstrap_ack_receipt_data(proof.context.as_ref().unwrap(), assigned)
+        .unwrap();
+    assert_eq!(receipt, &expected);
+}

@@ -894,3 +894,47 @@ mod observation17_cut;
 #[path = "session/capture17_cut.rs"]
 mod capture17_cut;
 pub(crate) use capture17_cut::is_native_capture17_original_data;
+
+impl CorrelationGuard {
+    /// Returns the actual outgoing sequence for the first retained bootstrap reply.
+    ///
+    /// This reads transport DATA only. The enclosing original SDK/Source/Birth
+    /// guards and separately admitted reply construction remain mandatory.
+    ///
+    /// # Errors
+    /// Refuses a fenced guard, foreign or absent original, another method/cut,
+    /// or any outgoing request or response write already in progress.
+    pub(crate) fn original_bootstrap_response_sequence_data(
+        &self,
+        original: &Envelope,
+    ) -> Result<crucible_node_format::U64, ProviderError> {
+        self.check_live()?;
+        self.check_scope(original)?;
+        let mut incoming = self.received_requests.values();
+        if original.method != Method::NativeImport18Bootstrap
+            || original.sequence.get() != 2
+            || self.next_received != 3
+            || self.next_sent != 2
+            || !self.pending.is_empty()
+            || !self.writing_responses.is_empty()
+            || incoming.next() != Some(original)
+            || incoming.next().is_some()
+        {
+            return Err(ProviderError::Correlation(
+                "original bootstrap reply sequence DATA",
+            ));
+        }
+        Ok(crucible_node_format::U64::new(self.next_sent))
+    }
+
+    /// Names actual original-reply sequence-query controls before its loan.
+    pub(crate) fn original_bootstrap_response_sequence_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<&Envelope>()
+            + size_of::<std::collections::btree_map::Values<'static, Id, Envelope>>()
+            + size_of::<Option<&Envelope>>() * 2
+            + size_of::<crucible_node_format::U64>()
+            + size_of::<Result<crucible_node_format::U64, ProviderError>>()
+            + size_of::<Result<(), ProviderError>>() * 2
+    }
+}

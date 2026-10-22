@@ -448,6 +448,31 @@ impl PacketNativeImport18SourceBindingWireData {
 }
 
 impl PacketNativeImport18PrivateBootWireData {
+    /// Computes receipt DATA with the actual retained key without copying it.
+    ///
+    /// The caller keeps the independently verified original context and assigned
+    /// reply inside its complete current SDK/Source/Birth loan. This helper
+    /// neither publishes a response nor issues bootstrap or phase permission.
+    ///
+    /// # Errors
+    /// Refuses an invalid retained key, context or canonical serialization.
+    pub(in crate::reference_packet) fn bootstrap_ack_receipt_data(
+        &self,
+        context: &super::bootstrap_ack::PacketNativeImport18BootstrapAckContext,
+        assigned_response: &[u8; 32],
+    ) -> Result<super::bootstrap_ack::PacketNativeImport18BootstrapAckReceipt, ProviderError> {
+        let key: &[u8; 32] = self
+            .private_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid())?;
+        super::bootstrap_ack::native_import18_bootstrap_ack_receipt_data(
+            key,
+            context,
+            assigned_response,
+        )
+    }
+
     /// Verifies proof DATA with the actual retained private key without copying it.
     ///
     /// The caller independently authenticates original Source/Birth, channel and

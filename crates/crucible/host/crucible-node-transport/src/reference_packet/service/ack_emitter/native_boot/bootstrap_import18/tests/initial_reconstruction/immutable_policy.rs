@@ -927,3 +927,28 @@ fn original_bootstrap_proof_binds_every_actual_context_operand_and_terminal_owne
         }
     }
 }
+
+#[test]
+fn original_bootstrap_reply_retains_each_output_and_uses_the_actual_sdk_sequence() {
+    let prefix = "initial_policy_kernel_normalizations_host_reply_";
+    for suffix in ["complete", "reactive", "changed_cut", "missing_proof"] {
+        flight(&format!("{prefix}{suffix}"));
+    }
+    for boundary in [
+        "construction",
+        "result",
+        "result_built",
+        "envelope",
+        "envelope_built",
+        "assignment",
+        "assigned",
+        "receipt",
+        "receipt_built",
+        "seal",
+        "sealed",
+    ] {
+        for action in ["reject", "expire", "revoke"] {
+            flight(&format!("{prefix}{action}_{boundary}"));
+        }
+    }
+}

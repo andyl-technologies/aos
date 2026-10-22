@@ -119,6 +119,26 @@ impl Attempt {
         }
     }
 
+    /// Reports whether this external occurrence has already been spent.
+    pub(super) fn started_data(&self) -> bool {
+        self.started
+    }
+
+    /// Spends an empty external occurrence before the enclosing original guards.
+    pub(super) fn start_data(&mut self) {
+        self.started = true;
+    }
+
+    /// Preserves outputs while closing an aggregate verification/reply attempt.
+    pub(super) fn refuse_data(&mut self) {
+        self.failed = true;
+    }
+
+    /// Records completion only after the original aggregate terminal guards.
+    pub(super) fn complete_data(&mut self) {
+        self.complete = true;
+    }
+
     fn authenticate_alias(
         &self,
         original: &OriginalImport18RawBootstrap,
@@ -194,19 +214,48 @@ impl Attempt {
         inputs: Inputs<'_>,
         inspect: impl FnOnce(&Context) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_verified_operands_data(inputs, |context, _, _, _, _| inspect(context))
+    }
+
+    /// Lends verified context DATA and the same actual current request operands.
+    ///
+    /// Inspection and its Copy result require separately admitted credit. The
+    /// original SDK record remains reserved before and after either callback
+    /// outcome. This loan does not reserve or publish an outgoing response.
+    ///
+    /// # Errors
+    /// Refuses incomplete verification, stale original custody or either outcome.
+    pub(super) fn with_verified_operands_data<R: Copy>(
+        &self,
+        inputs: Inputs<'_>,
+        inspect: impl FnOnce(
+            &Context,
+            &Envelope,
+            &Request,
+            &crate::session::CorrelationGuard,
+            &BootstrapAckOperands<'_>,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         if !self.complete || self.failed || !self.verified || self.step != Some(Step::Verify) {
             return Err(refused());
         }
-        inputs
-            .correlation
-            .with_received_context_data(inputs.prior, |_, _, _, _, operands, _| {
+        inputs.correlation.with_received_context_data(
+            inputs.prior,
+            |guard, original, request, _, operands, _| {
                 self.authenticate(inputs, operands)?;
-                let outcome = inspect(self.context.as_ref().ok_or_else(refused)?);
+                let outcome = inspect(
+                    self.context.as_ref().ok_or_else(refused)?,
+                    original,
+                    request,
+                    guard,
+                    operands,
+                );
                 let terminal = self.authenticate(inputs, operands);
                 let result = outcome?;
                 terminal?;
                 Ok(result)
-            })
+            },
+        )
     }
 
     /// Quotes every nested current loan and concrete Copy-result control.
@@ -219,9 +268,15 @@ impl Attempt {
             size_of::<Inputs<'static>>() * 3,
             size_of::<&Self>(),
             size_of::<&Context>(),
-            size_of::<R>() * 2,
-            size_of::<Result<R, ProviderError>>() * 2,
+            size_of::<&Envelope>(),
+            size_of::<&Request>(),
+            size_of::<&crate::session::CorrelationGuard>(),
+            size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<R>() * 3,
+            size_of::<Result<R, ProviderError>>() * 3,
             size_of::<Result<(), ProviderError>>() * 2,
+            size_of::<[usize; 12]>(),
+            size_of::<std::array::IntoIter<usize, 12>>(),
         ]
         .into_iter()
         .try_fold(
@@ -283,12 +338,35 @@ fn verify_current(
     attempt: &mut Attempt,
     admission: &dyn Admission,
 ) -> Result<(), ProviderError> {
+    verify_current_with_data(inputs, attempt, admission, |_, _, _, _, _, _| Ok(()))
+}
+
+/// Lends constructed verification only inside the same aggregate correlation loan.
+///
+/// Completion is recorded by the outer original owner after every terminal guard.
+/// No callback result creates Source funding, an opaque recipe or phase permission.
+///
+/// # Errors
+/// Preserves verification, original custody, callback and terminal refusals.
+pub(super) fn verify_current_with_data<R: Copy>(
+    inputs: Inputs<'_>,
+    attempt: &mut Attempt,
+    admission: &dyn Admission,
+    inspect: impl FnOnce(
+        &Attempt,
+        &Context,
+        &Envelope,
+        &Request,
+        &crate::session::CorrelationGuard,
+        &BootstrapAckOperands<'_>,
+    ) -> Result<R, ProviderError>,
+) -> Result<R, ProviderError> {
     let original = inputs.prior.original;
     attempt.cut = Some(original.cut);
     attempt.launch = Some(Rc::downgrade(original.parsed.shared_launch_data()?));
     inputs.correlation.with_received_context_data(
         inputs.prior,
-        |_, envelope, request, proof, operands, digests| {
+        |guard, envelope, request, proof, operands, digests| {
             attempt.authenticate(inputs, operands)?;
             original.admit_source_row(
                 original
@@ -325,7 +403,14 @@ fn verify_current(
                 );
                 observe_step(inputs, attempt, admission, operands, step, outcome)?;
             }
-            Ok(())
+            inspect(
+                attempt,
+                attempt.context.as_ref().ok_or_else(refused)?,
+                envelope,
+                request,
+                guard,
+                operands,
+            )
         },
     )
 }
@@ -461,7 +546,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
     let fields = [
         storage::counter_scratch_data(),
         size_of::<Inputs<'static>>() * 6,
-        size_of::<&Attempt>(),
+        size_of::<&Attempt>() * 2,
         size_of::<&mut Attempt>(),
         size_of::<&dyn Admission>(),
         size_of::<&BootstrapAckOperands<'static>>(),
@@ -474,7 +559,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Step>() * 4,
         size_of::<[usize; 3]>() * 3,
         size_of::<Result<[usize; 3], ProviderError>>(),
-        size_of::<Result<(), ProviderError>>() * 9,
+        size_of::<Result<(), ProviderError>>() * 11,
         size_of::<Weak<PacketNativeImport18SelectedLaunchWireData>>(),
         size_of::<usize>() * 6,
         size_of::<Option<usize>>(),

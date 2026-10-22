@@ -23,6 +23,7 @@ mod attempt;
 mod prewalk;
 #[path = "bootstrap_codec/storage.rs"]
 mod storage;
+pub(super) use attempt::observe_envelope_data;
 pub(in super::super) use attempt::{Attempt, Step};
 pub(super) use storage::envelope_text_data;
 
@@ -350,9 +351,12 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked counter-layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 24] = [
+    let fields: [usize; 27] = [
         prewalk::counter_scratch_data(),
         storage::counter_scratch_data(),
+        size_of::<&Envelope>(),
+        size_of::<&mut crate::retained_metadata::MetadataObserver>(),
+        size_of::<Result<(), ProviderError>>(),
         size_of::<&OriginalImport18RawBootstrap>(),
         size_of::<&mut OriginalImport18RawBootstrap>(),
         size_of::<&Normalizations>(),
@@ -367,8 +371,8 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Result<[usize; 3], ProviderError>>(),
         size_of::<[Step; 3]>(),
         size_of::<std::array::IntoIter<Step, 3>>(),
-        size_of::<[usize; 24]>(),
-        size_of::<std::array::IntoIter<usize, 24>>(),
+        size_of::<[usize; 27]>(),
+        size_of::<std::array::IntoIter<usize, 27>>(),
         size_of::<Option<Step>>(),
         size_of::<Step>(),
         size_of::<Result<(), ProviderError>>() * 6,

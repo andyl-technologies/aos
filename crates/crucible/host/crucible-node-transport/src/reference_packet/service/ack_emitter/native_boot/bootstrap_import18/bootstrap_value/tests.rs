@@ -413,6 +413,11 @@ fn closed_parser_bound_covers_escaped_input_without_charging_whitespace_as_nodes
 
 #[test]
 fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser() {
+    let reply = [
+        size_of::<super::super::bootstrap_reply::Attempt>() + 1000,
+        1,
+        1,
+    ];
     let proof = [
         size_of::<super::super::bootstrap_proof::Attempt>() + 1000,
         1,
@@ -432,21 +437,55 @@ fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser(
         1,
     ];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value, codec, correlation, proof).unwrap(),
+        retained_schedule_data(
+            normalizations,
+            literal,
+            value,
+            codec,
+            correlation,
+            proof,
+            reply
+        )
+        .unwrap(),
         normalizations[0]
             + size_of::<Literal>()
             + size_of::<Attempt>()
             + size_of::<super::super::bootstrap_codec::Attempt>()
             + size_of::<super::super::bootstrap_correlation::Attempt>()
             + size_of::<super::super::bootstrap_proof::Attempt>()
+            + size_of::<super::super::bootstrap_reply::Attempt>()
     );
     let value = [size_of::<Attempt>() + 2_000_000, 1, 1];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value, codec, correlation, proof).unwrap(),
-        size_of::<Normalizations>() + literal[0] + value[0] + codec[0] + correlation[0] + proof[0]
+        retained_schedule_data(
+            normalizations,
+            literal,
+            value,
+            codec,
+            correlation,
+            proof,
+            reply
+        )
+        .unwrap(),
+        size_of::<Normalizations>()
+            + literal[0]
+            + value[0]
+            + codec[0]
+            + correlation[0]
+            + proof[0]
+            + reply[0]
     );
     assert!(
-        retained_schedule_data([usize::MAX; 3], literal, value, codec, correlation, proof).is_err()
+        retained_schedule_data(
+            [usize::MAX; 3],
+            literal,
+            value,
+            codec,
+            correlation,
+            proof,
+            reply
+        )
+        .is_err()
     );
     assert!(
         retained_schedule_data(
@@ -455,7 +494,8 @@ fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser(
             value,
             codec,
             correlation,
-            proof
+            proof,
+            reply
         )
         .is_err()
     );
@@ -466,7 +506,8 @@ fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser(
             [usize::MAX; 3],
             codec,
             correlation,
-            proof
+            proof,
+            reply
         )
         .is_err()
     );
@@ -500,20 +541,63 @@ pub(in super::super::super) fn complete_for_codec(
 #[test]
 fn retained_schedule_refuses_typed_codec_overflow() {
     assert!(
-        retained_schedule_data([1; 3], [1; 3], [1; 3], [usize::MAX; 3], [1; 3], [1; 3]).is_err()
+        retained_schedule_data(
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [usize::MAX; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3]
+        )
+        .is_err()
     );
 }
 
 #[test]
 fn retained_schedule_refuses_sdk_correlation_overflow() {
     assert!(
-        retained_schedule_data([1; 3], [1; 3], [1; 3], [1; 3], [usize::MAX; 3], [1; 3]).is_err()
+        retained_schedule_data(
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [usize::MAX; 3],
+            [1; 3],
+            [1; 3]
+        )
+        .is_err()
     );
 }
 
 #[test]
 fn retained_schedule_refuses_original_proof_overflow() {
     assert!(
-        retained_schedule_data([1; 3], [1; 3], [1; 3], [1; 3], [1; 3], [usize::MAX; 3]).is_err()
+        retained_schedule_data(
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [usize::MAX; 3],
+            [1; 3]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn retained_schedule_refuses_original_reply_overflow() {
+    assert!(
+        retained_schedule_data(
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [1; 3],
+            [usize::MAX; 3]
+        )
+        .is_err()
     );
 }

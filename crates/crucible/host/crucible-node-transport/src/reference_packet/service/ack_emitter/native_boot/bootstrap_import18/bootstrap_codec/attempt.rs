@@ -230,31 +230,7 @@ impl Attempt {
     pub(super) fn requested_storage_data(&self) -> Result<usize, ProviderError> {
         let mut observer = MetadataObserver::new();
         if let Some(envelope) = &self.envelope {
-            let Envelope {
-                protocol,
-                message: _,
-                session_id,
-                incarnation_id,
-                node_id,
-                execution_owner_id,
-                capture_owner_id,
-                request_id,
-                operation_id,
-                sequence: _,
-                method: _,
-                body,
-                extensions,
-            } = envelope;
-            observer.observe(protocol)?;
-            observer.observe(session_id)?;
-            observer.observe(incarnation_id)?;
-            observer.observe(node_id)?;
-            observer.observe(execution_owner_id)?;
-            observer.observe(capture_owner_id)?;
-            observer.observe(request_id)?;
-            observer.observe(operation_id)?;
-            observer.observe(body)?;
-            observer.observe(extensions)?;
+            observe_envelope_data(envelope, &mut observer)?;
         }
         if let Some(request) = &self.request {
             let PacketNativeImport18BootstrapRequest {
@@ -306,4 +282,40 @@ impl Attempt {
             self.proof.as_ref().ok_or_else(refused)?,
         ))
     }
+}
+
+/// Counts every owning Envelope field using the ordinary metadata census.
+///
+/// # Errors
+/// Refuses metadata limits, unsupported layouts or checked capacity overflow.
+pub(in super::super) fn observe_envelope_data(
+    envelope: &Envelope,
+    observer: &mut MetadataObserver,
+) -> Result<(), ProviderError> {
+    let Envelope {
+        protocol,
+        message: _,
+        session_id,
+        incarnation_id,
+        node_id,
+        execution_owner_id,
+        capture_owner_id,
+        request_id,
+        operation_id,
+        sequence: _,
+        method: _,
+        body,
+        extensions,
+    } = envelope;
+    observer.observe(protocol)?;
+    observer.observe(session_id)?;
+    observer.observe(incarnation_id)?;
+    observer.observe(node_id)?;
+    observer.observe(execution_owner_id)?;
+    observer.observe(capture_owner_id)?;
+    observer.observe(request_id)?;
+    observer.observe(operation_id)?;
+    observer.observe(body)?;
+    observer.observe(extensions)?;
+    Ok(())
 }
