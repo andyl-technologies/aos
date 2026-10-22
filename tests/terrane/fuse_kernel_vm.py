@@ -5,6 +5,7 @@ do not depend on a userspace FUSE library's release or cache policy. It serves
 one permanently sealed executable and a direct-I/O control of the same bytes.
 """
 
+import ctypes
 import errno
 import fcntl
 import json
@@ -24,6 +25,43 @@ BACKING_OPEN = 0x4010E501
 BACKING_CLOSE = 0x4004E502
 ENABLE_VERITY = 0x40806685
 MEASURE_VERITY = 0xC0046686
+PROJECT = 71
+
+
+class Quota(ctypes.Structure):
+    """Matches Linux's generic if_dqblk project quota UAPI."""
+
+    _fields_ = [(name, ctypes.c_uint64) for name in (
+        "block_hard", "block_soft", "current_space", "inode_hard",
+        "inode_soft", "current_inodes", "block_time", "inode_time",
+    )] + [("valid", ctypes.c_uint32)]
+
+
+def project_quota(root, operation, value):
+    """Queries the actual ext4 project through Linux's descriptor-based UAPI."""
+    # The AOS glibc has no quotactl_fd wrapper. This VM runs the x86-64 UAPI;
+    # refuse another architecture rather than reusing its syscall number.
+    require(os.uname().machine == "x86_64", "unsupported project quota syscall ABI")
+    library = ctypes.CDLL(None, use_errno=True)
+    call = library.syscall
+    call.argtypes = [ctypes.c_long, ctypes.c_int, ctypes.c_uint,
+                     ctypes.c_uint, ctypes.c_void_p]
+    call.restype = ctypes.c_long
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        if call(443, descriptor, (operation << 8) | 2,
+                PROJECT, ctypes.byref(value)) != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error))
+    finally:
+        os.close(descriptor)
+    return value
+
+
+def charge(root):
+    value = project_quota(root, 0x800007, Quota())
+    require(value.block_hard == 8192, "project's finite quota changed")
+    return value.current_space, value.current_inodes
 
 
 def require(condition, message):
@@ -166,8 +204,16 @@ def expect_disconnected(action):
 def run(root, executable):
     body = executable.read_bytes()
     require(body.startswith(b"\x7fELF"), "probe executable is not an actual ELF")
+    project_quota(root, 0x800008, Quota(block_hard=8192, valid=1))
+    require(charge(root) == (0, 0), "project was charged before backing creation")
     backing_path = root / "sealed"
     with backing_path.open("xb") as stream:
+        # Only the backing inode belongs to this project. Overlay and mountpoint
+        # allocations cannot hide or imitate its final charge release.
+        attributes = bytearray(28)
+        fcntl.ioctl(stream.fileno(), 0x801C581F, attributes)
+        struct.pack_into("=I", attributes, 12, PROJECT)
+        fcntl.ioctl(stream.fileno(), 0x401C5820, attributes)
         stream.write(body)
         stream.flush()
         os.fsync(stream.fileno())
@@ -180,6 +226,10 @@ def run(root, executable):
     struct.pack_into("=HH", measurement, 0, 0, 64)
     fcntl.ioctl(backing, MEASURE_VERITY, measurement)
     require(struct.unpack_from("=HH", measurement) == (1, 32), "invalid fs-verity seal")
+    original_inode = backing_path.stat().st_ino
+    original_charge = charge(root)
+    require(original_charge[0] >= len(body) and original_charge[1] == 1,
+            "sealed backing lacks actual project quota funding")
 
     mountpoint, merged = root / "lower", root / "merged"
     upper, work = root / "upper", root / "work"
@@ -239,10 +289,15 @@ def run(root, executable):
         expect_disconnected(lambda: os.open(mountpoint / "after-abort", os.O_RDONLY))
         require(os.pread(opened[0], len(body), 0) == body and mapping[:] == body,
                 "unexpected change to retained passthrough backing after abort")
+        backing_path.unlink()
+        require(not backing_path.exists() and charge(root) == original_charge,
+                "unlink or abort prematurely released retained backing's charge")
+        require(os.pread(opened[0], len(body), 0) == body and mapping[:] == body,
+                "unlink changed the retained passthrough descriptor or mapping")
         probe.check()
         print("OBSERVED " + json.dumps({
             "kernel": os.uname().release,
-            "backing_inode": backing_path.stat().st_ino,
+            "backing_inode": original_inode,
             "backing_bytes": len(body),
             "backing_verity_sha256": measurement[4:36].hex(),
             "backing_id_closed": True,
@@ -251,6 +306,9 @@ def run(root, executable):
             "abort_existing_passthrough_readable": True,
             "abort_existing_mapping_readable": True,
             "passthrough_userspace_reads": probe.reads[2],
+            "project_hard_limit_bytes": 8 * 1024 * 1024,
+            "unlinked_retained_project_bytes": original_charge[0],
+            "unlinked_retained_project_inodes": original_charge[1],
         }, sort_keys=True), flush=True)
     finally:
         if connection is not None and (connection / "abort").exists():
@@ -275,6 +333,13 @@ def run(root, executable):
             finally:
                 probe.close()
     probe.check()
+    os.sync()
+    final_charge = charge(root)
+    require(final_charge == (0, 0), "final kernel references retained backing charge")
+    print("RELEASED " + json.dumps({"project_bytes": final_charge[0],
+                                    "project_inodes": final_charge[1]},
+                                   sort_keys=True), flush=True)
+    print("PASS actual project quota retains unlinked sealed backing through abort and releases bytes and inode after final kernel references close", flush=True)
 
 
 if __name__ == "__main__":

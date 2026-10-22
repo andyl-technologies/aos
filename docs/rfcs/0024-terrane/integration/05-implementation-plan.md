@@ -13100,3 +13100,30 @@ all three independently observed sealed inodes, genuine metadata verification
 and the original refusal controls. Other cold-recovery fixtures are unchanged.
 The failed run is retained; descriptor sharing and the corrected manifest still
 require their own full native and application qualification.
+
+Application-target compilation at `0c6fad4740` passes in 783.11 seconds;
+independent review matches all 7,987 immutable source files and 184 compiler
+records across 59 packages. The descriptor-sharing commit `5fb670be04` passes
+the same required compilation in 758.58 seconds with the same reviewed counts.
+Its full native run fails in 637.96 seconds at the known scoped manifest
+identity mismatch. The corrected canonical-hash fixture at `e195873896` fails
+in 601.98 seconds with unchanged source: after all 128 native units and the
+original whole-file recovery controls pass, the combined scoped actor exceeds
+its unchanged 30-second limit. No scoped manifest success is inferred. Its
+captured intermediate output was not printed by the supervisor on timeout;
+bounded phase diagnostics and independent actor lifecycles remain necessary
+to resolve this failure without raising the deadline.
+
+The independent FUSE kernel probe now measures D-133's physical charge lifetime
+using an actual finite ext4 project quota. Only the sealed backing inode belongs
+to the measured project. After backing-ID release, connection abort and unlink,
+the original passthrough descriptor and mapping remain readable and the actual
+kernel charge remains 3,330,048 bytes and one inode for the 3,292,128-byte ELF.
+After closing the mapping and descriptors, unmounting both layers and closing
+the connection, an actual quota query reports zero bytes and zero inodes.
+The initial probe passes on AOS kernel 7.2.3 with the original bounds. The AOS
+glibc lacks a `quotactl_fd` wrapper, so the probe uses the checked x86-64 syscall
+ABI and refuses other architectures. Committed qualification and independent
+source review remain required. This privileged kernel probe exercises no
+production broker, worker, exposure lease or allocation owner and closes no
+trunk task.
