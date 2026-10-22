@@ -10590,3 +10590,41 @@ selected and the existing 14 pure mount-admission cases pass at
 `/nix/store/9ffwv6qbqzg7p7wfgr4ib9gh2f0qp6bd-aos-selinux-runtime-roots-1`.
 This compile check embeds the preceding policy artifact solely for build testing;
 installed profiles still select their exact policy and physical manifest.
+
+
+### Root history recovery without writer custody (installed execution pending)
+
+The history-only Cache settlement query now uses the existing protected read-only
+journal opener. It neither takes Root's writer lock nor creates, repairs or
+truncates journal state. Named-currentness checks still follow both successful
+and rejected replay. The focused three-test suite passes, including a reader
+coexisting with Root's live writer, unchanged journal bytes, exact recorded and
+pending observations, foreign-packet rejection and refusal after writer advance.
+
+The confined recovery invocation selects a separate explicit SELinux role.
+Only the authority journal and its exact lock/compaction basenames acquire its
+readable history label; compiler state and evidence retain their inaccessible
+file label. Recovery has no history mutation, writer-lock, credential, outbound
+socket, TPM or normal Root entry permission. Controller can connect to its fixed
+private listener. Effective checks retain exact entry and attribute membership,
+foreign-entry denial and bounded named transitions. The 149 checker unit tests
+pass; the added history/runtime broad-file-type mutation cases also pass.
+Full compiled-policy and installed checks remain pending.
+
+The fixed fresh-only provisioner now includes the compiler directory with its
+actual root identity and Controller group. Confined normal Root opens that
+existing directory as writable; recovery retains the strict read-only mount.
+Neither asks PID 1 to create or repair protected persistent state. Recovery waits
+for setup without a Requires/Wants success dependency on views or signed inputs.
+The legacy recovery unit contract passes at
+`/nix/store/7qivpk1fn9avf2pqxxn8mlvq07clj8w3-sandbox-policy-cache-recovery-service-eval-0`.
+Strict static C compilation and the existing pure mount cases pass at
+`/nix/store/ibdxnpz45zmr59xzc7nlmh92vc7b75xs-aos-selinux-runtime-roots-1`.
+These source/component receipts do not qualify installed history recovery,
+normal Root startup, method 46, held Q04 or public Create.
+
+The preceding manager-user-namespace policy passes complete compiled-policy
+checks at `/nix/store/p0zn8xlvnp5v283ps3wz58przvbha25k-aos-selinux-production-policy-1`.
+The retained native-manager Rust changes pass complete test-target compilation at
+`/nix/store/5y220avf5hr39vq045bdp2h65jyraazz-aos-test-targets-0.1.0`.
+The new read-only recovery change has its own complete compilation retry running.

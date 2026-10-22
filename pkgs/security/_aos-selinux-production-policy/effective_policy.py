@@ -47,6 +47,7 @@ EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
 EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_TENANT)
 NO_CONTEXT_TRANSLATION_ATTRIBUTE = "aos_no_context_translation_domain"
 NO_CONTEXT_TRANSLATION_DOMAINS = (
+    owner_policy.recovery_policy.DOMAIN,
     fuse_worker_policy.WORKER_DOMAIN,
     owner_policy.OFFLINE_HELPER,
     *owner_policy.HELPER_DOMAINS,
@@ -60,6 +61,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
     (EXPLICIT_LOADER_ATTRIBUTE, EXPLICIT_LOADER_DOMAINS),
     (NO_CONTEXT_TRANSLATION_ATTRIBUTE, NO_CONTEXT_TRANSLATION_DOMAINS),
     (PRIVATE_ROOT_CUSTODY_ATTRIBUTE, (
+        owner_policy.recovery_policy.DOMAIN,
         "aos_sandbox_policy_authority_t",
         "aos_nix_offline_prepare_t",
         "aos_nix_offline_tpm_helper_t",
@@ -129,6 +131,8 @@ PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
 GUARDED_OBJECT_TYPES = (
     *PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES,
     HOST_CANARY_STATE_TYPE,
+    owner_policy.recovery_policy.HISTORY,
+    owner_policy.recovery_policy.RUNTIME,
     owner_policy.ROOT_NO_APPLY_SIGNING_CREDENTIAL,
     owner_policy.HOST_NO_APPLY_CREDENTIAL,
     *(("aos_runtime_deployment_credential_t",

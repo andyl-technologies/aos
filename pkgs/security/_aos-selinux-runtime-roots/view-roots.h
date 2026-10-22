@@ -136,6 +136,8 @@ static const struct directory_spec view_source_specs[] = {
          "system_u:object_r:aos_sandbox_cache_journal_t", 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
         {"cache-residency-objects", "/var/lib/aos/sandbox/cache-residency-objects",
          "system_u:object_r:aos_sandbox_cache_object_t", 0700, AOS_CONTROLLER_UID, AOS_CONTROLLER_GID},
+        {"policy-compiler", "/var/lib/aos/sandbox/policy-compiler",
+         "system_u:object_r:aos_sandbox_policy_authority_state_t", 0700, 0, AOS_CONTROLLER_GID},
         /* This existing evidence recipe remains Root-owned. The same exact
          * fresh-create/check engine never adopts or relabels a foreign root. */
         {"source-evidence", "/var/lib/aos/sandbox/source-evidence",
@@ -144,7 +146,7 @@ static const struct directory_spec view_source_specs[] = {
 static const bool view_source_enabled[] = {
         AOS_SOURCE_VIEW_REQUIRED || AOS_CACHE_VIEW_REQUIRED, AOS_CACHE_VIEW_REQUIRED,
         AOS_CACHE_SIGNER_VIEW_REQUIRED || AOS_CACHE_VIEW_REQUIRED,
-        AOS_ENVIRONMENT_EVIDENCE_REQUIRED,
+        AOS_CACHE_VIEW_REQUIRED, AOS_ENVIRONMENT_EVIDENCE_REQUIRED,
 };
 
 _Static_assert(sizeof(view_source_specs) / sizeof(view_source_specs[0]) ==

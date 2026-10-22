@@ -301,6 +301,41 @@ class EffectivePolicyTest(unittest.TestCase):
 
         return FakePolicy()
 
+    def test_recovery_history_requires_read_only_access(self) -> None:
+        recovery = effective_policy.owner_policy.recovery_policy
+        for permission in ("open", "read"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(recovery.DOMAIN, recovery.HISTORY, "file", permission)
+                )
+        for permission in ("write", "lock", "create"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(recovery.DOMAIN, recovery.HISTORY, "file", permission)
+                )
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access("init_t", recovery.HISTORY, "file", "read")
+        )
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(recovery.DOMAIN, recovery.STATE, "file", "read")
+        )
+        for object_type in (recovery.HISTORY, recovery.RUNTIME):
+            with self.subTest(object_type=object_type):
+                policy = FakePolicy()
+                policy.file_types.add(object_type)
+                with self.assertRaisesRegex(ValueError, "protected object inherited broad file_type"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_fixed_root_directory_preparation_cannot_open_journals(self) -> None:
+        provisioner = effective_policy.PROVISIONER_DOMAIN
+        state = "aos_sandbox_policy_authority_state_t"
+        self.assert_missing_allow_rejected(
+            effective_policy.Access(provisioner, state, "dir", "create")
+        )
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access(provisioner, state, "file", "open")
+        )
+
     def test_transition_no_filter_never_observes_filename(self) -> None:
         class UnobservableName:
             @property
@@ -612,6 +647,7 @@ class EffectivePolicyTest(unittest.TestCase):
             set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
             {
                 worker,
+                "aos_sandbox_policy_recovery_t",
                 "aos_nix_offline_tpm_helper_t",
                 "aos_method46_controller_helper_t",
                 "aos_method46_storage_helper_t",

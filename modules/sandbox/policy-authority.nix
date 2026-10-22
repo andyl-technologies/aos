@@ -531,13 +531,20 @@ in {
             cacheRecoveryConfig.ExecStart
             == "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}"
             && cacheRecoveryConfig.Type == "simple"
+            && (!confined || cacheRecoveryConfig.SELinuxContext == "system_u:system_r:aos_sandbox_policy_recovery_t")
             && cacheRecoveryConfig.User == "root"
             && cacheRecoveryConfig.Group == "aos-sandboxd"
             && cacheRecoveryConfig.UMask == "0007"
             && cacheRecoveryConfig.RuntimeDirectory == "aos/sandbox-policy-cache-recovery"
             && cacheRecoveryConfig.RuntimeDirectoryMode == "0710"
-            && cacheRecoveryConfig.StateDirectory == "aos/sandbox/policy-compiler"
-            && cacheRecoveryConfig.StateDirectoryMode == "0700";
+            && (
+              if confined
+              then (cacheRecoveryConfig.StateDirectory or []) == []
+              else
+                cacheRecoveryConfig.StateDirectory
+                == "aos/sandbox/policy-compiler"
+                && cacheRecoveryConfig.StateDirectoryMode == "0700"
+            );
           message = "Cache recovery must retain its fixed executable, root identity, and private socket and journal directories";
         }
         {
@@ -552,7 +559,7 @@ in {
             && cacheRecoveryConfig.RestrictAddressFamilies == ["AF_UNIX"]
             && (cacheRecovery.requires or []) == []
             && (cacheRecovery.wants or []) == []
-            && cacheRecovery.after == ["local-fs.target"]
+            && cacheRecovery.after == ["local-fs.target"] ++ lib.optional confined "aos-sandbox-view-roots.service"
             && cacheRecovery.unitConfig.RequiresMountsFor == ["/var/lib/aos/sandbox/policy-compiler"]
             && (cacheRecovery.unitConfig.BindsTo or []) == [];
           message = "Cache recovery must not depend on policy credentials, normal authority, Cache views, or broad write access";
@@ -563,7 +570,7 @@ in {
       description = "Prepare fixed AOS sandbox view roots through authenticated handoff";
       requires = ["local-fs.target"];
       after = ["local-fs.target"];
-      before = ["aos-sandbox-cache-journal-view.service"];
+      before = ["aos-sandbox-cache-journal-view.service" "aos-sandbox-policy-cache-recovery.service"];
       unitConfig.RequiresMountsFor = ["/var/lib"];
       serviceConfig = {
         Type = "oneshot";
@@ -678,7 +685,10 @@ in {
         ReadOnlyPaths =
           lib.optional environmentProvisionSelected
           (toString cfg.environmentProvision);
-        StateDirectory = "aos/sandbox/policy-compiler";
+        StateDirectory =
+          if confined
+          then []
+          else "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-policy-authority";
         RuntimeDirectoryMode = "0710";
@@ -708,10 +718,12 @@ in {
         ProtectKernelTunables = true;
         ProtectProc = "invisible";
         ProtectSystem = "strict";
-        # Administration must preprovision this exact labelled Root directory.
-        ReadWritePaths = lib.mkIf (cfg.credentials.gitEvidenceProvision != null || environmentProvisionSelected) [
-          "/var/lib/aos/sandbox/source-evidence"
-        ];
+        # Fixed preparation owns compiler state; optional evidence retains its
+        # separately selected provisioning recipe.
+        ReadWritePaths =
+          lib.optional confined "/var/lib/aos/sandbox/policy-compiler"
+          ++ lib.optional (cfg.credentials.gitEvidenceProvision != null || environmentProvisionSelected)
+          "/var/lib/aos/sandbox/source-evidence";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
@@ -724,12 +736,18 @@ in {
     systemd.services.aos-sandbox-policy-cache-recovery = {
       description = "AOS root-only Cache signer settlement recovery";
       wantedBy = ["multi-user.target"];
-      after = ["local-fs.target"];
+      # Ordering waits for fixed setup but does not require its success. An
+      # unrelated failed view must not suppress already existing Root history.
+      after = ["local-fs.target"] ++ lib.optional confined "aos-sandbox-view-roots.service";
       unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox/policy-compiler"];
       serviceConfig = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/aos-sandbox-policy-authorityd --serve-cache-signer-recovery ${toString controller.uid} ${toString controller.gid}";
-        StateDirectory = "aos/sandbox/policy-compiler";
+        SELinuxContext = lib.mkIf confined "system_u:system_r:aos_sandbox_policy_recovery_t";
+        StateDirectory =
+          if confined
+          then []
+          else "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-policy-cache-recovery";
         RuntimeDirectoryMode = "0710";

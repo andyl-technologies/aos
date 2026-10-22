@@ -1,0 +1,42 @@
+# Credential-independent historical Root replay. The same fixed ELF enters
+# this role only through its explicit recovery unit context, never by default.
+type aos_sandbox_policy_recovery_t;
+typeattribute aos_sandbox_policy_recovery_t domain;
+typeattribute aos_sandbox_policy_recovery_t aos_private_root_custody_domain;
+typeattribute aos_sandbox_policy_recovery_t aos_no_context_translation_domain;
+role system_r types aos_sandbox_policy_recovery_t;
+type aos_sandbox_policy_history_t;
+type aos_sandbox_policy_recovery_runtime_t;
+
+allow init_t aos_sandbox_policy_recovery_t:process transition;
+allow init_t aos_sandbox_policy_recovery_t:process2 { nnp_transition nosuid_transition };
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_authority_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_policy_recovery_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_sandbox_policy_recovery_t { root_t usr_t etc_t var_t var_lib_t var_run_t device_t }:dir { getattr open search };
+allow aos_sandbox_policy_recovery_t null_device_t:chr_file { getattr open read write };
+allow aos_sandbox_policy_recovery_t init_t:fd use;
+allow aos_sandbox_policy_recovery_t self:process { getattr getsched setrlimit sigchld signal };
+allow aos_sandbox_policy_recovery_t self:unix_stream_socket { accept bind create getattr getopt listen read setopt shutdown write };
+
+# Only the authority journal and its physical lock/compaction names are history.
+# The reader never locks, repairs, truncates or mutates them. Compiler state and
+# Source evidence keep their separate inaccessible file label.
+allow aos_sandbox_policy_history_t fs_t:filesystem associate;
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_history_t:file { append create getattr ioctl lock open read rename setattr unlink write };
+type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file aos_sandbox_policy_history_t "authority.journal";
+type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file aos_sandbox_policy_history_t "authority.journal.lock";
+type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file aos_sandbox_policy_history_t "authority.journal.compact.tmp";
+allow aos_sandbox_policy_recovery_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_authority_state_t:dir { getattr open read search };
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_history_t:file { getattr open read };
+
+# PID 1 prepares only this volatile socket directory. It gains no history access.
+allow aos_sandbox_policy_recovery_runtime_t tmpfs_t:filesystem associate;
+allow init_t aos_sandbox_policy_recovery_runtime_t:dir { add_name create getattr open read relabelto remove_name search setattr write };
+type_transition init_t var_run_t:dir aos_sandbox_policy_recovery_runtime_t "sandbox-policy-cache-recovery";
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_recovery_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_recovery_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_policy_recovery_t aos_sandbox_policy_recovery_runtime_t:sock_file aos_sandbox_policy_recovery_runtime_t;
+allow aos_sandbox_controller_t aos_sandbox_policy_recovery_runtime_t:dir { getattr open search };
+allow aos_sandbox_controller_t aos_sandbox_policy_recovery_runtime_t:sock_file { getattr open read write };
+allow aos_sandbox_controller_t aos_sandbox_policy_recovery_t:unix_stream_socket connectto;

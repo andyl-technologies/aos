@@ -48,6 +48,11 @@
 /var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3|approved-effect-v4|approved-recovery-v4|provisioning-v4\.journal(\.lock)?) -- system_u:object_r:aos_nix_offline_prepare_state_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3|nix-fixed-domain-pins-v2|nix-floor-owner-hierarchy-auth-v4) -- system_u:object_r:aos_nix_offline_prepare_credential_t
+/var/lib/aos/sandbox/policy-compiler -d system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/policy-compiler/state\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/policy-compiler/authority\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_history_t
+/run/aos/sandbox-policy-cache-recovery -d system_u:object_r:aos_sandbox_policy_recovery_runtime_t
+/run/aos/sandbox-policy-cache-recovery/recovery\.sock -s system_u:object_r:aos_sandbox_policy_recovery_runtime_t
 /var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t

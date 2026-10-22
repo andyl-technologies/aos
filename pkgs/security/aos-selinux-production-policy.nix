@@ -276,6 +276,8 @@
     + closedSelectedSource (policySupport + "/owner_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/view_confinement.te")
+    + "\n"
+    + builtins.readFile (policySupport + "/recovery_confinement.te")
     + (
       if environmentProvision != null
       then "\n" + builtins.readFile (policySupport + "/environment_confinement.te")
@@ -387,6 +389,27 @@
           context = "system_u:object_r:default_t";
         }
       ];
+  });
+
+  recoveryContextExpectations = builtins.toFile "aos-policy-recovery-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries = let
+      entry = path: kind: type: {
+        inherit path kind;
+        context = "system_u:object_r:${type}";
+      };
+      root = "/var/lib/aos/sandbox/policy-compiler";
+      runtime = "/run/aos/sandbox-policy-cache-recovery";
+    in [
+      (entry root "directory" "aos_sandbox_policy_authority_state_t")
+      (entry "${root}/state.journal" "regular" "aos_sandbox_policy_authority_state_t")
+      (entry "${root}/authority.journal" "regular" "aos_sandbox_policy_history_t")
+      (entry "${root}/authority.journal.lock" "regular" "aos_sandbox_policy_history_t")
+      (entry "${root}/authority.journal.compact.tmp" "regular" "aos_sandbox_policy_history_t")
+      (entry "${root}/authority.journal.sibling" "regular" "var_lib_t")
+      (entry runtime "directory" "aos_sandbox_policy_recovery_runtime_t")
+      (entry "${runtime}/recovery.sock" "socket" "aos_sandbox_policy_recovery_runtime_t")
+    ];
   });
 
   moduleContextExpectations = builtins.toFile "aos-kernel-module-context-expectations.json" (builtins.toJSON {
@@ -804,6 +827,10 @@ in
             --file-contexts file_contexts.bin \
             --libselinux ${libselinux}/lib/libselinux.so.1 \
             --expected ${nspawnContextExpectations}
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${recoveryContextExpectations}
           ${
             if environmentProvision == null
             then ""
@@ -853,6 +880,8 @@ in
             ${policySupport}/aos_sandbox_helper_socket_negative.te \
             ${policySupport}/aos_sandbox_signer_socket_negative.te \
             ${policySupport}/view_confinement.te \
+            ${policySupport}/recovery_confinement.te \
+            ${policySupport}/recovery_policy.py \
             ${policySupport}/view_policy.py \
             attribute-negative-diagnostic \
             aos_sandbox_loader_negative-diagnostic \

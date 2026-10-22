@@ -16,10 +16,6 @@ allow aos_sandbox_policy_authority_t aos_environment_gcroot_t:lnk_file { getattr
 # It runs as init_t; confined Online Nix receives no host GC-root authority.
 allow init_t aos_environment_gcroot_t:lnk_file { create getattr read relabelto rename setattr unlink };
 
-# The existing fixed provisioner can create/check the selected UID0 evidence
-# directory. It gains no file open/read/append permission or general path API.
-allow aos_sandbox_runtime_roots_t aos_sandbox_policy_authority_state_t:dir { add_name create getattr open search setattr write };
-
 # Pinned refpolicy selinuxutil.fc maps restorecon to setfiles_exec_t and its
 # init_system_domain transition selects setfiles_t. The exact installer also
 # works when its existing privileged invocation retains init_t. Neither domain

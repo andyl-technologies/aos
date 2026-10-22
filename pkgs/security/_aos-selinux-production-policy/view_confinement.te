@@ -63,6 +63,9 @@ allow aos_sandbox_runtime_roots_t aos_sandbox_cache_view_preparer_t:process sigc
 allow aos_sandbox_runtime_roots_t self:capability dac_read_search;
 allow aos_sandbox_runtime_roots_t var_run_t:dir { add_name create getattr open read search write };
 allow aos_sandbox_runtime_roots_t { aos_sandbox_view_parent_t aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t aos_sandbox_source_view_mount_t aos_sandbox_cache_view_mount_t }:dir { add_name create getattr open read search setattr write };
+# Fixed Root compiler/evidence directories use the same fresh-only engine.
+# The helper receives no permission to open or mutate their journal files.
+allow aos_sandbox_runtime_roots_t aos_sandbox_policy_authority_state_t:dir { add_name create getattr open read search setattr write };
 allow aos_sandbox_runtime_roots_t fs_t:filesystem getattr;
 allow aos_sandbox_runtime_roots_t tmpfs_t:filesystem getattr;
 

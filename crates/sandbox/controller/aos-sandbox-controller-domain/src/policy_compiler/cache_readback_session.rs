@@ -194,6 +194,8 @@ pub fn compact_fixed_cache_signer_root_journal_v2() -> Result<(), ClosedCacheRea
 /// A recorded result proves only protected Root journal history. An unrecorded
 /// result means the named challenge is still pending, not that its packet is
 /// valid or eligible for a new effect. This method never reopens owner custody.
+/// It opens the existing journal and lock read-only, without taking the writer
+/// lock or repairing an interrupted tail, and rechecks their names after replay.
 ///
 /// # Errors
 ///
@@ -212,9 +214,17 @@ pub fn recover_fixed_cache_signer_root_history_v2(
         readback: CacheOwnerReadbackChallengeV1::new(nonce, cut)?,
         epoch,
     };
-    with_existing_fixed_cache_signer_root_journal_v2(|journal| {
-        recover_cache_signer_root_history_in_journal_v2(journal, challenge, packet)
-    })
+    let (mut readback, _) = Journal::open_read_only_protected_at(
+        Path::new(PROTECTED_POLICY_ROOT),
+        POLICY_AUTHORITY_JOURNAL,
+        policy_authority_journal_limits(),
+    )?;
+    let result =
+        recover_cache_signer_root_history_in_journal_v2(readback.journal_mut(), challenge, packet);
+    // History is nonauthorizing, but a replaced name or advancing writer still
+    // invalidates this observation. Never repair or truncate a rejected tail.
+    readback.check_named_currentness()?;
+    result
 }
 
 /// Spends a signer challenge under Root's writer, then releases that writer.
@@ -1146,8 +1156,72 @@ mod tests {
             .expect("unrecorded after spend"),
             CacheSignerRootSettlementStateV2::Unrecorded
         );
+        let uid = fs::metadata(directory.path()).expect("fixture UID").uid();
+        let (mut pending, _) = Journal::open_read_only_protected_at_uid_for_test(
+            directory.path(),
+            "authority.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("read-only history coexists with the Root writer");
+        let pending_bytes =
+            fs::read(directory.path().join("authority.journal")).expect("pending journal bytes");
+        assert_eq!(
+            recover_cache_signer_root_history_in_journal_v2(
+                pending.journal_mut(),
+                challenge,
+                &packet,
+            )
+            .expect("read-only pending history"),
+            CacheSignerRootSettlementStateV2::Unrecorded,
+        );
+        pending
+            .check_named_currentness_at_uid_for_test()
+            .expect("pending names");
+        assert_eq!(
+            fs::read(directory.path().join("authority.journal")).expect("unchanged journal"),
+            pending_bytes,
+        );
+
         record_cache_signer_root_settlement_in_journal_v2(&mut root, challenge, &packet, expected)
             .expect("first settlement");
+        assert!(pending.check_named_currentness_at_uid_for_test().is_err());
+        drop(pending);
+
+        let (mut settled, _) = Journal::open_read_only_protected_at_uid_for_test(
+            directory.path(),
+            "authority.journal",
+            JournalLimits::default(),
+            uid,
+        )
+        .expect("read-only settled history coexists with the Root writer");
+        let settled_bytes =
+            fs::read(directory.path().join("authority.journal")).expect("settled journal bytes");
+        assert_eq!(
+            recover_cache_signer_root_history_in_journal_v2(
+                settled.journal_mut(),
+                challenge,
+                &packet,
+            )
+            .expect("read-only exact settlement"),
+            CacheSignerRootSettlementStateV2::Recorded,
+        );
+        assert!(
+            recover_cache_signer_root_history_in_journal_v2(
+                settled.journal_mut(),
+                challenge,
+                &other_packet,
+            )
+            .is_err()
+        );
+        settled
+            .check_named_currentness_at_uid_for_test()
+            .expect("settled names");
+        assert_eq!(
+            fs::read(directory.path().join("authority.journal")).expect("unchanged journal"),
+            settled_bytes,
+        );
+        drop(settled);
         drop(root);
 
         let mut reopened = journal(directory.path());

@@ -31,6 +31,8 @@
   viewRoots = cfg.systemd.services.aos-sandbox-view-roots.serviceConfig;
   viewService = cfg.systemd.services.aos-sandbox-cache-journal-view;
   parent = sandbox.resourceBank.parentEnclosure;
+  root = cfg.systemd.services.aos-sandbox-policy-authorityd.serviceConfig;
+  recovery = cfg.systemd.services.aos-sandbox-policy-cache-recovery;
   wrongPackage = system.extendModules {
     modules = [
       ({lib, ...}: {
@@ -58,6 +60,16 @@
   assert (viewService.serviceConfig.ExecStartPre or []) == [];
   assert builtins.elem "aos-sandbox-view-roots.service" viewService.requires;
   assert builtins.elem "aos-sandbox-view-roots.service" viewService.after;
+  assert (root.StateDirectory or []) == [];
+  assert builtins.elem "/var/lib/aos/sandbox/policy-compiler" root.ReadWritePaths;
+  assert (recovery.serviceConfig.StateDirectory or []) == [];
+  assert (recovery.serviceConfig.ReadWritePaths or []) == [];
+  assert recovery.serviceConfig.ProtectSystem == "strict";
+  assert recovery.serviceConfig.SELinuxContext == "system_u:system_r:aos_sandbox_policy_recovery_t";
+  assert recovery.serviceConfig.NoNewPrivileges;
+  assert (recovery.requires or []) == [];
+  assert (recovery.wants or []) == [];
+  assert builtins.elem "aos-sandbox-view-roots.service" recovery.after;
   assert sandbox.controllerService.package == sandbox.nixBroker._package;
   assert sandbox.policyAuthority.package == sandbox.nixBroker._package;
   assert builtins.elem "/proc/1/exe:aos-method46-pid1-image:read-only" controller.OpenFile;

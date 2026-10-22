@@ -6,6 +6,7 @@ delivery exceptions grant no owner state access or preparation authority.
 """
 
 import view_policy
+import recovery_policy
 
 
 ENVIRONMENT_PROVISION = False
@@ -73,8 +74,8 @@ RESOURCE_BANK_KNOWN_RECIPIENTS = (
 RESOURCE_BANK_RECIPIENTS = ()
 ONLINE_NIX_HELPERS = ONLINE_NIX_DOMAINS[1:3]
 ONLINE_NIX_IMAGE_IOCTL_CELLS = (("aos_sandbox_nix_t", "aos_nix_online_store_t"),)
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1], *RUNTIME_DOMAINS[:1])
+ENFORCING = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS)
+NO_DEFAULT_ENTRY = (recovery_policy.DOMAIN, *OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1], *RUNTIME_DOMAINS[:1])
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -772,6 +773,15 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend(bank_positive)
     negative.extend(bank_negative)
 
+    positive.extend(accesses(
+        "aos_sandbox_runtime_roots_t", "aos_sandbox_policy_authority_state_t", "dir",
+        ("add_name", "create", "getattr", "open", "read", "search", "setattr", "write"),
+    ))
+    negative.extend(accesses(
+        "aos_sandbox_runtime_roots_t", "aos_sandbox_policy_authority_state_t", "file",
+        (*file_read, *file_mutate),
+    ))
+
     if ENVIRONMENT_PROVISION:
         root = "aos_sandbox_policy_authority_t"
         artifact = "aos_environment_provision_t"
@@ -783,8 +793,6 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         positive.extend(accesses("init_t", artifact, "file", file_read))
         positive.extend(accesses("init_t", gcroot, "lnk_file", ("create", "getattr", "read", "relabelto", "rename", "setattr", "unlink")))
         positive.extend(accesses("setfiles_t", gcroot, "lnk_file", ("getattr", "relabelto", "setattr")))
-        positive.extend(accesses("aos_sandbox_runtime_roots_t", "aos_sandbox_policy_authority_state_t", "dir",
-                                 ("add_name", "create", "getattr", "open", "search", "setattr", "write")))
         for reader in ENFORCING:
             negative.extend(accesses(reader, artifact, "file", (*file_mutate, "execute", "execute_no_trans", "entrypoint", "map")))
             negative.extend(accesses(reader, artifact, "dir", dir_mutate))
@@ -792,6 +800,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             if reader != root:
                 negative.extend(accesses(reader, artifact, "file", ("open", "read")))
                 negative.extend(accesses(reader, gcroot, "lnk_file", ("getattr", "read")))
+
+    recovery_positive, recovery_negative, recovery_transitions = recovery_policy.matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(recovery_positive)
+    negative.extend(recovery_negative)
+    transitions.extend(recovery_transitions)
 
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)
