@@ -1,5 +1,6 @@
 # Reconciles image-owned accounts without writing the immutable initrd database.
 {
+  lib,
   mkSystem,
   pkgs,
   ...
@@ -11,6 +12,56 @@
   shells = import ../../pkgs/system/_systemd-abilities/identity-shells.nix {
     inherit (pkgs) bash util-linux;
   };
+  program = pkgs.systemd.handlers // {meta.mainProgram = "aos-systemd-native-resources";};
+  evaluated = lib.evalModules {
+    inherit lib;
+    modules = [
+      ../../lib/effects/module.nix
+      ../../pkgs/system/_service-management/identity.nix
+      {
+        aos.activation.scope = ["test" "initrd"];
+        aos.abilities.identity.operations = {
+          group = {
+            handler = {inherit program;};
+            effects = {
+              image.input = {
+                name = "image-service";
+                requested_id = 888;
+              };
+              conflict.input = {
+                name = "image-service";
+                requested_id = 889;
+              };
+              missing.input = {
+                name = "missing-service";
+                requested_id = 889;
+              };
+            };
+          };
+          principal = {
+            handler = {inherit program;};
+            effects.image.input = {
+              name = "image-service";
+              requested_id = 888;
+              primary_group = "image-service";
+              description = "Image service";
+            };
+          };
+        };
+      }
+    ];
+  };
+  invocations =
+    lib.mapAttrsToList (id: effect: {
+      name = "${builtins.elemAt effect.identity (builtins.length effect.identity - 2)}-${lib.last effect.identity}";
+      value = {
+        inherit id effect;
+        inherit (effect) input revision;
+        action = "apply";
+        previous = null;
+      };
+    })
+    evaluated.config.aos.activation.graph.nodes;
   system = mkSystem [
     ../../systems/server-test.nix
     {
@@ -61,13 +112,8 @@ in {
         )
     machine.succeed(f"chmod 0600 {backing}/root/shadow {backing}/root/gshadow")
 
-    document = {
-        "id": "immutable-identity-group",
-        "revision": "a" * 64,
-        "action": "apply",
-        "effect": {"identity": ["test", "initrd", "identity", "group", "image-service"]},
-        "input": {"name": "image-service", "allocation": "managed", "requested_id": 888},
-    }
+    invocations = json.loads(${builtins.toJSON (builtins.toJSON (builtins.listToAttrs invocations))})
+    document = invocations["group-image"]
 
     def write_invocation():
         machine.succeed(
@@ -98,6 +144,9 @@ in {
         write_invocation()
         original = snapshot()
         machine.fail(f"systemctl start {unit}", timeout=30)
+        machine.succeed(
+            f"journalctl -u {unit} --no-pager -o cat | grep -F 'Read-only file system'"
+        )
         assert snapshot() == original
         machine.succeed(f"test ! -e {image}/.pwd.lock")
         machine.succeed(f"systemctl reset-failed {unit}")
@@ -114,27 +163,21 @@ in {
         assert snapshot() == original
         machine.succeed(f"test ! -e {image}/.pwd.lock")
 
-        document["input"]["requested_id"] = 889
+        document = invocations["group-conflict"]
         write_invocation()
         machine.fail(f"systemctl start {unit}", timeout=30)
+        machine.succeed(
+            f"journalctl -u {unit} --no-pager -o cat "
+            "| grep -F 'existing account numeric identity conflicts'"
+        )
         machine.succeed(f"systemctl reset-failed {unit}")
         assert snapshot() == original
 
-        document["id"] = "immutable-identity-principal"
-        document["effect"]["identity"][-2] = "principal"
-        document["input"] = {
-            "name": "image-service", "allocation": "managed", "requested_id": 888,
-            "primary_group": "image-service", "description": "Image service",
-            "home_directory": "/var/empty", "login_access": "disabled",
-        }
+        document = invocations["principal-image"]
         apply()
         assert snapshot() == original
 
-        document["id"] = "immutable-identity-missing-group"
-        document["effect"]["identity"][-2:] = ["group", "missing-service"]
-        document["input"] = {
-            "name": "missing-service", "allocation": "managed", "requested_id": 889,
-        }
+        document = invocations["group-missing"]
         write_invocation()
         machine.fail(f"systemctl start {unit}", timeout=30)
         assert not receipt()["complete"]
