@@ -412,6 +412,21 @@ protocol tests and strict protocol Clippy pass. Independent C-vector execution,
 actual prebirth artifact retention, loaded-image/TLS funding and the real
 retained-parent installer remain required before activating this edition.
 
+The corrected Setup-nine ABI gate passes at
+`4vg3xzidzz40k0fp3zm6g3c6ckrhk575`. Its first run correctly refused an
+overlapping libtest filter: the root codec group also selected a nested plan
+test. The corrected invocation excludes the separately counted plan module;
+all original expected counts remain enforced. Mandatory application compilation
+passes at `8ggrxi1dqbhi1ficwxf7vrran22yxbmk` with all 5,343 committed
+Rust/TOML inputs matching its immutable source. Core evaluation also passes.
+
+For the subsequent runtime-pair revision, all 5,348 committed Rust/TOML inputs
+match the mandatory application's immutable source, and the separately checked
+public vector fixture matches SHA-256
+`cf11e957a8e305a8de6f3725156c8335c854ec3bb1f084a717832b9f0d58012a`.
+Its ABI and mandatory application builds remain pending; source correspondence
+alone is not a compilation result.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree
@@ -464,9 +479,24 @@ package configures the canonical `/usr/share/locale` runtime message path and
 stages `locale.alias` under its output using installation-only `inst_localedir`;
 it preserves all normal locale/charmap source installation. This leaves the
 compiled runtime path unchanged during installation. Deployment must provide
-that canonical message path or explicit domain bindings. The new hermetic
-package build and complete ABI check are pending; preceding component results
-do not qualify this package configuration.
+that canonical message path or explicit domain bindings.
+
+The fresh hermetic build of this complete-process revision now passes all
+thirteen bounded/application and ordinary runtime controls, each with the
+original runner's literal PASS and zero exit status. The complete original
+`check-abi` returns zero, and its independent gate passes at
+`cljibydqkm1v2lhzd27fr7vc6ndp69v0`. The installed public
+`_nl_default_dirname@@GLIBC_2.2.5` object is exactly eighteen bytes; neither
+the expected ABI list nor the source declaration was changed. The matching
+compiler package passes at `zpmhwdlxhmxbhq7dids0fxbss4pd5ill`: its actual C
+consumer queries the canonical process inventory, creates and physically
+returns the supplied-stack thread, refuses stale reuse, and checks the exact
+installed loader and libc. Its C++ public-header check also passes. Independent
+review retains all thirteen original results and hashes the installed pair and
+headers in proof
+`c38afd5c5f448572b25400746b38d25ca5fc4e788abd171bce5fcd30c1a7b555`.
+These results qualify this package component, not the subsequent fail-stop
+provider revision, whole-image/TLS payment or launched runtime profile.
 
 #### Installed bounded-pthread QEMU consumer
 
