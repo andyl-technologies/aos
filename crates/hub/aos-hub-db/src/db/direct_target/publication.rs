@@ -9,6 +9,31 @@ use crate::direct_upload::DirectObjectIncarnation;
 use crate::direct_upload::DirectUploadTarget;
 use crate::value::Value;
 
+/// Locks publication parents by complete unique keys before checking eligibility.
+pub(super) fn parent_locks(publication: &str, object: i64, registry: i64) -> Vec<CheckedStatement> {
+    vec![
+        CheckedStatement::point_lock("registries", "updated_at", "id = ?1", vals![registry]),
+        CheckedStatement::point_lock(
+            "registry_publication_state",
+            "resource_version",
+            "registry_id = ?1",
+            vals![registry],
+        ),
+        CheckedStatement::point_lock(
+            "registry_publications",
+            "mutation_version",
+            "publication_id = ?1 AND registry_id = ?2",
+            vals![publication, registry],
+        ),
+        CheckedStatement::point_lock(
+            "surface_objects",
+            "updated_at",
+            "id = ?1 AND registry_id = ?2",
+            vals![object, registry],
+        ),
+    ]
+}
+
 impl Database {
     /// Builds billing and publication parent locks before the retained source session.
     ///
@@ -37,16 +62,11 @@ impl Database {
         let org = row.get::<Option<i64>>(0)?;
         let registry = row.get::<i64>(1)?;
         let mut statements = Self::verified_registry_accounting_owner_locks(org);
-        statements.extend([
-            CheckedStatement::exact("UPDATE registries SET updated_at = updated_at WHERE id = ?1",
-                vals![registry], 1),
-            CheckedStatement::exact("UPDATE registry_publication_state SET resource_version = resource_version WHERE registry_id = ?1",
-                vals![registry], 1),
-            CheckedStatement::exact("UPDATE registry_publications SET mutation_version = mutation_version WHERE publication_id = ?1 AND registry_id = ?2",
-                vals![publication_id, registry], 1),
-            CheckedStatement::exact("UPDATE surface_objects SET updated_at = updated_at WHERE id = ?1 AND registry_id = ?2",
-                vals![i64::try_from(surface_object_id.get())?, registry], 1),
-        ]);
+        statements.extend(parent_locks(
+            publication_id,
+            i64::try_from(surface_object_id.get())?,
+            registry,
+        ));
         Ok(statements)
     }
 

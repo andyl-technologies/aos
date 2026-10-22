@@ -84,12 +84,11 @@ impl Database {
                     .await?
                     .context("direct publication parent disappeared")?;
                 let registry: i64 = row.get(0)?;
-                vec![
-                    exact("UPDATE registries SET updated_at = updated_at WHERE id = ?1", vals![registry], 1),
-                    exact("UPDATE registry_publication_state SET resource_version = resource_version WHERE registry_id = ?1", vals![registry], 1),
-                    exact("UPDATE registry_publications SET mutation_version = mutation_version WHERE publication_id = ?1 AND registry_id = ?2", vals![publication_id, registry], 1),
-                    exact("UPDATE surface_objects SET updated_at = updated_at WHERE id = ?1 AND registry_id = ?2", vals![i64::try_from(surface_object_id.get())?, registry], 1),
-                ]
+                super::publication::parent_locks(
+                    publication_id,
+                    i64::try_from(surface_object_id.get())?,
+                    registry,
+                )
             }
             (DirectSqlOwner::Oci, DirectUploadTarget::OciBlob { upload_id }) => {
                 let row = self

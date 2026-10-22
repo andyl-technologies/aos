@@ -4,7 +4,7 @@
 //! Only the verified final transaction installs it; ordinary replacement clears it.
 
 use anyhow::{ensure, Context as _, Result};
-use sha2::Digest as _;
+use futures_util::StreamExt as _;
 
 use crate::direct_upload::DirectObjectIncarnation;
 use crate::direct_upload::DirectSessionState;
@@ -15,6 +15,7 @@ use crate::backend::{CheckedStatement, PostgresLockSql};
 use crate::db::Database;
 
 mod postgres;
+mod reads;
 
 fn copy_lock(
     predicates: &[String],
@@ -150,7 +151,8 @@ pub fn validate_direct_presence_provenance(
 impl Database {
     /// Locks and checks exact terminal sources of required immutable Direct copies.
     ///
-    /// At most one full canonical record is retained. Compact source tuples and
+    /// At most four full canonical records are retained while source reads overlap.
+    /// Consecutive copies share their source load. Compact source tuples and
     /// exact copy tuples are bounded to 65,536 copies and 11,000 checked statements;
     /// exceeding either limit refuses before pointer effects. Predicates are grouped
     /// below 96 parameters for SQLite/Worker and MySQL; PostgreSQL uses bounded
@@ -199,7 +201,6 @@ impl Database {
         );
 
         let mut sources = std::collections::BTreeMap::<String, (String, i64, String)>::new();
-        let mut current_source: Option<(String, DirectUploadSessionRecord)> = None;
         let mut copy_checks = Vec::new();
         let mut copy_predicates = Vec::new();
         let mut copy_values = Vec::new();
@@ -223,65 +224,19 @@ impl Database {
             if rows.is_empty() {
                 break;
             }
-            for row in rows {
+            let mut loaded = reads::copies(self, rows)?;
+            while let Some(copy) = loaded.next().await {
+                let copy = copy?;
                 seen = seen.checked_add(1).context("direct copy count overflow")?;
                 ensure!(
                     seen <= MAX_COPIES,
                     "direct provenance dependency set exceeds bound"
                 );
-                let object: i64 = row.get(0)?;
-                let placement: i64 = row.get(1)?;
-                let session: String = row.get(2)?;
-                let deployment: String = row.get(10)?;
-                if current_source.as_ref().is_none_or(|(id, _)| id != &session) {
-                    current_source = Some((
-                        session.clone(),
-                        self.direct_upload_session(&deployment, &session)
-                            .await?
-                            .context("direct copy source disappeared")?,
-                    ));
-                }
-                let record = &current_source
-                    .as_ref()
-                    .context("direct copy source absent")?
-                    .1;
-                let hash: String = row.get(3)?;
-                let size: i64 = row.get(4)?;
-                let etag: String = row.get(5)?;
-                let provider: Option<String> = row.get(6)?;
-                let placement_version: i64 = row.get(7)?;
-                let write_spec: i64 = row.get(8)?;
-                let binding_version: i64 = row.get(9)?;
-                validate_direct_presence_provenance(
-                    record,
-                    &DirectPresenceProvenance {
-                        deployment_id: &deployment,
-                        session_id: &session,
-                        surface_object_id: object,
-                        placement_id: placement,
-                        sha256: &hash,
-                        byte_size: size,
-                        etag: &etag,
-                        provider_version: provider.as_deref(),
-                        placement_resource_version: placement_version,
-                        write_spec_version: write_spec,
-                        binding_resource_version: binding_version,
-                    },
-                )?;
-                let evidence = record
-                    .completion_evidence
-                    .as_ref()
-                    .context("direct copy receipt absent")?;
-                let source_tuple = (
-                    record.admission.logical_fingerprint.clone(),
-                    i64::try_from(record.resource_version.get())?,
-                    hex::encode(sha2::Sha256::digest(
-                        crate::direct_upload::encode_direct_control(evidence)?,
-                    )),
-                );
-                if let Some(original) = sources.insert(session.clone(), source_tuple.clone()) {
+                if let Some(original) =
+                    sources.insert(copy.session.clone(), copy.source_tuple.clone())
+                {
                     ensure!(
-                        original == source_tuple,
+                        original == copy.source_tuple,
                         "direct source changed during provenance read"
                     );
                 }
@@ -291,18 +246,7 @@ impl Database {
                     AND ((CAST(?{} AS VARCHAR) IS NULL AND provider_version IS NULL) OR provider_version = ?{})
                     AND observed_placement_resource_version = ?{} AND observed_write_spec_version = ?{} AND observed_binding_resource_version = ?{})",
                     start+1, start+2, start+3, start+4, start+5, start+6, start+6, start+7, start+8, start+9));
-                copy_values.extend(vals![
-                    object,
-                    placement,
-                    session,
-                    hash,
-                    size,
-                    etag,
-                    provider,
-                    placement_version,
-                    write_spec,
-                    binding_version
-                ]);
+                copy_values.extend(copy.values);
                 if copy_predicates.len() == copy_group_size {
                     copy_checks.push(copy_lock(
                         &copy_predicates,
@@ -311,7 +255,7 @@ impl Database {
                     ));
                     copy_predicates.clear();
                 }
-                cursor = (object, placement);
+                cursor = copy.cursor;
             }
         }
         ensure!(
