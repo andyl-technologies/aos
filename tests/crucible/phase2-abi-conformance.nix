@@ -686,6 +686,17 @@ in
                 -p crucible-qemu-protocol \
                 --lib native_transfer::manifest::tests:: \
                 -- --test-threads=1
+              require_test_set 7 protocol-native-paid-probe \
+                native_transfer::probe::tests::probe_preserves_no_birth_unknown_birth_and_reap_after_lost_launch_return \
+                -p crucible-qemu-protocol --lib native_transfer::probe::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib native_transfer::probe::tests:: \
+                -- --test-threads=1
               require_test_set 4 protocol-native-transfer-plan \
                 plugin_setup_plan::preexec::tests::native_transfer::native_plan_preserves_prior_sections_and_refuses_all_earlier_editions \
                 -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::native_transfer::

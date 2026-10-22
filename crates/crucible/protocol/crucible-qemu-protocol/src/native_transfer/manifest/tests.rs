@@ -5,7 +5,7 @@ use super::*;
 use crate::native_transfer::tests::{runtime, transfer};
 use crate::native_transfer::{put32, put64};
 
-fn material() -> (Vec<u8>, NativeTransfer, RuntimeArtifactPair) {
+pub(in crate::native_transfer) fn material() -> (Vec<u8>, NativeTransfer, RuntimeArtifactPair) {
     let runtime = runtime();
     let mut transfer = transfer();
     transfer.artifact_count = 4;

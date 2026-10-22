@@ -103,7 +103,7 @@ pub struct NativeProfileProducer {
 }
 
 impl NativeProfileProducer {
-    fn read(bytes: &[u8]) -> Self {
+    pub(super) fn read(bytes: &[u8]) -> Self {
         Self {
             kind: read32(bytes, 0),
             disposition: if read32(bytes, 4) == 1 {
@@ -312,7 +312,7 @@ fn validate_artifacts(bytes: &[u8], count: usize) -> Result<(), NativeProfileDec
     Ok(())
 }
 
-fn validate_producers(bytes: &[u8]) -> Result<(), NativeProfileDecodeError> {
+pub(super) fn validate_producers(bytes: &[u8]) -> Result<(), NativeProfileDecodeError> {
     let (rows, _) = bytes.as_chunks::<PRODUCER_BYTES>();
     for (index, bytes) in rows.iter().enumerate() {
         let kind = index as u32 + 1;
@@ -422,4 +422,4 @@ fn validated_strings(mut bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

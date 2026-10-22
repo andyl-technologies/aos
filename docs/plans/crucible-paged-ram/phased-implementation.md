@@ -537,7 +537,10 @@ Nine adversarial/component cases pass in the full 248-test protocol suite;
 strict all-target protocol Clippy also passes after replacing dynamic chunk
 iteration with the compiler's fixed-array views. The initial Clippy refusal is
 retained. Counted ABI registration and exact component bindings are added;
-fresh hermetic ABI and application compilation remain pending.
+the hermetic ABI gate passes at `k8q7cjm0v2sz5fg52lsmdxgskn1n8x2g`. All
+5,350 committed Rust/TOML inputs match that checkpoint's final application-test
+source, but its full application compilation remains pending. Later manifest,
+plan-fourteen and probe additions require their own fresh hermetic gates.
 
 The borrowed complete manifest reader additionally checks the public clarification
 at signed `86ed25302e7778b2ca24fe18f705645371d54cec`, tree
@@ -556,8 +559,8 @@ truncation and independently valid foreign correlations; strict all-target
 protocol Clippy passes. Counted ABI registration and component bindings cover
 these cases separately from the nine transfer cases.
 
-Independent C transfer/manifest vectors, the probe reader, negotiated resource
-phase, real prebirth issuer and launcher, retained borrower adoption and matching
+Independent C transfer/manifest vectors, negotiated resource phase, real prebirth
+issuer and launcher, retained borrower adoption and matching
 kernel reap remain incomplete. Setup ten and plan thirteen cannot consume this
 material. A distinct plan-fourteen codec now adds an eight-byte header extension
 and exact 1,472-byte transfer after RuntimePair192, under the unchanged aggregate
@@ -569,6 +572,21 @@ limit and overflow. Earlier selected decoders refuse the new framing. Counted
 ABI registration separates these cases from the original transfer reader.
 Parsing grants no resources or execution/cleanup permission; no negotiated
 resource phase, extra descriptor role or profile is activated by these codecs.
+
+The separate borrowed 3,584-byte paid-probe report reader follows signed
+`6e7e4bc1d74f58e15de3a7dacfb632cad51cf957`, tree
+`ed98000b05c4658751350b80f548259c3f5a58d5`. Independent review verifies all four
+clarification payloads against manifest
+`1b389e660f6da1d878267691bc40ab1ec5fa3ff4e89e63c8612edb42ad3e26c7`.
+It preserves known no-birth, unknown birth, independent witnesses and matching
+reap descriptions after lost launch-return observations. Impossible flag/witness
+combinations refuse; nonzero errno or raw wait status remain valid negative
+reports. Completed normal-exit-zero syntax is a separate predicate and grants
+no birth/reap authority or outside-owner closure. Exact profile/report/runtime
+digests and selected compiled producer contracts are correlated, while actual
+probe-child identities may differ from future recipient children. Seven cases
+and strict all-target protocol Clippy pass; counted ABI registration and exact
+component bindings are added. Real paid probe issuance and launch remain absent.
 
 #### Selected allocator fail-stop component
 

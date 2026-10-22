@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::runtime_artifact::RuntimeArtifactPair;
 
 pub mod manifest;
+pub mod probe;
 
 /// Contains the complete fixed transfer record, including its ten liability rows.
 pub const NATIVE_TRANSFER_BYTES: usize = 1472;
