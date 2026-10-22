@@ -32,7 +32,8 @@ const mainWorker :Workerd.Worker = (
   bindings = [
     (name = "HYBRID_OBJECT_GUARD", durableObjectNamespace = "HybridObjectGuard"),
     (name = "HYBRID_DIRECT_UPLOAD", durableObjectNamespace = "HybridDirectUpload"),
-    (name = "HUB_DEPLOYMENT_ID", text = "direct-guard-persisted-fixture")
+    (name = "HUB_DEPLOYMENT_ID", text = "direct-guard-persisted-fixture"),
+    (name = "HUB_DIRECT_UPLOAD_JOURNAL_KEY", text = "direct-journal-persisted-fixture-key")
   ]
 );
 `;
@@ -71,14 +72,15 @@ async function start() {
   throw new Error("Workerd readiness deadline elapsed; logs retained.");
 }
 
-async function probe(action) {
+async function probe(action, journal = false) {
   observation += 1;
-  const response = await fetch("http://127.0.0.1:8796/_e2e/direct-guard", {
+  const route = journal ? "direct-journal" : "direct-guard";
+  const response = await fetch(`http://127.0.0.1:8796/_e2e/${route}`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ key, action }), signal: AbortSignal.timeout(30_000),
   });
   const text = await response.text();
-  await writeFile(join(root, `${observation}-${generation}-${action}.json`), JSON.stringify({ action, generation, status: response.status, body: text }, null, 2), { flag: "wx", mode: 0o600 });
+  await writeFile(join(root, `${observation}-${generation}-${route}-${action}.json`), JSON.stringify({ action, generation, status: response.status, body: text }, null, 2), { flag: "wx", mode: 0o600 });
   if (!response.ok) throw new Error(`Guard phase ${action} refused; transcript retained.`);
 }
 
@@ -95,15 +97,18 @@ try {
     if (response.status !== 404) throw new Error("Reserved public namespace reached a backend.");
   }
   await probe("seed");
+  await probe("seed", true);
   await probe("unknown");
   await probe("unknown");
   await stop();
   await start();
   await probe("after_restart");
+  await probe("after_restart", true);
   await probe("provider_acknowledged");
   await stop();
   await start();
   await probe("lost_native_acknowledgement");
+  await probe("finished_after_restart", true);
   await probe("native_acknowledged");
   await writeFile(join(root, "PASS"), "Durable original/attempt/unknown/publication/Native acknowledgement transitions passed across two process restarts.\n", { flag: "wx" });
   process.stdout.write(`PASS: retained transcripts and SQLite journals in ${root}\n`);

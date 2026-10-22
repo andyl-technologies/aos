@@ -1541,6 +1541,11 @@ mod entry {
         }
 
         #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-journal" {
+            return crate::direct_upload::storage::conformance::fetch(req, &env).await;
+        }
+
+        #[cfg(feature = "do-e2e")]
         if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-egress" {
             return match crate::consoleports::e2e_assert_direct_egress().await {
                 Ok(()) => Response::ok("ok"),

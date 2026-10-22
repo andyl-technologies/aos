@@ -19,6 +19,11 @@ use worker::{
 
 use super::journal::{self, Effect, PartRecord};
 
+mod turn;
+
+#[cfg(feature = "do-e2e")]
+pub(crate) mod conformance;
+
 pub(crate) const BINDING: &str = "HYBRID_DIRECT_UPLOAD";
 const SIGNATURE: &str = "x-aos-direct-journal-signature";
 const DOMAIN: &[u8] = b"aos.direct-upload.durable-journal.v1\0";
@@ -172,14 +177,21 @@ impl HybridDirectUpload {
         )
         .await?;
         let storage = self.state.storage();
-        // A clock step backwards cannot renew any original transport or grant.
-        let floor = read::<WireInteger>(&storage, "clock-floor/v1").await?;
-        ensure!(
-            floor.is_none_or(|floor| now >= floor.get()),
-            "direct durable clock regressed"
-        );
-        write(&storage, "clock-floor/v1", &WireInteger::new(now)).await?;
-        let original: Option<DirectUploadAdmission> = read(&storage, "admission/v1").await?;
+        let mut pending = turn::Turn::new(&storage, now).await?;
+        let result = self.apply(&mut pending, &deployment, message).await;
+        // A refused turn still retains its observed clock floor. No staged
+        // effect records become visible unless the complete turn succeeds.
+        pending.commit(result.is_ok()).await?;
+        result
+    }
+
+    async fn apply(
+        &self,
+        pending: &mut turn::Turn<'_>,
+        deployment: &str,
+        message: JournalRequest,
+    ) -> Result<Reply> {
+        let original: Option<DirectUploadAdmission> = pending.read("admission/v1").await?;
         if let Some(original) = original {
             ensure!(
                 original == message.admission,
@@ -190,26 +202,22 @@ impl HybridDirectUpload {
                 matches!(message.operation, Operation::Admit),
                 "direct original admission absent"
             );
-            write(&storage, "admission/v1", &message.admission).await?;
+            pending.write("admission/v1", &message.admission)?;
         }
         let admission = &message.admission;
         match message.operation {
             Operation::Admit => Ok(Reply::Acknowledged),
             Operation::Begin { effect, nonce } => {
                 let key = effect_key(&effect.operation_id)?;
-                let original = read(&storage, &key)
-                    .await?
-                    .unwrap_or_else(|| effect.clone());
+                let original = pending.read(&key).await?.unwrap_or_else(|| effect.clone());
                 let (next, terminal) = original.begin(&effect, &nonce)?;
                 if terminal.is_none() {
-                    // The attempt is separately retained before permission to dispatch.
-                    write(
-                        &storage,
+                    // Retain the attempt under its own key before permitting dispatch.
+                    pending.write(
                         &format!("attempt/v1/{}/{}", effect.operation_id, nonce),
                         &next,
-                    )
-                    .await?;
-                    write(&storage, &key, &next).await?;
+                    )?;
+                    pending.write(&key, &next)?;
                 }
                 Ok(Reply::Begin { terminal })
             }
@@ -219,21 +227,22 @@ impl HybridDirectUpload {
                 terminal,
             } => {
                 let key = effect_key(&operation_id)?;
-                let effect: Effect = read(&storage, &key)
+                let effect: Effect = pending
+                    .read(&key)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("direct dispatched effect absent"))?;
-                write(&storage, &key, &effect.finish(&nonce, terminal)?).await?;
+                pending.write(&key, &effect.finish(&nonce, terminal)?)?;
                 Ok(Reply::Acknowledged)
             }
             Operation::ReadEffect { operation_id } => Ok(Reply::Effect {
-                effect: read(&storage, &effect_key(&operation_id)?).await?,
+                effect: pending.read(&effect_key(&operation_id)?).await?,
             }),
             Operation::ReadAbort => Ok(Reply::Abort {
-                abort: read(&storage, "abort/v1").await?,
+                abort: pending.read("abort/v1").await?,
             }),
             Operation::ReadOriginal => Ok(Reply::Original {
                 admission: admission.clone(),
-                complete: read(&storage, "complete/v1").await?,
+                complete: pending.read("complete/v1").await?,
             }),
             Operation::RetainAbort { abort } => {
                 ensure!(
@@ -243,16 +252,17 @@ impl HybridDirectUpload {
                         && abort.expected_resource_version.get() > 0,
                     "direct original Abort differs"
                 );
-                if let Some(original) = read::<DirectAbortRequest>(&storage, "abort/v1").await? {
+                if let Some(original) = pending.read::<DirectAbortRequest>("abort/v1").await? {
                     ensure!(original == abort, "direct retained Abort changed");
                 } else {
-                    write(&storage, "abort/v1", &abort).await?;
+                    pending.write("abort/v1", &abort)?;
                 }
                 Ok(Reply::Acknowledged)
             }
             Operation::Register { part } => {
                 ensure!(
-                    read::<DirectCompleteRequest>(&storage, "complete/v1")
+                    pending
+                        .read::<DirectCompleteRequest>("complete/v1")
                         .await?
                         .is_none(),
                     "direct grants frozen"
@@ -262,7 +272,7 @@ impl HybridDirectUpload {
                 ensure!(
                     part.session.session_id == admission.session_id
                         && part.session.logical_fingerprint == admission.logical_fingerprint
-                        && part.placement == placement.public_ref(&deployment)?
+                        && part.placement == placement.public_ref(deployment)?
                         && part.part.checksum.algorithm == placement.checksum_algorithm
                         && valid_direct_digest(&part.grant_id)
                         && part.grant_revision.get() > 0
@@ -272,18 +282,19 @@ impl HybridDirectUpload {
                     "direct grant original invalid"
                 );
                 let key = part_key(part.placement.placement_id, part.part.part_number);
-                if let Some(existing) = read::<PartRecord>(&storage, &key).await? {
+                if let Some(existing) = pending.read::<PartRecord>(&key).await? {
                     let mut original = existing;
                     original.observed = None;
                     ensure!(original == part, "direct grant original changed");
                 } else {
-                    write(&storage, &key, &part).await?;
+                    pending.write(&key, &part)?;
                 }
                 Ok(Reply::Acknowledged)
             }
             Operation::Report { report } => {
                 ensure!(
-                    read::<DirectCompleteRequest>(&storage, "complete/v1")
+                    pending
+                        .read::<DirectCompleteRequest>("complete/v1")
                         .await?
                         .is_none(),
                     "direct reports frozen"
@@ -292,12 +303,13 @@ impl HybridDirectUpload {
                     report.placement.placement_id,
                     report.observed.part.part_number,
                 );
-                let mut part: PartRecord = read(&storage, &key)
+                let mut part: PartRecord = pending
+                    .read(&key)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("direct grant absent"))?;
                 part.validate_report(&report)?;
                 part.observed = Some(report.observed);
-                write(&storage, &key, &part).await?;
+                pending.write(&key, &part)?;
                 Ok(Reply::Acknowledged)
             }
             Operation::Freeze { complete } => {
@@ -313,17 +325,16 @@ impl HybridDirectUpload {
                 );
                 for (manifest, placement) in complete.manifests.iter().zip(&admission.placements) {
                     ensure!(
-                        manifest.placement == placement.public_ref(&deployment)?
+                        manifest.placement == placement.public_ref(deployment)?
                             && manifest.part_count == admission.intent.part_count()?,
                         "direct Complete placement differs"
                     );
                 }
-                if let Some(original) =
-                    read::<DirectCompleteRequest>(&storage, "complete/v1").await?
+                if let Some(original) = pending.read::<DirectCompleteRequest>("complete/v1").await?
                 {
                     ensure!(original == complete, "direct original Complete changed");
                 } else {
-                    write(&storage, "complete/v1", &complete).await?;
+                    pending.write("complete/v1", &complete)?;
                 }
                 Ok(Reply::Acknowledged)
             }
@@ -339,7 +350,8 @@ impl HybridDirectUpload {
                 );
                 let prefix = format!("part/v1/{}/", placement_id.get());
                 let start = part_key(placement_id, after.saturating_add(1));
-                let page = storage
+                let page = pending
+                    .storage()
                     .list_with_options(
                         ListOptions::new()
                             .prefix(&prefix)
