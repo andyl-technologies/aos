@@ -7,15 +7,63 @@
   defaultRepositories,
 }: {
   root,
-  sourceDirectories,
+  sourceDirectories ? [],
+  sourceInventory ? null,
   extraFiles ? [],
   toolchains ? defaultToolchains,
   repositories ? defaultRepositories,
   jobs ? 4,
-  analysisTargets ? ["//tools/bazel/tests/fixture:rust_app" "//tools/bazel/tests/fixture:cpp_app"],
+  analysisTargets ? null,
 }: let
   rootString = toString root;
-  paths = ["MODULE.bazel" "MODULE.bazel.lock" ".bazelrc"] ++ sourceDirectories ++ extraFiles;
+  inventory =
+    if sourceInventory == null
+    then null
+    else if builtins.typeOf sourceInventory != "path"
+    then throw "mkAosBazelWorkspace: sourceInventory must be a checked-in path, not a build output"
+    else builtins.fromJSON (builtins.readFile sourceInventory);
+  inventoryPaths =
+    if inventory == null
+    then []
+    else inventory.source_files ++ inventory.source_directories ++ builtins.attrNames inventory.contracts;
+  validRelativePath = path:
+    builtins.isString path
+    && path != ""
+    && !lib.hasPrefix "/" path
+    && builtins.all (part: !builtins.elem part ["" "." ".."])
+    (lib.splitString "/" path);
+  selectedTargets =
+    if analysisTargets != null
+    then analysisTargets
+    else if inventory != null
+    then inventory.targets
+    else ["//tools/bazel/tests/fixture:rust_app" "//tools/bazel/tests/fixture:cpp_app"];
+  validInventory =
+    inventory
+    == null
+    || (
+      builtins.all (path:
+        if validRelativePath path
+        then true
+        else throw "mkAosBazelWorkspace: invalid source inventory path '${path}'")
+      inventoryPaths
+      && inventory.schema_version
+      == 1
+      && (
+        if inventory.generator_sha256 == builtins.hashFile "sha256" ../../../tools/bazel/metadata/export_inventory.py
+        then true
+        else throw "stale Bazel source inventory generator; regenerate configured metadata"
+      )
+      && builtins.all (label: builtins.elem label inventory.targets) selectedTargets
+      && builtins.all (name:
+        if
+          builtins.pathExists (root + "/${name}")
+          && builtins.hashFile "sha256" (root + "/${name}") == inventory.contracts.${name}
+        then true
+        else throw "stale Bazel source inventory for ${name}; regenerate configured metadata")
+      (builtins.attrNames inventory.contracts)
+    );
+  paths = ["MODULE.bazel" "MODULE.bazel.lock" ".bazelrc"] ++ inventoryPaths ++ sourceDirectories ++ extraFiles;
   accept = path: type: let
     absolute = toString path;
     relative = lib.removePrefix "${rootString}/" absolute;
@@ -118,16 +166,21 @@
           ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
             --config ${configuration} --workspace "$PWD/workspace" \
             --output-base "$TMPDIR/bazel" --nix-sandbox --prepare-lock -- build --nobuild \
-            ${lib.escapeShellArgs analysisTargets}
+          ${lib.escapeShellArgs selectedTargets}
           mkdir -p "$out"
           cp workspace/MODULE.bazel.lock "$out/MODULE.bazel.lock"
         '';
       }
     ];
   };
-in {
-  inherit source toolchains configuration preparedLock;
-  # The initial fixtures deliberately use conservative directory selections.
-  # Production consumers require the configured-graph inventory before cutover.
-  sourceSelection = "explicit-directory-union";
-}
+in
+  assert validInventory; {
+    inherit source toolchains configuration preparedLock;
+    # The initial fixtures deliberately use conservative directory selections.
+    # Production consumers require the configured-graph inventory before cutover.
+    sourceSelection =
+      if inventory == null
+      then "explicit-directory-union"
+      else "configured-inventory";
+    inherit selectedTargets;
+  }

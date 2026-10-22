@@ -1,0 +1,19 @@
+{
+  "configured_targets": [],
+  "contracts": {
+    "MODULE.bazel": "704d84a037ba1b8dce8ff914834213a696e6cd090db8307d364ccb7cdbc96142",
+    "MODULE.bazel.lock": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356",
+    "crates/example/BUILD.bazel": "fff761834a70c51072ee7665f51114e4a488fd807e256214583399b72bc63523"
+  },
+  "generator_sha256": "c36403c81cbdbacfe41e98b8ed7ce94de2ea2d75c633ea3198688db43734cd60",
+  "schema_version": 1,
+  "source_directories": [
+    "crates/example/src"
+  ],
+  "source_files": [
+    "crates/example/src/lib.rs"
+  ],
+  "targets": [
+    "//crates/example:sources"
+  ]
+}

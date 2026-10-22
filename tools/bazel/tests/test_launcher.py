@@ -68,7 +68,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("--override_repository=aos_tools=/declared/toolchains", arguments)
 
     def test_local_cache_policy_precedes_program_arguments(self):
-        result = self.invoke(["run", "//:example", "--", "argument with spaces"],
+        result = self.invoke(["run", "//:example", "--", "--remote_cache=program-option", "argument with spaces"],
                              ["--cache", str(self.root / "cache")])
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = json.loads(self.capture.read_text())["args"]
@@ -77,7 +77,8 @@ class LauncherTests(unittest.TestCase):
 
     def test_remote_cache_and_toolchain_overrides_are_rejected(self):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
-                       "--override_module=rules_rust=/unreviewed"]:
+                       "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",
+                       "--genrule_strategy=standalone", "--bes_backend=grpc://example.invalid"]:
             with self.subTest(option=option):
                 result = self.invoke(["build", "//:example", option])
                 self.assertNotEqual(result.returncode, 0)

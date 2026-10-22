@@ -98,6 +98,31 @@ URLs/hashes, patches, the source-only exclusion audit, and any additional rule
 helper repositories in `rule-inputs.json`. Re-run the offline checks with empty
 per-user caches. Ordinary launchers cannot perform this update.
 
+## Configured source selection
+
+Every shared build exports `inventory.json` from an aspect over its configured
+targets. It records dependency labels, first-party source files, generated
+inputs, feature/flag/environment declarations, and execution/target variants
+that occur in the graph. External Rust targets retain their configuration
+metadata without becoming first-party source paths.
+
+After a successful analysis/build, check that inventory into the owning family
+and pass its path as `sourceInventory` to `mkAosBazelWorkspace`. The function
+reads that checked-in JSON during pure evaluation; it never runs Bazel or
+realizes an inventory derivation. Hashes cover module/BUILD/shared policy
+declarations and the exporter. Graph changes reject the stale inventory.
+Implementation contents stay ordinary source inputs. Discovery roots under
+owned `src`, `tests`, and `benches` trees include new files while unrelated
+documentation, other worktrees, Cargo outputs, and Bazel outputs stay outside
+the selected source.
+
+`checks.build.bazel.precision-parity` compiles the native fixtures from the
+generated selection and compares artifact digests with the conservative
+selection. `source-selection` checks documentation exclusion, new-file
+inclusion, and stale-graph rejection without evaluation-time builds. The
+fixture inventory is an infrastructure contract; production families still
+need their own selected configurations and parity checks.
+
 ## Migration oracle
 
 `metadata/cargo-inventory.json` records Cargo's discovered targets, declared

@@ -11,7 +11,7 @@
   pkgs = aos.pkgs;
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/tests/fixture"];
+    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/tests/fixture"];
   };
 in
   import ../../../tests/build/_bazel-cache.nix {inherit pkgs workspace trial;}

@@ -2,13 +2,13 @@
 {
   pkgs,
   workspace,
-  trial ? "qualification-v1",
+  trial ? builtins.hashString "sha256" (toString workspace.source),
 }: let
   lib = pkgs.lib;
   toolchains = pkgs.mkAosBazelToolchains {identity = "cache-proof:${trial}";};
   configured = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/tests/fixture"];
+    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/tests/fixture"];
     inherit toolchains;
   };
   snapshot = edited:

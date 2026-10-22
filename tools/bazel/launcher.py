@@ -67,8 +67,13 @@ def main():
 
     forbidden = ("--remote_", "--remote-", "--experimental_remote_", "--override_repository",
                  "--override_module", "--repo_env", "--action_env", "--host_action_env",
-                 "--spawn_strategy", "--strategy", "--modify_execution_info")
-    if any(argument.startswith(forbidden) for argument in arguments):
+                 "--spawn_strategy", "--strategy", "--modify_execution_info",
+                 "--registry", "--inject_repository", "--extra_toolchains",
+                 "--crosstool_top", "--host_crosstool_top", "--workspace_status_command",
+                 "--bes_backend", "--genrule_strategy", "--test_strategy",
+                 "--dynamic_local_strategy", "--dynamic_remote_strategy", "--sandbox_add_mount_pair")
+    bazel_arguments = arguments[:arguments.index("--")] if "--" in arguments else arguments
+    if any(argument.startswith(forbidden) for argument in bazel_arguments):
         parser.error("toolchain/environment overrides and remote services are not supported")
 
     output_base = options.output_base.resolve()

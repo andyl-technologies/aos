@@ -1,0 +1,2 @@
+filegroup(name = "sources", srcs = glob(["src/**/*.rs"]))
+# changed graph

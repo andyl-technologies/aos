@@ -5,10 +5,28 @@
 }: let
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/tests/fixture"];
+    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/tests/fixture"];
   };
 in
   rec {
+    source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
+    precise = pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-precise-fixtures";
+      workspace = pkgs.mkAosBazelWorkspace {
+        root = ../..;
+        sourceInventory = ../../tools/bazel/metadata/fixture-inventory.json;
+      };
+      targets = ["//tools/bazel/tests/fixture:package"];
+    };
+    precision-parity = pkgs.runCommand "aos-bazel-source-precision-parity" {} ''
+      cmp ${fixtures}/packages/index.json ${precise}/packages/index.json
+      for manifest in ${fixtures}/packages/*/manifest.json; do
+        relative="''${manifest#${fixtures}/}"
+        cmp "$manifest" "${precise}/$relative"
+      done
+      mkdir -p "$out"
+      cp ${precise}/inventory.json "$out/inventory.json"
+    '';
     toolchains = pkgs.aosBazelToolchains;
     fixtures = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-fixtures";
@@ -51,7 +69,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime unit policy];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime unit policy source-selection precision-parity];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';
