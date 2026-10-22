@@ -31,6 +31,7 @@
   systemFor = stage0: enableMountUnit: let
     system = systems.server-secureboot-lockdown.extendModules {
       modules = [
+        ../../systems/_server-test-packages.nix
         (stage0Fixture stage0)
         {
           aos.image.erofsCompressionLevel = 1;

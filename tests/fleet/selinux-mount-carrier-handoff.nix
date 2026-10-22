@@ -115,7 +115,7 @@
 
   systemFor = stage0: let
     system = systems.server-secureboot-lockdown.extendModules {
-      modules = [(fixtureModule stage0)];
+      modules = [../../systems/_server-test-packages.nix (fixtureModule stage0)];
     };
     cfg = system.config;
   in

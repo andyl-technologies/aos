@@ -9797,7 +9797,7 @@ history; no completion, replay validity, currentness, new deadline or recovery
 authority follows from it. V5 remains responsible for all those independent
 hardware-admission checks.
 
-Twenty-four selected Core offline tests pass, including V7 purpose separation,
+Twenty-eight selected Core offline tests pass, including V7 purpose separation,
 interrupted-startup refusal and physical input bounds. Full Rust target
 compilation passes at
 `/nix/store/9zdpphssp4y0z9hdj649f3fc7m3a3p7f-aos-test-targets-0.1.0`.
@@ -9813,6 +9813,12 @@ both the original private-candidate verifier and the public-only verifier,
 including tampered candidate, wrong-node and forged-signature rejection.
 Installed execution and the expanded artifact check remain pending. These
 source and component checks grant no public lifecycle readiness.
+
+The prior hardware-profile artifact check also passes at
+`/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.
+That immutable source predates V6 and V7: it qualifies its original hardware
+profile and compiled policy, not the newer import/export purposes or an
+installed TPM operation.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
@@ -10025,6 +10031,20 @@ test uses direct read-only virtio backing, not the signed-initrd embedded image
 through stage0 and a real switch-root. No production major reservation,
 mapper activation, executable handoff, switch-root retention, or reboot-stable
 production policy identity has been installed; startup capture remains closed.
+
+Fresh component reruns pass at
+`/nix/store/vcpzcsixm9z7dkx58bfc1g34kalirycn-aos-vm-test-sandbox-mount-executable-carrier-0`
+and
+`/nix/store/rf7r3r6aj01pzpkhqyiczghcy5f2pn5g-aos-vm-test-sandbox-mount-carrier-reboot-1`.
+The latter's two actual serial transcripts both report `TEST_RESULT:PASS`
+and identical launcher/daemon device, inode, size, mode and measurement tuples.
+These exact-kernel tests use Firecracker. The separate signed-initrd QEMU
+first-launcher fixture initially fails evaluation because it omits the server
+test package admission, leaving enabled chrony without its lifecycle contract.
+Both carrier fleet fixtures now import that existing admission module, as the
+root-handoff fixture already does. The production service contracts and
+permissions are unchanged. The corrected installed QEMU run remains pending;
+neither component receipt admits `AOSMMCAP1` or public Create.
 
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed
