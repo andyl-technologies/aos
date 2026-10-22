@@ -59,9 +59,9 @@ def main():
     spec.loader.exec_module(support)
     support.verify_image()
     verify_surface(image, source)
-    # Use the same real provisioning and checked role launchers with two empty
+    # Use the same real provisioning and checked role launchers with three empty
     # domains. These are fixture inputs, never quota or recovery receipts.
-    support.CASES = ["empty", "pin"]
+    support.CASES = ["empty", "pin", "index-closure"]
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
@@ -225,9 +225,13 @@ def main():
             "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop",
             "PASS durable exposure records match actual original index and file inodes and verity measurements; draining and receipt drop retain all bindings",
             "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain",
-            "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure",
             "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"],
             "durable native root exposure actor failed")
+        result = actor("index-closure", "index-closure")
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure"],
+            "independent index exposure closure actor failed")
         verify_surface(image, source)
         print("PASS actual native surface-index admission, cold retirement and separate cap; exposure pins and worker remain unqualified", flush=True)
     finally:

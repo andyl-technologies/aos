@@ -75,7 +75,13 @@ fn main() -> Result<()> {
     }
     if !matches!(
         mode.as_str(),
-        "run" | "cap" | "refuse-cold" | "exposure" | "file-closure" | "cold-closure"
+        "run"
+            | "cap"
+            | "refuse-cold"
+            | "exposure"
+            | "file-closure"
+            | "cold-closure"
+            | "index-closure"
     ) {
         return Err("unknown surface-owner selector".into());
     }
@@ -107,6 +113,9 @@ fn main() -> Result<()> {
     }
     if mode == "file-closure" {
         return runtime.block_on(exposure::file_closure::verify(&owner, &inputs));
+    }
+    if mode == "index-closure" {
+        return runtime.block_on(exposure::verify_index_closure(&owner, &inputs));
     }
     if mode == "exposure" {
         runtime.block_on(exposure::verify(&owner, &inputs))?;

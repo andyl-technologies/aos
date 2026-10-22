@@ -14264,3 +14264,34 @@ that none of those components exist; it neither imports that dependency nor
 claims Terrane sandbox integration. T5 still requires the actual protected
 factory joins and combined native qualification, with no privileged Terrane
 role or raw-descriptor authority substitute.
+
+The diagnostic surface run at `818e3dce82` fails overall in 763.86 seconds.
+Its original sealed-file and cold draining-closure actors pass. The later
+exposure actor reaches the unchanged 30-second bound after its third signed
+commit returns and during fresh root preparation, before native mapping
+admission. Evidence remains at
+`/scratch/nix-build/nix-179583-2816609854/build/serial.log`.
+A temporary focused SDK test reproducing three signed policy commits and a
+fresh root preparation passes locally in 16.86 seconds overall; that result
+does not establish the VM timeout's cause or surface acceptance.
+
+Index-only closure now has its own independently provisioned project and
+30-second actor. The existing exposure actor retains its original assertions
+and 30-second bound; the VM retains its 180-second bound. The new actor creates
+actual unrelated active and draining exposures, publishes and discloses an
+original sealed file, releases its ordinary lease and verifies its enduring
+exposure pin before testing independent closure. Closure still checks refusal
+while active, foreign generations, retained receipts and surviving mappings;
+only authenticated final closure may release its exact obligations while all
+unrelated rows remain. Formatting, strict all-target Linux Clippy and the
+complete 128-case native source inventory pass. Combined native qualification
+and mandatory application-target compilation for this revision remain pending.
+
+Application-target compilation also passes at `975435c568` in 1,434.35 seconds
+and at `818e3dce82` in 1,151.21 seconds. Independent review matches each immutable
+source's 8,042 files and all 184 test artifact records across 59 packages.
+The earlier `79b7477a83` application and full native host-cache checks pass in
+1,457.99 and 1,499.59 seconds respectively; review matches 8,041 source files,
+184 application records, 5,334 native bound inputs and four actual installed
+Cargo ELFs, with all 128 library cases and 92 fixture selectors. None of these
+checkpoint passes changes the failed owning surface results or trunk acceptance.

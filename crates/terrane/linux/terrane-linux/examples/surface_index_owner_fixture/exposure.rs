@@ -11,7 +11,10 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, UNIX_EPOCH},
 };
-use terrane_format::surface::{View, ViewTarget};
+use terrane_format::{
+    identity::{Descriptor, IdentityKind, TERRANE_V1},
+    surface::{View, ViewTarget},
+};
 use terrane_linux::host_cache::NativeMetadataOwner;
 use terrane_sdk::{
     host::cache::{CacheState, ExposurePhase},
@@ -43,6 +46,71 @@ fn limits() -> RootNodeLimits {
         max_metadata_bytes: 65536,
         max_path_bytes: 4096,
     }
+}
+
+pub(super) async fn verify_index_closure(
+    owner: &NativeMetadataOwner,
+    inputs: &config::Inputs,
+) -> Result<()> {
+    let body = b"unrelated retained exposure source";
+    let fixture = RepositoryFixture::new(&inputs.domain).await?;
+    fixture.commit(body).await?;
+    let selection = fixture
+        .repository
+        .prepare_root_read(
+            &ViewTarget::Ref(MAIN.parse()?),
+            fixture.authority.token(),
+            "sdk",
+            limits(),
+        )
+        .await?;
+    let mapped = owner.prepare_surface_mapping(selection).await?;
+    let deadline = now()? + 90;
+    let active = owner.retain_surface_exposure(&mapped, deadline).await?;
+    let draining = owner.retain_surface_exposure(&mapped, deadline).await?;
+    let identity = TERRANE_V1.calculate(IdentityKind::Chunk, body)?;
+    let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, body)?;
+    let publication = owner
+        .publish_inline(descriptor, [vec![0], body.to_vec()].concat())
+        .await?;
+    let selection = fixture
+        .repository
+        .prepare_file_read(
+            &View::parse(MAIN)?,
+            b"file",
+            fixture.authority.token(),
+            "sdk",
+        )
+        .await?;
+    let backing = owner
+        .prepare_exposure_file_backing(&active, &mapped, selection, deadline)
+        .await?;
+    owner.release_sealed_object_lease(backing.lease()).await?;
+    publication.complete_cache_handoff(owner).await?;
+    owner.drain_surface_exposure(&draining).await?;
+    let preserved = snapshot(inputs).await?;
+    if preserved.exposures.len() != 2
+        || !preserved.exposures.iter().any(|row| {
+            row.id == active.id() && row.phase == ExposurePhase::Active && row.backings.len() == 2
+        })
+        || !preserved
+            .exposures
+            .iter()
+            .any(|row| row.id == draining.id() && row.phase == ExposurePhase::Draining)
+        || !preserved.pins.iter().any(|pin| {
+            pin.owner == format!("exposure:{}", active.id()) && pin.expires == i64::MAX as u64
+        })
+    {
+        return Err("independent closure lacks actual unrelated exposure and file custody".into());
+    }
+    drop(backing);
+    drop(mapped);
+    drop(active);
+    drop(draining);
+
+    // Independent closure must preserve both live and draining obligations,
+    // including the original file binding and its non-expiring physical pin.
+    closure::verify(owner, inputs, &fixture).await
 }
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
@@ -229,7 +297,6 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     println!(
         "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain"
     );
-    closure::verify(owner, inputs, &fixture).await?;
     Ok(())
 }
 
