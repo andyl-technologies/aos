@@ -144,7 +144,7 @@ pub fn original_native_restore_input_construction_storage_data(
         != Some(PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
         || launch.fresh_restore_allocation_selection.is_none()
         || model.total_bytes == 0
-        || input_lengths.iter().any(|length| *length == 0)
+        || input_lengths.contains(&0)
         || maximum_requested_bytes == 0
     {
         return Err(refused());

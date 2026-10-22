@@ -130,15 +130,23 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         bodies,
         source,
         initial_quote_formatter_data(launch)?,
-        native_import18_launch_identity_construction_data(launch, maximum)?,
-        original_import18_launch_validation_construction_data(launch, maximum)?,
-        super::initial_normalizations::construction_data(launch, private, maximum)?,
-        original_import18_bootstrap_literal_construction_data(launch, maximum)?,
-        original_import18_bootstrap_value_construction_data(launch, maximum)?,
-        original_import18_bootstrap_codec_construction_data(launch, maximum)?,
-        original_import18_bootstrap_correlation_construction_data(launch, maximum)?,
-        original_import18_bootstrap_proof_construction_data(launch, maximum)?,
-        original_import18_bootstrap_reply_construction_data(launch, maximum)?,
+        LaunchConstructionData {
+            identity: native_import18_launch_identity_construction_data(launch, maximum)?,
+            validation: original_import18_launch_validation_construction_data(launch, maximum)?,
+        },
+        BootstrapConstructionData {
+            normalizations: super::initial_normalizations::construction_data(
+                launch, private, maximum,
+            )?,
+            literal: original_import18_bootstrap_literal_construction_data(launch, maximum)?,
+            value: original_import18_bootstrap_value_construction_data(launch, maximum)?,
+            codec: original_import18_bootstrap_codec_construction_data(launch, maximum)?,
+            correlation: original_import18_bootstrap_correlation_construction_data(
+                launch, maximum,
+            )?,
+            proof: original_import18_bootstrap_proof_construction_data(launch, maximum)?,
+            reply: original_import18_bootstrap_reply_construction_data(launch, maximum)?,
+        },
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -195,15 +203,23 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         bodies,
         source,
         initial_quote_formatter_data(launch)?,
-        native_import18_launch_identity_construction_data(launch, maximum)?,
-        original_import18_launch_validation_construction_data(launch, maximum)?,
-        super::initial_normalizations::construction_data(launch, &private, maximum)?,
-        original_import18_bootstrap_literal_construction_data(launch, maximum)?,
-        original_import18_bootstrap_value_construction_data(launch, maximum)?,
-        original_import18_bootstrap_codec_construction_data(launch, maximum)?,
-        original_import18_bootstrap_correlation_construction_data(launch, maximum)?,
-        original_import18_bootstrap_proof_construction_data(launch, maximum)?,
-        original_import18_bootstrap_reply_construction_data(launch, maximum)?,
+        LaunchConstructionData {
+            identity: native_import18_launch_identity_construction_data(launch, maximum)?,
+            validation: original_import18_launch_validation_construction_data(launch, maximum)?,
+        },
+        BootstrapConstructionData {
+            normalizations: super::initial_normalizations::construction_data(
+                launch, &private, maximum,
+            )?,
+            literal: original_import18_bootstrap_literal_construction_data(launch, maximum)?,
+            value: original_import18_bootstrap_value_construction_data(launch, maximum)?,
+            codec: original_import18_bootstrap_codec_construction_data(launch, maximum)?,
+            correlation: original_import18_bootstrap_correlation_construction_data(
+                launch, maximum,
+            )?,
+            proof: original_import18_bootstrap_proof_construction_data(launch, maximum)?,
+            reply: original_import18_bootstrap_reply_construction_data(launch, maximum)?,
+        },
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -226,6 +242,23 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
     )
 }
 
+/// Groups the original launch identity and its independent validation work.
+struct LaunchConstructionData {
+    identity: (usize, usize),
+    validation: [usize; 3],
+}
+
+/// Groups the sequential Bootstrap constructors without merging their axes.
+struct BootstrapConstructionData {
+    normalizations: [usize; 3],
+    literal: [usize; 3],
+    value: [usize; 3],
+    codec: [usize; 3],
+    correlation: [usize; 3],
+    proof: [usize; 3],
+    reply: [usize; 3],
+}
+
 /// Groups the independent retained Hello constructor populations.
 struct HelloConstructionData {
     roster: [usize; 3],
@@ -246,18 +279,24 @@ fn combine(
     bodies: ProspectiveBodyConstructionData,
     source: [usize; 3],
     formatter: [usize; 3],
-    launch_identity: (usize, usize),
-    launch_validation: [usize; 3],
-    normalizations: [usize; 3],
-    bootstrap_literal: [usize; 3],
-    bootstrap_value: [usize; 3],
-    bootstrap_codec: [usize; 3],
-    bootstrap_correlation: [usize; 3],
-    bootstrap_proof: [usize; 3],
-    bootstrap_reply: [usize; 3],
+    launch: LaunchConstructionData,
+    bootstrap: BootstrapConstructionData,
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
+    let LaunchConstructionData {
+        identity: launch_identity,
+        validation: launch_validation,
+    } = launch;
+    let BootstrapConstructionData {
+        normalizations,
+        literal: bootstrap_literal,
+        value: bootstrap_value,
+        codec: bootstrap_codec,
+        correlation: bootstrap_correlation,
+        proof: bootstrap_proof,
+        reply: bootstrap_reply,
+    } = bootstrap;
     let HelloConstructionData {
         roster: hello,
         frames: hello_frames,
@@ -522,6 +561,9 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + size_of::<[u8; 32]>() * 4
         + size_of::<InitialConstructionData>()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
+        // Name grouped arguments beside the conservative operand controls.
+        + size_of::<LaunchConstructionData>()
+        + size_of::<BootstrapConstructionData>()
         + size_of::<HelloConstructionData>()
         + size_of::<usize>() // Additional initial SDK retained-backing result.
         + size_of::<[usize; 3]>() * 6

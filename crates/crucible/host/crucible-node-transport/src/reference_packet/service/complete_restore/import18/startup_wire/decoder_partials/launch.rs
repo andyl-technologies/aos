@@ -80,6 +80,11 @@ decoder_struct!(PacketConnectedDefinition {
     output,
 });
 
+// Keep both child-type dependencies when their current depths are equal.
+const fn maximum_tag_levels_data(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
+}
+
 impl DecoderPartial for PacketConnectedSourceProgram {
     const HEAP_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
         PacketProgramDefinition::HEAP_LAYOUT,
@@ -99,13 +104,10 @@ impl DecoderPartial for PacketConnectedSourceProgram {
             PacketConnectedDefinition::TYPED_LAYOUT,
         ),
     );
-    const BUFFERED_TAG_LEVELS: usize = 1 + if PacketProgramDefinition::BUFFERED_TAG_LEVELS
-        > PacketConnectedDefinition::BUFFERED_TAG_LEVELS
-    {
-        PacketProgramDefinition::BUFFERED_TAG_LEVELS
-    } else {
-        PacketConnectedDefinition::BUFFERED_TAG_LEVELS
-    };
+    const BUFFERED_TAG_LEVELS: usize = 1 + maximum_tag_levels_data(
+        PacketProgramDefinition::BUFFERED_TAG_LEVELS,
+        PacketConnectedDefinition::BUFFERED_TAG_LEVELS,
+    );
     const DIAGNOSTIC_NAMES_BYTES: usize = "PacketConnectedSourceProgram".len()
         + "kind".len()
         + "producer".len()

@@ -156,21 +156,22 @@ impl Initial15NativeImportGeometryConstructionData {
         attempt
             .summaries
             .resize(self.summary_entries, HistoricalAliasSummary::default());
-        let plan = ValidatedNativeOwnedProtocol11::validate(
-            input.current_protocol.1,
-            self.decoder_limits,
-            &mut attempt.summaries,
-        )?;
-        attempt.validated_demand = Some(*plan.allocation_demand());
-        attempt.geometry = Some(
-            RestoredSettledNativeImportGeometryData::from_validated_initial15_data(
-                input,
-                &plan,
-                &self.import_limits,
-                self.normalization_maximum,
-            )?,
-        );
-        drop(plan);
+        {
+            let plan = ValidatedNativeOwnedProtocol11::validate(
+                input.current_protocol.1,
+                self.decoder_limits,
+                &mut attempt.summaries,
+            )?;
+            attempt.validated_demand = Some(*plan.allocation_demand());
+            attempt.geometry = Some(
+                RestoredSettledNativeImportGeometryData::from_validated_initial15_data(
+                    input,
+                    &plan,
+                    &self.import_limits,
+                    self.normalization_maximum,
+                )?,
+            );
+        }
         attempt.authenticate_origin_data()?;
         if attempt.retained_requested_storage_data(self.retained)? != self.retained {
             return Err(exhausted());
