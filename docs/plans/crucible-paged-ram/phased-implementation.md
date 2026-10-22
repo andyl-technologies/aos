@@ -546,6 +546,19 @@ at 125. Compilation and execution have independent finite limits. A nonzero
 complete ABI status refuses before compiling the consumer. Fresh hermetic
 provider, ABI and installed GLib consumer results for this revision are pending.
 
+Independent qualification of the corrected signed provider now passes its full
+build, both bounded suites, eleven ordinary regressions, unchanged complete ABI
+check (twenty passes, original status zero), installation, actual GLib/hidden
+formatter controls and installed geometry. Independent review verifies all 225
+sealed payloads against manifest
+`5679c5db294d3eec6540403fcee186ccd8dbdb99fde044a580c023569307a0d6`.
+The first repository hermetic build compiled the provider but failed while
+retaining the GLib source: its out-of-tree build directory made the relative
+source path incorrect. That failure precedes runtime and ABI checks and remains
+unqualified. The package now copies from the builder's explicit unpacked source
+directory; a fresh hermetic build is pending. Independent component success
+does not qualify that pending package or any complete launched runtime profile.
+
 #### Installed bounded-pthread QEMU consumer
 
 The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,

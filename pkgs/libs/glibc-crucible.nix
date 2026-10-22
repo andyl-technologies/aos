@@ -39,7 +39,7 @@
     postBuild = ''
       qualification="$out/share/glibc-crucible/qualification"
       mkdir -p "$qualification"
-      cp ../malloc/tst-malloc-bounded-glib.c "$qualification/"
+      cp "$TMPDIR/glibc-2.39/malloc/tst-malloc-bounded-glib.c" "$qualification/"
 
       # This configured GCC carries its real unwinder in libgcc.a. Derive the
       # archive from that compiler; no fabricated libgcc_eh alias is needed.
