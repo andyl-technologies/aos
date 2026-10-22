@@ -259,26 +259,6 @@ async fn local_blame_preserves_introduction_through_merges_and_refuses_unauthori
     assert!(carried_rows[2].starts_with(&format!("fold commit={merged} ")));
     assert!(carried_rows[3].starts_with(&format!("fold commit={second_merge} ")));
 
-    // Replacing content introduces a new object and clears the old fold chain.
-    fs::write(source.join("nested/original"), b"replacement content\n")?;
-    fs::write(source.join("feature"), b"feature content\n")?;
-    let replaced = fixture.succeed(
-        "commit",
-        &[
-            &fixture.path_text("source")?,
-            "--message",
-            "Replace original",
-        ],
-    )?;
-    let current = fixture.succeed("blame", &["refs/heads/_/main", "nested/original"])?;
-    assert_eq!(current.lines().count(), 2);
-    assert!(
-        current
-            .lines()
-            .nth(1)
-            .ok_or("missing replacement")?
-            .starts_with(&format!("introduction commit={replaced} "))
-    );
     assert_eq!(fs::read(fixture.authority.join("issuer.seed"))?, issuer);
     assert_eq!(fs::read(fixture.authority.join("terminal.seed"))?, terminal);
     assert_eq!(fs::read(fixture.authority.join("token.cbor"))?, token);
@@ -296,6 +276,73 @@ async fn local_blame_preserves_introduction_through_merges_and_refuses_unauthori
     let refused = fixture.invoke("blame", &["refs/heads/_/main", "feature"])?;
     assert!(!refused.status.success());
     assert!(refused.stdout.is_empty());
+
+    // Keep replacement independent of the deep-history ordering scenario:
+    // every write must still finish inside the ordinary publication window.
+    check_blame_replacement_after_merge().await?;
+    Ok(())
+}
+
+async fn check_blame_replacement_after_merge() -> Result<(), Error> {
+    let fixture = Fixture::new().await?;
+    fixture.initialize()?;
+    let token = fs::read(fixture.authority.join("token.cbor"))?;
+    let issuer = fs::read(fixture.authority.join("issuer.seed"))?;
+    let terminal = fs::read(fixture.authority.join("terminal.seed"))?;
+    let source = fixture.root.join("source");
+    fs::create_dir(&source)?;
+    fs::create_dir(source.join("nested"))?;
+    fixture.succeed(
+        "fork",
+        &["refs/heads/_/feature", "--message", "Fork feature"],
+    )?;
+    fs::write(source.join("nested/original"), b"feature content\n")?;
+    let introduced = fixture.succeed(
+        "commit",
+        &[
+            "--reference",
+            "refs/heads/_/feature",
+            &fixture.path_text("source")?,
+            "--message",
+            "Feature content",
+        ],
+    )?;
+    fs::remove_file(source.join("nested/original"))?;
+    fs::write(source.join("main"), b"main content\n")?;
+    fixture.succeed(
+        "commit",
+        &[&fixture.path_text("source")?, "--message", "Main content"],
+    )?;
+    let merged = fixture.succeed(
+        "merge",
+        &["refs/heads/_/feature", "--message", "Merge feature"],
+    )?;
+
+    let carried = fixture.succeed("blame", &["refs/heads/_/main", "nested/original"])?;
+    let rows = carried.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], format!("view={merged}"));
+    assert!(rows[1].starts_with(&format!("introduction commit={introduced} ")));
+    assert!(rows[2].starts_with(&format!("fold commit={merged} ")));
+
+    // New content must replace both the introduction and the carried fold chain.
+    fs::write(source.join("nested/original"), b"replacement content\n")?;
+    let replaced = fixture.succeed(
+        "commit",
+        &[
+            &fixture.path_text("source")?,
+            "--message",
+            "Replace feature",
+        ],
+    )?;
+    let current = fixture.succeed("blame", &["refs/heads/_/main", "nested/original"])?;
+    let rows = current.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], format!("view={replaced}"));
+    assert!(rows[1].starts_with(&format!("introduction commit={replaced} ")));
+    assert_eq!(fs::read(fixture.authority.join("issuer.seed"))?, issuer);
+    assert_eq!(fs::read(fixture.authority.join("terminal.seed"))?, terminal);
+    assert_eq!(fs::read(fixture.authority.join("token.cbor"))?, token);
     Ok(())
 }
 

@@ -15655,3 +15655,35 @@ publication release grace and rejects unknown or unreleased promises. It waits
 for those original deadlines as well as consumer grace within the unchanged
 30-second grace and 240-second guest limits. A fresh VM must qualify this
 corrected lifecycle expectation; no runtime pass is inferred from preparation.
+
+
+#### Enrollment lifetime qualification and bounded blame scenarios
+
+The frozen `cba326c877` native initial-enrollment VM passes in 272.719 seconds.
+Complete review matches all 8,079 immutable source files, 5,358 bound inputs,
+the actual Cargo example artifact and installed ELF, retained scripts and runtime
+inputs, and all 17 executed fixture selectors. Both domains pass chunked object
+and SDK range reads, repeated-reference manifests and advisory-listing controls.
+The exact inode delta contains only the original zero-length private body;
+publication and consumer promises expire before recovery, and every other
+sealed inode remains unchanged. The original actor, grace and guest limits
+remain in force. This qualifies the corrected component, not the earlier failed
+eleven-component request or a later full-source aggregate.
+
+At `43caa45aea`, both corrected scoped SDK blame cases pass (11.09 and 5.49
+seconds), including metadata-only access and denial of the sibling graft root.
+The owning gate still fails in 501.321 seconds because the CLI scenario's last
+replacement commit exceeds the ordinary publication window: its actual error
+is `commit publication window expired`, after a 35.982-second command. The
+preceding two-merge provenance assertions pass. The earlier `646d990f96`
+six-case workflow also remains failed; it is not converted into a pass.
+
+The CLI case now uses two independent repository lifecycles. The first retains
+all introduction, mode, subtree, fixed-view, symlink and parent-ordered two-fold
+assertions, followed by unchanged-credential and empty-output refusal checks.
+The second imports and merges a feature, verifies its original introduction and
+fold, replaces its content, and requires a new introduction with no old fold.
+It also verifies all three credential files remain unchanged. Each write uses
+the original publication policy and deadline. No assertion, selected case,
+authorization check or production timeout is removed or relaxed. Fresh owning
+runtime qualification is required for this fixture correction.
