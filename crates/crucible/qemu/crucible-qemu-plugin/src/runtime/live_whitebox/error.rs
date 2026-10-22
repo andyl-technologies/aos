@@ -223,6 +223,67 @@ pub enum LiveWhiteboxError {
         /// Original capability, range, coordinate or guest-write failure.
         source: crate::WhiteboxDoorbellError,
     },
+    /// Preparation or service rejected a selectable guest callback.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableCallback {
+        /// Original snapshot, protocol, catalog or guest-input refusal.
+        source: crate::SelectableDoorbellError,
+    },
+    /// A selectable catalog delta failed canonical encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableProtocol {
+        /// Original fixed-field or reservation validation refusal.
+        source: crucible_qemu_protocol::SelectableProtocolError,
+    },
+    /// A deferred request exceeded its transport profile or failed encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectablePendingTransport {
+        /// Original process-neutral transport refusal.
+        source: crucible_qemu_protocol::selectable_transport::SelectablePendingTransportError,
+    },
+    /// The real marker ring refused a selectable catalog publication.
+    #[error("safe white-box callback failed: {source}")]
+    SelectablePublication {
+        /// Original marker validation or queue refusal.
+        source: crate::WhiteboxMarkerSinkError,
+    },
+    /// A correlated reset still owns the catalog being restored.
+    #[error(
+        "safe white-box callback failed: correlated reset retains the selectable catalog until settlement"
+    )]
+    SelectableRestorePendingReset,
+    /// A deferred callback reported pending after losing its catalog token.
+    #[error(
+        "safe white-box callback failed: selectable callback reported pending without retained catalog state"
+    )]
+    SelectablePendingStateMissing,
+    /// The VM stop lacked the request that requested its native handoff.
+    #[error("safe white-box callback failed: selectable VM stop has no pending request")]
+    SelectableHandoffWithoutPending,
+    /// The request cannot represent its required next instruction boundary.
+    #[error("safe white-box callback failed: selectable native handoff icount overflowed")]
+    SelectableHandoffIcountOverflow,
+    /// The request cannot represent its required next simulation tick.
+    #[error("safe white-box callback failed: selectable native handoff tick overflowed")]
+    SelectableHandoffTickOverflow,
+    /// QEMU stopped at another boundary after the selectable instruction.
+    #[error(
+        "safe white-box callback failed: selectable request at raw icount {request_icount} tick {request_tick_ps} stopped at raw {actual_icount} tick {actual_tick_ps}, expected exactly raw {expected_icount} tick {expected_tick_ps} after the doorbell instruction boundary"
+    )]
+    SelectableHandoffCoordinate {
+        /// Original pre-instruction retirement count.
+        request_icount: u64,
+        /// Original pre-instruction simulation tick.
+        request_tick_ps: u64,
+        /// Actual stopped retirement count.
+        actual_icount: u64,
+        /// Actual stopped simulation tick.
+        actual_tick_ps: u64,
+        /// Required stopped retirement count.
+        expected_icount: u64,
+        /// Required stopped simulation tick.
+        expected_tick_ps: u64,
+    },
     /// A host reply arrived without a catalog-owned request.
     #[error("safe white-box callback failed: selectable reply arrived without a pending request")]
     SelectableReplyWithoutPending,

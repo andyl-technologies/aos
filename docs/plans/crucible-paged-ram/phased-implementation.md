@@ -69,6 +69,27 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Typed selectable callback and publication failures
+
+Trap preparation and service, catalog freeze/rebind, pending projection and all
+three catalog-delta publications now retain their concrete original errors.
+They no longer format another String in the live adapter. Missing pending state,
+reset-held restore and handoff overflow are fixed variants; a drift refusal
+retains the original, actual and required retirement/tick coordinates. Display
+preserves the original diagnostics and formats these fields only at reporting.
+The generic selectable callback formatter is removed.
+
+Existing controls require all six handoff coordinates and its exact diagnostic.
+The live ring control additionally fills the real queue, requires the concrete
+marker refusal through the error-source chain and verifies that the original
+queued registration, coordinate and bytes remain intact. Missing-token controls
+require their exact typed refusals. All 1,177 plugin unit tests, every plugin
+target and engineering hygiene pass. The existing actual-layout control measures
+the containing Runtime at 18,936 bytes with alignment eight and its inline
+white-box state at 9,552 bytes. Required packaged compilation is pending. No test
+case name, binding or policy exception is added. Backend/service-created dynamic
+payloads and full operational funding remain open; this does not admit CPU work.
+
 #### Borrowed pending transport
 
 Deferred-profile validation and live pending publication now borrow the retained
@@ -85,8 +106,12 @@ owned/borrowed byte equality, the maximum message, oversized refusal and an
 unchanged caller buffer after validation or capacity failure. The existing live
 catalog/ring control also requires the transport to borrow the actual retained
 catalog request. All 1,177 plugin unit tests, compilation of every protocol/plugin
-target and engineering hygiene pass. Required packaged checks are in progress.
-No case name or binding is added.
+target and engineering hygiene pass. Mandatory application compilation passes
+at `ypga59sr49h0niaw5ync41mwcv7mx6zq`. All 5,313 committed Rust/TOML files at
+`a960a98b7c9f3246a232e16a990aae3a5030c9b9` match immutable source
+`afp0zxpiiy1bjyjl05bm94p0plg0ld7x`, with comparison record SHA-256
+`c433ca0ce871ffcba86d18b432fca4588d662b416962014a404ff53b7f908047`.
+The fresh ABI check is in progress. No case name or binding is added.
 
 #### Typed selectable reply failures
 

@@ -51,7 +51,7 @@ pub(super) fn prepare_trap_snapshot(
     let coordinate =
         SelectableCallbackCoordinate::new(event.current_icount(), trap_tick_ps, event.vcpu_index());
     crate::whitebox_doorbell::PreparedSelectableTrap::decode(doorbell, event, coordinate, payload)
-        .map_err(callback_error)
+        .map_err(|source| LiveWhiteboxError::SelectableCallback { source })
 }
 
 /// Preallocated live and post-VMState catalog incarnations.
@@ -345,7 +345,7 @@ impl LiveSelectableState {
         let mut writer = app_random::LiveGuestMemoryWriter::new(apis, event.current_icount());
         prepared
             .serve_with_reply_buffer(&capability, self, &mut writer, reply_buffer)
-            .map_err(callback_error)
+            .map_err(|source| LiveWhiteboxError::SelectableCallback { source })
     }
 
     /// Freezes the exact setup catalog at the guest readiness marker.
@@ -353,15 +353,13 @@ impl LiveSelectableState {
         self.catalog
             .freeze()
             .map(|_proof| ())
-            .map_err(callback_error)
+            .map_err(|source| LiveWhiteboxError::SelectableCatalog { source })
     }
 
     /// Swaps the exact preallocated continuation after VMState load.
     pub(super) fn restore_continuation(&mut self) -> Result<(), LiveWhiteboxError> {
         if self.reset.blocks_restore() {
-            return Err(callback_error(
-                "correlated reset retains the selectable catalog until settlement",
-            ));
+            return Err(LiveWhiteboxError::SelectableRestorePendingReset);
         }
         let restored = self
             .restore_catalog
@@ -381,19 +379,24 @@ impl LiveSelectableState {
         let pending = self
             .catalog
             .pending_request()
-            .ok_or_else(|| callback_error("selectable VM stop has no pending request"))?;
+            .ok_or(LiveWhiteboxError::SelectableHandoffWithoutPending)?;
         let request_icount = pending.coordinate().raw_icount();
         let expected_stop_icount = request_icount
             .checked_add(SELECTABLE_NATIVE_HANDOFF_INSTRUCTIONS)
-            .ok_or_else(|| callback_error("selectable native handoff icount overflowed"))?;
+            .ok_or(LiveWhiteboxError::SelectableHandoffIcountOverflow)?;
         let request_tick_ps = pending.coordinate().tick_ps();
         let expected_stop_tick_ps = request_tick_ps
             .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
-            .ok_or_else(|| callback_error("selectable native handoff tick overflowed"))?;
+            .ok_or(LiveWhiteboxError::SelectableHandoffTickOverflow)?;
         if raw_icount != expected_stop_icount || tick_ps != expected_stop_tick_ps {
-            return Err(callback_error(format!(
-                "selectable request at raw icount {request_icount} tick {request_tick_ps} stopped at raw {raw_icount} tick {tick_ps}, expected exactly raw {expected_stop_icount} tick {expected_stop_tick_ps} after the doorbell instruction boundary"
-            )));
+            return Err(LiveWhiteboxError::SelectableHandoffCoordinate {
+                request_icount,
+                request_tick_ps,
+                actual_icount: raw_icount,
+                actual_tick_ps: tick_ps,
+                expected_icount: expected_stop_icount,
+                expected_tick_ps: expected_stop_tick_ps,
+            });
         }
         let coordinate = SelectableCallbackCoordinate::new(
             raw_icount,
@@ -403,7 +406,7 @@ impl LiveSelectableState {
         self.catalog
             .rebind_pending_boundary(coordinate)
             .map(|_pending| ())
-            .map_err(callback_error)
+            .map_err(|source| LiveWhiteboxError::SelectableCatalog { source })
     }
 
     /// Returns whether catalog deltas belong to the authoritative generation.
@@ -416,19 +419,16 @@ impl LiveSelectableState {
     pub(super) fn pending_transport_record(
         &self,
     ) -> Result<SelectablePendingTransportView<'_>, LiveWhiteboxError> {
-        let pending =
-            self.catalog
-                .pending_request()
-                .ok_or_else(|| LiveWhiteboxError::Callback {
-                    message: "selectable callback reported pending without retained catalog state"
-                        .to_owned(),
-                })?;
+        let pending = self
+            .catalog
+            .pending_request()
+            .ok_or(LiveWhiteboxError::SelectablePendingStateMissing)?;
         SelectablePendingTransportView::new(
             pending.request(),
             pending.reply_range().guest_address(),
             pending.coordinate().raw_icount(),
         )
-        .map_err(callback_error)
+        .map_err(|source| LiveWhiteboxError::SelectablePendingTransport { source })
     }
 
     #[cfg(test)]
@@ -492,14 +492,16 @@ impl LiveWhiteboxMarkerShmemProducer {
         registration: &crucible_qemu_protocol::SelectableRegister,
         buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let written = registration.encode_into(buffer).map_err(callback_error)?;
+        let written = registration
+            .encode_into(buffer)
+            .map_err(|source| LiveWhiteboxError::SelectableProtocol { source })?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
             &buffer[..written],
         )
-        .map_err(callback_error)
+        .map_err(|source| LiveWhiteboxError::SelectablePublication { source })
     }
 
     pub(super) fn record_selectable_pending(
@@ -509,14 +511,16 @@ impl LiveWhiteboxMarkerShmemProducer {
         record: &SelectablePendingTransportView<'_>,
         buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let written = record.encode_into(buffer).map_err(callback_error)?;
+        let written = record
+            .encode_into(buffer)
+            .map_err(|source| LiveWhiteboxError::SelectablePendingTransport { source })?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING,
             &buffer[..written],
         )
-        .map_err(callback_error)
+        .map_err(|source| LiveWhiteboxError::SelectablePublication { source })
     }
 
     pub(super) fn record_selectable_completed(
@@ -526,25 +530,21 @@ impl LiveWhiteboxMarkerShmemProducer {
         reply: &SelectionReply,
         buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
-        let written = reply.encode_into(buffer).map_err(callback_error)?;
+        let written = reply
+            .encode_into(buffer)
+            .map_err(|source| LiveWhiteboxError::SelectableProtocol { source })?;
         self.record(
             current_icount,
             vcpu_index,
             WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
             &buffer[..written],
         )
-        .map_err(callback_error)
+        .map_err(|source| LiveWhiteboxError::SelectablePublication { source })
     }
 }
 
 fn service_error(error: SelectableCatalogError) -> SelectableDoorbellServiceError {
     SelectableDoorbellServiceError::new(error.to_string())
-}
-
-fn callback_error(source: impl ToString) -> LiveWhiteboxError {
-    LiveWhiteboxError::Callback {
-        message: source.to_string(),
-    }
 }
 
 #[cfg(test)]

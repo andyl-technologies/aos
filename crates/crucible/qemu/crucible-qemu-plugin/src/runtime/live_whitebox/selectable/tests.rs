@@ -542,6 +542,30 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     let prefix_len = observed.payload().len();
     assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
     assert!(header.dequeue_whitebox_marker(&mut entries)?.is_none());
+
+    producer.record_selectable_registration(500, 0, &registered, &mut workspace)?;
+    let refused = producer
+        .record_selectable_completed(2_550, 1, &reply, &mut workspace)
+        .unwrap_err();
+    let retained = std::error::Error::source(&refused)
+        .and_then(|source| source.downcast_ref::<crate::WhiteboxMarkerSinkError>())
+        .unwrap_or_else(|| panic!("publication must retain its original marker refusal"));
+    assert_eq!(retained.message(), "live white-box marker queue is full");
+    assert!(matches!(
+        refused,
+        LiveWhiteboxError::SelectablePublication { .. }
+    ));
+    assert_eq!(
+        refused.to_string(),
+        "safe white-box callback failed: white-box marker sink failed: live white-box marker queue is full"
+    );
+    let unchanged = header.dequeue_whitebox_marker(&mut entries)?.unwrap();
+    let unchanged = unchanged.validate()?;
+    assert_eq!(unchanged.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED);
+    assert_eq!(unchanged.current_icount(), 500);
+    assert_eq!(unchanged.vcpu_index(), 0);
+    assert_eq!(unchanged.payload(), registered.encode()?);
+    assert!(header.dequeue_whitebox_marker(&mut entries)?.is_none());
     Ok(())
 }
 
@@ -732,6 +756,14 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
 -> Result<(), Box<dyn std::error::Error>> {
     let plan = cold_plan()?;
     let mut state = live_state(&plan, reply_input())?;
+    assert_eq!(
+        state.rebind_pending_boundary(52, 2_550),
+        Err(LiveWhiteboxError::SelectableHandoffWithoutPending)
+    );
+    assert!(matches!(
+        state.pending_transport_record(),
+        Err(LiveWhiteboxError::SelectablePendingStateMissing)
+    ));
     state.register_selectable(
         &registration(1)?,
         SelectableCallbackCoordinate::new(10, (10) * 50, 0),
@@ -752,10 +784,20 @@ fn native_handoff_rejects_any_instruction_drift_before_vmstop()
         panic!("a chained guest instruction must fail the selectable stop fence");
     };
 
-    assert!(
-        error
-            .to_string()
-            .contains("expected exactly raw 51 tick 2550")
+    assert_eq!(
+        error,
+        LiveWhiteboxError::SelectableHandoffCoordinate {
+            request_icount: 50,
+            request_tick_ps: 2_500,
+            actual_icount: 52,
+            actual_tick_ps: 2_550,
+            expected_icount: 51,
+            expected_tick_ps: 2_550,
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "safe white-box callback failed: selectable request at raw icount 50 tick 2500 stopped at raw 52 tick 2550, expected exactly raw 51 tick 2550 after the doorbell instruction boundary"
     );
     assert_eq!(
         state
