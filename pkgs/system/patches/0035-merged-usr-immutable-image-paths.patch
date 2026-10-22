@@ -5,6 +5,17 @@ and publishes the selected toplevel at /usr/lib/aos/toplevel. Walk those
 actual image paths without following symlinks or crossing mounts. Keep the
 logical /nix/store identity comparisons bound to the same selected members.
 
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -2017,7 +2017,7 @@
+         if (root_fd < 0)
+                 return log_error_errno(root_fd, "Cannot open AOS handoff root: %m");
+         lower_fd = chase_and_open(
+-                        "/nix.lower",
++                        "/usr/lib/aos/nix",
+                         root,
+                         (root ? CHASE_PREFIX_ROOT : 0) |
+                         CHASE_PROHIBIT_SYMLINKS |
 --- a/src/core/load-fragment.c
 +++ b/src/core/load-fragment.c
 @@ -6284,7 +6284,7 @@
