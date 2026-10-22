@@ -480,7 +480,13 @@ pub(in super::super::super) fn complete_for_correlation(
     };
     original
         .decode_bootstrap_codec_data(&normalizations, &literal, &parsed, &mut attempt, &model)
-        .unwrap();
+        .unwrap_or_else(|error| {
+            panic!(
+                "bootstrap codec fixture preparation: {error:?}; step={:?}; expired={}",
+                attempt.step,
+                original.cut.is_expired()
+            )
+        });
     assert_eq!(model.calls.get(), 4);
     (normalizations, literal, parsed, attempt)
 }

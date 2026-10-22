@@ -17,6 +17,29 @@ struct Model<'a> {
 }
 
 impl Model<'_> {
+    fn observe_retained(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        attempt: &Attempt,
+        role: Role,
+        actual: usize,
+    ) {
+        self.observed.set(self.observed.get() | (1 << role.index()));
+        assert_eq!(
+            actual,
+            attempt.retained_requested_bytes_data(original).unwrap()
+        );
+        assert_eq!(
+            actual > size_of::<Attempt>(),
+            role != Role::HostRegistration
+        );
+        assert!(actual <= attempt.row.unwrap()[0]);
+        assert_eq!(
+            original.retained_requested_bytes().unwrap(),
+            self.original_retained
+        );
+    }
+
     fn selected(&self, prefix: &str, role: Role) -> bool {
         self.case
             .strip_prefix("initial_policy_kernel_normalizations_")
@@ -89,20 +112,7 @@ impl Admission for Model<'_> {
         role: Role,
         actual: usize,
     ) -> Result<(), ProviderError> {
-        self.observed.set(self.observed.get() | (1 << role.index()));
-        assert_eq!(
-            actual,
-            attempt.retained_requested_bytes_data(original).unwrap()
-        );
-        assert_eq!(
-            actual > size_of::<Attempt>(),
-            role != Role::HostRegistration
-        );
-        assert!(actual <= attempt.row.unwrap()[0]);
-        assert_eq!(
-            original.retained_requested_bytes().unwrap(),
-            self.original_retained
-        );
+        self.observe_retained(original, attempt, role, actual);
         let value = if role == Role::HostRegistration {
             assert!(attempt.value.is_none());
             original
@@ -367,23 +377,71 @@ fn retained_value_bound_covers_actual_strings_empty_maps_and_unhinted_arrays() {
     }
 }
 
-/// Retains a complete attempt using the independent existing role/census oracles.
+/// Checks downstream setup without repeating the independent serialization oracle.
+///
+/// Dedicated normalization flights use `Model` directly and retain every raw
+/// field and canonical hash comparison. Downstream flights still execute the
+/// complete production normalization, phase checks and retained-output census
+/// under their original cut before testing their own operation.
+struct Preparation(Model<'static>);
+
+impl Admission for Preparation {
+    fn construct_data(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        attempt: &Attempt,
+        row: [usize; 3],
+    ) -> Result<(), ProviderError> {
+        self.0.construct_data(original, attempt, row)
+    }
+
+    fn role_data(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        attempt: &Attempt,
+        role: Role,
+    ) -> Result<(), ProviderError> {
+        self.0.role_data(original, attempt, role)
+    }
+
+    fn finish_data(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        attempt: &Attempt,
+        role: Role,
+        actual: usize,
+    ) -> Result<(), ProviderError> {
+        self.0.observe_retained(original, attempt, role, actual);
+        assert!(attempt.digests[role.index()].is_some());
+        assert!(attempt.hash.written > 0);
+
+        let mut digests = self.0.digests.get();
+        digests[role.index()] = attempt.digests[role.index()];
+        self.0.digests.set(digests);
+        Ok(())
+    }
+}
+
+/// Retains genuine normalization outputs for a downstream operation's fixture.
 pub(in super::super) fn complete_for_host(original: &mut OriginalImport18RawBootstrap) -> Attempt {
-    let model = Model {
+    let model = Preparation(Model {
         case: "initial_policy_kernel_normalizations_complete",
         original_retained: original.retained_requested_bytes().unwrap(),
         constructed: Cell::new(false),
         entered: Cell::new(0),
         observed: Cell::new(0),
         digests: Cell::new([None; 5]),
-    };
+    });
     let mut attempt = Attempt::empty_data();
     original
         .construct_bootstrap_normalizations_data(&mut attempt, &model)
         .unwrap();
-    assert_eq!(model.entered.get(), 31);
-    assert_eq!(model.observed.get(), 31);
-    assert_eq!(attempt.digests, model.digests.get());
+    assert_eq!(model.0.entered.get(), 31);
+    assert_eq!(model.0.observed.get(), 31);
+    assert_eq!(attempt.digests, model.0.digests.get());
+    assert_eq!(attempt.finished, 5);
+    assert!(attempt.complete && !attempt.failed);
+    assert!(attempt.value.is_none() && attempt.hash.written == 0);
     assert_eq!(
         attempt.retained_requested_bytes_data(original).unwrap(),
         size_of::<Attempt>()
