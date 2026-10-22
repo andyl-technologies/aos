@@ -255,3 +255,14 @@ fn full_launch_validation_keeps_original_custody_without_installing_a_model() {
         flight(case);
     }
 }
+
+/// Completes the real pure validator before testing later policy adoption.
+pub(super) fn validate_for_policy(owner: &mut OriginalImport18RawBootstrap) {
+    let admission = Admission {
+        case: "initial_launch_validation_complete",
+        calls: Cell::new(0),
+        retained: owner.retained_requested_bytes().unwrap(),
+    };
+    owner.validate_launch_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 2);
+}

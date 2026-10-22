@@ -350,3 +350,16 @@ fn original_response_publication_keeps_same_lease_socket_and_terminal_custody() 
         flight(case);
     }
 }
+
+/// Completes actual original SDK admission and publication for policy controls.
+pub(super) fn construct_for_policy(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_admission::construct_for_publication(owner);
+    let admission = Admission {
+        case: "initial_hello_publication_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.publish_hello_response_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}

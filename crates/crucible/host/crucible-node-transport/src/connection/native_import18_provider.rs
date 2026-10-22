@@ -5,7 +5,7 @@
 //! native dispatcher, input custody or phase permission is selected here.
 
 use super::*;
-use crate::reference_packet::Native5Policy;
+use crate::reference_packet::NativeImport18PolicyData;
 use crate::transport::original_frames::OriginalFrameReservation;
 use crucible_node_format::SchemaRef;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use std::{cell::RefCell, mem::size_of};
 pub(crate) struct NativeImport18ConnectionIdentity {
     actor: Rc<crate::protocol_snapshot::ProtocolCaptureOwner>,
     authority: Option<ConnectionAuthority>,
-    policy: Rc<Native5Policy>,
+    policy: Rc<NativeImport18PolicyData>,
     frames: Rc<RefCell<OriginalFrameReservation>>,
     phase: NativeImport18ConnectionPhase,
     request_id: Option<Id>,

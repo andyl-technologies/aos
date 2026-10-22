@@ -33,6 +33,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_selection_counter_scratch_data,
     original_import18_hello_value_construction_bound_data,
     original_import18_hello_value_counter_scratch_data,
+    original_import18_immutable_policy_construction_data,
+    original_import18_immutable_policy_counter_scratch_data,
     original_import18_launch_validation_construction_data,
     original_import18_launch_validation_counter_scratch_data,
     original_import18_public_channel_construction_data,
@@ -252,6 +254,12 @@ fn combine(
     // temporary coordinator/policy DATA never replaces original decoded owners.
     row[1] = row[1].max(launch_validation[1]);
     row[2] = row[2].max(add(raw[2], launch_validation[2])?);
+    // The model-absent policy adds one shared allocation. Its launch graph
+    // aliases the original decoder owner; no model or configuration is copied.
+    let policy = original_import18_immutable_policy_construction_data(maximum)?;
+    row[0] = add(row[0], policy[0])?;
+    row[1] = row[1].max(policy[1]);
+    row[2] = row[2].max(add(raw[2], policy[2])?);
     let recipe_identity = native_import18_recipe_identity_construction_data(maximum)?;
     row[1] = row[1].max(recipe_identity.0);
     row[2] = row[2].max(add(raw[2], recipe_identity.1)?);
@@ -389,6 +397,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
             .max(original_import18_hello_initial_admission_counter_scratch_data())
             .max(original_import18_hello_publication_counter_scratch_data())
             .max(original_import18_launch_validation_counter_scratch_data())
+            .max(original_import18_immutable_policy_counter_scratch_data())
+        + size_of::<[usize; 3]>() * 2 // Shared policy quote and combining row.
         + size_of::<[usize; 3]>() // The retained response-publication row.
         + size_of::<[usize; 3]>() * 2 // Pure launch row argument and combining window.
         + size_of::<[usize; 3]>()

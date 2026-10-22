@@ -67,6 +67,8 @@ pub(in crate::reference_packet::service) use bootstrap_import18::{
     hello_selection_counter_scratch_data as original_import18_hello_selection_counter_scratch_data,
     hello_value_construction_bound_data as original_import18_hello_value_construction_bound_data,
     hello_value_counter_scratch_data as original_import18_hello_value_counter_scratch_data,
+    immutable_policy_construction_data as original_import18_immutable_policy_construction_data,
+    immutable_policy_counter_scratch_data as original_import18_immutable_policy_counter_scratch_data,
     launch_validation_construction_data as original_import18_launch_validation_construction_data,
     launch_validation_counter_scratch_data as original_import18_launch_validation_counter_scratch_data,
     public_channel_construction_data as original_import18_public_channel_construction_data,

@@ -40,7 +40,15 @@ mod hello_sdk_request;
 #[path = "initial_reconstruction/hello_publication.rs"]
 mod hello_publication;
 pub(super) fn assert_hello_publication_bytes(case: &str, bytes: &[u8]) {
-    hello_publication::assert_parent_bytes(case, bytes);
+    if case.starts_with("initial_policy_") {
+        if immutable_policy::publishes(case) {
+            hello_publication::assert_parent_bytes("initial_hello_publication_complete", bytes);
+        } else {
+            assert!(bytes.is_empty());
+        }
+    } else {
+        hello_publication::assert_parent_bytes(case, bytes);
+    }
 }
 
 #[path = "initial_reconstruction/hello_admission.rs"]
@@ -83,6 +91,9 @@ mod selection;
 
 #[path = "initial_reconstruction/launch_validation.rs"]
 mod launch_validation;
+
+#[path = "initial_reconstruction/immutable_policy.rs"]
+mod immutable_policy;
 
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
@@ -171,6 +182,9 @@ fn operands(case: &str) -> [Value; 3] {
     if case.starts_with("initial_launch_validation_") {
         launch_validation::prepare_selected(case, &mut selected);
     }
+    if case.starts_with("initial_policy_") {
+        immutable_policy::prepare_selected(case, &mut selected);
+    }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
     if case == "initial_unmeasured_controller_executable" {
@@ -257,7 +271,7 @@ fn required(values: &[Value; 3]) -> [usize; 3] {
 fn flight(case: &str) {
     let mut values = operands(case);
     let mut row = required(&values);
-    if case.starts_with("initial_launch_validation_") {
+    if case.starts_with("initial_launch_validation_") || case.starts_with("initial_policy_") {
         launch_validation::fund_initial_partition(&mut values, row);
         assert_eq!(required(&values), row);
     }
@@ -417,6 +431,7 @@ pub(super) fn assert_child(
             || case.starts_with("initial_hello_")
             || case.starts_with("initial_selection_")
             || case.starts_with("initial_launch_validation_")
+            || case.starts_with("initial_policy_")
         {
             if result.is_err() && case.starts_with("initial_launch_validation_") {
                 eprintln!(
@@ -438,6 +453,10 @@ pub(super) fn assert_child(
             );
             assert!(!owner.initial_reconstructed);
         }
+    }
+    if case.starts_with("initial_policy_") {
+        immutable_policy::assert_child(case, &mut owner);
+        return;
     }
     if case.starts_with("initial_launch_validation_") {
         launch_validation::assert_child(case, &mut owner);

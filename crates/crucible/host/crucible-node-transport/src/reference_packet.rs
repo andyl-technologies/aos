@@ -16,6 +16,9 @@ const MAXIMUM_EVENTS: usize = 32;
 const MAXIMUM_OPERATIONS: usize = 64;
 const MAXIMUM_PAYLOAD: usize = 1024;
 
+mod native_import18_policy;
+pub(crate) use native_import18_policy::NativeImport18PolicyData;
+
 mod birth;
 pub use birth::PacketModelBirthFailure;
 
