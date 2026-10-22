@@ -15438,3 +15438,16 @@ not substituted policy tests. The SDK lifecycle split at `bd59758797` is pushed;
 Python syntax, all 2,645 Nix formatting checks and the actual two-VM aggregate
 Nix dry run pass. Required application compilation and final SDK/owning-gate
 qualification remain running or required. No additional task is accepted.
+
+The `2e34a1d9fe` eleven-component owning-gate invocation fails during evaluation
+in 0.909 seconds: the shared-directory gate requires `initialEnrollmentProof`
+but its import argument set omitted it. Integration derivation evaluation did
+not exercise that gate import. The shared-directory importer now explicitly
+passes the original proof alongside its portable shared-mode prerequisite. This
+changes no native runtime or success assertion. A fresh complete owning-gate
+evaluation and execution remain required; the failed receipt is retained.
+
+The corrected eleven-gate Nix dry run passes, including shared-directory,
+domain isolation, all four host-cache gates, wipe, publication and the three
+surface gates. All 2,645 Nix formatting checks and `git diff --check` pass.
+This establishes evaluation and formatting only; execution remains required.
