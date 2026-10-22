@@ -632,7 +632,10 @@ all-target Clippy pass. Mutually consistent foreign tails still refuse the
 original containing Source identity. Refreshed inventory
 `c42yjzg3319bsgwgwym8j0lc13si6smv` verifies 505 canonical bindings: 473 model,
 thirteen format and nineteen native, with 148 uncovered requirements and none
-fully qualified. Fresh hermetic ABI and application-target checks are pending.
+fully qualified. The fresh hermetic ABI gate passes at
+`407pgc4zibhjkv5sqhj5vh7b33gmc89x`, including all 277 protocol cases and
+the host/guest compilation matrix. Core evaluation passes at
+`p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`. The application-target check is pending.
 All 5,358 committed Rust/TOML inputs match the latter's immutable source
 `6dzf80a82r1894dj4pdfbx2mhs5sh5xg`; comparison record SHA256 is
 `c965bfe66696331a34445f7e2f228324d1747158fb9bd0e112b60270639541d6`. This codec issues no paid landing,
@@ -656,9 +659,20 @@ The earlier `1bf5541` baseline passes its hermetic installed component gate at
 its shared payload contains native objects. That result does not qualify the
 corrected version. The new installed-loader gate compiles the original fixture
 and real syscall-refusal helper against matching installed artifacts, checks the
-C++ header layout, and retains the original runner outcomes. Version-two full
-build, unchanged ABI, installed controls and literal zeroing-omission controls
-are pending. Complete process admission, kernel/image/initial-stack funding,
+C++ header layout, and retains the original runner outcomes.
+
+Independent public version-two qualification now passes the complete sequential
+build, all twenty unchanged ABI checks, installation, twenty initial-loader
+controls against both build and installed artifacts, thirteen existing bounded
+controls, eleven ordinary regressions, and the actual GLib/formatter controls.
+All 501 read-only qualification payloads match manifest
+`9a5df6c771303ee5132288f5d719ccca108002c47ebae63ae496e104eaacd4d4`.
+A separately rebuilt, never-installed DTV-zeroing omission reaches the unchanged
+validator and exits 127 with EIO at cut ten; its retained receipt records the
+actual attempted/returned history and unreleased debt. Both full builds and
+every runner retain their original status and finite limits. These public
+component results do not replace the pending repository hermetic installed
+gate. Complete process admission, kernel/image/initial-stack funding,
 helper and relocation closure remain unavailable; selected probes refuse before
 normal relocation and program entry, and `complete_profile` remains zero.
 
