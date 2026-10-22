@@ -12,7 +12,10 @@ mod lifecycle;
 mod permit;
 mod queue;
 mod reextract;
+mod surface;
 pub(in crate::host_cache::owner) use permit::CachePermit;
+#[cfg(feature = "surface-fuse")]
+pub(in crate::host_cache::owner) use queue::Allocation;
 
 use activity::Registry;
 pub(in crate::host_cache::owner) use activity::{ReadActivities, ReadActivity, ReadOrigin};

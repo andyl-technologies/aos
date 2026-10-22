@@ -275,9 +275,13 @@ impl NativeOwnerExecutor {
         Ok(job)
     }
 
-    // One serial counter preserves FIFO order across encoded and sealed jobs.
-    // Rejected attempts may consume a number, but cannot reorder accepted ones.
-    fn next_allocation_order(&mut self) -> io::Result<u64> {
+    /// Orders original allocations across encoded, sealed and derived indexes.
+    ///
+    /// Rejected attempts can consume a number without reordering accepted jobs.
+    ///
+    /// # Errors
+    /// Refuses an exhausted finite admission counter.
+    pub(in crate::host_cache::owner) fn next_allocation_order(&mut self) -> io::Result<u64> {
         self.allocation_order = self.allocation_order.checked_add(1).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::StorageFull,

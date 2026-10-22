@@ -9,7 +9,7 @@ use super::{
     graph::{self, Unit},
     permit::{CachePermit, Transition},
     queue::Queue,
-    reextract,
+    reextract, surface,
 };
 use crate::{
     host_cache::owner::{
@@ -141,6 +141,7 @@ pub(in crate::host_cache::owner) async fn run(
 ) -> io::Result<NativeCacheEvictionReport> {
     let units = graph::capture(executor)?;
     let encoded_units = encoded::capture(executor)?;
+    let surface_units = surface::capture(executor)?;
     let (config, owner) = {
         let custody = executor
             .custody()
@@ -179,7 +180,13 @@ pub(in crate::host_cache::owner) async fn run(
             .queue
             .as_mut()
             .ok_or_else(|| invalid("native FIFO absent"))?
-            .refresh(&units, &encoded_units, &pending, &mut activities)?;
+            .refresh(
+                &units,
+                &encoded_units,
+                &surface_units,
+                &pending,
+                &mut activities,
+            )?;
     }
     policy::synchronize_policy(executor)?;
     let before = observe(executor)?;
@@ -211,6 +218,10 @@ pub(in crate::host_cache::owner) async fn run(
         .into_iter()
         .map(|unit| (unit.key().to_owned(), unit))
         .collect();
+    let mut surface_units: BTreeMap<_, _> = surface_units
+        .into_iter()
+        .map(|unit| (unit.allocation.key.clone(), unit))
+        .collect();
     for key in candidates {
         if executor.cache.pending.contains_key(&key) || encoded::contains_key(executor, &key) {
             continue;
@@ -232,6 +243,7 @@ pub(in crate::host_cache::owner) async fn run(
                 // must wait for a later, independently eligible command.
                 let fresh = graph::capture(executor)?;
                 let encoded = encoded::capture(executor)?;
+                let surface = surface::capture(executor)?;
                 let pending = executor
                     .cache
                     .pending
@@ -250,7 +262,7 @@ pub(in crate::host_cache::owner) async fn run(
                     .queue
                     .as_mut()
                     .ok_or_else(|| invalid("native FIFO absent"))?
-                    .refresh(&fresh, &encoded, &pending, &mut activities)?;
+                    .refresh(&fresh, &encoded, &surface, &pending, &mut activities)?;
                 continue;
             }
             let unit = fresh
@@ -258,6 +270,8 @@ pub(in crate::host_cache::owner) async fn run(
                 .find(|unit| unit.key == key)
                 .ok_or_else(|| invalid("FIFO candidate lost original sealed allocation"))?;
             retire(executor, Arc::new(unit)).await?;
+        } else if let Some(unit) = surface_units.remove(&key) {
+            surface::retire(executor, unit).await?;
         } else {
             let unit = encoded_units
                 .remove(&key)

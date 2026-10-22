@@ -13,6 +13,20 @@ use std::{
 };
 use terrane_sdk::host::cache::{CacheEntry, CachePolicy, PolicyConfig};
 
+/// Describes scheduling data without supplying native retirement authority.
+pub(in crate::host_cache::owner) struct Allocation {
+    /// Original physical executor admission sequence.
+    pub(in crate::host_cache::owner) order: u64,
+    /// Inspected device and inode scheduling key.
+    pub(in crate::host_cache::owner) key: String,
+    /// Actual synchronized allocation, never inferred released bytes.
+    pub(in crate::host_cache::owner) allocated: u64,
+    /// Current retained custody or unelapsed release grace.
+    pub(in crate::host_cache::owner) protected: bool,
+    /// Original registration matched against actual read activity.
+    pub(in crate::host_cache::owner) origin: ReadOrigin,
+}
+
 struct Entry {
     origin: ReadOrigin,
     allocated: u64,
@@ -52,6 +66,7 @@ impl Queue {
         &mut self,
         units: &[Unit],
         encoded: &[EncodedAllocation],
+        surface: &[super::surface::Unit],
         pending: &BTreeSet<String>,
         activities: &mut Registry,
     ) -> io::Result<()> {
@@ -73,6 +88,16 @@ impl Queue {
                     unit.allocated(),
                     unit.protected(),
                     ReadOrigin::Admission(unit.order()),
+                )
+            }))
+            .chain(surface.iter().map(|unit| {
+                let allocation = &unit.allocation;
+                (
+                    allocation.order,
+                    allocation.key.as_str(),
+                    allocation.allocated,
+                    allocation.protected,
+                    allocation.origin,
                 )
             }))
             .collect::<Vec<_>>();

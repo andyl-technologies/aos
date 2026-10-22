@@ -67,7 +67,7 @@ pub(super) fn run(
         if mode == "pressure-calibrate" {
             return calibrate(owner, inputs, baseline).await;
         }
-        verify(owner, inputs, policy).await
+        verify(owner, inputs, policy, mode == "global-pressure").await
     }))
 }
 
@@ -110,6 +110,7 @@ async fn verify(
     owner: &NativeMetadataOwner,
     inputs: &config::Inputs,
     policy: SurfaceIndexPolicy,
+    global: bool,
 ) -> Result<()> {
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
     fixture
@@ -150,8 +151,31 @@ async fn verify(
     }
     let path = inputs.root.join("state/cache/records.toml");
     let before = fs::read(&path)?;
-    let obligations = exposure::snapshot(inputs).await?.exposures;
-    refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    let snapshot = exposure::snapshot(inputs).await?;
+    let future = snapshot
+        .reservations
+        .iter()
+        .try_fold(0u64, |sum, hold| sum.checked_add(hold.bytes))
+        .ok_or("pressure future holds overflow")?;
+    let allocation = measured("TERRANE_PRESSURE_ALLOCATION")?;
+    let incoming = inputs
+        .owner_config()?
+        .policy
+        .capacity
+        .checked_sub(
+            full.checked_add(future)
+                .ok_or("pressure accounting overflows")?,
+        )
+        .and_then(|headroom| headroom.checked_add(allocation))
+        .ok_or("pressure incoming bound overflows")?;
+    let obligations = snapshot.exposures;
+    if global {
+        if owner.evict_cached(incoming).await?.retired_allocations != 0 {
+            return Err("global pressure ignored a genuine retained receipt".into());
+        }
+    } else {
+        refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    }
     if fs::read(&path)? != before || !cold_path.exists() {
         return Err("automatic pressure ignored a genuine retained admission receipt".into());
     }
@@ -159,11 +183,29 @@ async fn verify(
     let seal = terrane_linux::verity::measure(&file)?;
     let mapping = MappedIndex::open(file.into(), cold_root, &seal, 4096)?;
     drop(cold);
-    refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    if global {
+        if owner.evict_cached(incoming).await?.retired_allocations != 0 {
+            return Err("global pressure skipped genuine index release grace".into());
+        }
+    } else {
+        refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    }
     if fs::read(&path)? != before || !cold_path.exists() {
         return Err("automatic pressure skipped genuine release grace".into());
     }
     tokio::time::sleep(inputs.owner_config()?.policy.release_grace).await;
+    if global {
+        let retired = owner.evict_cached(incoming).await?;
+        if retired.retired_allocations != 1
+            || retired.charged_reserved_bytes != full
+            || retired.future_hold_bytes
+                != future
+                    .checked_sub(policy.future_hold_bytes)
+                    .ok_or("pressure future hold underflows")?
+        {
+            return Err("global pressure changed actual charge or an unrelated future hold".into());
+        }
+    }
     refused(owner, incoming_root, incoming_nodes.clone()).await?;
     if cold_path.exists()
         || !canonical_path(inputs, active_key.root()).exists()
@@ -172,9 +214,15 @@ async fn verify(
     {
         return Err("automatic pressure lost active exposure or original retired mapping".into());
     }
-    println!(
-        "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit"
-    );
+    if global {
+        println!(
+            "PASS shared host FIFO selects the original derived index after real release grace while preserving active exposure and exact mapped charge"
+        );
+    } else {
+        println!(
+            "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit"
+        );
+    }
     let held = quota_sample(&mut quota, inputs)?.0;
     drop(mapping);
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -200,8 +248,14 @@ async fn verify(
     {
         return Err("automatic pressure failed exact retry after actual final unmap".into());
     }
-    println!(
-        "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"
-    );
+    if global {
+        println!(
+            "PASS shared host retirement releases only the original index future hold; actual final unmap precedes bounded index-cap retry with durable custody unchanged"
+        );
+    } else {
+        println!(
+            "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"
+        );
+    }
     Ok(())
 }

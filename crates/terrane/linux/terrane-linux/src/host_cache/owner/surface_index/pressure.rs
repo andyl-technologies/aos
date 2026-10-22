@@ -7,6 +7,7 @@ use super::{Job, allocation_bound, eviction, invalid};
 use crate::{
     host_cache::owner::{
         consumer::state,
+        publication::eviction::{Allocation, ReadActivity, ReadOrigin},
         retention::{Custody, NativeOwnerExecutor},
     },
     host_cache::{NativeCacheOwnerConfig, SurfaceIndexPolicy},
@@ -15,7 +16,9 @@ use crate::{
 use std::{
     collections::BTreeMap,
     io,
+    os::unix::fs::MetadataExt,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use terrane_sdk::{
     host::cache::{CacheEntry, CachePolicy},
@@ -25,12 +28,14 @@ use terrane_sdk::{
 struct Entry {
     allocation: String,
     pinned: bool,
+    protected_until: Duration,
 }
 
 struct Schedule {
     policy: CachePolicy,
     entries: BTreeMap<IndexKey, Entry>,
     owner: String,
+    release_grace: Duration,
 }
 
 /// Shares read promotion independently of physical custody and native IO.
@@ -41,6 +46,7 @@ pub(in crate::host_cache::owner) struct Queue(Arc<Mutex<Schedule>>);
 pub(super) struct Activity {
     queue: Queue,
     allocation: String,
+    global: Arc<ReadActivity>,
 }
 
 impl Activity {
@@ -55,7 +61,7 @@ impl Activity {
             .map_err(|_| invalid("surface FIFO poisoned"))?
             .policy
             .touch(&self.allocation);
-        Ok(())
+        self.global.record()
     }
 }
 
@@ -76,6 +82,7 @@ impl Queue {
             policy: CachePolicy::new(policy).map_err(io::Error::other)?,
             entries: BTreeMap::new(),
             owner: config.quota_owner.clone(),
+            release_grace: config.policy.release_grace,
         }))))
     }
 
@@ -89,6 +96,7 @@ impl Queue {
         device: u64,
         inode: u64,
         allocated: u64,
+        global: Arc<ReadActivity>,
     ) -> io::Result<Activity> {
         let mut schedule = self
             .0
@@ -118,11 +126,13 @@ impl Queue {
             Entry {
                 allocation: allocation.clone(),
                 pinned: true,
+                protected_until: Duration::ZERO,
             },
         );
         Ok(Activity {
             queue: self.clone(),
             allocation,
+            global,
         })
     }
 
@@ -149,38 +159,7 @@ impl Queue {
             .lock()
             .map_err(|_| invalid("surface FIFO poisoned"))?;
         let now = TokioClock.monotonic();
-        let keys: Vec<_> = schedule.entries.keys().copied().collect();
-        for key in keys {
-            let Some(job) = owner.surface_indexes.get(&key) else {
-                let entry = schedule
-                    .entries
-                    .remove(&key)
-                    .ok_or_else(|| invalid("surface FIFO entry disappeared"))?;
-                schedule.policy.forget_allocation(&entry.allocation);
-                continue;
-            };
-            let protected = protects(owner, key, job)?;
-            let entry = schedule
-                .entries
-                .get(&key)
-                .ok_or_else(|| invalid("surface FIFO entry absent"))?;
-            let allocation = entry.allocation.clone();
-            if protected && !entry.pinned {
-                schedule.policy.pin(&allocation).map_err(io::Error::other)?;
-            } else if !protected && entry.pinned {
-                // Receipt release is observed conservatively on this scan.
-                // The host's real grace must elapse before automatic eviction.
-                schedule
-                    .policy
-                    .release(&allocation, now)
-                    .map_err(io::Error::other)?;
-            }
-            schedule
-                .entries
-                .get_mut(&key)
-                .ok_or_else(|| invalid("surface FIFO entry disappeared"))?
-                .pinned = protected;
-        }
+        refresh(&mut schedule, owner, now)?;
         // One victim keeps the entire attempt within the configured S3-FIFO
         // scan bound. If it cannot meet the target, admission refuses and a
         // later request can retry after real kernel retirement progresses.
@@ -207,6 +186,103 @@ impl Queue {
         }
         Ok(())
     }
+}
+
+/// Captures verified original allocations for the shared host FIFO.
+///
+/// # Errors
+/// Refuses unavailable custody, changed backing, scheduling bounds or grace.
+pub(in crate::host_cache::owner) fn inventory(
+    executor: &NativeOwnerExecutor,
+) -> io::Result<Vec<(IndexKey, Allocation)>> {
+    let owner = executor
+        .custody()
+        .lock()
+        .map_err(|_| invalid("surface custody poisoned"))?;
+    state::check_ready(executor, &owner)?;
+    let Some(queue) = &owner.surface_queue else {
+        return Ok(Vec::new());
+    };
+    let mut schedule = queue
+        .0
+        .lock()
+        .map_err(|_| invalid("surface FIFO poisoned"))?;
+    let now = TokioClock.monotonic();
+    refresh(&mut schedule, &owner, now)?;
+    let mut allocations = Vec::new();
+    allocations
+        .try_reserve_exact(owner.surface_indexes.len())
+        .map_err(io::Error::other)?;
+    for (key, job) in &owner.surface_indexes {
+        let entry = schedule
+            .entries
+            .get(key)
+            .ok_or_else(|| invalid("surface FIFO registration absent"))?;
+        let protected = entry.pinned || now < entry.protected_until;
+        // Inspection verifies original custody without recording consumer use.
+        drop(super::reuse(&owner, job, &job.compiled)?);
+        let backing = job
+            .backing
+            .as_ref()
+            .ok_or_else(|| invalid("surface FIFO backing absent"))?;
+        let allocation = format!("{}:{}", backing.metadata.dev(), backing.metadata.ino());
+        if allocation != entry.allocation || backing.activity.is_none() {
+            return Err(invalid("surface FIFO changed original registration"));
+        }
+        allocations.push((
+            *key,
+            Allocation {
+                order: job.order,
+                key: allocation,
+                allocated: backing.allocated,
+                protected,
+                origin: ReadOrigin::Admission(job.order),
+            },
+        ));
+    }
+    Ok(allocations)
+}
+
+fn refresh(schedule: &mut Schedule, owner: &Custody, now: Duration) -> io::Result<()> {
+    let keys: Vec<_> = schedule.entries.keys().copied().collect();
+    for key in keys {
+        let Some(job) = owner.surface_indexes.get(&key) else {
+            let entry = schedule
+                .entries
+                .remove(&key)
+                .ok_or_else(|| invalid("surface FIFO entry disappeared"))?;
+            schedule.policy.forget_allocation(&entry.allocation);
+            continue;
+        };
+        let protected = protects(owner, key, job)?;
+        let entry = schedule
+            .entries
+            .get(&key)
+            .ok_or_else(|| invalid("surface FIFO entry absent"))?;
+        let allocation = entry.allocation.clone();
+        if protected && !entry.pinned {
+            schedule.policy.pin(&allocation).map_err(io::Error::other)?;
+        } else if !protected && entry.pinned {
+            // Receipt release is observed conservatively on this scan.
+            // The host's real grace must elapse before automatic eviction.
+            schedule
+                .policy
+                .release(&allocation, now)
+                .map_err(io::Error::other)?;
+        }
+        let grace = schedule.release_grace;
+        let entry = schedule
+            .entries
+            .get_mut(&key)
+            .ok_or_else(|| invalid("surface FIFO entry disappeared"))?;
+        if !protected && entry.pinned {
+            entry.protected_until = now
+                .checked_add(grace)
+                .ok_or_else(|| invalid("surface release grace overflows"))?;
+        }
+        entry.pinned = protected;
+    }
+    Ok(())
 }
 
 fn protects(owner: &Custody, key: IndexKey, job: &Job) -> io::Result<bool> {

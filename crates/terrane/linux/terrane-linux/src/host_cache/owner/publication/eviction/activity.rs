@@ -124,6 +124,19 @@ pub(super) struct ActivitySnapshot {
 }
 
 impl Registry {
+    /// Registers the original index inode under the shared admission clock.
+    ///
+    /// # Errors
+    /// Refuses exhausted bounded registry storage or conflicting registrations.
+    #[cfg(feature = "surface-fuse")]
+    pub(in crate::host_cache::owner) fn for_surface(
+        &mut self,
+        inode: (u64, u64),
+        order: u64,
+        limit: usize,
+    ) -> io::Result<Arc<ReadActivity>> {
+        self.for_inode(inode, ReadOrigin::Admission(order), limit)
+    }
     /// Captures one consistent read-order cut without holding the clock during allocation.
     ///
     /// # Errors

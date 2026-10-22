@@ -119,24 +119,29 @@ def pressure_actors(support, executable, environment_for):
     snapshot, allocation = map(int, fields[1:])
     support.require(0 <= snapshot <= support.HARD and 0 < allocation <= support.HARD,
         "actual pressure measurements exceed the genuine project budget")
-    environment = dict(environment_for("pressure"),
-        TERRANE_PRESSURE_SNAPSHOT=str(snapshot), TERRANE_PRESSURE_ALLOCATION=str(allocation))
-    try:
-        result = subprocess.run(support.role_command(840, [executable, "pressure"]),
-            env=environment, text=True, capture_output=True, timeout=60)
-    except subprocess.TimeoutExpired as error:
-        for stream in [error.stdout, error.stderr]:
-            if stream:
-                print(stream.decode(errors="replace") if isinstance(stream, bytes)
-                    else stream, end="", flush=True)
-        raise
-    print(result.stdout, end="", flush=True)
-    print(result.stderr, end="", flush=True)
-    support.require(result.returncode == 0 and result.stdout.splitlines() == [
-        "PASS surface admission requires actual recovery and acknowledged Resume",
-        "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit",
-        "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"],
-        "actual automatic index-pressure control failed")
+    for case in ["pressure", "global-pressure"]:
+        environment = dict(environment_for(case),
+            TERRANE_PRESSURE_SNAPSHOT=str(snapshot), TERRANE_PRESSURE_ALLOCATION=str(allocation))
+        try:
+            result = subprocess.run(support.role_command(840, [executable, case]),
+                env=environment, text=True, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired as error:
+            for stream in [error.stdout, error.stderr]:
+                if stream:
+                    print(stream.decode(errors="replace") if isinstance(stream, bytes)
+                        else stream, end="", flush=True)
+            raise
+        print(result.stdout, end="", flush=True)
+        print(result.stderr, end="", flush=True)
+        expected = ["PASS surface admission requires actual recovery and acknowledged Resume"]
+        expected.extend([
+            "PASS shared host FIFO selects the original derived index after real release grace while preserving active exposure and exact mapped charge",
+            "PASS shared host retirement releases only the original index future hold; actual final unmap precedes bounded index-cap retry with durable custody unchanged"
+        ] if case == "global-pressure" else [
+            "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit",
+            "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"])
+        support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
+            "actual automatic index-pressure control failed: " + case)
 
 
 def load(name, path):
@@ -168,7 +173,7 @@ def main():
     support.require(Path(__file__).read_bytes()
         == (source / "tests/terrane/scoped_worker_vm.py").read_bytes(),
         "installed scoped supervisor differs from immutable source")
-    support.CASES = ["pressure-calibration", "pressure"] if pressure else [case]
+    support.CASES = ["pressure-calibration", "pressure", "global-pressure"] if pressure else [case]
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()

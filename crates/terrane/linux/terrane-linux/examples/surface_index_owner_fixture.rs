@@ -82,10 +82,13 @@ fn main() -> Result<()> {
     };
     settings.surface_index = Some(policy);
     let mut preparation = NativeCachePreparation::inspect(settings, confinement.clone())?;
-    let pressure_baseline = if matches!(mode.as_str(), "pressure-calibrate" | "pressure") {
+    let pressure_baseline = if matches!(
+        mode.as_str(),
+        "pressure-calibrate" | "pressure" | "global-pressure"
+    ) {
         let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
         let baseline = quota_sample(&mut quota, &inputs)?.0;
-        if mode == "pressure" {
+        if matches!(mode.as_str(), "pressure" | "global-pressure") {
             policy = pressure::policy(policy, baseline)?;
             drop(preparation);
             let mut settings = inputs.owner_config()?;
@@ -126,6 +129,7 @@ fn main() -> Result<()> {
             | "crash-recover"
             | "pressure-calibrate"
             | "pressure"
+            | "global-pressure"
     ) {
         return Err("unknown surface-owner selector".into());
     }

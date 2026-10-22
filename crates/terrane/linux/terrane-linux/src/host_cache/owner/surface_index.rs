@@ -109,6 +109,7 @@ impl Backing {
 
 /// Retains compilation and every attempted physical resource before effects.
 pub(super) struct Job {
+    order: u64,
     compiled: CompiledIndex,
     reservation: String,
     hold: u64,
@@ -197,7 +198,7 @@ impl NativeMetadataOwner {
 
 /// Owns actual admission through both durable snapshots and physical verification.
 pub(super) async fn admit(
-    executor: &NativeOwnerExecutor,
+    executor: &mut NativeOwnerExecutor,
     root: Digest,
     nodes: BTreeMap<Digest, Vec<u8>>,
     domain: Option<&str>,
@@ -248,6 +249,7 @@ pub(super) async fn admit(
     };
     pressure::prepare(executor, compiled.bytes().len()).await?;
     let key = compiled.key();
+    let order = executor.next_allocation_order()?;
     let (generation, write) = {
         let mut owner = custody
             .lock()
@@ -292,6 +294,7 @@ pub(super) async fn admit(
         owner.surface_indexes.insert(
             key,
             Job {
+                order,
                 compiled,
                 reservation: format!("surface-index:{token}"),
                 hold: policy.future_hold_bytes,
@@ -345,6 +348,16 @@ pub(super) async fn admit(
             .get(&key)
             .and_then(|job| job.backing.as_ref())
             .ok_or_else(|| invalid("surface FIFO backing absent"))?;
+        let global = executor
+            .cache
+            .activities
+            .lock()
+            .map_err(|_| invalid("surface read registry poisoned"))?
+            .for_surface(
+                (backing.metadata.dev(), backing.metadata.ino()),
+                order,
+                owner.preparation.config.state.records,
+            )?;
         let activity = owner
             .surface_queue
             .as_ref()
@@ -354,6 +367,7 @@ pub(super) async fn admit(
                 backing.metadata.dev(),
                 backing.metadata.ino(),
                 backing.allocated,
+                global,
             )?;
         let backing = owner
             .surface_indexes

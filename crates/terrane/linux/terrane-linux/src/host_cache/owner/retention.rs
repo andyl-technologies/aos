@@ -434,7 +434,7 @@ impl NativeMetadataOwner {
                             response,
                         } => {
                             let result = runtime.block_on(super::surface_index::admit(
-                                &executor,
+                                &mut executor,
                                 root,
                                 nodes,
                                 domain.as_deref(),

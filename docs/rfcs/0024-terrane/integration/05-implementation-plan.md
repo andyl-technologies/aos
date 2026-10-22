@@ -14451,3 +14451,42 @@ pass. Native pressure, existing owning components and mandatory application
 qualification for this revision remain pending. This implements cap-triggered
 index reclamation; general host-pressure composition and full deployment
 acceptance remain separate work.
+
+
+At `5787230df5`, the actual index-pressure VM passes in 614.09 seconds and
+scoped worker grants pass in 589.64 seconds. Both completed reviews compare all
+8,049 immutable source files, 5,340 base and 5,324 surface inputs, four actual
+base Cargo executables and the surface executable SHA-256
+`7fda5dccbfd06840d5384b23399e440652f29f6eb3baf01da8b53413a87b03a4`.
+The complete owning surface VM also passes in 718.20 seconds; its complete source and five-executable review also passes. Mandatory
+application qualification remains running. The pressure
+witnesses retain the actual configured grace and reject false capacity credit
+while the original unlinked mapping survives. They do not qualify deployment.
+
+The census-enabled forced-crash runs at `aa2a190045` and `5787230df5` now
+confirm exact-byte cold refusal while the original worker mapping survives
+owner SIGKILL. They fail later at the expected policy comparison after worker
+death. Genuine recovery intentionally retains one newly funded metadata
+bootstrap; the fixture incorrectly omitted it from its expected snapshot. The
+comparison now requires exactly one new bounded hold with the configured owner
+and bytes, checks the actual recovery receipt's total future hold, and compares
+every other typed field, including snapshot version, before and after Resume.
+No recovery or closure rule changes. The `aa2a190045` application check passes
+in 641.56 seconds with all 8,047 immutable files and 184 compiler records across
+59 packages reviewed. The `a448149095` application check also passes with its
+complete source and compiler-record review. Neither failed crash run is green.
+
+Derived indexes now join the general host S3-FIFO inventory using the same
+physical admission counter and actual verified-read clock as encoded and sealed
+allocations. Inventory checks original backing without promoting inspection
+into a consumer read. Retained receipts, all durable exposure rows and the
+conservatively observed release-grace deadline protect each index. Selection
+invokes its existing funded checked unlink and local closure; planner removal
+does not report reclaimed kernel quota. The separate index-cap policy remains
+in force. A third independently provisioned pressure actor exercises this host
+selection while retaining the victim mapping, checks exact future-hold release
+and unchanged physical charge, then requires final unmap before index-cap retry.
+The existing 120-second pressure VM and 60-second actor contracts are unchanged.
+Both strict Linux all-target feature profiles, formatting, Python syntax,
+Nix evaluation and all 128 native source declarations pass. Exact-source native
+and mandatory application qualification are pending; no trunk task is closed.
