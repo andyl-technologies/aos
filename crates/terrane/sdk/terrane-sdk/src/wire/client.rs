@@ -24,6 +24,9 @@ use super::{
 };
 use crate::store::ContentValidator;
 
+/// Receives exact private pack ranges without admitting their unverified bytes.
+pub mod range;
+
 /// Reads a complete bounded bundle through the generated native RPC client.
 ///
 /// `options` must explicitly set positive message and element-memory limits and
@@ -59,18 +62,7 @@ where
     <T::ResponseBody as Body>::Error: fmt::Display,
     V: ContentValidator,
 {
-    let timeout = options.timeout().ok_or(BundleClientError::Limits)?;
-    if timeout.is_zero()
-        || options.max_message_size().is_none_or(|bytes| bytes == 0)
-        || options
-            .element_memory_limit()
-            .is_none_or(|bytes| bytes == 0)
-    {
-        return Err(BundleClientError::Limits);
-    }
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or(BundleClientError::Limits)?;
+    let deadline = call_deadline(&options).ok_or(BundleClientError::Limits)?;
 
     let receive = async {
         let mut receiver = BundleReceiver::new(limits, request.include_profile);
@@ -135,4 +127,18 @@ impl std::error::Error for BundleClientError {
             _ => None,
         }
     }
+}
+
+// Validate caller bounds before a generated client can start network I/O.
+fn call_deadline(options: &CallOptions) -> Option<Instant> {
+    let timeout = options.timeout()?;
+    if timeout.is_zero()
+        || options.max_message_size().is_none_or(|bytes| bytes == 0)
+        || options
+            .element_memory_limit()
+            .is_none_or(|bytes| bytes == 0)
+    {
+        return None;
+    }
+    Instant::now().checked_add(timeout)
 }

@@ -12508,3 +12508,44 @@ not replace current full aggregate qualification. Required application-target
 compilation at `2a3c545c58` passes in 1,582.10 seconds, matching 7,943 immutable
 source files and 184 compiler artifact records across 59 packages; executable
 bytes are not retained by that application compilation check.
+
+
+#### Native exact fallback range reception
+
+The generated ContentService client now receives GetRange responses privately
+until successful protocol termination and exact requested coverage. Pack IDs
+must contain sixteen bytes; request offsets cannot overflow, and requested
+lengths must fit explicit finite retained-byte limits before any connection.
+Nonempty frames must use contiguous absolute pack offsets, contain at most four
+MiB and fit both the remaining request and the configured frame count. Empty
+requests accept no data frames. The same explicit timeout, message and decoded-
+element checks used by bundle reads now share one native call-bound helper.
+Timeouts and cancellation drop the actual response stream and private bytes.
+These results are unverified pack bytes, not chunk identities, admission,
+current authorization or Original provenance.
+
+All eleven actual range socket cases pass locally under the existing thirty-
+second selector bound. They include the maximum legal frame, a frame one byte
+too large, near-u64-limit offsets, exact coverage, gaps, overlap, reordering,
+empty frames, oversized decoding, cutoff before terminal metadata, explicit
+error termination, deadlines and cancellation. The ten bundle socket cases also
+pass after extracting their unchanged peer into a shared fixture. The first
+range compile corrected two fixture calls to the generated mutable-field API;
+an initial cutoff fixture incorrectly sent successful RPC termination before
+cutting off HTTP framing and was corrected to omit terminal metadata. Both
+failed diagnostics remain separate from the complete passing run. Strict
+SDK/Linux/CLI all-target Clippy, native portable and actual WebAssembly checking,
+Rust/Nix formatting and check evaluation pass. Frozen range-client and repeated
+bundle-client checks, and required application compilation, remain pending.
+No task acceptance changes.
+
+Frozen bundle-client qualification at `73797c43f9` passes all ten socket cases
+in 147.95 seconds. Independent review matches 7,948 immutable source files and
+5,245 bound inputs. At `2389aedc6b`, the owning watch gate passes all seven
+cases in 1,277.45 seconds and guarded ref-history passes all ten cases in
+1,349.42 seconds, matching 7,944 immutable source files and 5,243 bound inputs.
+Watch evidence retains the actual SDK executable; the two source integration
+outputs retain compiler and execution records rather than executable bytes.
+Required application-target compilation at `2389aedc6b` passes in 1,536.97
+seconds with 184 compiler artifact records across 59 packages and the same
+7,944 immutable source files. This is compilation evidence only.
