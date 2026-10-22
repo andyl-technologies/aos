@@ -10,6 +10,7 @@ mod config;
 mod consumer;
 mod corruption;
 mod fetch;
+mod health;
 mod index_io;
 #[cfg(feature = "native-test-fixtures")]
 mod policy_stall_fixture;

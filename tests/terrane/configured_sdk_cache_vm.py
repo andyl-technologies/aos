@@ -8,6 +8,7 @@ import os
 import pathlib
 import runpy
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -102,25 +103,45 @@ def manifest_payload():
     return bytes(result)
 
 
-def actor(driver, image, label, arguments, success=True, mount_policy=None):
+def actor(driver, image, label, arguments, success=True, mount_policy=None, maintained=False):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
     with contextlib.ExitStack() as stack:
         command = namespace_actor(driver, image, arguments, mount_policy, stack)
-        return run_actor(driver, label, command, success, mount_policy)
+        return run_actor(driver, label, command, success, mount_policy, maintained)
 
 
-def run_actor(driver, label, command, success, mount_policy):
+def run_actor(driver, label, command, success, mount_policy, maintained):
     """Collects bounded actor output and retains every namespace observation."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     output = [bytearray(), bytearray()]
     streams = {process.stdout: output[0], process.stderr: output[1]}
     deadline = min(driver.DEADLINE, time.monotonic() + 30)
+    stop_at = None
+    stopped = False
+    state_inodes = None
     try:
         while streams:
+            if maintained and not stopped:
+                snapshots = [line for line in output[0].splitlines(keepends=True)
+                             if line.startswith(b"completed SDK snapshot ") and line.endswith(b"\n")]
+                if len(snapshots) == 2:
+                    driver.require(process.poll() is None,
+                                   "native cache exited at SDK completion: " + label)
+                    if stop_at is None:
+                        state_inodes = verify_owner_locks(driver, True)
+                        stop_at = time.monotonic() + 2
+                    if time.monotonic() >= stop_at:
+                        verify_owner_locks(driver, True, state_inodes)
+                        process.send_signal(signal.SIGTERM)
+                        stopped = True
             remaining = deadline - time.monotonic()
             driver.require(remaining > 0, "native SDK actor deadline: " + label)
+            if stop_at is not None and not stopped:
+                remaining = min(remaining, max(0, stop_at - time.monotonic()))
             ready, _, _ = select.select(list(streams), [], [], remaining)
+            if not ready and stop_at is not None and not stopped:
+                continue
             driver.require(ready, "native SDK actor output timeout: " + label)
             for stream in ready:
                 chunk = os.read(stream.fileno(), 4096)
@@ -140,6 +161,10 @@ def run_actor(driver, label, command, success, mount_policy):
 
     driver.require(process.returncode == (0 if success else 1),
                    "native SDK actor exit status: " + label)
+    if maintained:
+        driver.require(stopped, "native cache exited before supervised SIGTERM: " + label)
+        verify_owner_locks(driver, False, state_inodes)
+        print("PASS actual maintained native cache owns both original state locks after SDK completion and releases them after SIGTERM", flush=True)
     if mount_policy is not None:
         rows = [json.loads(line[len(NAMESPACE_OBSERVATION):])
                 for line in output[0].splitlines() if line.startswith(NAMESPACE_OBSERVATION)]
@@ -149,6 +174,30 @@ def run_actor(driver, label, command, success, mount_policy):
         output[0] = b"".join(line for line in output[0].splitlines(keepends=True)
                              if not line.startswith(NAMESPACE_OBSERVATION))
     return tuple(map(bytes, output))
+
+
+def verify_owner_locks(driver, held, expected=None):
+    """Checks kernel exclusion on both original cache directories, including the unused domain."""
+    identities = {}
+    for domain in ["public", "private"]:
+        path = driver.ROOT / "positive" / domain / "state/cache"
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(descriptor)
+            identities[domain] = (metadata.st_dev, metadata.st_ino)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as error:
+                driver.require(held and error.errno in {errno.EAGAIN, errno.EWOULDBLOCK},
+                               "native cache state lock refusal differs")
+            else:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                driver.require(not held, "maintained native owner lost kernel state exclusion")
+        finally:
+            os.close(descriptor)
+    driver.require(expected is None or identities == expected,
+                   "maintained native cache replaced an original state directory")
+    return identities
 
 
 def host_configuration(driver, refused=False, mode="never"):
@@ -358,7 +407,8 @@ def run(driver, image):
         before = cache_states(driver)
         stdout, stderr = actor(driver, image, name + "-cli",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
-              success=not refused, mount_policy="masked" if name == "masked" else "readonly")
+              success=not refused, mount_policy="masked" if name == "masked" else "readonly",
+              maintained=not refused)
         after = cache_states(driver)
         actor(driver, image, name + "-publication",
               ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])

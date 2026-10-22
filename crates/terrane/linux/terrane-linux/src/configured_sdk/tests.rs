@@ -175,6 +175,13 @@ fn pure_sdk_profile_matches_the_actual_compiled_registry() -> TestResult {
         let config = parsed?;
         let plan = preflight(&config, Role::Serve)?;
         assert!(!format!("{plan:?}").contains("missing-capability"));
+
+        let error = super::run_service(&config, Role::Serve, |_| {
+            panic!("missing native cache must refuse before service notification")
+        })
+        .expect_err("service requires actual native cache resources");
+        assert_eq!(error.kind(), FailureKind::NativeCacheConfiguration);
+        assert!(!error.requires_process_exit());
     }
     Ok(())
 }
@@ -319,17 +326,21 @@ fn fifo_and_device_credentials_are_classified_before_any_read() -> TestResult {
 #[test]
 fn failure_display_debug_and_entire_source_chain_redact_private_data() {
     const SECRET: &str = "capability-bytes-must-never-appear";
-    let error = Error::repository(
-        FailureKind::Preparation,
-        RepositoryError::Io(io::Error::other(SECRET)),
-    );
-    assert_eq!(error.io_kind(), Some(io::ErrorKind::Other));
-    assert!(error.requires_process_exit());
-    assert!(!format!("{error}: {error:?}").contains(SECRET));
-    let mut source = error.source();
-    while let Some(cause) = source {
-        assert!(!format!("{cause}: {cause:?}").contains(SECRET));
-        source = cause.source();
+    for error in [
+        Error::repository(
+            FailureKind::Preparation,
+            RepositoryError::Io(io::Error::other(SECRET)),
+        ),
+        Error::io(FailureKind::NativeCacheService, io::Error::other(SECRET)),
+    ] {
+        assert_eq!(error.io_kind(), Some(io::ErrorKind::Other));
+        assert!(error.requires_process_exit());
+        assert!(!format!("{error}: {error:?}").contains(SECRET));
+        let mut source = error.source();
+        while let Some(cause) = source {
+            assert!(!format!("{cause}: {cause:?}").contains(SECRET));
+            source = cause.source();
+        }
     }
 }
 

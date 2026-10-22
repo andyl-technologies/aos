@@ -19,6 +19,8 @@ pub enum FailureKind {
     NativeCacheProfile,
     /// Actual native cache recovery or publisher Resume failed.
     NativeCacheOpen,
+    /// Native owner health, service notification or process shutdown failed.
+    NativeCacheService,
     /// The store is not one exact local file-bucket leaf.
     UnsupportedStore,
     /// Existing local authority and policy inputs were not supplied.
@@ -121,6 +123,7 @@ impl Error {
                 | FailureKind::Runtime
                 | FailureKind::NativeCacheProfile
                 | FailureKind::NativeCacheOpen
+                | FailureKind::NativeCacheService
                 | FailureKind::RepositoryOpen
                 | FailureKind::Preparation
                 | FailureKind::Presentation
@@ -151,6 +154,7 @@ impl fmt::Display for Error {
                 "configured SDK native cache profile differs from original repository"
             }
             FailureKind::NativeCacheOpen => "configured SDK native cache recovery failed",
+            FailureKind::NativeCacheService => "configured SDK native cache maintenance failed",
             FailureKind::UnsupportedStore => {
                 "configured SDK startup requires one exact local file-bucket leaf"
             }

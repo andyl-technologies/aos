@@ -15,8 +15,9 @@
 //! Bounded lower reads verify bodies before actual native admission and enforce
 //! explicit circuit policy. Native object reads retain genuine backing through
 //! verified plaintext reads and completed cache handoff.
-//! Completion means durable snapshots whose actual handles have drained and
-//! stopped. It never parks a pretend daemon or advertises host-tier readiness.
+//! [`run`] returns durable snapshots whose actual handles have drained and
+//! stopped. [`run_service`] additionally retains the original recovered native
+//! workers for ongoing cache maintenance until a process shutdown signal.
 //!
 //! Callers supply a fresh single-threaded, capability-free process with trusted
 //! procfs, dedicated identity and no unconfined descriptor-sharing peers. A
@@ -25,6 +26,7 @@
 
 mod error;
 mod preflight;
+mod service;
 mod tokens;
 
 pub use error::{Error, FailureKind};
@@ -79,6 +81,10 @@ impl ValidatedSdk<'_> {
     /// After an error requiring process exit, the caller must terminate rather
     /// than retrying startup or executing another program in this process.
     pub fn start(self) -> Result<CompletedSdk, Error> {
+        self.start_with(None)
+    }
+
+    fn start_with(self, notification: Option<service::Ready>) -> Result<CompletedSdk, Error> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::refused(FailureKind::ExistingRuntime));
         }
@@ -94,7 +100,12 @@ impl ValidatedSdk<'_> {
             .enable_all()
             .build()
             .map_err(|error| Error::io(FailureKind::Runtime, error))?;
-        let outcome = runtime.block_on(start_exposures(self.config, &installed, self.cache));
+        let outcome = runtime.block_on(start_exposures(
+            self.config,
+            &installed,
+            self.cache,
+            notification,
+        ));
         // Runtime drop joins its blocking work while the real receipt remains
         // retained. No asynchronous filesystem action outlives this boundary.
         drop(runtime);
@@ -129,6 +140,32 @@ impl fmt::Debug for ValidatedSdk<'_> {
 /// errors as described by [`ValidatedSdk::start`].
 pub fn run(config: &Config, selected_role: Role) -> Result<CompletedSdk, Error> {
     preflight(config, selected_role)?.start()
+}
+
+/// Maintains the original native cache owners after completing pinned SDK snapshots.
+///
+/// Requires the same fully supported local composition as [`run`], including
+/// explicit native cache resources. The callback observes completed, stopped
+/// snapshot handles only after every native domain has recovered and resumed.
+/// The original physical owners then continue periodic expiry and retirement
+/// until SIGINT or SIGTERM. Shutdown closes admission and joins the original workers
+/// before returning.
+/// This does not operate a network endpoint or a live SDK presentation handle.
+///
+/// # Errors
+/// Returns pure preflight or missing-cache refusals before confinement, and the
+/// terminal startup errors described by [`ValidatedSdk::start`]. Signal setup,
+/// callback, bounded owner health and shutdown failures also require process exit.
+pub fn run_service(
+    config: &Config,
+    selected_role: Role,
+    on_ready: impl FnOnce(&[CompletedSnapshot]) -> std::io::Result<()> + 'static,
+) -> Result<CompletedSdk, Error> {
+    let plan = preflight(config, selected_role)?;
+    if plan.cache.is_none() {
+        return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+    }
+    plan.start_with(Some(Box::new(on_ready)))
 }
 
 /// Holds completed SDK snapshots and their genuine process confinement receipt.
@@ -206,6 +243,7 @@ async fn start_exposures(
         NativeReadPolicy,
         terrane_sdk::host::cache::ReassemblyMode,
     )>,
+    notification: Option<service::Ready>,
 ) -> Result<Vec<CompletedSnapshot>, Error> {
     installed
         .check_current()
@@ -230,8 +268,10 @@ async fn start_exposures(
             .remove(domain)
             .ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
         let mut presentation = None;
+        let mut retained = None;
         let repository = repository.with_read_driver(|original| {
             let driver = cache.into_content().with_lower(original.clone(), policy);
+            retained = Some(driver.clone());
             presentation = Some(Arc::new(driver.presentation(mode))
                 as Arc<dyn terrane_sdk::repository::ObjectPresentation>);
             driver
@@ -239,7 +279,24 @@ async fn start_exposures(
         let repository = repository.with_object_presentation(
             presentation.ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?,
         );
-        return present(config, installed, &repository).await;
+        let retained = retained.ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
+        let snapshots = present(config, installed, &repository).await?;
+        let mut owners: Vec<_> = caches
+            .values()
+            .map(|cache| cache.content().ready().owner())
+            .collect();
+        owners.push(retained.native().ready().owner());
+        service::maintain(notification, installed, &snapshots, &owners).await?;
+
+        // These are the original owners, including domains without exposures.
+        // Keep them alive through service shutdown and join before runtime drop.
+        drop(repository);
+        drop(retained);
+        drop(caches);
+        return Ok(snapshots);
+    }
+    if notification.is_some() {
+        return Err(Error::refused(FailureKind::NativeCacheConfiguration));
     }
     present(config, installed, &repository).await
 }

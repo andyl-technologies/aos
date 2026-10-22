@@ -80,6 +80,10 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    /// Checks the original acknowledged worker without admitting or releasing content.
+    CheckRunning {
+        response: oneshot::Sender<io::Result<()>>,
+    },
     #[cfg(feature = "surface-fuse")]
     SurfaceExposure(super::surface_index::exposure::Request),
     #[cfg(feature = "surface-fuse")]
@@ -401,6 +405,9 @@ impl NativeMetadataOwner {
                     };
                     let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        Command::CheckRunning { response } => {
+                            let _ = response.send(super::health::check(&executor));
+                        }
                         #[cfg(feature = "surface-fuse")]
                         Command::SurfaceExposure(request) => {
                             runtime.block_on(super::surface_index::exposure::execute(

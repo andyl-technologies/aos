@@ -182,9 +182,10 @@ fn main() -> Result<()> {
     let (root, nodes) = tree()?;
     let before = snapshot(&inputs)?;
     eprintln!("SURFACE_STAGE mode={mode} phase=pre-resume-refusal");
-    if runtime
-        .block_on(owner.cache_surface_index(root, nodes.clone()))
-        .is_ok()
+    if runtime.block_on(owner.check_running()).is_ok()
+        || runtime
+            .block_on(owner.cache_surface_index(root, nodes.clone()))
+            .is_ok()
         || snapshot(&inputs)? != before
     {
         return Err("surface admission before actual Resume changed state".into());
@@ -193,6 +194,7 @@ fn main() -> Result<()> {
     let completed = runtime.block_on(owner.recover())?;
     eprintln!("SURFACE_STAGE mode={mode} phase=resume");
     runtime.block_on(owner.resume_recovered(completed))?;
+    runtime.block_on(owner.check_running())?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
     if let Some(baseline) = pressure_baseline {
         return pressure::run(&mode, &runtime, &owner, &inputs, policy, baseline);

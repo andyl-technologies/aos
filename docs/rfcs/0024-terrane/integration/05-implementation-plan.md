@@ -14921,3 +14921,38 @@ uses this client for genuine closure reports and requires a real unserved
 request to time out without changing owner policy. Native requalification
 and the current application-target build remain required. This component
 does not implement configured role startup or accept another trunk task.
+
+
+#### Maintained configured native cache lifetime
+
+The `d8a250bc4b` native GC listener and private-channel checks pass in
+716.686 and 716.615 seconds. These execute the original-owner closure proof
+with the boxed fixture future and unchanged stack and time limits. The
+listener also exercises the bounded readiness-driven GC client and actual
+unserved-connection timeout. Source and artifact review remains separate from
+the successful check receipts. The earlier `5e815dc29f` full native cache VM
+passes in 1,550.255 seconds; independent review matches 8,061 immutable source
+files, 5,352 bound inputs, four installed Cargo ELFs, all 128 native library
+cases and 92 selectors. Its application-target build passes in 1,889.738
+seconds, pending source review. These are component results, not a deployed
+milestone acceptance.
+
+Configured CLI serving with explicit native resources now retains every
+original recovered cache owner after completing its SDK snapshots, including
+configured domains without exposures. The real physical workers continue
+periodic expiry and retirement until SIGTERM or SIGINT. A bounded serialized
+Running check observes the original worker's retained custody, policy snapshot,
+publisher context and bootstrap funding. It creates no authority or readiness
+receipt. Service shutdown drops the original owners and joins their workers
+before dropping the executor and confinement receipt. The finite library
+snapshot API and SDK-only CLI configuration retain their existing behavior.
+
+Strict ordinary and all-feature Linux profiles, CLI and integration targets
+pass. All 12 configured SDK unit cases pass, including pre-confinement refusal
+of service startup without native resources and redaction of service errors.
+The native supervisor now requires the actual CLI to retain both original
+cache-directory locks after snapshot completion, retain their inode identities
+across two seconds, and release both locks only after supervised SIGTERM.
+These new native assertions and the mandatory application-target build require
+qualification at the resulting committed source. This does not yet qualify
+four-role deployment, GC collection, mounted FUSE or another trunk task.

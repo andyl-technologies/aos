@@ -3,7 +3,8 @@
 //! Arguments and file loading live here; configuration semantics and role
 //! behavior live in library crates (CRATE-16). [`local`] calls the T1
 //! repository SDK and registered checkout surface (CRATE-22 to CRATE-24).
-//! Linux configured SDK snapshots and publisher startup run through `terrane-linux`;
+//! Linux configured SDK snapshots, native cache maintenance and publisher startup
+//! run through `terrane-linux`;
 //! other configured runtimes remain unavailable. Syntax checking starts no runtime.
 //! Roles follow specifications 03 and 37, and TOML follows 11 and 26.
 
@@ -83,33 +84,44 @@ fn run(arguments: Arguments) -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(target_os = "linux")]
     if role == Role::Serve && !config.exposures().is_empty() {
-        use std::io::Write;
-
         // The library performs whole-config preflight and installs confinement
-        // before its executor. Keep completion custody through status reporting.
-        let completed = terrane_linux::configured_sdk::run(&config, role)?;
-        let mut output = std::io::stdout().lock();
-        for snapshot in completed.snapshots()? {
-            let status = snapshot.status();
-            write!(
-                output,
-                "completed SDK snapshot {:?}: commit ",
-                snapshot.id()
-            )?;
-            for byte in status.commit {
-                write!(output, "{byte:02x}")?;
-            }
-            writeln!(
-                output,
-                ", state {:?}, endpoint {:?}",
-                status.state,
-                snapshot.endpoint()
-            )?;
+        // before its executor. Native workers remain active after SDK completion.
+        if config.host_tier().is_some() {
+            terrane_linux::configured_sdk::run_service(&config, role, report_snapshots)?;
+            return Ok(());
         }
-        output.flush()?;
+        let completed = terrane_linux::configured_sdk::run(&config, role)?;
+        report_snapshots(completed.snapshots()?)?;
         return Ok(());
     }
 
     role.run()?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn report_snapshots(
+    snapshots: &[terrane_linux::configured_sdk::CompletedSnapshot],
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut output = std::io::stdout().lock();
+    for snapshot in snapshots {
+        let status = snapshot.status();
+        write!(
+            output,
+            "completed SDK snapshot {:?}: commit ",
+            snapshot.id()
+        )?;
+        for byte in status.commit {
+            write!(output, "{byte:02x}")?;
+        }
+        writeln!(
+            output,
+            ", state {:?}, endpoint {:?}",
+            status.state,
+            snapshot.endpoint()
+        )?;
+    }
+    output.flush()
 }
