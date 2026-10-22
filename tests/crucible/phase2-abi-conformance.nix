@@ -651,6 +651,18 @@ in
                 --features private-measurement-domain \
                 --lib main_stack \
                 -- --test-threads=1
+              require_test_set 2 host-stack-refinement \
+                spawn::process_envelope::tests::descriptor_refinement_rejects_intervening_stack_selection \
+                -p crucible-qemu-host --features private-measurement-domain --lib intervening_stack_selection
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-host \
+                --features private-measurement-domain \
+                --lib intervening_stack_selection \
+                -- --test-threads=1
               require_test_set 3 protocol-doorbell \
                 doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
                 -p crucible-qemu-protocol doorbell_abi

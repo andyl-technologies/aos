@@ -814,6 +814,7 @@ fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn
         contract.attempt_binding.refine_descriptor_limit(
             contract.maximum_resident_bytes,
             32,
+            None,
             expected,
         )?;
     }

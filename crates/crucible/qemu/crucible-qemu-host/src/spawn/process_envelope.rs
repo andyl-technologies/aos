@@ -26,10 +26,22 @@ impl AttemptResourceBinding {
         }
     }
 
+    fn matches_refinement_snapshot(
+        &self,
+        resident_bytes: u64,
+        descriptors: u64,
+        main_stack_bytes: Option<u64>,
+    ) -> bool {
+        self.effective_resident_bytes.load(Ordering::Acquire) == resident_bytes
+            && self.effective_file_descriptors.load(Ordering::Acquire) == descriptors
+            && super::main_stack::selected_limit(self) == main_stack_bytes
+    }
+
     pub(super) fn refine_descriptor_limit(
         &self,
         expected_resident_bytes: u64,
         expected: u64,
+        expected_main_stack_bytes: Option<u64>,
         requested: u64,
     ) -> Result<(), ProcessEnvelopeRefinementError> {
         if requested == libc::RLIM_INFINITY
@@ -42,9 +54,11 @@ impl AttemptResourceBinding {
             .compare_exchange(OPEN, REFINING, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| ProcessEnvelopeRefinementError::Started)?;
 
-        if self.effective_resident_bytes.load(Ordering::Acquire) != expected_resident_bytes
-            || self.effective_file_descriptors.load(Ordering::Acquire) != expected
-        {
+        if !self.matches_refinement_snapshot(
+            expected_resident_bytes,
+            expected,
+            expected_main_stack_bytes,
+        ) {
             self.launch_state.store(OPEN, Ordering::Release);
             return Err(ProcessEnvelopeRefinementError::Identity);
         }
@@ -151,11 +165,13 @@ impl QemuChildProcessContract {
             .compare_exchange(OPEN, REFINING, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| ProcessEnvelopeRefinementError::Started)?;
 
-        // The other subdivision may have changed after the initial identity
-        // check. Recheck both effective limits while holding the shared latch.
-        if self.effective_resident_bytes() != expected.maximum_resident_bytes
-            || self.effective_file_descriptors() != Some(expected.maximum_file_descriptors)
-        {
+        // A duplicate may refine the envelope after the initial identity cut.
+        // Recheck the entire mutable snapshot while holding the shared latch.
+        if !self.attempt_binding.matches_refinement_snapshot(
+            expected.maximum_resident_bytes,
+            expected.maximum_file_descriptors,
+            expected.main_stack_bytes,
+        ) {
             self.attempt_binding
                 .launch_state
                 .store(OPEN, Ordering::Release);
@@ -208,6 +224,7 @@ impl QemuChildProcessContract {
         self.attempt_binding.refine_descriptor_limit(
             expected.maximum_resident_bytes,
             expected.maximum_file_descriptors,
+            expected.main_stack_bytes,
             requested,
         )?;
         self.configured_process_envelope()
@@ -534,7 +551,7 @@ mod tests {
         let old = identity(&binding);
         let duplicate = Arc::clone(&binding);
 
-        binding.refine_descriptor_limit(4096, 32, 24).unwrap();
+        binding.refine_descriptor_limit(4096, 32, None, 24).unwrap();
         let mut current = identity(&binding);
         current.maximum_file_descriptors = 24;
 
@@ -551,7 +568,7 @@ mod tests {
         assert_eq!(current.child_cgroup_device(), old.child_cgroup_device());
         assert_eq!(current.child_cgroup_inode(), old.child_cgroup_inode());
         assert!(matches!(
-            binding.refine_descriptor_limit(4096, 32, 20),
+            binding.refine_descriptor_limit(4096, 32, None, 20),
             Err(ProcessEnvelopeRefinementError::Identity)
         ));
         assert_eq!(
@@ -568,7 +585,7 @@ mod tests {
             .store(2048, Ordering::Release);
 
         assert!(matches!(
-            binding.refine_descriptor_limit(4096, 32, 24),
+            binding.refine_descriptor_limit(4096, 32, None, 24),
             Err(ProcessEnvelopeRefinementError::Identity)
         ));
         assert_eq!(
@@ -579,13 +596,77 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_refinement_rejects_intervening_stack_selection() {
+        let binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let observed = identity(&binding);
+        assert!(observed.same_process_as(&observed));
+
+        // This deterministic interleaving occurs after the outer identity cut
+        // and before descriptor refinement acquires the same shared latch.
+        binding.configure_main_stack(2 * 1024 * 1024).unwrap();
+        let result = binding.refine_descriptor_limit(
+            observed.maximum_resident_bytes,
+            observed.maximum_file_descriptors,
+            observed.main_stack_bytes,
+            24,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProcessEnvelopeRefinementError::Identity)
+        ));
+        assert_eq!(
+            binding.effective_file_descriptors.load(Ordering::Acquire),
+            32
+        );
+        assert_eq!(binding.launch_state.load(Ordering::Acquire), OPEN);
+        assert_eq!(
+            super::super::main_stack::selected_limit(&binding),
+            Some(2 * 1024 * 1024)
+        );
+
+        binding
+            .refine_descriptor_limit(4096, 32, Some(2 * 1024 * 1024), 24)
+            .unwrap();
+        assert_eq!(
+            binding.effective_file_descriptors.load(Ordering::Acquire),
+            24
+        );
+    }
+
+    #[test]
+    fn memory_refinement_rejects_intervening_stack_selection() {
+        let binding = Arc::new(AttemptResourceBinding::new(4096, Some(32)));
+        let observed = identity(&binding);
+        assert!(observed.same_process_as(&observed));
+
+        binding.configure_main_stack(2 * 1024 * 1024).unwrap();
+        binding
+            .launch_state
+            .compare_exchange(OPEN, REFINING, Ordering::AcqRel, Ordering::Acquire)
+            .unwrap();
+        // Exercise the exact locked precondition before the real cgroup write;
+        // this identity fixture cannot issue a configured process witness.
+        assert!(!binding.matches_refinement_snapshot(
+            observed.maximum_resident_bytes,
+            observed.maximum_file_descriptors,
+            observed.main_stack_bytes,
+        ));
+        assert!(binding.matches_refinement_snapshot(4096, 32, Some(2 * 1024 * 1024)));
+        assert_eq!(
+            binding.effective_resident_bytes.load(Ordering::Acquire),
+            4096
+        );
+    }
+
+    #[test]
     fn descriptor_refinement_refuses_invalid_or_started_assignments() {
         let binding = AttemptResourceBinding::new(4096, Some(32));
         let floor = QemuChildProcessContract::required_launch_file_descriptors();
 
         for requested in [0, floor - 1, 33, libc::RLIM_INFINITY] {
             assert!(matches!(
-                binding.refine_descriptor_limit(4096, 32, requested),
+                binding.refine_descriptor_limit(4096, 32, None, requested),
                 Err(ProcessEnvelopeRefinementError::DescriptorLimit)
             ));
             assert_eq!(
@@ -594,10 +675,12 @@ mod tests {
             );
             assert_eq!(binding.launch_state.load(Ordering::Acquire), OPEN);
         }
-        binding.refine_descriptor_limit(4096, 32, floor).unwrap();
+        binding
+            .refine_descriptor_limit(4096, 32, None, floor)
+            .unwrap();
         binding.freeze_for_launch().unwrap();
         assert!(matches!(
-            binding.refine_descriptor_limit(4096, floor, floor),
+            binding.refine_descriptor_limit(4096, floor, None, floor),
             Err(ProcessEnvelopeRefinementError::Started)
         ));
         assert_eq!(
@@ -617,7 +700,7 @@ mod tests {
 
         original
             .attempt_binding
-            .refine_descriptor_limit(4096, 32, 24)
+            .refine_descriptor_limit(4096, 32, None, 24)
             .unwrap();
 
         assert_eq!(original.effective_file_descriptors(), Some(24));

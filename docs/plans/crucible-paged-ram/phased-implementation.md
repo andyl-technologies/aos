@@ -339,6 +339,37 @@ ABI conformance passes at `d33s40wyhlzi1zm716cd059hppgih7dl`. Strict boundary
 qualification stops at controller Clippy (909 library and 963 test errors);
 its boundary assertions did not execute.
 
+#### Rechecking stack selection during envelope refinement
+
+Memory and descriptor refinements now share the same locked comparison of all
+mutable envelope fields, including the optional Main stack selection. A
+selection through another actual contract duplicate between the initial
+identity cut and latch acquisition makes the old snapshot stale; refinement
+refuses before a cgroup write or descriptor assignment. Refusal preserves the
+selected stack limit and leaves the unchanged envelope available to an actual
+current snapshot. This adds no storage, backing credit or stack authority.
+
+Two deterministic controls exercise that interleaving through the real shared
+binding, with no timing sleeps or fabricated configured process witness. The
+memory control checks the exact locked predicate before the kernel write; the
+descriptor control invokes the actual mutation path and verifies that the old
+snapshot cannot change NOFILE. Both controls fail at their intended assertions
+with the old comparison and pass after the fix. All 17 process-envelope tests
+pass; every all-feature Host test target compiles. The required application
+build passes at
+`/nix/store/kzmxy8dmn223wp7lyxwk38qswbqq0hwq-aos-test-targets-0.1.0`,
+and engineering hygiene passes at
+`/nix/store/zcvijji792yblcv5r97p578pnwrl3izi-crucible-phase1-engineering-hygiene-0`.
+Committed-source comparison and ABI qualification remain pending.
+
+The broader all-feature Host run reports 1,368 passing tests, ten failures and
+four ignored tests. Nine failures are in guarded helper/custody paths; the
+endpoint worker disposition mismatch test fails with a Setup deadline expiry.
+Those failures remain retained and unresolved; the focused results do not
+establish a passing full Host suite. Strict license qualification again stops
+at controller Clippy (909 library and 963 test errors), before its boundary
+assertions execute.
+
 #### Sticky terminal decisions from actual lender collection
 
 The collector now saves the actual typed operation disposition under the same
