@@ -880,6 +880,15 @@ pub(super) fn wait_for_public_attempt(
                 eprintln!("{dispatch}");
             }
 
+            // A traced plugin names why a zero-length advance went unanswered.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ZERO-LENGTH-QUERY-V1 ", 6, 512)
+            {
+                for row in rows {
+                    eprintln!("{row}");
+                }
+            }
+
             // Work outside RUN dispatch, such as a checkpoint or capture after
             // a choice, logs no progress row; the newest service lines name it.
             let stderr = service.stderr_tail();
