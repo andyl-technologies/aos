@@ -116,7 +116,9 @@ def run_actor(driver, label, command, success, mount_policy, maintained):
                                start_new_session=True)
     output = [bytearray(), bytearray()]
     streams = {process.stdout: output[0], process.stderr: output[1]}
-    deadline = min(driver.DEADLINE, time.monotonic() + 30)
+    started = time.monotonic()
+    actor_deadline = started + 30
+    deadline = min(driver.DEADLINE, actor_deadline)
     stop_at = None
     stopped = False
     state_inodes = None
@@ -155,6 +157,17 @@ def run_actor(driver, label, command, success, mount_policy, maintained):
         process.wait(timeout=max(0.1, deadline - time.monotonic()))
     finally:
         driver.stop(process)
+        timing = {
+            "actor": label,
+            "elapsed_seconds": time.monotonic() - started,
+            "whole_remaining_at_start": driver.DEADLINE - started,
+            "deadline_source": "whole" if driver.DEADLINE < actor_deadline else "actor",
+            "maintained": maintained,
+            "exit_status": process.returncode,
+        }
+        encoded = json.dumps(timing, sort_keys=True)
+        (driver.ROOT / "proof-logs" / ("native-sdk-" + label + ".timing.json")).write_text(encoded + "\n")
+        print("NATIVE_SDK_ACTOR_TIMING " + encoded, flush=True)
         for suffix, data in zip(["stdout", "stderr"], output):
             (driver.ROOT / "proof-logs" / ("native-sdk-" + label + "." + suffix)).write_bytes(data)
             print(data.decode("utf-8", errors="replace"), end="", flush=True)

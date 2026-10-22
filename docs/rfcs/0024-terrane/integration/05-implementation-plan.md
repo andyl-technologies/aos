@@ -14990,3 +14990,29 @@ Both supported strict Linux/CLI profiles and final fixture compilation pass.
 Native qualification and the mandatory application-target build remain separate
 requirements. This change does not launch or
 register a production FUSE worker and accepts no trunk task.
+
+
+#### Maintained-service qualification and bounded timing diagnostic
+
+At `d1f9088224`, the finite SDK native regression passes in 522.940 seconds.
+Independent review matches all 8,064 immutable source files, 5,339 bound inputs,
+three installed Cargo ELFs and all separate-process success/refusal witnesses.
+The configured SDK unit gate passes in 47.012 seconds with all 12 actual cases;
+its old static result label still says 11. The native GC listener check passes
+in 703.735 seconds, pending its separate artifact review.
+
+The maintained-service VM fails in 701.852 seconds. All three positive modes
+complete their actual original-inode lock checks, remain alive after both SDK
+snapshots and release both locks after supervised SIGTERM. Existing lower-read,
+circuit, physical backing and profile-refusal controls also complete. The final
+unenrolled-cache CLI then reaches an output deadline, and the guest shuts down
+at 244.390 kernel seconds. The actual supervisor uses the earlier of its
+30-second actor deadline and 240-second whole-run deadline. The retained output
+does not identify which bound limited that actor; no cause or full service
+qualification is inferred from the preceding successes.
+
+The supervisor now retains exact elapsed time, whole-run budget at actor start,
+selected deadline source and final exit status for every actor, including failed
+actors. This diagnostic changes no actor, assertion, role behavior, two-second
+lifetime control or time bound. A new source-bound run is required; the failed
+run remains retained as a failure.
