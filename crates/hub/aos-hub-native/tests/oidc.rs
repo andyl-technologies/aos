@@ -6,7 +6,7 @@
 //! JWKS endpoint exposing the RSA public key — using a baked 2048-bit RSA test
 //! keypair (`TEST_RSA_PEM` / `TEST_JWK_N`). The tests drive `begin_login` →
 //! fake authorize → callback → `complete_login` and assert the identity is
-//! created, linked (JIT keyed on `(iss, sub)`), and mapped to roles, plus the
+//! created, linked (JIT keyed on verifier and subject), and mapped to roles, plus the
 //! negative cases (bad nonce/state, expired flow, aud/iss mismatch, tampered
 //! signature, JIT disabled).
 
@@ -63,6 +63,7 @@ const TEST_JWK_E: &str = "AQAB";
 
 /// The test IdP's key id.
 const TEST_KID: &str = "test-key-1";
+const TEST_VERIFIER_ID: &str = "test-verifier";
 
 /// Claims the fake IdP mints into the id_token, controllable per test.
 #[derive(Clone, Serialize)]
@@ -315,8 +316,12 @@ async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     assert!(login.provisioned, "first login should provision a user");
     assert_eq!(login.email.as_deref(), Some("alice@acme.com"));
 
-    // The identity is keyed on (iss, sub).
-    let user = db.identity_user(&idp_base, "idp-subject-1").await.unwrap();
+    let config = db.idp_config(org_id).await.unwrap().unwrap();
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&config);
+    let user = db
+        .identity_user(&verifier_id, "idp-subject-1")
+        .await
+        .unwrap();
     assert_eq!(user, Some(login.user_id));
 }
 
@@ -333,7 +338,7 @@ async fn second_login_same_iss_sub_does_not_create_new_user() {
         .await
         .unwrap();
 
-    // Same (iss, sub) but a different (recycled) email: must resolve to the
+    // Same verifier and subject but a different email: resolve to the
     // same user, not a fresh one.
     *idp.email.lock().unwrap() = Some("alice-new@acme.com".into());
     let second = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -448,7 +453,7 @@ async fn expired_flow_is_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
     // Stage a flow that is already expired (negative TTL).
-    db.create_oidc_flow("st", org_id, "nn", "verifier", None, -1)
+    db.create_oidc_flow("st", org_id, TEST_VERIFIER_ID, "nn", "verifier", None, -1)
         .await
         .unwrap();
     assert!(db.take_oidc_flow("st").await.unwrap().is_none());
@@ -631,7 +636,7 @@ fn idp_config_from_record_parses_role_map() {
 
 #[tokio::test]
 async fn identity_link_existing_then_link_paths() {
-    // (iss, sub) keying: existing identity wins; verified email on a captured
+    // Verifier-subject keying: existing identity wins; verified email on a captured
     // domain links to an existing user; otherwise JIT.
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
@@ -642,6 +647,7 @@ async fn identity_link_existing_then_link_paths() {
     let existing = db.create_user("bob@acme.com", None).await.unwrap();
     let link = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-bob",
             Some("bob@acme.com"),
@@ -657,6 +663,7 @@ async fn identity_link_existing_then_link_paths() {
     // Same identity again resolves as Existing.
     let again = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-bob",
             Some("bob@acme.com"),
@@ -673,6 +680,7 @@ async fn identity_link_existing_then_link_paths() {
     // returns None for a new identity.
     let none = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-new",
             Some("carol@acme.com"),
@@ -690,11 +698,8 @@ async fn identity_link_existing_then_link_paths() {
 
 #[tokio::test]
 async fn jit_refuses_to_graft_onto_existing_account_by_email() {
-    // Security (H2): a self-hosted IdP asserts a victim's address with a brand
-    // new (iss, sub). Step 1 (existing identity) and step 2 (verified captured
-    // domain) do not apply — the attacker's org never captured the victim's
-    // domain — so JIT is reached. JIT must REFUSE rather than reconcile onto
-    // the victim's pre-existing user row by email.
+    // A self-hosted IdP asserting an existing address must not make a new
+    // identity resolve to the account that already owns that address.
     let db = Database::open_in_memory().await.unwrap();
     let attacker_org = db.create_org("attacker", "Attacker Inc").await.unwrap();
 
@@ -703,6 +708,7 @@ async fn jit_refuses_to_graft_onto_existing_account_by_email() {
 
     let denied = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://attacker-idp",
             "sub-attacker",
             Some("ceo@othercorp.com"),
@@ -721,11 +727,11 @@ async fn jit_refuses_to_graft_onto_existing_account_by_email() {
     // No identity row was grafted onto the victim, and the victim's id was not
     // returned — no session could have been minted as them.
     assert_eq!(
-        db.identity_user("https://attacker-idp", "sub-attacker")
+        db.identity_user(TEST_VERIFIER_ID, "sub-attacker")
             .await
             .unwrap(),
         None,
-        "a denied JIT must not create an (iss, sub) identity row"
+        "a denied JIT must not create a verifier-subject identity row"
     );
     // The victim's account is untouched and still resolves only by its email.
     assert_eq!(
@@ -744,6 +750,7 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
     assert_eq!(db.user_by_email("dana@newcomer.com").await.unwrap(), None);
     let link = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-dana",
             Some("dana@newcomer.com"),
@@ -758,13 +765,187 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
         IdentityLink::Created(id) => id,
         other => panic!("expected a freshly created user, got {other:?}"),
     };
-    // The fresh user and its (iss, sub) identity both exist.
+    // The fresh user and its verifier-subject identity both exist.
     assert_eq!(
         db.user_by_email("dana@newcomer.com").await.unwrap(),
         Some(new_user)
     );
     assert_eq!(
-        db.identity_user("https://idp", "sub-dana").await.unwrap(),
+        db.identity_user(TEST_VERIFIER_ID, "sub-dana")
+            .await
+            .unwrap(),
         Some(new_user)
     );
+}
+
+#[tokio::test]
+async fn identical_issuers_remain_bound_to_their_verifiers() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first_org = db.create_org("first", "First").await.unwrap();
+    let second_org = db.create_org("second", "Second").await.unwrap();
+
+    let mut first_config = verifier_config(first_org, "https://idp.example/keys-one");
+    let second_config = verifier_config(second_org, "https://idp.example/keys-two");
+    db.upsert_idp_config(&first_config).await.unwrap();
+    db.upsert_idp_config(&second_config).await.unwrap();
+
+    let first_verifier = aos_hub_model::identity::oidc_verifier_id(&first_config);
+    let second_verifier = aos_hub_model::identity::oidc_verifier_id(&second_config);
+    assert_ne!(first_verifier, second_verifier);
+
+    let first_user = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "shared-subject",
+            Some("first@example.test"),
+            true,
+            first_org,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .user_id();
+
+    let disabled = db
+        .link_or_create_identity(
+            &second_verifier,
+            &second_config.issuer,
+            "shared-subject",
+            Some("second@example.test"),
+            true,
+            second_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled, None);
+    assert_eq!(
+        db.identity_user(&second_verifier, "shared-subject")
+            .await
+            .unwrap(),
+        None
+    );
+
+    first_config.org_id = second_org;
+    assert_eq!(
+        aos_hub_model::identity::oidc_verifier_id(&first_config),
+        first_verifier
+    );
+    assert_eq!(
+        db.identity_user(&first_verifier, "shared-subject")
+            .await
+            .unwrap(),
+        Some(first_user)
+    );
+}
+
+#[tokio::test]
+async fn login_flow_rejects_a_changed_verifier() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("flow-change", "Flow Change").await.unwrap();
+    let initial = verifier_config(org_id, "https://idp.example/keys-one");
+    db.upsert_idp_config(&initial).await.unwrap();
+
+    let redirect = begin_login(&db, "https://hub.example", org_id, None)
+        .await
+        .unwrap();
+    let state = url::Url::parse(&redirect.url)
+        .unwrap()
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+        .unwrap();
+
+    let changed = verifier_config(org_id, "https://idp.example/keys-two");
+    db.upsert_idp_config(&changed).await.unwrap();
+
+    let result = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &test_http(),
+        "https://hub.example",
+        &CallbackParams {
+            code: "unused-code".into(),
+            state,
+        },
+    )
+    .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn legacy_identity_adoption_requires_one_verifier() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first_org = db.create_org("legacy-first", "Legacy First").await.unwrap();
+    let first_config = verifier_config(first_org, "https://idp.example/keys-one");
+    db.upsert_idp_config(&first_config).await.unwrap();
+    let first_verifier = aos_hub_model::identity::oidc_verifier_id(&first_config);
+
+    let adopted_user = db.create_user("adopted@example.test", None).await.unwrap();
+    db.seed_legacy_oidc_identity(adopted_user, &first_config.issuer, "legacy-one")
+        .await
+        .unwrap();
+    let adopted = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "legacy-one",
+            None,
+            false,
+            first_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(adopted, Some(IdentityLink::Existing(adopted_user)));
+
+    let second_org = db
+        .create_org("legacy-second", "Legacy Second")
+        .await
+        .unwrap();
+    let second_config = verifier_config(second_org, "https://idp.example/keys-two");
+    db.upsert_idp_config(&second_config).await.unwrap();
+
+    let ambiguous_user = db
+        .create_user("ambiguous@example.test", None)
+        .await
+        .unwrap();
+    db.seed_legacy_oidc_identity(ambiguous_user, &first_config.issuer, "legacy-ambiguous")
+        .await
+        .unwrap();
+    let ambiguous = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "legacy-ambiguous",
+            None,
+            false,
+            first_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ambiguous, None);
+}
+
+fn verifier_config(org_id: i64, jwks_uri: &str) -> IdpConfigRecord {
+    IdpConfigRecord {
+        org_id,
+        issuer: "https://idp.example".into(),
+        authorization_endpoint: "https://idp.example/authorize".into(),
+        token_endpoint: "https://idp.example/token".into(),
+        jwks_uri: jwks_uri.into(),
+        client_id: "hub-client".into(),
+        client_secret_enc: None,
+        scopes: "openid email".into(),
+        groups_claim: None,
+        role_map_json: "{}".into(),
+        allow_jit: true,
+        enforce_sso: false,
+        default_role: "viewer".into(),
+        resource_version: 1,
+        incarnation_id: None,
+        mutation_plan_id: None,
+    }
 }
