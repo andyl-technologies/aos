@@ -63,6 +63,8 @@ pub struct FakeState {
     pub reference_balance: Arc<AtomicI32>,
     /// Makes `GetUnit` return the authoritative systemd `NoSuchUnit` error.
     pub unit_missing: Arc<AtomicBool>,
+    /// Collects otherwise present inactive units unless a client retains them.
+    pub collect_unreferenced_units: Arc<AtomicBool>,
     /// Holds an accepted `RefUnit` call before its method reply.
     pub hold_ref_reply: Arc<AtomicBool>,
     /// Holds an accepted `UnrefUnit` call before its method reply.
@@ -94,6 +96,7 @@ impl FakeState {
             main_pid: Arc::new(AtomicU32::new(4242)),
             reference_balance: Arc::new(AtomicI32::new(0)),
             unit_missing: Arc::new(AtomicBool::new(false)),
+            collect_unreferenced_units: Arc::new(AtomicBool::new(false)),
             hold_ref_reply: Arc::new(AtomicBool::new(false)),
             hold_unref_reply: Arc::new(AtomicBool::new(false)),
             disconnect_observed: Arc::new(AtomicBool::new(false)),
@@ -253,7 +256,10 @@ impl FakeSystemd {
 
     async fn get_unit(&self, name: &str) -> Result<OwnedObjectPath, FakeManagerError> {
         self.record("get_unit");
-        if self.state.unit_missing.load(Ordering::SeqCst) {
+        if self.state.unit_missing.load(Ordering::SeqCst)
+            || (self.state.collect_unreferenced_units.load(Ordering::SeqCst)
+                && self.state.reference_balance.load(Ordering::SeqCst) == 0)
+        {
             return Err(FakeManagerError::NoSuchUnit(name.to_owned()));
         }
         *self.state.observed_unit.lock().unwrap() = name.to_string();

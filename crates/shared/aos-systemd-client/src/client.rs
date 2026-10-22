@@ -1787,6 +1787,26 @@ impl PinnedSystemdManager {
         Ok(identity)
     }
 
+    /// Loads and retains a canonical unit without starting it.
+    ///
+    /// Unlike `LoadUnit`, systemd's `RefUnit` loads and references the unit in
+    /// one operation. The reference prevents an inactive unit from being
+    /// collected between subsequent identity and property reads. It lasts
+    /// until this manager's D-Bus connection closes, including its clones.
+    /// This operation does not validate a resource revision or grant lifecycle
+    /// authority; callers must still validate their owned definition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the manager changes, loading or referencing fails,
+    /// or the requested name resolves to an alias. An acquired reference stays
+    /// attached to the connection even if a later identity check fails.
+    pub async fn load_referenced_unit(&self, name: &str) -> Result<String> {
+        self.ensure_current().await?;
+        self.manager.ref_unit(name).await?;
+        self.unit_identity(name).await
+    }
+
     /// Reloads manager configuration through this exact manager incarnation.
     ///
     /// # Errors

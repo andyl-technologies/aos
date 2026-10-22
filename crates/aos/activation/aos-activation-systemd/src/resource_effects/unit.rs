@@ -419,6 +419,9 @@ fn check_link(definition: &Definition) -> Result<bool> {
 }
 
 async fn owned_identity(manager: &PinnedSystemdManager, definition: &Definition) -> Result<String> {
+    // A newly published inactive mount can otherwise be collected between
+    // LoadUnit and these reads. This invocation owns the manager connection.
+    manager.load_referenced_unit(&definition.unit).await?;
     let identity = manager
         .unit_identity_at_revision(&definition.unit, &definition.revision)
         .await?;
@@ -726,7 +729,6 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         fs::remove_file(link_path(&desired))?;
     }
     manager.daemon_reload().await?;
-    manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
     if receipt.image.take().is_some() {
         fs::File::open(unit_root())?.sync_all()?;

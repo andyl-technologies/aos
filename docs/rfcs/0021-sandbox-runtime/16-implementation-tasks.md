@@ -9877,6 +9877,17 @@ returns Access denied. That test now requires the denial and retained absence
 of candidate state. It does not claim an installed active-owner preparation
 refusal; that case still needs the genuinely provisioned Nix runtime.
 
+That Root run then fails native host activation while querying `srv.mount`:
+`LoadUnit` does not retain an inactive unit, so PID1 can collect it before the
+owned-definition checks. Native resource handling now uses `RefUnit` to load
+and retain the unit atomically before checking its canonical identity, revision,
+fragment and drop-ins. The invocation's existing private manager connection
+owns the reference until it closes. No lifecycle or definition check is waived.
+All three pinned-manager tests pass through the AOS-built D-Bus broker,
+including a regression that collects unreferenced inactive units and retains
+alias rejection. Full Rust target compilation and installed reruns remain
+required for this repair.
+
 The post-pin handoff adversary now retains its procfs and target descriptors
 in one C process, survives switch-root's final signal broadcast, and publishes
 its continuation only after all replacement-byte checks finish. This avoids

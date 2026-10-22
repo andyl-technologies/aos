@@ -7,6 +7,9 @@
 
 mod common;
 
+#[path = "pinned_bus/unit_reference.rs"]
+mod unit_reference;
+
 use std::sync::Arc;
 use std::time::Duration;
 
