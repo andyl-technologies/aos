@@ -43,6 +43,14 @@ fn default_compression_level() -> i32 {
     3
 }
 
+fn default_max_materialized_nar_bytes() -> u64 {
+    8 * 1024 * 1024 * 1024
+}
+
+fn default_max_concurrent_nar_materializations() -> usize {
+    4
+}
+
 fn default_max_concurrent_builds() -> u32 {
     4
 }
@@ -158,6 +166,14 @@ pub struct CompressionConfig {
     /// Compression level (meaning depends on algorithm).
     #[serde(default = "default_compression_level")]
     pub level: i32,
+
+    /// Maximum compressed bytes produced while measuring or serving a range.
+    #[serde(default = "default_max_materialized_nar_bytes")]
+    pub max_materialized_bytes: u64,
+
+    /// Maximum concurrent NAR measurement and range materialization jobs.
+    #[serde(default = "default_max_concurrent_nar_materializations")]
+    pub max_concurrent_materializations: usize,
 }
 
 impl Default for CompressionConfig {
@@ -165,6 +181,8 @@ impl Default for CompressionConfig {
         Self {
             algorithm: default_compression_algorithm(),
             level: default_compression_level(),
+            max_materialized_bytes: default_max_materialized_nar_bytes(),
+            max_concurrent_materializations: default_max_concurrent_nar_materializations(),
         }
     }
 }
@@ -339,15 +357,47 @@ impl Default for ServerConfig {
 ///
 /// # Errors
 ///
-/// Returns an error if the file exists but cannot be read, or if its
-/// contents are not valid TOML for [`ServerConfig`].
+/// Returns an error if the file exists but cannot be read, if its contents are
+/// not valid TOML for [`ServerConfig`], or if a NAR materialization limit is
+/// zero.
 pub fn load_config(path: &Path) -> Result<ServerConfig> {
-    if !path.exists() {
-        return Ok(ServerConfig::default());
-    }
-    let contents = std::fs::read_to_string(path)
-        .with_context(|| format!("reading config file {}", path.display()))?;
-    let config: ServerConfig = toml::from_str(&contents)
-        .with_context(|| format!("parsing config file {}", path.display()))?;
+    let config = if path.exists() {
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("reading config file {}", path.display()))?;
+        toml::from_str(&contents)
+            .with_context(|| format!("parsing config file {}", path.display()))?
+    } else {
+        ServerConfig::default()
+    };
+
+    anyhow::ensure!(
+        config.compression.max_materialized_bytes > 0,
+        "compression.max_materialized_bytes must be positive"
+    );
+    anyhow::ensure!(
+        config.compression.max_concurrent_materializations > 0,
+        "compression.max_concurrent_materializations must be positive"
+    );
+
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_config;
+
+    #[test]
+    fn nar_materialization_limits_must_be_positive() {
+        for setting in [
+            "max_materialized_bytes = 0",
+            "max_concurrent_materializations = 0",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("server.toml");
+            std::fs::write(&path, format!("[compression]\n{setting}\n")).unwrap();
+
+            let error = load_config(&path).unwrap_err();
+            assert!(error.to_string().contains("must be positive"));
+        }
+    }
 }

@@ -119,6 +119,9 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
         build_mgr,
         drain: Arc::clone(&drain_state),
         signer,
+        nar_materialization_admission: Arc::new(tokio::sync::Semaphore::new(
+            cfg.compression.max_concurrent_materializations,
+        )),
     });
 
     let app = routes::router(Arc::clone(&state));

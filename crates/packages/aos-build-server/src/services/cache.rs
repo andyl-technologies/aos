@@ -23,13 +23,13 @@ use tokio::sync::Semaphore;
 
 use aos_build_api::aos::cache::v1::*;
 use aos_nar::info as core_narinfo;
-use aos_nix::{aos_nix_env, StoreHash};
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
 use crate::compress::{self, Compression};
 use crate::narinfo;
 use crate::pack;
-use crate::routes::AppState;
+use crate::routes::{AppState, NarMaterializationError, measure_nar_bounded};
 use crate::services;
 #[cfg(test)]
 use crate::views::ViewManager;
@@ -243,10 +243,24 @@ impl CacheService for CacheServiceImpl {
         // Update access metadata (best-effort).
         let _ = access::update_access(&self.state.views, view, &store_hash);
 
+        let measured_file = measure_nar_bounded(&self.state, info.clone())
+            .await
+            .map_err(|error| match error {
+                NarMaterializationError::Busy => ConnectError::new(
+                    ErrorCode::ResourceExhausted,
+                    "NAR materialization capacity is busy",
+                ),
+                NarMaterializationError::Failed(error) => ConnectError::new(
+                    ErrorCode::Internal,
+                    format!("narinfo measurement: {error:#}"),
+                ),
+            })?;
+
         let narinfo_text = narinfo::format_narinfo(
             &info,
             &self.state.store_dir,
             &self.state.config.compression,
+            measured_file,
             Some(&self.state.signer),
         )
         .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("narinfo rendering: {e}")))?;
@@ -533,10 +547,7 @@ async fn receive_nar_upload(
         ConnectError::new(ErrorCode::Internal, format!("import failed: {error}"))
     })?;
     if let Ok(hash) = StoreHash::from_store_path(&imported) {
-        let _ = service
-            .state
-            .views
-            .create_tmp_root(&view, &hash, &imported);
+        let _ = service.state.views.create_tmp_root(&view, &hash, &imported);
     }
 
     Ok(UploadResponse {
@@ -713,7 +724,7 @@ async fn import_nar_file(path: &Path) -> Result<String, String> {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, header};
     use connectrpc::{RequestContext, StreamMessage};
     use futures_util::stream;
 
@@ -751,6 +762,9 @@ mod tests {
         let state = Arc::new(AppState {
             store: NixStore::open(&database).unwrap(),
             views: ViewManager::new(root.clone(), config.views.clone()).unwrap(),
+            nar_materialization_admission: Arc::new(Semaphore::new(
+                config.compression.max_concurrent_materializations,
+            )),
             config,
             store_dir: root.join("store").display().to_string(),
             jwt_secret: vec![42; 32],

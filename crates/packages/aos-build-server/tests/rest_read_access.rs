@@ -43,6 +43,9 @@ fn test_state(directory: &TempDir) -> Arc<AppState> {
     Arc::new(AppState {
         store: NixStore::open(&database).unwrap(),
         views: ViewManager::new(directory.path().to_path_buf(), config.views.clone()).unwrap(),
+        nar_materialization_admission: Arc::new(tokio::sync::Semaphore::new(
+            config.compression.max_concurrent_materializations,
+        )),
         config,
         store_dir: "/nix/store".into(),
         jwt_secret: JWT_SECRET.to_vec(),
