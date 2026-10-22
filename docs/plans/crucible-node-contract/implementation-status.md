@@ -2824,6 +2824,48 @@ These admissions remain models. Typed request decoding, actual assigned request
 and proof handling, genuine enclosing Source/Birth funding, opaque Initial/Recipe,
 bootstrap dispatch/publication and full RFC acceptance remain unfinished.
 
+## Original typed bootstrap DTO custody
+
+Commit `b16b150902` retains the actual first post-Hello Envelope, bootstrap
+request and proof as separate unassigned DATA outputs. A complete allocation-free
+field/leaf preflight precedes typed allocation. Each completed output is stored
+before validation; fixed serde failure coordinates and every earlier output
+remain observable after refusal. Both original and external occurrences are
+spent before guards, preventing replacement by a fresh attempt.
+
+One full original literal/strict-Value/Host/native-SDK loan surrounds decoding
+and observation on either outcome. Intermediate checks use the same borrowed
+live SDK. The envelope targets the actual session/incarnation, follows the
+original Hello sequence and uses a distinct request ID. Its full body/extensions
+match the original strict tree. The decoded request joins the actual private
+Recipe identity and independently reconstructed initial row. Proof checks here
+validate structure only; a correctly shaped all-zero MAC remains unauthenticated
+DATA. These checks create no SDK request assignment or native permission.
+
+The independent Source/native initial formula includes all typed string, tree
+and byte backing, actual decoder partials, expanded diagnostics, constructor
+windows, census, callbacks and concrete loan results. The pinned base64 decoder
+retains capacity 33 for each decoded 32-byte digest; all three banks are priced.
+A maximum-width census covers seven 128-byte IDs, four quoted unsigned integers,
+all closed maps and each actual decoded capacity. Retained lifetimes extend the
+existing normalization/literal/parser schedule without increasing the policy,
+original deadline or later phase partitions.
+
+Thirty-one physical flights cover both program families, closed-field refusal,
+typed numeric/ID/base64 errors, wrong current target/sequence/Recipe/funding,
+admission and census refusal after each output, changed cut, actual SDK
+revocation, expiry and callback refusal. Both complete Transport configurations
+pass 1,972 tests each with zero failures, no filtering and sixteen existing
+ignores. Affected all-feature/all-target checking, formatting and all six
+architecture gates pass. The application gate compiles 180 test executables
+across 58 package identities, including 71 integration targets. Its 327 owned
+Rust/Cargo inputs match the commit and exact captured source. That gate runs no
+tests; no new VM or configured Engine/Daemon runtime result is claimed.
+
+Actual request correlation/assignment, complete proof verification, genuine
+enclosing Source/Birth funding, opaque Initial/Recipe, bootstrap dispatch and
+publication, all later native phases and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
