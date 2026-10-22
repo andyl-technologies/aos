@@ -1654,6 +1654,10 @@ class EffectivePolicyTest(unittest.TestCase):
                 "init_t", "systemd_unit_t", "service",
                 ("status", "start", "stop", "reload"),
             ),
+            *effective_policy.accesses(
+                "init_t", "init_tmpfs_t", "service",
+                ("status", "start", "stop", "reload"),
+            ),
         )
 
         for access in required:

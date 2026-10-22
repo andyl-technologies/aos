@@ -9582,6 +9582,22 @@ including the effective permission matrix and deliberately invalid loadable
 policies. Installed-image qualification remains pending. No activation journal
 is erased or repaired to turn the failed first effect into a successful boot.
 
+The following Host image passed manager subscription and reload, then PID 1
+denied status of the native `nix-profile-gcroots` mount unit. That fragment
+was generated in the writable `/etc` overlay and retained `init_tmpfs_t`,
+rather than the immutable unit's `systemd_unit_t`. Host activation now has
+the same four unit-management permissions on that generated-unit label;
+Sandbox-owner manager mutation remains forbidden. The checker independently
+requires every permission on both labels. The same console exposed PID 1's
+rejection of the fixed phase-0 target's `PrivateUsers=managed` combined with
+explicit `User=root`/`Group=root`. The target now leaves those two assignments
+to managed namespace setup while retaining its closed capability set and
+hardening. The module contract rejects that invalid combination and passes;
+all 144 checker regressions also pass. These repairs still require
+compiled-policy and enforcing installed-VM qualification. The other VM runs
+embedding the same known-denied policy were interrupted before qualification
+and will be replaced with these repairs; interruption is not a test pass.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

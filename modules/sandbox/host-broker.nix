@@ -787,9 +787,9 @@ in {
         ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe target";
         TimeoutStopSec = "1s";
         Restart = "no";
-        User = "root";
-        Group = "root";
         CapabilityBoundingSet = "";
+        # Managed user namespaces select their own shifted root mapping. PID 1
+        # rejects this mode when User= or Group= is explicitly configured.
         PrivateUsers = "managed";
         RestrictNamespaces = true;
         PrivateNetwork = true;

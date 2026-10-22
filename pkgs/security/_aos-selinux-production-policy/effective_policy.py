@@ -255,6 +255,9 @@ POSITIVE_ACCESS = (
     *accesses(
         "init_t", "systemd_unit_t", "service", ("status", "start", "stop", "reload")
     ),
+    *accesses(
+        "init_t", "init_tmpfs_t", "service", ("status", "start", "stop", "reload")
+    ),
     # Excluding the three explicit-loader roles must not remove ordinary host
     # textrel support or weaken their membership in the base domain boundary.
     Access("init_t", "textrel_shlib_t", "file", "execmod"),
