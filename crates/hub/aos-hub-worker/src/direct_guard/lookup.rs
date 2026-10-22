@@ -44,13 +44,14 @@ async fn handle_body(request: &Request, env: &Env, body: &[u8]) -> Result<Signed
             .headers()
             .get(DIRECT_FINAL_GUARD_SIGNATURE_HEADER)?
             .ok_or_else(|| anyhow::anyhow!("direct final authority signature absent"))?;
-        let challenge = verify_direct_final_guard_lookup(
-            &key,
-            &signature,
-            &body,
-            &deployment,
-            crate::direct_upload::config::guard_latest_now(env)?,
-        )?;
+        let challenge = authenticate_direct_final_guard_lookup(&key, &signature, body)?;
+        crate::direct_upload::not_before::validate_when_current(
+            challenge.issued_at.get(),
+            || crate::direct_upload::config::guard_latest_now(env),
+            |now| challenge.validate(&deployment, now),
+            |duration| worker::Delay::from(duration),
+        )
+        .await?;
         return forward(
             env,
             &challenge.admission,
@@ -70,13 +71,14 @@ async fn handle_body(request: &Request, env: &Env, body: &[u8]) -> Result<Signed
         .headers()
         .get(DIRECT_AUTHORITY_LOOKUP_SIGNATURE_HEADER)?
         .ok_or_else(|| anyhow::anyhow!("direct source authority signature absent"))?;
-    let challenge = verify_direct_authority_lookup(
-        &key,
-        &signature,
-        &body,
-        &deployment,
-        crate::direct_upload::config::guard_latest_now(env)?,
-    )?;
+    let challenge = authenticate_direct_authority_lookup(&key, &signature, body)?;
+    crate::direct_upload::not_before::validate_when_current(
+        challenge.issued_at.get(),
+        || crate::direct_upload::config::guard_latest_now(env),
+        |now| challenge.validate(&deployment, now),
+        |duration| worker::Delay::from(duration),
+    )
+    .await?;
     // Positive Stage receipt lookup is historical metadata. It grants no
     // provider read or mutation; every other authority path remains qualified.
     let qualified = if matches!(

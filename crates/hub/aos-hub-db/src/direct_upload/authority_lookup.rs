@@ -225,6 +225,28 @@ pub fn sign_direct_authority_lookup(
     sign(key, b"aos.direct-upload.authority-request.v1\0", request)
 }
 
+/// Authenticates and decodes a bounded proof challenge without admitting it.
+///
+/// A receiver may wait for a near-future signed issue time after authentication.
+/// It must call [`DirectAuthorityLookup::validate`] with its fresh qualified
+/// clock before accessing durable originals or forwarding the challenge.
+///
+/// # Errors
+/// Returns an error for bad authentication, excessive bytes, malformed fields,
+/// or noncanonical encoding.
+pub fn authenticate_direct_authority_lookup(
+    key: &StorageWorkKey,
+    signature: &str,
+    body: &[u8],
+) -> Result<DirectAuthorityLookup> {
+    verify(
+        key,
+        b"aos.direct-upload.authority-request.v1\0",
+        signature,
+        body,
+    )
+}
+
 /// Authenticates before parsing and validates the fresh original proof challenge.
 ///
 /// # Errors
@@ -236,12 +258,7 @@ pub fn verify_direct_authority_lookup(
     deployment: &str,
     latest_now: u64,
 ) -> Result<DirectAuthorityLookup> {
-    let request: DirectAuthorityLookup = verify(
-        key,
-        b"aos.direct-upload.authority-request.v1\0",
-        signature,
-        body,
-    )?;
+    let request = authenticate_direct_authority_lookup(key, signature, body)?;
     request.validate(deployment, latest_now)?;
     Ok(request)
 }

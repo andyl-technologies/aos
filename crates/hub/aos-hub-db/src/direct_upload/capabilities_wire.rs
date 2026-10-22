@@ -168,6 +168,23 @@ pub fn sign_direct_storage_capabilities_request(
     sign(key, REQUEST_DOMAIN, request)
 }
 
+/// Authenticates and decodes a bounded capability challenge without admitting it.
+///
+/// A receiver may wait for a near-future signed issue time after authentication.
+/// It must call [`DirectStorageCapabilitiesRequest::validate`] with its fresh,
+/// independently qualified clock before resolving any profiles or replying.
+///
+/// # Errors
+/// Returns an error for bad authentication, excessive bytes, or noncanonical,
+/// unknown, duplicate, or malformed fields.
+pub fn authenticate_direct_storage_capabilities_request(
+    key: &StorageWorkKey,
+    signature: &str,
+    bytes: &[u8],
+) -> Result<DirectStorageCapabilitiesRequest> {
+    verify(key, REQUEST_DOMAIN, signature, bytes)
+}
+
 /// Authenticates raw bytes before closed decoding, then checks audience and time.
 ///
 /// # Errors
@@ -181,7 +198,7 @@ pub fn verify_direct_storage_capabilities_request(
     executor_origin: &str,
     latest_now: u64,
 ) -> Result<DirectStorageCapabilitiesRequest> {
-    let request: DirectStorageCapabilitiesRequest = verify(key, REQUEST_DOMAIN, signature, bytes)?;
+    let request = authenticate_direct_storage_capabilities_request(key, signature, bytes)?;
     request.validate(deployment, executor_origin, latest_now)?;
     Ok(request)
 }

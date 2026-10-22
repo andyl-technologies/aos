@@ -285,6 +285,23 @@ pub fn sign_direct_final_guard_lookup(
     sign(key, REQUEST_DOMAIN, request)
 }
 
+/// Authenticates and decodes a bounded guard challenge without admitting it.
+///
+/// A receiver may wait for a near-future signed issue time after authentication.
+/// It must call [`DirectFinalGuardLookup::validate`] with its fresh qualified
+/// clock before accessing a guard or forwarding the challenge.
+///
+/// # Errors
+/// Returns an error for bad authentication, excessive bytes, malformed fields,
+/// or noncanonical encoding.
+pub fn authenticate_direct_final_guard_lookup(
+    key: &StorageWorkKey,
+    signature: &str,
+    body: &[u8],
+) -> Result<DirectFinalGuardLookup> {
+    verify(key, REQUEST_DOMAIN, signature, body)
+}
+
 /// Authenticates a fresh guard challenge before parsing any supplied identity.
 ///
 /// # Errors
@@ -296,7 +313,7 @@ pub fn verify_direct_final_guard_lookup(
     deployment: &str,
     latest_now: u64,
 ) -> Result<DirectFinalGuardLookup> {
-    let value: DirectFinalGuardLookup = verify(key, REQUEST_DOMAIN, signature, body)?;
+    let value = authenticate_direct_final_guard_lookup(key, signature, body)?;
     value.validate(deployment, latest_now)?;
     Ok(value)
 }

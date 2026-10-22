@@ -807,14 +807,14 @@ async fn capabilities_inner(
     let qualified = QualifiedConfig::load(env).await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let origin = request.url()?.origin().ascii_serialization();
-    let challenge = verify_direct_storage_capabilities_request(
-        key,
-        signature,
-        body,
-        &deployment,
-        &origin,
-        qualified.latest_now()?,
-    )?;
+    let challenge = authenticate_direct_storage_capabilities_request(key, signature, body)?;
+    super::not_before::validate_when_current(
+        challenge.issued_at.get(),
+        || qualified.latest_now(),
+        |now| challenge.validate(&deployment, &origin, now),
+        |duration| worker::Delay::from(duration),
+    )
+    .await?;
     let (profile, policy, runtime) = if challenge.managed {
         let (protected, _) = qualified.managed(env)?;
         let DirectProtectedProfile::Managed {

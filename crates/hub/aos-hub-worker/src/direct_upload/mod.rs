@@ -17,6 +17,9 @@ pub(crate) mod sdk_observation;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) mod acceptance_window;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod not_before;
+
 #[cfg(any(target_arch = "wasm32", test))]
 mod complete;
 
