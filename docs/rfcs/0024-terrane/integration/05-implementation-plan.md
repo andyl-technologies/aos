@@ -13019,3 +13019,18 @@ closure, and promise `ENOTCONN` for operations requiring the disconnected worker
 FUSE-6, FUSE-50 and the errno mapping use that same boundary. Already disclosed
 descriptors, cached pages and mappings are not claimed to be revoked. Requirement
 IDs and gate names remain unchanged; mounted exposure conformance is still open.
+
+The earlier warm-handoff qualification at `ac3bd11d10` now terminates failed
+after 640.63 seconds. All 128 native library cases and the inline whole-file
+witness pass before the added manifest source cleanup receives publisher-local
+`Unavailable`. The log establishes neither a timeout nor the specific native
+reason. Its build directory and frozen source are retained; the cold-domain
+correction at `00f7bad8fc` is being qualified separately. Required application
+test-target compilation at `ac3bd11d10` passes in 802.01 seconds. Independent
+review matches all 7,987 immutable source files and 184 compiler records across
+59 packages; compilation does not replace the failed native runtime result.
+
+Frozen registry and plan-coverage checks at `00f7bad8fc` pass with all 9,313
+tracked files unchanged. They establish 292 unique gates, all 69 T0/T1 floor
+gates, and ownership of 1,082 mandatory requirements across 97 plan tasks. They
+do not establish implementation or runtime acceptance of those requirements.
