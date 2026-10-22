@@ -132,6 +132,7 @@ impl Serialize for SessionSettledHistoryData<'_> {
             connection: _,
             authority,
             deadline: _,
+            bootstrap_hello_cut: _,
             sequence,
             peer_pid,
             peer_executable,

@@ -19,6 +19,7 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::{ClientContent, DeadlineStream, ExchangeDeadline};
 
+mod bootstrap_cut;
 mod fresh_restore_query;
 #[path = "session/original_conflict.rs"]
 pub(super) mod original_conflict;
@@ -276,6 +277,7 @@ pub struct ClientSession {
     connection: Connection<DeadlineStream>,
     authority: ConnectionAuthority,
     deadline: ExchangeDeadline,
+    bootstrap_hello_cut: bootstrap_cut::OriginalBootstrapHelloCut,
     sequence: U64,
     peer_pid: u32,
     peer_executable: ContentRef,
@@ -1282,6 +1284,7 @@ impl ClientSession {
                 deadline,
             ),
         };
+        let bootstrap_hello_cut = bootstrap_cut::OriginalBootstrapHelloCut::capture(&deadline);
         let mut reader =
             FrameReader::with_limits(writer.try_clone()?, maximum_bytes, maximum_nesting)?;
         let retained_hello = journal
@@ -1330,6 +1333,7 @@ impl ClientSession {
             connection,
             authority,
             deadline,
+            bootstrap_hello_cut,
             sequence: U64::new(2),
             peer_pid: peer.pid,
             peer_executable: peer.executable.clone(),
@@ -1897,6 +1901,7 @@ impl ClientSession {
             connection,
             authority: _,
             deadline,
+            bootstrap_hello_cut: _,
             sequence: _,
             peer_pid: _,
             peer_executable: _,
@@ -1936,6 +1941,7 @@ impl ClientSession {
             connection,
             authority,
             deadline,
+            bootstrap_hello_cut: _,
             sequence,
             peer_pid,
             peer_executable,

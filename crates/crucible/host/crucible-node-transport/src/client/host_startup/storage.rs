@@ -15,6 +15,7 @@ use crucible_node_format::{ContentRef, Id};
 use super::{OriginalPacketHostStartup, PacketNativeHostStartupInputs, hello, refused};
 use crate::{
     ProviderError,
+    client::ClientSession,
     handshake::{ExtensionHandshake, Handshake, HelloRequest, HelloResult},
     retained_metadata::{
         MetadataObserver, RetainedProtocolMetadataFacts,
@@ -76,7 +77,8 @@ impl PacketNativeHostStartupStorageData {
 /// Compiler frames, recursive observer stack and allocator physical overhead
 /// are separate. No serialization or metadata observer runs in this getter.
 pub fn original_packet_host_startup_counter_scratch_data() -> usize {
-    4 * size_of::<MetadataObserver<'static>>()
+    ClientSession::original_bootstrap_hello_cut_capture_counter_scratch_data()
+        + 4 * size_of::<MetadataObserver<'static>>()
         + 4 * size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<PacketNativeHostStartupStorageData>()
         + size_of::<[usize; 18]>()

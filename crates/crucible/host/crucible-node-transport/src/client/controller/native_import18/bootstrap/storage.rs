@@ -149,7 +149,8 @@ impl CnpController {
     /// It excludes parser/serializer/factory and variable receive controls. These
     /// are explicit DATA/control layouts, not physical compiler stack bounds.
     pub fn original_native_import18_bootstrap_counter_scratch_data() -> usize {
-        size_of::<&Self>()
+        crate::client::ClientSession::original_bootstrap_hello_cut_counter_scratch_data()
+            + size_of::<&Self>()
             + size_of::<&OriginalHelloJournal>()
             + size_of::<&PacketNativeImport18PrebirthRecipeData>() * 2
             + size_of::<&PacketNativeImport18InitialFundingData>() * 2
@@ -238,6 +239,7 @@ fn authenticate_inputs_data(
     request: &PacketNativeImport18BootstrapRequest,
 ) -> Result<(), ProviderError> {
     controller.protocol_owner.ensure_current()?;
+    controller.session.original_bootstrap_hello_cut_data()?;
     if controller.original(request_id).is_some()
         || !controller
             .authority()

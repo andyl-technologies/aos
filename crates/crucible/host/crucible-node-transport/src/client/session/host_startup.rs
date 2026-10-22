@@ -57,6 +57,7 @@ impl OriginalHostHelloAttempt {
             ));
         }
         self.attempted = true;
+        let bootstrap_hello_cut = bootstrap_cut::OriginalBootstrapHelloCut::capture(deadline);
         journal.begin(request, hello::MAXIMUM_HELLO_BYTES, 64)?;
         deadline.remaining()?;
         let stream = self
@@ -174,6 +175,7 @@ impl OriginalHostHelloAttempt {
             ))?,
             authority: authority.clone(),
             deadline: deadline.clone(),
+            bootstrap_hello_cut,
             sequence: U64::new(2),
             peer_pid: peer.pid,
             peer_executable: peer.executable.clone(),

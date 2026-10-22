@@ -18,6 +18,7 @@ impl ClientSession {
     ) -> Result<(Self, std::os::unix::net::UnixStream), ProviderError> {
         let (stream, peer) = std::os::unix::net::UnixStream::pair()?;
         let deadline = ExchangeDeadline::start(Duration::from_secs(30))?;
+        let bootstrap_hello_cut = bootstrap_cut::OriginalBootstrapHelloCut::capture(&deadline);
         let writer = DeadlineStream::with_deadline(stream, deadline.clone())?;
         let connection = Connection::new(
             writer,
@@ -31,6 +32,7 @@ impl ClientSession {
                 connection,
                 authority,
                 deadline,
+                bootstrap_hello_cut,
                 sequence: U64::new(2),
                 peer_pid: std::process::id(),
                 peer_executable: canonical::content_ref(

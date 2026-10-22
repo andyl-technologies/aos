@@ -52,6 +52,7 @@ pub(crate) use restore_inputs::{
 
 mod assigned_admit;
 mod assigned_restore;
+mod bootstrap_frontier;
 mod confirmation;
 mod native5_birth;
 pub use native5_birth::{Native5ConnectionBirth, Native5ConnectionBirthRefusal};

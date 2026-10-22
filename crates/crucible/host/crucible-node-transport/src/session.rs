@@ -941,3 +941,6 @@ impl CorrelationGuard {
 
 #[path = "session/bootstrap_publication.rs"]
 mod bootstrap_publication;
+
+#[path = "session/bootstrap_response.rs"]
+mod bootstrap_response;

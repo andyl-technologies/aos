@@ -18,6 +18,7 @@ impl ClientSession {
                 connection,
                 authority,
                 deadline,
+                bootstrap_hello_cut: _,
                 sequence,
                 peer_pid,
                 peer_executable,
@@ -142,6 +143,7 @@ impl ClientSession {
             connection,
             authority: _,
             deadline,
+            bootstrap_hello_cut: _,
             sequence: _,
             peer_pid: _,
             peer_executable: _,
@@ -199,10 +201,12 @@ impl ClientSession {
             .install_native5_controller_codec(&mut bank, selection, coordinator)
             .unwrap();
         let witness = connection.retain_original_protocol_supervisor().unwrap();
+        let bootstrap_hello_cut = bootstrap_cut::OriginalBootstrapHelloCut::capture(&deadline);
         let session = Self {
             connection,
             authority,
             deadline,
+            bootstrap_hello_cut,
             sequence: U64::new(2),
             peer_pid: std::process::id(),
             peer_executable: canonical::content_ref(
