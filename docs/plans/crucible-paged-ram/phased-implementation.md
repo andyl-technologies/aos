@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 415 committed bindings: 396 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 416 committed bindings: 397 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -414,6 +414,17 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Compact typed parent-Park QMP context
+
+The two existing parent-Park adapter refusal sites retain their context in a
+closed operation enum beside the full inline runtime error. Display preserves
+the existing diagnostic text. The initiating typed cause and independent post
+remain available through the original error chain, without boxing, discarded
+coordinates or a lint waiver. The focused allocation/error-chain control passes
+for both actual contexts and verifies that inline QMP errors stay below 128 bytes.
+All 137 QMP unit controls and host target compilation pass. Application,
+engineering-hygiene, exact-supervision and canonical license checks remain pending. This representation change supplies no new operation or custody.
+
 #### Borrowed fixed marker refusal diagnostics
 
 Four existing marker publication and coordinate refusals now borrow fixed
@@ -426,8 +437,12 @@ and verifies that no entry was published. A separate diagnostic control checks
 both static borrowing and preservation of the incoming owned allocation.
 
 All 115 focused white-box controls, all plugin target compilation and content-bound
-engineering hygiene pass. Mandatory application compilation and all 298 exact
-supervision cases remain pending for this checkpoint. These component controls
+engineering hygiene pass. Mandatory application compilation passes at
+`wgq36bw7g56p97xgm2a3jmvvy0xdc18j`; all 5,300 committed Rust/TOML inputs at
+`908cbce844649982c54f6ef8b08efa2100133901` match immutable source
+`v3jzypjkf51yv2hy5vkz0jv1lrbcivix`. The comparison record has SHA-256
+`22f1361852010a8b5d460d3eec8240fde3b3f97952b0119682007c8c56e3f847`.
+All 298 exact supervision cases remain pending for this checkpoint. These component controls
 do not establish complete dynamic diagnostic funding or Native admission.
 
 #### Typed marker callback refusals
@@ -441,8 +456,12 @@ A focused child owns the marker/VMStop boundary; it grants no Source or cleanup
 authority and does not resolve the underlying payload-funding obligation.
 
 All 113 white-box controls, all plugin target compilation and content-bound
-engineering hygiene pass. Mandatory application compilation and all 294 exact
-supervision cases remain in progress. The new controls check the original
+engineering hygiene pass. Mandatory application compilation passes at
+`rdb5any9hajs8qxl08gflrglhbq80rmc`; all 5,300 committed Rust/TOML inputs at
+`4d04e7b09987a676334ac2f419ddb5d63685e2a3` match immutable source
+`m2gzhlaa26csr49v1yv1xsh6zbf01w63`. The comparison record has SHA-256
+`013705a3d5fe88bc4795b7b7ed6dc8cc283919e5a07a67fd837c874ba98a6749`.
+All 294 exact supervision cases remain in progress. The new controls check the original
 string address, exact provider status, absence of a TB exit after ready refusal,
 and retention of the actual already-deferred stop after collision. The existing
 safe-decoder control also checks that consuming a marker moves its allocation.
@@ -503,7 +522,7 @@ passes at `iksqy0zq7dygva09m83ck3z5l19x1y9x`: all 5,298 committed Rust/TOML
 inputs at `17af9ee4221577c18294228bad7c5db7dea63a2d` match immutable source
 `x46gjjy0n2iycsffa5qqjvbgdzqm05d4`. The comparison record has SHA-256
 `c18b360377b8d026c5d23f882f31095ef9948a3c853aeec3315c96083111769a`.
-All 291 exact supervision cases remain in progress.
+All 291 exact supervision cases pass at `shzc4c3w15lhnhhqjs6rbh0q1p1lga4n`.
 The moved catalog and doorbell causes can themselves own diagnostic payloads;
 this change does not establish their complete funding or Native admission.
 

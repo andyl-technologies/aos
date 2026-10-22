@@ -119,7 +119,7 @@ impl QemuNode {
             .host_io_runtime
             .begin_parent_park_action(correlation, actor, family)
             .map_err(|error| crate::QmpError::OperationalRuntime {
-                operation: "retain canonical parent Park request",
+                operation: crate::QmpRuntimeOperation::RetainParentParkRequest,
                 source: error,
             })?;
         self.channels
@@ -132,7 +132,7 @@ impl QemuNode {
             .host_io_runtime
             .current_parent_park_action()
             .map_err(|error| crate::QmpError::OperationalRuntime {
-                operation: "recheck canonical parent Park request after imports",
+                operation: crate::QmpRuntimeOperation::RecheckParentParkRequest,
                 source: error,
             })?;
         if current != source_action {

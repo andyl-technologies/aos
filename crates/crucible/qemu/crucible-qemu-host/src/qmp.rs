@@ -2153,7 +2153,7 @@ struct QmpCommandReturn {
 #[path = "qmp/error.rs"]
 mod error;
 
-pub use error::QmpError;
+pub use error::{QmpError, QmpRuntimeOperation};
 
 fn snapshot_job_id(job_action: &'static str, tag: &QmpSnapshotTag) -> String {
     format!("crucible-{job_action}-{}", tag.as_str())

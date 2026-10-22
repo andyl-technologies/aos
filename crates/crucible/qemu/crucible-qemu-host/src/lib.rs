@@ -372,7 +372,7 @@ pub use qmp::{
     QMP_QUIT_COMMAND_NAME, QMP_SNAPSHOT_DELETE_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND,
     QMP_SNAPSHOT_VMSTATE_DEVICE, QMP_STOP_COMMAND, QemuQmpVmStateControlChannel,
     QmpCheckpointEpochState, QmpCheckpointIdentity, QmpClient, QmpCommandComplete, QmpCommandKind,
-    QmpDescriptorName, QmpError, QmpGreeting, QmpHotForkBlockBarrierState,
+    QmpDescriptorName, QmpError, QmpRuntimeOperation, QmpGreeting, QmpHotForkBlockBarrierState,
     QmpHotForkBlockSealCandidate, QmpHotForkBlockSealRequest, QmpHotForkBlockSealState,
     QmpHotForkBlockSealedRoot, QmpHotForkBlockSnapshotBinding, QmpHotForkBlockSnapshotBindingError,
     QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof, QmpHotForkChildConsoleState,

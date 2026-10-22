@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// Identifies the QMP boundary retaining a parent-Park runtime refusal.
+///
+/// The two actual boundaries use a closed context instead of retaining a
+/// second string slice beside the complete typed runtime cause and its post.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpRuntimeOperation {
+    /// The runtime retains the canonical request before importing QMP authority.
+    RetainParentParkRequest,
+    /// The runtime rechecks that same request after importing QMP authority.
+    RecheckParentParkRequest,
+}
+
+impl std::fmt::Display for QmpRuntimeOperation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::RetainParentParkRequest => "retain canonical parent Park request",
+            Self::RecheckParentParkRequest => "recheck canonical parent Park request after imports",
+        })
+    }
+}
+
 /// Typed errors returned by the minimal QMP client.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QmpError {
@@ -28,7 +49,7 @@ pub enum QmpError {
     #[error("{operation} host supervision failed: {source}")]
     OperationalRuntime {
         /// Actual QMP boundary that observed the adapter failure.
-        operation: &'static str,
+        operation: QmpRuntimeOperation,
         /// Complete initiating adapter cause and its saved independent post.
         #[source]
         source: crate::QemuAsyncDriverRuntimeError,
@@ -275,5 +296,61 @@ impl From<QmpError> for QemuNodeChannelError {
             }
             other => QemuNodeChannelError::new("qmp", other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::HostSupervisionError;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::error::Error as _;
+
+    #[test]
+    fn runtime_boundaries_retain_typed_cause_and_post_without_diagnostic_allocation() {
+        for (operation, text) in [
+            (
+                QmpRuntimeOperation::RetainParentParkRequest,
+                "retain canonical parent Park request",
+            ),
+            (
+                QmpRuntimeOperation::RecheckParentParkRequest,
+                "recheck canonical parent Park request after imports",
+            ),
+        ] {
+            let source = crate::QemuAsyncDriverRuntimeError::operational_supervision(
+                "observe parent Park request",
+                HostSupervisionError::CapacityExhausted,
+            )
+            .with_operational_supervision_post(HostSupervisionError::InvalidBudget);
+            let expected = format!("{text} host supervision failed: {source}");
+
+            let (error, counts) = TestAllocationObserver::count(|| QmpError::OperationalRuntime {
+                operation,
+                source,
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert_eq!(error.to_string(), expected);
+            let retained = error
+                .source()
+                .unwrap()
+                .downcast_ref::<crate::QemuAsyncDriverRuntimeError>()
+                .unwrap();
+            assert_eq!(
+                retained.operational_supervision_source(),
+                Some(HostSupervisionError::CapacityExhausted)
+            );
+            assert_eq!(
+                retained.operational_supervision_post(),
+                Some(HostSupervisionError::InvalidBudget)
+            );
+        }
+        assert!(
+            std::mem::size_of::<QmpError>() < 128,
+            "QMP error size: {}",
+            std::mem::size_of::<QmpError>()
+        );
     }
 }
