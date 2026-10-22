@@ -19,6 +19,11 @@ import tempfile
 
 LIMIT = 1048576
 STATE = Path("/var/lib/aos/network")
+INITRD_STATE = Path("/run/aos/initrd-native-network-effects")
+
+
+def in_initrd():
+    return Path("/etc/initrd-release").is_file()
 
 
 def require(condition, message):
@@ -219,7 +224,7 @@ def command(argv):
     require(result.returncode == 0, "network manager command failed: " + result.stderr[:4096])
 
 
-def units(args, resolved):
+def units(args, resolved, *, initrd=False):
     files = {}
     names = ["systemd-networkd.service", "systemd-networkd.socket", "systemd-networkd-wait-online.service"]
     if resolved:
@@ -229,8 +234,33 @@ def units(args, resolved):
         require(str(source).startswith("/nix/store/"), "manager unit source is not immutable")
         content = source.read_text()
         require(len(content.encode()) <= LIMIT, "manager unit is oversized")
-        files["etc/systemd/system/" + name] = content
+        directory = "run/systemd/system/" if initrd else "etc/systemd/system/"
+        files[directory + name] = content
     return files
+
+
+def immutable_image_file(path, content):
+    """Checks an exact root-owned file before reusing read-only image bytes."""
+    safe_path(path)
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return False
+    with os.fdopen(descriptor, "rb") as stream:
+        if not os.fstatvfs(stream.fileno()).f_flag & os.ST_RDONLY:
+            return False
+        metadata = os.fstat(stream.fileno())
+        # Nix canonicalizes nonexecutable store files to 0444; archive-built
+        # files may retain 0644. Neither mode permits another owner to write.
+        require(
+            stat.S_ISREG(metadata.st_mode)
+            and metadata.st_uid == 0 and metadata.st_gid == 0
+            and stat.S_IMODE(metadata.st_mode) in (0o444, 0o644)
+            and metadata.st_nlink == 1,
+            "immutable network image file metadata differs",
+        )
+        require(stream.read(LIMIT + 1) == content.encode(), "immutable network image file differs")
+    return True
 
 
 def link_identity(path, target):
@@ -293,6 +323,8 @@ def converge(args, invocation):
                 return {"status": "retry-safe"}
             raise
     require(operation in ("configure", "bootstrap"), "unsupported network operation")
+    initrd = in_initrd()
+    state = INITRD_STATE if initrd else STATE
     policy = invocation["input"]
     bootstrap = operation == "bootstrap"
     if bootstrap:
@@ -309,16 +341,22 @@ def converge(args, invocation):
     desired = {"files": render(policy), "resolved": policy["resolver"]["enabled"], "revision": invocation["revision"]}
     if bootstrap:
         desired["files"] = {path.replace("/10-aos-", "/01-aos-bootstrap-"): content for path, content in desired["files"].items()}
+        if initrd:
+            # Metadata is discovered after the immutable image was built.
+            # Its earlier filename takes precedence over image DHCP policy.
+            desired["files"] = {path.replace("etc/systemd/network/", "run/systemd/network/"): content for path, content in desired["files"].items()}
     else:
-        desired["files"].update(units(args, desired["resolved"]))
+        desired["files"].update(units(args, desired["resolved"], initrd=initrd))
     desired["symlinks"] = {"etc/resolv.conf": "/run/systemd/resolve/stub-resolv.conf"} if desired["resolved"] else {}
-    safe_path(STATE)
-    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
-    require(STATE.stat().st_uid == 0 and not STATE.stat().st_mode & 0o077, "network state directory is not private root state")
-    lock = os.open(STATE / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    # Initrd ownership lasts through this boot's release barrier. Persistent
+    # host receipts belong to a separate owner after /var and /etc are mounted.
+    safe_path(state)
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    require(state.stat().st_uid == 0 and not state.stat().st_mode & 0o077, "network state directory is not private root state")
+    lock = os.open(state / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        receipt_path = STATE / (hashlib.sha256(invocation["id"].encode()).hexdigest() + ".json")
+        receipt_path = state / (hashlib.sha256(invocation["id"].encode()).hexdigest() + ".json")
         previous_text = read(receipt_path)
         receipt = json.loads(previous_text) if previous_text else None
         if receipt:
@@ -352,6 +390,11 @@ def converge(args, invocation):
                 paths |= receipt["desired"].get("symlinks", {}).keys() | (receipt.get("previous") or {}).get("symlinks", {}).keys()
                 for path in paths:
                     target = Path("/") / path
+                    content = read(target) if link_at(target) is None else None
+                    if initrd and content is not None and immutable_image_file(target, content):
+                        # Release the receipt and stop its manager; immutable
+                        # image files disappear with the initrd after pivot.
+                        continue
                     if link_at(target) is not None or read(target) is not None:
                         target.unlink()
                 command([args.systemctl, "daemon-reload"])
@@ -377,7 +420,9 @@ def converge(args, invocation):
             if read(target) is not None:
                 target.unlink()
         for path, content in desired["files"].items():
-            write(Path("/") / path, content)
+            target = Path("/") / path
+            if not (initrd and immutable_image_file(target, content)):
+                write(target, content)
         for path, link in desired["symlinks"].items():
             target = Path("/") / path
             if link_at(target) is None:
