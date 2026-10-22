@@ -154,7 +154,7 @@ in {
         vm.succeed(f"systemctl reset-failed {unit}")
         vm.execute(f"systemctl start {unit}")
         vm.wait_until_succeeds(
-            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1; "
+            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1 && "
             f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
             timeout=120,
         )
@@ -180,7 +180,7 @@ in {
     )
     vm.execute(f"systemctl start {unit}")
     vm.wait_until_succeeds(
-        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1; "
+        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1 && "
         f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
         timeout=120,
     )
@@ -196,7 +196,7 @@ in {
     vm.succeed(f"systemctl reset-failed {unit}")
     vm.succeed(f"systemctl start {unit}")
     vm.wait_until_succeeds(
-        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0; "
+        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
         f"test $(systemctl show {unit} --property=ActiveState --value) = inactive",
         timeout=120,
     )
