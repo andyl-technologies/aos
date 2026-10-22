@@ -483,3 +483,59 @@ fn sdk_io_refusal_keeps_actual_diagnostics_and_counts_only_proven_nonowning_repr
         assert!(fixture.attempt.admission_failure.is_some());
     }
 }
+
+#[test]
+fn original_sdk_preserves_unsorted_version_advertisements_and_duplicate_refusal() {
+    for reactive in [false, true] {
+        for duplicate in [false, true] {
+            let mut fixture = Fixture::new(reactive);
+            // This population exercises internal splits and parent propagation
+            // in the real temporary validation tree, in descending wire order.
+            fixture.hello.versions = (0..1024)
+                .rev()
+                .map(|index| format!("future/{index}"))
+                .chain(std::iter::once("CNP/1".to_owned()))
+                .collect();
+            if duplicate {
+                fixture.hello.versions.push("future/511".to_owned());
+            }
+            fixture.request.body = serde_json::to_value(&fixture.hello)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone();
+            let mut verifier = ModelVerifier::new(Fault::None);
+            let original_versions = fixture.hello.versions.clone();
+            let components = super::super::super::initial_admission_controls::data().unwrap();
+            assert!(components.into_iter().all(|axis| axis > 0));
+            assert!(fixture.attempt.authority.is_none());
+            assert!(!fixture.attempt.admission_started);
+
+            let outcome = fixture.admit(&mut verifier);
+
+            assert_eq!(fixture.hello.versions, original_versions);
+            if duplicate {
+                assert!(outcome.is_err());
+                assert_eq!((verifier.authenticated, verifier.contracts), (0, 0));
+                assert!(fixture.attempt.authority.is_none());
+                let Some(ProviderError::Contract(ContractError::Invalid { field, reason })) =
+                    fixture.attempt.admission_failure.as_ref()
+                else {
+                    panic!("duplicate version must retain its original validation failure");
+                };
+                assert_eq!(*field, "versions");
+                assert_eq!(reason, "duplicate protocol version");
+            } else {
+                outcome.unwrap();
+                assert_eq!((verifier.authenticated, verifier.contracts), (1, 1));
+                fixture
+                    .attempt
+                    .authority_data(fixture.cut)
+                    .unwrap()
+                    .ensure_live()
+                    .unwrap();
+            }
+            assert!(fixture.admit(&mut verifier).is_err());
+        }
+    }
+}

@@ -5,7 +5,7 @@
 //! coexists. These logical requested controls make no compiler-frame or ABI
 //! claim. JSON extensions use the same checked 64-container plus scalar profile.
 
-use crate::handshake::{HelloResult, Limits, ResumedOperation};
+use crate::handshake::{HelloRequest, HelloResult, Limits, ResumedOperation};
 use crucible_node_format::{
     ArtifactIdentity, Bytes, ContentRef, FacetSelection, HashRef, Id, ImplementationIdentity,
     NodeManifest, ProviderManifest, SchemaRef, U64,
@@ -26,6 +26,7 @@ type StructVariantState = <JsonSerializer as Serializer>::SerializeStructVariant
 
 trait Controls {
     const DATA: usize;
+    const DEPTH: usize;
 }
 
 const fn maximum(values: &[usize]) -> usize {
@@ -54,6 +55,7 @@ const fn window<T>() -> usize {
 }
 
 impl Controls for String {
+    const DEPTH: usize = 1;
     const DATA: usize = window::<Self>()
         + size_of::<String>()
         + size_of::<Vec<u8>>()
@@ -62,10 +64,12 @@ impl Controls for String {
 }
 
 impl Controls for Id {
+    const DEPTH: usize = 1 + String::DEPTH;
     const DATA: usize = window::<Self>() + String::DATA;
 }
 
 impl Controls for Bytes {
+    const DEPTH: usize = 1 + String::DEPTH;
     const DATA: usize = window::<Self>()
         + String::DATA
         + size_of::<&[u8]>()
@@ -74,6 +78,7 @@ impl Controls for Bytes {
 }
 
 impl Controls for U64 {
+    const DEPTH: usize = 1 + String::DEPTH;
     const DATA: usize = window::<Self>()
         + size_of::<[u8; 20]>()
         + size_of::<Result<&'static str, std::str::Utf8Error>>()
@@ -81,10 +86,12 @@ impl Controls for U64 {
 }
 
 impl Controls for u16 {
+    const DEPTH: usize = 1;
     const DATA: usize = window::<Self>();
 }
 
 impl<T: Controls + 'static> Controls for Vec<T> {
+    const DEPTH: usize = 1 + T::DEPTH;
     const DATA: usize = window::<Self>()
         + size_of::<std::slice::Iter<'static, T>>()
         + size_of::<Option<&'static T>>()
@@ -92,6 +99,7 @@ impl<T: Controls + 'static> Controls for Vec<T> {
 }
 
 impl<T: Controls + 'static> Controls for BTreeMap<String, T> {
+    const DEPTH: usize = 1 + maximum(&[String::DEPTH, T::DEPTH]);
     const DATA: usize = window::<Self>()
         + size_of::<std::collections::btree_map::Iter<'static, String, T>>()
         + size_of::<Option<(&'static String, &'static T)>>()
@@ -99,6 +107,7 @@ impl<T: Controls + 'static> Controls for BTreeMap<String, T> {
 }
 
 impl Controls for Value {
+    const DEPTH: usize = 65 + String::DEPTH;
     const DATA: usize = 65
         * (window::<Self>()
             + size_of::<serde_json::map::Iter<'static>>()
@@ -109,6 +118,7 @@ impl Controls for Value {
 }
 
 impl Controls for Map<String, Value> {
+    const DEPTH: usize = 1 + Value::DEPTH;
     const DATA: usize = window::<Self>()
         + size_of::<serde_json::map::Iter<'static>>()
         + size_of::<Option<(&'static String, &'static Value)>>()
@@ -119,9 +129,16 @@ const fn field_data<S, T: Controls>(_: fn(&S) -> &T) -> usize {
     T::DATA
 }
 
+const fn field_depth<S, T: Controls>(_: fn(&S) -> &T) -> usize {
+    T::DEPTH
+}
+
 macro_rules! fields {
     ($type:ident { $($field:ident),+ $(,)? }) => {
         impl Controls for $type {
+            const DEPTH: usize = 1 + maximum(&[
+                $(field_depth(|value: &Self| &value.$field),)+
+            ]);
             const DATA: usize = window::<Self>() + maximum(&[
                 $(field_data(|value: &Self| &value.$field),)+
             ]);
@@ -236,3 +253,74 @@ pub(super) const fn selection_data() -> usize {
         + U64::DATA
         + window::<Vec<crucible_node_format::ExtensionSelection>>()
 }
+
+/// Bounds the checked initial request's serializer path without invoking it.
+///
+/// The caller authenticates the absent resume branch and empty extension map.
+/// Bytes and quoted integers still need their separately funded leaf formatters.
+pub(in super::super) const fn initial_request_comparison_depth_data() -> usize {
+    1 + maximum(&[
+        field_depth(|value: &HelloRequest| &value.versions),
+        field_depth(|value: &HelloRequest| &value.session_id),
+        field_depth(|value: &HelloRequest| &value.controller_nonce),
+        field_depth(|value: &HelloRequest| &value.required_features),
+        field_depth(|value: &HelloRequest| &value.optional_features),
+        field_depth(|value: &HelloRequest| &value.limits),
+        field_depth(|value: &HelloRequest| &value.admission_token),
+        1, // absent Option<ResumeSession>
+        1, // empty Extensions map
+    ])
+}
+
+/// Bounds the initial result path, including every complete provider child.
+///
+/// Only the authenticated empty resumed-operation and null token branches are
+/// covered. Arbitrary provider extensions retain the checked JSON-depth bound.
+pub(in super::super) const fn initial_result_comparison_depth_data() -> usize {
+    1 + maximum(&[
+        field_depth(|value: &HelloResult| &value.version),
+        field_depth(|value: &HelloResult| &value.session_id),
+        field_depth(|value: &HelloResult| &value.incarnation_id),
+        field_depth(|value: &HelloResult| &value.controller_nonce),
+        field_depth(|value: &HelloResult| &value.provider_nonce),
+        field_depth(|value: &HelloResult| &value.selected_features),
+        field_depth(|value: &HelloResult| &value.limits),
+        field_depth(|value: &HelloResult| &value.provider_identity),
+        1, // empty resumed-operation Vec
+        2, // Nullable wrapper and absent token Option
+    ])
+}
+
+// The quote must fail to compile if either enclosing schema gains a field.
+const _: fn(&HelloRequest) = |value| {
+    let _: &Option<crate::handshake::ResumeSession> = &value.resume_session;
+    let _: &crucible_node_format::Extensions = &value.extensions;
+    let HelloRequest {
+        versions: _,
+        session_id: _,
+        controller_nonce: _,
+        required_features: _,
+        optional_features: _,
+        limits: _,
+        admission_token: _,
+        resume_session: _,
+        extensions: _,
+    } = value;
+};
+
+const _: fn(&HelloResult) = |value| {
+    let _: &Vec<ResumedOperation> = &value.resumed_operations;
+    let _: &crate::envelope::Nullable<Bytes> = &value.resume_token;
+    let HelloResult {
+        version: _,
+        session_id: _,
+        incarnation_id: _,
+        controller_nonce: _,
+        provider_nonce: _,
+        selected_features: _,
+        limits: _,
+        provider_identity: _,
+        resumed_operations: _,
+        resume_token: _,
+    } = value;
+};

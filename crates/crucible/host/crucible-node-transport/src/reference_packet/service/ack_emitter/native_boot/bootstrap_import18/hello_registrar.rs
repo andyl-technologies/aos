@@ -30,6 +30,9 @@ pub(in crate::reference_packet::service) use initial_admission_backing::{
     retained_backing_data as initial_admission_retained_backing_data,
 };
 
+#[path = "hello_registrar/initial_admission_controls.rs"]
+mod initial_admission_controls;
+
 #[path = "hello_registrar/attempt.rs"]
 mod attempt;
 

@@ -2058,6 +2058,37 @@ with it: the complete separately admitted SDK constructor and callback rows are
 still required. Publication, ACK, Native18 policy, model adoption and opaque
 Initial/Recipe production remain unfinished.
 
+## Initial SDK tree and comparison control windows
+
+The next constructor component follows the pinned Rust 1.98.1 incremental set
+path through entry/search, leaf and internal splits, root growth and separator
+propagation. Its private-record bounds follow complete field rosters rather than
+constructing library-private values. The three actual key types are borrowed
+version Strings, owned envelope names and original request IDs. Normal destruction
+of the temporary borrowed-version set has a distinct loop/navigation row; no
+arbitrary key destructor or comparator is included in that closed bound.
+
+The SDK supplies initialized original-entry and verifier-bridge header controls
+from their defining modules. The complete Provider/Node/Implementation field DAG
+now also supplies initial request/result comparison depth, using exhaustive
+field destructuring and actual child types. The comparison visitor names its own
+concrete layer states, results and borrowed adapters. JSON children retain the
+existing 64-container plus scalar profile. No serializer or comparison executes
+during this calculation.
+
+A real SDK model-callback control accepts 1,025 descending, unique protocol
+versions for both program families, exercises internal tree splits, and preserves
+the original wire order. Adding a duplicate preserves the original typed reason,
+refuses before either trusted callback and spends admission. These controls do
+not use the native verifier or grant native Source/Birth provenance. Complete
+qualification is pending.
+
+These are partial construction terms. Complete decoder/writer and validator
+work, owning leaf clones and backing, native callback measurement/equality,
+terminal census and genuine native producer admission remain required before
+connecting the SDK call to the original root. Initial/Recipe, policy, ACK and
+full RFC implementation remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

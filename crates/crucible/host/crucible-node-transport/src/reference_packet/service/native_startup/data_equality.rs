@@ -43,6 +43,44 @@ pub(crate) fn counter_scratch_data() -> usize {
         + 4
 }
 
+/// Names one complete closed comparison-serializer layer and its adapters.
+///
+/// The caller composes the actual serialized field path and separately funds
+/// owning leaf formatters. These logical source controls are not stack frames.
+/// Unsupported is zero-sized and its custom error never formats Display text.
+pub(crate) const fn serialization_layer_counter_scratch_data<T: ?Sized>() -> usize {
+    use std::mem::size_of;
+
+    size_of::<&T>() * 3
+        + size_of::<Compare<'static>>() * 3
+        + size_of::<View<'static>>() * 3
+        + size_of::<Sequence<'static>>() * 3
+        + size_of::<Object<'static>>() * 3
+        + size_of::<Key<'static>>() * 3
+        + size_of::<Unsupported>()
+        + size_of::<Result<bool, Unsupported>>() * 4
+        + size_of::<Result<(), Unsupported>>() * 3
+        + size_of::<Result<Sequence<'static>, Unsupported>>()
+        + size_of::<Result<Object<'static>, Unsupported>>()
+        + size_of::<&Value>() * 4
+        + size_of::<Option<&Value>>() * 4
+        + size_of::<&Map<String, Value>>() * 2
+        + size_of::<Option<&Map<String, Value>>>()
+        + size_of::<serde_json::map::Iter<'static>>()
+        + size_of::<Option<(&String, &Value)>>()
+        + size_of::<&str>() * 4
+        + size_of::<&[Value]>() * 2
+        + size_of::<Option<usize>>()
+        + size_of::<usize>() * 4
+        + size_of::<bool>() * 4
+        + size_of::<u64>() * 2
+        + size_of::<i64>() * 2
+        + size_of::<f64>() * 2
+        + size_of::<char>()
+        + size_of::<[u8; 4]>()
+        + size_of::<u32>()
+}
+
 pub(crate) fn matches<T: Serialize + ?Sized>(actual: &Value, expected: &T) -> bool {
     expected
         .serialize(Compare(View::Value(actual)))

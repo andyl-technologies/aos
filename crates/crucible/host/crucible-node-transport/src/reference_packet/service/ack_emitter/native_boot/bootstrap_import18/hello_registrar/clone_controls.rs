@@ -25,6 +25,20 @@ type TreeDataPerLevelScratchFields = [usize; 23];
 #[path = "clone_controls/node_helpers.rs"]
 mod node_helpers;
 
+#[path = "clone_controls/set_insert.rs"]
+mod set_insert;
+pub(super) use set_insert::{
+    data as set_insertion_data,
+    quote_counter_scratch_data as set_insertion_quote_counter_scratch_data,
+};
+
+#[path = "clone_controls/set_drop.rs"]
+mod set_drop;
+pub(super) use set_drop::{
+    borrowed_data as borrowed_set_drop_data,
+    quote_counter_scratch_data as set_drop_quote_counter_scratch_data,
+};
+
 #[path = "clone_controls/typed.rs"]
 mod typed;
 pub(super) use typed::{CloneControls, combine};

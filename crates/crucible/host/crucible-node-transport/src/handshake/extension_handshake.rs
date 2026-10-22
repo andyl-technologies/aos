@@ -229,6 +229,43 @@ impl ExtensionHandshake {
         Ok(authority)
     }
 
+    /// Names concrete wrapper/bridge controls on original initial admission.
+    ///
+    /// This source roster supplies no construction permission. The complete
+    /// decoder, validation, selection, owning backing and callback windows must
+    /// join it before the original native producer invokes the SDK.
+    pub(crate) const fn original_initial_admission_controls_data<
+        V: TrustedHandshakeVerifier + 'static,
+    >() -> [usize; 2] {
+        use std::mem::size_of;
+
+        let ordinary = Handshake::original_initial_admission_controls_data();
+        let transient = ordinary[0]
+            + size_of::<ExtensionOfferV1>()
+            + size_of::<ExtensionSelectionV1>() * 3
+            + size_of::<Arc<[ExtensionSelection]>>() * 3
+            + size_of::<SelectionVerifier<'static, V>>() * 2
+            + size_of::<ConnectionAuthority>() * 3
+            + size_of::<Result<ConnectionAuthority, ProviderError>>() * 2;
+        let scratch = ordinary[1]
+            + size_of::<&mut Self>() * 3
+            + size_of::<&Envelope>() * 4
+            + size_of::<&HelloRequest>() * 3
+            + size_of::<&HelloResult>() * 3
+            + size_of::<&mut V>() * 3
+            + size_of::<&dyn InstalledExtensionNegotiationVerifier>() * 2
+            + size_of::<&[ExtensionSelection]>() * 4
+            + size_of::<&IdSet>() * 2
+            + size_of::<std::slice::Iter<'static, Id>>() * 2
+            + size_of::<Option<(&HelloRequest, &HelloResult)>>() * 3
+            + size_of::<Option<&serde_json::Value>>() * 2
+            + size_of::<Option<&[ExtensionSelection]>>()
+            + size_of::<ProviderError>() * 3
+            + size_of::<Result<(), ProviderError>>() * 5
+            + size_of::<bool>() * 4;
+        [transient, scratch]
+    }
+
     /// Verifies the controller's exact surviving typed Hello registration.
     ///
     /// Equal wire IDs or tuples cannot substitute another original private
