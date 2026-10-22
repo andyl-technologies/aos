@@ -267,6 +267,90 @@ class NativeHandlerTests(unittest.TestCase):
         instance.manager = active_bus_manager(calls)
         return value, rendered, instance, calls, originals
 
+    def test_retained_image_service_preserves_alias_inodes_without_manager_reload(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            identities = {
+                name: (instance.unit_directory / name).lstat().st_ino
+                for name in rendered["units"]
+            }
+
+            instance.service("apply")
+
+            self.assertNotIn(("daemon-reload",), calls)
+            self.assertEqual(instance.service("observe")["status"], "current")
+            for name in rendered["units"]:
+                leaf = instance.unit_directory / name
+                self.assertTrue(leaf.is_symlink())
+                self.assertEqual(leaf.lstat().st_ino, identities[name])
+                self.assertEqual(leaf.read_bytes(), originals[name])
+                self.assertEqual(instance.receipt["image_units"][name]["target"], os.readlink(leaf))
+
+            with self.assertRaisesRegex(ValueError, "image transition for removal"):
+                instance.service("remove")
+            self.assertNotIn(("daemon-reload",), calls)
+
+    def test_retained_image_service_rejects_changed_definition_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            value["lifecycle"]["description"] = "Changed image service"
+
+            with self.assertRaisesRegex(ValueError, "conflicts with authenticated rendered content"):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+                self.assertEqual((instance.unit_directory / name).read_bytes(), originals[name])
+
+    def test_retained_ordinary_service_defers_target_links_until_activation(self):
+        value = service()
+        value.update(retain_image_definition=True, bootstrap=False)
+        value["dependencies"] = {"wanted_by": ["multi-user.target"]}
+        rendered = handler_module.realize_service(value)
+        self.assertTrue(rendered["links"])
+
+        with tempfile.TemporaryDirectory() as root:
+            handler_module.render_services({"example": value}, root)
+
+            for name, text in rendered["units"].items():
+                self.assertEqual((Path(root) / name).read_text(), text)
+            for name in rendered["links"]:
+                self.assertFalse((Path(root) / name).is_symlink())
+
+    def test_retained_image_activation_installs_missing_links_without_reload(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            self.assertTrue(rendered["links"])
+            for name in rendered["links"]:
+                (instance.unit_directory / name).unlink()
+
+            instance.service("apply")
+
+            self.assertTrue(instance.links_match(rendered["links"]))
+            self.assertNotIn(("daemon-reload",), calls)
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+
+    def test_retained_image_service_rejects_missing_selected_projection(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = Path(root) / "unselected-image"
+
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            self.assertFalse(instance.receipt_path.exists())
+
     def test_image_projection_converts_exact_aliases_then_removes_only_namespace_entries(self):
         with tempfile.TemporaryDirectory() as root:
             value, rendered, instance, calls, originals = self.projected_service(root)

@@ -602,7 +602,11 @@ class Handler(ResourceHandler):
         receipt = self.receipt or {}
         custody = dict(receipt.get("image_units", {}))
         owned_names = set(receipt.get("units", {})) | set(receipt.get("previous_units", {}))
-        eligible = self.value.get("bootstrap", False) or self.value.get("activation_owner", "ability") != "ability"
+        eligible = (
+            self.value.get("bootstrap", False)
+            or self.value.get("retain_image_definition", False)
+            or self.value.get("activation_owner", "ability") != "ability"
+        )
         if action == "remove" or self.invocation.get("action") == "remove":
             eligible = False
         for name, expected in desired.items():
@@ -688,6 +692,12 @@ class Handler(ResourceHandler):
         return fields
 
     def service(self, action):
+        retain_image = self.value.get("retain_image_definition", False)
+        if retain_image and (action == "remove" or self.invocation.get("action") == "remove"):
+            if action == "observe":
+                return {"status": "indeterminate"}
+            raise ValueError("image-owned service definitions require an image transition for removal")
+
         start_mode = self.value["lifecycle"].get("start_mode", "wait")
         if start_mode not in {"wait", "enqueue"}:
             raise ValueError("unsupported service startup dispatch mode")
@@ -756,8 +766,33 @@ class Handler(ResourceHandler):
             if action == "observe":
                 return {"status": "indeterminate"}
             raise
-        expected = all(self.unit_digest(name, custody) == value for name, value in desired.items())
-        expected = expected and self.links_match(realization["links"])
+        definitions_match = all(self.unit_digest(name, custody) == value for name, value in desired.items())
+        expected = definitions_match and self.links_match(realization["links"])
+        if retain_image:
+            # No mutable definition or arbitrary equal-byte alias substitutes
+            # for the image projection that PID 1 already loaded and sealed.
+            try:
+                selected = all(
+                    name in custody
+                    and self.selected_image_unit(name, custody[name]["target"])
+                    for name in desired
+                )
+            except OSError as error:
+                if action == "observe":
+                    return {"status": "indeterminate"}
+                raise ValueError("selected image service projection is unavailable") from error
+            retired_units = prior_units.keys() - desired.keys()
+            retired_links = prior_links.keys() - realization["links"].keys()
+            if (
+                not definitions_match
+                or not selected
+                or retired_units
+                or retired_links
+                or not self.links_safe(realization["links"])
+            ):
+                if action == "observe":
+                    return {"status": "indeterminate"}
+                raise ValueError("service definition differs from the retained image projection")
         if action == "observe" and self.invocation.get("action") == "remove":
             if self.receipt is None:
                 absent = all(not (self.unit_directory / name).exists() and not (self.unit_directory / name).is_symlink() for name in desired)
@@ -871,13 +906,19 @@ class Handler(ResourceHandler):
         receipt["private_storage"] = sorted(set(private_storage_sources(self.value)) | set((self.receipt or {}).get("private_storage", [])))
         old_resource = (self.receipt or {}).get("resource")
         self.save(receipt)
-        for name, text in realization["units"].items():
-            # Adopt the mutable /etc entry as a regular owned file. Pending
-            # custody authenticates a projected alias only until this conversion.
-            durable_write(self.unit_directory / name, text.encode())
-        self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
-        self.install_links(realization["links"])
-        self.manager("daemon-reload")
+        if not retain_image:
+            for name, text in realization["units"].items():
+                # Pending custody permits converting this exact projected alias
+                # to an owned regular definition on mutable installations.
+                durable_write(self.unit_directory / name, text.encode())
+            self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
+            self.install_links(realization["links"])
+            self.manager("daemon-reload")
+        else:
+            # Ordinary services enter the image without target installation
+            # links. Publish those only after activation realized prerequisites;
+            # explicit lifecycle dispatch uses the already selected definitions.
+            self.install_links(realization["links"])
         if old_resource and old_resource != unit_name and owner == "ability":
             self.manager("stop", old_resource)
         if owner == "ability" and not self.value["enabled"]:
@@ -911,7 +952,7 @@ class Handler(ResourceHandler):
         for name in prior_units.keys() - desired.keys():
             if self.unit_digest(name, custody) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)
-        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
+        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units=custody if retain_image else {}))
         return result
 
     def retire_private_storage(self):
@@ -991,7 +1032,17 @@ def render_services(services, directory):
         identities.update(realization["units"])
         for unit_name, contents in realization["units"].items():
             durable_write(directory / unit_name, contents.encode())
+        owner = value.get("activation_owner", value.get("activationOwner", "ability"))
+        defer_target_links = (
+            value.get("retain_image_definition", False)
+            and not value.get("bootstrap", False)
+            and owner == "ability"
+        )
         for link, target in realization["links"].items():
+            if defer_target_links and "/" in link:
+                # Keep aliases addressable, but do not pull ordinary services
+                # into early targets before their activation inputs exist.
+                continue
             path = directory / link
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.is_symlink() and os.readlink(path) == target:

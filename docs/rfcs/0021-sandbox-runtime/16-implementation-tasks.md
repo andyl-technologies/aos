@@ -10506,3 +10506,29 @@ The native effects checks pass at
 `/nix/store/9lzhfysj60hwdwyr4s4qn9gbz78lqz5k-aos-effect-module-checks-0`.
 This harness repair still requires installed image execution; it grants no
 Sandbox readiness or public lifecycle qualification.
+
+### Native lifecycle under original manager custody (installed retry pending)
+
+The funded Root and lifecycle-enclosure guests fail before their intended
+startup assertions: native activation replaces image unit aliases with mutable
+files and requests daemon-reload, which original parent custody refuses. The
+resulting mutable dbus socket definition cannot be started under the installed
+policy, so multi-user.target fails through aos-activate.service. These runs do
+not qualify Root or the public lifecycle.
+
+Parent enclosure now selects immutable definition retention for native services
+and their package resource groups. The image contains their canonical original
+definitions; ordinary services receive no early target links or seeded runtime
+configuration. Activation authenticates each exact selected image member, keeps
+its alias, and reconciles lifecycle after prerequisites without replacing unit
+fragments or reloading PID 1. Removal and definition changes require a separate
+image transition and fail closed here. Slice receipts retain image custody
+instead of converting the selected seed into a mutable revision-bearing file.
+
+The complete native effects checks pass at
+`/nix/store/9lzhfysj60hwdwyr4s4qn9gbz78lqz5k-aos-effect-module-checks-0`.
+Tests cover unchanged alias inodes, absent manager reload, deferred target links,
+and rejection of changed or unselected definitions. The real lifecycle-funded
+VM derivation evaluates successfully. Focused Rust execution, complete test-target
+compilation and installed boot/reboot qualification remain pending. No public
+Create or method-46 qualification gate is opened.

@@ -103,6 +103,8 @@ struct ResourceGroup {
     description: String,
     #[serde(default)]
     bootstrap: bool,
+    #[serde(default)]
+    retain_image_definition: bool,
     // The checked graph resolves this provider-owned ordering input before
     // invocation. It does not alter the rendered group's manager definition.
     #[serde(default, rename = "bootstrapResource")]
@@ -457,6 +459,7 @@ async fn image_manager_owned(
     manager: &PinnedSystemdManager,
     desired: &Definition,
 ) -> Result<String> {
+    manager.load_referenced_unit(&desired.unit).await?;
     let identity = manager.unit_identity(&desired.unit).await?;
     let (fragment, dropins) = manager
         .unit_definition_paths_exact(&desired.unit, &identity)
@@ -540,6 +543,18 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     } else {
         None
     };
+    if let Some(input) = group.as_ref().filter(|input| input.retain_image_definition) {
+        return resource_group::retain(
+            invocation,
+            action,
+            input,
+            &desired,
+            previous.as_ref(),
+            &path,
+            &manager,
+        )
+        .await;
+    }
     let seed = group.as_ref().map(resource_group::seed_text).transpose()?;
     if let Some(receipt) = &previous {
         if let Some(image) = &receipt.image {

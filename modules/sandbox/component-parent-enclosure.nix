@@ -493,6 +493,10 @@ in {
     ];
 
     aos.sandbox.resourceBank._parentImage = manifest;
+    # The parent owns the original unit fragments before native activation.
+    # Project every enabled native service into that image; activation may
+    # reconcile lifecycle but cannot replace definitions or reload PID 1.
+    aos.servicesRetainImageDefinitions = true;
     environment.etc."aos/resource-parent-enclosure-v5" = {
       source = "${manifest}/enclosure.bin";
       mode = "0444";

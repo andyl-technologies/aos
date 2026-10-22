@@ -4,7 +4,7 @@
   lib,
   pkgs,
 }: let
-  services = lib.filterAttrs (_: service: service.enable && (service.bootstrap || service.activationOwner != "ability")) config.aos.services;
+  services = lib.filterAttrs (_: service: service.enable && (service.bootstrap || (service.retain_image_definition or false) || service.activationOwner != "ability")) config.aos.services;
   groups = import ./bootstrap-resource-groups.nix {inherit config lib;};
   project = name: _: let
     input = config.aos.abilities.serviceManagement.operations.realize.effects.${name}.input;
