@@ -2099,6 +2099,31 @@ terminal census and genuine native producer admission remain required before
 connecting the SDK call to the original root. Initial/Recipe, policy, ACK and
 full RFC implementation remain unfinished.
 
+## Initial SDK constructor funding
+
+The closed original initial SDK path now has one composed retained/transient/
+scratch row. It includes its repeated borrowed-Value offer decode, actual empty
+selection decoder, nonnumeric bounded JSON writer and quoted U64 leaf, borrowed
+version-set validation, complete typed comparison paths, original-body serializer
+comparison, owning String/Id/feature clones, tree insertion and concrete native
+verifier measurement/custody windows. The second typed offer remains local across
+later phases and its complete retained demand joins transient demand. The actual
+SDK's successful outputs and bounded closed validation failures join retained
+demand. Arbitrary callbacks, changed input trees, nonempty installed registries
+and resumption are outside this row.
+
+Both independent initial formulas now compose all three axes instead of reserving
+only success backing. The original Prepare and escrow limits are unchanged. The
+102 focused bootstrap controls pass before the final quote-specific test addition;
+the new short-credit, zero and overflowing-frame controls then pass separately.
+The real SDK census-growth control now also checks the complete row for both
+program families and spare-capacity variants. Full qualification is pending.
+
+The original root still does not invoke SDK admission. A pre-read physical phase,
+separately admitted complete original guards/census and its genuine enclosing
+Source/Birth producer must join this constructor before invocation. This change
+produces no opaque Initial/Recipe, native policy, publication, ACK or model.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

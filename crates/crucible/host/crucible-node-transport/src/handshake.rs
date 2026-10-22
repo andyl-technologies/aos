@@ -28,6 +28,7 @@ mod extension_contract;
 mod extension_handshake;
 mod negotiation;
 
+pub(crate) use extension_contract::original_initial_negotiation_writer_layer_counter_scratch_data;
 pub use extension_contract::*;
 pub use extension_handshake::{
     ExtensionHandshake, ORIGINAL_HOST_EXTENSION_REGISTRY_FORMAT, OriginalExtensionRegistryOwner,

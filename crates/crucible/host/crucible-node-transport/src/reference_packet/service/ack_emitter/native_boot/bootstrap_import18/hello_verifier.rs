@@ -221,3 +221,66 @@ fn same_token_data(actual: &[u8; 32], original: &[u8]) -> bool {
 fn refused() -> ProviderError {
     ProviderError::Correlation("original import18 Hello verifier refused")
 }
+
+type CallbackFields = [usize; 28];
+
+/// Quotes callback measurement, physical guards and complete value comparisons.
+///
+/// These fixed controls use the actual private verifier and original stream
+/// types. They neither borrow a launch nor establish Source/Birth provenance.
+/// The enclosing constructor retains its SDK output and admits this complete
+/// callback window before invoking either callback.
+///
+/// # Errors
+/// Refuses checked composition overflow in the complete typed comparison row.
+pub(super) fn construction_data() -> Result<[usize; 3], ProviderError> {
+    use std::mem::size_of;
+
+    let mut row = super::controller_measurement::construction_data();
+    let fields: CallbackFields = [
+        super::channel_custody::counter_scratch_data(),
+        OriginalExchange::exchange_loan_counter_scratch_data::<()>(),
+        OriginalNativePublicBirthChannel::counter_scratch_data(),
+        super::hello_registrar::initial_value_comparison_counter_scratch_data()?,
+        size_of::<Verifier<'static>>() * 2,
+        size_of::<&Verifier<'static>>() * 3,
+        size_of::<BorrowedCustody<'static>>(),
+        size_of::<&PacketNative5SourceLaunch>() * 2,
+        size_of::<&PacketNativeImport18HelloSelectionData>() * 2,
+        size_of::<&OriginalExchange>() * 2,
+        size_of::<&HelloRequest>() * 2,
+        size_of::<&HelloResult>() * 2,
+        size_of::<&TrustedInstallation>(),
+        size_of::<&ProviderManifest>(),
+        size_of::<&IdSet>(),
+        size_of::<&[SchemaRef]>(),
+        size_of::<&ContentRef>() * 2,
+        size_of::<&Id>(),
+        size_of::<&[u8; 32]>(),
+        size_of::<&[u8]>(),
+        size_of::<std::iter::Zip<std::slice::Iter<'static, u8>, std::slice::Iter<'static, u8>>>(),
+        size_of::<Option<(&u8, &u8)>>(),
+        size_of::<OperationalDeadline>() * 2,
+        size_of::<Stage>() * 2,
+        size_of::<ProviderError>() * 2,
+        size_of::<Result<(), ProviderError>>() * 6,
+        size_of::<bool>() * 2,
+        size_of::<u8>() * 3,
+    ];
+    row[2] = fields.into_iter().try_fold(row[2], |sum, field| {
+        sum.checked_add(field).ok_or_else(refused)
+    })?;
+    Ok(row)
+}
+
+/// Names actual callback quote arrays and checked accumulation controls.
+pub(super) fn counter_scratch_data() -> usize {
+    use std::mem::size_of;
+
+    size_of::<CallbackFields>()
+        + size_of::<std::array::IntoIter<usize, 28>>()
+        + size_of::<[usize; 3]>()
+        + size_of::<usize>() * 3
+        + size_of::<Result<usize, ProviderError>>() * 3
+        + size_of::<Result<[usize; 3], ProviderError>>()
+}

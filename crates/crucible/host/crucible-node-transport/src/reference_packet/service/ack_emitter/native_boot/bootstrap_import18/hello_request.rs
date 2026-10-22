@@ -171,6 +171,24 @@ pub(in crate::reference_packet::service) fn construction_bound_data(
     Ok(row)
 }
 
+/// Quotes the SDK's repeated typed offer decode from the same original tree.
+///
+/// This supplies decoder DATA alone, without running the original loan/guards.
+///
+/// # Errors
+/// Refuses invalid framing or the decoder's independent complete-peak bound.
+pub(super) fn sdk_offer_reconstruction_data(
+    frame: usize,
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
+    storage::construction_data(frame, maximum)
+}
+
+/// Names the repeated decoder supplier's concrete controls without a loan.
+pub(super) fn sdk_offer_reconstruction_counter_scratch_data() -> usize {
+    storage::counter_scratch_data()
+}
+
 fn ensure_peak_data(row: [usize; 3], maximum: usize) -> Result<(), ProviderError> {
     let peak = row.into_iter().try_fold(0usize, |sum, axis| {
         sum.checked_add(axis).ok_or_else(exhausted)

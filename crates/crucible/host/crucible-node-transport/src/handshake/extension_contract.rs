@@ -200,31 +200,78 @@ fn preflight_roster_entries(value: &Value) -> Result<(), ProviderError> {
     Ok(())
 }
 
-pub(super) fn preflight_encoded(value: &impl Serialize) -> Result<(), ProviderError> {
-    struct Counter(usize);
+struct Counter(usize);
 
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 = self
-                .0
-                .checked_add(bytes.len())
-                .filter(|total| *total <= MAXIMUM_EXTENSION_NEGOTIATION_BYTES)
-                // The enclosing preflight returns its fixed resource refusal.
-                // A simple kind avoids allocating discarded diagnostic text.
-                .ok_or(std::io::ErrorKind::Other)?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+impl std::io::Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .filter(|total| *total <= MAXIMUM_EXTENSION_NEGOTIATION_BYTES)
+            // The enclosing preflight returns its fixed resource refusal.
+            // A simple kind avoids allocating discarded diagnostic text.
+            .ok_or(std::io::ErrorKind::Other)?;
+        Ok(bytes.len())
     }
 
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn preflight_encoded(value: &impl Serialize) -> Result<(), ProviderError> {
     // Count the borrowed encoded Value before deserialization retains strings
     // or full references; the outer frame/parser ceiling remains independent.
     serde_json::to_writer(Counter(0), value)
         .map_err(|_| ProviderError::ResourceExhausted("extension negotiation bytes"))?;
     Ok(())
+}
+
+/// Names one layer of the real bounded writer's closed nonnumeric profile.
+///
+/// Initial native Offer1/empty Selection1 contain only objects, arrays, strings
+/// and null. Their typed field DAG and original immutable Value must establish
+/// that profile before these controls are used. Numeric Value formatters,
+/// arbitrary Serialize callbacks and RawValue producers are outside this row.
+/// The caller separately funds quoted U64 leaf formatters and the transient
+/// serde_json ErrorImpl allocation reached on writer refusal.
+pub(crate) const fn original_initial_negotiation_writer_layer_counter_scratch_data() -> usize {
+    use serde::Serializer;
+    use std::mem::size_of;
+
+    type Writer = serde_json::Serializer<Counter>;
+    type BorrowedWriter = &'static mut Writer;
+    size_of::<Counter>() * 2
+        + size_of::<Writer>() * 2
+        + size_of::<&mut Writer>() * 3
+        + size_of::<<BorrowedWriter as Serializer>::SerializeSeq>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeTuple>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeTupleStruct>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeTupleVariant>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeMap>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeStruct>()
+        + size_of::<<BorrowedWriter as Serializer>::SerializeStructVariant>()
+        + size_of::<Result<(), serde_json::Error>>() * 4
+        + size_of::<Result<(), std::io::Error>>() * 4
+        + size_of::<Result<usize, std::io::Error>>() * 2
+        + size_of::<serde_json::Error>() * 2
+        + size_of::<std::io::Error>() * 2
+        + size_of::<std::io::ErrorKind>()
+        + size_of::<serde_json::ser::CharEscape>()
+        + size_of::<serde_json::ser::CompactFormatter>()
+        + size_of::<&mut serde_json::ser::CompactFormatter>() * 3
+        + size_of::<&mut Counter>() * 4
+        + size_of::<&str>() * 5
+        + size_of::<&[u8]>() * 8
+        + size_of::<Option<(&u8, &[u8])>>()
+        + size_of::<(&[u8], &[u8])>()
+        + size_of::<[u8; 6]>()
+        + size_of::<[u8; 2]>()
+        + size_of::<[u8; 4]>()
+        + size_of::<u8>() * 4
+        + size_of::<usize>() * 5
+        + size_of::<Option<usize>>() * 3
+        + size_of::<bool>() * 3
 }
 
 fn edition(format: U64) -> Result<(), crucible_node_format::ContractError> {

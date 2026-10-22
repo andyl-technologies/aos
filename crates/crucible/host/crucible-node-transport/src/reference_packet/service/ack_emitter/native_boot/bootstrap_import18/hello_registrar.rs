@@ -30,8 +30,19 @@ pub(in crate::reference_packet::service) use initial_admission_backing::{
     retained_backing_data as initial_admission_retained_backing_data,
 };
 
+#[path = "hello_registrar/initial_admission_storage.rs"]
+mod initial_admission_storage;
+pub(in crate::reference_packet::service) use initial_admission_storage::{
+    construction_data as initial_admission_construction_data,
+    counter_scratch_data as initial_admission_counter_scratch_data,
+};
+
 #[path = "hello_registrar/initial_admission_controls.rs"]
 mod initial_admission_controls;
+
+#[path = "hello_registrar/initial_admission_validation.rs"]
+mod initial_admission_validation;
+pub(super) use initial_admission_validation::closed_value_counter_scratch_data as initial_value_comparison_counter_scratch_data;
 
 #[path = "hello_registrar/attempt.rs"]
 mod attempt;

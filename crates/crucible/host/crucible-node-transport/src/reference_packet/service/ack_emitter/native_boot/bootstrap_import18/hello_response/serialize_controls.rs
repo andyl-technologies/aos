@@ -5,10 +5,12 @@
 //! coexists. These logical requested controls make no compiler-frame or ABI
 //! claim. JSON extensions use the same checked 64-container plus scalar profile.
 
-use crate::handshake::{HelloRequest, HelloResult, Limits, ResumedOperation};
+use crate::handshake::{
+    ExtensionOfferV1, ExtensionSelectionV1, HelloRequest, HelloResult, Limits, ResumedOperation,
+};
 use crucible_node_format::{
-    ArtifactIdentity, Bytes, ContentRef, FacetSelection, HashRef, Id, ImplementationIdentity,
-    NodeManifest, ProviderManifest, SchemaRef, U64,
+    ArtifactIdentity, Bytes, ContentRef, ExtensionSelection, FacetSelection, HashRef, Id,
+    ImplementationIdentity, NodeManifest, ProviderManifest, SchemaRef, SemanticVersion, U64,
 };
 use serde::Serializer;
 use serde_json::{Map, Value};
@@ -88,6 +90,11 @@ impl Controls for U64 {
 impl Controls for u16 {
     const DEPTH: usize = 1;
     const DATA: usize = window::<Self>();
+}
+
+impl<T: Controls> Controls for Option<T> {
+    const DEPTH: usize = 1 + T::DEPTH;
+    const DATA: usize = window::<Self>() + T::DATA;
 }
 
 impl<T: Controls + 'static> Controls for Vec<T> {
@@ -215,6 +222,34 @@ fields!(Limits {
     journal_entries,
     blob_chunk_bytes
 });
+
+fields!(SemanticVersion {
+    major,
+    minor,
+    patch,
+    prerelease,
+    build
+});
+fields!(ExtensionSelection {
+    declaration,
+    identifier,
+    semantic_version,
+    schema_digest
+});
+fields!(ExtensionOfferV1 {
+    format,
+    required,
+    optional
+});
+fields!(ExtensionSelectionV1 { format, selected });
+
+/// Bounds either actual typed negotiation writer without executing Serialize.
+///
+/// This closed field DAG has no numeric Value, RawValue, Bytes or extension map.
+/// Initial caller guards still establish the same original immutable wire tree.
+pub(in super::super) const fn initial_negotiation_writer_depth_data() -> usize {
+    maximum(&[ExtensionOfferV1::DEPTH, ExtensionSelectionV1::DEPTH])
+}
 
 /// Names the real provider Serialize field DAG used during pure future quoting.
 pub(super) const fn provider_data() -> usize {

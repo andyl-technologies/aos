@@ -73,6 +73,8 @@ pub(in crate::reference_packet::service) use hello_registrar::{
     construction_data as hello_registrar_construction_data,
     counter_scratch_data as hello_registrar_counter_scratch_data,
     initial_admission_backing_counter_scratch_data as hello_initial_admission_backing_counter_scratch_data,
+    initial_admission_construction_data as hello_initial_admission_construction_data,
+    initial_admission_counter_scratch_data as hello_initial_admission_counter_scratch_data,
     initial_admission_retained_backing_data as hello_initial_admission_retained_backing_data,
 };
 

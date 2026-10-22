@@ -15,8 +15,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_exchange_counter_scratch_data,
     original_import18_hello_frames_construction_data,
     original_import18_hello_frames_counter_scratch_data,
-    original_import18_hello_initial_admission_backing_counter_scratch_data,
-    original_import18_hello_initial_admission_retained_backing_data,
+    original_import18_hello_initial_admission_construction_data,
+    original_import18_hello_initial_admission_counter_scratch_data,
     original_import18_hello_literal_construction_data,
     original_import18_hello_literal_counter_scratch_data,
     original_import18_hello_registrar_construction_data,
@@ -122,7 +122,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
             response: original_import18_hello_response_construction_data(launch, maximum)?,
-            admission_backing: original_import18_hello_initial_admission_retained_backing_data(
+            admission: original_import18_hello_initial_admission_construction_data(
                 launch, maximum,
             )?,
         },
@@ -178,7 +178,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
             result: original_import18_hello_result_construction_data(launch, maximum)?,
             envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
             response: original_import18_hello_response_construction_data(launch, maximum)?,
-            admission_backing: original_import18_hello_initial_admission_retained_backing_data(
+            admission: original_import18_hello_initial_admission_construction_data(
                 launch, maximum,
             )?,
         },
@@ -198,7 +198,7 @@ struct HelloConstructionData {
     result: [usize; 3],
     envelope: [usize; 3],
     response: [usize; 3],
-    admission_backing: usize,
+    admission: [usize; 3],
 }
 
 fn combine(
@@ -220,7 +220,7 @@ fn combine(
         result: hello_result,
         envelope: hello_envelope,
         response: hello_response,
-        admission_backing,
+        admission,
     } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
@@ -310,10 +310,11 @@ fn combine(
     row[0] = add(row[0], hello_response[0])?;
     row[1] = row[1].max(hello_response[1]);
     row[2] = row[2].max(add(raw[2], hello_response[2])?);
-    // Reserve successful SDK registration's additional retained backing. Its
-    // complete transient/callback constructor row remains a separate prerequisite
-    // before native admission may invoke the real SDK.
-    row[0] = add(row[0], admission_backing)?;
+    // SDK-local offer ownership coexists with validation, comparison and native
+    // callbacks. Its complete row joins the same independent initial formula.
+    row[0] = add(row[0], admission[0])?;
+    row[1] = row[1].max(admission[1]);
+    row[2] = row[2].max(add(raw[2], admission[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -352,6 +353,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
+        + size_of::<[usize; 3]>() // The retained complete initial SDK row.
         + original_import18_hello_request_counter_scratch_data()
         // Registrar, request, result and envelope quotes return rows in turn.
         // Their recursive quote controls never coexist; the enclosing result
@@ -361,7 +363,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
             .max(original_import18_hello_result_counter_scratch_data())
             .max(original_import18_hello_envelope_counter_scratch_data())
             .max(original_import18_hello_response_counter_scratch_data())
-            .max(original_import18_hello_initial_admission_backing_counter_scratch_data())
+            .max(original_import18_hello_initial_admission_counter_scratch_data())
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()

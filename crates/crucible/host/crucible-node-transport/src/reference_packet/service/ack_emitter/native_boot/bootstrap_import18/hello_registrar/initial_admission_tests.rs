@@ -388,6 +388,11 @@ fn independent_source_retained_projection_covers_real_initial_sdk_census_growth(
                 268_435_456,
             )
             .unwrap();
+            let complete = super::super::super::initial_admission_storage::construction_data(
+                &launch,
+                268_435_456,
+            )
+            .unwrap();
             let mut fixture = Fixture::new(reactive);
             let spelling = "r".repeat(crucible_node_format::MAX_ID_BYTES);
             let mut original =
@@ -406,6 +411,7 @@ fn independent_source_retained_projection_covers_real_initial_sdk_census_growth(
             let after = fixture.attempt.retained_backing_data().unwrap();
             let additional = after.checked_sub(before).unwrap();
             assert!(additional > 0);
+            assert!(additional <= complete[0]);
             assert!(
                 additional <= projected,
                 "actual={additional}, projected={projected}"

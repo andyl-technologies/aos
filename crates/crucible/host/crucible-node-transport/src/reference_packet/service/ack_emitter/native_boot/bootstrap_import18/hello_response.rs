@@ -16,7 +16,8 @@ mod projection;
 #[path = "hello_response/serialize_controls.rs"]
 mod serialize_controls;
 pub(super) use serialize_controls::{
-    initial_request_comparison_depth_data, initial_result_comparison_depth_data,
+    initial_negotiation_writer_depth_data, initial_request_comparison_depth_data,
+    initial_result_comparison_depth_data,
 };
 #[path = "hello_response/storage.rs"]
 mod storage;
