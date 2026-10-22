@@ -177,21 +177,15 @@ in {
     vm.fail(f"systemctl is-active --quiet {unit}")
     vm.succeed(f"test ! -e {root}")
 
-    # A real live unit with the fixed owner name must close preparation,
-    # before any candidate directory exists. The actor grants no runtime
-    # authority and is collected before the positive uninstalled-owner case.
-    vm.succeed(
+    # PID1 must refuse a transient replacement of the protected owner name.
+    # This is a manager-boundary negative, not an active genuine Nix owner;
+    # the latter requires independently provisioned runtime credentials.
+    status, _, diagnostic = vm.execute(
         "systemd-run --unit=aos-sandbox-nixd.service --collect "
         "--slice=aos-control.slice ${pkgs.coreutils}/bin/sleep infinity"
     )
-    vm.execute(f"systemctl start {unit}")
-    vm.wait_until_succeeds(
-        f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1 && "
-        f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
-        timeout=120,
-    )
+    assert status != 0 and "Access denied" in diagnostic, (status, diagnostic)
     vm.succeed(f"test ! -e {root}")
-    vm.succeed("systemctl stop aos-sandbox-nixd.service")
     vm.wait_until_succeeds(
         "! ${pkgs.systemd}/bin/busctl call org.freedesktop.systemd1 "
         "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager "

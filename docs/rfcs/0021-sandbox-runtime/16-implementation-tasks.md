@@ -9869,6 +9869,14 @@ inventory. It passes from the clean qualification worktree at
 The prior installed toplevel demonstrably violates its direct-link check.
 Core evaluation passes; installed reruns determine the runtime result.
 
+The next clean installed Root VM passes parent enrollment, connects its agent
+and reaches `sandbox-root-startup`'s test body. The clean offline approval test
+also passes the Controller load check. It then stops at its attempt to replace
+the protected Nix name with a transient sleeping process: PID1 correctly
+returns Access denied. That test now requires the denial and retained absence
+of candidate state. It does not claim an installed active-owner preparation
+refusal; that case still needs the genuinely provisioned Nix runtime.
+
 The post-pin handoff adversary now retains its procfs and target descriptors
 in one C process, survives switch-root's final signal broadcast, and publishes
 its continuation only after all replacement-byte checks finish. This avoids
