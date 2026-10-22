@@ -974,6 +974,27 @@ impl OwnedCallbackRuntimeState {
                 LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
             })?;
 
+            // The complete Runtime includes the reader ledger and both paid
+            // journals. Enroll only after its real callback owner exists, and
+            // retain any born Source owner before interpreting either result.
+            state.setup.check_runtime_installation().map_err(|source| {
+                LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source }
+            })?;
+            if let Some(owner) = state.original_owner.as_ref() {
+                let (_, runtime, _) = state.setup.callback_child_material().map_err(|source| {
+                    LiveVcpuTimeCallbackError::CallbackChildStorage { source }
+                })?;
+                // SAFETY: the actual paid pinned Runtime was exposed before
+                // enrollment and remains retained on every failure path.
+                let owner = unsafe {
+                    crate::ram_fingerprint::NativeOriginalOwnerRef::from_retained_runtime(owner)
+                };
+                let enrollment = owner.enroll_reader(runtime);
+                let post = state.setup.check_runtime_installation();
+                enrollment.map_err(|message| LiveVcpuTimeCallbackError::RamObserverSetup { message })?;
+                post.map_err(|source| LiveVcpuTimeCallbackError::CallbackRegistrationOwner { source })?;
+            }
+
             if let Some(sampling) = fingerprint {
                 // The whole keeper belongs to Runtime request0. Source's
                 // constructor consumes its actual optional role, then transfer
@@ -1366,6 +1387,11 @@ impl Drop for RequiredOwnedCallbacksRegistered {
             }
         }
         if state.registration_groups.close_spans().is_err() {
+            return;
+        }
+        if state.original_owner.as_ref().is_some_and(|owner| {
+            owner.return_reader_registration().is_err()
+        }) {
             return;
         }
         let Ok(mut receiver) = state.command_receive.try_lock() else {

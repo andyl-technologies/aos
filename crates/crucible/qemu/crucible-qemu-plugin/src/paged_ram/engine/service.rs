@@ -700,7 +700,7 @@ fn rearm_resident_pages(generation: u64) -> Result<(), RamError> {
     Ok(())
 }
 
-pub(super) extern "C" fn operational_read(address: u64, output: *mut u8, valid: u32) -> c_int {
+pub(crate) extern "C" fn operational_read(address: u64, output: *mut u8, valid: u32) -> c_int {
     if output.is_null() || valid == 0 || valid as usize > PAGE_BYTES {
         return -libc::EINVAL;
     }
@@ -711,7 +711,7 @@ pub(super) extern "C" fn operational_read(address: u64, output: *mut u8, valid: 
 ///
 /// Native full-root traversal exclusively owns this buffer until return. It
 /// discards any partial bytes on failure before hashing or publishing a root.
-pub(super) extern "C" fn root_scratch_read(
+pub(crate) extern "C" fn root_scratch_read(
     address: u64,
     scratch: *mut NativeRootScratch,
     valid: u32,

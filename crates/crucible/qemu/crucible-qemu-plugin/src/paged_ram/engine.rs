@@ -44,7 +44,8 @@ mod page_versions;
 use page_versions::PageStates;
 mod service;
 pub(crate) use fork::{ChildArenaConfiguration, ChildPagingCustody, PreparedChildArenas};
-use service::{FaultService, operational_read, operational_rearm, root_scratch_read};
+use service::{FaultService, operational_rearm};
+pub(crate) use service::{operational_read, root_scratch_read};
 use service::capture_work::physical_end::{NativePhysicalEnd, PhysicalActionAdmission};
 
 use super::restore::{
@@ -79,20 +80,16 @@ type PinTopology = extern "C" fn(u64, u64) -> c_int;
 type MarkWrite = extern "C" fn(u64, u32, u64) -> c_int;
 type ReadWriteGeneration = extern "C" fn(u64, u64, *mut u64) -> c_int;
 type AcknowledgeSource = extern "C" fn(u64) -> c_int;
-type OperationalRead = extern "C" fn(u64, *mut u8, u32) -> c_int;
 
 /// Contains a synchronous full-root reader's private page scratch.
 #[repr(C)]
-struct NativeRootScratch {
+pub(crate) struct NativeRootScratch {
     bytes: [u8; PAGE_BYTES],
 }
 
-type RootScratchRead =
-    extern "C" fn(u64, *mut NativeRootScratch, u32, *const NativePageHasher) -> c_int;
 type Rearm = extern "C" fn(u64) -> c_int;
 type RegisterRearm = extern "C" fn(Option<Rearm>) -> c_int;
 type RegisterPlacement = extern "C" fn(extern "C" fn() -> c_int) -> c_int;
-type RegisterReaders = extern "C" fn(Option<OperationalRead>, Option<RootScratchRead>) -> c_int;
 type ServiceWorker = extern "C" fn(u32, u64, u64, u32) -> c_int;
 
 pub(crate) const PAGER_STACK_BYTES: usize = 2 * 1024 * 1024;
@@ -605,12 +602,9 @@ impl PausedPagingOwner {
     /// # Errors
     /// Returns missing native capabilities or failed callback registration.
     pub(crate) fn install_reader(self: &Arc<Self>) -> Result<(), RamError> {
-        // SAFETY: the resolved registrar has the matching native-private ABI.
-        let register = unsafe {
-            std::mem::transmute::<*mut c_void, RegisterReaders>(symbol(
-                b"qemu_plugin_crucible_register_ram_readers_v3\0",
-            )?)
-        };
+        // The real paid Runtime already enrolled the v4 nominal callbacks.
+        // Connecting a service cannot install a selected raw-callback bypass.
+        crate::ram_fingerprint::require_reader_registration()?;
         // SAFETY: the registrar matches this process-private scalar callback.
         let register_rearm = unsafe {
             std::mem::transmute::<*mut c_void, RegisterRearm>(symbol(
@@ -634,13 +628,6 @@ impl PausedPagingOwner {
         }
         *current = Some(self.clone());
         drop(current);
-        let status = register(Some(operational_read), Some(root_scratch_read));
-        if status != 0 {
-            return Err(RamError::Native {
-                operation: "operational RAM reader registration refused",
-                status,
-            });
-        }
         let status = register_rearm(Some(operational_rearm));
         if status != 0 {
             return Err(RamError::Native {

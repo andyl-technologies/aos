@@ -28,13 +28,21 @@ impl Custody {
 }
 
 /// Owns one physical child of the Module's existing Root view.
-struct Loan<'a> {
+pub(super) struct Loan<'a> {
     state: &'a Mutex<State>,
     identity: Identity,
+    released: bool,
 }
 
 impl<'a> Loan<'a> {
-    fn retain(state: &'a Mutex<State>, selector: usize) -> Result<Self, ObservationOperationError> {
+    /// Retains one nominal child beneath the same actual Root selector.
+    ///
+    /// # Errors
+    /// Refuses contention, absent or changed parent, another loan or serial wrap.
+    pub(super) fn retain(
+        state: &'a Mutex<State>,
+        selector: usize,
+    ) -> Result<Self, ObservationOperationError> {
         let mut current = state
             .try_lock()
             .map_err(|_| refusal("Root read loan busy"))?;
@@ -52,9 +60,84 @@ impl<'a> Loan<'a> {
         let identity = Identity { serial, selector };
         current.reads.serial = serial;
         current.reads.retained = Some(identity);
-        Ok(Self { state, identity })
+        Ok(Self {
+            state,
+            identity,
+            released: false,
+        })
     }
 
+    /// Checks factual custody without observing or renewing a clock.
+    ///
+    /// # Errors
+    /// Refuses contention, changed parent or already consumed custody.
+    pub(super) fn current(&self) -> Result<(), ObservationOperationError> {
+        if self.released {
+            return Err(refusal("Root read loan already returned"));
+        }
+        let current = self
+            .state
+            .try_lock()
+            .map_err(|_| refusal("Root read observation busy"))?;
+        if current.reads.retained != Some(self.identity)
+            || current.selector.load(Ordering::Acquire) as usize != self.identity.selector
+        {
+            return Err(refusal("Root read loan changed"));
+        }
+        Ok(())
+    }
+    /// Attempts actual local consumption, preserving this owner on refusal.
+    ///
+    /// # Errors
+    /// Refuses contention, changed parent or a second physical return.
+    pub(super) fn return_physical(&mut self) -> Result<(), ObservationOperationError> {
+        if self.released {
+            return Err(refusal("Root read loan already returned"));
+        }
+        let mut current = self
+            .state
+            .try_lock()
+            .map_err(|_| refusal("Root read return busy"))?;
+        if current.reads.retained != Some(self.identity)
+            || current.selector.load(Ordering::Acquire) as usize != self.identity.selector
+        {
+            return Err(refusal("Root read return parent changed"));
+        }
+        current.reads.retained = None;
+        self.released = true;
+        Ok(())
+    }
+
+    pub(super) fn serial(&self) -> u64 {
+        self.identity.serial
+    }
+
+    /// Borrows factual local custody; the real owner remains in its paid field.
+    pub(super) fn borrow(&self) -> Borrow<'a> {
+        Borrow {
+            state: self.state,
+            identity: self.identity,
+        }
+    }
+}
+
+impl Drop for Loan<'_> {
+    fn drop(&mut self) {
+        // A failed nonwaiting destructor leaves durable parent debt. Explicit
+        // Source return keeps this very Loan in its paid field until consumed.
+        if !self.released {
+            let _ = self.return_physical();
+        }
+    }
+}
+
+/// Borrows the existing nominal loan without constructing another owner.
+pub(super) struct Borrow<'a> {
+    state: &'a Mutex<State>,
+    identity: Identity,
+}
+
+impl Borrow<'_> {
     fn current(&self) -> Result<(), ObservationOperationError> {
         let current = self
             .state
@@ -69,20 +152,16 @@ impl<'a> Loan<'a> {
     }
 }
 
-impl Drop for Loan<'_> {
-    fn drop(&mut self) {
-        // The synchronous closure cannot retain the borrowed operation. Release
-        // its real local loan even after expiry or unwinding; neither event
-        // ends the Source Original. Changed identity leaves durable parent debt.
-        let Ok(mut current) = self.state.try_lock() else {
-            // Contention or poison leaves the prepaid parent's real debt. The
-            // caller cannot treat a best-effort destructor as consumed custody.
-            return;
-        };
-        if current.reads.retained == Some(self.identity)
-            && current.selector.load(Ordering::Acquire) as usize == self.identity.selector
-        {
-            current.reads.retained = None;
+enum BackingLoan<'a> {
+    Scope(Loan<'a>),
+    Source(Borrow<'a>),
+}
+
+impl BackingLoan<'_> {
+    fn current(&self) -> Result<(), ObservationOperationError> {
+        match self {
+            Self::Scope(loan) => loan.current(),
+            Self::Source(loan) => loan.current(),
         }
     }
 }
@@ -90,7 +169,7 @@ impl Drop for Loan<'_> {
 /// Completes backing work without claiming native output or progress publication.
 struct ReadExchange<'a> {
     owner: &'a Owner,
-    loan: Loan<'a>,
+    loan: BackingLoan<'a>,
     completed: AtomicBool,
 }
 
@@ -143,7 +222,10 @@ pub(crate) fn with_read_exchange<T>(
         .ok_or_else(|| refusal("RAM observation lacks an active native Original"))?
         .owner();
     let selector = owner.selector()?;
-    let loan = Loan::retain(&owner.state, selector)?;
+    let loan = match owner.reader.borrow_backing()? {
+        Some(loan) => BackingLoan::Source(loan),
+        None => BackingLoan::Scope(Loan::retain(&owner.state, selector)?),
+    };
     let operation = ReadExchange {
         owner,
         loan,
@@ -237,5 +319,62 @@ mod tests {
         assert!(!current.reads.is_retained());
         assert_eq!(current.reads.serial, u64::MAX);
         assert_eq!(current.selector.load(Ordering::Acquire) as usize, selector);
+    }
+
+    #[test]
+    fn explicit_read_return_keeps_the_same_owner_until_nonwaiting_consumption() {
+        let state = state();
+        let selector = selector(&state);
+        let mut loan = Loan::retain(&state, selector).unwrap();
+        let borrowed = loan.borrow();
+        let serial = loan.serial();
+        let current = state.lock().unwrap();
+
+        assert!(loan.return_physical().is_err());
+        assert!(current.reads.is_retained());
+        assert_eq!(loan.serial(), serial);
+        drop(current);
+
+        assert!(borrowed.current().is_ok());
+        loan.return_physical().unwrap();
+
+        assert!(!state.lock().unwrap().reads.is_retained());
+        assert!(borrowed.current().is_err());
+        assert!(loan.current().is_err());
+        assert!(loan.return_physical().is_err());
+        drop(loan);
+
+        let successor = Loan::retain(&state, selector).unwrap();
+        assert!(successor.serial() > serial);
+        // A stale borrow cannot become valid when the same parent is lent again.
+        assert!(borrowed.current().is_err());
+        assert!(successor.current().is_ok());
+    }
+
+    #[test]
+    fn explicit_read_return_preserves_changed_parent_and_original_custody() {
+        let state = state();
+        let selector = selector(&state);
+        let mut loan = Loan::retain(&state, selector).unwrap();
+        let original = state.lock().unwrap().reads.retained;
+        state
+            .lock()
+            .unwrap()
+            .selector
+            .store(std::ptr::null_mut(), Ordering::Release);
+
+        assert!(loan.return_physical().is_err());
+        assert!(!loan.released);
+        assert!(state.lock().unwrap().reads.retained == original);
+
+        // Restoring the fixture's same parent permits that very owner to return.
+        // These addresses are local ledger fixtures, never Source issuers.
+        state
+            .lock()
+            .unwrap()
+            .selector
+            .store(selector as *mut Operation, Ordering::Release);
+        loan.return_physical().unwrap();
+        assert!(!state.lock().unwrap().reads.is_retained());
     }
 }

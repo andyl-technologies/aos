@@ -9,6 +9,7 @@
 use super::*;
 
 mod read;
+mod reader;
 pub(crate) use read::with_read_exchange;
 
 mod publication;
@@ -170,10 +171,19 @@ pub(crate) struct Owner {
     fingerprint: crate::runtime::FingerprintApi,
     apis: Apis,
     state: Mutex<State>,
+    reader: reader::Reader,
     active: AtomicBool,
 }
 
 impl Owner {
+    /// Returns reader registration before releasing its containing Runtime.
+    ///
+    /// # Errors
+    /// Retains the allocation if a read, delivery or physical return is unsettled.
+    pub(crate) fn return_reader_registration(&self) -> Result<(), RamError> {
+        self.reader.return_registration(self)
+    }
+
     /// Initializes the inline paid owner before its stable fields are enrolled.
     ///
     /// # Errors
@@ -187,6 +197,7 @@ impl Owner {
             return Err(RamError::Invariant("Original runtime userdata absent"));
         }
         let apis = Apis::resolve()?;
+        let reader = reader::Reader::prepare(placement)?;
         let fingerprint = crate::runtime::FingerprintApi::resolve(placement).map_err(|status| {
             RamError::Native {
                 operation: "resolve fingerprint retirement",
@@ -201,6 +212,7 @@ impl Owner {
             fingerprint,
             apis,
             state: Mutex::new(State::default()),
+            reader,
             active: AtomicBool::new(false),
         })
     }
@@ -363,6 +375,7 @@ impl Owner {
 
     /// Returns only the module view, independently of Original post and end.
     fn return_view(&self) -> Result<(), RamError> {
+        self.reader.corroborate_completion(self)?;
         let selector = self
             .selector()
             .map_err(ObservationOperationError::into_io)?;
@@ -415,6 +428,18 @@ fn refusal(message: &'static str) -> ObservationOperationError {
         kind: std::io::ErrorKind::Other,
         message,
     }
+}
+
+/// Checks the actual paid registration before connecting the pager service.
+///
+/// # Errors
+/// Refuses absent, failed or physically closing registration. This issues no
+/// read child and lends no Original or callback authority.
+pub(crate) fn require_reader_registration() -> Result<(), RamError> {
+    reader::active_owner()
+        .ok_or(RamError::Invariant("RAM reader Runtime owner absent"))?
+        .reader
+        .require_enrolled()
 }
 
 /// Borrows the stable Source lane during the genuine synchronous observer.
@@ -565,6 +590,18 @@ pub(crate) struct OwnerRef {
 }
 
 impl OwnerRef {
+    /// Enrolls the prepaid reader fields after the actual callback owner exists.
+    ///
+    /// # Errors
+    /// Refuses missing Source custody, conflicting fields or failed posts.
+    pub(crate) fn enroll_reader(
+        self,
+        runtime: *mut crate::startup_source::runtime_purpose::RuntimePurpose,
+    ) -> Result<(), RamError> {
+        let owner = self.owner();
+        owner.reader.enroll(owner, runtime)
+    }
+
     /// Constructs the narrow observer view after the genuine runtime birth.
     ///
     /// # Safety

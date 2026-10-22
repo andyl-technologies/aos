@@ -31,6 +31,7 @@ pub(crate) use candidate::CaptureClose;
 pub(crate) use held::{cleanup_held_claim, observe_held, retire_held_cache};
 use native::{CaptureClaim, NativeApis, symbol};
 pub(crate) use original::with_read_exchange as with_native_original_read;
+pub(crate) use original::require_reader_registration;
 pub(crate) use original::{
     FingerprintPlacement, Owner as NativeOriginalOwner, OwnerRef as NativeOriginalOwnerRef,
     borrowed_original_class, retirement_api, synchronize,

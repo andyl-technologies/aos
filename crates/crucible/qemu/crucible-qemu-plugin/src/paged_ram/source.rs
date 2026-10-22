@@ -26,7 +26,7 @@ use super::controller::{CheckpointWorkAdmission, HeldCheckpointWork};
 /// Only the GPL-private root reader supplies this stack context. Neither the
 /// function nor its context may escape the callback that lends them.
 #[repr(C)]
-pub(super) struct NativePageHasher {
+pub(crate) struct NativePageHasher {
     hash: Option<extern "C" fn(*mut std::ffi::c_void, *const u8, u32, *mut u8) -> libc::c_int>,
     context: *mut std::ffi::c_void,
 }
