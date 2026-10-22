@@ -32,6 +32,7 @@ mod overlay;
 mod path;
 mod prepared;
 pub(crate) mod read;
+mod root_nodes;
 pub(crate) mod schema;
 mod validator;
 
@@ -51,6 +52,7 @@ pub use object::ObjectPresentation;
 #[cfg(all(feature = "std", unix))]
 pub use overlay::PublishedOverlayLayer;
 pub use prepared::PreparedTree;
+pub use root_nodes::{RootNodeLimits, RootNodes};
 pub use validator::MetadataValidator;
 
 use terrane_format::{chunking::ChunkProfile, identity::Digest, refs::RefRecord};

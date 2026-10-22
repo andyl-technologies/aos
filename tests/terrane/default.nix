@@ -521,6 +521,7 @@ in {
   integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};
   integration.ref-head = import ./ref-head.nix {inherit sourceGate;};
   integration.ref-listing = import ./ref-listing.nix {inherit sourceGate;};
+  integration.root-nodes = import ./root-nodes.nix {inherit sourceGate;};
   integration.configured-workload-issuer = configuredIssuerProof;
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};

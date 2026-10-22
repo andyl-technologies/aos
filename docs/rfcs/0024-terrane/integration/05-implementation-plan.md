@@ -12710,3 +12710,28 @@ intended feature set. This image-only result does not claim cache VM execution.
 Required application-target compilation at `3360441f00` passes in 1,618.88
 seconds, independently matching 7,963 source files and 184 compiler artifact
 records across 59 packages. Task acceptance remains unchanged.
+
+#### Guarded complete root metadata
+
+The repository now exposes complete canonical root Nodes through an immutable
+result with private construction. The ordinary signed snapshot and every
+expanded graft path must pass current Read and provenance checks. A denied
+descendant refuses the whole inventory. Explicit limits cover Node keys and
+bytes, expanded entries and absolute path bytes; a fresh root authorization
+check follows private output allocation. The result carries no backend,
+credential, live lease or continuing authorization.
+
+All seven native cases pass: a content driver that refuses all file-body reads,
+pinned and reopened signed targets, exact bounds and underflow refusals, empty
+roots with invalid or expired credentials, surface and root caveats, verbatim
+escaping symlink targets, and a genuinely admitted new graft refused under a
+root-only attenuation. The fixture retains normal provenance admission; it does
+not relocate attributed entries without source proof. Strict SDK/Linux/CLI
+all-target Clippy, native portable and actual WebAssembly compilation pass.
+Owning qualification and required application compilation remain pending.
+
+Frozen canonical mapping at `e04c59e1e2` passes in 189.24 seconds, independently
+matching 7,970 source files, 5,259 crate inputs and its actual retained native
+ELF. Required application compilation at `192fa2a700` passes in 1,620.72 seconds,
+matching 7,967 source files and 184 compiler artifact records across 59 packages.
+No FUSE mount, host index lease or task acceptance follows from these results.
