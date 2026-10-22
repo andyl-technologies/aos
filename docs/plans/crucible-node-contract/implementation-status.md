@@ -2586,6 +2586,36 @@ No new VM or configured Engine/Daemon runtime result is claimed. Live ACK
 publication, genuine Source/Birth funding, complete phase construction and
 full RFC acceptance remain unfinished.
 
+## Original native bootstrap kernel measurement
+
+Commit `8817e06077` measures the actual running native image once under the
+original model-absent policy, cut and live SDK guards. The pre-read attempt
+retains the resulting full executable reference before terminal guards and
+whole-owner observation. Refusal spends the occurrence, contains the actual SDK
+lease and preserves surviving outputs. The kernel loan borrows the original
+controller coordinates and full executable reference together with the actual
+native PID, UID and retained image measurement.
+
+The defining initial construction formula includes the actual measurement
+factory's retained strings and separate transient/counter controls. The original
+256 MiB ceiling and later four partitions remain unchanged. Admission callbacks
+in the physical controls remain models; neither the measurement nor its Copy
+loan supplies genuine Source/Birth credit, a native ACK or a phase grant.
+
+All twenty-five physical policy/kernel cases pass, including missing policy,
+short admission, terminal census refusal, callback refusal, expiry, substituted
+cut and SDK containment. The measurement matches an independent current-image
+read. Both complete Transport configurations pass 1,957 tests each with no
+failures, no filtering and sixteen existing ignores. Affected all-feature and
+all-target checking, changed-file formatting and all six architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 304 owned Rust/Cargo inputs
+match the commit and its exact captured source. This gate executes no tests.
+No new VM or configured Engine/Daemon runtime result is claimed. Genuine
+Source/Birth funding, live ACK publication, complete phase construction and
+full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
