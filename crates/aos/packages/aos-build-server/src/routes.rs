@@ -178,9 +178,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Builds the ConnectRPC service router with all four RPC services
 /// (cache, build, gc, auth) registered against the shared state.
 fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
-    let cache_svc = Arc::new(services::cache::CacheServiceImpl {
-        state: Arc::clone(&state),
-    });
+    let cache_svc = Arc::new(services::cache::CacheServiceImpl::new(Arc::clone(&state)));
     let build_svc = Arc::new(services::build::BuildServiceImpl {
         state: Arc::clone(&state),
     });
@@ -820,7 +818,7 @@ async fn import_nar(data: &[u8]) -> Result<String, Response> {
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    if let Err(reason) = pack::validate_imported_path(&imported) {
+    if let Err(reason) = pack::validate_imported_path(&imported).await {
         tracing::warn!(path = %imported, reason = %reason, "imported path rejected");
         return Err((StatusCode::BAD_REQUEST, reason).into_response());
     }
