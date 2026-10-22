@@ -53,7 +53,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
 use aos_nar::cache::nix_cache_info;
-use aos_nix::aos_nix_env;
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
 use crate::auth::{self, AuthClaims, AuthResult, ViewAccessError};
@@ -76,16 +76,34 @@ use tracing;
 /// `meta/`, so names containing path traversal sequences (`..`), directory
 /// separators, or null bytes are rejected with `400 Bad Request`.
 fn validate_view_name(name: &str) -> Result<(), Response> {
-    if name.is_empty()
-        || name.contains("..")
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('\0')
-    {
+    if crate::views::validate_view_name(name).is_err() {
         tracing::warn!(view = %name, "rejected invalid view name");
         return Err((StatusCode::BAD_REQUEST, "invalid view name").into_response());
     }
     Ok(())
+}
+
+/// Parses a canonical store hash from an HTTP path component.
+fn parse_store_hash(value: &str) -> Result<StoreHash, Response> {
+    value.parse().map_err(|error| {
+        tracing::warn!(hash = %value, %error, "rejected invalid store hash");
+        (StatusCode::BAD_REQUEST, "invalid store hash").into_response()
+    })
+}
+
+/// Parses a NAR filename and returns its canonical store identity.
+fn parse_nar_filename(name: &str) -> Result<StoreHash, Response> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err((StatusCode::BAD_REQUEST, "invalid NAR filename").into_response());
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    parse_store_hash(hash)
 }
 
 // ConnectRPC service extension traits for registration
@@ -265,8 +283,12 @@ async fn narinfo_handler(
         Some(h) => h,
         None => return (StatusCode::BAD_REQUEST, "expected .narinfo suffix").into_response(),
     };
+    let hash = match parse_store_hash(hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
-    let store_path = match state.views.check_visibility(&view, hash) {
+    let store_path = match state.views.check_visibility(&view, &hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -293,7 +315,7 @@ async fn narinfo_handler(
     };
 
     // Update access metadata (best-effort, don't fail the request).
-    let _ = access::update_access(&state.views, &view, hash);
+    let _ = access::update_access(&state.views, &view, &hash);
 
     let body = match narinfo::format_narinfo(
         &info,
@@ -364,12 +386,12 @@ async fn nar_handler(
             .into_response();
     };
 
-    let store_hash = match name.split('-').next() {
-        Some(h) if !h.is_empty() => h,
-        _ => return (StatusCode::BAD_REQUEST, "invalid NAR filename").into_response(),
+    let store_hash = match parse_nar_filename(name) {
+        Ok(hash) => hash,
+        Err(response) => return response,
     };
 
-    let store_path = match state.views.check_visibility(&view, store_hash) {
+    let store_path = match state.views.check_visibility(&view, &store_hash) {
         Ok(Some(path)) => path,
         Ok(None) => return (StatusCode::NOT_FOUND, "path not in view").into_response(),
         Err(e) => {
@@ -577,7 +599,7 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 
 /// Returns the path to the partial upload file for a given hash
 /// (`{aos_root}/uploads/{hash}.partial`).
-fn partial_upload_path(hash: &str) -> std::path::PathBuf {
+fn partial_upload_path(hash: &StoreHash) -> std::path::PathBuf {
     crate::aos_root()
         .join("uploads")
         .join(format!("{hash}.partial"))
@@ -613,6 +635,10 @@ async fn upload_path_handler(
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
     }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     if !claims.has_view(&view) {
         tracing::warn!(view = %view, sub = %claims.sub, "view not authorized for upload");
@@ -813,9 +839,14 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
     };
 
     // Create a temporary GC root to protect the path until its build creates bin/ roots.
-    if let Some(hash) = ViewManager::store_path_hash(&imported) {
-        if let Err(e) = views.create_tmp_root(view, hash, &imported) {
-            tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+    match StoreHash::from_store_path(&imported) {
+        Ok(hash) => {
+            if let Err(e) = views.create_tmp_root(view, &hash, &imported) {
+                tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(path = %imported, %error, "import returned an invalid store path");
         }
     }
 
@@ -843,6 +874,10 @@ async fn upload_progress_handler(
         tracing::warn!(view = %view, hash = %hash, "upload progress read access denied");
         return response;
     }
+    let hash = match parse_store_hash(&hash) {
+        Ok(hash) => hash,
+        Err(response) => return response,
+    };
 
     let partial_path = partial_upload_path(&hash);
 
@@ -1207,8 +1242,8 @@ async fn upload_pack_handler(
         Ok(paths) => {
             // Create temporary GC roots for all imported paths.
             for path in &paths {
-                if let Some(hash) = ViewManager::store_path_hash(path) {
-                    if let Err(e) = state.views.create_tmp_root(&view, hash, path) {
+                if let Ok(hash) = StoreHash::from_store_path(path) {
+                    if let Err(e) = state.views.create_tmp_root(&view, &hash, path) {
                         tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
                     }
                 }
@@ -1396,7 +1431,7 @@ async fn gc_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_build_closure_sse_event, parse_range_header};
+    use super::{format_build_closure_sse_event, parse_nar_filename, parse_range_header};
     use crate::build::{BuildEvent, BuildEventKind};
 
     #[test]
@@ -1436,5 +1471,28 @@ mod tests {
         assert_eq!(parse_range_header("bytes=0-1,3-4", 4096), None);
         assert_eq!(parse_range_header("bytes=-0", 4096), None);
         assert_eq!(parse_range_header("bytes=0-0", 0), None);
+    }
+
+    #[test]
+    fn nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+            "00000000000000000000000000000000.payload",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
     }
 }

@@ -42,7 +42,7 @@ fn test_state(directory: &TempDir) -> Arc<AppState> {
 
     Arc::new(AppState {
         store: NixStore::open(&database).unwrap(),
-        views: ViewManager::new(directory.path().to_path_buf(), config.views.clone()),
+        views: ViewManager::new(directory.path().to_path_buf(), config.views.clone()).unwrap(),
         config,
         store_dir: "/nix/store".into(),
         jwt_secret: JWT_SECRET.to_vec(),
@@ -147,7 +147,7 @@ async fn upload_progress_requires_view_read_permission() {
     let alpha_reader = access_token(&state, &["alpha"], &["read"]);
     let alpha_builder = access_token(&state, &["alpha"], &["build"]);
     let beta_reader = access_token(&state, &["beta"], &["read"]);
-    let uri = "/alpha/store/0123456789abcdefghijklmnopqrstuv";
+    let uri = "/alpha/store/0123456789abcdfghijklmnpqrsvwxyz";
 
     assert_eq!(
         request_status(Arc::clone(&state), "HEAD", uri, Some(&beta_reader)).await,
@@ -169,7 +169,7 @@ async fn artifact_reads_require_view_read_permission_before_store_lookup() {
     let state = test_state(&directory);
     let alpha_reader = access_token(&state, &["alpha"], &["read"]);
     let beta_reader = access_token(&state, &["beta"], &["read"]);
-    let hash = "0123456789abcdefghijklmnopqrstuv";
+    let hash = "0123456789abcdfghijklmnpqrsvwxyz";
 
     for uri in [
         format!("/alpha/{hash}.narinfo"),
