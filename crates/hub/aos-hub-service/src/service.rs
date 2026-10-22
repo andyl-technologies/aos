@@ -1138,6 +1138,8 @@ pub struct SurfaceObjectResponse {
     pub content_type: &'static str,
     /// The `Cache-Control` header value for the requested machine path.
     pub cache_control: &'static str,
+    /// The credential headers named by `Vary`, when the response is private.
+    pub vary: Option<&'static str>,
     /// When `Some`, the object is not served inline but as a temporary (`302`)
     /// redirect to this presigned origin URL — the authenticated-origin read of
     /// a private external binding (RFC-0004 "presigned GET → 302"). `302`

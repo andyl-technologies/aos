@@ -60,6 +60,8 @@ pub struct OidcFlowRecord {
     pub state: String,
     /// The org whose IdP this flow targets.
     pub org_id: i64,
+    /// Verifier configuration that was trusted when the flow began.
+    pub verifier_id: String,
     /// The nonce bound into the authorization request; the id_token's `nonce`
     /// claim must equal it.
     pub nonce: String,
@@ -157,7 +159,7 @@ impl WebauthnChallengeBinding {
 /// how the identity was reconciled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityLink {
-    /// An existing `(iss, sub)` identity resolved to this user id.
+    /// An existing verifier and subject identity resolved to this user id.
     Existing(i64),
     /// A verified email on a captured domain linked to an existing user.
     Linked(i64),
