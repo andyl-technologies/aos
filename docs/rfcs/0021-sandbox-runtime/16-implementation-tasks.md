@@ -9575,9 +9575,12 @@ denied root manager `reload` request. Production policy now explicitly grants
 the host activation domain manager status/reload and generic unit
 status/start/stop/reload. Sandbox owners retain their independently checked
 status-only manager access. All 144 policy-checker regression tests pass,
-including removal of each host activation permission; compiled-policy and
-installed-image qualification remain pending. No activation journal is erased
-or repaired to turn the failed first effect into a successful boot.
+including removal of each host activation permission. The full compiled-policy
+gate passes at
+`/nix/store/fm68g7vklr5w7bwdajc6ah8b7pxqw5ba-aos-selinux-production-policy-1`,
+including the effective permission matrix and deliberately invalid loadable
+policies. Installed-image qualification remains pending. No activation journal
+is erased or repaired to turn the failed first effect into a successful boot.
 
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
