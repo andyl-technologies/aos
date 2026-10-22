@@ -32,12 +32,13 @@
   };
 
   identityRecord = "/var/lib/aos-sandbox-network-worker/bpffs-identity";
+  namespacePin = "/var/lib/aos-sandbox-network-worker/namespace-pin";
   pin = "/sys/fs/bpf/aos/sandbox-network/vm-proof";
   socket = "/run/aos/sandbox-network-worker/control.sock";
   # The selected profile admits only fixed absolute-path arguments. Keep the
   # probe's mode selector inside its dedicated test executable.
   workerProbe = pkgs.writeShellScriptBin "aos-network-worker-bpffs-qualification" ''
-    exec ${probe}/bin/network-worker-bpffs-probe worker ${identityRecord} ${pin}
+    exec ${probe}/bin/network-worker-bpffs-probe worker ${identityRecord} ${pin} ${namespacePin}
   '';
   system = mkSystem [
     ../../systems/server-test.nix
@@ -145,39 +146,24 @@ in {
         "systemctl cat 'aos-sandbox-network-worker@.service'"
     )
 
-    def directive_tokens(unit, directive):
-        prefix = f"{directive}="
-        return {
-            token
-            for line in unit.splitlines()
-            if line.startswith(prefix)
-            for token in shlex.split(line.removeprefix(prefix))
-        }
-
-    assert "ProtectKernelTunables=" not in worker_unit
-    assert directive_tokens(worker_unit, "InaccessiblePaths") == {
-        "-/proc/kallsyms",
-        "-/proc/kcore",
-    }
-    assert directive_tokens(worker_unit, "ReadOnlyPaths") == {
-        "/etc",
-        "-/proc/acpi",
-        "-/proc/apm",
-        "-/proc/asound",
-        "-/proc/bus",
-        "-/proc/fs",
-        "-/proc/irq",
-        "-/proc/latency_stats",
-        "-/proc/mtrr",
-        "-/proc/scsi",
-        "-/proc/sys",
-        "-/proc/sysrq-trigger",
-        "-/proc/timer_stats",
-        "/sys",
-    }
-    assert directive_tokens(worker_unit, "ReadWritePaths") == {
-        "/sys/fs/bpf/aos/sandbox-network",
-    }
+    # Preparation publishes namespace bind pins to the host. A filesystem
+    # sandbox would silently confine those mounts to the worker's namespace.
+    for namespace_directive in (
+        "BindPaths=",
+        "BindReadOnlyPaths=",
+        "InaccessiblePaths=",
+        "MountAPIVFS=",
+        "PrivateDevices=",
+        "PrivateTmp=",
+        "ProtectHome=",
+        "ProtectKernelTunables=",
+        "ProtectSystem=",
+        "ReadOnlyPaths=",
+        "ReadWritePaths=",
+        "RootDirectory=",
+        "RootImage=",
+    ):
+        assert namespace_directive not in worker_unit, worker_unit
 
     assert vm.succeed(
         f"{COREUTILS}/stat --file-system --format=%t /sys/fs/bpf"
@@ -279,7 +265,7 @@ in {
         raise
     vm.succeed(f"{PROBE} inspect ${pin}")
 
-    worker_device, worker_inode, worker_mount_namespace, worker_magic = (
+    worker_device, worker_inode, worker_mount_namespace, worker_magic, worker_network_namespace = (
         vm.succeed(f"cat ${identityRecord}").split()
     )
     host_device, host_inode = vm.succeed(
@@ -291,7 +277,17 @@ in {
 
     assert worker_magic == "cafe4a11"
     assert (worker_device, worker_inode) == (host_device, host_inode)
-    assert worker_mount_namespace != host_mount_namespace
-    vm.succeed("test ! -e /sys/fs/bpf/aos/outside-worker")
+    print(f"worker mount namespace: {worker_mount_namespace}; host: {host_mount_namespace}")
+
+    # Shared bpffs inodes alone cannot prove mount propagation. Require the
+    # worker's actual namespace bind mount to remain visible after it exits.
+    assert vm.succeed(
+        f"{COREUTILS}/stat --file-system --format=%t ${namespacePin}"
+    ).strip() == "6e736673"
+    assert vm.succeed(
+        f"{COREUTILS}/stat --format=%i ${namespacePin}"
+    ).strip() == worker_network_namespace
+    vm.succeed("umount ${namespacePin}")
+    vm.succeed("rm ${namespacePin}")
   '';
 }

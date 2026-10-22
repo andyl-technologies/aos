@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
@@ -89,38 +90,6 @@ static int inspect_pinned_map(const char *pin_path)
   return close(map_fd);
 }
 
-static int require_read_only_file(const char *path)
-{
-  int descriptor = open(path, O_WRONLY | O_CLOEXEC);
-
-  if (descriptor >= 0) {
-    close(descriptor);
-    fprintf(stderr,
-            "network-worker-bpffs-probe: protected sysfs file is writable\n");
-    return -1;
-  }
-  if (errno != EACCES && errno != EROFS) {
-    perror("network-worker-bpffs-probe: test protected sysfs file");
-    return -1;
-  }
-  return 0;
-}
-
-static int require_read_only_parent(const char *path)
-{
-  if (mkdir(path, 0700) == 0) {
-    rmdir(path);
-    fprintf(stderr,
-            "network-worker-bpffs-probe: bpffs parent is unexpectedly writable\n");
-    return -1;
-  }
-  if (errno != EACCES && errno != EROFS) {
-    perror("network-worker-bpffs-probe: test protected bpffs parent");
-    return -1;
-  }
-  return 0;
-}
-
 static int require_mount_read_only(const char *path, int expected_read_only)
 {
   struct statvfs filesystem;
@@ -137,15 +106,32 @@ static int require_mount_read_only(const char *path, int expected_read_only)
   return 0;
 }
 
-static int record_worker_identity(const char *output_path, const char *pin_path)
+static int pin_worker_namespace(const char *path, struct stat *identity)
 {
-  static const char *const outside_pin_parent =
-      "/sys/fs/bpf/aos/outside-worker";
+  int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                        0600);
+
+  if (descriptor < 0 || close(descriptor) != 0) {
+    perror("network-worker-bpffs-probe: create namespace pin");
+    return -1;
+  }
+  if (mount("/proc/self/ns/net", path, NULL, MS_BIND, NULL) != 0 ||
+      stat(path, identity) != 0) {
+    perror("network-worker-bpffs-probe: bind worker namespace");
+    return -1;
+  }
+  return 0;
+}
+
+static int record_worker_identity(const char *output_path, const char *pin_path,
+                                  const char *namespace_pin)
+{
   static const char *const pin_parent =
       "/sys/fs/bpf/aos/sandbox-network";
   struct statfs filesystem;
   struct stat directory;
   struct stat mount_namespace;
+  struct stat network_namespace;
   char identity[256];
   int length;
   int output_fd;
@@ -167,20 +153,19 @@ static int record_worker_identity(const char *output_path, const char *pin_path)
     perror("network-worker-bpffs-probe: inspect worker mount namespace");
     return -1;
   }
-  if (require_mount_read_only("/sys", 1) != 0 ||
-      require_mount_read_only("/sys/fs/bpf/aos", 1) != 0 ||
-      require_mount_read_only(pin_parent, 0) != 0 ||
-      require_read_only_file("/sys/kernel/uevent_seqnum") != 0 ||
-      require_read_only_parent(outside_pin_parent) != 0)
+  if (require_mount_read_only(pin_parent, 0) != 0)
     return -1;
   if (create_pinned_map(pin_path) != 0)
     return -1;
+  if (pin_worker_namespace(namespace_pin, &network_namespace) != 0)
+    return -1;
 
-  length = snprintf(identity, sizeof(identity), "%ju %ju %ju %lx\n",
+  length = snprintf(identity, sizeof(identity), "%ju %ju %ju %lx %ju\n",
                     (uintmax_t)directory.st_dev,
                     (uintmax_t)directory.st_ino,
                     (uintmax_t)mount_namespace.st_ino,
-                    (unsigned long)filesystem.f_type);
+                    (unsigned long)filesystem.f_type,
+                    (uintmax_t)network_namespace.st_ino);
   if (length <= 0 || (size_t)length >= sizeof(identity))
     return -1;
 
@@ -238,8 +223,8 @@ static int connect_worker_socket(const char *socket_path)
 
 int main(int argc, char **argv)
 {
-  if (argc == 4 && strcmp(argv[1], "worker") == 0)
-    return record_worker_identity(argv[2], argv[3]) == 0 ? EXIT_SUCCESS
+  if (argc == 5 && strcmp(argv[1], "worker") == 0)
+    return record_worker_identity(argv[2], argv[3], argv[4]) == 0 ? EXIT_SUCCESS
                                                          : EXIT_FAILURE;
   if (argc == 3 && strcmp(argv[1], "inspect") == 0)
     return inspect_pinned_map(argv[2]) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
@@ -247,7 +232,7 @@ int main(int argc, char **argv)
     return connect_worker_socket(argv[2]) == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
   fprintf(stderr,
-          "usage: network-worker-bpffs-probe worker OUTPUT PIN\n"
+          "usage: network-worker-bpffs-probe worker OUTPUT PIN NAMESPACE_PIN\n"
           "       network-worker-bpffs-probe inspect PIN\n"
           "       network-worker-bpffs-probe connect SOCKET\n");
   return EXIT_FAILURE;
