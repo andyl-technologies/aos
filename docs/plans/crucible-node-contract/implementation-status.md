@@ -3099,6 +3099,35 @@ independent whole funding, opaque Initial/Recipe producers, five native phase
 consumers and remaining full RFC work are still incomplete. These SDK DATA
 transitions grant no native phase, model installation or common Ready.
 
+## Retained closed Source bootstrap response decoding
+
+Commit `ce44658aaa` adds a dedicated closed Bootstrap18 response decoder and an
+independent component R/T/S quote. Allocation-free preflight checks the complete
+response header, body, funding strings and sole receipt position before DTO
+construction. Each initialized Envelope, typed original request, completed body,
+result and receipt stays in its retained owner before later fallible checks.
+Failures retain their last construction step and fixed serde coordinates;
+occupied output refuses reuse without replacing the original owner.
+
+The decoder borrows the caller's strict raw tree. Its completed-body constructor
+avoids the generic internally tagged response buffer, and its quote includes the
+actual partial DTO, base64 and diagnostic construction windows. It excludes the
+separately retained raw parser, literal bank, live SDK, Source holder and MAC work.
+Decoded receipt fields remain DATA: they authenticate no Source, settle no SDK
+original and issue no bootstrap completion or native readiness.
+
+All fifteen Bootstrap ACK namespace tests pass in both standard and raw-JSON
+modes, including ten new closed-decoder controls. Transport/Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass. The required
+application compilation gate emits 180 test executables across 58 package IDs,
+including 71 integration targets. All 366 owned Rust/Cargo inputs match committed
+`ce44658aaa` and its actual captured Nix source. That gate runs no tests.
+
+The actual Source Bootstrap transport transaction, independently admitted whole
+funding, genuine opaque Initial/Recipe production and remaining full RFC work
+remain incomplete. No new full Transport library, configured runtime or VM
+qualification is claimed by this component checkpoint.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
