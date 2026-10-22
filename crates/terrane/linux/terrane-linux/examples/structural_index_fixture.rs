@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
@@ -18,7 +17,7 @@ use terrane_format::tree_format::{
     Attribute, ContentRef, Entry, EntryKind, ExtendedAttribute, LeafItem, Property, TreeUse,
 };
 use terrane_linux::inode_policy::InodeTable;
-use terrane_linux::structural_index::{Kind, MappedIndex, MappingError, compile_nodes};
+use terrane_linux::structural_index::{CompiledIndex, Kind, MappedIndex, MappingError};
 use terrane_sdk::host::publication::VerityBinding;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -47,8 +46,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let CompiledFixture {
         root: tree_root,
         graft: graft_root,
-        bytes,
+        compiled,
     } = compile_fixture()?;
+    let bytes = compiled.bytes();
     let mut wrong_root = tree_root;
     wrong_root[0] ^= 1;
     let mut writer = OpenOptions::new()
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .read(true)
         .create_new(true)
         .open(&path)?;
-    writer.write_all(&bytes)?;
+    compiled.write_to(&mut writer)?;
     writer.sync_all()?;
     let dummy = VerityBinding {
         algorithm: 1,
@@ -85,6 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let file = File::open(&path)?;
     let binding = terrane_linux::verity::enable(&file)?;
     assert_eq!(terrane_linux::verity::measure(&file)?, binding);
+    compiled.verify_reader(&mut file.try_clone()?)?;
+    println!("PASS: canonical compilation binds actual sealed index bytes");
     let metadata = file.metadata()?;
     let inode = metadata.ino();
     let device = metadata.dev();
@@ -219,7 +221,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct CompiledFixture {
     root: Digest,
     graft: Digest,
-    bytes: Vec<u8>,
+    compiled: CompiledIndex,
 }
 
 fn compile_fixture() -> Result<CompiledFixture, Box<dyn Error>> {
@@ -281,11 +283,11 @@ fn compile_fixture() -> Result<CompiledFixture, Box<dyn Error>> {
         .chain(graft.nodes())
         .map(|node| (node.identity(), node.encoded().to_vec()))
         .collect();
-    let bytes = compile_nodes(root.root_identity(), &nodes, 4096, 32, 65536, 65536)?;
+    let compiled = CompiledIndex::from_nodes(root.root_identity(), &nodes, 4096, 32, 65536, 65536)?;
     Ok(CompiledFixture {
         root: root.root_identity(),
         graft: graft.root_identity(),
-        bytes,
+        compiled,
     })
 }
 

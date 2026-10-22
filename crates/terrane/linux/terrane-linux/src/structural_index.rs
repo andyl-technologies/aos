@@ -12,6 +12,7 @@
 //! ```
 
 mod compile;
+mod compiled;
 mod links;
 mod mapping;
 mod metadata;
@@ -19,6 +20,7 @@ mod nodes;
 mod tree;
 
 pub use compile::compile;
+pub use compiled::{CompiledIndex, IndexKey};
 pub use mapping::{MappedIndex, MappingError};
 pub use metadata::{Field, Fields, FieldsIter, Metadata};
 pub use nodes::compile_nodes;

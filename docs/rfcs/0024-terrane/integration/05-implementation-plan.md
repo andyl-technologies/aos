@@ -13334,3 +13334,17 @@ controls. Review matches the installed ELF to the actual Cargo artifact and
 requires every guest witness. These are component passes; neither a cache pin
 nor a mounted exposure is inferred. Required application-target compilation
 on this same checkpoint remains in progress.
+
+The structural producer now retains a bounded `CompiledIndex` constructed only
+from checked canonical trees or actual node bodies. Its derived `(root, version)`
+key does not reuse the canonical pack-index identity domain. Fixed-buffer copy
+verification compares every byte and requires exact EOF; a structurally valid
+index with an unchanged root tag but altered mode is refused. Short reads,
+interruption, partial writes and actual I/O errors retain their original failure
+semantics. The native mapping fixture verifies its actual sealed descriptor
+against the retained compilation before mapping. Local verification passes all
+22 structural cases and strict all-feature/all-target Clippy. Source-bound
+structural, actual sealed-mapping and required application-target qualification
+remain pending for this increment. This producer boundary supplies no native
+cache admission, pin, exposure authorization or worker lifecycle; those remain
+required and T-FUSE-2 stays open.

@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod compiled;
 mod metadata;
 mod trees;
 

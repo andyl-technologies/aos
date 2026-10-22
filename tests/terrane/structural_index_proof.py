@@ -19,6 +19,8 @@ CASES = [
     "every_truncation_and_hostile_header_offset_is_rejected",
     "forged_parent_child_and_arena_relationships_are_rejected",
     "arbitrary_short_inputs_and_single_byte_mutations_never_panic",
+    "compiled::canonical_compilation_refuses_a_valid_index_with_an_unchanged_root_tag",
+    "compiled::streaming_copy_and_verification_preserve_short_io_failures_and_exact_length",
     "metadata::canonical_tree_preserves_modes_unknown_fields_and_graft_properties",
     "metadata::hardlinks_share_checked_inodes_but_repeated_grafts_and_equal_content_do_not",
     "metadata::malformed_metadata_maps_modes_and_cursors_are_refused",
