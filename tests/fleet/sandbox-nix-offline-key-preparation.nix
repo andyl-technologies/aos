@@ -107,7 +107,12 @@ in {
     == runtimeSystem.config.systemd.units."aos-sandboxd.service".text; system;
     bootMode = "image";
     firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
-    memoryMiB = 4096;
+    # Back the unchanged finite bank with the same physical capacity as the
+    # funded fixture, including headroom outside its advertised 32 GiB memory.
+    vcpuCount = 16;
+    memoryMiB = 36864;
+    varSizeMiB = 65536;
+    imageDiskMiB = 98304;
   };
 
   testScript = ''
@@ -116,6 +121,12 @@ in {
     unit = "aos-sandbox-nix-floor-provision.service"
     root = "/var/lib/aos/sandbox-nix-floor-provision"
     python = "${pkgs.python3}/bin/python3"
+
+    assert int(vm.succeed("nproc --all").strip()) == 16
+    memory = dict(line.split(":", 1) for line in vm.succeed("cat /proc/meminfo").splitlines())
+    assert int(memory["MemTotal"].split()[0]) >= 32 * 1024 * 1024
+    available = int(vm.succeed("df -B1 --output=avail /var").splitlines()[-1])
+    assert available >= ${toString installationPolicy.capacity.storage-bytes}
 
     def public_candidate_exports():
         journal = vm.succeed(
