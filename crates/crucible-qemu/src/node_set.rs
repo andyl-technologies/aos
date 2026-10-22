@@ -2060,6 +2060,10 @@ impl QemuNodeSet {
         ceiling: VirtualTime,
         stop: crucible::RunCeilingStop,
     ) -> Result<StepObservation, BackendError> {
+        self.attempt_progress.note_dispatch(
+            std::iter::once((node, ceiling.ticks)),
+            self.parked_campaign_markers.keys(),
+        );
         let started = self.run_window.begin();
         let progress_started = self.attempt_progress.begin();
         let result = self.step_node_to_untimed(node, ceiling, stop);

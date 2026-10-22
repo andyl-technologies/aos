@@ -26,6 +26,17 @@
 //!   count, wall time inside its own RUNs, wall time it sat finished while
 //!   other RUNs of its set still ran, its latest RUN ceiling, and its clock.
 //!
+//! A RUN set can run far longer than one window, and then no progress row
+//! closes. Each dispatch therefore also prints, at most once per window, a
+//! row naming what is about to run and which nodes sit parked:
+//!
+//! ```text
+//! CRUCIBLE-ATTEMPT-DISPATCH-V1 runs=traffic-west:1741000000000->1760000000000 parked=router-a,router-b
+//! ```
+//!
+//! Each run reports `node:clock_ps->ceiling_ps`, where the clock is the node's
+//! latest reached coordinate known to this set (`?` before its first RUN).
+//!
 //! Host time read here is diagnostic only. It never reaches a scheduling
 //! decision, a guest-visible value, or canonical evidence.
 
@@ -94,6 +105,7 @@ pub(super) struct AttemptProgress {
     window: Option<Window>,
     horizons: BTreeMap<NodeId, u64>,
     clocks: BTreeMap<NodeId, u64>,
+    last_dispatch_row: Option<Instant>,
 }
 
 impl AttemptProgress {
@@ -105,6 +117,7 @@ impl AttemptProgress {
             window: None,
             horizons: BTreeMap::new(),
             clocks: BTreeMap::new(),
+            last_dispatch_row: None,
         }
     }
 
@@ -116,12 +129,64 @@ impl AttemptProgress {
             window: None,
             horizons: BTreeMap::new(),
             clocks: BTreeMap::new(),
+            last_dispatch_row: None,
         }
     }
 
     /// Returns a start instant when the set should be measured.
     pub(super) fn begin(&self) -> Option<Instant> {
         (self.enabled && self.emitted < MAX_ROWS).then(progress_clock)
+    }
+
+    /// Prints a dispatch row when none was printed within the last window.
+    ///
+    /// `runs` pairs each node about to run with its RUN ceiling; `parked`
+    /// names nodes held at a campaign marker and excluded from the set.
+    pub(super) fn note_dispatch<'a>(
+        &mut self,
+        runs: impl IntoIterator<Item = (&'a NodeId, u64)>,
+        parked: impl IntoIterator<Item = &'a NodeId>,
+    ) {
+        if let Some(row) = self.dispatch_row(progress_clock(), runs, parked) {
+            let _ = writeln!(std::io::stderr().lock(), "{row}");
+        }
+    }
+
+    fn dispatch_row<'a>(
+        &mut self,
+        now: Instant,
+        runs: impl IntoIterator<Item = (&'a NodeId, u64)>,
+        parked: impl IntoIterator<Item = &'a NodeId>,
+    ) -> Option<String> {
+        if !self.enabled || self.emitted >= MAX_ROWS {
+            return None;
+        }
+        if self
+            .last_dispatch_row
+            .is_some_and(|last| now.saturating_duration_since(last) < PROGRESS_INTERVAL)
+        {
+            return None;
+        }
+        self.last_dispatch_row = Some(now);
+
+        let mut row = String::from("CRUCIBLE-ATTEMPT-DISPATCH-V1 runs=");
+        for (index, (node, ceiling)) in runs.into_iter().enumerate() {
+            if index > 0 {
+                row.push(',');
+            }
+            let _ = match self.clocks.get(node) {
+                Some(clock) => write!(row, "{}:{clock}->{ceiling}", node.name),
+                None => write!(row, "{}:?->{ceiling}", node.name),
+            };
+        }
+        row.push_str(" parked=");
+        for (index, node) in parked.into_iter().enumerate() {
+            if index > 0 {
+                row.push(',');
+            }
+            row.push_str(&node.name);
+        }
+        Some(row)
     }
 
     /// Records one dispatched RUN set and prints a row when the window is due.
@@ -401,5 +466,38 @@ mod tests {
 
         assert!(progress.window.is_none());
         assert!(progress.clocks.is_empty());
+    }
+
+    #[test]
+    fn dispatch_row_names_runs_and_parked_nodes_once_per_window() {
+        let mut progress = AttemptProgress::new();
+        let start = progress_clock();
+        let node = |name: &str| NodeId {
+            name: String::from(name),
+        };
+        let (west, router) = (node("west"), node("router"));
+        progress.record(
+            start,
+            start,
+            &[sample("west", 90, 80, 1)],
+            1,
+            HostWaitTotals::default(),
+        );
+
+        let row = progress.dispatch_row(start, [(&west, 200), (&node("east"), 210)], [&router]);
+        assert_eq!(
+            row.as_deref(),
+            Some("CRUCIBLE-ATTEMPT-DISPATCH-V1 runs=west:80->200,east:?->210 parked=router")
+        );
+
+        // A second dispatch inside the same window prints nothing.
+        let quiet = progress.dispatch_row(start + Duration::from_secs(1), [(&west, 300)], []);
+        assert!(quiet.is_none());
+
+        let next = progress.dispatch_row(start + PROGRESS_INTERVAL, [(&west, 400)], []);
+        assert_eq!(
+            next.as_deref(),
+            Some("CRUCIBLE-ATTEMPT-DISPATCH-V1 runs=west:80->400 parked=")
+        );
     }
 }

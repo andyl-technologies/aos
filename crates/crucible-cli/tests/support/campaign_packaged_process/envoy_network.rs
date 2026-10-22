@@ -871,6 +871,15 @@ pub(super) fn wait_for_public_attempt(
                 eprintln!("{attempt_progress}");
             }
 
+            // A RUN set longer than the progress window closes no progress
+            // row; its dispatch row still names what runs and what is parked.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ATTEMPT-DISPATCH-V1 ", 1, 4096)
+                && let Some(dispatch) = rows.last()
+            {
+                eprintln!("{dispatch}");
+            }
+
             // A host wait row names the publication the controller is blocked
             // on; the latest one explains a crawl that the progress row only
             // measures.

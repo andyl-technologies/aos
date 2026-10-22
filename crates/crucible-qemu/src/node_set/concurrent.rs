@@ -233,6 +233,10 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
             }
         }
         self.arm_concurrent_fault_event_staging(&runs)?;
+        self.attempt_progress.note_dispatch(
+            runs.iter().map(|run| (run.node(), run.ceiling().ticks)),
+            self.parked_campaign_markers.keys(),
+        );
         let started = self.run_window.begin();
         let progress_started = self.attempt_progress.begin();
         let mut progress_samples = Vec::with_capacity(runs.len());
