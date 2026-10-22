@@ -24,6 +24,7 @@ use aos_build_api::aos::auth::v1::*;
 use aos_build_api::aos::build::v1::*;
 use aos_build_api::aos::cache::v1::*;
 use aos_build_api::aos::gc::v1::*;
+use aos_nix::StoreHash;
 
 /// Typed ConnectRPC client for the AOS server.
 ///
@@ -58,23 +59,9 @@ fn validate_view(view: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate that a store hash contains only hex characters and has the
-/// expected Nix store hash length (32 chars, base-32 encoding).
+/// Validates that a store hash uses the canonical Nix base32 representation.
 fn validate_store_hash(hash: &str) -> Result<()> {
-    if hash.is_empty() {
-        bail!("store_hash must not be empty");
-    }
-    // Nix store hashes are 32-char base-32 (0-9, a-z minus e/o/t/u).
-    // Be lenient: accept any alphanumeric chars of the right length.
-    if hash.len() != 32 {
-        bail!(
-            "store_hash has unexpected length {} (expected 32)",
-            hash.len()
-        );
-    }
-    if !hash.chars().all(|c| c.is_ascii_alphanumeric()) {
-        bail!("store_hash contains non-alphanumeric characters");
-    }
+    hash.parse::<StoreHash>().context("invalid store_hash")?;
     Ok(())
 }
 
@@ -235,8 +222,8 @@ impl AosClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if `store_hash` is not a 32-character
-    /// alphanumeric Nix store hash, or if the `CacheService.GetNarInfo`
+    /// Returns an error if `store_hash` is not a canonical Nix store hash,
+    /// or if the `CacheService.GetNarInfo`
     /// RPC fails.
     pub async fn get_nar_info(&self, store_hash: &str) -> Result<NarInfo> {
         validate_store_hash(store_hash)?;
@@ -284,8 +271,8 @@ impl AosClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if `store_hash` is not a 32-character
-    /// alphanumeric Nix store hash, or if the streaming
+    /// Returns an error if `store_hash` is not a canonical Nix store hash,
+    /// or if the streaming
     /// `CacheService.Upload` RPC fails.
     pub async fn upload(&self, store_hash: &str, nar_data: &[u8]) -> Result<String> {
         validate_store_hash(store_hash)?;

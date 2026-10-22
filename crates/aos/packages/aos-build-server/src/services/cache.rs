@@ -2,23 +2,28 @@
 //!
 //! RPC twins of the REST cache endpoints in [`crate::routes`]:
 //! `GetCacheInfo`, `GetNarInfo`, and `QueryMissing` are unary;
-//! `Upload`/`UploadPack` are client-streaming (chunks are buffered, then
-//! imported via `nix-store --import` with the same `.drv`-or-CA safety
-//! check as REST uploads); `Download` is server-streaming, chunking the
-//! same compressed NAR pipeline used by `GET /{view}/nar/{filename}`.
+//! `Upload`/`UploadPack` are client-streaming through bounded private spool
+//! files before import with the same `.drv`-or-CA check as REST uploads;
+//! `Download` is server-streaming, chunking the same compressed NAR pipeline
+//! used by `GET /{view}/nar/{filename}`.
 
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use connectrpc::{
     ConnectError, Encodable, ErrorCode, InboundStream, RequestContext, Response, ServiceRequest,
     ServiceResult,
 };
 use futures_util::{Stream, StreamExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 
 use aos_build_api::aos::cache::v1::*;
 use aos_nar::info as core_narinfo;
-use aos_nix::aos_nix_env;
+use aos_nix::{aos_nix_env, StoreHash};
 
 use crate::access;
 use crate::compress::{self, Compression};
@@ -26,6 +31,7 @@ use crate::narinfo;
 use crate::pack;
 use crate::routes::AppState;
 use crate::services;
+#[cfg(test)]
 use crate::views::ViewManager;
 
 /// Boxed server-streaming response used by the generated service traits.
@@ -35,6 +41,125 @@ type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Se
 pub struct CacheServiceImpl {
     /// Shared server state (store, views, signer, config).
     pub state: Arc<AppState>,
+    upload_admission: Arc<Semaphore>,
+}
+
+impl CacheServiceImpl {
+    /// Creates a cache service with the configured shared upload budget.
+    pub fn new(state: Arc<AppState>) -> Self {
+        let upload_admission = Arc::new(Semaphore::new(state.config.uploads.max_concurrent));
+        Self {
+            state,
+            upload_admission,
+        }
+    }
+
+    fn upload_deadline(&self, context: &RequestContext) -> Instant {
+        let configured = Instant::now()
+            .checked_add(Duration::from_secs(
+                self.state.config.uploads.timeout_seconds,
+            ))
+            .unwrap_or_else(Instant::now);
+
+        context
+            .deadline()
+            .map_or(configured, |deadline| deadline.min(configured))
+    }
+}
+
+struct UploadSpool {
+    path: PathBuf,
+    file: tokio::fs::File,
+    length: u64,
+}
+
+impl UploadSpool {
+    async fn create(root: &Path) -> Result<Self, ConnectError> {
+        let directory = root.join("uploads").join("rpc");
+        tokio::fs::create_dir_all(&directory)
+            .await
+            .map_err(internal_upload_error("creating RPC upload directory"))?;
+        tokio::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .await
+            .map_err(internal_upload_error(
+                "setting RPC upload directory permissions",
+            ))?;
+
+        let path = directory.join(format!(".{}.upload", uuid::Uuid::new_v4()));
+        let file = tokio::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .await
+            .map_err(internal_upload_error("creating RPC upload spool"))?;
+
+        Ok(Self {
+            path,
+            file,
+            length: 0,
+        })
+    }
+
+    async fn append(&mut self, data: &[u8], maximum: u64) -> Result<(), ConnectError> {
+        let data_length = u64::try_from(data.len()).map_err(|_| {
+            ConnectError::new(ErrorCode::ResourceExhausted, "upload chunk is too large")
+        })?;
+        let new_length = self.length.checked_add(data_length).ok_or_else(|| {
+            ConnectError::new(ErrorCode::ResourceExhausted, "upload size overflow")
+        })?;
+        if new_length > maximum {
+            return Err(ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                format!("upload exceeds {maximum} byte limit"),
+            ));
+        }
+
+        self.file
+            .write_all(data)
+            .await
+            .map_err(internal_upload_error("writing RPC upload spool"))?;
+        self.length = new_length;
+        Ok(())
+    }
+
+    async fn read_bounded(&mut self) -> Result<Vec<u8>, ConnectError> {
+        self.file
+            .flush()
+            .await
+            .map_err(internal_upload_error("flushing RPC upload spool"))?;
+        self.file
+            .seek(std::io::SeekFrom::Start(0))
+            .await
+            .map_err(internal_upload_error("rewinding RPC upload spool"))?;
+
+        let capacity = usize::try_from(self.length).map_err(|_| {
+            ConnectError::new(ErrorCode::ResourceExhausted, "upload is too large to parse")
+        })?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(capacity).map_err(|_| {
+            ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                "upload buffer allocation failed",
+            )
+        })?;
+        self.file
+            .read_to_end(&mut data)
+            .await
+            .map_err(internal_upload_error("reading RPC upload spool"))?;
+        Ok(data)
+    }
+}
+
+impl Drop for UploadSpool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn internal_upload_error(operation: &'static str) -> impl FnOnce(std::io::Error) -> ConnectError {
+    move |error| ConnectError::new(ErrorCode::Internal, format!("{operation}: {error}"))
 }
 
 impl CacheService for CacheServiceImpl {
@@ -87,7 +212,12 @@ impl CacheService for CacheServiceImpl {
         req: ServiceRequest<'_, GetNarInfoRequest>,
     ) -> ServiceResult<impl Encodable<NarInfo> + Send + use<'a>> {
         let view: &str = req.view;
-        let store_hash: &str = req.store_hash;
+        let store_hash: StoreHash = req.store_hash.parse().map_err(|error| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                format!("invalid store hash: {error}"),
+            )
+        })?;
 
         let view_config = self
             .state
@@ -99,7 +229,7 @@ impl CacheService for CacheServiceImpl {
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -111,7 +241,7 @@ impl CacheService for CacheServiceImpl {
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in store"))?;
 
         // Update access metadata (best-effort).
-        let _ = access::update_access(&self.state.views, view, store_hash);
+        let _ = access::update_access(&self.state.views, view, &store_hash);
 
         let narinfo_text = narinfo::format_narinfo(
             &info,
@@ -169,58 +299,30 @@ impl CacheService for CacheServiceImpl {
 
     /// `Upload` — client-streamed NAR upload of a single store path.
     ///
-    /// The view name is taken from the first chunk; all chunk data is
-    /// buffered, then imported via `nix-store --import`. Requires a JWT
-    /// with the `build` permission on the view (checked after the stream
-    /// is consumed). The imported path must pass the `.drv`-or-CA safety
-    /// check and receives a temporary GC root.
+    /// Authentication precedes stream consumption. The first chunk fixes the
+    /// authorized view and store identity; contiguous chunks are written to a
+    /// bounded private spool and streamed into `nix-store --import`. The
+    /// imported path must pass the `.drv`-or-CA check and receives a temporary
+    /// GC root.
     async fn upload<'a>(
         &'a self,
         ctx: RequestContext,
-        mut requests: InboundStream<UploadChunk>,
+        requests: InboundStream<UploadChunk>,
     ) -> ServiceResult<impl Encodable<UploadResponse> + Send + use<'a>> {
-        let mut all_data = Vec::new();
-        let mut view_name = String::new();
+        services::require_rpc_claims(&ctx, &self.state)?;
+        let _permit = Arc::clone(&self.upload_admission)
+            .try_acquire_owned()
+            .map_err(|_| {
+                ConnectError::new(ErrorCode::ResourceExhausted, "upload capacity reached")
+            })?;
+        let deadline = tokio::time::Instant::from_std(self.upload_deadline(&ctx));
 
-        while let Some(chunk_result) = requests.next().await {
-            let chunk = chunk_result?;
-            let chunk = chunk.view();
-            if view_name.is_empty() {
-                view_name = chunk.view.to_string();
-            }
-            let data: &[u8] = chunk.data;
-            all_data.extend_from_slice(data);
-        }
-
-        if view_name.is_empty() {
-            return Err(ConnectError::new(
-                ErrorCode::InvalidArgument,
-                "no chunks received",
-            ));
-        }
-
-        if self.state.views.get_view(&view_name).is_none() {
-            return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
-        }
-        services::require_rpc_permission(&ctx, &self.state, &view_name, "build")?;
-
-        // Import via nix-store --import.
-        let imported = import_nar_data(&all_data)
+        tokio::time::timeout_at(deadline, receive_nar_upload(self, &ctx, requests))
             .await
-            .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("import failed: {e}")))?;
-
-        // Create a temporary GC root.
-        if let Some(hash) = ViewManager::store_path_hash(&imported) {
-            let _ = self
-                .state
-                .views
-                .create_tmp_root(&view_name, hash, &imported);
-        }
-
-        Response::ok(UploadResponse {
-            store_path: imported,
-            ..Default::default()
-        })
+            .map_err(|_| {
+                ConnectError::new(ErrorCode::DeadlineExceeded, "upload deadline exceeded")
+            })?
+            .and_then(Response::ok)
     }
 
     /// `Download` — server-streamed NAR download.
@@ -259,20 +361,12 @@ impl CacheService for CacheServiceImpl {
             ));
         };
 
-        let store_hash = match name.split('-').next() {
-            Some(h) if !h.is_empty() => h,
-            _ => {
-                return Err(ConnectError::new(
-                    ErrorCode::InvalidArgument,
-                    "invalid NAR filename",
-                ));
-            }
-        };
+        let store_hash = parse_nar_filename(name)?;
 
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -307,64 +401,247 @@ impl CacheService for CacheServiceImpl {
     /// `UploadPack` — client-streamed batched upload in the AOSP pack
     /// format.
     ///
-    /// Chunks are buffered into the full pack, which is checksum-verified
-    /// and parsed ([`pack::parse_pack`]) before its entries are imported.
-    /// Requires a JWT with the `build` permission on the view (from the
-    /// first chunk). Every imported path gets a temporary GC root.
+    /// Authentication precedes stream consumption. The first chunk fixes the
+    /// authorized view; bounded chunks are spooled privately, checksum-verified,
+    /// and parsed ([`pack::parse_pack`]) before import. Every imported path
+    /// receives a temporary GC root.
     async fn upload_pack<'a>(
         &'a self,
         ctx: RequestContext,
-        mut requests: InboundStream<PackChunk>,
+        requests: InboundStream<PackChunk>,
     ) -> ServiceResult<impl Encodable<UploadPackResponse> + Send + use<'a>> {
-        let mut all_data = Vec::new();
-        let mut view_name = String::new();
+        services::require_rpc_claims(&ctx, &self.state)?;
+        let _permit = Arc::clone(&self.upload_admission)
+            .try_acquire_owned()
+            .map_err(|_| {
+                ConnectError::new(ErrorCode::ResourceExhausted, "upload capacity reached")
+            })?;
+        let deadline = tokio::time::Instant::from_std(self.upload_deadline(&ctx));
 
-        while let Some(chunk_result) = requests.next().await {
-            let chunk = chunk_result?;
-            let chunk = chunk.view();
-            if view_name.is_empty() {
-                view_name = chunk.view.to_string();
-            }
-            let data: &[u8] = chunk.data;
-            all_data.extend_from_slice(data);
+        tokio::time::timeout_at(deadline, receive_pack_upload(self, &ctx, requests))
+            .await
+            .map_err(|_| {
+                ConnectError::new(ErrorCode::DeadlineExceeded, "upload deadline exceeded")
+            })?
+            .and_then(Response::ok)
+    }
+}
+
+fn authorize_upload_view(
+    service: &CacheServiceImpl,
+    context: &RequestContext,
+    view: &str,
+) -> Result<(), ConnectError> {
+    let view_config = service
+        .state
+        .views
+        .get_view(view)
+        .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "unknown view"))?;
+    services::require_rpc_permission(context, &service.state, view, "build")?;
+
+    if let Some(maximum) = view_config.max_paths {
+        let count = service.state.views.count_roots(view).map_err(|error| {
+            ConnectError::new(ErrorCode::Internal, format!("counting view roots: {error}"))
+        })?;
+        if count >= maximum {
+            return Err(ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                format!("view has {count} rooted paths, max is {maximum}"),
+            ));
         }
+    }
 
-        if view_name.is_empty() {
+    Ok(())
+}
+
+async fn receive_nar_upload(
+    service: &CacheServiceImpl,
+    context: &RequestContext,
+    mut requests: InboundStream<UploadChunk>,
+) -> Result<UploadResponse, ConnectError> {
+    let first = requests
+        .next()
+        .await
+        .transpose()?
+        .ok_or_else(|| ConnectError::new(ErrorCode::InvalidArgument, "no chunks received"))?;
+    let first_view = first.view();
+    let view = first_view.view.to_string();
+    let store_hash = first_view.store_hash.to_string();
+    if view.is_empty() || store_hash.is_empty() {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "first chunk must identify a view and store hash",
+        ));
+    }
+    authorize_upload_view(service, context, &view)?;
+
+    let limits = &service.state.config.uploads;
+    let mut spool = UploadSpool::create(service.state.views.root()).await?;
+    let mut expected_offset = 0u64;
+    let mut final_seen = false;
+    let mut next = Some(first);
+
+    loop {
+        let Some(message) = next.take() else {
+            break;
+        };
+        let chunk = message.view();
+        if chunk.view != view || chunk.store_hash != store_hash {
             return Err(ConnectError::new(
                 ErrorCode::InvalidArgument,
-                "no chunks received",
+                "upload identity changed between chunks",
+            ));
+        }
+        if final_seen {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "upload continued after final chunk",
+            ));
+        }
+        if chunk.offset < 0 || chunk.offset as u64 != expected_offset {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "upload chunk offset is not contiguous",
+            ));
+        }
+        if chunk.data.len() as u64 > limits.max_chunk_bytes {
+            return Err(ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                format!("upload chunk exceeds {} byte limit", limits.max_chunk_bytes),
             ));
         }
 
-        if self.state.views.get_view(&view_name).is_none() {
-            return Err(ConnectError::new(ErrorCode::NotFound, "unknown view"));
-        }
-        services::require_rpc_permission(&ctx, &self.state, &view_name, "build")?;
-
-        let entries = pack::parse_pack(&all_data).map_err(|e| {
-            ConnectError::new(ErrorCode::InvalidArgument, format!("invalid pack: {e}"))
-        })?;
-
-        let count = entries.len();
-
-        let paths = pack::import_pack(&entries).await.map_err(|e| {
-            ConnectError::new(ErrorCode::Internal, format!("pack import failed: {e}"))
-        })?;
-
-        // Create temporary GC roots for all imported paths.
-        for path in &paths {
-            if let Some(hash) = ViewManager::store_path_hash(path) {
-                let _ = self.state.views.create_tmp_root(&view_name, hash, path);
-            }
-        }
-
-        Response::ok(UploadPackResponse {
-            accepted: count as i32,
-            rejected: 0,
-            paths,
-            ..Default::default()
-        })
+        spool.append(chunk.data, limits.max_bytes).await?;
+        expected_offset = spool.length;
+        final_seen = chunk.is_final;
+        next = requests.next().await.transpose()?;
     }
+
+    if !final_seen {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "upload ended without a final chunk",
+        ));
+    }
+
+    spool
+        .file
+        .flush()
+        .await
+        .map_err(internal_upload_error("flushing RPC upload spool"))?;
+    let imported = import_nar_file(&spool.path).await.map_err(|error| {
+        ConnectError::new(ErrorCode::Internal, format!("import failed: {error}"))
+    })?;
+    if let Ok(hash) = StoreHash::from_store_path(&imported) {
+        let _ = service
+            .state
+            .views
+            .create_tmp_root(&view, &hash, &imported);
+    }
+
+    Ok(UploadResponse {
+        store_path: imported,
+        ..Default::default()
+    })
+}
+
+async fn receive_pack_upload(
+    service: &CacheServiceImpl,
+    context: &RequestContext,
+    mut requests: InboundStream<PackChunk>,
+) -> Result<UploadPackResponse, ConnectError> {
+    let first = requests
+        .next()
+        .await
+        .transpose()?
+        .ok_or_else(|| ConnectError::new(ErrorCode::InvalidArgument, "no chunks received"))?;
+    let view = first.view().view.to_string();
+    if view.is_empty() {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "first chunk must identify a view",
+        ));
+    }
+    authorize_upload_view(service, context, &view)?;
+
+    let limits = &service.state.config.uploads;
+    let mut spool = UploadSpool::create(service.state.views.root()).await?;
+    let mut final_seen = false;
+    let mut next = Some(first);
+    loop {
+        let Some(message) = next.take() else { break };
+        let chunk = message.view();
+        if chunk.view != view {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "upload view changed between chunks",
+            ));
+        }
+        if final_seen {
+            return Err(ConnectError::new(
+                ErrorCode::InvalidArgument,
+                "upload continued after final chunk",
+            ));
+        }
+        if chunk.data.len() as u64 > limits.max_chunk_bytes {
+            return Err(ConnectError::new(
+                ErrorCode::ResourceExhausted,
+                format!("upload chunk exceeds {} byte limit", limits.max_chunk_bytes),
+            ));
+        }
+        spool.append(chunk.data, limits.max_bytes).await?;
+        final_seen = chunk.is_final;
+        next = requests.next().await.transpose()?;
+    }
+    if !final_seen {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "upload ended without a final chunk",
+        ));
+    }
+
+    let data = spool.read_bounded().await?;
+    let entries = pack::parse_pack(&data).map_err(|error| {
+        ConnectError::new(ErrorCode::InvalidArgument, format!("invalid pack: {error}"))
+    })?;
+    let count = entries.len();
+    let paths = pack::import_pack(&entries).await.map_err(|error| {
+        ConnectError::new(ErrorCode::Internal, format!("pack import failed: {error}"))
+    })?;
+    for path in &paths {
+        if let Ok(hash) = StoreHash::from_store_path(path) {
+            let _ = service.state.views.create_tmp_root(&view, &hash, path);
+        }
+    }
+
+    Ok(UploadPackResponse {
+        accepted: count as i32,
+        rejected: 0,
+        paths,
+        ..Default::default()
+    })
+}
+
+fn parse_nar_filename(name: &str) -> Result<StoreHash, ConnectError> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "invalid NAR filename",
+        ));
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    hash.parse().map_err(|error| {
+        ConnectError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid NAR filename: {error}"),
+        )
+    })
 }
 
 /// Parses rendered narinfo text into a proto `NarInfo` message.
@@ -387,11 +664,10 @@ fn parse_narinfo_to_proto(narinfo_text: &str) -> Result<NarInfo, ConnectError> {
     })
 }
 
-/// Imports NAR data via `nix-store --import` and returns the imported
+/// Imports a spooled NAR via `nix-store --import` and returns the imported
 /// store path, after vetting it with [`pack::validate_imported_path`].
-async fn import_nar_data(data: &[u8]) -> Result<String, String> {
+async fn import_nar_file(path: &Path) -> Result<String, String> {
     use std::process::Stdio;
-    use tokio::io::AsyncWriteExt;
     use tokio::process::Command;
 
     let mut child = Command::new("nix-store")
@@ -400,12 +676,15 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|e| format!("spawning nix-store --import: {e}"))?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(data)
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|e| format!("opening spooled NAR: {e}"))?;
+        tokio::io::copy(&mut file, &mut stdin)
             .await
             .map_err(|e| format!("writing NAR: {e}"))?;
         drop(stdin);
@@ -423,7 +702,7 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    if let Err(reason) = pack::validate_imported_path(&imported) {
+    if let Err(reason) = pack::validate_imported_path(&imported).await {
         return Err(reason);
     }
 
@@ -432,7 +711,360 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_narinfo_to_proto;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use axum::http::{header, HeaderMap, HeaderValue};
+    use connectrpc::{RequestContext, StreamMessage};
+    use futures_util::stream;
+
+    use super::*;
+    use crate::auth;
+    use crate::build::BuildManager;
+    use crate::config::ServerConfig;
+    use crate::drain::DrainState;
+    use crate::sign::NarInfoSigner;
+    use crate::store::NixStore;
+    use crate::tokens::TokenStore;
+
+    fn test_service(maximum_bytes: u64) -> (tempfile::TempDir, CacheServiceImpl, RequestContext) {
+        test_service_with(maximum_bytes, |_| {})
+    }
+
+    fn test_service_with(
+        maximum_bytes: u64,
+        configure: impl FnOnce(&mut ServerConfig),
+    ) -> (tempfile::TempDir, CacheServiceImpl, RequestContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_path_buf();
+        let database = root.join("store.sqlite");
+        drop(rusqlite::Connection::open(&database).unwrap());
+
+        let mut config = ServerConfig::default();
+        config.uploads.max_bytes = maximum_bytes;
+        config.uploads.max_chunk_bytes = maximum_bytes;
+        configure(&mut config);
+        let tokens = TokenStore::open(&root.join("tokens.sqlite")).unwrap();
+        let (_, record) = tokens
+            .create_token(&["default".into()], &["build".into()], None, None, None)
+            .unwrap();
+        let access_token = auth::create_access_token(&[42; 32], &record, 3600).unwrap();
+        let state = Arc::new(AppState {
+            store: NixStore::open(&database).unwrap(),
+            views: ViewManager::new(root.clone(), config.views.clone()).unwrap(),
+            config,
+            store_dir: root.join("store").display().to_string(),
+            jwt_secret: vec![42; 32],
+            tokens,
+            build_mgr: Arc::new(BuildManager::new()),
+            drain: Arc::new(DrainState::new()),
+            signer: NarInfoSigner::load(None).unwrap(),
+        });
+        let service = CacheServiceImpl::new(state);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+        );
+        (directory, service, RequestContext::new(headers))
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_upload_does_not_poll_the_payload_stream() {
+        let (_directory, service, _) = test_service(8);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed_polls = Arc::clone(&polls);
+        let requests = stream::poll_fn(move |_| {
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Ready(None)
+        });
+
+        let error =
+            match CacheService::upload(&service, RequestContext::default(), Box::pin(requests))
+                .await
+            {
+                Ok(_) => panic!("unauthenticated upload was accepted"),
+                Err(error) => error,
+            };
+
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn upload_stops_when_aggregate_limit_is_crossed() {
+        let (_directory, service, context) = test_service(5);
+        let messages = [
+            UploadChunk {
+                view: "default".into(),
+                store_hash: "hash".into(),
+                data: vec![1; 3],
+                offset: 0,
+                is_final: false,
+                ..Default::default()
+            },
+            UploadChunk {
+                view: "default".into(),
+                store_hash: "hash".into(),
+                data: vec![2; 3],
+                offset: 3,
+                is_final: true,
+                ..Default::default()
+            },
+        ];
+        let requests = stream::iter(
+            messages
+                .into_iter()
+                .map(|message| Ok(StreamMessage::from_message(&message))),
+        );
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("oversized upload was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.to_string().contains("5 byte limit"), "{error}");
+        let spool_directory = service.state.views.root().join("uploads/rpc");
+        assert_eq!(std::fs::read_dir(spool_directory).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn upload_stops_when_a_chunk_limit_is_crossed() {
+        let (_directory, service, context) = test_service_with(8, |config| {
+            config.uploads.max_chunk_bytes = 2;
+        });
+        let message = UploadChunk {
+            view: "default".into(),
+            store_hash: "hash".into(),
+            data: vec![1; 3],
+            offset: 0,
+            is_final: true,
+            ..Default::default()
+        };
+        let requests = stream::iter([Ok(StreamMessage::from_message(&message))]);
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("upload with an oversized chunk was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.to_string().contains("2 byte limit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn upload_observes_the_view_path_quota_before_spooling() {
+        let (_directory, service, context) = test_service_with(8, |config| {
+            config.views[0].max_paths = Some(0);
+        });
+        let message = UploadChunk {
+            view: "default".into(),
+            store_hash: "hash".into(),
+            data: vec![1],
+            offset: 0,
+            is_final: true,
+            ..Default::default()
+        };
+        let requests = stream::iter([Ok(StreamMessage::from_message(&message))]);
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("upload above the view path quota was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.to_string().contains("max is 0"), "{error}");
+        assert!(!service.state.views.root().join("uploads/rpc").exists());
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_a_view_change_before_import() {
+        let (_directory, service, context) = test_service(16);
+        let messages = [
+            UploadChunk {
+                view: "default".into(),
+                store_hash: "hash".into(),
+                data: vec![1],
+                offset: 0,
+                ..Default::default()
+            },
+            UploadChunk {
+                view: "other".into(),
+                store_hash: "hash".into(),
+                data: vec![2],
+                offset: 1,
+                is_final: true,
+                ..Default::default()
+            },
+        ];
+        let requests = stream::iter(
+            messages
+                .into_iter()
+                .map(|message| Ok(StreamMessage::from_message(&message))),
+        );
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("upload with a changed view was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.to_string().contains("identity changed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn upload_capacity_is_checked_before_polling_the_stream() {
+        let (_directory, service, context) = test_service(8);
+        let permit_count = service.state.config.uploads.max_concurrent as u32;
+        let _held = Arc::clone(&service.upload_admission)
+            .acquire_many_owned(permit_count)
+            .await
+            .unwrap();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed_polls = Arc::clone(&polls);
+        let requests = stream::poll_fn(move |_| {
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Ready(None)
+        });
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("upload above concurrent capacity was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn upload_honors_the_request_deadline() {
+        let (_directory, service, context) = test_service(8);
+        let context = context.with_deadline(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(10))
+                .unwrap(),
+        ));
+        let requests = stream::pending();
+
+        let error = match CacheService::upload(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("upload outlived its request deadline"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::DeadlineExceeded);
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_pack_upload_does_not_poll_the_payload_stream() {
+        let (_directory, service, _) = test_service(8);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let observed_polls = Arc::clone(&polls);
+        let requests = stream::poll_fn(move |_| {
+            observed_polls.fetch_add(1, Ordering::SeqCst);
+            std::task::Poll::Ready(None)
+        });
+
+        let error = match CacheService::upload_pack(
+            &service,
+            RequestContext::default(),
+            Box::pin(requests),
+        )
+        .await
+        {
+            Ok(_) => panic!("unauthenticated pack upload was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pack_upload_stops_when_aggregate_limit_is_crossed() {
+        let (_directory, service, context) = test_service(5);
+        let messages = [
+            PackChunk {
+                view: "default".into(),
+                data: vec![1; 3],
+                ..Default::default()
+            },
+            PackChunk {
+                view: "default".into(),
+                data: vec![2; 3],
+                is_final: true,
+                ..Default::default()
+            },
+        ];
+        let requests = stream::iter(
+            messages
+                .into_iter()
+                .map(|message| Ok(StreamMessage::from_message(&message))),
+        );
+
+        let error = match CacheService::upload_pack(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("oversized pack upload was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        assert!(error.to_string().contains("5 byte limit"), "{error}");
+        let spool_directory = service.state.views.root().join("uploads/rpc");
+        assert_eq!(std::fs::read_dir(spool_directory).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn pack_upload_rejects_a_view_change_before_import() {
+        let (_directory, service, context) = test_service(8);
+        let messages = [
+            PackChunk {
+                view: "default".into(),
+                data: vec![1],
+                ..Default::default()
+            },
+            PackChunk {
+                view: "other".into(),
+                data: vec![2],
+                is_final: true,
+                ..Default::default()
+            },
+        ];
+        let requests = stream::iter(
+            messages
+                .into_iter()
+                .map(|message| Ok(StreamMessage::from_message(&message))),
+        );
+
+        let error = match CacheService::upload_pack(&service, context, Box::pin(requests)).await {
+            Ok(_) => panic!("pack upload with a changed view was accepted"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(error.to_string().contains("view changed"), "{error}");
+    }
+
+    #[test]
+    fn rpc_nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
+    }
 
     #[test]
     fn narinfo_proto_preserves_download_metadata() {

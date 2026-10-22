@@ -28,8 +28,8 @@ use std::os::unix;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
-use aos_nix::aos_nix_env;
+use anyhow::{Context, Result, ensure};
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::config::ViewConfig;
 
@@ -48,9 +48,23 @@ impl ViewManager {
     /// Does not touch the filesystem; call
     /// [`init_directories`](Self::init_directories) to create the on-disk
     /// tree.
-    pub fn new(root: PathBuf, views: Vec<ViewConfig>) -> Self {
-        let map = views.into_iter().map(|v| (v.name.clone(), v)).collect();
-        Self { root, views: map }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a view name is not a safe single path component or
+    /// if the configuration defines the same view more than once.
+    pub fn new(root: PathBuf, views: Vec<ViewConfig>) -> Result<Self> {
+        let mut map = HashMap::with_capacity(views.len());
+        for view in views {
+            validate_view_name(&view.name)?;
+            let name = view.name.clone();
+            ensure!(
+                map.insert(name.clone(), view).is_none(),
+                "duplicate view {name:?}"
+            );
+        }
+
+        Ok(Self { root, views: map })
     }
 
     /// Creates the directory tree for all configured views: the
@@ -92,14 +106,29 @@ impl ViewManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if an existing symlink cannot be read.
-    pub fn check_visibility(&self, view: &str, hash: &str) -> Result<Option<String>> {
+    /// Returns an error if an existing root cannot be read, does not point to
+    /// a direct entry in this server's store, or names a different store hash.
+    pub fn check_visibility(&self, view: &str, hash: &StoreHash) -> Result<Option<String>> {
         for ns in &["bin", "src"] {
-            let link = self.root.join("gcroots").join(view).join(ns).join(hash);
+            let link = self
+                .root
+                .join("gcroots")
+                .join(view)
+                .join(ns)
+                .join(hash.as_str());
             if link.is_symlink() {
                 let target = fs::read_link(&link)
                     .with_context(|| format!("reading symlink {}", link.display()))?;
-                return Ok(Some(target.to_string_lossy().to_string()));
+                let target = if target.is_absolute() {
+                    target
+                } else {
+                    link.parent()
+                        .context("GC root has no parent directory")?
+                        .join(target)
+                };
+                let target = self.canonical_store_target(hash, &target)?;
+
+                return Ok(Some(target.to_string_lossy().into_owned()));
             }
         }
         Ok(None)
@@ -123,22 +152,30 @@ impl ViewManager {
     ///
     /// # Errors
     ///
-    /// Returns an error if the symlink cannot be created or renamed into
-    /// place (e.g. the namespace directory does not exist).
-    pub fn create_gc_root(&self, view: &str, ns: &str, hash: &str, store_path: &str) -> Result<()> {
+    /// Returns an error if `store_path` is not the matching direct entry in
+    /// this server's store, or if the symlink cannot be created or renamed
+    /// into place (e.g. the namespace directory does not exist).
+    pub fn create_gc_root(
+        &self,
+        view: &str,
+        ns: &str,
+        hash: &StoreHash,
+        store_path: &str,
+    ) -> Result<()> {
         let link_dir = self.root.join("gcroots").join(view).join(ns);
-        let link = link_dir.join(hash);
+        let link = link_dir.join(hash.as_str());
         let tmp = link_dir.join(format!(".{hash}.tmp"));
+        let store_path = self.canonical_store_target(hash, Path::new(store_path))?;
 
         // Remove stale temp symlink if it exists.
         let _ = fs::remove_file(&tmp);
 
-        unix::fs::symlink(store_path, &tmp)
+        unix::fs::symlink(&store_path, &tmp)
             .with_context(|| format!("creating symlink {}", tmp.display()))?;
         fs::rename(&tmp, &link)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), link.display()))?;
 
-        tracing::debug!(view = %view, ns = %ns, hash = %hash, store_path = %store_path, "GC root created");
+        tracing::debug!(view = %view, ns = %ns, hash = %hash, store_path = %store_path.display(), "GC root created");
         Ok(())
     }
 
@@ -153,7 +190,7 @@ impl ViewManager {
         &self,
         view: &str,
         ns: &str,
-        hash: &str,
+        hash: &StoreHash,
         meta: &serde_json::Value,
     ) -> Result<()> {
         let meta_dir = self.root.join("meta").join(view).join(ns);
@@ -168,13 +205,38 @@ impl ViewManager {
         Ok(())
     }
 
-    /// Extracts the hash portion from a store path
-    /// (e.g. `/var/lib/aos/store/abc123-foo` -> `abc123`).
-    ///
-    /// Returns `None` only for pathological inputs with no basename.
-    pub fn store_path_hash(store_path: &str) -> Option<&str> {
-        let basename = store_path.rsplit('/').next()?;
-        basename.split('-').next()
+    /// Resolves a root target while preserving a store object that is itself
+    /// a symlink.
+    fn canonical_store_target(&self, hash: &StoreHash, target: &Path) -> Result<PathBuf> {
+        let store_dir = fs::canonicalize(self.root.join("store"))
+            .with_context(|| format!("resolving store directory under {}", self.root.display()))?;
+        let target_parent = target
+            .parent()
+            .context("store target has no parent directory")?;
+        let target_parent = fs::canonicalize(target_parent).with_context(|| {
+            format!("resolving store target parent {}", target_parent.display())
+        })?;
+
+        ensure!(
+            target_parent == store_dir,
+            "GC root target is outside the store"
+        );
+
+        let target_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("store target has no valid UTF-8 name")?;
+        let target_hash = StoreHash::from_store_path(target_name)
+            .context("GC root target has an invalid store path name")?;
+        ensure!(
+            &target_hash == hash,
+            "GC root target hash does not match its name"
+        );
+        let target = store_dir.join(target_name);
+        fs::symlink_metadata(&target)
+            .with_context(|| format!("reading store target {}", target.display()))?;
+
+        Ok(target)
     }
 
     /// Creates GC roots for the source inputs of a derivation.
@@ -227,10 +289,10 @@ impl ViewManager {
         tracing::debug!(view = %view, drv = %drv_path, count = paths.len(), "creating source roots");
 
         for path in &paths {
-            let hash = Self::store_path_hash(path)
+            let hash = StoreHash::from_store_path(path)
                 .with_context(|| format!("extracting hash from {path}"))?;
 
-            self.create_gc_root(view, "src", hash, path)?;
+            self.create_gc_root(view, "src", &hash, path)?;
 
             let mut meta = serde_json::json!({
                 "store_path": path,
@@ -243,7 +305,7 @@ impl ViewManager {
                 meta["expires_at"] = serde_json::json!(exp);
             }
 
-            self.write_metadata(view, "src", hash, &meta)?;
+            self.write_metadata(view, "src", &hash, &meta)?;
         }
 
         Ok(())
@@ -260,7 +322,7 @@ impl ViewManager {
     ///
     /// Returns an error if the root or its metadata cannot be written, or
     /// if the system clock is before the Unix epoch.
-    pub fn create_tmp_root(&self, view: &str, hash: &str, store_path: &str) -> Result<()> {
+    pub fn create_tmp_root(&self, view: &str, hash: &StoreHash, store_path: &str) -> Result<()> {
         self.create_gc_root(view, "tmp", hash, store_path)?;
 
         let now = std::time::SystemTime::now()
@@ -356,18 +418,138 @@ impl ViewManager {
             .as_secs() as i64;
 
         for path in paths {
-            let hash = Self::store_path_hash(path)
+            let hash = StoreHash::from_store_path(path)
                 .with_context(|| format!("extracting hash from {path}"))?;
 
-            self.create_gc_root(view, ns, hash, path)?;
+            self.create_gc_root(view, ns, &hash, path)?;
 
             let meta = serde_json::json!({
                 "store_path": path,
                 "pushed_at": now,
                 "access_count": 0,
             });
-            self.write_metadata(view, ns, hash, &meta)?;
+            self.write_metadata(view, ns, &hash, &meta)?;
         }
+
+        Ok(())
+    }
+}
+
+/// Validates a view name before it is used as an on-disk path component.
+///
+/// # Errors
+///
+/// Returns an error for empty names, traversal sequences, separators, or null
+/// bytes.
+pub fn validate_view_name(name: &str) -> Result<()> {
+    ensure!(!name.is_empty(), "view name must not be empty");
+    ensure!(
+        name != "."
+            && !name.contains("..")
+            && !name.contains('/')
+            && !name.contains('\\')
+            && !name.contains('\0'),
+        "view name must be a single path component"
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ServerConfig;
+
+    const STORE_HASH: &str = "0123456789abcdfghijklmnpqrsvwxyz";
+
+    fn manager(root: &Path) -> ViewManager {
+        ViewManager::new(root.to_path_buf(), ServerConfig::default().views).unwrap()
+    }
+
+    #[test]
+    fn configured_view_names_are_safe_and_unique() {
+        let root = PathBuf::from("/unused");
+        for name in ["", ".", "..", "../other", "other/view", "other\\view"] {
+            let mut config = ServerConfig::default();
+            config.views[0].name = name.to_string();
+            assert!(ViewManager::new(root.clone(), config.views).is_err());
+        }
+
+        let mut config = ServerConfig::default();
+        config.views.push(config.views[0].clone());
+        assert!(ViewManager::new(root, config.views).is_err());
+    }
+
+    #[test]
+    fn visibility_accepts_only_matching_direct_store_targets() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = directory.path().join("store");
+        let roots = directory.path().join("gcroots/default/bin");
+        fs::create_dir_all(&store)?;
+        fs::create_dir_all(&roots)?;
+
+        let hash: StoreHash = STORE_HASH.parse()?;
+        let valid_target = store.join(format!("{hash}-demo"));
+        fs::write(&valid_target, b"payload")?;
+        unix::fs::symlink(&valid_target, roots.join(hash.as_str()))?;
+
+        assert_eq!(
+            manager(directory.path()).check_visibility("default", &hash)?,
+            Some(valid_target.to_string_lossy().into_owned())
+        );
+
+        let outside_target = directory.path().join(format!("{hash}-outside"));
+        fs::write(&outside_target, b"outside")?;
+        fs::remove_file(roots.join(hash.as_str()))?;
+        unix::fs::symlink(&outside_target, roots.join(hash.as_str()))?;
+
+        let error = manager(directory.path())
+            .check_visibility("default", &hash)
+            .unwrap_err();
+        assert!(error.to_string().contains("outside the store"), "{error:#}");
+
+        Ok(())
+    }
+
+    #[test]
+    fn gc_root_creation_rejects_mismatched_store_targets() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = directory.path().join("store");
+        let roots = directory.path().join("gcroots/default/bin");
+        fs::create_dir_all(&store)?;
+        fs::create_dir_all(&roots)?;
+
+        let expected: StoreHash = STORE_HASH.parse()?;
+        let other: StoreHash = "00000000000000000000000000000000".parse()?;
+        let target = store.join(format!("{other}-demo"));
+        fs::write(&target, b"payload")?;
+
+        let error = manager(directory.path())
+            .create_gc_root("default", "bin", &expected, target.to_str().unwrap())
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error:#}");
+        assert!(!roots.join(expected.as_str()).exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn visibility_preserves_store_entries_that_are_symlinks() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = directory.path().join("store");
+        let roots = directory.path().join("gcroots/default/bin");
+        fs::create_dir_all(&store)?;
+        fs::create_dir_all(&roots)?;
+
+        let hash: StoreHash = STORE_HASH.parse()?;
+        let target = store.join(format!("{hash}-link"));
+        unix::fs::symlink("missing-target", &target)?;
+        unix::fs::symlink(&target, roots.join(hash.as_str()))?;
+
+        assert_eq!(
+            manager(directory.path()).check_visibility("default", &hash)?,
+            Some(target.to_string_lossy().into_owned())
+        );
 
         Ok(())
     }
