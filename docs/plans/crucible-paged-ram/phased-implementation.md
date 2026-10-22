@@ -533,7 +533,11 @@ Full Source/Module physical return remains unqualified.
 #### Borrowed initial native trap reads
 
 The live trap dispatcher now retains the original GLib read array and borrows
-its bytes through routing, replacing its initial native-to-Vec copy. A focused
+its bytes through introspection routing, replacing its initial native-to-Vec
+copy. App-random, selectable and marker handlers retain their existing own-read
+interfaces; their initial inspection array returns before those reads,
+publications or deferred VMStop work. The setup-complete predicate is computed
+before that return, so its borrowed bytes are never used after release. A focused
 owner returns the native array exactly once on scope exit or read/shape refusal.
 Explicit owned reader APIs still copy when their callers require owned bytes.
 Buffer construction checks exact requested length, a representable slice extent
@@ -552,8 +556,12 @@ preserves its address, while an owned String clone would allocate separately.
 All eleven focused guest-memory controls, 129 white-box controls and every
 plugin test target's compilation pass. Content-bound engineering hygiene
 passes. Mandatory application compilation, ABI/license checking and the exact
-325-case supervision run are being collected. The retained GLib allocation, explicit owned reads, other
-service parsing, callback stacks and complete operation funding remain open.
+325-case supervision run are being collected. All 5,310 committed Rust/TOML
+files at `6dca2ad40a4c55aad8de4f7e32e4b126a613944d` match immutable application
+source `cknjvgv11vnmj2x0al64a6czfcav2rpk`; the comparison record has SHA-256
+`081b5e0013afd63ad5b0fcbbf3be8734a938856936e5ee8163c68550d2bad378`.
+The retained GLib allocation, explicit owned reads, other service parsing,
+callback stacks and complete operation funding remain open.
 This introduces no Source activation, Module permission or residency claim.
 
 #### Typed live guest-introspection refusals
@@ -571,12 +579,14 @@ Three controls exercise actual routing refusal precedence, modeled ring failure
 with its complete Error source chain, and known request consumption followed by
 sequence overflow. All nine focused router tests, 126 white-box tests and every
 plugin test target's compilation pass. Corrected content-bound engineering
-hygiene passes. Mandatory application compilation, ABI/license checking and
+hygiene passes. ABI conformance passes at `ayl6az368908mjim2njpvym8h1jr56hi`.
+Canonical license checking stops at 909 host-library and 963 host-test Clippy
+errors; boundary assertions do not run. Mandatory application compilation and
 the exact 322-case supervision run are being collected. All 5,308 committed
 Rust/TOML files at `0b2dc41ac5e3343dfebb98d1d7ebde8a89983c6c` match immutable
 application source `n48s1b82xdjclagrbz1r7z2yl2pirc77`; the comparison record has
-SHA-256 `fe13ce9c055fc63f6dfe8e1b025ad09455c3dccfa512c5e775d703f5e4fcc22e`. The first hygiene attempt rejected the stale whole-file
-Runtime review digest after its one-line typed-error re-export. Reviewing that
+SHA-256 `fe13ce9c055fc63f6dfe8e1b025ad09455c3dccfa512c5e775d703f5e4fcc22e`.
+The first hygiene attempt rejected the stale whole-file Runtime review digest after its one-line typed-error re-export. Reviewing that
 exact diff and retaining the 2,593 implementation-line count corrects the
 content-bound review record; the scanner and thresholds are unchanged.
 This removes callback diagnostic construction on this path; it does
@@ -604,12 +614,14 @@ Two protocol controls cover maximum payload/address/header equality and exact
 mutation/truncation refusals. One live-router control exchanges maximum request
 and response payloads and verifies deferred request consumption. Every existing
 record variant compares both direction APIs. All fourteen protocol controls,
-seven shared-memory controls and six live-router controls pass. All 123 white-box controls and every affected target's compilation pass.
-Content-bound engineering hygiene passes. Canonical license checking stops at the unchanged
+seven shared-memory controls and six live-router controls pass. All 123
+white-box controls and every affected target's compilation pass. Content-bound
+engineering hygiene passes. Canonical license checking stops at the unchanged
 909 host-library and 963 host-test Clippy errors; its boundary assertions do
 not run. ABI conformance passes at `6h6ydy3382gixqz06f52m37kn76j22lb`.
 Mandatory application compilation passes at `2mna23zbrz1k9fgicnrrv0n5s1gcssws`;
-the exact 319-case supervision run is being collected. All 5,307 committed Rust/TOML files at
+all 319 exact supervision cases pass across nine groups at
+`nckp7w26lkz429d69dcscivfg39vjra8`. All 5,307 committed Rust/TOML files at
 `4189ebf43165ddfb08a669b6431878df8fccf72f` match immutable application source
 `s6aid5fgzgh6rjgjla0y2acbyaaxw2g4`; the comparison record has SHA-256
 `4621607d1c4ac8ca88ce6eafb0f68cef1801eee3782d358b8d29e5601f649dd7`.

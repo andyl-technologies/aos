@@ -668,8 +668,10 @@ impl LiveWhiteboxState {
         if guest_introspection::is_exchange(payload) {
             self.handle_guest_introspection(&mut reader, event, payload)
         } else if app_random::is_request(payload) {
+            drop(buffer);
             self.handle_app_random(&mut reader, event, raw_icount, trap_tick_ps, vcpu_index)
         } else if selectable::is_message(payload) {
+            drop(buffer);
             let selectable = self
                 .selectable
                 .as_mut()
@@ -698,7 +700,11 @@ impl LiveWhiteboxState {
             }
             Ok(())
         } else {
-            if is_setup_complete_marker(payload)
+            let setup_complete = is_setup_complete_marker(payload);
+            // Other handlers take their own snapshot. Return this inspection
+            // buffer before their reads, publications or deferred VMStop work.
+            drop(buffer);
+            if setup_complete
                 && let Some(selectable) = self.selectable.as_mut()
             {
                 // Reconcile required declarations before the readiness marker
