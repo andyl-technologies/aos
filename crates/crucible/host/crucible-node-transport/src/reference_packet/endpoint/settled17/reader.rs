@@ -329,29 +329,28 @@ impl CurrentEndpoint17Data {
         for record in &self.records {
             record.authenticate_connection17_data(connection)?;
         }
-        if let Some(fresh) = &self.fresh_restore_attempt {
-            if fresh.startup.purpose != PacketNativeReportStartupPurpose::FreshCompletedAdmit13
+        if let Some(fresh) = &self.fresh_restore_attempt
+            && (fresh.startup.purpose != PacketNativeReportStartupPurpose::FreshCompletedAdmit13
                 || fresh.startup.source_digest.0 != fresh.prepare.source_digest.0
-                || fresh.creator != self.complete.creator
-            {
-                return Err(invalid());
-            }
+                || fresh.creator != self.complete.creator)
+        {
+            return Err(invalid());
         }
-        if let Some(token) = &self.canonical_ack_admission {
-            if !token.authority.same_registration_data(&self.authority) {
-                return Err(invalid());
-            }
+        if let Some(token) = &self.canonical_ack_admission
+            && !token.authority.same_registration_data(&self.authority)
+        {
+            return Err(invalid());
         }
-        if let Some(token) = &self.restore_prepare_admission {
-            if !token.authority.same_registration_data(&self.authority) {
-                return Err(invalid());
-            }
+        if let Some(token) = &self.restore_prepare_admission
+            && !token.authority.same_registration_data(&self.authority)
+        {
+            return Err(invalid());
         }
         if let Some(flight) = &self.restore_commit {
-            if let Some(token) = &flight.admission {
-                if !token.authority.same_registration_data(&self.authority) {
-                    return Err(invalid());
-                }
+            if let Some(token) = &flight.admission
+                && !token.authority.same_registration_data(&self.authority)
+            {
+                return Err(invalid());
             }
             if let Some(recovered) = &flight.recovered_connection {
                 recovered.authenticate_child_groups_data()?;
@@ -363,10 +362,10 @@ impl CurrentEndpoint17Data {
                 record.authenticate_connection17_data(connection)?;
             }
         }
-        if let Some(token) = &connection.canonical_ack_admission {
-            if token.group_ids_data().2 != self.groups.boot {
-                return Err(invalid());
-            }
+        if let Some(token) = &connection.canonical_ack_admission
+            && token.group_ids_data().2 != self.groups.boot
+        {
+            return Err(invalid());
         }
         if let Some(inputs) = &connection.restore_inputs {
             let (_, _, boot, _, prepare) = inputs.token.group_ids_data();
@@ -384,15 +383,14 @@ impl CurrentEndpoint17Data {
             if boot != self.groups.boot {
                 return Err(invalid());
             }
-            if let Some(flight) = self.groups.flight {
-                if flight
+            if let Some(flight) = self.groups.flight
+                && (flight
                     .mapping
                     .is_some_and(|mapping| mapping != installed.mapping_group)
                     || flight.admission.is_some_and(|groups| groups.4 != commit)
-                    || flight.held.is_some_and(|groups| groups.2 != commit)
-                {
-                    return Err(invalid());
-                }
+                    || flight.held.is_some_and(|groups| groups.2 != commit))
+            {
+                return Err(invalid());
             }
         }
         Ok(())
@@ -473,8 +471,8 @@ impl CurrentEndpoint17GroupIds {
         {
             return Err(invalid());
         }
-        if let Some(flight) = self.flight {
-            if flight
+        if let Some(flight) = self.flight
+            && (flight
                 .admission
                 .is_some_and(|groups| (groups.0, groups.1) != (current.actor, current.frames))
                 || flight
@@ -483,10 +481,9 @@ impl CurrentEndpoint17GroupIds {
                 || flight
                     .proof_allocation
                     .is_some_and(|groups| groups != (current.actor, current.codec, current.frames))
-                || flight.recovered.is_some_and(|groups| groups != current)
-            {
-                return Err(invalid());
-            }
+                || flight.recovered.is_some_and(|groups| groups != current))
+        {
+            return Err(invalid());
         }
         Ok(())
     }
@@ -512,12 +509,11 @@ impl CurrentEndpoint17GroupIds {
         {
             return Err(invalid());
         }
-        if let Some(fresh) = self.fresh {
-            if fresh.startup != (self.boot, self.policy)
-                || fresh.prepare != (self.boot, self.policy)
-            {
-                return Err(invalid());
-            }
+        if let Some(fresh) = self.fresh
+            && (fresh.startup != (self.boot, self.policy)
+                || fresh.prepare != (self.boot, self.policy))
+        {
+            return Err(invalid());
         }
         if let Some(flight) = self.flight {
             if flight
@@ -527,10 +523,10 @@ impl CurrentEndpoint17GroupIds {
             {
                 return Err(invalid());
             }
-            if let (Some(admission), Some(held)) = (flight.admission, flight.held) {
-                if admission.4 != held.2 {
-                    return Err(invalid());
-                }
+            if let (Some(admission), Some(held)) = (flight.admission, flight.held)
+                && admission.4 != held.2
+            {
+                return Err(invalid());
             }
         }
         Ok(())

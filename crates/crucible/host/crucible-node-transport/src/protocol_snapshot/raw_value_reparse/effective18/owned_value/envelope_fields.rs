@@ -321,11 +321,11 @@ impl<'bank> NativeImport18EnvelopeFieldsConstructionData<'bank> {
                 scalar_error_possible |= field.nullable() || field == EnvelopeField18Data::Sequence;
                 if field.nullable() {
                     row.add_cut(raw, value)?;
-                } else if field.structural() {
-                    if let Some(fields) = value.as_object() {
-                        for value in fields.values() {
-                            row.add_cut(raw, value)?;
-                        }
+                } else if field.structural()
+                    && let Some(fields) = value.as_object()
+                {
+                    for value in fields.values() {
+                        row.add_cut(raw, value)?;
                     }
                 }
             }

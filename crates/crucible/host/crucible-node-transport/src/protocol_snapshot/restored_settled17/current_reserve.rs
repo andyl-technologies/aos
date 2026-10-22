@@ -162,8 +162,8 @@ impl CurrentReserve17 {
                 return Err(invalid());
             }
         }
-        if let Some(sealed) = &self.sealed {
-            if sealed.carrier != self.carrier
+        if let Some(sealed) = &self.sealed
+            && (sealed.carrier != self.carrier
                 || sealed.existing_rows != self.existing_rows
                 || sealed
                     .retained
@@ -171,10 +171,9 @@ impl CurrentReserve17 {
                     .and_then(|n| n.checked_add(sealed.scratch))
                     != Some(sealed.requested)
                 || sealed.frame_bytes == 0
-                || sealed.metadata_rows.contains(&0)
-            {
-                return Err(invalid());
-            }
+                || sealed.metadata_rows.contains(&0))
+        {
+            return Err(invalid());
         }
         Ok(())
     }

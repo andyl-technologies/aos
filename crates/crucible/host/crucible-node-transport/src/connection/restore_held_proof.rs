@@ -348,10 +348,8 @@ pub(super) fn borrowed_field<'a>(input: &'a [u8], name: &str) -> Result<&'a [u8]
             .checked_add(1)
             .filter(|n| *n <= 64)
             .ok_or_else(refused)?;
-        if plain_string(key)? == name {
-            if result.replace(value).is_some() {
-                return Err(refused());
-            }
+        if plain_string(key)? == name && result.replace(value).is_some() {
+            return Err(refused());
         }
     }
     fields.finish()?;

@@ -92,11 +92,11 @@ impl PacketControl {
         projection.add_value(&self.selection.world)?;
         reference(projection, "application/json")?;
         projection.add_value(storage)?;
-        if let Some(profile) = &self.complete_capture_profile {
-            if !profile.is_original_arrays() {
-                projection.add_field("capture_profile")?;
-                projection.add_value(profile)?;
-            }
+        if let Some(profile) = &self.complete_capture_profile
+            && !profile.is_original_arrays()
+        {
+            projection.add_field("capture_profile")?;
+            projection.add_value(profile)?;
         }
         macro_rules! optional {
             ($field:ident, $key:literal) => {

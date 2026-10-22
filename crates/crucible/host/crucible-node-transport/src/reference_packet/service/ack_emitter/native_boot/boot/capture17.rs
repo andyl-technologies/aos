@@ -285,10 +285,10 @@ impl Drop for OriginalNativeCapture17Read {
         if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
             attempt.interrupt_data();
         }
-        if let Ok(mut owner) = self.boot.try_borrow_mut() {
-            if let Some(state) = owner.restored_settled.as_mut() {
-                state.interrupt();
-            }
+        if let Ok(mut owner) = self.boot.try_borrow_mut()
+            && let Some(state) = owner.restored_settled.as_mut()
+        {
+            state.interrupt();
         }
     }
 }

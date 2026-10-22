@@ -55,24 +55,24 @@ impl<'a> Walk<'a> {
             self.first = false;
             return self.return_data(self.root, 0).map(Some);
         }
-        if !self.skip {
-            if let Some((value, depth)) = self.current {
-                let frame = match value {
-                    Value::Array(values) => Some(Frame::Array {
-                        entries: values.iter(),
-                        depth,
-                    }),
-                    Value::Object(values) => Some(Frame::Object {
-                        entries: values.iter(),
-                        depth,
-                    }),
-                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-                };
-                if let Some(frame) = frame {
-                    let slot = self.frames.get_mut(self.length).ok_or_else(invalid)?;
-                    *slot = Some(frame);
-                    self.length += 1;
-                }
+        if !self.skip
+            && let Some((value, depth)) = self.current
+        {
+            let frame = match value {
+                Value::Array(values) => Some(Frame::Array {
+                    entries: values.iter(),
+                    depth,
+                }),
+                Value::Object(values) => Some(Frame::Object {
+                    entries: values.iter(),
+                    depth,
+                }),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+            };
+            if let Some(frame) = frame {
+                let slot = self.frames.get_mut(self.length).ok_or_else(invalid)?;
+                *slot = Some(frame);
+                self.length += 1;
             }
         }
         self.skip = false;

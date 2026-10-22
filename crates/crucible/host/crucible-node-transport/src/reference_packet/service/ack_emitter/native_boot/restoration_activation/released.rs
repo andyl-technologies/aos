@@ -76,10 +76,8 @@ impl NativeAckBoot {
         let terminal = flight.terminal.as_ref().ok_or_else(refused)?;
         let mut matched = None;
         for (index, record) in records.iter().enumerate() {
-            if record.originals().contains(terminal) {
-                if matched.replace(index).is_some() {
-                    return Err(refused());
-                }
+            if record.originals().contains(terminal) && matched.replace(index).is_some() {
+                return Err(refused());
             }
         }
         let record = matched.ok_or_else(refused)?;

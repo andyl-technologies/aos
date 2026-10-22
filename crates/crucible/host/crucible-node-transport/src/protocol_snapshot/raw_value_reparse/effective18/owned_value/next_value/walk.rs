@@ -67,19 +67,19 @@ impl<'a> Walk<'a> {
             self.first = false;
             return self.return_data(self.root, 0).map(Some);
         }
-        if !self.skip {
-            if let Some((value, depth)) = self.current {
-                let frame = match value.kind_data()? {
-                    SourceKind::Array(entries) => Some(Frame::Array { entries, depth }),
-                    SourceKind::Object(entries) => Some(Frame::Object { entries, depth }),
-                    _ => None,
-                };
-                if let Some(frame) = frame {
-                    if self.frames.len() >= self.population {
-                        return Err(exhausted());
-                    }
-                    self.frames.push(frame);
+        if !self.skip
+            && let Some((value, depth)) = self.current
+        {
+            let frame = match value.kind_data()? {
+                SourceKind::Array(entries) => Some(Frame::Array { entries, depth }),
+                SourceKind::Object(entries) => Some(Frame::Object { entries, depth }),
+                _ => None,
+            };
+            if let Some(frame) = frame {
+                if self.frames.len() >= self.population {
+                    return Err(exhausted());
                 }
+                self.frames.push(frame);
             }
         }
         self.skip = false;

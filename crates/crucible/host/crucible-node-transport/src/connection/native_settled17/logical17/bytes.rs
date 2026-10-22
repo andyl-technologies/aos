@@ -24,10 +24,8 @@ pub(crate) fn field<'a>(input: &'a [u8], name: &str) -> Result<&'a [u8], Provide
     let mut fields = Fields::object(input)?;
     let mut found = None;
     while let Some((key, value)) = fields.pair()? {
-        if plain_string(key)? == name {
-            if found.replace(value).is_some() {
-                return Err(invalid());
-            }
+        if plain_string(key)? == name && found.replace(value).is_some() {
+            return Err(invalid());
         }
     }
     fields.finish()?;
@@ -466,10 +464,10 @@ fn canonical(
                 while let Some((key, value)) = fields.pair()? {
                     total = total.checked_add(1).ok_or_else(invalid)?;
                     charge(work, key.len())?;
-                    if let Some(previous) = previous {
-                        if string_order(key, previous)? != Ordering::Greater {
-                            continue;
-                        }
+                    if let Some(previous) = previous
+                        && string_order(key, previous)? != Ordering::Greater
+                    {
+                        continue;
                     }
                     let replace = match selected {
                         None => true,

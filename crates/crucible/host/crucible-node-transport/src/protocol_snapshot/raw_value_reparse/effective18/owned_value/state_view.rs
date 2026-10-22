@@ -81,33 +81,31 @@ impl<'a> NativeImport18FirstFlatViewData<'a> {
         match self.node {
             NodeData::Text { value, .. } => Ok(FirstPassNodeOriginData::Text(value)),
             NodeData::Raw { state, value } => {
-                if let Value::Object(values) = value {
-                    if matches!(state.mode, Some(RawMode::Reparse))
-                        && values
-                            .iter()
-                            .next()
-                            .is_some_and(|(key, _)| key == RAW_VALUE_KEY)
-                    {
-                        let position = state
-                            .lookup
-                            .get(&(value as *const Value as usize))
-                            .ok_or_else(invalid)?;
-                        let child = state.reparses.get(*position).ok_or_else(invalid)?;
-                        if !std::ptr::eq(child.source, value) {
-                            return Err(invalid());
-                        }
-                        let child = child.attempt.as_ref().ok_or_else(invalid)?;
-                        let payload = values
-                            .get(RAW_VALUE_KEY)
-                            .and_then(Value::as_str)
-                            .ok_or_else(invalid)?;
-                        if values.len() != 1
-                            || child.texts.first().map(String::as_str) != Some(payload)
-                        {
-                            return Err(invalid());
-                        }
-                        return Ok(FirstPassNodeOriginData::Text(child.completed_data()?));
+                if let Value::Object(values) = value
+                    && matches!(state.mode, Some(RawMode::Reparse))
+                    && values
+                        .iter()
+                        .next()
+                        .is_some_and(|(key, _)| key == RAW_VALUE_KEY)
+                {
+                    let position = state
+                        .lookup
+                        .get(&(value as *const Value as usize))
+                        .ok_or_else(invalid)?;
+                    let child = state.reparses.get(*position).ok_or_else(invalid)?;
+                    if !std::ptr::eq(child.source, value) {
+                        return Err(invalid());
                     }
+                    let child = child.attempt.as_ref().ok_or_else(invalid)?;
+                    let payload = values
+                        .get(RAW_VALUE_KEY)
+                        .and_then(Value::as_str)
+                        .ok_or_else(invalid)?;
+                    if values.len() != 1 || child.texts.first().map(String::as_str) != Some(payload)
+                    {
+                        return Err(invalid());
+                    }
+                    return Ok(FirstPassNodeOriginData::Text(child.completed_data()?));
                 }
                 Ok(FirstPassNodeOriginData::Raw(value))
             }

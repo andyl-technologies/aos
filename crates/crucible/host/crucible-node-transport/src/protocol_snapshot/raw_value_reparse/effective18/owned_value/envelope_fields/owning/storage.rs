@@ -78,22 +78,22 @@ pub(super) fn quote_data(
                 let (_, t, s) = member.requested_storage_data();
                 transient = transient.max(t);
                 scratch = scratch.max(add(counter_data(), s)?);
-            } else if field.structural() {
-                if let Some(values) = input.as_object() {
-                    for (key, value) in values {
-                        retained = add(retained, key.len())?;
-                        transient = transient.max(add(
-                            cut_initializer_data(),
-                            add(
-                                key.len(),
-                                size_of::<String>() * 2 + size_of::<Option<String>>(),
-                            )?,
-                        )?);
-                        let member = source.member_row_data(value, maximum)?;
-                        let (_, t, s) = member.requested_storage_data();
-                        transient = transient.max(t);
-                        scratch = scratch.max(add(counter_data(), s)?);
-                    }
+            } else if field.structural()
+                && let Some(values) = input.as_object()
+            {
+                for (key, value) in values {
+                    retained = add(retained, key.len())?;
+                    transient = transient.max(add(
+                        cut_initializer_data(),
+                        add(
+                            key.len(),
+                            size_of::<String>() * 2 + size_of::<Option<String>>(),
+                        )?,
+                    )?);
+                    let member = source.member_row_data(value, maximum)?;
+                    let (_, t, s) = member.requested_storage_data();
+                    transient = transient.max(t);
+                    scratch = scratch.max(add(counter_data(), s)?);
                 }
             }
         }

@@ -563,21 +563,19 @@ impl CurrentControl17Data {
     /// Refuses evidence without Hold or different creator/Control/Hold ordinals.
     /// The enclosing graph independently compares actual Boot/Commit ordinals.
     pub(crate) fn authenticate_local_groups_data(&self) -> Result<(), ProviderError> {
-        if let Some(hold) = &self.complete_restored_hold {
-            if hold.capture_identity_group_data() != self.capture_identity_group_data()
-                || hold.historical_creator_data() != self.capture_creator
-            {
-                return Err(invalid());
-            }
+        if let Some(hold) = &self.complete_restored_hold
+            && (hold.capture_identity_group_data() != self.capture_identity_group_data()
+                || hold.historical_creator_data() != self.capture_creator)
+        {
+            return Err(invalid());
         }
-        if let Some(evidence) = &self.complete_restored_evidence {
-            if self
+        if let Some(evidence) = &self.complete_restored_evidence
+            && self
                 .complete_restored_hold
                 .as_ref()
                 .is_none_or(|hold| hold.group_data() != evidence.hold)
-            {
-                return Err(invalid());
-            }
+        {
+            return Err(invalid());
         }
         Ok(())
     }

@@ -187,16 +187,16 @@ impl<'a> SourceView<'a> {
     pub(super) fn resolved_data(self) -> Result<(Physical<'a>, usize), ProviderError> {
         let mut physical = self.origin;
         let mut created = self.created;
-        if created == 0 {
-            if let Physical::Raw(value) = physical {
-                match super::super::state_view::raw_data(self.loans.first.state_data(), value)
-                    .origin_data()?
-                {
-                    FirstPassNodeOriginData::Raw(value) => physical = Physical::Raw(value),
-                    FirstPassNodeOriginData::Text(value) => {
-                        physical = Physical::Text(value);
-                        created = 1;
-                    }
+        if created == 0
+            && let Physical::Raw(value) = physical
+        {
+            match super::super::state_view::raw_data(self.loans.first.state_data(), value)
+                .origin_data()?
+            {
+                FirstPassNodeOriginData::Raw(value) => physical = Physical::Raw(value),
+                FirstPassNodeOriginData::Text(value) => {
+                    physical = Physical::Text(value);
+                    created = 1;
                 }
             }
         }

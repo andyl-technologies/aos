@@ -398,17 +398,16 @@ impl Drop for OriginalRestoredProducerRead<'_> {
             return;
         }
 
-        if let Ok(mut owner) = self.boot.try_borrow_mut() {
-            if let Some(state) = owner
+        if let Ok(mut owner) = self.boot.try_borrow_mut()
+            && let Some(state) = owner
                 .startup
                 .as_mut()
                 .and_then(|startup| startup.restored_suffix.as_mut())
-            {
-                state.failed = true;
-                state.ledger.interrupt_data();
-                if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
-                    attempt.interrupt_data();
-                }
+        {
+            state.failed = true;
+            state.ledger.interrupt_data();
+            if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
+                attempt.interrupt_data();
             }
         }
     }

@@ -147,13 +147,13 @@ impl Attempt {
         &self,
         original: &OriginalImport18RawBootstrap,
     ) -> Result<(), ProviderError> {
-        if let Some(launch) = &self.launch {
-            if !Weak::ptr_eq(
+        if let Some(launch) = &self.launch
+            && !Weak::ptr_eq(
                 launch,
                 &Rc::downgrade(original.parsed.shared_launch_data()?),
-            ) {
-                return Err(refused());
-            }
+            )
+        {
+            return Err(refused());
         }
         Ok(())
     }

@@ -302,10 +302,10 @@ impl ClientSession {
                 output,
             );
         let result = self.finish_original_bootstrap_effect_data(result, cut, 3);
-        if result.is_err() {
-            if let Some(raw) = output {
-                raw.failed = true;
-            }
+        if result.is_err()
+            && let Some(raw) = output
+        {
+            raw.failed = true;
         }
         result
     }

@@ -550,10 +550,10 @@ impl Drop for OriginalNativeObservation17Read {
         if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
             attempt.interrupt_data();
         }
-        if let Ok(mut owner) = self.boot.try_borrow_mut() {
-            if let Some(state) = &mut owner.restored_settled {
-                state.interrupt();
-            }
+        if let Ok(mut owner) = self.boot.try_borrow_mut()
+            && let Some(state) = &mut owner.restored_settled
+        {
+            state.interrupt();
         }
     }
 }

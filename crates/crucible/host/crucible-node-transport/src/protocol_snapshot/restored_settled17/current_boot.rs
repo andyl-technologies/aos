@@ -355,26 +355,26 @@ impl CurrentBoot17Data {
             {
                 return Err(invalid());
             }
-            if let Some(suffix) = &startup.restored_suffix {
-                if suffix.first_observation_group.is_some_and(|group| {
+            if let Some(suffix) = &startup.restored_suffix
+                && suffix.first_observation_group.is_some_and(|group| {
                     self.restoration_stages
                         .first_observation
                         .as_ref()
                         .is_none_or(|first| first.group != group)
-                }) {
-                    return Err(invalid());
-                }
+                })
+            {
+                return Err(invalid());
             }
         }
-        if let Some(prepare) = &self.prepare {
-            if prepare.payload.service_quote.as_ref().is_some_and(|quote| {
+        if let Some(prepare) = &self.prepare
+            && (prepare.payload.service_quote.as_ref().is_some_and(|quote| {
                 quote.boot_group != boot_group || quote.policy_group != self.policy_group
             }) || prepare.payload.control_quote.as_ref().is_some_and(|quote| {
                 quote.policy_group != self.policy_group
                     || quote.endpoint.policy_group != self.policy_group
-            }) {
-                return Err(invalid());
-            }
+            }))
+        {
+            return Err(invalid());
         }
         Ok(())
     }

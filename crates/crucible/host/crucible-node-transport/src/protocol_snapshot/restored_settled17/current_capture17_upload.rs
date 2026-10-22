@@ -313,10 +313,9 @@ fn effect<'body, 'rows>(
         ledger_group: verified_group,
         ..
     }) = &result
+        && *verified_group != ledger_group
     {
-        if *verified_group != ledger_group {
-            return Err(invalid());
-        }
+        return Err(invalid());
     }
     if matches!(
         phase,
@@ -384,14 +383,13 @@ pub(crate) fn read_current_capture17_upload_data<'body, 'rows>(
         "failed" => CurrentCaptureUploadPhase17::Failed,
         _ => return Err(invalid()),
     };
-    if let Some(effect) = &effect {
-        if effect.ledger_group != storage.ledger_group
+    if let Some(effect) = &effect
+        && (effect.ledger_group != storage.ledger_group
             || effect.supervisor_group != storage.supervisor_group
             || effect.input != storage.input
-            || effect.before != storage.before
-        {
-            return Err(invalid());
-        }
+            || effect.before != storage.before)
+    {
+        return Err(invalid());
     }
     if phase != CurrentCaptureUploadPhase17::Failed {
         admitted.requested_peak_data()?;
