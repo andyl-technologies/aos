@@ -880,6 +880,17 @@ pub(super) fn wait_for_public_attempt(
                 eprintln!("{dispatch}");
             }
 
+            // Work outside RUN dispatch, such as a checkpoint or capture after
+            // a choice, logs no progress row; the newest service lines name it.
+            let stderr = service.stderr_tail();
+            let recent = stderr.lines().rev().take(6).collect::<Vec<_>>();
+            for line in recent.into_iter().rev() {
+                eprintln!(
+                    "CRUCIBLE-ENVOY-SERVICE-TAIL-V1 {}",
+                    line.chars().take(600).collect::<String>()
+                );
+            }
+
             // A host wait row names the publication the controller is blocked
             // on; the latest one explains a crawl that the progress row only
             // measures.
