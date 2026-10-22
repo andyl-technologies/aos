@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::download::{
-    DownloadRequest, default_engine, download_nars, fetch_narinfo_closure, resolve_mirror_chain,
-    split_mirror_chain,
+    DownloadRequest, default_engine, download_nars, fetch_narinfo_closure_for_trust,
+    resolve_mirror_chain, split_mirror_chain,
 };
 use crate::resolve::ResolvedClosure;
 use crate::types::{BootProviderState, ImageGeneration, ModuleLibraryIdentity};
@@ -560,11 +560,12 @@ async fn import_toplevel(
     let trust = registries.trust_context_for_roots(&roots);
     trust.enforce_totality()?;
     let requests = [request(&closure.root.store_path, mirror)];
-    let resolved = fetch_narinfo_closure(
+    let resolved = fetch_narinfo_closure_for_trust(
         Arc::new(default_engine()),
         &requests,
         config.settings.parallel_downloads,
         printer,
+        &trust,
     )
     .await?;
     let results = download_nars(
@@ -604,11 +605,12 @@ async fn import_exact(
     let roots = [(registry_name, store_path_hash(store_path))];
     let trust = registries.trust_context_for_roots(&roots);
     trust.enforce_totality()?;
-    let resolved = fetch_narinfo_closure(
+    let resolved = fetch_narinfo_closure_for_trust(
         Arc::new(default_engine()),
         &[request(store_path, mirror)],
         config.settings.parallel_downloads,
         printer,
+        &trust,
     )
     .await?;
     let results = download_nars(

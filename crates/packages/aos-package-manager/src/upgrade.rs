@@ -25,8 +25,9 @@ use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    resolve_mirror_chain, resolved_downloads_json, split_mirror_chain,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars,
+    fetch_narinfo_closure_for_trust, resolve_mirror_chain, resolved_downloads_json,
+    split_mirror_chain,
 };
 use super::platform::native_platform;
 use super::profile::Profile;
@@ -350,11 +351,12 @@ pub async fn run(
     let resolved: Vec<ResolvedDownload> = if !requests.is_empty() {
         printer.step(4, 7, "Planning downloads...");
         let engine = std::sync::Arc::new(default_engine());
-        fetch_narinfo_closure(
+        fetch_narinfo_closure_for_trust(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
             printer,
+            &trust_ctx,
         )
         .await?
     } else {

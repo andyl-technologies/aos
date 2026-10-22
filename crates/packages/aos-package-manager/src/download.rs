@@ -27,6 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 use tokio::sync::Semaphore;
@@ -38,11 +39,71 @@ use aos_cli_ui::output::{Printer, TransferProgress};
 use aos_nar::cache::canonical_sha256_hex;
 use aos_nar::info::{self as narinfo, NarInfo};
 use aos_nar::verify::sha256_digest_hex;
+use aos_registry_client::registry::store::TrustContext;
 use aos_registry_format::consumer::RegistryConfig;
 use aos_transfer::{
     DownloadRequest as ManagedDownloadRequest, HashAlgorithm, ResumePolicy, TransferEngine,
     TransferEngineConfig, TransferEvent, TransferObserver, TransferRequest,
 };
+
+const MAX_NARINFO_BYTES: u64 = 1024 * 1024;
+const MAX_NARINFO_REFERENCES: usize = 4096;
+const MAX_CLOSURE_METADATA_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CLOSURE_NODES: usize = 65_536;
+const MAX_CLOSURE_DEPTH: usize = 1024;
+const MAX_CLOSURE_REFERENCE_EDGES: usize = 262_144;
+
+#[derive(Clone, Copy)]
+struct MetadataLimits {
+    document_bytes: u64,
+    document_references: usize,
+    closure_metadata_bytes: u64,
+    closure_nodes: usize,
+    closure_depth: usize,
+    closure_reference_edges: usize,
+}
+
+impl Default for MetadataLimits {
+    fn default() -> Self {
+        Self {
+            document_bytes: MAX_NARINFO_BYTES,
+            document_references: MAX_NARINFO_REFERENCES,
+            closure_metadata_bytes: MAX_CLOSURE_METADATA_BYTES,
+            closure_nodes: MAX_CLOSURE_NODES,
+            closure_depth: MAX_CLOSURE_DEPTH,
+            closure_reference_edges: MAX_CLOSURE_REFERENCE_EDGES,
+        }
+    }
+}
+
+struct MetadataBudget {
+    limits: MetadataLimits,
+    received_bytes: AtomicU64,
+}
+
+impl MetadataBudget {
+    fn new(limits: MetadataLimits) -> Self {
+        Self {
+            limits,
+            received_bytes: AtomicU64::new(0),
+        }
+    }
+
+    fn charge_document(&self, bytes: u64, references: usize) -> Result<()> {
+        anyhow::ensure!(
+            references <= self.limits.document_references,
+            "narinfo references exceed the per-document limit"
+        );
+        self.received_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |received| {
+                received
+                    .checked_add(bytes)
+                    .filter(|next| *next <= self.limits.closure_metadata_bytes)
+            })
+            .map_err(|_| anyhow::anyhow!("narinfo closure exceeds its metadata byte limit"))?;
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Request / result types
@@ -258,17 +319,34 @@ fn is_not_found(err: &anyhow::Error) -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error if any narinfo fetch fails (network error, missing
-/// body, non-UTF-8 body, or unparseable narinfo) or a fetch task panics.
+/// Returns an error if the request batch or metadata byte budget is exceeded,
+/// any narinfo has too many references, a fetch fails (network error, missing
+/// body, non-UTF-8 body, mismatched store path, or unparseable narinfo), or a
+/// fetch task panics.
 pub async fn fetch_narinfos(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
     parallel: u32,
     printer: &Printer,
 ) -> Result<Vec<ResolvedDownload>> {
+    let budget = Arc::new(MetadataBudget::new(MetadataLimits::default()));
+    fetch_narinfos_with_budget(engine, requests, parallel, printer, budget).await
+}
+
+async fn fetch_narinfos_with_budget(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+    budget: Arc<MetadataBudget>,
+) -> Result<Vec<ResolvedDownload>> {
     if requests.is_empty() {
         return Ok(Vec::new());
     }
+    anyhow::ensure!(
+        requests.len() <= budget.limits.closure_nodes,
+        "narinfo request batch exceeds the closure node limit"
+    );
 
     printer.info(&format!("Fetching {} narinfo(s)...", requests.len(),));
 
@@ -278,13 +356,14 @@ pub async fn fetch_narinfos(
     for (idx, req) in requests.iter().enumerate() {
         let req_clone = req.clone();
         let engine = Arc::clone(&engine);
+        let budget = Arc::clone(&budget);
         let permit = Arc::clone(&semaphore)
             .acquire_owned()
             .await
             .context("acquiring semaphore permit")?;
 
         let handle = tokio::spawn(async move {
-            let result = fetch_one_narinfo(&engine, &req_clone).await;
+            let result = fetch_one_narinfo(&engine, &req_clone, &budget).await;
             drop(permit);
             result.map(|(mirror_url, info)| {
                 (
@@ -329,22 +408,83 @@ pub async fn fetch_narinfos(
 ///
 /// # Errors
 ///
-/// Returns an error if a narinfo fetch fails, the local store validity
-/// check fails, or the fetched reference graph contains a cycle.
+/// Returns an error if a narinfo fetch fails, the local store validity check
+/// fails, the metadata, node, reference, edge, or depth budget is exceeded, or
+/// the fetched reference graph contains a cycle.
 pub async fn fetch_narinfo_closure(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
     parallel: u32,
     printer: &Printer,
 ) -> Result<Vec<ResolvedDownload>> {
-    fetch_narinfo_closure_with_filter(
+    fetch_narinfo_closure_with_policy(
         engine,
         requests,
         parallel,
         printer,
         filter_missing_download_requests,
+        MetadataLimits::default(),
+        None,
     )
     .await
+}
+
+/// Fetches a reference closure while restricting graph-backed traversal to
+/// authenticated store-path hashes.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`fetch_narinfo_closure`], or
+/// when a narinfo names a member outside `expected_hashes`.
+pub(crate) async fn fetch_expected_narinfo_closure(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+    expected_hashes: &HashSet<String>,
+) -> Result<Vec<ResolvedDownload>> {
+    fetch_narinfo_closure_with_policy(
+        engine,
+        requests,
+        parallel,
+        printer,
+        filter_missing_download_requests,
+        MetadataLimits::default(),
+        Some(expected_hashes),
+    )
+    .await
+}
+
+/// Fetches a closure and applies a closed signed-graph membership check when
+/// every requested root belongs to the transaction's authenticated graph.
+///
+/// Mixed and legacy transactions retain cache discovery semantics while still
+/// receiving the same byte, reference, node, edge, and depth limits.
+///
+/// # Errors
+///
+/// Returns an error under the same conditions as [`fetch_narinfo_closure`], or
+/// when a graph-backed response introduces an unauthenticated member.
+pub(crate) async fn fetch_narinfo_closure_for_trust(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+    trust: &TrustContext<'_>,
+) -> Result<Vec<ResolvedDownload>> {
+    let fully_graph_backed = requests
+        .iter()
+        .all(|request| trust.enforced(narinfo::store_hash(&request.store_path)));
+    if fully_graph_backed {
+        let expected = trust
+            .attributed_hashes()
+            .map(str::to_string)
+            .collect::<HashSet<_>>();
+        return fetch_expected_narinfo_closure(engine, requests, parallel, printer, &expected)
+            .await;
+    }
+
+    fetch_narinfo_closure(engine, requests, parallel, printer).await
 }
 
 /// Fetches complete reference metadata, including paths already valid locally.
@@ -353,25 +493,34 @@ pub async fn fetch_narinfo_closure(
 /// pins. Local validity alone supplies neither those facts nor release authority.
 ///
 /// # Errors
-/// Rejects unavailable narinfos, malformed responses, or reference cycles.
+/// Rejects unavailable narinfos, malformed responses, exceeded closure
+/// budgets, or reference cycles.
 pub(crate) async fn fetch_complete_narinfo_closure(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
     parallel: u32,
     printer: &Printer,
 ) -> Result<Vec<ResolvedDownload>> {
-    fetch_narinfo_closure_with_filter(engine, requests, parallel, printer, |requests| {
-        std::future::ready(Ok(requests))
-    })
+    fetch_narinfo_closure_with_policy(
+        engine,
+        requests,
+        parallel,
+        printer,
+        |requests| std::future::ready(Ok(requests)),
+        MetadataLimits::default(),
+        None,
+    )
     .await
 }
 
-async fn fetch_narinfo_closure_with_filter<Filter, Future>(
+async fn fetch_narinfo_closure_with_policy<Filter, Future>(
     engine: Arc<TransferEngine>,
     requests: &[DownloadRequest],
     parallel: u32,
     printer: &Printer,
     mut filter_references: Filter,
+    limits: MetadataLimits,
+    expected_hashes: Option<&HashSet<String>>,
 ) -> Result<Vec<ResolvedDownload>>
 where
     Filter: FnMut(Vec<DownloadRequest>) -> Future,
@@ -384,16 +533,36 @@ where
     let mut fetched: HashMap<String, ResolvedDownload> = HashMap::new();
     let mut requested: HashSet<String> = HashSet::new();
     let mut pending = Vec::new();
+    let mut depth = 0usize;
+    let mut reference_edges = 0usize;
+    let budget = Arc::new(MetadataBudget::new(limits));
 
     for request in requests {
         let hash = narinfo::store_hash(&request.store_path).to_string();
+        if let Some(expected) = expected_hashes {
+            anyhow::ensure!(
+                expected.contains(&hash),
+                "requested store path is outside the authenticated closure"
+            );
+        }
         if requested.insert(hash) {
             pending.push(request.clone());
         }
     }
+    anyhow::ensure!(
+        requested.len() <= limits.closure_nodes,
+        "narinfo closure exceeds its node limit"
+    );
 
     while !pending.is_empty() {
-        let resolved = fetch_narinfos(Arc::clone(&engine), &pending, parallel, printer).await?;
+        let resolved = fetch_narinfos_with_budget(
+            Arc::clone(&engine),
+            &pending,
+            parallel,
+            printer,
+            Arc::clone(&budget),
+        )
+        .await?;
         let mut candidates = Vec::new();
 
         for item in resolved {
@@ -402,12 +571,30 @@ where
                 continue;
             }
 
+            reference_edges = reference_edges
+                .checked_add(item.narinfo.references.len())
+                .context("narinfo reference count overflow")?;
+            anyhow::ensure!(
+                reference_edges <= limits.closure_reference_edges,
+                "narinfo closure exceeds its reference edge limit"
+            );
+
             for reference in &item.narinfo.references {
                 let reference_hash = narinfo::store_hash(reference).to_string();
+                if let Some(expected) = expected_hashes {
+                    anyhow::ensure!(
+                        expected.contains(&reference_hash),
+                        "narinfo references a store path outside the authenticated closure"
+                    );
+                }
                 if fetched.contains_key(&reference_hash) || requested.contains(&reference_hash) {
                     continue;
                 }
                 requested.insert(reference_hash);
+                anyhow::ensure!(
+                    requested.len() <= limits.closure_nodes,
+                    "narinfo closure exceeds its node limit"
+                );
                 candidates.push(DownloadRequest {
                     store_path: reference_store_path(reference, &item.narinfo.store_path),
                     mirror_url: item.req.mirror_url.clone(),
@@ -418,6 +605,15 @@ where
             fetched.insert(hash, item);
         }
 
+        if !candidates.is_empty() {
+            depth = depth
+                .checked_add(1)
+                .context("narinfo closure depth overflow")?;
+            anyhow::ensure!(
+                depth <= limits.closure_depth,
+                "narinfo closure exceeds its depth limit"
+            );
+        }
         pending = filter_references(candidates).await?;
     }
 
@@ -459,11 +655,12 @@ async fn filter_missing_download_requests(
 async fn fetch_one_narinfo(
     engine: &TransferEngine,
     req: &DownloadRequest,
+    budget: &MetadataBudget,
 ) -> Result<(String, NarInfo)> {
     let mut last_not_found: Option<anyhow::Error> = None;
     for mirror_url in req.mirror_chain() {
         let url = narinfo_url(mirror_url, &req.store_path);
-        match fetch_one_narinfo_from(engine, &url, req).await {
+        match fetch_one_narinfo_from(engine, &url, req, budget).await {
             Ok(info) => return Ok((mirror_url.to_string(), info)),
             Err(err) if is_not_found(&err) => {
                 // Cache miss: fall through to the next cache in priority order.
@@ -481,8 +678,9 @@ async fn fetch_one_narinfo_from(
     engine: &TransferEngine,
     url: &str,
     req: &DownloadRequest,
+    budget: &MetadataBudget,
 ) -> Result<NarInfo> {
-    let transfer_req = TransferRequest::get(url);
+    let transfer_req = TransferRequest::get(url).with_maximum_bytes(budget.limits.document_bytes);
     let result = engine
         .execute(transfer_req)
         .await
@@ -492,8 +690,16 @@ async fn fetch_one_narinfo_from(
     })?;
     let text =
         std::str::from_utf8(&body).with_context(|| format!("narinfo body is not UTF-8: {url}"))?;
-    narinfo::parse(text)
-        .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))
+    let info = narinfo::parse(text)
+        .with_context(|| format!("parsing narinfo for {} from {url}", req.store_path))?;
+    anyhow::ensure!(
+        info.store_path == req.store_path,
+        "narinfo StorePath {} does not match requested path {}",
+        info.store_path,
+        req.store_path
+    );
+    budget.charge_document(body.len() as u64, info.references.len())?;
+    Ok(info)
 }
 
 /// Expand a narinfo reference (bare basename or full path) to a full store
@@ -886,6 +1092,72 @@ fn short_label(store_path: &str) -> String {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    async fn fetch_raw_narinfo(
+        body: &[u8],
+        chunked: bool,
+        maximum_bytes: u64,
+        store_path: &str,
+    ) -> Result<NarInfo> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let response_body = body.to_vec();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 2048];
+            stream.read(&mut request).await.unwrap();
+
+            if chunked {
+                stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    .await
+                    .unwrap();
+                for chunk in response_body.chunks(7) {
+                    stream
+                        .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                        .await
+                        .unwrap();
+                    stream.write_all(chunk).await.unwrap();
+                    stream.write_all(b"\r\n").await.unwrap();
+                }
+                stream.write_all(b"0\r\n\r\n").await.unwrap();
+            } else {
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                            response_body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                stream.write_all(&response_body).await.unwrap();
+            }
+        });
+        let mut config = TransferEngineConfig::default();
+        config.retry.max_attempts = 1;
+        let engine = TransferEngine::new(config);
+        let request = DownloadRequest {
+            store_path: store_path.to_string(),
+            mirror_url: format!("http://{address}"),
+            fallback_mirrors: Vec::new(),
+        };
+        let mut limits = MetadataLimits::default();
+        limits.document_bytes = maximum_bytes;
+        limits.closure_metadata_bytes = maximum_bytes;
+        let budget = MetadataBudget::new(limits);
+        let result = fetch_one_narinfo_from(
+            &engine,
+            &format!("http://{address}/metadata.narinfo"),
+            &request,
+            &budget,
+        )
+        .await;
+        server.await.unwrap();
+        result
+    }
 
     #[test]
     fn join_basic() {
@@ -996,6 +1268,172 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn narinfo_http_body_limit_handles_content_length_and_chunked_responses() {
+        let store_path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
+        let body = narinfo::format(&resolved_download(store_path, &[]).narinfo).into_bytes();
+
+        for chunked in [false, true] {
+            let accepted = fetch_raw_narinfo(&body, chunked, body.len() as u64, store_path).await;
+            assert!(accepted.is_ok(), "exact limit failed: {accepted:?}");
+
+            let error = fetch_raw_narinfo(&body, chunked, body.len() as u64 - 1, store_path)
+                .await
+                .unwrap_err();
+            assert!(format!("{error:#}").contains("byte limit"), "{error:#}");
+        }
+    }
+
+    #[tokio::test]
+    async fn closure_limits_stop_expanding_and_deep_graphs_before_follow_up_fetches() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
+        let first = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-first-1.0";
+        let second = "cccccccccccccccccccccccccccccccc-second-1.0";
+        std::fs::write(
+            cache
+                .path()
+                .join(format!("{}.narinfo", narinfo::store_hash(root))),
+            narinfo::format(&resolved_download(root, &[first, second]).narinfo),
+        )
+        .unwrap();
+        let requests = [DownloadRequest {
+            store_path: root.to_string(),
+            mirror_url: format!("file://{}", cache.path().display()),
+            fallback_mirrors: Vec::new(),
+        }];
+        let printer = Printer::new(0, true, false);
+
+        let mut node_limits = MetadataLimits::default();
+        node_limits.closure_nodes = 2;
+        let node_error = fetch_narinfo_closure_with_policy(
+            Arc::new(default_engine()),
+            &requests,
+            1,
+            &printer,
+            |requests| std::future::ready(Ok(requests)),
+            node_limits,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            node_error.to_string().contains("node limit"),
+            "{node_error:#}"
+        );
+
+        let mut depth_limits = MetadataLimits::default();
+        depth_limits.closure_depth = 0;
+        let depth_error = fetch_narinfo_closure_with_policy(
+            Arc::new(default_engine()),
+            &requests,
+            1,
+            &printer,
+            |requests| std::future::ready(Ok(requests)),
+            depth_limits,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            depth_error.to_string().contains("depth limit"),
+            "{depth_error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_closure_rejects_unexpected_member_before_fetch() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
+        let unexpected = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-unexpected-1.0";
+        std::fs::write(
+            cache
+                .path()
+                .join(format!("{}.narinfo", narinfo::store_hash(root))),
+            narinfo::format(&resolved_download(root, &[unexpected]).narinfo),
+        )
+        .unwrap();
+        let requests = [DownloadRequest {
+            store_path: root.to_string(),
+            mirror_url: format!("file://{}", cache.path().display()),
+            fallback_mirrors: Vec::new(),
+        }];
+        let expected = HashSet::from([narinfo::store_hash(root).to_string()]);
+
+        let error = fetch_expected_narinfo_closure(
+            Arc::new(default_engine()),
+            &requests,
+            1,
+            &Printer::new(0, true, false),
+            &expected,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("outside the authenticated closure"),
+            "{error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_closure_accepts_expected_anonymous_member() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
+        let anonymous = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-anonymous-1.0";
+        for item in [
+            resolved_download(root, &[anonymous]),
+            resolved_download(anonymous, &[]),
+        ] {
+            std::fs::write(
+                cache.path().join(format!(
+                    "{}.narinfo",
+                    narinfo::store_hash(&item.narinfo.store_path)
+                )),
+                narinfo::format(&item.narinfo),
+            )
+            .unwrap();
+        }
+        let requests = [DownloadRequest {
+            store_path: root.to_string(),
+            mirror_url: format!("file://{}", cache.path().display()),
+            fallback_mirrors: Vec::new(),
+        }];
+        let expected = HashSet::from([
+            narinfo::store_hash(root).to_string(),
+            narinfo::store_hash(anonymous).to_string(),
+        ]);
+
+        let closure = fetch_expected_narinfo_closure(
+            Arc::new(default_engine()),
+            &requests,
+            1,
+            &Printer::new(0, true, false),
+            &expected,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(closure.len(), 2);
+        assert_eq!(closure[0].narinfo.store_path, anonymous);
+        assert_eq!(closure[1].narinfo.store_path, root);
+    }
+
+    #[test]
+    fn metadata_budget_enforces_reference_and_aggregate_byte_limits() {
+        let mut limits = MetadataLimits::default();
+        limits.document_references = 2;
+        limits.closure_metadata_bytes = 5;
+        let budget = MetadataBudget::new(limits);
+
+        budget.charge_document(5, 2).unwrap();
+
+        assert!(budget.charge_document(0, 3).is_err());
+        assert!(budget.charge_document(1, 0).is_err());
+    }
+
+    #[tokio::test]
     async fn complete_metadata_preserves_references_skipped_by_missing_downloads() {
         let cache = tempfile::tempdir().unwrap();
         let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
@@ -1022,7 +1460,7 @@ mod tests {
 
         // The boundary models the default downloader's locally-valid check
         // without mutating process-global store configuration in parallel tests.
-        let missing = fetch_narinfo_closure_with_filter(
+        let missing = fetch_narinfo_closure_with_policy(
             Arc::new(default_engine()),
             &requests,
             2,
@@ -1033,6 +1471,8 @@ mod tests {
                     .filter(|request| request.store_path != dependency)
                     .collect()))
             },
+            MetadataLimits::default(),
+            None,
         )
         .await
         .unwrap();
