@@ -47,7 +47,7 @@ const PROOF_FIELDS: [&str; 4] = ["schema", "algorithm", "context_digest", "mac"]
 ///
 /// # Errors
 /// Refuses checked population arithmetic or unsupported pinned tree layouts.
-pub(super) fn extent_data() -> Result<OriginalJsonValueStorageExtentData, ProviderError> {
+pub(in super::super) fn extent_data() -> Result<OriginalJsonValueStorageExtentData, ProviderError> {
     let mut members = 1usize; // The sole proof18 extension entry.
     let mut strings = NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF.len();
     for fields in [

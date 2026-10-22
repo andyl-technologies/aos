@@ -48,6 +48,8 @@ pub(in crate::reference_packet::service) use bootstrap_import18::{
     bootstrap_literal_construction_data as original_import18_bootstrap_literal_construction_data,
     bootstrap_normalizations_construction_data as original_import18_bootstrap_normalizations_construction_data,
     bootstrap_normalizations_counter_scratch_data as original_import18_bootstrap_normalizations_counter_scratch_data,
+    bootstrap_proof_construction_data as original_import18_bootstrap_proof_construction_data,
+    bootstrap_proof_counter_scratch_data as original_import18_bootstrap_proof_counter_scratch_data,
     bootstrap_retained_schedule_data as original_import18_bootstrap_retained_schedule_data,
     bootstrap_schedule_counter_scratch_data as original_import18_bootstrap_schedule_counter_scratch_data,
     bootstrap_value_construction_data as original_import18_bootstrap_value_construction_data,

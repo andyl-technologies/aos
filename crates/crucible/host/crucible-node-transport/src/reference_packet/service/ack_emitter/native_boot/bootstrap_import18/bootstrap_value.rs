@@ -18,6 +18,7 @@ use std::rc::{Rc, Weak};
 
 #[path = "bootstrap_value/populations.rs"]
 mod populations;
+pub(super) use populations::extent_data as closed_value_extent_data;
 
 /// Admits the parser while observing all original and external owners.
 pub(in super::super) trait Admission {
@@ -148,7 +149,7 @@ impl Attempt {
         literal: &Literal,
         inspect: impl FnOnce(&Value) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
-        self.with_value_and_operands_data(original, normalizations, literal, |value, _| {
+        self.with_value_and_operands_data(original, normalizations, literal, |value, _, _| {
             inspect(value)
         })
     }
@@ -164,14 +165,18 @@ impl Attempt {
         original: &OriginalImport18RawBootstrap,
         normalizations: &Normalizations,
         literal: &Literal,
-        inspect: impl FnOnce(&Value, &BootstrapAckOperands<'_>) -> Result<R, ProviderError>,
+        inspect: impl FnOnce(
+            &Value,
+            &BootstrapAckOperands<'_>,
+            super::bootstrap_normalizations::Digests,
+        ) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
         if !self.complete || self.failed {
             return Err(refused());
         }
-        literal.with_body_and_operands_data(original, normalizations, |_, operands| {
+        literal.with_body_and_operands_data(original, normalizations, |_, operands, digests| {
             self.guard(original)?;
-            let outcome = inspect(self.value.value_data()?, operands);
+            let outcome = inspect(self.value.value_data()?, operands, digests);
             let terminal = self
                 .guard(original)
                 .and_then(|()| self.value.value_data().map(|_| ()));
@@ -194,6 +199,7 @@ impl Attempt {
             size_of::<&Literal>(),
             size_of::<&Value>(),
             size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<super::bootstrap_normalizations::Digests>() * 2,
             size_of::<R>(),
             size_of::<Result<R, ProviderError>>(),
             size_of::<R>(),
@@ -260,7 +266,7 @@ impl OriginalImport18RawBootstrap {
         // The original owners remain immutably borrowed throughout this phase.
         // Check the same live authority between callbacks, and retain full
         // original/Host/SDK terminal guards around either aggregate outcome.
-        literal.with_body_and_operands_data(self, normalizations, |raw, operands| {
+        literal.with_body_and_operands_data(self, normalizations, |raw, operands, _| {
             attempt.guard_operands(self, operands)?;
             self.admit_source_row(self.initial_construction.as_ref().ok_or_else(refused)?.row)?;
             admission.quote_data(
@@ -364,25 +370,28 @@ pub(in crate::reference_packet::service) fn retained_schedule_data(
     value: [usize; 3],
     codec: [usize; 3],
     correlation: [usize; 3],
+    proof: [usize; 3],
 ) -> Result<usize, ProviderError> {
     let normalizing = normalizations[0]
         .checked_add(size_of::<Literal>())
         .and_then(|sum| sum.checked_add(size_of::<Attempt>()))
         .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_codec::Attempt>()))
         .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_correlation::Attempt>()))
+        .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_proof::Attempt>()))
         .ok_or_else(exhausted)?;
     let decoding = size_of::<Normalizations>()
         .checked_add(literal[0])
         .and_then(|sum| sum.checked_add(value[0]))
         .and_then(|sum| sum.checked_add(codec[0]))
         .and_then(|sum| sum.checked_add(correlation[0]))
+        .and_then(|sum| sum.checked_add(proof[0]))
         .ok_or_else(exhausted)?;
     Ok(normalizing.max(decoding))
 }
 
 /// Names the fixed retained-lifetime calculation and checked sum controls.
 pub(in crate::reference_packet::service) fn schedule_counter_scratch_data() -> usize {
-    size_of::<[usize; 3]>() * 5
+    size_of::<[usize; 3]>() * 6
         + size_of::<usize>() * 4
         + size_of::<Option<usize>>()
         + size_of::<Result<usize, ProviderError>>()
@@ -421,6 +430,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<&Normalizations>(),
         size_of::<&Literal>(),
         size_of::<&BootstrapAckOperands<'static>>(),
+        size_of::<super::bootstrap_normalizations::Digests>() * 2,
         size_of::<&dyn Admission>(),
         size_of::<[usize; 3]>() * 4,
         size_of::<BootstrapBodyMetadataProfileData>(),

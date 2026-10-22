@@ -884,3 +884,46 @@ fn original_bootstrap_correlation_retains_actual_sdk_requests_through_fencing() 
         ));
     }
 }
+
+#[test]
+fn original_bootstrap_proof_binds_every_actual_context_operand_and_terminal_owner() {
+    let prefix = "initial_policy_kernel_normalizations_host_proof_";
+    for suffix in [
+        "complete",
+        "reactive",
+        "wrong_birth",
+        "wrong_kernel",
+        "wrong_policy",
+        "wrong_host",
+        "wrong_native",
+        "wrong_hello_request",
+        "wrong_hello_response",
+        "wrong_assignment",
+        "wrong_recipe",
+        "wrong_funding",
+        "wrong_key",
+        "wrong_mac",
+        "wrong_digest",
+        "changed_cut",
+        "missing_correlation",
+        "callback_refused",
+        "loan_expired",
+    ] {
+        flight(&format!("{prefix}{suffix}"));
+    }
+    for boundary in [
+        "construction",
+        "assignment",
+        "assigned",
+        "context",
+        "constructed",
+        "digest",
+        "hashed",
+        "verification",
+        "verified",
+    ] {
+        for action in ["reject", "expire", "revoke"] {
+            flight(&format!("{prefix}{action}_{boundary}"));
+        }
+    }
+}

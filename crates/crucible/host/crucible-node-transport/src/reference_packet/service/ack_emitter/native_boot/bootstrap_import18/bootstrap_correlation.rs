@@ -13,6 +13,9 @@ use super::*;
 use crate::envelope::Envelope;
 use crate::reference_packet::service::PacketNative5SourceLaunch;
 use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18SelectedLaunchWireData;
+use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
+    PacketNativeImport18BootstrapAckProof, PacketNativeImport18BootstrapRequest,
+};
 use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
 use crate::session::CorrelationGuard;
 use std::rc::{Rc, Weak};
@@ -44,7 +47,7 @@ impl Inputs<'_> {
     ///
     /// # Errors
     /// Refuses foreign associations, incomplete census or checked overflow.
-    fn retained_data(&self, current: usize) -> Result<usize, ProviderError> {
+    pub(super) fn retained_data(&self, current: usize) -> Result<usize, ProviderError> {
         let Self {
             original,
             normalizations,
@@ -191,6 +194,14 @@ impl Attempt {
             .ok_or_else(exhausted)
     }
 
+    /// Fences a failed composite consumer while preserving every accepted record.
+    pub(super) fn refuse_data(&mut self) {
+        self.failed = true;
+        if let Some(guard) = &mut self.guard {
+            guard.fence();
+        }
+    }
+
     fn authenticate_received(&self, envelope: &Envelope) -> Result<(), ProviderError> {
         let guard = self.guard.as_ref().ok_or_else(refused)?;
         let mut incoming = guard.incoming_requests();
@@ -209,17 +220,23 @@ impl Attempt {
     /// Refuses checked counter-layout accumulation overflow.
     pub(in super::super) fn received_loan_counter_scratch_data<R: Copy>()
     -> Result<usize, ProviderError> {
-        let fields: [usize; 10] = [
+        let fields: [usize; 16] = [
             size_of::<Inputs<'static>>() * 3,
             size_of::<&Self>(),
             size_of::<&CorrelationGuard>(),
+            size_of::<RequestValues<'static>>() * 3,
+            size_of::<Option<&Envelope>>() * 4,
+            size_of::<Result<&Envelope, ProviderError>>(),
             size_of::<&Envelope>(),
+            size_of::<&PacketNativeImport18BootstrapRequest>(),
+            size_of::<&PacketNativeImport18BootstrapAckProof>(),
+            size_of::<super::bootstrap_normalizations::Digests>() * 2,
             size_of::<&BootstrapAckOperands<'static>>(),
             size_of::<Result<(), ProviderError>>() * 2,
-            size_of::<R>() * 2,
-            size_of::<Result<R, ProviderError>>() * 2,
-            size_of::<[usize; 10]>(),
-            size_of::<std::array::IntoIter<usize, 10>>(),
+            size_of::<R>() * 3,
+            size_of::<Result<R, ProviderError>>() * 3,
+            size_of::<[usize; 16]>(),
+            size_of::<std::array::IntoIter<usize, 16>>(),
         ];
         fields.into_iter().try_fold(
             Codec::request_loan_counter_scratch_data::<R>()?,
@@ -238,6 +255,31 @@ impl Attempt {
         inputs: Inputs<'_>,
         inspect: impl FnOnce(&CorrelationGuard, &Envelope) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_received_context_data(inputs, |guard, envelope, _, _, _, _| {
+            inspect(guard, envelope)
+        })
+    }
+
+    /// Lends the actual reserved request and all original proof operands together.
+    ///
+    /// The five normalization hashes travel through the same nested literal,
+    /// strict and typed loan. No independent SDK or normalization loan opens.
+    /// Callback allocations and Copy results need separately admitted credit.
+    ///
+    /// # Errors
+    /// Refuses incomplete/fenced correlation, stale originals or either outcome.
+    pub(super) fn with_received_context_data<R: Copy>(
+        &self,
+        inputs: Inputs<'_>,
+        inspect: impl FnOnce(
+            &CorrelationGuard,
+            &Envelope,
+            &PacketNativeImport18BootstrapRequest,
+            &PacketNativeImport18BootstrapAckProof,
+            &BootstrapAckOperands<'_>,
+            super::bootstrap_normalizations::Digests,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         if !self.complete || self.failed || self.step != Some(Step::Receive) {
             return Err(refused());
         }
@@ -246,10 +288,12 @@ impl Attempt {
             inputs.normalizations,
             inputs.literal,
             inputs.parsed,
-            |envelope, _, _, operands| {
+            |envelope, request, proof, operands, digests| {
                 self.authenticate(inputs, operands)?;
                 self.authenticate_received(envelope)?;
-                let outcome = inspect(self.guard.as_ref().ok_or_else(refused)?, envelope);
+                let guard = self.guard.as_ref().ok_or_else(refused)?;
+                let received = guard.incoming_requests().next().ok_or_else(refused)?;
+                let outcome = inspect(guard, received, request, proof, operands, digests);
                 let terminal = self
                     .authenticate(inputs, operands)
                     .and_then(|()| self.authenticate_received(envelope));
@@ -319,7 +363,7 @@ fn construct_current(
         inputs.normalizations,
         inputs.literal,
         inputs.parsed,
-        |envelope, _, _, operands| {
+        |envelope, _, _, operands, _| {
             attempt.authenticate(inputs, operands)?;
             let original = inputs.original;
             original.admit_source_row(

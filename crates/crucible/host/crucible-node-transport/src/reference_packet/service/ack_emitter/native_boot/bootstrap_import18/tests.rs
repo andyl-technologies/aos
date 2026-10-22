@@ -109,6 +109,7 @@ fn child(case: &str, wire: &[u8]) {
         None
     };
     let process = command.spawn().unwrap();
+    let mut proof_hello = None;
     drop(command);
     if let Some(peer) = &mut public_peer {
         if case.starts_with("initial_hello_request_")
@@ -125,7 +126,9 @@ fn child(case: &str, wire: &[u8]) {
             let body = initial_reconstruction::hello_request_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
-            if case.contains("_normalizations_host_correlation_") {
+            if case.contains("_normalizations_host_proof_") {
+                proof_hello = Some(body);
+            } else if case.contains("_normalizations_host_correlation_") {
                 super::bootstrap_codec::tests::write_parent_frame(
                     "initial_policy_kernel_normalizations_host_codec_complete",
                     peer,
@@ -181,8 +184,26 @@ fn child(case: &str, wire: &[u8]) {
     if case != "open_writer" {
         parent.shutdown(Shutdown::Write).unwrap();
     }
+    let proof_publication = if let Some(hello) = proof_hello {
+        super::bootstrap_proof::tests::write_parent_frame(
+            case,
+            public_peer.as_mut().unwrap(),
+            wire,
+            process.id(),
+            &hello,
+        )
+    } else {
+        Ok(Vec::new())
+    };
     let output = process.wait_with_output().unwrap();
-    let mut diagnostics = output.stderr;
+    let mut diagnostics = match proof_publication {
+        Ok(frame) => frame,
+        Err(error) => panic!(
+            "{case}: bootstrap fixture Hello: {error}; child: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    };
+    diagnostics.extend_from_slice(&output.stderr);
     if let Some(peer) = &mut public_peer {
         use std::io::Read;
         if let Err(error) = peer.read_to_end(&mut diagnostics) {

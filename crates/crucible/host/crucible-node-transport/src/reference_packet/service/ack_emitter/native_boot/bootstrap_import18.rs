@@ -64,9 +64,15 @@ pub(in crate::reference_packet::service) use launch_validation::{
 mod bootstrap_codec;
 #[path = "bootstrap_import18/bootstrap_correlation.rs"]
 mod bootstrap_correlation;
+#[path = "bootstrap_import18/bootstrap_proof.rs"]
+mod bootstrap_proof;
 pub(in crate::reference_packet::service) use bootstrap_correlation::{
     construction_data as bootstrap_correlation_construction_data,
     counter_scratch_data as bootstrap_correlation_counter_scratch_data,
+};
+pub(in crate::reference_packet::service) use bootstrap_proof::{
+    construction_data as bootstrap_proof_construction_data,
+    counter_scratch_data as bootstrap_proof_counter_scratch_data,
 };
 #[path = "bootstrap_import18/bootstrap_value.rs"]
 mod bootstrap_value;
@@ -265,6 +271,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     bootstrap_value_started: bool,
     bootstrap_codec_started: bool,
     bootstrap_correlation_started: bool,
+    bootstrap_proof_started: bool,
     selection_construction_row: Option<[usize; 3]>,
     selection_started: bool,
     selection_authenticated: bool,
@@ -347,6 +354,7 @@ impl OriginalImport18RawBootstrap {
             bootstrap_value_started: false,
             bootstrap_codec_started: false,
             bootstrap_correlation_started: false,
+            bootstrap_proof_started: false,
             selection_construction_row: None,
             selection_started: false,
             selection_authenticated: false,

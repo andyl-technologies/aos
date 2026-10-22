@@ -13,6 +13,36 @@ use crate::native_hello::{OriginalNativeHelloPublication, RetainedOriginalNative
 type Exchange = RetainedOriginalNativeHelloExchange<OriginalNativePublicBirthChannel>;
 
 impl OriginalImport18RawBootstrap {
+    /// Reads literal pair DATA inside an already held original operand loan.
+    ///
+    /// The enclosing composite loan supplies complete Host/SDK/input guards.
+    /// This helper keeps physical publication and current authority checks and
+    /// returns no permission or ownership of either frame.
+    ///
+    /// # Errors
+    /// Refuses stale SDK/cut/channel or incomplete physical publication.
+    pub(super) fn published_hello_frame_digests_under_operands_data(
+        &self,
+        operands: &super::bootstrap_operands::BootstrapAckOperands<'_>,
+    ) -> Result<OriginalHelloFrameDigests, ProviderError> {
+        operands.ensure_current_authority_data()?;
+        self.authenticate_channel()?;
+        let result = self
+            .hello_exchange
+            .as_ref()
+            .ok_or_else(refused)?
+            .with_exchange_data(|exchange| {
+                self.hello_publication
+                    .frame_digests_data(exchange, self.cut)
+            });
+        let terminal = self
+            .authenticate_channel()
+            .and_then(|()| operands.ensure_current_authority_data());
+        let digests = result?;
+        terminal?;
+        Ok(digests)
+    }
+
     /// Lends role-normalized literal digests after actual SDK admission/publication.
     ///
     /// The caller separately admits inspection and any subsequent serialization.
@@ -73,7 +103,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + pair_counter_scratch_data()
 }
 
-fn pair_counter_scratch_data() -> usize {
+pub(super) fn pair_counter_scratch_data() -> usize {
     OriginalNativeHelloPublication::completed_frame_digests_counter_scratch_data::<
         OriginalNativePublicBirthChannel,
     >() + Exchange::exchange_loan_counter_scratch_data::<OriginalHelloFrameDigests>()

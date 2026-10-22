@@ -112,7 +112,7 @@ impl OriginalImport18RawBootstrap {
     ) -> Result<(), ProviderError> {
         attempt.cut = Some(self.cut);
         attempt.launch = Some(Rc::downgrade(self.parsed.shared_launch_data()?));
-        parsed.with_value_and_operands_data(self, normalizations, literal, |value, operands| {
+        parsed.with_value_and_operands_data(self, normalizations, literal, |value, operands, _| {
             attempt.guard(self, operands)?;
             self.admit_source_row(self.initial_construction.as_ref().ok_or_else(refused)?.row)?;
             let row = construction_data(
@@ -221,6 +221,7 @@ impl Attempt {
             size_of::<&Literal>(),
             size_of::<&Parsed>(),
             size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<super::bootstrap_normalizations::Digests>() * 2,
             size_of::<(
                 &Envelope,
                 &PacketNativeImport18BootstrapRequest,
@@ -271,7 +272,7 @@ impl Attempt {
             normalizations,
             literal,
             parsed,
-            |envelope, request, proof, _| inspect(envelope, request, proof),
+            |envelope, request, proof, _, _| inspect(envelope, request, proof),
         )
     }
 
@@ -292,19 +293,25 @@ impl Attempt {
             &PacketNativeImport18BootstrapRequest,
             &PacketNativeImport18BootstrapAckProof,
             &BootstrapAckOperands<'_>,
+            super::bootstrap_normalizations::Digests,
         ) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
-        parsed.with_value_and_operands_data(original, normalizations, literal, |_, operands| {
-            self.guard(original, operands)?;
-            let (envelope, request, proof) = self.data()?;
-            let outcome = inspect(envelope, request, proof, operands);
-            let terminal = self
-                .guard(original, operands)
-                .and_then(|()| self.data().map(|_| ()));
-            let result = outcome?;
-            terminal?;
-            Ok(result)
-        })
+        parsed.with_value_and_operands_data(
+            original,
+            normalizations,
+            literal,
+            |_, operands, digests| {
+                self.guard(original, operands)?;
+                let (envelope, request, proof) = self.data()?;
+                let outcome = inspect(envelope, request, proof, operands, digests);
+                let terminal = self
+                    .guard(original, operands)
+                    .and_then(|()| self.data().map(|_| ()));
+                let result = outcome?;
+                terminal?;
+                Ok(result)
+            },
+        )
     }
 }
 
@@ -343,7 +350,7 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked counter-layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 23] = [
+    let fields: [usize; 24] = [
         prewalk::counter_scratch_data(),
         storage::counter_scratch_data(),
         size_of::<&OriginalImport18RawBootstrap>(),
@@ -355,12 +362,13 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<&mut Attempt>(),
         size_of::<&dyn Admission>(),
         size_of::<&BootstrapAckOperands<'static>>(),
+        size_of::<super::bootstrap_normalizations::Digests>() * 2,
         size_of::<[usize; 3]>() * 2,
         size_of::<Result<[usize; 3], ProviderError>>(),
         size_of::<[Step; 3]>(),
         size_of::<std::array::IntoIter<Step, 3>>(),
-        size_of::<[usize; 23]>(),
-        size_of::<std::array::IntoIter<usize, 23>>(),
+        size_of::<[usize; 24]>(),
+        size_of::<std::array::IntoIter<usize, 24>>(),
         size_of::<Option<Step>>(),
         size_of::<Step>(),
         size_of::<Result<(), ProviderError>>() * 6,

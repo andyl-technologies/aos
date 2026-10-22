@@ -448,6 +448,26 @@ impl PacketNativeImport18SourceBindingWireData {
 }
 
 impl PacketNativeImport18PrivateBootWireData {
+    /// Verifies proof DATA with the actual retained private key without copying it.
+    ///
+    /// The caller independently authenticates original Source/Birth, channel and
+    /// current SDK custody. A carried key and matching MAC issue no allowance.
+    ///
+    /// # Errors
+    /// Refuses an invalid key, context, proof or distinct-domain MAC.
+    pub(in crate::reference_packet) fn verify_bootstrap_ack_proof_data(
+        &self,
+        context: &super::bootstrap_ack::PacketNativeImport18BootstrapAckContext,
+        proof: &super::bootstrap_ack::PacketNativeImport18BootstrapAckProof,
+    ) -> Result<(), ProviderError> {
+        let key: &[u8; 32] = self
+            .private_key
+            .as_slice()
+            .try_into()
+            .map_err(|_| invalid())?;
+        super::bootstrap_ack::verify_native_import18_bootstrap_ack_proof_data(key, context, proof)
+    }
+
     /// Borrows the original full Host registration without creating authority.
     pub(in crate::reference_packet) fn expected_host_registration_data(&self) -> &Value {
         &self.expected_host_registration

@@ -216,7 +216,10 @@ pub(in super::super::super) fn assert_child(
         let entered = Cell::new(false);
         let loan = attempt.with_received_data(inputs, |guard, envelope| {
             entered.set(true);
-            assert!(guard.incoming_requests().next() == Some(envelope));
+            assert!(std::ptr::eq(
+                guard.incoming_requests().next().unwrap(),
+                envelope
+            ));
             if suffix == "loan_expired" {
                 std::thread::sleep(Duration::from_secs(5));
             }
@@ -331,4 +334,53 @@ fn correlation_quote_uses_actual_closed_guard_tree_layout_and_exact_peak() {
         Attempt::received_loan_counter_scratch_data::<[u8; 4096]>().unwrap()
             >= Attempt::received_loan_counter_scratch_data::<()>().unwrap() + 4096
     );
+}
+
+/// Completes original correlation without opening an additional full SDK loan.
+pub(in super::super::super) fn complete_for_proof(
+    original: &mut OriginalImport18RawBootstrap,
+    reserve: bool,
+) -> (Normalizations, Literal, Parsed, Codec, Attempt) {
+    let (normalizations, literal, parsed, codec) =
+        super::super::bootstrap_codec::tests::complete_for_correlation(original);
+    let mut attempt = Attempt::empty_data();
+    let model = Model {
+        suffix: "complete",
+        calls: Cell::new(0),
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+            parsed.retained_requested_bytes_data(original).unwrap(),
+            codec.retained_requested_bytes_data(original).unwrap(),
+        ],
+    };
+    if reserve {
+        original
+            .retain_bootstrap_correlation_data(
+                &normalizations,
+                &literal,
+                &parsed,
+                &codec,
+                &mut attempt,
+                &model,
+            )
+            .unwrap();
+    }
+    assert_eq!(model.calls.get(), if reserve { 4 } else { 0 });
+    (normalizations, literal, parsed, codec, attempt)
+}
+
+/// Inspects the actual SDK fence while retaining its accepted request record.
+pub(in super::super::super) fn assert_fenced_record(attempt: &mut Attempt) {
+    let guard = attempt.guard.as_mut().unwrap();
+    let original = guard.incoming_requests().next().unwrap().clone();
+    assert!(matches!(
+        guard.receive(&original),
+        Err(ProviderError::Correlation("connection is fenced"))
+    ));
+    assert_eq!(guard.incoming_requests().count(), 1);
+    assert_eq!(guard.incoming_requests().next(), Some(&original));
 }
