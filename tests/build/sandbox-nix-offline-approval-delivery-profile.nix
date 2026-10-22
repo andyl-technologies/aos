@@ -14,6 +14,7 @@
     cfg = system.config;
     service = cfg.systemd.services.aos-sandbox-nix-floor-provision.serviceConfig;
     profile = builtins.head (lib.splitString ":" (builtins.elemAt service.OpenFile 1));
+    historyExport = command == "export-history-v7";
   in
     assert builtins.all (check: check.assertion) cfg.assertions;
     assert service.DeviceAllow == [];
@@ -22,9 +23,13 @@
     == [
       "node-id:/etc/credstore/node-id"
       "nix-floor-provision-approval-public-key-v3:/etc/credstore/nix-floor-provision-approval-public-key-v3"
+    ]
+    ++ lib.optionals (!historyExport) [
       "nix-floor-provision-approved-job-v6:/etc/credstore/nix-floor-provision-approved-job-v6"
       "nix-floor-provision-approved-effect-v6:/etc/credstore/nix-floor-provision-approved-effect-v6"
     ];
+    assert service.ProtectSystem == "strict";
+    assert service.ReadWritePaths == lib.optionals (!historyExport) ["/var/lib/aos"];
     assert cfg.systemd.services.aos-sandbox-nix-floor-provision.wantedBy == [];
     assert cfg.systemd.services.aos-sandbox-nix-floor-provision.requiredBy == []; {
       inherit profile;
@@ -35,13 +40,15 @@
     };
   initialize = caseFor "import-initialize-v6";
   recover = caseFor "import-recovery-v6";
+  history = caseFor "export-history-v7";
 in
   pkgs.runCommand "sandbox-nix-offline-approval-delivery-profile-check" {
     buildDeps = [pkgs.python3];
   } ''
     ${pkgs.python3}/bin/python3 - \
       ${lib.escapeShellArg initialize.profile} ${initialize.unit} \
-      ${lib.escapeShellArg recover.profile} ${recover.unit} <<'PY'
+      ${lib.escapeShellArg recover.profile} ${recover.unit} \
+      ${lib.escapeShellArg history.profile} ${history.unit} <<'PY'
     import hashlib
     import json
     import pathlib
@@ -49,13 +56,17 @@ in
 
     profiles = []
     for command, profile_name, unit_name in zip(
-        ("import-initialize-v6", "import-recovery-v6"),
+        ("import-initialize-v6", "import-recovery-v6", "export-history-v7"),
         sys.argv[1::2], sys.argv[2::2], strict=True,
     ):
         profile_path = pathlib.Path(profile_name)
-        assert str(profile_path).endswith("-aos-nix-offline-startup-profile-6/profile.json")
+        version = 7 if command == "export-history-v7" else 6
+        assert str(profile_path).endswith(f"-aos-nix-offline-startup-profile-{version}/profile.json")
         profile = json.loads(profile_path.read_bytes())
-        assert profile["format"] == "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
+        assert profile["format"] == (
+            "AOS_NIX_OFFLINE_HISTORY_EXPORT_7" if version == 7
+            else "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
+        )
         assert "hardware" not in profile
         unit = pathlib.Path(unit_name).read_bytes()
         original = f"OpenFile={profile_path}:aos-nix-offline-prepare-profile:read-only\n".encode()
@@ -78,7 +89,10 @@ in
     assert profiles[0]["unit_sha256"] != profiles[1]["unit_sha256"]
     profiles[1]["unit_sha256"] = profiles[0]["unit_sha256"]
     assert profiles[0] == profiles[1]
+    profiles[2]["unit_sha256"] = profiles[0]["unit_sha256"]
+    profiles[2]["format"] = profiles[0]["format"]
+    assert profiles[0] == profiles[2]
     PY
     mkdir -p "$out"
-    printf '%s\n' 'PASS: distinct V6 approval delivery; no hardware admission' > "$out/result"
+    printf '%s\n' 'PASS: distinct V6 approval delivery and read-only V7 history; no hardware admission' > "$out/result"
   ''

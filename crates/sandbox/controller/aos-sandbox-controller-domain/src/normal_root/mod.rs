@@ -130,6 +130,8 @@ pub(crate) use git_evidence_credential::{
 };
 pub use nix_offline_provision::{
     OfflineNixApprovalDeliveryOriginV6, OfflineNixApprovalDeliveryStartupV6,
+    OfflineNixHistoryExportOriginV7, OfflineNixHistoryExportStartupV7,
+    require_nix_offline_public_static_approval_v3,
     NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalDataV4, NixOfflineEffectApprovalKindV4,
     NixOfflineJobIdentityDataV5,
     OfflineNixHardwareOriginV5, OfflineNixPrepareOriginV3, OfflineNixPrepareStartupErrorV3,

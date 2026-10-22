@@ -9753,7 +9753,9 @@ formats, interrupted startup refusal, single-link ownership and bounded
 history reads. Core and native-resource evaluation pass. Complete Rust target
 compilation passes at
 `/nix/store/vfcpj3xw9p4sypln7p77cjzafrv73g0x-aos-test-targets-0.1.0`.
-The immutable V6 profile checks are running. The added enforcing VM test uses
+The immutable V6 profile check passes at
+`/nix/store/77203w3mdvrsp1k4cpjlja1h146ag722-sandbox-nix-offline-approval-delivery-profile-check`.
+The added enforcing VM test uses
 host-only independent signing, actual public candidate export, the production
 V6 importer and the existing static inspector; it remains unqualified until
 its installed run passes. No hardware, held-Q04 or public lifecycle completion
@@ -9772,6 +9774,45 @@ The actual test covers initialize, same-boot independently approved recovery,
 repeat refusal, generic-root read denial and old-job refusal after reboot and
 a QEMU/swtpm power cut. These are offline-job checks, not runtime floor or
 normal Controller lifecycle qualification.
+
+The separately admitted V7 `export-history-v7` purpose now supplies read-only
+physical journal DATA for operator inspection, including after a failed job.
+Its immutable profile format is `AOS_NIX_OFFLINE_HISTORY_EXPORT_7`, with its
+own version-7 path family. It retains only the original two public credentials,
+has private devices and no writable-path exception, and supplies no hardware
+loan, private candidate, approval proposal or runtime publication. V3, V5 and
+V6 purpose comparisons remain distinct. The additional file-context family
+does not add an SELinux read or write permission.
+
+The fixed native reader takes both existing installation and journal locks,
+opens only original public/static-job/journal names, checks ownership, mode,
+single links, mount identities, labels and ACL absence, and compares two
+complete bounded readbacks with retained named associations. The canonical
+static manifest/signature engine is shared with the existing private-candidate
+verifier; the new public-only comparison does not establish private-key
+possession. No private candidate is opened. Failed, interrupted and reused
+reader attempts expose no bytes and keep their original causes and custody.
+The existing bounded history wire codec exports DATA, including incomplete
+history; no completion, replay validity, currentness, new deadline or recovery
+authority follows from it. V5 remains responsible for all those independent
+hardware-admission checks.
+
+Twenty-four selected Core offline tests pass, including V7 purpose separation,
+interrupted-startup refusal and physical input bounds. Full Rust target
+compilation passes at
+`/nix/store/9zdpphssp4y0z9hdj649f3fc7m3a3p7f-aos-test-targets-0.1.0`.
+Core evaluation and the expanded profile build plan pass. Both hardware VM
+scripts and their complete embedded guest checks parse. The new failed-job
+case deliberately delivers wrong TPM owner authorization, then requires the
+actual failed journal to remain exportable through V7 after reboot and a
+QEMU/swtpm power cut, without generic-root state reads. All three tests of the
+explicitly selected production `nix-provision` service pass. That isolated
+feature build is required in addition to the ordinary application target
+check. The independent operator interoperability test also passes against
+both the original private-candidate verifier and the public-only verifier,
+including tampered candidate, wrong-node and forged-signature rejection.
+Installed execution and the expanded artifact check remain pending. These
+source and component checks grant no public lifecycle readiness.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an

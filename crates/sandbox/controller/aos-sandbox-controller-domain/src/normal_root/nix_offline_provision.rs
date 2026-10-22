@@ -42,7 +42,9 @@ use super::{NormalRootStartupErrorV1, images, profile::ImagePinV1, service, star
 
 mod approved_data;
 mod approval_delivery;
+mod history_export;
 pub use approval_delivery::{OfflineNixApprovalDeliveryOriginV6, OfflineNixApprovalDeliveryStartupV6};
+pub use history_export::{OfflineNixHistoryExportOriginV7, OfflineNixHistoryExportStartupV7};
 pub(crate) use approved_data::nix_offline_location_has_original_label_v5;
 pub(crate) use approved_data::nix_offline_opening_has_original_label_v5;
 pub use approved_data::{
@@ -51,6 +53,7 @@ pub use approved_data::{
     fill_nix_offline_static_preimage_v3,
     require_nix_offline_effect_approval_v4, require_nix_offline_static_approval_v3,
     require_nix_offline_static_header_v3,
+    require_nix_offline_public_static_approval_v3,
     NixOfflineJobIdentityDataV5, inspect_nix_offline_job_identity_v5,
     nix_offline_job_has_original_label_v5,
 };
@@ -153,6 +156,7 @@ enum OfflinePrepareModeV3 {
     Recover,
     ImportInitializeApprovalV6,
     ImportRecoveryApprovalV6,
+    ExportHistoryV7,
 }
 
 impl OfflinePrepareModeV3 {
@@ -164,6 +168,7 @@ impl OfflinePrepareModeV3 {
             Self::Recover => "recover",
             Self::ImportInitializeApprovalV6 => "import-initialize-v6",
             Self::ImportRecoveryApprovalV6 => "import-recovery-v6",
+            Self::ExportHistoryV7 => "export-history-v7",
         }
     }
 
@@ -186,7 +191,8 @@ impl OfflinePrepareModeV3 {
     const fn observations(self) -> usize {
         match self {
             Self::PrepareKeys | Self::InspectApprovedJob
-            | Self::ImportInitializeApprovalV6 | Self::ImportRecoveryApprovalV6 => MAXIMUM_OBSERVATIONS,
+            | Self::ImportInitializeApprovalV6 | Self::ImportRecoveryApprovalV6
+            | Self::ExportHistoryV7 => MAXIMUM_OBSERVATIONS,
             Self::Initialize => HARDWARE_INITIALIZE_OBSERVATIONS,
             Self::Recover => HARDWARE_RECOVERY_OBSERVATIONS,
         }
@@ -227,7 +233,9 @@ struct HardwareProfileV5 {
 
 impl Profile {
     fn require(&self, mode: OfflinePrepareModeV3) -> Result<(), Error> {
-        let format = if mode.approval_delivery_v6() {
+        let format = if mode == OfflinePrepareModeV3::ExportHistoryV7 {
+            "AOS_NIX_OFFLINE_HISTORY_EXPORT_7"
+        } else if mode.approval_delivery_v6() {
             "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
         } else {
             "AOS_NIX_OFFLINE_PREPARE_STARTUP_3"
@@ -607,7 +615,9 @@ impl OfflineNixPrepareStartupV3 {
         let profile_original = self.raw.get(1).ok_or(Error::Rejected)?;
         let profile_path = std::fs::read_link(format!("/proc/self/fd/{}", profile_original.as_raw_fd()))?;
         super::profile::require_store_path(profile_path.to_str().ok_or(Error::Rejected)?)?;
-        let suffix = if mode.approval_delivery_v6() {
+        let suffix = if mode == OfflinePrepareModeV3::ExportHistoryV7 {
+            "-aos-nix-offline-startup-profile-7/profile.json"
+        } else if mode.approval_delivery_v6() {
             "-aos-nix-offline-startup-profile-6/profile.json"
         } else {
             "-aos-nix-offline-startup-profile-3/profile.json"
@@ -1679,7 +1689,14 @@ mod tests {
         for mode in legacy {
             assert!(profile.require_mode(mode).is_err());
         }
+        assert!(profile.require_mode(OfflinePrepareModeV3::ExportHistoryV7).is_err());
+        profile.format = "AOS_NIX_OFFLINE_HISTORY_EXPORT_7".into();
+        assert!(profile.require_mode(OfflinePrepareModeV3::ExportHistoryV7).is_ok());
+        for mode in legacy.into_iter().chain(delivery) {
+            assert!(profile.require_mode(mode).is_err());
+        }
         profile.format = "AOS_NIX_OFFLINE_PREPARE_STARTUP_3".into();
+        assert!(profile.require_mode(OfflinePrepareModeV3::ExportHistoryV7).is_err());
         for mode in delivery {
             assert!(profile.require_mode(mode).is_err());
         }

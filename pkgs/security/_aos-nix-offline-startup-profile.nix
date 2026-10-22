@@ -10,6 +10,7 @@
   unitContract,
   hardware ? false,
   approvalDelivery ? false,
+  historyExport ? false,
 }: let
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
@@ -52,7 +53,9 @@ in
   mkDerivation {
     pname = "aos-nix-offline-startup-profile";
     version =
-      if approvalDelivery
+      if historyExport
+      then "7"
+      else if approvalDelivery
       then "6"
       else "3";
     src = ./aos-normal-root-profile.py;
@@ -61,7 +64,7 @@ in
     propagatedDeps = [];
     outputChecks = {};
     inherit unitContract;
-    hardwareMode = assert !(hardware && approvalDelivery);
+    hardwareMode = assert builtins.length (builtins.filter (selected: selected) [hardware approvalDelivery historyExport]) <= 1;
       if hardware
       then "1"
       else "0";
@@ -184,7 +187,9 @@ in
                   hashlib.sha256(neutral).digest())
           profile = {
               "format": "${
-            if approvalDelivery
+            if historyExport
+            then "AOS_NIX_OFFLINE_HISTORY_EXPORT_7"
+            else if approvalDelivery
             then "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
             else "AOS_NIX_OFFLINE_PREPARE_STARTUP_3"
           }",

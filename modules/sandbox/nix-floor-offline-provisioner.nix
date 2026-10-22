@@ -1,4 +1,4 @@
-##! Disabled manual Nix preparation, inspection and independently approved hardware jobs.
+##! Manual Nix preparation, approvals, hardware jobs and read-only history DATA.
 {
   config,
   lib,
@@ -13,6 +13,7 @@
   command = "${program} ${cfg.command}";
   hardware = builtins.elem cfg.command ["initialize" "recover"];
   approvalDelivery = builtins.elem cfg.command ["import-initialize-v6" "import-recovery-v6"];
+  historyExport = cfg.command == "export-history-v7";
   systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   delivery =
     [
@@ -59,7 +60,7 @@
     (builtins.map (job: job.path) rendered.jobScripts)
     rendered.text;
   profile = pkgs.aosNixOfflineStartupProfileWith {
-    inherit hardware approvalDelivery;
+    inherit hardware approvalDelivery historyExport;
     systemd = config.aos.manager.selected.package;
     aos-selinux-production-policy = selinux._productionPolicy;
     aos-selinux-kernel-policy-readback = selinux._canonicalReadback;
@@ -68,12 +69,12 @@
 in {
   options.aos.sandbox.nixOfflinePrepare.enable =
     lib.mkEnableOption
-    "the disabled-by-default manual prepare-keys unit, without TPM or runtime installation";
+    "the manual offline Nix provisioning unit";
 
   options.aos.sandbox.nixOfflinePrepare.command = lib.mkOption {
-    type = lib.types.enum ["prepare-keys" "inspect-approved-job" "initialize" "recover" "import-initialize-v6" "import-recovery-v6"];
+    type = lib.types.enum ["prepare-keys" "inspect-approved-job" "initialize" "recover" "import-initialize-v6" "import-recovery-v6" "export-history-v7"];
     default = "prepare-keys";
-    description = "Select the manual offline purpose; V6 imports signed approval data, and hardware commands independently compare actual installation pins.";
+    description = "Select the manual offline purpose; V6 imports signed approval data, V7 exports read-only history data, and hardware commands independently compare actual installation pins.";
   };
 
   config = lib.mkIf cfg.enable {
@@ -132,7 +133,7 @@ in {
           && (!hardware || (service.LimitAS or null) == "1G")
           && (service.PrivateNetwork or null) == true
           && (service.ProtectSystem or null) == "strict"
-          && (service.ReadWritePaths or []) == ["/var/lib/aos"]
+          && (service.ReadWritePaths or []) == (lib.optionals (!historyExport) ["/var/lib/aos"])
           && (service.StateDirectory or []) == []
           && (service.RuntimeDirectory or []) == []
           && (service.RootDirectory or "") == ""
@@ -150,6 +151,8 @@ in {
         then "Manual independently approved offline Nix hardware provisioning"
         else if approvalDelivery
         then "Manual signed offline Nix approval delivery"
+        else if historyExport
+        then "Manual read-only offline Nix history export"
         else "Manual unsigned offline Nix key candidate preparation";
       wantedBy = [];
       requiredBy = [];
@@ -216,7 +219,7 @@ in {
           RestrictAddressFamilies = ["AF_UNIX"];
           LockPersonality = true;
           MemoryDenyWriteExecute = true;
-          ReadWritePaths = ["/var/lib/aos"];
+          ReadWritePaths = lib.optionals (!historyExport) ["/var/lib/aos"];
           StateDirectory = [];
           RuntimeDirectory = [];
         }

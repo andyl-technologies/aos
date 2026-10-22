@@ -760,6 +760,11 @@ pub use nix_offline_approval_delivery::{
 };
 
 #[cfg(target_os = "linux")]
+mod nix_offline_history_export;
+#[cfg(target_os = "linux")]
+pub use nix_offline_history_export::{NixOfflineHistoryExportErrorV7, NixOfflineHistoryExportNativeV7};
+
+#[cfg(target_os = "linux")]
 mod nix_offline_provisioning;
 #[cfg(target_os = "linux")]
 pub use nix_offline_provisioning::{

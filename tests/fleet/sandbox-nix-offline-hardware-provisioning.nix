@@ -3,6 +3,7 @@
   lib,
   pkgs,
   systems,
+  rejectHierarchyAuthorization ? false,
   ...
 }: let
   preparation = import ./sandbox-nix-offline-key-preparation.nix {
@@ -26,7 +27,8 @@
   recover = invocation "recover";
   importInitialize = invocation "import-initialize-v6";
   importRecovery = invocation "import-recovery-v6";
-  variants = {inherit initialize recover importInitialize importRecovery;};
+  exportHistory = invocation "export-history-v7";
+  variants = {inherit initialize recover importInitialize importRecovery exportHistory;};
   system = preparation.machines.vm.system.extendModules {
     modules = [
       {
@@ -41,7 +43,10 @@
     ];
   };
 in {
-  name = "sandbox-nix-offline-hardware-provisioning";
+  name =
+    if rejectHierarchyAuthorization
+    then "sandbox-nix-offline-hardware-failed-history"
+    else "sandbox-nix-offline-hardware-provisioning";
   timeout = 1800;
   inherit (preparation) bootTimeout;
   machines.vm =
@@ -61,6 +66,12 @@ in {
       import tempfile
       import time
       import uuid
+
+      hardware_succeeds = ${
+        if rejectHierarchyAuthorization
+        then "False"
+        else "True"
+      }
 
       def install_credential(host_path, name, *, replace=False):
           target = "/etc/credstore/" + name
@@ -186,7 +197,11 @@ in {
                   ], check=True)
               finally:
                   backend.terminate()
-                  backend.wait(timeout=5)
+                  try:
+                      backend.wait(timeout=5)
+                  except subprocess.TimeoutExpired:
+                      backend.kill()
+                      backend.wait(timeout=5)
           vm._launch()
           vm.agent.wait_ready(time.monotonic() + 300)
           vm.wait_for_unit("multi-user.target", timeout=300)
@@ -195,7 +210,12 @@ in {
           assert_candidate_reads_denied()
 
           install_credential(domain, "nix-fixed-domain-pins-v2")
-          install_credential(hierarchy, "nix-floor-owner-hierarchy-auth-v4")
+          delivered_hierarchy = scratch / "delivered-hierarchy-auth"
+          delivered_hierarchy.write_bytes(
+              hierarchy.read_bytes() if hardware_succeeds else bytes([0x77]) * 32
+          )
+          delivered_hierarchy.chmod(0o600)
+          install_credential(delivered_hierarchy, "nix-floor-owner-hierarchy-auth-v4")
           initialized = scratch / "initialize"
           subprocess.run([
               "${operator}/bin/aos-sandbox-nix-offline-approval-vm-fixture",
@@ -210,56 +230,99 @@ in {
           run_offline(0)
           run_offline(1)
           select_invocation(
+              "${exportHistory.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${exportHistory.profile}",
+          )
+          run_offline(1)
+          assert public_histories() == []
+          select_invocation(
               "${initialize.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
               "${initialize.profile}",
           )
           boot = vm.succeed("cat /proc/sys/kernel/random/boot_id").strip()
-          run_offline(0)
+          run_offline(0 if hardware_succeeds else 1)
           histories = public_histories()
-          assert len(histories) == 1
+          assert len(histories) == (1 if hardware_succeeds else 0)
+          assert_history_reads_denied()
+          select_invocation(
+              "${exportHistory.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${exportHistory.profile}",
+          )
+          run_offline(0)
+          exported = public_histories()
+          assert len(exported) == len(histories) + 1
+          if hardware_succeeds:
+              assert exported == histories + histories
           assert_history_reads_denied()
           history = scratch / "history"
-          history.write_bytes(histories[0])
+          history.write_bytes(exported[-1])
 
-          recovered = scratch / "recover"
-          subprocess.run([
-              "${operator}/bin/aos-sandbox-nix-offline-approval-vm-fixture",
-              "recover", str(public), str(domain), "${recover.profile}", str(key), str(recovered), str(history),
-          ], check=True)
-          assert (recovered / "approved-job-v3").read_bytes() == (initialized / "approved-job-v3").read_bytes()
-          install_credential(recovered / "approved-recovery-v4", "nix-floor-provision-approved-effect-v6", replace=True)
-          select_invocation(
-              "${importRecovery.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
-              "${importRecovery.profile}",
-          )
-          run_offline(0)
-          run_offline(1)
-          select_invocation(
-              "${recover.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
-              "${recover.profile}",
-          )
-          assert vm.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot
-          run_offline(0)
-          completed = public_histories()
-          assert len(completed) == 2 and completed[0] == histories[0]
-          assert len(completed[1]) > len(completed[0])
-          assert_history_reads_denied()
-          run_offline(1)
-          assert public_histories() == completed
+          completed = exported
+          if hardware_succeeds:
+              recovered = scratch / "recover"
+              subprocess.run([
+                  "${operator}/bin/aos-sandbox-nix-offline-approval-vm-fixture",
+                  "recover", str(public), str(domain), "${recover.profile}", str(key), str(recovered), str(history),
+              ], check=True)
+              assert (recovered / "approved-job-v3").read_bytes() == (initialized / "approved-job-v3").read_bytes()
+              install_credential(recovered / "approved-recovery-v4", "nix-floor-provision-approved-effect-v6", replace=True)
+              select_invocation(
+                  "${importRecovery.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+                  "${importRecovery.profile}",
+              )
+              run_offline(0)
+              run_offline(1)
+              select_invocation(
+                  "${recover.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+                  "${recover.profile}",
+              )
+              assert vm.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot
+              run_offline(0)
+              completed = public_histories()
+              assert len(completed) == 3 and completed[:2] == histories + histories
+              assert len(completed[2]) > len(completed[0])
+              assert_history_reads_denied()
+              run_offline(1)
+              assert public_histories() == completed
 
-          # Reboot cannot renew the original job or export a fabricated success.
+          # Reboot cannot renew the original job. Its public DATA remains
+          # exportable independently, including after failed hardware admission.
+          select_invocation(
+              "${initialize.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${initialize.profile}",
+          )
           vm.reboot()
           vm.wait_for_unit("multi-user.target", timeout=300)
           run_offline(1)
           assert public_histories() == []
           assert_history_reads_denied()
           assert_candidate_reads_denied()
+          select_invocation(
+              "${exportHistory.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${exportHistory.profile}",
+          )
+          run_offline(0)
+          assert public_histories() == [completed[-1]]
+          assert_history_reads_denied()
+          select_invocation(
+              "${initialize.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${initialize.profile}",
+          )
+          run_offline(1)
+          assert public_histories() == [completed[-1]]
           vm.power_cycle()
           vm.wait_for_unit("multi-user.target", timeout=300)
           run_offline(1)
           assert public_histories() == []
           assert_history_reads_denied()
           assert_candidate_reads_denied()
+          select_invocation(
+              "${exportHistory.unit}/lib/systemd/system/aos-sandbox-nix-floor-provision.service",
+              "${exportHistory.profile}",
+          )
+          run_offline(0)
+          assert public_histories() == [completed[-1]]
+          assert_history_reads_denied()
           vm.fail("systemctl is-active --quiet aos-sandboxd.service")
           vm.fail("systemctl is-active --quiet aos-sandbox-nixd.service")
     '';

@@ -1,4 +1,4 @@
-//! Manual Nix preparation, static inspection and approved offline hardware job.
+//! Manual Nix preparation, approvals, hardware jobs and read-only history export.
 //!
 //! The selected service is disabled by default and has no boot activation.
 //! Explicit process exit retains originals through the terminal boundary; it
@@ -9,8 +9,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_controller_domain::normal_root::{OfflineNixPrepareStartupV3, OfflineNixApprovalDeliveryStartupV6};
-use aos_sandbox_controller_domain::journal::NixOfflineApprovalDeliveryNativeV6;
+use aos_sandbox_controller_domain::journal::{
+    NixOfflineApprovalDeliveryNativeV6, NixOfflineHistoryExportNativeV7,
+};
+use aos_sandbox_controller_domain::normal_root::{
+    OfflineNixApprovalDeliveryStartupV6, OfflineNixHistoryExportStartupV7, OfflineNixPrepareStartupV3,
+};
 use aos_sandbox_broker_session_security::nix_floor_provisioning::{
     NixApprovedJobInspectionAttemptV3, NixPrepareKeysAttemptV3,
     NixOfflineHardwareAttemptV5, NixOfflineHardwareResourcesV5,
@@ -24,6 +28,7 @@ enum Command {
     Recover,
     ImportInitializeV6,
     ImportRecoveryV6,
+    ExportHistoryV7,
 }
 
 fn command(value: Option<&std::ffi::OsStr>) -> Option<Command> {
@@ -34,6 +39,7 @@ fn command(value: Option<&std::ffi::OsStr>) -> Option<Command> {
         Some(value) if value == "recover" => Some(Command::Recover),
         Some(value) if value == "import-initialize-v6" => Some(Command::ImportInitializeV6),
         Some(value) if value == "import-recovery-v6" => Some(Command::ImportRecoveryV6),
+        Some(value) if value == "export-history-v7" => Some(Command::ExportHistoryV7),
         _ => None,
     }
 }
@@ -47,6 +53,10 @@ fn main() {
     };
     if arguments.next().is_some() {
         std::process::exit(2);
+    }
+
+    if selected == Command::ExportHistoryV7 {
+        history_export_main();
     }
 
     if matches!(selected, Command::ImportInitializeV6 | Command::ImportRecoveryV6) {
@@ -63,7 +73,11 @@ fn main() {
         match selected {
             Command::PrepareKeys => startup.capture_and_admit(),
             Command::InspectApprovedJob => startup.capture_and_admit_inspection(),
-            Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
+            Command::Initialize
+            | Command::Recover
+            | Command::ImportInitializeV6
+            | Command::ImportRecoveryV6
+            | Command::ExportHistoryV7 => std::process::exit(2),
         }
         .is_ok()
     }));
@@ -79,7 +93,11 @@ fn main() {
         match selected {
             Command::PrepareKeys => original.borrow_original(),
             Command::InspectApprovedJob => original.borrow_inspection(),
-            Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
+            Command::Initialize
+            | Command::Recover
+            | Command::ImportInitializeV6
+            | Command::ImportRecoveryV6
+            | Command::ExportHistoryV7 => std::process::exit(2),
         }
     }));
     let origin = match borrowed {
@@ -124,7 +142,11 @@ fn main() {
             attempt.wipe_secrets();
             std::process::exit(if success { 0 } else { 1 });
         }
-        Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
+        Command::Initialize
+        | Command::Recover
+        | Command::ImportInitializeV6
+        | Command::ImportRecoveryV6
+        | Command::ExportHistoryV7 => std::process::exit(2),
     }
 }
 
@@ -160,6 +182,43 @@ fn approval_delivery_main(selected: Command) -> ! {
     let success = matches!(delivery, Ok(true));
     let _original_unwind = delivery.err();
     attempt.wipe_secrets();
+    std::process::exit(if success { 0 } else { 1 });
+}
+
+fn history_export_main() -> ! {
+    let mut startup = OfflineNixHistoryExportStartupV7::new();
+    let admitted = catch_unwind(AssertUnwindSafe(|| startup.capture_and_admit().is_ok()));
+    if !matches!(admitted, Ok(true)) {
+        let _original_unwind = admitted.err();
+        std::process::exit(1);
+    }
+
+    let original = &mut startup;
+    let borrowed = catch_unwind(AssertUnwindSafe(move || {
+        let original = original;
+        original.borrow_original()
+    }));
+    let origin = match borrowed {
+        Ok(Ok(origin)) => origin,
+        Ok(Err(_)) => std::process::exit(1),
+        Err(payload) => {
+            let _original_unwind = payload;
+            std::process::exit(1);
+        }
+    };
+    let mut attempt = NixOfflineHistoryExportNativeV7::new(origin);
+    let captured = catch_unwind(AssertUnwindSafe(|| {
+        if attempt.capture_once().is_err() {
+            return false;
+        }
+        let Some(history) = attempt.public_history_data() else {
+            return false;
+        };
+
+        write_public_history(&mut io::stdout().lock(), history).is_ok()
+    }));
+    let success = matches!(captured, Ok(true));
+    let _original_unwind = captured.err();
     std::process::exit(if success { 0 } else { 1 });
 }
 
@@ -329,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn command_parser_accepts_only_the_six_literal_manual_commands() {
+    fn command_parser_accepts_only_the_seven_literal_manual_commands() {
         assert_eq!(
             command(Some(std::ffi::OsStr::new("prepare-keys"))),
             Some(Command::PrepareKeys),
@@ -354,6 +413,10 @@ mod tests {
             command(Some(std::ffi::OsStr::new("import-recovery-v6"))),
             Some(Command::ImportRecoveryV6)
         );
+        assert_eq!(
+            command(Some(std::ffi::OsStr::new("export-history-v7"))),
+            Some(Command::ExportHistoryV7)
+        );
         for value in [
             "",
             "initialize extra",
@@ -361,6 +424,9 @@ mod tests {
             "import-initialize",
             "import-recovery-v5",
             "import-recovery-v6 extra",
+            "export-history",
+            "export-history-v6",
+            "export-history-v7 extra",
             "--inspect-approved-job",
             "prepare-keys extra",
         ] {

@@ -289,7 +289,8 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use aos_sandbox_controller_domain::normal_root::{
-        derive_nix_offline_public_candidates_v3, require_nix_offline_static_approval_v3,
+        derive_nix_offline_public_candidates_v3, require_nix_offline_public_static_approval_v3,
+        require_nix_offline_static_approval_v3,
     };
 
     #[test]
@@ -342,7 +343,47 @@ mod tests {
         .unwrap();
 
         let mut changed = public;
+        require_nix_offline_public_static_approval_v3(
+            &public,
+            &job,
+            domain.node().as_bytes(),
+            &approval,
+            &mut preimage,
+        )
+        .unwrap();
+        assert!(
+            require_nix_offline_public_static_approval_v3(
+                &public,
+                &job,
+                &[0x42; 16],
+                &approval,
+                &mut preimage,
+            )
+            .is_err()
+        );
+        let mut forged_job = job;
+        forged_job[1268] ^= 1;
+        assert!(
+            require_nix_offline_public_static_approval_v3(
+                &public,
+                &forged_job,
+                domain.node().as_bytes(),
+                &approval,
+                &mut preimage,
+            )
+            .is_err()
+        );
         changed[92] ^= 1;
+        assert!(
+            require_nix_offline_public_static_approval_v3(
+                &changed,
+                &job,
+                domain.node().as_bytes(),
+                &approval,
+                &mut preimage,
+            )
+            .is_err()
+        );
         assert!(
             require_nix_offline_static_approval_v3(
                 &private,

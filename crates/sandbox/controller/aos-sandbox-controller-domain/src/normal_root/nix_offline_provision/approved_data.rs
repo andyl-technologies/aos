@@ -251,6 +251,62 @@ pub fn require_nix_offline_static_approval_v3(
         return Err(Error::Rejected);
     }
 
+    require_static_manifest_and_signature(public, approved, node, approval, preimage)
+}
+
+/// Verifies public candidates and independently signed static-job DATA.
+///
+/// This comparison needs no private seed and does not establish possession of
+/// the candidate keys. It supplies neither currentness nor hardware authority.
+///
+/// # Errors
+/// Rejects noncanonical public records, mismatched node or candidate bytes,
+/// invalid manifest roles or revocation, and an invalid independent signature.
+pub fn require_nix_offline_public_static_approval_v3(
+    public: &[u8],
+    approved: &[u8],
+    node: &[u8; 16],
+    approval: &[u8; 48],
+    preimage: &mut [u8],
+) -> Result<(), Error> {
+    require_nix_offline_static_header_v3(approved, approval)?;
+    if public.len() != 268
+        || public[..8] != *b"AOSNPC03"
+        || public[8..10] != 3_u16.to_le_bytes()
+        || public[10..12] != [0; 2]
+        || public[12..28] == [0; 16]
+        || *node == [0; 16]
+        || public[44..76] == [0; 32]
+        || public[28..44] != *node
+        || public != &approved[80..348]
+    {
+        return Err(Error::Rejected);
+    }
+
+    for (index, record) in public[76..].chunks_exact(48).enumerate() {
+        if record[..16] == [0; 16]
+            || record[16..] == [0; 32]
+            || record[..16] == approval[..16]
+            || record[16..] == approval[16..]
+            || public[76..76 + index * 48]
+                .chunks_exact(48)
+                .any(|earlier| earlier[..16] == record[..16] || earlier[16..] == record[16..])
+        {
+            return Err(Error::Rejected);
+        }
+        VerifyingKey::from_bytes(record[16..].try_into().map_err(|_| Error::Rejected)?)?;
+    }
+
+    require_static_manifest_and_signature(public, approved, node, approval, preimage)
+}
+
+fn require_static_manifest_and_signature(
+    public: &[u8],
+    approved: &[u8],
+    node: &[u8; 16],
+    approval: &[u8; 48],
+    preimage: &mut [u8],
+) -> Result<(), Error> {
     let manifest = BrokerSessionManifestV1::decode(&approved[348..1268])?;
     if manifest.encode().as_slice() != &approved[348..1268]
         || manifest.protocol() != BrokerSessionProtocolV1::Nix
