@@ -8,6 +8,8 @@
 
 mod closed;
 mod config;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod diagnostics;
 #[cfg(all(feature = "do-e2e", any(test, target_arch = "wasm32")))]
 pub(super) mod lease_scale;
 mod protocol;

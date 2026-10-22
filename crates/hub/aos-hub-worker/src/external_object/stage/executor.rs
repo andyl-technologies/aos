@@ -34,6 +34,7 @@ use super::super::{
 };
 use super::{
     config::{self, Config},
+    diagnostics::{self, Phase},
     protocol::{self, Intent, Operation, Receipt, Reply, SourceProof, Turn},
 };
 
@@ -114,6 +115,13 @@ pub(crate) async fn execute_stage_with_signal(
         None,
     )
     .await
+    .inspect_err(|error| {
+        worker::console_error!(
+            "external_stage_execution_refused phase={} reason={}",
+            diagnostics::phase(error),
+            diagnostics::reason(error)
+        );
+    })
 }
 
 /// Observes actual provider dispatch while preserving retained terminal replay.
@@ -192,7 +200,8 @@ async fn execute_stage_observed_inner(
             },
         },
     )
-    .await?
+    .await
+    .map_err(|error| diagnostics::at(Phase::Lookup, error))?
     {
         Reply::Terminal { receipt } => return checked_result(&intent, &receipt),
         Reply::Unsettled => {}
@@ -213,7 +222,8 @@ async fn execute_stage_observed_inner(
         i64::try_from(work.context.placement.binding_id.get())?,
         i64::try_from(work.context.placement.binding_resource_version.get())?,
     )
-    .await?;
+    .await
+    .map_err(|error| diagnostics::at(Phase::Binding, error))?;
     validate_publication(&object, &config, work, &publication, &deployment)?;
     let source = if work.operation.destination() {
         let expected = match &work.operation {
@@ -252,7 +262,8 @@ async fn execute_stage_observed_inner(
             },
         },
     )
-    .await?;
+    .await
+    .map_err(|error| diagnostics::at(Phase::Begin, error))?;
     let (turn, floor, source, closed, direct_permission_expires_at) = match reply {
         Reply::Terminal { receipt } => return checked_result(&intent, &receipt),
         Reply::Dispatch {
@@ -297,7 +308,9 @@ async fn execute_stage_observed_inner(
             | Action::CompleteDestination { .. }
             | Action::VerifyClosedStage { .. }
     ) {
-        load_manifest(env, &turn).await?
+        load_manifest(env, &turn)
+            .await
+            .map_err(|error| diagnostics::at(Phase::Manifest, error))?
     } else {
         Vec::new()
     };
@@ -354,7 +367,8 @@ async fn execute_stage_observed_inner(
         #[cfg(feature = "do-e2e")]
         observation,
     )
-    .await?;
+    .await
+    .map_err(|error| diagnostics::at(Phase::Provider, error))?;
     let receipt = Receipt {
         turn,
         outcome,
@@ -371,7 +385,8 @@ async fn execute_stage_observed_inner(
             },
         },
     )
-    .await?
+    .await
+    .map_err(|error| diagnostics::at(Phase::Terminal, error))?
     {
         Reply::Terminal {
             receipt: acknowledged,

@@ -64,7 +64,13 @@ impl ExternalObjectGuard {
                 headers.set("cache-control", "private, no-store")?;
                 Ok(Response::ok(encoded)?.with_headers(headers))
             }
-            Err(_) => Response::error("external stage turn refused", 409),
+            Err(error) => {
+                worker::console_error!(
+                    "external_stage_journal_refused reason={}",
+                    super::diagnostics::reason(&error)
+                );
+                Response::error("external stage turn refused", 409)
+            }
         }
     }
 
