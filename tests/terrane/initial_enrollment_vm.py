@@ -280,8 +280,23 @@ def configured_publication():
             # The consumer cannot inspect this publisher-only namespace. Root observes
             # the original sealed inodes around the complete unprivileged operation.
             sealed_before = sealed_snapshot()
+            (ROOT / "proof-logs/sealed-chunked-before.json").write_text(
+                json.dumps(sealed_before, indent=2) + "\n")
             run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
-            require(sealed_snapshot() == sealed_before,
+            sealed_after = sealed_snapshot()
+            (ROOT / "proof-logs/sealed-chunked-after.json").write_text(
+                json.dumps(sealed_after, indent=2) + "\n")
+            if sealed_after != sealed_before:
+                prior = {(row[0], row[1]): row for row in sealed_before}
+                current = {(row[0], row[1]): row for row in sealed_after}
+                changes = {
+                    "removed": [row for key, row in prior.items() if key not in current],
+                    "added": [row for key, row in current.items() if key not in prior],
+                    "changed": [(row, current[key]) for key, row in prior.items()
+                                if key in current and current[key] != row],
+                }
+                print("SEALED_CHUNKED_TRANSITION " + json.dumps(changes, sort_keys=True), flush=True)
+            require(sealed_after == sealed_before,
                     "chunked object reads changed the original sealed namespace")
             print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")

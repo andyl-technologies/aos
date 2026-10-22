@@ -15597,3 +15597,19 @@ The intermediate formatting check caught a new assertion's line wrapping; the
 final check runs after formatting and passes. All 2,646 Nix files format, the
 eight operator-guide shell blocks parse, its relative links resolve, and
 `git diff --check` passes. Compilation supplies no integration runtime claim.
+
+#### Initial-enrollment sealed-namespace failure retained
+
+The frozen `8dc8dd6311` eleven-component T2 request fails after 4,294.593
+seconds. The actual initial-enrollment VM completes its chunked-object actor
+and native-root checks, then its supervisor rejects a changed sealed namespace.
+Its Firecracker process exits cleanly, but `TEST_RESULT:FAIL` remains the VM
+result; neither the request nor any blocked owning gate is accepted. The passing
+full-cache component remains a separate result.
+
+The supervisor now retains complete before/after sealed-inode snapshots and
+prints an exact added/removed/changed delta before the original equality check.
+No assertion, privilege boundary, actor or timeout is weakened. A fresh bounded
+VM must establish what changed before deciding whether production behavior or
+the expected lifecycle needs correction. The independent `646d990f96` blame
+qualification continues on its immutable source.
