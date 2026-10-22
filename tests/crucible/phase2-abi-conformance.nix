@@ -450,13 +450,17 @@ in
                 shift 3
 
                 list_file="$TMPDIR/abi-conformance-$label-tests.list"
+                if [ -n "''${ABI_TEST_SKIP-}" ]; then
+                  set -- "$@" -- --skip "$ABI_TEST_SKIP" --list
+                else
+                  set -- "$@" -- --list
+                fi
                 cargo test \
                   --frozen \
                   --offline \
                   --target-dir "$TMPDIR/crucible-abi-conformance-target" \
                   --manifest-path crates/Cargo.toml \
-                  "$@" \
-                  -- --list > "$list_file"
+                  "$@" > "$list_file"
 
                 actual_count=$(grep -c ': test$' "$list_file" || :)
                 if [ "$actual_count" -ne "$expected_count" ]; then
@@ -515,7 +519,9 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
-              require_test_set 16 protocol-deferred-cleanup \
+              # libtest filters are substrings; exclude the separate plan's
+              # identically named module from this exact sixteen-codec group.
+              ABI_TEST_SKIP=plugin_setup_plan:: require_test_set 16 protocol-deferred-cleanup \
                 deferred_cleanup::tests::physical_consumption_survives_unknown_return_capture_and_failed_post \
                 -p crucible-qemu-protocol --lib deferred_cleanup::tests::
               cargo test \
@@ -525,7 +531,7 @@ in
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
                 --lib deferred_cleanup::tests:: \
-                -- --test-threads=1
+                -- --skip plugin_setup_plan:: --test-threads=1
               require_test_set 4 protocol-deferred-cleanup-setup \
                 deferred_cleanup::setup::tests::setup_nine_keeps_exact_physical_body_and_incarnation_footer \
                 -p crucible-qemu-protocol --lib deferred_cleanup::setup::tests::
