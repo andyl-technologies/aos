@@ -9827,6 +9827,19 @@ independent route/TPMS_NV_PUBLIC vectors and canonical rejection cases; both
 existing Security profile/sidecar geometry tests pass. The full Rust target
 compilation check is running. Runtime-floor publication remains required.
 
+The shared Protocol seed/genesis codec now constructs and verifies the complete
+canonical `AOSNXS02` and `AOSNXG02` DATA, including both independent signatures,
+the empty anchor, one-seed main cut, initial checkpoint and NV equation.
+It accepts external signatures without owning an issuer key. Runtime still
+compares those bytes against its existing complete-map/checkpoint engines and
+the original role-specific authentication digest. All six Protocol profile and
+genesis tests pass; both selected `online-nix` Security interoperability tests
+pass against those existing native equations. The selected test invocation
+uses the real domain-3333 AOS Store-reader header; an ordinary Cargo shell
+without that generated header correctly fails compilation. The complete Rust
+target check is running. This codec publishes no credentials or journals,
+touches no TPM and grants no runtime currentness.
+
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.
 That immutable source predates V6 and V7: it qualifies its original hardware
@@ -10090,8 +10103,10 @@ including the normal image's absent-carrier case and all three parameter
 rejections. Core evaluation passes. The signed-initrd QEMU test now requires
 the exact raw device and inode pairs of both the running launcher and Mount
 daemon to survive a full reboot, in addition to service restart and PID 1
-reexec. The selected stage0 build and that updated installed run remain
-pending. These source checks do not qualify production startup capture.
+reexec. The selected stage0 package builds at
+`/nix/store/6p5pysqqlzd5ib2gsjyv32a534ks1ww0-aos-selinux-stage0-1`.
+The updated installed run remains pending. These source checks do not qualify
+production startup capture.
 
 With the provider option disabled and no namespace-40 records, the packaged
 Mount service skips source-owner recovery and does not require an undeployed

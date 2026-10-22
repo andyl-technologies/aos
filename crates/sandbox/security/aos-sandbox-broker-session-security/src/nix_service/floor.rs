@@ -3,7 +3,7 @@
 //! Genuine Core origin loans retain the actual parent startup and twelve public
 //! credentials. The supplied seed, initialized native journals and written NV
 //! are independent inputs, never produced by this consumer. The fixed codecs
-//! below authenticate initialization DATA; currentness still requires the same
+//! in Protocol authenticate initialization DATA; currentness still requires the same
 //! retained main/sidecar writers and the authenticated physical helper.
 //!
 //! ```text
@@ -22,7 +22,6 @@ use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_broker_session_protocol::manifest::{
     BrokerSessionManifestBindingV1, BrokerSessionManifestV1,
 };
-use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
@@ -31,18 +30,18 @@ use aos_sandbox_linux::credential::{
     read_optional_bounded_role_credential_v1,
 };
 use crate::tpm_nv_custody::{
-    FloorCutV1, FloorErrorV1, OnlineFloorCheckpointV1, OnlineFloorProfileV1,
+    FloorErrorV1, OnlineFloorCheckpointV1, OnlineFloorProfileV1,
     OnlineFloorRoleV1, online_cut_from_records_v1,
 };
 use crate::tpm_nv_custody::physical::OriginalOnlinePhysicalAuthDestinationV1;
 
-const INITIALIZATION_BYTES: usize = 904;
-const SEED_BYTES: usize = 640;
+const INITIALIZATION_BYTES: usize =
+    aos_sandbox_protocol::nix_online_floor_initialization::INITIALIZATION_BYTES_V2;
+const SEED_BYTES: usize =
+    aos_sandbox_protocol::nix_online_floor_initialization::SEED_BYTES_V2;
 const ISSUER_NAME: &str = "nix-online-floor-issuer-v1";
 const AUTH_NAME: &str = "nix-online-floor-auth-v1";
 const GENESIS_NAME: &str = "nix-online-floor-genesis-v1";
-const SEED_DOMAIN: &[u8] = b"aos.sandbox.nix.online-floor.seed.v2\0";
-const INITIAL_DOMAIN: &[u8] = b"aos.sandbox.nix.online-floor.initial-cut.v2\0";
 
 /// Keeps the existing typed Core failure on the same genuine original loan.
 pub(crate) enum OnlineOriginV1 {
@@ -550,35 +549,19 @@ fn read_credential(directory: &Path, name: &str, length: usize, private: bool)
 fn validate_initialization(
     bytes: &[u8; INITIALIZATION_BYTES], issuer: &[u8; 48], auth: &[u8; 32],
 ) -> Result<OnlineFloorProfileV1, FloorErrorV1> {
-    if bytes[..12] != *b"AOSNXG02\0\x02\0\0"
-        || bytes[12..24] != *b"AOSNXS02\0\x02\0\0"
-        || issuer[..16] == [0; 16] || issuer[16..] == [0; 32] || *auth == [0; 32]
-    {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    let profile = OnlineFloorProfileV1::decode(&bytes[24..556])?;
-    if profile.issuer_digest() != <[u8; 32]>::from(Sha256::digest(issuer))
+    use aos_sandbox_protocol::nix_online_floor_initialization::OnlineFloorInitializationDataV2;
+
+    let data = OnlineFloorInitializationDataV2::decode(bytes, issuer)
+        .map_err(|_| FloorErrorV1::Provisioning)?;
+    let profile = OnlineFloorProfileV1::decode(&data.profile().encode())?;
+    if *auth == [0; 32]
         || profile.auth_digest() != <[u8; 32]>::from(Sha256::digest(auth))
     {
         return Err(FloorErrorV1::Provisioning);
     }
-    let public: [u8; 32] = issuer[16..].try_into().map_err(|_| FloorErrorV1::Provisioning)?;
-    let verifier = VerifyingKey::from_bytes(&public).map_err(|_| FloorErrorV1::Provisioning)?;
-    let seed_signature = Signature::from_slice(&bytes[588..652])
-        .map_err(|_| FloorErrorV1::Provisioning)?;
-    let mut seed_message = Vec::with_capacity(SEED_DOMAIN.len() + 576);
-    seed_message.extend_from_slice(SEED_DOMAIN);
-    seed_message.extend_from_slice(&bytes[12..588]);
-    verifier.verify_strict(&seed_message, &seed_signature)
-        .map_err(|_| FloorErrorV1::Provisioning)?;
-    let initial_signature = Signature::from_slice(&bytes[840..])
-        .map_err(|_| FloorErrorV1::Provisioning)?;
-    let mut initial_message = Vec::with_capacity(INITIAL_DOMAIN.len() + 840);
-    initial_message.extend_from_slice(INITIAL_DOMAIN);
-    initial_message.extend_from_slice(&bytes[..840]);
-    verifier.verify_strict(&initial_message, &initial_signature)
-        .map_err(|_| FloorErrorV1::Provisioning)?;
 
+    // The signed DATA must also match the live writer's existing complete-map
+    // and checkpoint engines. Decoding never substitutes for native custody.
     let empty = online_cut_from_records_v1(profile, 1, std::iter::empty())?;
     if bytes[556..588] != empty.head() {
         return Err(FloorErrorV1::Provisioning);
@@ -597,6 +580,88 @@ fn validate_initialization(
     {
         return Err(FloorErrorV1::Provisioning);
     }
-    let _complete_initial_cut: FloorCutV1 = initialized;
     Ok(profile)
+}
+
+#[cfg(test)]
+mod initialization_tests {
+    use aos_sandbox_protocol::nix_online_floor_initialization::{
+        OnlineFloorInitializationDataV2, OnlineFloorSeedDataV2,
+    };
+    use aos_sandbox_protocol::nix_online_floor_profile::{
+        OnlineFloorProfileFieldsV2, OnlineFloorProfileV2, OnlineFloorRoleV2,
+    };
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    use super::*;
+
+    fn fixture(role: OnlineFloorRoleV2) -> ([u8; 48], [u8; 32], OnlineFloorInitializationDataV2) {
+        let signing = SigningKey::from_bytes(&[role as u8; 32]);
+        let mut issuer = [3; 48];
+        issuer[16..].copy_from_slice(&signing.verifying_key().to_bytes());
+        let auth = [31; 32];
+        let mut salt_name = [4; 34];
+        salt_name[..2].copy_from_slice(&[0, 0x0b]);
+        let profile = OnlineFloorProfileV2::from_fields(OnlineFloorProfileFieldsV2 {
+            role,
+            node: [1; 16],
+            deployment: [2; 32],
+            endpoint: [3; 16],
+            domain: [4; 16],
+            domain_commitment: [5; 32],
+            disclosure: [6; 32],
+            public_set_digest: [7; 32],
+            startup_digest: [8; 32],
+            stable_endpoint: [9; 32],
+            genesis_id: [10; 16],
+            issuer_digest: Sha256::digest(issuer).into(),
+            auth_digest: Sha256::digest(auth).into(),
+            salt_name,
+            snapshot_digest: [11; 32],
+        })
+        .unwrap();
+
+        let signature = signing
+            .sign(&OnlineFloorSeedDataV2::signing_message(profile))
+            .to_bytes();
+        let seed = OnlineFloorSeedDataV2::from_signature(profile, &issuer, signature).unwrap();
+        let signature = signing
+            .sign(&OnlineFloorInitializationDataV2::signing_message(&seed))
+            .to_bytes();
+        let initialization =
+            OnlineFloorInitializationDataV2::from_signature(seed, &issuer, signature).unwrap();
+        (issuer, auth, initialization)
+    }
+
+    #[test]
+    fn shared_genesis_matches_the_existing_native_floor_equations() {
+        for role in [OnlineFloorRoleV2::Controller, OnlineFloorRoleV2::Owner] {
+            let (issuer, auth, initialization) = fixture(role);
+
+            let profile =
+                validate_initialization(&initialization.encode(), &issuer, &auth).unwrap();
+            let seed = initialization.seed().encode();
+            let key = initialization.seed().journal_key();
+            let cut = online_cut_from_records_v1(profile, 4, [(key.as_slice(), seed.as_slice())])
+                .unwrap();
+            let checkpoint = OnlineFloorCheckpointV1::initial(profile, cut).unwrap();
+
+            assert_eq!(profile.encode(), initialization.profile().encode());
+            assert_eq!(checkpoint.encode(), initialization.checkpoint());
+            assert_eq!(checkpoint.nv_value(), initialization.nv_value());
+            assert_eq!(profile.role().nv_index(), role.nv_index());
+        }
+    }
+
+    #[test]
+    fn auth_and_independent_issuer_substitution_remain_closed() {
+        let (issuer, auth, initialization) = fixture(OnlineFloorRoleV2::Controller);
+        let bytes = initialization.encode();
+
+        assert!(validate_initialization(&bytes, &issuer, &[0; 32]).is_err());
+        assert!(validate_initialization(&bytes, &issuer, &[32; 32]).is_err());
+        let mut changed_issuer = issuer;
+        changed_issuer[0] ^= 1;
+        assert!(validate_initialization(&bytes, &changed_issuer, &auth).is_err());
+    }
 }
