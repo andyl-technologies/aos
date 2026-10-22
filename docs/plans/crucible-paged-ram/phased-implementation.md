@@ -65,9 +65,9 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | `a0651364c1` imports signed `eb298a8e1c`, tree `d940cee8`, adding retained pending-constructor custody. Exact raw atomic reconstruction, the 348-created-file license inventory and 187 owning Source tests pass. The 1,918-object cohort and corrected first normal delivery pass under unchanged bounds. | The missing-helper failure, fixture correction and explicit qualification bridge remain retained. All twenty-five bounded custody suites and ABI conformance pass. Full QEMU still fails launched dirty capture; genuine Module issuance, selected execution and complete return remain open. The canonical license gate still stops at strict controller Clippy. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 404 committed bindings: 385 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 405 committed bindings: 386 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -329,7 +329,8 @@ hygiene pass. Mandatory application test-target compilation passes at
 immutable source `cdbvbjpnxnl2qr8hn30kvzi3g5bdylry`. The comparison record has
 SHA-256 `da55628b1c34cd6d5fd5230fabe3440078532456c315269654556f654dae5b88`.
 ABI conformance passes at `3wxg0f5v6bvbhhkcjgsdhanxm5q1s4qw`;
-final exact supervision remains in progress. The fresh
+all 287 exact supervision cases pass in nine groups at
+`mh6vha4nls2xq5gz9m519s6hdsr7c11p`. The fresh
 canonical license gate stops before its assertions at strict controller Clippy:
 1,184 host-library and 1,255 host-test errors.
 
@@ -337,11 +338,38 @@ The matching public Source reader is staged, not imported. Review caught an
 ordinary-parent-current cycle in signed `881048e437`: retained reader debt
 incorrectly refused the identity observations needed by that reader. Signed
 `0137bd538c` restricts those five debt checks to actual parent return. The
-original 49 and six paired omission controls pass; its fresh owning build and
-normal delivery remain pending. The earlier 881 first normal pass (48.462 of
-60 seconds) and interrupted subsequent sweep belong to the preserved earlier
+original 49 and six paired omission controls pass in 39.807 seconds. Its fresh
+1,918-object owning build passes in 150.398 seconds under the unchanged
+600-second/6-GiB/two-compiler bound. Its first corrected-tree normal delivery
+passes in 52.927 seconds under the original 60-second/6-GiB bound; the
+independent sweep and final artifact seal remain in progress. The earlier 881
+first normal pass (48.462 of 60 seconds) and interrupted subsequent sweep belong to the preserved earlier
 snapshot. Neither layout tests nor that earlier normal pass qualify genuine
 installed Module reads, selected activation or physical Source return.
+
+#### Typed network stop refusals
+
+`27659ae233` retains the actual network ring error or inline frame/stop
+coordinates at the stop-consistency boundary. Display formatting remains lazy;
+the same Original's independent post still runs after either refusal. A real
+memfd-backed ring regression covers a corrupt tail, a mismatched source slot
+and a mismatched instruction count. Runtime binds before publication so the
+control exercises the actual unpublished frontier. All three refusals allocate
+and reallocate nothing, leave the ring and wake unchanged, and retain the typed
+cause. These inconsistent component snapshots grant no physical Native stop.
+
+The initial compile exposed the actual 32-bit frame sequence; a subsequent
+control setup bound Runtime after publication and therefore observed no new
+frame. Both failed attempts remain recorded. After correcting those two test
+assumptions, the mapped regression and all 68 runtime regressions pass. The
+private-feature mapped regression and four paired fingerprint controls pass.
+Content-bound engineering hygiene passes. Mandatory application target
+compilation passes at `rvx6s8vrfhh0pzmwnyc3dlm8fch7vi5j`; all 5,298 committed
+Rust/TOML files match immutable source `mqczf8kqqy5svsg6brg4h6202jzkpq99`.
+The comparison record has SHA-256
+`9abfaaeade9b42f5ef053b2b05b613d10287ca0ce13031a072d8260265fd66e5`.
+Exact supervision remains in progress. Complete diagnostic funding, actual
+Source stop custody and Native admission remain open.
 
 #### Typed fault consumer refusals
 
@@ -404,6 +432,20 @@ conventional bundle. Its record has SHA-256
 the archive's 78,170-blob reconstruction was not independently repeated. Initial
 link/export/fingerprint refusals remain retained. Review identified duplicate
 Meson dependency entries for correction in the subsequent cumulative cut.
+
+Signed `adacca21ec`, tree `192a138b`, composes that deferred lifetime with
+the separately retained `43fa571778` physical executor/boundary lineage. Its
+production executor files match the reviewed 43fa parent exactly; extractor
+fingerprints reflect the joined Source. All 27 configured objects and 55
+physical controls pass. Source/fixed floor are 243,032/287,110; the extra 144
+bytes are the actual boundary journals. Independent verification matches
+nineteen signed sources, 542 regular evidence files and five artifact hashes,
+with record SHA-256
+`4ee76f338ebf3be53d3754625378781dab451351fc2db267c7f218ce678d2014`.
+The complete archive's 78,178-blob/mode reconstruction was not independently
+repeated. Signed `b1663af68d` removes the three duplicate Meson dependencies;
+its sole parent is adacca. Neither cut qualifies a complete matching ELF,
+physical Main finish, semantic RR permission or a borrowed class-one Original.
 
 #### Staged Native executor and cleanup prerequisites
 
