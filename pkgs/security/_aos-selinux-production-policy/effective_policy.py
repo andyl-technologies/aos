@@ -249,6 +249,12 @@ def execution_access() -> tuple[Access, ...]:
 
 
 POSITIVE_ACCESS = (
+    # Native host activation requires the manager and generated-unit API;
+    # owner_policy separately forbids manager mutation by Sandbox services.
+    *accesses("init_t", "init_t", "system", ("status", "reload")),
+    *accesses(
+        "init_t", "systemd_unit_t", "service", ("status", "start", "stop", "reload")
+    ),
     # Excluding the three explicit-loader roles must not remove ordinary host
     # textrel support or weaken their membership in the base domain boundary.
     Access("init_t", "textrel_shlib_t", "file", "execmod"),

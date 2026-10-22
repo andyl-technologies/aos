@@ -1647,6 +1647,23 @@ class EffectivePolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "missing effective allow"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_native_activation_requires_each_manager_permission(self) -> None:
+        required = (
+            *effective_policy.accesses("init_t", "init_t", "system", ("status", "reload")),
+            *effective_policy.accesses(
+                "init_t", "systemd_unit_t", "service",
+                ("status", "start", "stop", "reload"),
+            ),
+        )
+
+        for access in required:
+            with self.subTest(access=access):
+                policy = FakePolicy()
+                policy.allows[access] = []
+
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_guest_anchor_source_keeps_var_traversal_separate_from_relabeling(self) -> None:
         """Pins explicit anchor grants; the binary checker covers inheritance."""
         source = Path(__file__).with_name("aos_sandbox.te").read_text()

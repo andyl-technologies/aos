@@ -8,6 +8,7 @@ require {
     attribute aos_no_context_translation_domain;
     attribute file_type;
     type init_t;
+    type systemd_unit_t;
     type device_t;
     type fixed_disk_device_t;
     type fuse_device_t;
@@ -46,10 +47,17 @@ require {
     class process { fork getcap getattr getpgid getsched noatsecure ptrace rlimitinh setexec setfscreate setpgid setrlimit setsched setsockcreate sigchld siginh sigkill signal sigstop transition };
     class process2 { nnp_transition nosuid_transition };
     class security read_policy;
+    class service { reload start status stop };
+    class system { reload status };
     class memfd_file { create getattr ioctl map open read write };
     class sock_file { create getattr open read rename setattr unlink write };
     class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
 }
+
+# Native host activation subscribes to PID 1 before reconciling its generated
+# units. Sandbox owners retain their separately checked status-only access.
+allow init_t self:system { reload status };
+allow init_t systemd_unit_t:service { reload start status stop };
 
 # The fixed image worker has no pathname-opened FUSE, Cache, Root or channel
 # authority. Mount labels and retains its original preparation objects before

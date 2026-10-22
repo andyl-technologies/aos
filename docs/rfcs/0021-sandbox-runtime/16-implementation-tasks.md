@@ -9559,6 +9559,17 @@ build contract passes at
 The shared Secure Boot enrollment VM also passes with this build. Dedicated
 adversarial root-handoff VM qualification remains pending.
 
+The next enforcing Host phase-0 boot passed that root handoff, then stopped
+in native host activation: PID 1 denied the `init_t` resource provider's
+manager `status` request during subscription. The same boot also recorded a
+denied root manager `reload` request. Production policy now explicitly grants
+the host activation domain manager status/reload and generic unit
+status/start/stop/reload. Sandbox owners retain their independently checked
+status-only manager access. All 144 policy-checker regression tests pass,
+including removal of each host activation permission; compiled-policy and
+installed-image qualification remain pending. No activation journal is erased
+or repaired to turn the failed first effect into a successful boot.
+
 GNU build identity is a separate admission prerequisite. The previously built
 AOS systemd executable lacks the required GNU build-ID note, and an unflagged
 AOS Rust probe built without one. The systemd and Mount daemon package
