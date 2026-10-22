@@ -140,10 +140,15 @@ impl Delivery {
     ///
     /// # Errors
     /// Retains malformed or refused custody. A projection or current result
-    /// cannot substitute for consumption of the exact canonical holder.
+    /// cannot substitute for consumption of the exact canonical holder. Once
+    /// consumed, repeated calls replay the saved Ready or payload post refusal
+    /// without invoking any Native return again.
     pub(super) fn identity_return(&mut self, api: Api, id: u64) -> Result<(), StartupSourceError> {
-        if !self.attempted || self.returned {
+        if !self.attempted {
             return Ok(());
+        }
+        if self.returned {
+            return self.return_result();
         }
         if self.projection.is_null() || self.serial == 0 {
             return Err(status_error(-libc::EPROTO));
@@ -201,8 +206,13 @@ impl Delivery {
         self.returned = true;
         // Save real lifetime consumption before reporting an independent
         // Ready or payload return post failure. A later cleanup cannot reissue it.
-        ready?;
-        payload
+        self.return_result()
+    }
+
+    /// Projects retained post history independently from physical consumption.
+    fn return_result(&self) -> Result<(), StartupSourceError> {
+        native_status(self.ready_return_status)?;
+        native_status(self.payload_return_status)
     }
 }
 

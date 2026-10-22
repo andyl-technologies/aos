@@ -389,6 +389,24 @@ immutable application source
 `5ya73iji71gv4lpc8mbmgf59cjyv60ga`; the comparison record has SHA-256
 `c306fd48b5f8c9e24a75d082b9fbed593435ffb2296473fd179b34df6cb74ec6`.
 
+#### Received delivery post-refusal replay
+
+The actual received-delivery keeper now preserves its saved Ready and payload
+post refusals after known physical lifetime consumption. Repeated return calls
+project retained history before any Native callback, so they cannot report a
+fresh success, reclaim the delivery twice or erase the failure before parent
+cleanup. The existing inline status fields carry this history; the complete
+paid Runtime layout is unchanged. Unknown lifetime consumption still retains
+its exact canonical field and parent debt.
+
+The two existing local-model regressions now repeat cleanup after changing the
+modeled provider's result, verify the original refusal and assert exactly one
+Ready, payload and lifetime return. Their addresses and copied output facts
+supply no real Native or publisher authority. All 21 command-receive tests and
+content-bound engineering hygiene pass. Mandatory application compilation,
+all plugin target compilation and the 289-case exact supervision check remain
+in progress. Full Source/Module physical return remains unqualified.
+
 #### Typed network stop refusals
 
 `27659ae233` retains the actual network ring error or inline frame/stop

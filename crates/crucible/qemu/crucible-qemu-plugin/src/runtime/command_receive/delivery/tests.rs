@@ -315,9 +315,14 @@ fn payload_post_refusal_saves_real_lifetime_consumption_before_reporting_failure
     assert!(delivery.projection.is_null());
     assert_eq!(delivery.serial, 0);
     assert_eq!(delivery.payload_return_status, -libc::ECANCELED);
-    assert_eq!(status(delivery.identity_return(api(), 7)), 0);
+
+    MODEL.with_borrow_mut(|model| model.payload_return_status = 0);
+    for _ in 0..2 {
+        assert_eq!(status(delivery.identity_return(api(), 7)), -libc::ECANCELED);
+    }
     assert_eq!(status(retain(&mut delivery)), -libc::ESTALE);
     MODEL.with_borrow(|model| {
+        assert_eq!(model.ready_returns, 1);
         assert_eq!(model.payload_returns, 1);
         assert_eq!(model.returns, 1);
         assert_eq!(model.creates, 1);
@@ -359,6 +364,14 @@ fn ready_post_refusal_saves_consumption_and_still_attempts_both_actual_returns()
     assert!(delivery.ready_returned);
     assert!(delivery.returned);
     assert!(delivery.projection.is_null());
+
+    MODEL.with_borrow_mut(|model| {
+        model.ready_status = 0;
+        model.payload_return_status = -libc::EIO;
+    });
+    for _ in 0..2 {
+        assert_eq!(status(delivery.identity_return(api(), 7)), -libc::ECANCELED);
+    }
     MODEL.with_borrow(|model| {
         assert_eq!(model.ready_returns, 1);
         assert_eq!(model.payload_returns, 1);
