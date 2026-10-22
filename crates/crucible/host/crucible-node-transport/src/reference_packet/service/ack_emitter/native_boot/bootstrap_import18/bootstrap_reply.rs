@@ -54,6 +54,19 @@ pub(in super::super) struct Inputs<'a> {
     pub(in super::super) proof: &'a Proof,
 }
 
+/// Borrows the constructed context and original operands inside one SDK loan.
+///
+/// This view neither completes pending verification nor authorizes publication.
+/// The enclosing original loan retains its guards across reply construction.
+#[derive(Clone, Copy)]
+struct Verified<'a, 'sdk> {
+    context: &'a Context,
+    envelope: &'a Envelope,
+    request: &'a Request,
+    guard: &'a crate::session::CorrelationGuard,
+    operands: &'a BootstrapAckOperands<'sdk>,
+}
+
 /// Names separately admitted outputs of the complete reply constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in super::super) enum Step {
@@ -293,15 +306,18 @@ impl OriginalImport18RawBootstrap {
             verified,
             verification,
             |proof, context, envelope, request, guard, operands| {
-                construct_under_verified_data(
-                    Inputs { prior, proof },
-                    attempt,
-                    admission,
+                let verified = Verified {
                     context,
                     envelope,
                     request,
                     guard,
                     operands,
+                };
+                construct_under_verified_data(
+                    Inputs { prior, proof },
+                    attempt,
+                    admission,
+                    &verified,
                 )
             },
         );
@@ -327,9 +343,14 @@ fn construct_current(
     inputs.proof.with_verified_operands_data(
         inputs.prior,
         |context, envelope, request, guard, operands| {
-            construct_under_verified_data(
-                inputs, attempt, admission, context, envelope, request, guard, operands,
-            )
+            let verified = Verified {
+                context,
+                envelope,
+                request,
+                guard,
+                operands,
+            };
+            construct_under_verified_data(inputs, attempt, admission, &verified)
         },
     )
 }
@@ -341,12 +362,9 @@ fn construct_under_verified_data(
     inputs: Inputs<'_>,
     attempt: &mut Attempt,
     admission: &dyn Admission,
-    context: &Context,
-    envelope: &Envelope,
-    request: &Request,
-    guard: &crate::session::CorrelationGuard,
-    operands: &BootstrapAckOperands<'_>,
+    verified: &Verified<'_, '_>,
 ) -> Result<(), ProviderError> {
+    let operands = verified.operands;
     let original = inputs.prior.prior.original;
     attempt.cut = Some(original.cut);
     attempt.launch = Some(Rc::downgrade(original.parsed.shared_launch_data()?));
@@ -406,10 +424,7 @@ fn construct_under_verified_data(
             maximum_frame,
             maximum_nesting,
             attempt,
-            context,
-            envelope,
-            request,
-            guard,
+            verified,
             step,
         );
         let terminal = attempt.authenticate(inputs, operands);
@@ -439,12 +454,17 @@ fn construct_step(
     maximum_frame: usize,
     maximum_nesting: usize,
     attempt: &mut Attempt,
-    context: &Context,
-    envelope: &Envelope,
-    request: &Request,
-    guard: &crate::session::CorrelationGuard,
+    verified: &Verified<'_, '_>,
     step: Step,
 ) -> Result<(), ProviderError> {
+    let Verified {
+        context,
+        envelope,
+        request,
+        guard,
+        ..
+    } = *verified;
+
     match step {
         Step::Result => {
             attempt.result = Some(ReplyResult {
@@ -547,7 +567,9 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 27] = [
+    let fields: [usize; 28] = [
+        // One context view survives both the constructor and step-helper borrows.
+        size_of::<Verified<'static, 'static>>() + size_of::<&Verified<'static, 'static>>() * 2,
         storage::counter_scratch_data(),
         BootstrapAckOperands::framing_counter_scratch_data(),
         combined_counter_scratch_data(),
@@ -573,8 +595,8 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Weak<PacketNativeImport18SelectedLaunchWireData>>(),
         size_of::<usize>() * 7,
         size_of::<Option<usize>>(),
-        size_of::<[usize; 27]>(),
-        size_of::<std::array::IntoIter<usize, 27>>(),
+        size_of::<[usize; 28]>(),
+        size_of::<std::array::IntoIter<usize, 28>>(),
     ];
     fields.into_iter().try_fold(
         Proof::verified_loan_counter_scratch_data::<()>()?,

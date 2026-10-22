@@ -427,17 +427,27 @@ impl OriginalImport18RawBootstrap {
                     prior,
                     correlation: header.with_guard_data(guard),
                 };
-                proof::verify_under_received_data(
-                    inputs,
-                    verified,
-                    verification,
+                let received = proof::Received {
                     guard,
                     envelope,
                     request,
                     proof,
                     operands,
                     digests,
+                };
+                proof::verify_under_received_data(
+                    inputs,
+                    verified,
+                    verification,
+                    &received,
                     |proof, context, envelope, request, guard, operands| {
+                        let verified = super::Verified {
+                            context,
+                            envelope,
+                            request,
+                            guard,
+                            operands,
+                        };
                         super::construct_under_verified_data(
                             super::Inputs {
                                 prior: inputs,
@@ -445,11 +455,7 @@ impl OriginalImport18RawBootstrap {
                             },
                             reply,
                             preparation,
-                            context,
-                            envelope,
-                            request,
-                            guard,
-                            operands,
+                            &verified,
                         )
                     },
                 )?;

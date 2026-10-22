@@ -38,6 +38,26 @@ pub(in super::super) struct Inputs<'a> {
     pub(in super::super) correlation: correlation::View<'a>,
 }
 
+/// Borrows the operands lent by one enclosing received-request scope.
+///
+/// Construction creates only a DATA view. The caller must retain the actual
+/// SDK loan and its terminal guards around verification and inspection.
+#[derive(Clone, Copy)]
+pub(super) struct Received<'a, 'sdk> {
+    /// Borrows the actual SDK that has reserved this original request.
+    pub(super) guard: &'a crate::session::CorrelationGuard,
+    /// Borrows the original correlated request envelope.
+    pub(super) envelope: &'a Envelope,
+    /// Borrows the typed request decoded from that envelope.
+    pub(super) request: &'a Request,
+    /// Borrows its still-unauthenticated proof extension.
+    pub(super) proof: &'a Proof,
+    /// Borrows current Host, Source and private channel custody.
+    pub(super) operands: &'a BootstrapAckOperands<'sdk>,
+    /// Copies the five already completed normalization hashes.
+    pub(super) digests: Digests,
+}
+
 /// Names separately admitted proof operations and their surviving outputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in super::super) enum Step {
@@ -368,10 +388,15 @@ pub(super) fn verify_current_with_data<R: Copy>(
     inputs.correlation.with_received_context_data(
         inputs.prior,
         |guard, envelope, request, proof, operands, digests| {
-            verify_under_received_data(
-                inputs, attempt, admission, guard, envelope, request, proof, operands, digests,
-                inspect,
-            )
+            let received = Received {
+                guard,
+                envelope,
+                request,
+                proof,
+                operands,
+                digests,
+            };
+            verify_under_received_data(inputs, attempt, admission, &received, inspect)
         },
     )
 }
@@ -384,12 +409,7 @@ pub(super) fn verify_under_received_data<R: Copy>(
     inputs: Inputs<'_>,
     attempt: &mut Attempt,
     admission: &dyn Admission,
-    guard: &crate::session::CorrelationGuard,
-    envelope: &Envelope,
-    request: &Request,
-    proof: &Proof,
-    operands: &BootstrapAckOperands<'_>,
-    digests: Digests,
+    received: &Received<'_, '_>,
     inspect: impl FnOnce(
         &Attempt,
         &Context,
@@ -399,6 +419,14 @@ pub(super) fn verify_under_received_data<R: Copy>(
         &BootstrapAckOperands<'_>,
     ) -> Result<R, ProviderError>,
 ) -> Result<R, ProviderError> {
+    let Received {
+        guard,
+        envelope,
+        request,
+        operands,
+        ..
+    } = *received;
+
     let original = inputs.prior.original;
     attempt.cut = Some(original.cut);
     attempt.launch = Some(Rc::downgrade(original.parsed.shared_launch_data()?));
@@ -437,18 +465,7 @@ pub(super) fn verify_under_received_data<R: Copy>(
         admission.step_data(inputs, attempt, step)?;
         attempt.authenticate(inputs, operands)?;
         attempt.step = Some(step);
-        let outcome = construct_step(
-            inputs,
-            attempt,
-            operands,
-            envelope,
-            request,
-            proof,
-            digests,
-            bodies.boot,
-            maximum_frame,
-            step,
-        );
+        let outcome = construct_step(inputs, attempt, received, bodies.boot, maximum_frame, step);
         observe_step(inputs, attempt, admission, operands, step, outcome)?;
     }
     inspect(
@@ -464,15 +481,20 @@ pub(super) fn verify_under_received_data<R: Copy>(
 fn construct_step(
     inputs: Inputs<'_>,
     attempt: &mut Attempt,
-    operands: &BootstrapAckOperands<'_>,
-    envelope: &Envelope,
-    request: &Request,
-    proof: &Proof,
-    digests: Digests,
+    received: &Received<'_, '_>,
     boot: &BootData,
     maximum_frame: usize,
     step: Step,
 ) -> Result<(), ProviderError> {
+    let Received {
+        envelope,
+        request,
+        proof,
+        operands,
+        digests,
+        ..
+    } = *received;
+
     let original = inputs.prior.original;
     match step {
         Step::Assigned => {
@@ -620,6 +642,8 @@ fn received_core_counter_scratch_data<R: Copy>() -> Result<usize, ProviderError>
         crate::session::CorrelationGuard::original_bootstrap_response_sequence_counter_scratch_data(
         ),
         size_of::<Inputs<'static>>(),
+        // One scoped view coexists with the verifier and step-helper borrows.
+        size_of::<Received<'static, 'static>>() + size_of::<&Received<'static, 'static>>() * 2,
         size_of::<&mut Attempt>(),
         size_of::<&dyn Admission>(),
         size_of::<&crate::session::CorrelationGuard>(),
