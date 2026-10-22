@@ -367,7 +367,12 @@ pub(in super::super::super) fn complete_for_proof(
                 &mut attempt,
                 &model,
             )
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "bootstrap correlation fixture preparation: {error:?}; expired={}",
+                    original.cut.is_expired()
+                )
+            });
     }
     assert_eq!(model.calls.get(), if reserve { 4 } else { 0 });
     (normalizations, literal, parsed, codec, attempt)

@@ -242,7 +242,7 @@ fn child(case: &str, wire: &[u8]) {
     }
     assert!(
         output.status.success(),
-        "{}",
+        "{case}: {}",
         String::from_utf8_lossy(&diagnostics)
     );
     if case.starts_with("initial_hello_publication_") || case.starts_with("initial_policy_") {
