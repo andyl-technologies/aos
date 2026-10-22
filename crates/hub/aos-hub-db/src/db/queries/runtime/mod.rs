@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod authorization;
 mod coordination_helpers;
 mod coordination_mutations;
 mod coordination_reads;

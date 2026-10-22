@@ -138,21 +138,20 @@ impl NativeDirectUploadAuthority {
             intent.byte_size.get() <= runtime.maximum_object_bytes.get(),
             "direct source exceeds accepted runtime limit"
         );
-        for credential in [&write, &read, &presign] {
-            if binding.kind == "deployment_r2" {
-                continue;
-            }
-            let current = self
-                .db
-                .current_binding_credential(binding.id, &credential.purpose)
-                .await?
-                .context("direct current purpose credential absent")?;
-            ensure!(
-                current.validation_state == "valid"
-                    && u64::try_from(current.generation)? == credential.generation.get(),
-                "direct purpose credential generation changed"
-            );
-            if binding.kind != "deployment_r2" {
+        if binding.kind != "deployment_r2" {
+            // Select all current heads in one snapshot. Transactional placement
+            // fences still recheck every selected generation before an effect.
+            let credentials = self.db.list_current_binding_credentials(binding.id).await?;
+            for credential in [&write, &read, &presign] {
+                let current = credentials
+                    .iter()
+                    .find(|current| current.purpose == credential.purpose)
+                    .context("direct current purpose credential absent")?;
+                ensure!(
+                    current.validation_state == "valid"
+                        && u64::try_from(current.generation)? == credential.generation.get(),
+                    "direct purpose credential generation changed"
+                );
                 ensure!(
                     current.secret_version_ref == credential.secret_version_ref
                         && current.credential_fingerprint == credential.credential_fingerprint,

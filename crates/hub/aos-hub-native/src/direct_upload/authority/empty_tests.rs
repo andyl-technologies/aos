@@ -3,7 +3,7 @@
 use super::*;
 
 #[tokio::test]
-async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan() {
+async fn external_admission_checks_current_credentials_and_refuses_empty_before_reservation() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org_id = db.create_org("external-empty", "External").await.unwrap();
     let owner = db.org_by_id(org_id).await.unwrap().unwrap();
@@ -144,6 +144,7 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
     let binding = db.binding(binding_id).await.unwrap().unwrap();
     let (acceptances, profile) =
         acceptance::tests::external_fixture(&origin, now, now + 600, &binding);
+    let protected_profiles = vec![profile.clone()];
     let DirectProtectedProfile::External {
         profile,
         runtime_qualification,
@@ -226,7 +227,7 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
         .add_root_certificate(ca)
         .build()
         .unwrap();
-    let authority = NativeDirectUploadAuthority {
+    let authority = Arc::new(NativeDirectUploadAuthority {
         db: db.clone(),
         rpc: rpc(db.clone(), http.clone()).await,
         origin: origin.clone(),
@@ -238,8 +239,8 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
         clock_uncertainty_seconds: 2,
         discovery: Arc::new(tokio::sync::OnceCell::new()),
         lookup_slots: Arc::new(tokio::sync::Semaphore::new(8)),
-    };
-    let service = DirectUploadService::new(db.clone(), Arc::new(authority));
+    });
+    let service = DirectUploadService::new(db.clone(), authority.clone());
     let cache = db.binary_cache_by_id(cache).await.unwrap().unwrap();
     let caps = service
         .get_capabilities(
@@ -294,5 +295,73 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
         .is_none());
     assert!(db.cache_write_ticket(&session).await.unwrap().is_none());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    let placement = db.surface_placement(placement.id).await.unwrap().unwrap();
+    authority
+        .resolve_placement(&placement, "nar/empty.nar", &intent, &protected_profiles)
+        .await
+        .unwrap();
+
+    // Every purpose must match the current SQL head, including its publication
+    // pins. A complete result for the other purposes cannot hide a mismatch.
+    for purpose in ["write", "read", "presign"] {
+        for (field, expected) in [
+            ("generation", "direct purpose credential generation changed"),
+            ("secret", "direct purpose credential publication changed"),
+            (
+                "fingerprint",
+                "direct purpose credential publication changed",
+            ),
+            ("purpose", "direct current purpose credential absent"),
+        ] {
+            let mut changed = protected_profiles.clone();
+            let DirectProtectedProfile::External { profile, .. } = &mut changed[0] else {
+                unreachable!();
+            };
+            let credential = match purpose {
+                "write" => &mut profile.selector.write_credential,
+                "read" => &mut profile.selector.read_credential,
+                "presign" => &mut profile.selector.presign_credential,
+                _ => unreachable!(),
+            };
+            match field {
+                "generation" => credential.generation = WireInteger::new(2),
+                "secret" => credential.secret_version_ref.push_str("-changed"),
+                "fingerprint" => credential.credential_fingerprint = "5".repeat(64),
+                "purpose" => credential.purpose = "missing".into(),
+                _ => unreachable!(),
+            }
+            let error = authority
+                .resolve_placement(&placement, "nar/empty.nar", &intent, &changed)
+                .await
+                .unwrap_err();
+            assert_eq!(error.to_string(), expected, "{purpose}/{field}");
+        }
+    }
+
+    let current = db
+        .current_binding_credential(binding_id, "read")
+        .await
+        .unwrap()
+        .unwrap();
+    db.validate_binding_credential_revision(
+        binding_id,
+        "read",
+        current.generation,
+        "invalid",
+        Some("revoked"),
+        current.head_resource_version,
+    )
+    .await
+    .unwrap();
+    let error = authority
+        .resolve_placement(&placement, "nar/empty.nar", &intent, &protected_profiles)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "direct purpose credential generation changed"
+    );
+
     server.abort();
 }
