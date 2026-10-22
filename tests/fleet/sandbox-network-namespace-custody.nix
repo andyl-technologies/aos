@@ -674,6 +674,12 @@ in {
         f"{managed_sandbox_ifindex} {managed_sandbox_address_1} "
         f"{managed_sandbox_address_2}"
     ).strip() == "NFT_OBSERVER_OK"
+    # The retained admission is Prepared: policy is installed while both
+    # veths remain fenced until a separately authorized lease arms them.
+    lifecycle.succeed(f"{IP} link set {managed_host} down")
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed link set {managed_sandbox} down"
+    )
     assert lifecycle.succeed(
         f"{FIXTURE} observer-kernel-run managed {managed_root} {managed_pin} "
         f"{IP} {NFT} {FIXTURE} {OBSERVER} {GATE_OBJECT}"
@@ -750,6 +756,13 @@ in {
     )
     lifecycle.succeed(f"test -d {default_scope_sentinel}")
     lifecycle.succeed(f"rmdir {default_scope_sentinel} {default_gate_root}")
+
+    # The following inventory-only peer substitution checks preserve the
+    # administratively up link attributes captured before the attack.
+    lifecycle.succeed(f"{IP} link set {managed_host} up")
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed link set {managed_sandbox} up"
+    )
 
     managed_host_link = json.loads(lifecycle.succeed(
         f"{IP} -j -details link show dev {managed_host}"
