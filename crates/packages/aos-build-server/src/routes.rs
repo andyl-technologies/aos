@@ -42,13 +42,14 @@ use axum::{
     Json, Router,
     body::{Body, Bytes},
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, head, post, put},
 };
 use serde::Deserialize;
-use tokio::io::{AsyncRead, AsyncSeekExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 
@@ -138,6 +139,47 @@ pub struct AppState {
     pub drain: Arc<DrainState>,
     /// Signer used to add a fresh `Sig:` line to served narinfo.
     pub signer: NarInfoSigner,
+    /// Admission bound shared by NAR range and narinfo materialization work.
+    pub nar_materialization_admission: Arc<Semaphore>,
+}
+
+/// Failure to admit or complete bounded NAR materialization work.
+#[derive(Debug)]
+pub(crate) enum NarMaterializationError {
+    /// All configured materialization slots are in use.
+    Busy,
+    /// The compression pipeline or blocking worker failed.
+    Failed(anyhow::Error),
+}
+
+fn try_nar_materialization_permit(
+    admission: &Arc<Semaphore>,
+) -> Result<tokio::sync::OwnedSemaphorePermit, NarMaterializationError> {
+    Arc::clone(admission)
+        .try_acquire_owned()
+        .map_err(|_| NarMaterializationError::Busy)
+}
+
+/// Measures compressed NAR metadata on an admitted blocking worker.
+///
+/// # Errors
+///
+/// Returns [`NarMaterializationError::Busy`] when all configured slots are in
+/// use, or [`NarMaterializationError::Failed`] when measurement fails.
+pub(crate) async fn measure_nar_bounded(
+    state: &Arc<AppState>,
+    info: crate::store::DbPathInfo,
+) -> Result<Option<(String, u64)>, NarMaterializationError> {
+    let permit = try_nar_materialization_permit(&state.nar_materialization_admission)?;
+    let compression = state.config.compression.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        narinfo::measure_nar(&info, &compression)
+    })
+    .await
+    .map_err(|error| NarMaterializationError::Failed(error.into()))?
+    .map_err(NarMaterializationError::Failed)
 }
 
 /// Builds the axum router with both REST and ConnectRPC endpoints.
@@ -316,10 +358,31 @@ async fn narinfo_handler(
     // Update access metadata (best-effort, don't fail the request).
     let _ = access::update_access(&state.views, &view, &hash);
 
+    let measured_file = match measure_nar_bounded(&state, info.clone()).await {
+        Ok(measured_file) => measured_file,
+        Err(NarMaterializationError::Busy) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "1")],
+                "NAR materialization capacity is busy",
+            )
+                .into_response();
+        }
+        Err(NarMaterializationError::Failed(error)) => {
+            tracing::error!(view = %view, hash = %hash, %error, "narinfo measurement failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "narinfo rendering failed",
+            )
+                .into_response();
+        }
+    };
+
     let body = match narinfo::format_narinfo(
         &info,
         &state.store_dir,
         &state.config.compression,
+        measured_file,
         Some(&state.signer),
     ) {
         Ok(body) => body,
@@ -348,9 +411,9 @@ async fn narinfo_handler(
 /// Anonymous when the view allows it, otherwise requires a valid JWT. The
 /// filename's extension selects the compression (`.nar`, `.nar.zst`,
 /// `.nar.xz`) and its leading hash segment must be visible in the view.
-/// Full downloads are streamed without buffering; requests with a `Range:`
-/// header materialise the compressed NAR in memory and answer with
-/// `206 Partial Content` (or `416` for unsatisfiable ranges).
+/// Full downloads are streamed without buffering. Range requests are
+/// materialized into a bounded unlinked file on a blocking worker, then only
+/// the requested slice is streamed to the client.
 async fn nar_handler(
     Path((view, filename)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
@@ -403,33 +466,67 @@ async fn nar_handler(
         }
     };
 
-    let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-    if let Some(range) = range {
-        let bytes = match compress::nar_bytes(&store_path, compression) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                tracing::error!(view = %view, hash = %store_hash, error = %e, "NAR range materialisation failed");
+    if let Some(range) = headers.get(header::RANGE) {
+        let range = match range
+            .to_str()
+            .ok()
+            .and_then(|value| ByteRangeSpec::parse(value).ok())
+        {
+            Some(range) => range,
+            None => return invalid_range_response(None),
+        };
+        let permit = match try_nar_materialization_permit(&state.nar_materialization_admission) {
+            Ok(permit) => permit,
+            Err(NarMaterializationError::Busy) => {
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("streaming NAR: {e}"),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "1")],
+                    "NAR materialization capacity is busy",
                 )
                     .into_response();
             }
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "streaming NAR failed").into_response();
+            }
         };
-        let total = bytes.len() as u64;
-        let Some((start, end)) = parse_range_header(range, total) else {
-            return (
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                [
-                    (header::ACCEPT_RANGES, "bytes".to_string()),
-                    (header::CONTENT_RANGE, format!("bytes */{total}")),
-                ],
-                "range not satisfiable",
-            )
-                .into_response();
+        let maximum_bytes = state.config.compression.max_materialized_bytes;
+        let materialized_path = store_path.clone();
+        let temporary_directory = state.views.root().to_path_buf();
+        let materialized = tokio::task::spawn_blocking(move || {
+            let result = compress::materialize_nar(
+                &materialized_path,
+                compression,
+                maximum_bytes,
+                &temporary_directory,
+            );
+            (permit, result)
+        })
+        .await;
+        let (permit, file, total) = match materialized {
+            Ok((permit, Ok((file, total)))) => (permit, file, total),
+            Ok((_permit, Err(error))) => {
+                tracing::error!(view = %view, hash = %store_hash, %error, "NAR range materialization failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "streaming NAR failed").into_response();
+            }
+            Err(error) => {
+                tracing::error!(view = %view, hash = %store_hash, %error, "NAR range worker failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "streaming NAR failed").into_response();
+            }
         };
+        let Some((start, end)) = range.resolve(total) else {
+            return invalid_range_response(Some(total));
+        };
+        let length = end - start + 1;
+        let mut file = tokio::fs::File::from_std(file);
+        if let Err(error) = file.seek(std::io::SeekFrom::Start(start)).await {
+            tracing::error!(view = %view, hash = %store_hash, %error, "NAR range seek failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "streaming NAR failed").into_response();
+        }
 
-        let chunk = bytes[start as usize..=end as usize].to_vec();
+        let stream = tokio_util::io::ReaderStream::new(file.take(length)).map(move |chunk| {
+            let _permit = &permit;
+            chunk
+        });
         tracing::info!(
             view = %view,
             hash = %store_hash,
@@ -448,9 +545,9 @@ async fn nar_handler(
                     header::CONTENT_RANGE,
                     format!("bytes {start}-{end}/{total}"),
                 ),
-                (header::CONTENT_LENGTH, chunk.len().to_string()),
+                (header::CONTENT_LENGTH, length.to_string()),
             ],
-            chunk,
+            Body::from_stream(stream),
         )
             .into_response();
     }
@@ -486,40 +583,67 @@ async fn nar_handler(
 /// Multi-range requests, malformed specs, and out-of-bounds starts yield
 /// `None` (the caller answers `416 Range Not Satisfiable`); an `end` past
 /// the body is clamped.
-fn parse_range_header(value: &str, total: u64) -> Option<(u64, u64)> {
-    if total == 0 {
-        return None;
-    }
-    let spec = value.trim().strip_prefix("bytes=")?;
-    if spec.contains(',') {
-        return None;
-    }
-    let (start, end) = spec.split_once('-')?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ByteRangeSpec {
+    FromTo { start: u64, end: u64 },
+    From { start: u64 },
+    Suffix { length: u64 },
+}
 
-    if start.is_empty() {
-        let suffix_len = end.parse::<u64>().ok()?;
-        if suffix_len == 0 {
+impl ByteRangeSpec {
+    fn parse(value: &str) -> Result<Self, ()> {
+        let spec = value.trim().strip_prefix("bytes=").ok_or(())?;
+        if spec.contains(',') {
+            return Err(());
+        }
+        let (start, end) = spec.split_once('-').ok_or(())?;
+
+        if start.is_empty() {
+            let length = end.parse::<u64>().map_err(|_| ())?;
+            return (length > 0).then_some(Self::Suffix { length }).ok_or(());
+        }
+
+        let start = start.parse::<u64>().map_err(|_| ())?;
+        if end.is_empty() {
+            return Ok(Self::From { start });
+        }
+
+        let end = end.parse::<u64>().map_err(|_| ())?;
+        (start <= end)
+            .then_some(Self::FromTo { start, end })
+            .ok_or(())
+    }
+
+    fn resolve(self, total: u64) -> Option<(u64, u64)> {
+        if total == 0 {
             return None;
         }
-        let start = total.saturating_sub(suffix_len);
-        return Some((start, total - 1));
-    }
 
-    let start = start.parse::<u64>().ok()?;
-    if start >= total {
-        return None;
+        match self {
+            Self::Suffix { length } => Some((total.saturating_sub(length), total - 1)),
+            Self::From { start } if start < total => Some((start, total - 1)),
+            Self::FromTo { start, end } if start < total => Some((start, end.min(total - 1))),
+            Self::From { .. } | Self::FromTo { .. } => None,
+        }
     }
+}
 
-    let end = if end.is_empty() {
-        total - 1
-    } else {
-        end.parse::<u64>().ok()?.min(total - 1)
-    };
-    if start > end {
-        return None;
+#[cfg(test)]
+fn parse_range_header(value: &str, total: u64) -> Option<(u64, u64)> {
+    ByteRangeSpec::parse(value).ok()?.resolve(total)
+}
+
+fn invalid_range_response(total: Option<u64>) -> Response {
+    let mut response = (StatusCode::RANGE_NOT_SATISFIABLE, "range not satisfiable").into_response();
+    response
+        .headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Some(total) = total {
+        if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total}")) {
+            response.headers_mut().insert(header::CONTENT_RANGE, value);
+        }
     }
-
-    Some((start, end))
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -1455,8 +1579,13 @@ async fn gc_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_build_closure_sse_event, parse_nar_filename, parse_range_header};
+    use super::{
+        NarMaterializationError, format_build_closure_sse_event, parse_nar_filename,
+        parse_range_header, try_nar_materialization_permit,
+    };
     use crate::build::{BuildEvent, BuildEventKind};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
 
     #[test]
     fn build_closure_sse_wrapper_preserves_inner_activity_type() {
@@ -1495,6 +1624,20 @@ mod tests {
         assert_eq!(parse_range_header("bytes=0-1,3-4", 4096), None);
         assert_eq!(parse_range_header("bytes=-0", 4096), None);
         assert_eq!(parse_range_header("bytes=0-0", 0), None);
+    }
+
+    #[test]
+    fn nar_materialization_admission_rejects_saturation() {
+        let admission = Arc::new(Semaphore::new(1));
+        let first = try_nar_materialization_permit(&admission).unwrap();
+
+        assert!(matches!(
+            try_nar_materialization_permit(&admission),
+            Err(NarMaterializationError::Busy)
+        ));
+
+        drop(first);
+        assert!(try_nar_materialization_permit(&admission).is_ok());
     }
 
     #[test]

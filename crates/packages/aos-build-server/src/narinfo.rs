@@ -5,7 +5,11 @@
 //! size, references, deriver, signatures) and tells the client where to
 //! download the NAR and how it is compressed.
 //!
-//! [`format_narinfo`] is the single entry point: it takes the path metadata
+//! [`format_narinfo`] renders the final document from path metadata and a
+//! precomputed compressed-payload measurement. [`measure_nar`] performs that
+//! bounded measurement outside the async request thread.
+//!
+//! The renderer takes the path metadata
 //! read from the Nix SQLite database ([`crate::store::DbPathInfo`]), the
 //! configured compression ([`crate::config::CompressionConfig`]), and an
 //! optional [`NarInfoSigner`], and renders the final response body. When
@@ -47,6 +51,32 @@ fn compression_from_config(config: &CompressionConfig) -> Compression {
     }
 }
 
+/// Measures the compressed NAR bytes advertised by a narinfo document.
+///
+/// Uncompressed NARs use metadata already stored in the Nix database and
+/// return `None`. Compressed NARs are streamed through a bounded digest pass.
+///
+/// # Errors
+///
+/// Returns an error if the compression pipeline fails or produces more than
+/// `compression.max_materialized_bytes` bytes.
+pub fn measure_nar(
+    info: &DbPathInfo,
+    compression: &CompressionConfig,
+) -> anyhow::Result<Option<(String, u64)>> {
+    if nar_compression(compression) == NarCompression::None {
+        return Ok(None);
+    }
+
+    compute_file_hash_size(
+        &info.path,
+        compression_from_config(compression),
+        compression.max_materialized_bytes,
+    )
+    .map(Some)
+    .with_context(|| format!("measuring compressed NAR for {}", info.path))
+}
+
 /// Formats a [`DbPathInfo`] as a Nix `.narinfo` response body.
 ///
 /// The rendered document advertises a NAR URL whose extension matches the
@@ -60,12 +90,13 @@ fn compression_from_config(config: &CompressionConfig) -> Compression {
 ///
 /// # Errors
 ///
-/// Returns an error if compressed-byte measurement fails, or if the stored or
-/// computed file hash is not a supported, well-formed SHA-256 hash.
+/// Returns an error if a compressed NAR has no measurement, or if the stored
+/// or computed file hash is not a supported, well-formed SHA-256 hash.
 pub fn format_narinfo(
     info: &DbPathInfo,
     store_dir: &str,
     compression: &CompressionConfig,
+    measured_file: Option<(String, u64)>,
     signer: Option<&NarInfoSigner>,
 ) -> anyhow::Result<String> {
     // The NarHash in the DB is stored as "sha256:{base16}" — narinfo needs it as-is.
@@ -81,8 +112,7 @@ pub fn format_narinfo(
     let (file_hash, file_size): (String, u64) = if nar_compression == NarCompression::None {
         (nar_hash.clone(), info.nar_size as u64)
     } else {
-        compute_file_hash_size(&info.path, compression_from_config(compression))
-            .with_context(|| format!("measuring compressed NAR for {}", info.path))?
+        measured_file.context("compressed NAR measurement is required")?
     };
 
     render_static_narinfo(
@@ -118,8 +148,30 @@ mod tests {
             refs: Vec::new(),
         };
 
-        let error =
-            format_narinfo(&info, "/nix/store", &CompressionConfig::default(), None).unwrap_err();
+        let error = measure_nar(&info, &CompressionConfig::default()).unwrap_err();
         assert!(error.to_string().contains("measuring compressed NAR"));
+    }
+
+    #[test]
+    fn compressed_narinfo_requires_a_measurement() {
+        let info = DbPathInfo {
+            id: 1,
+            path: "/nix/store/example".to_string(),
+            nar_hash: format!("sha256:{}", "11".repeat(32)),
+            nar_size: 7,
+            deriver: None,
+            sigs: Vec::new(),
+            refs: Vec::new(),
+        };
+
+        let error = format_narinfo(
+            &info,
+            "/nix/store",
+            &CompressionConfig::default(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("measurement is required"));
     }
 }

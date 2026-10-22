@@ -36,6 +36,7 @@ console = { workspace = true }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }
+tempfile = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }
 prost = { workspace = true }
