@@ -1541,6 +1541,17 @@ def main():
                     for path, original in scoped_originals.items()),
                 "scoped backing reopen replaced or changed an earlier whole-file inode")
         print("PASS independent observer matches SDK-authorized backing to the original immutable publisher inode", flush=True)
+        require("PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release" in scoped_file,
+                "missing actual SDK-authorized whole manifest witness")
+        manifest_inodes = [line for line in scoped_file.splitlines()
+                           if line.startswith("SCOPED_MANIFEST_INODE ")]
+        original_manifests = [path for path in scoped_originals
+                              if path.read_bytes() == bytes([0x5a]) * 262145]
+        require(len(manifest_inodes) == 1 and len(original_manifests) == 2
+                and any(manifest_inodes[0] == f"SCOPED_MANIFEST_INODE hash={path.name} inode={scoped_originals[path][0]} size=262145"
+                        for path in original_manifests),
+                "scoped manifest backing differs from both original recovered whole-file inodes")
+        print("PASS independent observer matches SDK-authorized manifest backing to its original recovered immutable inode", flush=True)
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)

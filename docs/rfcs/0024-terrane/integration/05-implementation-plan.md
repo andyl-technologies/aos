@@ -13043,3 +13043,23 @@ closure and all wait budgets remain unchanged. This makes future `Unavailable`
 failures diagnosable at the publisher without putting native error details in
 the protocol. Strict native all-target Clippy and formatting pass; the earlier
 failed runs contain no such diagnostics and retain their unresolved causes.
+
+Required application-target compilation for `00f7bad8fc` passes in 832.79
+seconds. Independent review matches all 7,987 immutable source files and 184
+compiler records across 59 packages. Its actual native run passes the new signed
+scoped inline-file case and the independent original-inode observer, then
+continues into the existing eviction and recovery controls. No complete native
+result or task acceptance is inferred from those intermediate witnesses.
+
+The same scoped fixture now additionally commits a manifest-sized file through
+the normal signed SDK directory import. Trusted bootstrap registers the native
+cache's immutable CDC profile using the existing initialization API, with genuine
+random signing authority and token identities. The SDK's opaque manifest
+selection closes around actual recovered whole-file backing; it checks the
+commit, root, typed identity, logical size, read-only descriptor, seal and complete
+bytes, including after physical lease release. The independent observer requires
+the selected inode and manifest hash to match one of the two original recovered
+files and preserves all three original cold inodes and bytes. No new physical
+domain, scaffold entry, actor limit, grace interval or selector is introduced.
+Strict native all-target Clippy and Python syntax checks pass; committed native
+and application qualification remain required for this added manifest case.

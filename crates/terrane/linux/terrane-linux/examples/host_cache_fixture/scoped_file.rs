@@ -16,6 +16,7 @@ use terrane_format::{
     identity::{Descriptor, IdentityKind, TERRANE_V1},
     refs::{CommitSource, Locality, PrincipalKind},
     surface::View,
+    tree_format::ContentRef,
 };
 use terrane_linux::host_cache::{NativeFileBacking, NativeMetadataOwner};
 use terrane_sdk::{
@@ -88,7 +89,7 @@ async fn run_async(
     {
         return Err("scoped backing lost signed file selection".into());
     }
-    check_backing(&backing, inode)?;
+    check_backing(&backing, inode, BYTES)?;
 
     let selection = fixture
         .repository
@@ -102,9 +103,9 @@ async fn run_async(
     }
     // A previously disclosed descriptor stays held by its actual owner. A
     // later authorization refusal cannot pretend that the kernel closed it.
-    check_backing(&backing, inode)?;
+    check_backing(&backing, inode, BYTES)?;
     owner.release_sealed_object_lease(backing.lease()).await?;
-    check_backing(&backing, inode)?;
+    check_backing(&backing, inode, BYTES)?;
     drop(backing);
 
     let foreign = RepositoryFixture::new("tenant:another-scoped-file").await?;
@@ -118,6 +119,43 @@ async fn run_async(
     if owner.prepare_file_backing(selection, expires).await.is_ok() || fs::read(policy)? != before {
         return Err("foreign-domain selection disclosed backing or mutated pin policy".into());
     }
+
+    // The earlier cold control independently recovered this complete file.
+    // Commit its bytes through the real SDK, then select its signed manifest;
+    // neither a caller-written content reference nor a chunk range is accepted.
+    let plaintext = vec![0x5a; terrane_format::chunking::CDC_1M_MIN + 1];
+    let manifest_commit = fixture.commit(&plaintext).await?;
+    let selection = fixture
+        .repository
+        .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+        .await?;
+    let ContentRef::Manifest(digest) = selection.content() else {
+        return Err("scoped manifest fixture unexpectedly selected an inline chunk".into());
+    };
+    let manifest_identity = TERRANE_V1.from_digest(IdentityKind::Manifest, &digest)?;
+    let manifest_root = selection.root();
+    let manifest = owner.prepare_file_backing(selection, expires).await?;
+    let manifest_stat = rustix::fs::fstat(&manifest)?;
+    if manifest.commit() != manifest_commit
+        || manifest.root() != manifest_root
+        || manifest.size() != plaintext.len() as u64
+        || manifest.lease().identity() != &manifest_identity
+    {
+        return Err("scoped manifest lost its signed whole-file selection".into());
+    }
+    check_backing(&manifest, manifest_stat.st_ino, &plaintext)?;
+    owner.release_sealed_object_lease(manifest.lease()).await?;
+    check_backing(&manifest, manifest_stat.st_ino, &plaintext)?;
+    let hash: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    println!(
+        "SCOPED_MANIFEST_INODE hash={hash} inode={} size={}",
+        manifest_stat.st_ino,
+        plaintext.len(),
+    );
+    drop(manifest);
+    println!(
+        "PASS actual signed scoped manifest returns recovered whole-file backing without substituting metadata or chunk ranges; retained descriptor survives release"
+    );
     drop(published);
     println!("SCOPED_FILE_INODE inode={inode} size={}", BYTES.len());
     println!(
@@ -127,12 +165,12 @@ async fn run_async(
     Ok(())
 }
 
-fn check_backing(backing: &NativeFileBacking, inode: u64) -> FixtureResult<()> {
+fn check_backing(backing: &NativeFileBacking, inode: u64, expected: &[u8]) -> FixtureResult<()> {
     let file = fs::File::from(backing.as_fd().try_clone_to_owned()?);
     let metadata = file.metadata()?;
     let flags = rustix::fs::fcntl_getfl(&file)?;
     if metadata.ino() != inode
-        || metadata.len() != BYTES.len() as u64
+        || metadata.len() != expected.len() as u64
         || flags.intersects(
             rustix::fs::OFlags::WRONLY | rustix::fs::OFlags::RDWR | rustix::fs::OFlags::PATH,
         )
@@ -141,9 +179,9 @@ fn check_backing(backing: &NativeFileBacking, inode: u64) -> FixtureResult<()> {
         return Err("scoped descriptor differs from the original immutable whole file".into());
     }
     terrane_linux::verity::measure(&file)?;
-    let mut actual = vec![0; BYTES.len()];
+    let mut actual = vec![0; expected.len()];
     file.read_exact_at(&mut actual, 0)?;
-    if actual != BYTES {
+    if actual != expected {
         return Err("scoped descriptor returned different plaintext".into());
     }
     Ok(())
@@ -170,7 +208,9 @@ impl RepositoryFixture {
             bucket: directory.0.join("bucket"),
             authority: directory.0.join("authority"),
         };
-        let (repository, authority) = Repository::initialize_local(
+        // Register the same immutable CDC profile as the native cache. Signing
+        // keys and token identities still come from actual local entropy.
+        let (repository, authority) = Repository::initialize_local_with_seed(
             &location,
             LocalAuthorityParameters {
                 owner_uid,
@@ -202,6 +242,7 @@ impl RepositoryFixture {
                 bootstrap_properties: Vec::new(),
             },
             MAIN,
+            [0; 32],
             TokioLocalFs,
             TokioClock,
         )
