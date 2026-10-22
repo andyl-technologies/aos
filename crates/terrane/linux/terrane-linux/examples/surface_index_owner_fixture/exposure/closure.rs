@@ -11,17 +11,22 @@ pub(super) async fn verify(
     inputs: &config::Inputs,
     fixture: &RepositoryFixture,
 ) -> Result<()> {
+    eprintln!("EXPOSURE_CLOSURE_STAGE snapshot");
     let preserved = snapshot(inputs).await?;
+    eprintln!("EXPOSURE_CLOSURE_STAGE signed-commit");
     fixture
         .commit(b"independent index-only closure source")
         .await?;
     let target = ViewTarget::Ref(MAIN.parse()?);
+    eprintln!("EXPOSURE_CLOSURE_STAGE prepare-root");
     let selection = fixture
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    eprintln!("EXPOSURE_CLOSURE_STAGE admit-mapping");
     let admitted = owner.prepare_surface_mapping(selection).await?;
     let key = admitted.key();
+    eprintln!("EXPOSURE_CLOSURE_STAGE retain-exposure");
     let lease = owner
         .retain_surface_exposure(&admitted, now()? + 90)
         .await?;
@@ -36,6 +41,7 @@ pub(super) async fn verify(
             limits(),
         )
         .await?;
+    eprintln!("EXPOSURE_CLOSURE_STAGE grant-original");
     let grant = owner
         .prepare_exposure_root_backing(&lease, &admitted, selection)
         .await?;
@@ -44,6 +50,7 @@ pub(super) async fn verify(
     let maximum = usize::try_from(file.metadata()?.len())?;
     let mapping = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
     let policy = inputs.root.join("state/cache/records.toml");
+    eprintln!("EXPOSURE_CLOSURE_STAGE active-refusal");
     let before = std::fs::read(&policy)?;
     if !matches!(owner.reconcile_surface_exposure(&id, generation).await,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied)
@@ -52,6 +59,7 @@ pub(super) async fn verify(
         return Err("active exposure reconciliation changed original obligations".into());
     }
 
+    eprintln!("EXPOSURE_CLOSURE_STAGE drain");
     owner.drain_surface_exposure(&lease).await?;
     let before = std::fs::read(&policy)?;
     if !matches!(owner.retire_draining_surface_index(key).await,
@@ -65,6 +73,7 @@ pub(super) async fn verify(
     drop(grant);
     drop(admitted);
     drop(lease);
+    eprintln!("EXPOSURE_CLOSURE_STAGE retire-original");
     if !owner.retire_draining_surface_index(key).await?
         || crate::canonical_path(inputs, key.root()).exists()
         || mapping.index().lookup(b"file").is_none()
@@ -74,12 +83,14 @@ pub(super) async fn verify(
         );
     }
     let before = std::fs::read(&policy)?;
+    eprintln!("EXPOSURE_CLOSURE_STAGE retained-mapping-refusal");
     if owner.reconcile_surface_exposure(&id, generation).await? || std::fs::read(&policy)? != before
     {
         return Err("live kernel mapping released durable exposure obligations".into());
     }
 
     drop(mapping);
+    eprintln!("EXPOSURE_CLOSURE_STAGE final-closure");
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if owner.reconcile_surface_exposure(&id, generation).await? {
@@ -89,6 +100,7 @@ pub(super) async fn verify(
         }
     })
     .await??;
+    eprintln!("EXPOSURE_CLOSURE_STAGE verify-policy");
     let after = snapshot(inputs).await?;
     let pin_owner = format!("exposure:{id}");
     if after.exposures.iter().any(|row| row.id == id)

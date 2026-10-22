@@ -14222,3 +14222,22 @@ file, directory and EOF. Refusals require their expected error class, unchanged
 actual descriptor count and a faulted channel; a fixture timeout cannot count
 as a refusal. These expanded native controls and mandatory application
 compilation remain pending. No trunk acceptance changes.
+
+
+Combined surface qualification at `79b7477a83` fails overall in 774.21
+seconds. Both original sealed-file closure and the following cold draining
+recovery actor pass, including the private publication-directory observer.
+The subsequent exposure actor passes its existing root/file grants, retained
+bindings and authenticated-census controls, then reaches its unchanged 30-second
+bound before the index-only closure witness. Retained evidence is
+`/scratch/nix-build/nix-3316515-175550193/build/serial.log`. Its cause remains
+undetermined. Stage diagnostics now surround the index-only scenario without
+changing any timeout, refusal condition, source input or success assertion.
+Neither narrower actor pass establishes overall surface acceptance.
+
+At the preceding `ddd3c52568` checkpoint, application-target compilation passes
+in 1,477.35 seconds and full native host-cache qualification passes in 1,469.87
+seconds. Independent review matches all 8,033 source files, 184 application
+records across 59 packages, 5,328 native inputs and four installed Cargo ELFs.
+These passes preserve that checkpoint's failed owning surface qualification
+and do not qualify later worker-client or publisher-descriptor changes.
