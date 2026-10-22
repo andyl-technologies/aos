@@ -1587,6 +1587,7 @@ async fn serve_resolved_delivery(
                 (header::LOCATION, location),
                 (header::CACHE_CONTROL, "private, no-store".to_owned()),
                 (header::REFERRER_POLICY, "no-referrer".to_owned()),
+                (header::VARY, "Authorization, Cookie".to_owned()),
             ],
         )
             .into_response();

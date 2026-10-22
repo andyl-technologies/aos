@@ -142,7 +142,13 @@ impl RpcService {
             return Ok(Some(SurfaceObjectResponse {
                 bytes,
                 content_type: keymap::content_type(machine_path),
-                cache_control: keymap::cache_control(machine_path),
+                cache_control: if registry.visibility == "public" || registry.org_id.is_none() {
+                    keymap::cache_control(machine_path)
+                } else {
+                    "private, no-store"
+                },
+                vary: (registry.visibility != "public" && registry.org_id.is_some())
+                    .then_some("Authorization, Cookie"),
                 redirect: None,
             }));
         }
