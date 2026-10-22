@@ -179,7 +179,47 @@ pub enum LiveWhiteboxError {
         /// Fixed callback read bound.
         maximum: usize,
     },
-    /// The safe doorbell callback rejected the live event.
+    /// The guest-memory adapter could not read the live event.
+    #[error("safe white-box callback failed: {source}")]
+    GuestMemoryRead {
+        /// Original guest-memory failure.
+        source: crate::GuestMemoryReadError,
+    },
+    /// The safe observational marker callback rejected the live event.
+    #[error("safe white-box callback failed: {source}")]
+    DoorbellCallback {
+        /// Original doorbell failure.
+        source: crate::WhiteboxDoorbellError,
+    },
+    /// QEMU rejected an observed ready marker.
+    #[error(
+        "safe white-box callback failed: QEMU rejected ready-marker observation `{name}` with status {status}"
+    )]
+    ReadyMarkerRefused {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+        /// Original QEMU refusal status.
+        status: i32,
+    },
+    /// A campaign marker arrived while another VMStop was deferred.
+    #[error(
+        "safe white-box callback failed: campaign boundary `{name}` collided with another deferred VMStop"
+    )]
+    CampaignMarkerCollision {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+    },
+    /// QEMU rejected the campaign boundary's requested TB exit.
+    #[error(
+        "safe white-box callback failed: QEMU rejected campaign boundary `{name}` TB exit with status {status}"
+    )]
+    CampaignMarkerExitRefused {
+        /// Original decoded marker name, moved from the consumed event.
+        name: String,
+        /// Original QEMU refusal status.
+        status: i32,
+    },
+    /// A remaining safe doorbell service rejected the live event.
     #[error("safe white-box callback failed: {message}")]
     Callback {
         /// Stable callback diagnostic.

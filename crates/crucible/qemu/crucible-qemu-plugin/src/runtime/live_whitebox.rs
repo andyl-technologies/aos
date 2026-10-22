@@ -35,6 +35,7 @@ mod error;
 mod guest_introspection;
 mod location;
 mod marker;
+mod ready_marker;
 mod selectable;
 #[cfg(test)]
 mod test_restore;
@@ -61,7 +62,6 @@ pub(super) use test_restore::install_app_random_restore_state_for_test;
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
-const CAMPAIGN_BOUNDARY_MARKERS: [&str; 2] = ["fault.transport.ready", "fault.followup.ready"];
 
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
 static LIVE_APP_RANDOM_STATE: AtomicPtr<LiveAppRandomState> = AtomicPtr::new(std::ptr::null_mut());
@@ -665,9 +665,7 @@ impl LiveWhiteboxState {
                 event.current_icount(),
                 event.payload_range(),
             )
-            .map_err(|source| LiveWhiteboxError::Callback {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::GuestMemoryRead { source })?;
         if guest_introspection::is_exchange(&payload) {
             self.handle_guest_introspection(&mut reader, event, &payload)
         } else if app_random::is_request(&payload) {
@@ -717,49 +715,20 @@ impl LiveWhiteboxState {
                 event,
             );
             self.marker_sink.clear_callback_coordinate();
-            let marker = marker_result.map_err(|source| LiveWhiteboxError::Callback {
-                message: source.to_string(),
-            })?;
-            if let WhiteboxMarkerPayload::Event(event) = marker.decoded_payload() {
-                let status = (self.apis.fault_ready_marker)(
-                    event.name.as_ptr().cast(),
-                    event.name.len(),
+            let marker =
+                marker_result.map_err(|source| LiveWhiteboxError::DoorbellCallback { source })?;
+            if let WhiteboxMarkerPayload::Event(event) = marker.into_decoded_payload() {
+                // The event already owns its decoded name. Move that allocation
+                // into a refusal instead of formatting another callback payload.
+                ready_marker::observe(
+                    event.name,
                     observed_raw_icount,
-                );
-                if status < 0 {
-                    return Err(LiveWhiteboxError::Callback {
-                        message: format!(
-                            "QEMU rejected ready-marker observation `{}` with status {status}",
-                            event.name
-                        ),
-                    });
-                }
-                if self.campaign_marker_parking
-                    && CAMPAIGN_BOUNDARY_MARKERS.contains(&event.name.as_str())
-                {
-                    match self
-                        .campaign_marker_vmstop
-                        .defer_campaign_marker(self.apis.force_vcpu_tb_exit)
-                    {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            return Err(LiveWhiteboxError::Callback {
-                                message: format!(
-                                    "campaign boundary `{}` collided with another deferred VMStop",
-                                    event.name
-                                ),
-                            });
-                        }
-                        Err(status) => {
-                            return Err(LiveWhiteboxError::Callback {
-                                message: format!(
-                                    "QEMU rejected campaign boundary `{}` TB exit with status {status}",
-                                    event.name
-                                ),
-                            });
-                        }
-                    }
-                }
+                    self.apis.fault_ready_marker,
+                    self.campaign_marker_parking.then_some((
+                        self.campaign_marker_vmstop.as_ref(),
+                        self.apis.force_vcpu_tb_exit,
+                    )),
+                )?;
             }
             Ok(())
         }

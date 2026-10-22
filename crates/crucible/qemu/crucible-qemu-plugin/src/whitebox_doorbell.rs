@@ -1735,6 +1735,12 @@ impl WhiteboxMarker {
     pub fn decoded_payload(&self) -> &WhiteboxMarkerPayload {
         &self.decoded_payload
     }
+
+    /// Consumes the marker and returns its decoded payload without cloning it.
+    #[must_use]
+    pub fn into_decoded_payload(self) -> WhiteboxMarkerPayload {
+        self.decoded_payload
+    }
 }
 
 /// A defensive decode diagnostic for a dropped white-box doorbell payload.

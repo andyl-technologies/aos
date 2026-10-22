@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 408 committed bindings: 389 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 411 committed bindings: 392 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -411,8 +411,61 @@ Mandatory application compilation passes at
 `cxj15pkm32kkg6l1shkn40j86li9a0ir`. All 5,298 committed Rust/TOML files match
 immutable source `a557f0sfpnj1h8qv3382gsvnn4l457r5`; the comparison record has
 SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
-The 289-case exact supervision check remains in progress. Full Source/Module
-physical return remains unqualified.
+All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
+Full Source/Module physical return remains unqualified.
+
+#### Typed marker callback refusals
+
+The live observational marker path retains the actual guest-memory and safe
+callback causes as typed errors. Ready-marker, campaign collision and TB-exit
+refusals move the decoded event's existing name allocation into the error with
+its original numeric status. Marker consumption exposes the decoded payload
+without cloning it. The provider ordering and diagnostic text are preserved.
+A focused child owns the marker/VMStop boundary; it grants no Source or cleanup
+authority and does not resolve the underlying payload-funding obligation.
+
+All 113 white-box controls, all plugin target compilation and content-bound
+engineering hygiene pass. Mandatory application compilation and all 294 exact
+supervision cases remain in progress. The new controls check the original
+string address, exact provider status, absence of a TB exit after ready refusal,
+and retention of the actual already-deferred stop after collision. The existing
+safe-decoder control also checks that consuming a marker moves its allocation.
+
+#### Sealed Native borrower and physical Main finish awaiting composition
+
+Signed `dacbcdbd16277d4c20b945e3f075cb709b66b7bb` implements the nominal
+Source borrower of the already-entered producing Quantum. It retains the real
+constructor and original cohort without starting another operation or clock.
+Its Current is a one-way Source leaf. After the actual registered Module return
+confirms Core-local consumption, Source saves that fact before the independent
+physical-parent cut. A refused cut retains Source custody and both original
+holders, marks uncertainty and permits no second Core callback or destructor.
+The factual consumed observer supplies no execution or cleanup permission.
+
+This branch passes 25 actual owning outputs, fifteen literal borrower controls
+and 55 constructor controls. Nine additional dependency edges are structural
+and unexecuted. Its complete configured Source/floor is 243,280/287,454 bytes;
+its exact 216-byte increase is the embedded constructor reciprocal, registration
+and borrower. The separate paid Module/Core journal remains unpriced here.
+No genuine populated Module borrower, RR or cleanup issuer is qualified.
+
+The earlier signed Main-finish `4d354ac595` has a distinct external consumed
+receipt and separate first/post history. Its first broad cohort stop and omitted
+generated-directory-link failure remain recorded; the corrected immutable
+1,918-object cohort and both complete system links pass under the original
+bounds. Signed `1c9ce6387f` preserves physical return independently of semantic
+health without changing that measured floor. Separate fixture `4866765d33`
+retains the real system-main attestation while renaming only its entry symbol;
+all five corrected whole-provider cases pass. Its first missing-attestation
+link failure is retained.
+
+Independent verification checks all four signed identities, changed-source
+blobs, 187,932 indexed evidence rows, 87,508 literal links and 28 artifacts,
+with zero differences. The record has SHA-256
+`1aaacc11ba3268e4cf46b8bb4524c3c8fc8941c21903723694892aab97908c67`.
+Archive bytes are rehashed; their full contents were separately audited by the
+Native integrator. The combined reader/deferred/cleanup/borrower tree is still
+under fresh qualification and is not the imported Native checkpoint above.
 
 #### Typed white-box registration refusals
 
@@ -427,7 +480,11 @@ before constructing producer state, without consuming branch decisions.
 All 111 white-box controls pass, all plugin targets compile and content-bound
 engineering hygiene passes. The new exact component binding exercises both producer
 refusals and the matching-node configuration. Mandatory application compilation
-and all 291 exact supervision cases remain in progress.
+passes at `iksqy0zq7dygva09m83ck3z5l19x1y9x`: all 5,298 committed Rust/TOML
+inputs at `17af9ee4221577c18294228bad7c5db7dea63a2d` match immutable source
+`x46gjjy0n2iycsffa5qqjvbgdzqm05d4`. The comparison record has SHA-256
+`c18b360377b8d026c5d23f882f31095ef9948a3c853aeec3315c96083111769a`.
+All 291 exact supervision cases remain in progress.
 The moved catalog and doorbell causes can themselves own diagnostic payloads;
 this change does not establish their complete funding or Native admission.
 

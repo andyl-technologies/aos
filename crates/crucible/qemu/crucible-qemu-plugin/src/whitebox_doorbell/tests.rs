@@ -297,7 +297,17 @@ fn whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount() {
             point: String::from("mark"),
         })
     );
-    assert_eq!(sink.markers, vec![marker]);
+    assert_eq!(sink.markers.as_slice(), std::slice::from_ref(&marker));
+
+    let WhiteboxMarkerPayload::Coverage(borrowed) = marker.decoded_payload() else {
+        panic!("the observed marker must retain its decoded coverage payload");
+    };
+    let original_address = borrowed.point.as_ptr();
+    let WhiteboxMarkerPayload::Coverage(owned) = marker.into_decoded_payload() else {
+        panic!("consuming a marker must preserve its decoded payload kind");
+    };
+    assert_eq!(owned.point, "mark");
+    assert_eq!(owned.point.as_ptr(), original_address);
 }
 
 #[test]
