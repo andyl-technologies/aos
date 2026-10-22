@@ -1839,9 +1839,9 @@ pub(crate) struct PasskeyRemoveForm {
 /// `POST /-/account/passkeys/remove` — delete one of the signed-in user's
 /// passkeys, then return to the passkeys page.
 ///
-/// Scoped to the session user, so a request can only remove the caller's own
-/// credential. Removing a passkey never locks the account out — email
-/// magic-link sign-in remains available.
+/// Requires recent reauthentication and is scoped to the session user, so a
+/// request can only remove the caller's own credential. Removing a passkey
+/// never locks the account out - email magic-link sign-in remains available.
 pub(crate) async fn passkeys_remove(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1852,6 +1852,9 @@ pub(crate) async fn passkeys_remove(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     match deps
@@ -1877,7 +1880,8 @@ pub(crate) struct PasskeyBeginForm {
     csrf: String,
 }
 
-/// `POST /-/account/passkeys/begin` — stage a registration challenge (JSON).
+/// `POST /-/account/passkeys/begin` — stage a session-bound registration
+/// challenge after recent reauthentication (JSON).
 pub(crate) async fn passkeys_begin(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1888,6 +1892,9 @@ pub(crate) async fn passkeys_begin(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let rp = match crate::auth::webauthn::relying_party(&deps.external_url) {
@@ -1902,6 +1909,8 @@ pub(crate) async fn passkeys_begin(
         &session.email,
         &rp.id,
         rp_name,
+        &session.secret,
+        session.auth.reauthentication_generation,
     )
     .await
     {
@@ -1920,7 +1929,8 @@ pub(crate) struct PasskeyFinishBody {
     attestation_object: String,
 }
 
-/// `POST /-/account/passkeys/finish` — verify + persist the new credential.
+/// `POST /-/account/passkeys/finish` — verify and persist the new credential
+/// when the same recently reauthenticated session began the ceremony.
 pub(crate) async fn passkeys_finish(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1931,6 +1941,9 @@ pub(crate) async fn passkeys_finish(
         Err(resp) => return *resp,
     };
     if let Err(resp) = check_csrf(&session, &body.csrf) {
+        return *resp;
+    }
+    if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
     let policy = match current_authentication_policy(
@@ -1974,6 +1987,8 @@ pub(crate) async fn passkeys_finish(
         session.auth.user_id,
         &rp.id,
         &rp.origin,
+        &session.secret,
+        session.auth.reauthentication_generation,
         &response,
         label,
     )

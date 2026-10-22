@@ -194,7 +194,8 @@ impl Database {
             .execute(
                 "UPDATE sessions
                     SET auth_level = 1, last_authenticated_at = ?2,
-                        authentication_method = ?3, authentication_provider = ?4
+                        authentication_method = ?3, authentication_provider = ?4,
+                        reauthentication_generation = reauthentication_generation + 1
                   WHERE id_hash = ?1",
                 &vals![hash, unix_now(), method, provider],
             )

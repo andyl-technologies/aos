@@ -124,6 +124,35 @@ pub struct WebauthnChallengeRecord {
     pub kind: String,
     /// Unix time the challenge expires; a verify after this is rejected.
     pub expires_at: i64,
+    /// Browser-session state that authorized a registration ceremony.
+    pub registration_binding: Option<WebauthnChallengeBinding>,
+}
+
+/// Browser-session state bound to a passkey registration ceremony.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebauthnChallengeBinding {
+    /// Hash of the browser-session secret that began the ceremony.
+    pub(in crate::db) session_id_hash: String,
+    /// Monotonic session generation observed when the ceremony began.
+    pub(in crate::db) reauthentication_generation: i64,
+}
+
+impl WebauthnChallengeBinding {
+    /// Captures one browser session's current reauthentication generation.
+    #[must_use]
+    pub fn for_session(secret: &str, reauthentication_generation: i64) -> Self {
+        Self {
+            session_id_hash: aos_hub_model::auth::token::sha256_hex(secret),
+            reauthentication_generation,
+        }
+    }
+
+    /// Reports whether this binding still matches the browser session.
+    #[must_use]
+    pub fn matches_session(&self, secret: &str, reauthentication_generation: i64) -> bool {
+        self.session_id_hash == aos_hub_model::auth::token::sha256_hex(secret)
+            && self.reauthentication_generation == reauthentication_generation
+    }
 }
 
 /// The outcome of [`Database::link_or_create_identity`]: the resolved user and
@@ -184,6 +213,8 @@ pub struct SessionAuth {
     pub expires_at: i64,
     /// Evidence that established or most recently elevated the session.
     pub authentication: SessionAuthentication,
+    /// Monotonic generation advanced by each in-place reauthentication.
+    pub reauthentication_generation: i64,
 }
 
 /// Authentication evidence retained with a browser session.

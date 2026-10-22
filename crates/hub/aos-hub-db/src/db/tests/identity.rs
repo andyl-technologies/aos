@@ -439,12 +439,14 @@ async fn sessions_retain_authentication_evidence() {
         session.authentication,
         SessionAuthentication::Oidc("https://idp.example".into())
     );
+    assert_eq!(session.reauthentication_generation, 0);
 
     db.elevate_session_with_authentication(&secret, &SessionAuthentication::Password)
         .await
         .unwrap();
     let session = db.validate_session(&secret).await.unwrap().unwrap();
     assert_eq!(session.authentication, SessionAuthentication::Password);
+    assert_eq!(session.reauthentication_generation, 1);
 }
 
 #[tokio::test]
@@ -819,8 +821,9 @@ async fn magic_links_single_use_and_expiry() {
 #[tokio::test]
 async fn take_webauthn_challenge_is_scoped_by_kind() {
     let db = Database::open_in_memory().await.unwrap();
+    let binding = WebauthnChallengeBinding::for_session("session-secret", 3);
     // A registration challenge is in flight for a victim.
-    db.create_webauthn_challenge("chal-abc", Some(1), "registration", 300)
+    db.create_webauthn_challenge("chal-abc", Some(1), "registration", 300, Some(&binding))
         .await
         .unwrap();
 
@@ -839,6 +842,10 @@ async fn take_webauthn_challenge_is_scoped_by_kind() {
         .unwrap()
         .expect("registration challenge survived the cross-kind attempt");
     assert_eq!(taken.kind, "registration");
+    assert!(taken
+        .registration_binding
+        .unwrap()
+        .matches_session("session-secret", 3));
 
     // And it is single-use: a second take finds nothing.
     assert!(db

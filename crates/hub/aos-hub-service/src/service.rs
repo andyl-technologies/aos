@@ -1671,6 +1671,8 @@ struct CachedSession {
     expires_at: i64,
     #[serde(default)]
     authentication: aos_hub_db::db::SessionAuthentication,
+    #[serde(default)]
+    reauthentication_generation: i64,
     email: String,
 }
 
@@ -1691,6 +1693,7 @@ impl CachedSession {
             last_authenticated_at: rs.auth.last_authenticated_at,
             expires_at: rs.auth.expires_at,
             authentication: rs.auth.authentication.clone(),
+            reauthentication_generation: rs.auth.reauthentication_generation,
             email: rs.email.clone(),
         }
     }
@@ -1712,6 +1715,7 @@ impl CachedSession {
                 last_authenticated_at: self.last_authenticated_at,
                 expires_at: self.expires_at,
                 authentication: self.authentication,
+                reauthentication_generation: self.reauthentication_generation,
             },
             email: self.email,
         })

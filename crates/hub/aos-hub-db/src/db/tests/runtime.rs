@@ -14,8 +14,8 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
         MIGRATIONS.len(),
-        12,
-        "released migrations include browser-session authentication evidence"
+        13,
+        "released migrations include passkey-registration session bindings"
     );
     let connection = Connection::open_in_memory().unwrap();
     connection
