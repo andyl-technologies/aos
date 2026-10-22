@@ -14704,3 +14704,22 @@ other actors' stack sizes. Both strict Linux feature profiles, Python syntax,
 Nix formatting and check evaluation pass. Actual native execution and mandatory
 application compilation remain pending; this adds no production role or task
 acceptance claim.
+
+
+Protected-listener checkpoint `9e9d6857e4` now passes all four checks and
+complete artifact reviews. Application compilation completes in 1,286.85 seconds
+and its review matches all 8,056 immutable source files and 184 compiler records
+across 59 packages. This completes its component qualification only.
+
+Explicit-resource checkpoint `6f07f3c860` application compilation fails because
+the existing initial-enrollment example constructs `DomainCache` directly and
+omitted the new optional `surface_index` field. The initial-enrollment image for
+configured proof checkpoint `58081226de` fails for the same reason before guest
+execution. Those failures remain retained. The example now explicitly selects
+None, preserving its original disabled policy. All integration targets now compile locally; strict lint of the corrected
+enrollment example and Rust formatting also pass before a new frozen
+qualification run. No native configured admission success is asserted.
+The configured actor's error documentation also now describes its refusal and
+native startup conditions. An investigated Nix overlap rewrite was discarded:
+the installed Nix already rejects signed integer overflow, so no unchecked
+arithmetic acceptance was demonstrated and no such fix is included.

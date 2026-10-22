@@ -9,6 +9,10 @@ use terrane_linux::{configured::NativeCachePlan, quota_confinement};
 use terrane_sdk::config::Config;
 
 /// Runs the fresh actor without adding its async frame to the other selectors.
+///
+/// # Errors
+/// Rejects invalid arguments, role or confinement failures, unavailable genuine
+/// recovery and any mismatch with the selected admission/refusal control.
 pub(super) fn run() -> Result<()> {
     require_empty_capabilities()?;
     let mut arguments = std::env::args().skip(2);
