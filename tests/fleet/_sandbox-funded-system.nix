@@ -12,6 +12,16 @@ systems.server-secureboot-lockdown.extendModules {
     ({config, ...}: let
       mib = 1048576;
       gib = 1024 * mib;
+      parent = config.aos.sandbox.resourceBank.parentEnclosure;
+      # Price the declared retention and one extra rotation file inside the
+      # existing node capacity. Receiver slices do not own these daemon files.
+      loggingProvision = {
+        storage-bytes =
+          parent.journal.systemMaxUse
+          + parent.journal.systemMaxFileSize
+          + parent.audit.maxLogFileMiB * (parent.audit.numLogs + 1) * mib;
+        tmpfs-bytes = parent.journal.runtimeMaxUse + parent.journal.runtimeMaxFileSize;
+      };
       vector = values: lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (name: values.${name} or 0);
       envelope = memory: cpu: pids: files:
         vector {
@@ -190,7 +200,7 @@ systems.server-secureboot-lockdown.extendModules {
                 publication-staging-bytes = 128 * mib;
                 output-bytes = 128 * mib;
               };
-            components = envelope (16 * gib) 1000000 512 1048576;
+            components = (envelope (16 * gib) 1000000 512 1048576) // loggingProvision;
             hostService = envelope (512 * mib) 100000 32 8192;
             hostControl = envelope (128 * mib) 10000 8 512;
             firstGlobalPrefix = envelope (256 * mib) 10000 1 4096;
@@ -214,7 +224,7 @@ systems.server-secureboot-lockdown.extendModules {
           };
           parentEnclosure = {
             manager = envelope (4 * gib) 100000 64 65536;
-            fixedServices = envelope (4 * gib) 300000 128 131072;
+            fixedServices = (envelope (4 * gib) 300000 128 131072) // loggingProvision;
             sourceSignerSender = envelope (128 * mib) 1000 1 128;
             sourceSignerReceiving = envelope (512 * mib) 50000 8 256;
             ownershipSender = envelope (128 * mib) 1000 1 128;
