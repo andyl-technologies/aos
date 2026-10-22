@@ -360,7 +360,12 @@ build passes at
 `/nix/store/kzmxy8dmn223wp7lyxwk38qswbqq0hwq-aos-test-targets-0.1.0`,
 and engineering hygiene passes at
 `/nix/store/zcvijji792yblcv5r97p578pnwrl3izi-crucible-phase1-engineering-hygiene-0`.
-Committed-source comparison and ABI qualification remain pending.
+All 5,332 committed Rust/TOML files at
+`e0822869d4fa1319db1dcb107aca1a1d35fcc1dd` match the application
+build source with zero mismatches. The comparison record SHA-256 is
+`0c8a79fc9e6ced3bdfc7e36cf72d619d312262c90e8aee765ace379acbe48ace`.
+ABI conformance, including both new interleaving controls, passes at
+`/nix/store/7xq7jbq067bsppqk7ipvq1fc3s33fcjn-crucible-phase2-abi-conformance-0`.
 
 The broader all-feature Host run reports 1,368 passing tests, ten failures and
 four ignored tests. Nine failures are in guarded helper/custody paths; the
