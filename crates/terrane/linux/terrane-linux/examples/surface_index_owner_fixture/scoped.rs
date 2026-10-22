@@ -67,7 +67,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let view = View::parse(MAIN)?;
-    let backing = files::admit(owner, &mapped, &fixture, &view).await?;
+    let backing = files::admit(owner, &mapped, &fixture, &view, None).await?;
     let file_selection = fixture
         .repository
         .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
@@ -159,4 +159,21 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure"
     );
     Ok(())
+}
+
+pub(super) async fn admit_exposure_file(
+    owner: &NativeMetadataOwner,
+    served: &terrane_linux::host_cache::NativeRootIndex,
+    fixture: &RepositoryFixture,
+    exposure: &terrane_linux::host_cache::NativeExposureLease,
+    expires: u64,
+) -> Result<terrane_linux::host_cache::NativeFileBacking> {
+    files::admit(
+        owner,
+        served,
+        fixture,
+        &View::parse(MAIN)?,
+        Some((exposure, expires)),
+    )
+    .await
 }

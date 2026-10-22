@@ -184,6 +184,7 @@ def main():
         print(result.stderr, end="", flush=True)
         require(result.returncode == 0 and result.stdout.splitlines() == [
             "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS actual sealed exposure file is pinned before closing Read; ordinary release and draining preserve durable object protection",
             "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop",
             "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"],
             "durable native root exposure actor failed")

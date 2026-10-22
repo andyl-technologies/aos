@@ -13657,3 +13657,40 @@ Validation was tightened during the initial unit code generation, so those
 three cases are being rerun against final source before a current-source
 runtime result is claimed. Frozen native and mandatory application checks
 remain required; no exposure or trunk task is closed.
+
+
+All three exposure-state cases pass again against the final SDK source at
+`e5c9160d45` (no ignored cases). The combined command's later repository-wide
+format check encounters subsequent native working-tree edits; the SDK test
+result is reported separately from that command's exit status. Frozen native
+and required application qualification at this commit remain running.
+Required application compilation at `8341f85a3e` passes in 1,517.33 seconds;
+review checks all 8,010 immutable source files and 184 compiler records across
+59 packages, without converting its retained native VM failure into a pass.
+
+The exposure file path now checks the original live physical context before
+consumer pin effects, prepares the real registered whole-file source and
+attaches its complete protected hashes to the durable exposure before closing
+the original scoped file Read. The queue matches the original index backing,
+exposure identity/generation/commit/root/version and actual registered consumer
+view; no caller-selected digest or pathname substitutes for native source
+custody. File deadlines cannot exceed exposure deadlines. Both source contexts
+and backing are rechecked around real synchronization. A failed closing Read
+returns no descriptor and conservatively retains attached exposure promises.
+
+Actual file receipts distinguish ordinary consumer protection from exposure
+protection. The existing ordinary path preserves its previous behavior. The
+new native fixture verifies a real sealed exposure file, changed-policy
+closing refusal, rejection of new consumers after draining, and retained object
+pins after ordinary release, automatic expiry and receipt drops. It reuses the
+existing actual body without increasing cap or time bounds. This does not
+implement authenticated backing transport, a worker, kernel closure census or
+exposure release. Initial strict all-feature and ordinary Tokio Linux all-target
+Clippy passes; final formatting and owning native/application qualification
+remain pending for this file-attachment increment. No trunk task is closed.
+
+
+Final formatting and strict all-target Clippy pass for both all-feature Linux
+and ordinary Tokio-only Linux profiles. The complete native source declaration
+inventory and VM supervisor syntax also pass. No SDK source changed during this
+native file-attachment increment. Runtime qualification remains pending.

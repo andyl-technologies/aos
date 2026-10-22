@@ -27,10 +27,11 @@ use terrane_sdk::{
 /// closes. Its descriptor may outlive lease revocation, just as an already
 /// disclosed read result may outlive its original authorization check.
 ///
-/// This grants neither an exposure lease nor enduring repository Read. A caller
-/// must separately authorize each later disclosure, renew physical protection
-/// as needed and release the lease through the original native owner. Dropping
-/// this value closes its descriptor but leaves durable policy to expiry.
+/// Ordinary grants carry no exposure context. Exposure file preparations also
+/// retain the acknowledged exposure identity and generation. Each later
+/// disclosure still needs fresh authorization and authenticated transport.
+/// Dropping this value closes its descriptor; ordinary consumer policy remains
+/// until release or expiry, while exposure obligations survive draining.
 pub struct NativeFileBacking {
     // Close the real descriptor before dropping its physical grant handle.
     backing: NativeSealedBacking,
@@ -38,6 +39,8 @@ pub struct NativeFileBacking {
     commit: Digest,
     root: Digest,
     size: u64,
+    #[cfg(feature = "surface-fuse")]
+    exposure: Option<crate::host_cache::NativeExposureLease>,
 }
 
 impl AsFd for NativeFileBacking {
@@ -47,6 +50,15 @@ impl AsFd for NativeFileBacking {
 }
 
 impl NativeFileBacking {
+    /// Borrows acknowledged exposure protection when this is an exposure grant.
+    ///
+    /// Ordinary whole-file grants return `None`. This context is not a worker
+    /// credential and does not replace transport authentication or fresh Read.
+    #[cfg(feature = "surface-fuse")]
+    pub fn exposure(&self) -> Option<&crate::host_cache::NativeExposureLease> {
+        self.exposure.as_ref()
+    }
+
     /// Returns the signed commit selected by the original repository operation.
     pub const fn commit(&self) -> Digest {
         self.commit
@@ -97,6 +109,40 @@ impl NativeMetadataOwner {
         selection: PreparedFileRead<'_, S, C>,
         expires: u64,
     ) -> Result<NativeFileBacking, Error> {
+        self.prepare_file_backing_inner(
+            selection,
+            expires,
+            #[cfg(feature = "surface-fuse")]
+            None,
+        )
+        .await
+    }
+
+    /// Prepares an original file with durable exposure protection before closing Read.
+    ///
+    /// # Errors
+    /// Refuses foreign or draining exposure context and every ordinary file
+    /// preparation, synchronization and closing authorization failure.
+    #[cfg(feature = "surface-fuse")]
+    pub(in crate::host_cache::owner) async fn prepare_file_backing_for_exposure<
+        S: Store,
+        C: Clock,
+    >(
+        &self,
+        selection: PreparedFileRead<'_, S, C>,
+        expires: u64,
+        exposure: &crate::host_cache::NativeExposureLease,
+    ) -> Result<NativeFileBacking, Error> {
+        self.prepare_file_backing_inner(selection, expires, Some(exposure))
+            .await
+    }
+
+    async fn prepare_file_backing_inner<S: Store, C: Clock>(
+        &self,
+        selection: PreparedFileRead<'_, S, C>,
+        expires: u64,
+        #[cfg(feature = "surface-fuse")] exposure: Option<&crate::host_cache::NativeExposureLease>,
+    ) -> Result<NativeFileBacking, Error> {
         let (kind, digest) = match selection.content() {
             ContentRef::Inline(digest) => (IdentityKind::Chunk, digest),
             ContentRef::Manifest(digest) => (IdentityKind::Manifest, digest),
@@ -108,6 +154,12 @@ impl NativeMetadataOwner {
         self.admission_bounds
             .check(domain.len(), 0)
             .map_err(|error| native_failure(error, &identity))?;
+        #[cfg(feature = "surface-fuse")]
+        if let Some(exposure) = exposure {
+            self.check_surface_exposure(exposure)
+                .await
+                .map_err(|error| native_failure(error, &identity))?;
+        }
         let lease = self
             .pin_object(identity.clone(), Some(domain.to_owned()), expires)
             .await
@@ -129,6 +181,12 @@ impl NativeMetadataOwner {
             let commit = selection.commit();
             let root = selection.root();
             let size = selection.size();
+            #[cfg(feature = "surface-fuse")]
+            if let Some(exposure) = exposure {
+                self.protect_surface_object(exposure, &lease)
+                    .await
+                    .map_err(|error| native_failure(error, &identity))?;
+            }
             selection.finish().await?;
             lease
                 .expires_at()
@@ -140,6 +198,8 @@ impl NativeMetadataOwner {
                 commit,
                 root,
                 size,
+                #[cfg(feature = "surface-fuse")]
+                exposure: exposure.cloned(),
             })
         }
         .await;

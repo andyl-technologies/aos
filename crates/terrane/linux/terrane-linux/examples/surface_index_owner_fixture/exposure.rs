@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, UNIX_EPOCH},
 };
-use terrane_format::surface::ViewTarget;
+use terrane_format::surface::{View, ViewTarget};
 use terrane_linux::host_cache::NativeMetadataOwner;
 use terrane_sdk::{
     host::cache::{CacheState, ExposurePhase},
@@ -21,7 +21,7 @@ use terrane_sdk::{
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
-    fixture.commit(b"durable index exposure").await?;
+    fixture.commit(b"signed surface source").await?;
     let selection = fixture
         .repository
         .prepare_root_read(
@@ -65,6 +65,12 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("exposure acknowledgment differs from original durable index context".into());
     }
     owner.renew_surface_exposure(&lease, expires + 10).await?;
+    let view = View::parse(MAIN)?;
+    let draining_selection = fixture
+        .repository
+        .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+        .await?;
+    let (pin_owner, object) = verify_file(owner, &mapped, &lease, &fixture, expires - 1).await?;
     owner.drain_surface_exposure(&lease).await?;
     owner.drain_surface_exposure(&lease).await?;
     let before = fs::read(&policy)?;
@@ -75,6 +81,20 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         || fs::read(&policy)? != before
     {
         return Err("draining exposure was resurrected or changed by refused renewal".into());
+    }
+    let before = snapshot(inputs).await?;
+    if !matches!(owner.prepare_exposure_file_backing(&lease, &mapped, draining_selection, expires - 1).await,
+        Err(terrane_sdk::repository::Error::Store(error)) if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Denied { .. }))
+    {
+        return Err("draining exposure disclosed new file backing".into());
+    }
+    let after = snapshot(inputs).await?;
+    if after
+        .leases
+        .iter()
+        .any(|row| !before.leases.iter().any(|old| old.owner == row.owner))
+    {
+        return Err("draining exposure accepted a new physical consumer".into());
     }
 
     let deadline = now()? + 2;
@@ -118,6 +138,19 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("exposure receipt drop or expiry released original index obligations".into());
     }
+    let state = snapshot(inputs).await?;
+    if !state
+        .pins
+        .iter()
+        .any(|pin| pin.owner == pin_owner && pin.hash == object && pin.expires == i64::MAX as u64)
+    {
+        return Err(
+            "ordinary release, drain or receipt drop released exposure object protection".into(),
+        );
+    }
+    println!(
+        "PASS actual sealed exposure file is pinned before closing Read; ordinary release and draining preserve durable object protection"
+    );
     println!(
         "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop"
     );
@@ -140,4 +173,41 @@ fn now() -> Result<u64> {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Checks actual file protection and a genuine closing policy-head refusal.
+async fn verify_file(
+    owner: &NativeMetadataOwner,
+    mapped: &terrane_linux::host_cache::NativeRootIndex,
+    lease: &terrane_linux::host_cache::NativeExposureLease,
+    fixture: &RepositoryFixture,
+    expires: u64,
+) -> Result<(String, String)> {
+    let backing =
+        super::scoped::admit_exposure_file(owner, mapped, fixture, lease, expires).await?;
+    let pin_owner = format!("exposure:{}", lease.id());
+    let object = hex(backing.lease().identity().digest());
+    let view = View::parse(MAIN)?;
+    let selection = fixture
+        .repository
+        .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+        .await?;
+    fixture.commit(b"later exposure policy head").await?;
+    if !matches!(owner.prepare_exposure_file_backing(lease, mapped, selection, expires).await,
+        Err(terrane_sdk::repository::Error::Store(error)) if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Denied { .. }))
+    {
+        return Err("exposure file backing escaped the actual closing Read".into());
+    }
+    let inputs = config::Inputs::load()?;
+    let state = snapshot(&inputs).await?;
+    if !state
+        .pins
+        .iter()
+        .any(|pin| pin.owner == pin_owner && pin.hash == object && pin.expires == i64::MAX as u64)
+    {
+        return Err("original exposure file was disclosed before its durable object pin".into());
+    }
+    owner.release_sealed_object_lease(backing.lease()).await?;
+    drop(backing);
+    Ok((pin_owner, object))
 }

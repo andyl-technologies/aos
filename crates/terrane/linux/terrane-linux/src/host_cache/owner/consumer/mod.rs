@@ -65,6 +65,62 @@ pub struct NativeSealedObjectLease {
 }
 
 impl NativeSealedObjectLease {
+    /// Retains the actual registered source context before exposure policy IO.
+    ///
+    /// # Errors
+    /// Refuses foreign grants, unavailable original jobs or poisoned custody.
+    #[cfg(feature = "surface-fuse")]
+    pub(in crate::host_cache::owner) fn exposure_context(
+        &self,
+        executor: &super::retention::NativeOwnerExecutor,
+    ) -> io::Result<Arc<PublisherRunningContext>> {
+        let job = self
+            .exposure_job(executor)?
+            .lock()
+            .map_err(|_| invalid("exposure consumer job poisoned"))?;
+        Ok(Arc::clone(&job.running))
+    }
+
+    /// Checks actual whole-object custody and copies its complete protected hashes.
+    ///
+    /// # Errors
+    /// Refuses foreign or revoked grants, expired phases, changed native backing
+    /// and missing original durable pins or funding.
+    #[cfg(feature = "surface-fuse")]
+    pub(in crate::host_cache::owner) fn exposure_pins(
+        &self,
+        executor: &super::retention::NativeOwnerExecutor,
+        owner: &Custody,
+    ) -> io::Result<(Vec<String>, u64)> {
+        self.expires_at()?;
+        let job = self
+            .exposure_job(executor)?
+            .lock()
+            .map_err(|_| invalid("exposure consumer job poisoned"))?;
+        let Phase::Live(deadline) = &job.phase else {
+            return Err(invalid("exposure consumer is not live"));
+        };
+        deadline.check_live()?;
+        state::check_job(owner, &job, self.owner(), deadline.expires)?;
+        Ok((job.source.protected_hashes().to_vec(), deadline.expires))
+    }
+
+    #[cfg(feature = "surface-fuse")]
+    fn exposure_job<'a>(
+        &self,
+        executor: &'a super::retention::NativeOwnerExecutor,
+    ) -> io::Result<&'a Arc<Mutex<ConsumerJob>>> {
+        for resource in executor.consumer_jobs() {
+            let job = resource
+                .lock()
+                .map_err(|_| invalid("exposure consumer job poisoned"))?;
+            if Arc::ptr_eq(&job.view, &self.lease.view) {
+                return Ok(resource);
+            }
+        }
+        Err(invalid("exposure consumer belongs to another native owner"))
+    }
+
     /// Borrows the original whole-object identity, including its content kind.
     pub fn identity(&self) -> &Identity {
         self.lease.identity()

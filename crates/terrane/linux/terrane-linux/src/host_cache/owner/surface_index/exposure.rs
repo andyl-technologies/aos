@@ -5,16 +5,19 @@
 //! its receipt, deadline expiry and explicit drain never discharge kernel custody.
 
 use super::{NativeMetadataOwner, NativeRootIndex, NativeSurfaceIndex, invalid};
+use crate::host_cache::NativeSealedObjectLease;
 use crate::host_cache::owner::{
     consumer::{clock, state},
     retention::{Command, NativeOwnerExecutor},
     snapshot,
 };
+use crate::structural_index::IndexKey;
 use std::{
     io,
     sync::{Arc, mpsc},
 };
-use terrane_sdk::host::cache::{ExposurePhase, ExposureRecord};
+use terrane_format::identity::Digest;
+use terrane_sdk::host::cache::{ExposurePhase, ExposureRecord, PinRecord};
 use tokio::sync::oneshot;
 
 /// Retains the original index and identity of an acknowledged durable exposure.
@@ -26,10 +29,21 @@ use tokio::sync::oneshot;
 pub struct NativeExposureLease {
     id: String,
     generation: u64,
+    commit: Digest,
     index: NativeSurfaceIndex,
 }
 
 impl NativeExposureLease {
+    /// Returns the immutable signed commit selected for this exposure.
+    pub const fn commit(&self) -> Digest {
+        self.commit
+    }
+
+    /// Returns the canonical index key retained by this exposure.
+    pub fn key(&self) -> IndexKey {
+        self.index.key()
+    }
+
     /// Returns the durable exposure identifier, which is not a credential.
     pub fn id(&self) -> &str {
         &self.id
@@ -42,14 +56,10 @@ impl NativeExposureLease {
 }
 
 pub(in crate::host_cache::owner) enum Operation {
-    Retain {
-        commit: String,
-        domain: String,
-        expires: u64,
-    },
-    Renew {
-        expires: u64,
-    },
+    Check,
+    ProtectObject { source: NativeSealedObjectLease },
+    Retain { domain: String, expires: u64 },
+    Renew { expires: u64 },
     Drain,
 }
 
@@ -63,8 +73,8 @@ impl NativeMetadataOwner {
     /// Durably retains an already checked mapped root before acknowledging a lease.
     ///
     /// This initial lease protects the index only. It grants no file descriptor
-    /// and contains no object pins until a separately checked object transition
-    /// is implemented. Cancellation after enqueue retains the physical obligation.
+    /// and contains no object pins until a checked file preparation attaches
+    /// actual backing. Cancellation after enqueue retains the physical obligation.
     /// No release API is provided: final kernel closure must first be established.
     ///
     /// # Errors
@@ -78,12 +88,12 @@ impl NativeMetadataOwner {
         let lease = NativeExposureLease {
             id: String::new(),
             generation: 1,
+            commit: served.commit,
             index: served.admission.clone(),
         };
         self.exposure_request(
             lease,
             Operation::Retain {
-                commit: state::hex(&served.commit),
                 domain: served.domain.clone(),
                 expires,
             },
@@ -154,6 +164,39 @@ impl NativeMetadataOwner {
             .await
             .map_err(|_| invalid("exposure worker stopped before acknowledgment"))?
     }
+
+    /// Checks live original exposure context before accepting file pin effects.
+    ///
+    /// # Errors
+    /// Refuses foreign, draining or expired context and native queue failures.
+    pub(in crate::host_cache::owner) async fn check_surface_exposure(
+        &self,
+        lease: &NativeExposureLease,
+    ) -> io::Result<()> {
+        self.exposure_request(lease.clone(), Operation::Check)
+            .await?;
+        Ok(())
+    }
+
+    /// Copies actual whole-object protection into this exposure's durable pins.
+    ///
+    /// # Errors
+    /// Refuses foreign original jobs, elapsed or draining context, a consumer
+    /// deadline beyond the exposure, exhausted bounds and synchronization errors.
+    pub(in crate::host_cache::owner) async fn protect_surface_object(
+        &self,
+        lease: &NativeExposureLease,
+        source: &NativeSealedObjectLease,
+    ) -> io::Result<()> {
+        self.exposure_request(
+            lease.clone(),
+            Operation::ProtectObject {
+                source: source.clone(),
+            },
+        )
+        .await?;
+        Ok(())
+    }
 }
 
 pub(in crate::host_cache::owner) async fn execute(
@@ -171,6 +214,17 @@ async fn transition(
 ) -> io::Result<NativeExposureLease> {
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
+    let source = match &operation {
+        Operation::ProtectObject { source } => Some(source.clone()),
+        _ => None,
+    };
+    let source_context = source
+        .as_ref()
+        .map(|source| source.exposure_context(executor))
+        .transpose()?;
+    if let Some(context) = &source_context {
+        context.check_current().map_err(io::Error::other)?;
+    }
     let custody = executor.custody();
     let now = clock::now_seconds()?;
     let (write, generation) = {
@@ -196,11 +250,7 @@ async fn transition(
         }
         let mut next = owner.state.clone();
         match operation {
-            Operation::Retain {
-                commit,
-                domain,
-                expires,
-            } => {
+            Operation::Retain { domain, expires } => {
                 if domain != owner.preparation.config.location.domain() {
                     return Err(io::Error::new(
                         io::ErrorKind::PermissionDenied,
@@ -212,7 +262,7 @@ async fn transition(
                     ExposureRecord {
                         id: lease.id.clone(),
                         generation: lease.generation,
-                        commit,
+                        commit: state::hex(&lease.commit),
                         root: state::hex(&lease.index.key().root()),
                         index_version: lease.index.key().version(),
                         deadline: expires,
@@ -231,11 +281,44 @@ async fn transition(
                     .find(|row| {
                         row.id == lease.id
                             && row.generation == lease.generation
+                            && row.commit == state::hex(&lease.commit)
                             && row.root == state::hex(&lease.index.key().root())
                             && row.index_version == lease.index.key().version()
                     })
                     .ok_or_else(|| invalid("exposure lost its original durable context"))?;
                 match operation {
+                    Operation::Check | Operation::ProtectObject { .. }
+                        if !row.accepts_work(lease.generation, now) =>
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "exposure is expired or draining",
+                        ));
+                    }
+                    Operation::Check => return Ok(lease),
+                    Operation::ProtectObject { source } => {
+                        let (hashes, expires) = source.exposure_pins(executor, &owner)?;
+                        if expires > row.deadline {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "file grant exceeds exposure deadline",
+                            ));
+                        }
+                        let pin_owner = row.pin_owner();
+                        for hash in hashes {
+                            if !next
+                                .pins
+                                .iter()
+                                .any(|pin| pin.owner == pin_owner && pin.hash == hash)
+                            {
+                                next.pins.push(PinRecord {
+                                    owner: pin_owner.clone(),
+                                    hash,
+                                    expires: i64::MAX as u64,
+                                });
+                            }
+                        }
+                    }
                     Operation::Renew { expires } => {
                         if !row.accepts_work(lease.generation, now)
                             || expires < row.deadline
@@ -261,10 +344,16 @@ async fn transition(
     snapshot::persist(executor, write).await?;
     state::synchronize_policy(executor)?;
     running.check_current().map_err(io::Error::other)?;
+    if let Some(context) = &source_context {
+        context.check_current().map_err(io::Error::other)?;
+    }
     let mut owner = custody
         .lock()
         .map_err(|_| invalid("exposure completion custody poisoned"))?;
     lease.index.check_native_backing()?;
+    if let Some(source) = &source {
+        source.exposure_pins(executor, &owner)?;
+    }
     state::finish(&mut owner, generation)?;
     Ok(lease)
 }
