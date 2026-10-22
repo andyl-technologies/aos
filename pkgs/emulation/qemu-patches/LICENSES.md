@@ -10,6 +10,17 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-publisher-rr-observation.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-rr-actor.rst` | GPL-2.0-or-later | QEMU default |
+| `plugins/crucible-native-quantum-rr.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-actor.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-birth.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-executor.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-partial-return.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-return.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-terminal-tail.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-rr.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-rr-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-quantum-keeper.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-quantum-rr-execution.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-quantum-rr-terminal.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

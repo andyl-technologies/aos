@@ -69,6 +69,70 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Retained Native RR actor and sticky pre-exec refusal
+
+Atomic signed DCO checkpoint `5b7be4763f681e1e0237b61b24708654a510225f`
+imports conventional signed union `137ce45cb65e3ef5b5ae5c295f350d403c6171cf`.
+Its tree `a152cc6c0a224af19762436e7432ea86636f9225` is byte-identical to
+executed actor `d37691e8f1ade403e02515431441234f1910ba6f` and retains
+`af148f6de3`, corrected `c441384d5c` and their complete source histories.
+Independent review matches all 27 changed signed/working sources, 10,293 regular
+actor evidence files, six literal links and seven artifacts. The comparison
+record SHA-256 is
+`6f49fa142673e7774bc294c7f38412a1eca1c9e46726ae07521f50af5d076708`.
+The composed seal independently matches 32 local evidence files, four artifacts,
+all 78,215 archived Git blobs, exact regular Git modes and 72 literal source
+links. Its comparison record SHA-256 is
+`3b9d6120e38618d9d635829e34186a7c3d98fb9cad37047c6b6094247fc53685`.
+
+The Source actor retains the actual constructor, producing borrower, deferred
+child, Original, Advance, Main-finish and terminal parent. It publishes its
+canonical relationship before Native/Module entry, captures born outputs before
+independent posts and retains consumed-negative or uncertain cleanup history.
+Normal, longjmp and atomic physical unwind withdraw work Use before return.
+The external terminal observer retains consumption independently of the retired
+CPU/QOM object. No CPU or executor frame is read after physical QOM return.
+Untouched-constructor closure requires all real fields and callback histories
+to be empty; contradictory held outputs refuse. Corrected pre-exec RR access
+also preserves its first failure across reinitialization, independently queries
+Source first/post and records actual access-return facts without restoring a
+consumed holder.
+
+Actual Source is 253,240 bytes and 31 genuine getter extents sum to 44,750,
+for a complete fixed floor of 297,990 bytes. The Source actor is 4,680 bytes,
+its tail registration 120, the separately priced Native actor 408 and CPU
+allocation header 888. CPUState 16,992, Core 160 and keeper 72 remain unchanged.
+The cumulative license inventory contains 408 created files, including eleven
+new paths and no deletions in this cut. The publisher RR documentation has an
+explicit GPL-2.0-or-later marker; the actor design note uses QEMU's default.
+The immutable handoff's contrary sentence is corrected by a separate preserved
+note, SHA-256
+`3bb3209981202933168de76ca892ba4eb4347d720ede70e9913b2cce60b8f8e3`;
+the correct inventory and original seal are unchanged.
+
+The authenticated corrected 987-object cohort passes in 391.116 seconds under
+its declared 600-second outer bound, two-compiler and six-GiB address-space/tree
+bounds. Later four-object semantic and two-object EOF deltas pass separately in
+12.483 and 11.663 seconds; they are not relabeled as another full-cohort run.
+Seventeen owning links, Source-layout and isolated preinit units, 47 physical
+omissions, 40 unentered-edge and fifteen callback-history controls pass.
+Twelve actual ordinary keeper cases pass in 37.312 seconds and two complete-
+provider no-entry reciprocal controls pass in 8.458 seconds. Earlier compile,
+link, provider, omission and reconstruction failures remain separately retained.
+The isolated preinit guard does not qualify actual RR entry; that refusal uses
+the genuine complete provider. No compilation or timing is attributed to the
+byte-identical history merge itself.
+
+The packaged license ledger passes at `lflmw9310swbwsz6080rp9y1d0fxx3wv`.
+Raw signed reconstruction passes at `vlvcadq3w85mji9k8zxyn7n71xnjf8qq`.
+The registered Source unit passes all 187 cases at
+`x0bx00wnmwwi5mm8nn9r355h9zv1vyvz`. Native component, ABI and strict
+license-boundary checks are running. Actor birth remains unwired and CPU admission returns ENOTSUP.
+Actual Module/Core operation issuance, full semantic RR execution, complete
+return/rearm and nonwaiting terminal cleanup remain unqualified. Source and
+Native blocking synchronization is an explicit remaining gap; a prepared Module
+guard alone does not establish a nonwaiting route.
+
 #### Typed actual guest-write failures
 
 The live callback and resumed per-vCPU writers retain coordinate mismatches and
@@ -90,7 +154,14 @@ All 1,177 plugin tests and compilation of every plugin target pass. The final
 fifteen adapter controls pass after the test helpers' readability adjustment.
 The 1,120-line test module has a content-bound responsibility review. The
 containing Runtime remains 18,936 bytes, alignment eight, with 9,552 inline
-white-box bytes. Engineering hygiene passes; required packaged compilation is running. No case name, binding or policy exception changes. Remaining dynamic
+white-box bytes. Engineering hygiene passes. Required packaged compilation passes at
+`26wdprd9b4prqwnhp4pmj67vjyiyipf5`. All 5,314 committed Rust/TOML inputs at
+`d2eee05595cf21362d375ef313218013cc13c6c7` match immutable source
+`989f8vz8pjbw71lqf2xllxdcqfrwspxz`, with comparison record SHA-256
+`436b1a42a6a0102706948dabae9b46520b614e7f4a828fc2d616c06c61282145`.
+ABI conformance passes at `8ym8sksxrcvg794g3m7fqsr09q3znjqm`.
+The fresh exact supervision check is running.
+No case name, binding or policy exception changes. Remaining dynamic
 payloads and complete operation/resource funding remain open.
 
 #### Typed selectable service failures
