@@ -200,6 +200,16 @@ impl<S, C, F> Coordinator<S, C, F> {
         Self { guard, timing, fs }
     }
 
+    /// Retains the original authority while binding physical read restrictions.
+    #[cfg(feature = "std")]
+    pub(crate) fn with_read_storage_policy(
+        mut self,
+        policy: std::sync::Arc<dyn crate::guard::ReadStoragePolicy>,
+    ) -> Self {
+        self.guard = self.guard.with_read_storage_policy(policy);
+        self
+    }
+
     /// Moves the exact authority, clock and filesystem into read-only cache routing.
     #[cfg(feature = "std")]
     pub(crate) fn with_read_cache<L>(

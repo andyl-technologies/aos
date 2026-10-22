@@ -15,7 +15,7 @@ mod validation;
 pub use driver::{NativeReadDriver, NativeReadPolicy};
 pub use object::{NativeChunkedObject, NativeChunkedReader};
 pub use prepared::{NativePreparedObject, NativeSealedObject};
-pub use presentation::NativeObjectPresentation;
+pub use presentation::{NativeObjectPresentation, NativeSealedReadPolicy};
 
 use super::{NativeConsumerLease, NativeReady};
 use std::{

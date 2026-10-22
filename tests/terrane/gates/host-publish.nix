@@ -271,6 +271,9 @@ in {
         script = ''
           mkdir -p "$out"
           test -s ${wipeConfiguration}/configuration.log
+          test "$(cat ${initialEnrollmentProof.sdkWipe}/result)" = PASS
+          mkdir -p "$out/nix-support"
+          printf '%s\n' ${initialEnrollmentProof.sdkWipe} > "$out/nix-support/signed-wipe-proof"
           test -s ${moduleEval}/result.json
           test -s ${combined "host-publish-sequence"}/result
           printf '%s\n' 'PASS: sealed tiers refuse unsupported wipe policies before effects; explicit none retains kernel sealing (D-128)' > "$out/result"

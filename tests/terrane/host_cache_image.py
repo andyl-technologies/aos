@@ -29,6 +29,7 @@ UNIT_NAME = "terrane-fs-unit"
 UNIT_PREFIXES = ("configured::", "configured_sdk::", "host_cache::", "host_quota::socket::",
                  "publisher_io::", "publisher_local::", "quota_confinement::")
 ROOT_UNIT_TESTS = (
+    'host_cache::content::presentation::tests::sealed_storage_requires_effective_none_without_weakening_private_defaults',
     'host_quota::initial_enrollment::tests::actual_initial_receipt_refuses_shared_and_other_root_guards_before_effects',
     'host_quota::initial_enrollment::tests::actual_initial_receipt_rejects_unknown_entries_before_scaffold_effects',
     'host_quota::initial_enrollment::tests::actual_scaffold_creation_retains_all_original_inodes_bytes_and_exclusions',

@@ -260,6 +260,14 @@ async fn start_exposures(
         if plan.chunk_profile(domain) != Some(repository.chunk_profile()) {
             return Err(Error::refused(FailureKind::NativeCacheProfile));
         }
+        let repository = repository
+            .with_read_storage_policy(Arc::new(crate::host_cache::NativeSealedReadPolicy));
+        // Check every signed storage requirement before opening a native domain.
+        // Retain these exact private preparations across the read-driver adapter.
+        let resolver = tokens::FileTokens { installed };
+        let prepared = PreparedExposures::prepare(&repository, config.exposures(), &resolver)
+            .await
+            .map_err(|error| Error::repository(FailureKind::Preparation, error))?;
         let mut caches = plan
             .open(Arc::clone(installed))
             .await
@@ -280,7 +288,7 @@ async fn start_exposures(
             presentation.ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?,
         );
         let retained = retained.ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
-        let snapshots = present(config, installed, &repository).await?;
+        let snapshots = present_prepared(config, &repository, prepared).await?;
         let mut owners: Vec<_> = caches
             .values()
             .map(|cache| cache.content().ready().owner())
@@ -310,6 +318,14 @@ async fn present<S: Store + Sync + BucketBinding>(
     let prepared = PreparedExposures::prepare(repository, config.exposures(), &resolver)
         .await
         .map_err(|error| Error::repository(FailureKind::Preparation, error))?;
+    present_prepared(config, repository, prepared).await
+}
+
+async fn present_prepared<S: Store + Sync + BucketBinding>(
+    config: &Config,
+    repository: &Repository<S, TokioClock, TokioLocalFs>,
+    prepared: PreparedExposures,
+) -> Result<Vec<CompletedSnapshot>, Error> {
     let handles = prepared
         .start(repository)
         .await

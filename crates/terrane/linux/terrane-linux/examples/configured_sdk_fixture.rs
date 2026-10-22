@@ -97,12 +97,14 @@ fn dispatch() -> FixtureResult<&'static str> {
     }
     let root = Path::new(root);
     match command.as_str() {
-        "setup" | "setup-manifest" => {
+        "setup" | "setup-manifest" | "setup-default-wipe" => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
             if command == "setup-manifest" {
-                runtime.block_on(setup_payload(root, owner, &payload::manifest()))?;
+                runtime.block_on(setup_payload(root, owner, &payload::manifest(), true))?;
+            } else if command == "setup-default-wipe" {
+                runtime.block_on(setup_payload(root, owner, PAYLOAD, false))?;
             } else {
                 runtime.block_on(setup(root, owner))?;
             }
@@ -139,10 +141,15 @@ fn dispatch() -> FixtureResult<&'static str> {
 }
 
 async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
-    setup_payload(root, owner, PAYLOAD).await
+    setup_payload(root, owner, PAYLOAD, true).await
 }
 
-async fn setup_payload(root: &Path, owner: u32, payload: &[u8]) -> FixtureResult<()> {
+async fn setup_payload(
+    root: &Path,
+    owner: u32,
+    payload: &[u8],
+    explicit_wipe_none: bool,
+) -> FixtureResult<()> {
     fs::create_dir(root)?;
     fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
     check_owner(root, owner)?;
@@ -184,7 +191,15 @@ async fn setup_payload(root: &Path, owner: u32, payload: &[u8]) -> FixtureResult
                 Duration::from_secs(10),
             )?,
             policy_authority: Some(MAIN.into()),
-            bootstrap_properties: Vec::new(),
+            // Successful sealed-cache cases explicitly sign their erasure policy.
+            // The negative case leaves the private-domain zero default intact.
+            bootstrap_properties: if explicit_wipe_none {
+                let mut value = Vec::new();
+                terrane_format::cbor::write_text(&mut value, "none");
+                vec![("wipe".into(), value)]
+            } else {
+                Vec::new()
+            },
         },
         MAIN,
         [7; 32],

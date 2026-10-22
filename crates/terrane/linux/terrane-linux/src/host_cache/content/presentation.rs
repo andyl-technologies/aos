@@ -10,6 +10,7 @@ use std::{io, os::unix::fs::FileExt, time::Duration};
 use terrane_format::{
     identity::{Identity, IdentityKind},
     manifest::Manifest,
+    properties::{EffectiveProperties, PropertyName, Value},
 };
 use terrane_sdk::{
     bucket::BucketBinding,
@@ -17,6 +18,24 @@ use terrane_sdk::{
     repository::ObjectPresentation,
     store::{Clock, ContentStore, StoreErrorKind, StoreFailure, TokioClock},
 };
+
+/// Rejects effective erasure policies that a permanently sealed tier cannot honor.
+///
+/// Private roots retain their `zero` default. Only an effective `none`
+/// policy permits persistent sealed storage; a host setting cannot
+/// weaken the selected root's requirement.
+pub struct NativeSealedReadPolicy;
+
+impl terrane_sdk::guard::ReadStoragePolicy for NativeSealedReadPolicy {
+    fn validate(&self, properties: &EffectiveProperties<'_>) -> Result<(), StoreFailure> {
+        if properties.get(PropertyName::Wipe) != Some(&Value::Text("none")) {
+            return Err(StoreFailure::new(StoreErrorKind::Unavailable {
+                retry_after: None,
+            }));
+        }
+        Ok(())
+    }
+}
 
 /// Retains actual native custody for the configured object presentation policy.
 ///
@@ -158,4 +177,79 @@ fn read_sealed(file: &std::fs::File, size: usize) -> io::Result<Vec<u8>> {
         offset += count;
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use terrane_format::properties::{Defaults, RootLayer, resolve};
+    use terrane_sdk::guard::ReadStoragePolicy;
+
+    #[test]
+    fn sealed_storage_requires_effective_none_without_weakening_private_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let defaults = Defaults {
+            store: "fixture",
+            private_domain: "private:fixture",
+            home: "local",
+        };
+        let private = resolve(&[], defaults)?;
+        assert_eq!(private.get(PropertyName::Wipe), Some(&Value::Text("zero")));
+        assert!(NativeSealedReadPolicy.validate(&private).is_err());
+
+        let mut public = Vec::new();
+        terrane_format::cbor::write_text(&mut public, "public");
+        let public_properties = [terrane_format::tree_format::Property {
+            name: "domain",
+            value: &public,
+        }];
+        let public_layers = [RootLayer {
+            properties: &public_properties,
+            overrides: &[],
+        }];
+        NativeSealedReadPolicy.validate(&resolve(&public_layers, defaults)?)?;
+
+        let mut none = Vec::new();
+        let mut zero = Vec::new();
+        terrane_format::cbor::write_text(&mut none, "none");
+        terrane_format::cbor::write_text(&mut zero, "zero");
+        let own = [terrane_format::tree_format::Property {
+            name: "wipe",
+            value: &none,
+        }];
+        let overrides = [terrane_format::tree_format::Property {
+            name: "wipe",
+            value: &zero,
+        }];
+        let graft = [RootLayer {
+            properties: &own,
+            overrides: &overrides,
+        }];
+        assert!(
+            NativeSealedReadPolicy
+                .validate(&resolve(&graft, defaults)?)
+                .is_err()
+        );
+
+        for (wipe, permitted) in [
+            ("none", true),
+            ("zero", false),
+            ("discard", false),
+            ("volatile", false),
+        ] {
+            let mut encoded = Vec::new();
+            terrane_format::cbor::write_text(&mut encoded, wipe);
+            let properties = [terrane_format::tree_format::Property {
+                name: "wipe",
+                value: &encoded,
+            }];
+            let layers = [RootLayer {
+                properties: &properties,
+                overrides: &[],
+            }];
+            let policy = resolve(&layers, defaults)?;
+            assert_eq!(NativeSealedReadPolicy.validate(&policy).is_ok(), permitted);
+        }
+        Ok(())
+    }
 }

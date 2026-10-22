@@ -101,10 +101,19 @@ where
         surface: &str,
         schema: &TreeSchema,
     ) -> Result<PreparedView, Error> {
-        Ok(self
+        let prepared = self
             .prepare_schema_metadata(view, token, surface, schema)
             .await?
-            .0)
+            .0;
+        let guard = self.coordinator.guard();
+        for entry in &prepared.entries {
+            let metadata = tree_format::decode_entry_bytes(&entry.encoded, prepared.minimum)?;
+            if matches!(metadata.kind, EntryKind::File { .. }) {
+                let path = absolute_path(&prepared.snapshot.scope, &entry.key);
+                guard.check_read_storage(&prepared.snapshot, &path)?;
+            }
+        }
+        Ok(prepared)
     }
 
     /// Builds the public projection while retaining private authority separately.

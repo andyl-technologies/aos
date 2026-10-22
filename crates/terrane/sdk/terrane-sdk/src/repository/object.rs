@@ -32,6 +32,21 @@ pub trait ObjectPresentation: Send + Sync {
 }
 
 impl<S: Store, C: Clock, F: LocalFs> Repository<S, C, F> {
+    /// Binds physical storage restrictions before guarded content access.
+    ///
+    /// The original guard resolves authenticated root and graft properties before
+    /// invoking this policy. Driver adapters preserve it. Restrictions apply to
+    /// ordinary content reads and external backing preparation; they grant no
+    /// authority and do not change effective policy.
+    #[cfg(feature = "std")]
+    pub fn with_read_storage_policy(
+        mut self,
+        policy: Arc<dyn crate::guard::ReadStoragePolicy>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_read_storage_policy(policy);
+        self
+    }
+
     /// Binds trusted same-domain object presentation without granting read authority.
     ///
     /// Every read still performs the original complete guarded content checks.

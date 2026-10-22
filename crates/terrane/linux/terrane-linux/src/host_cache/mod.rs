@@ -29,6 +29,7 @@ mod source;
 pub use content::{
     NativeChunkedObject, NativeChunkedReader, NativeContentStore, NativeObjectPresentation,
     NativePreparedObject, NativeReadDriver, NativeReadPolicy, NativeSealedObject,
+    NativeSealedReadPolicy,
 };
 #[cfg(feature = "tokio")]
 pub use manifest_source::NativeManifestSource;

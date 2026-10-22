@@ -281,6 +281,19 @@ def cache_states(driver):
     return result
 
 
+def native_content_inodes(driver):
+    """Captures actual persistent object identities without treating rows as custody."""
+    result = {}
+    for domain in ["public", "private"]:
+        root = driver.ROOT / "positive" / domain
+        for directory in ["objects", "sealed"]:
+            for path in (root / directory).rglob("*"):
+                if path.is_file():
+                    metadata = path.stat()
+                    result[str(path)] = (metadata.st_dev, metadata.st_ino, metadata.st_size)
+    return result
+
+
 def verify_funding(driver, directory, before, after):
     """Checks distinct startup, metadata retention and released-consumer holds."""
     owner = "fixture-" + directory
@@ -389,7 +402,7 @@ future_hold_bytes = 327680
     print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
 
 
-def run(driver, image):
+def run(driver, image, wipe_only=False):
     """Requires real native startup and a closed failure before SDK presentation."""
     driver.require((image / "share/configured_sdk_proof.py").read_bytes()
                    == (driver.SOURCE / "tests/terrane/configured_sdk_proof.py").read_bytes(),
@@ -401,15 +414,17 @@ def run(driver, image):
     os.chown(parent, 840, 840)
 
     large = manifest_payload()
-    for name, refused, mode, payload in [
+    cases = [("wipe-default", True, "never", PAYLOAD)] if wipe_only else [
             ("masked", True, "never", PAYLOAD),
             ("inline", False, "never", PAYLOAD),
             ("never", False, "never", large),
             ("always", False, "always", large),
             ("profile", True, "never", PAYLOAD),
-            ("refused", True, "never", PAYLOAD)]:
+            ("refused", True, "never", PAYLOAD)]
+    for name, refused, mode, payload in cases:
         root = parent / name
-        setup = "setup-manifest" if payload == large else "setup"
+        setup = ("setup-default-wipe" if name == "wipe-default" else
+                 "setup-manifest" if payload == large else "setup")
         actor(driver, image, name + "-setup",
               ["configured-sdk-cache-example", setup, root, 840])
         config = root / "config.toml"
@@ -418,6 +433,7 @@ def run(driver, image):
             host = host.replace("07" * 32, "08" * 32)
         config.write_text(config.read_text() + host)
         before = cache_states(driver)
+        before_content = native_content_inodes(driver) if name == "wipe-default" else None
         stdout, stderr = actor(driver, image, name + "-cli",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
               success=not refused, mount_policy="masked" if name == "masked" else "readonly",
@@ -426,6 +442,12 @@ def run(driver, image):
         actor(driver, image, name + "-publication",
               ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
         if refused:
+            if name == "wipe-default":
+                driver.require(not stdout and stderr ==
+                               b"terrane: configured SDK exposure preparation failed\n",
+                               "private default wipe did not refuse presentation")
+                driver.require(native_content_inodes(driver) == before_content,
+                               "private default wipe caused persistent content admission")
             if name == "profile":
                 driver.require(not stdout and stderr ==
                                b"terrane: configured SDK native cache profile differs from original repository\n",
@@ -439,6 +461,9 @@ def run(driver, image):
                                b"terrane: configured SDK native cache recovery failed\n",
                                "masked roots did not refuse actual native startup")
                 print("PASS actual inaccessible namespace roots refuse native startup before cache or snapshot effects", flush=True)
+                continue
+            if name == "wipe-default":
+                print("PASS actual signed private zero-wipe default refuses sealed admission before content or snapshot effects", flush=True)
                 continue
             witness = ("mismatched original profile" if name == "profile" else "an unenrolled native cache")
             print("PASS actual configured SDK refuses " + witness + " before any snapshot or policy effect", flush=True)

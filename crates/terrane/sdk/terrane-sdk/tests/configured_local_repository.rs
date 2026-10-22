@@ -443,6 +443,7 @@ async fn configured_read_cache_preserves_original_authority_and_refuses_writes()
 struct OriginalDriver<S> {
     original: S,
     calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    body_calls: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     unavailable: bool,
 }
 
@@ -472,6 +473,14 @@ impl<S: terrane_sdk::store::ContentStore + Sync> terrane_sdk::store::ContentStor
     ) -> Result<Vec<u8>, terrane_sdk::store::StoreFailure> {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if matches!(
+            identity.kind(),
+            terrane_format::identity::IdentityKind::Chunk
+                | terrane_format::identity::IdentityKind::Manifest
+        ) && let Some(calls) = &self.body_calls
+        {
+            calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if self.unavailable {
             return Err(terrane_sdk::store::StoreFailure::new(
                 terrane_sdk::store::StoreErrorKind::Unavailable { retry_after: None },
@@ -515,6 +524,7 @@ async fn configured_complete_content_driver_preserves_authority_and_is_not_bypas
         .with_read_driver(|original| OriginalDriver {
             original: original.clone(),
             calls: Arc::clone(&calls),
+            body_calls: None,
             unavailable: false,
         });
     let before = std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?;
@@ -547,6 +557,7 @@ async fn configured_complete_content_driver_preserves_authority_and_is_not_bypas
         .with_read_driver(|original| OriginalDriver {
             original: original.clone(),
             calls: Arc::clone(&calls),
+            body_calls: None,
             unavailable: true,
         });
     let result = refused
@@ -764,5 +775,90 @@ async fn explicit_seed_bootstrap_registers_original_profile_and_refuses_reseedin
     .await?;
 
     assert_eq!(reopened.chunk_profile().seed(), [7; 32]);
+    Ok(())
+}
+
+struct RefusePrivateWipe {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl terrane_sdk::guard::ReadStoragePolicy for RefusePrivateWipe {
+    fn validate(
+        &self,
+        properties: &terrane_format::properties::EffectiveProperties<'_>,
+    ) -> Result<(), terrane_sdk::store::StoreFailure> {
+        use terrane_format::properties::{PropertyName, Value};
+        assert_eq!(
+            properties.get(PropertyName::Wipe),
+            Some(&Value::Text("zero"))
+        );
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err(terrane_sdk::store::StoreFailure::new(
+            terrane_sdk::store::StoreErrorKind::Unavailable { retry_after: None },
+        ))
+    }
+}
+
+#[tokio::test]
+async fn signed_storage_policy_refuses_before_body_reads_and_external_preparation() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use terrane_sdk::surface::View;
+
+    let fixture = Fixture::new().await?;
+    fixture.commit_bytes(OLD).await?;
+    write_read_capability(&fixture).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let checks = Arc::new(AtomicUsize::new(0));
+    let body_calls = Arc::new(AtomicUsize::new(0));
+    let metadata_calls = Arc::new(AtomicUsize::new(0));
+    let repository = config
+        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .await?
+        .with_read_storage_policy(Arc::new(RefusePrivateWipe {
+            calls: Arc::clone(&checks),
+        }))
+        .with_read_driver(|original| OriginalDriver {
+            original: original.clone(),
+            calls: Arc::clone(&metadata_calls),
+            body_calls: Some(Arc::clone(&body_calls)),
+            unavailable: false,
+        });
+    let view = View::parse(MAIN)?;
+
+    assert!(
+        repository
+            .read_file(&view, b"file", b"invalid token", "sdk")
+            .await
+            .is_err()
+    );
+    assert_eq!(checks.load(Ordering::Relaxed), 0);
+    assert!(
+        repository
+            .read_file(&view, b"file", fixture.authority.token(), "sdk")
+            .await
+            .is_err()
+    );
+    assert_eq!(checks.load(Ordering::Relaxed), 1);
+    assert!(
+        repository
+            .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+            .await
+            .is_err()
+    );
+    assert_eq!(checks.load(Ordering::Relaxed), 2);
+
+    assert!(
+        PreparedExposures::prepare(&repository, config.exposures(), &ExplicitFileToken)
+            .await
+            .is_err()
+    );
+    assert_eq!(checks.load(Ordering::Relaxed), 3);
+    assert!(metadata_calls.load(Ordering::Relaxed) > 0);
+    assert_eq!(body_calls.load(Ordering::Relaxed), 0);
+    assert!(!fixture.parent.join("configured").exists());
     Ok(())
 }

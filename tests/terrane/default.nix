@@ -470,6 +470,7 @@ in {
   integration.native-initial-enrollment = initialEnrollmentProof.native;
   integration.native-reassembly = initialEnrollmentProof.reassembly;
   integration.native-sdk-cache = initialEnrollmentProof.sdk;
+  integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};

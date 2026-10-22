@@ -63,6 +63,10 @@ pub(crate) use original::{
 mod policy;
 mod read;
 #[cfg(feature = "std")]
+mod read_storage;
+#[cfg(feature = "std")]
+pub use read_storage::ReadStoragePolicy;
+#[cfg(feature = "std")]
 mod requalification;
 #[cfg(feature = "std")]
 mod view_selection;
@@ -237,6 +241,8 @@ pub struct Guard<S, C> {
     clock: C,
     keys: Vec<IssuerKey>,
     config: GuardConfig,
+    #[cfg(feature = "std")]
+    read_storage_policy: Option<std::sync::Arc<dyn ReadStoragePolicy>>,
     // Weak cache keys distinguish this allocation without retaining authority.
     // Every constructor and configuration adapter starts a fresh discriminator.
     #[cfg(feature = "std")]
@@ -271,6 +277,8 @@ impl<S, C> Guard<S, C> {
             clock,
             keys,
             config,
+            #[cfg(feature = "std")]
+            read_storage_policy: None,
             #[cfg(feature = "std")]
             candidate_preparation_scope: std::sync::Arc::new(()),
             #[cfg(feature = "std")]
@@ -342,6 +350,7 @@ impl<S, C> Guard<S, C> {
             clock: self.clock,
             keys: self.keys,
             config: self.config,
+            read_storage_policy: self.read_storage_policy,
             candidate_preparation_scope: std::sync::Arc::new(()),
             interpretation: self.interpretation,
             configured_current: self.configured_current,

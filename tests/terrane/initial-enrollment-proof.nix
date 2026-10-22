@@ -49,11 +49,13 @@
         then "terrane-native-reassembly-ext4"
         else if scenario == "surface"
         then "terrane-native-configured-surface-index-ext4"
+        else if scenario == "sdk-wipe"
+        then "terrane-native-sdk-wipe-ext4"
         else "terrane-native-sdk-cache-ext4";
       memory = 1024;
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
-        ++ lib.optional (builtins.elem scenario ["sdk" "surface"]) configuredSdkProof.image
+        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-wipe" "surface"]) configuredSdkProof.image
         ++ lib.optional (scenario == "surface") surfaceImage;
       testScript = ''
         set -eu
@@ -100,7 +102,7 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
-        ${lib.optionalString (builtins.elem scenario ["sdk" "surface"]) ''
+        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-wipe" "surface"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
         ''}
         ${lib.optionalString (scenario == "surface") ''
@@ -131,5 +133,6 @@ in {
   native = nativeFor "enrollment";
   reassembly = nativeFor "reassembly";
   sdk = nativeFor "sdk";
+  sdkWipe = nativeFor "sdk-wipe";
   surface = nativeFor "surface";
 }

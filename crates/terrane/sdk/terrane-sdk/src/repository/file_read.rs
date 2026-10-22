@@ -117,6 +117,7 @@ where
         } = self.file_read_metadata(view, path, token, surface).await?;
         let guard = self.coordinator.guard();
         let head = SnapshotPathHead::begin(guard, &snapshot, &absolute).await?;
+        guard.check_read_storage(&snapshot, &absolute)?;
 
         Ok(PreparedFileRead {
             guard,

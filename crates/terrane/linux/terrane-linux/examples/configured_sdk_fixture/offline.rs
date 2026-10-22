@@ -134,6 +134,9 @@ pub(super) fn run(root: &Path, owner: u32) -> FixtureResult<()> {
         let first = boundaries.first().ok_or("missing actual payload chunk")?;
         let resident = TERRANE_V1.calculate(IdentityKind::Chunk, &payload[first.clone()])?;
         let mut driver = None;
+        let original = original.with_read_storage_policy(Arc::new(
+            terrane_linux::host_cache::NativeSealedReadPolicy,
+        ));
         let repository = original.with_read_driver(|original| {
             let actual = cache.into_content().with_lower(
                 OfflineChunks {

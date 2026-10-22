@@ -15057,3 +15057,66 @@ application build passes in 1,592.833 seconds; independent review matches all
 The `d1f9088224` passing listener check is also independently reviewed against
 all 8,064 source files, 5,355 base and 5,339 surface inputs and the installed
 Cargo ELFs. No new trunk task or complete deployed role is accepted.
+
+
+#### Signed erasure policy before native admission
+
+The maintained SDK timing qualification at `fdcb0f28a7` passes in 817.749
+seconds with the original actor and whole-run limits. Independent review
+matches all 8,066 immutable source files, four actual Cargo ELFs, all nine
+namespace observations and all three retained original-lock/SIGTERM controls.
+The final unenrolled-cache refusal takes 3.242 seconds with 13.611 seconds left
+at its start. This successful run does not establish the cause of the prior
+failure. The `d1f9088224` mandatory application-target build also passes in
+1,583.538 seconds; independent review matches all 8,064 source files and 185
+test executables across 59 packages.
+
+The shared-directory owning gate at `5e815dc29f` passes in 2,837.269 seconds.
+Its independent review matches all 8,061 immutable source files and 5,336
+crate inputs, seven ordinary cases and the original setgid reader case actually
+executed as UID 840 on ext4. DOM-14/15 and full private-consumer release remain
+separate obligations; this result alone does not accept T-STORE-3.
+
+An audit finds that the configured native read driver could admit content
+under a signed private root's implicit `wipe=zero` while the host configuration
+said `none`. D-128 forbids that downgrade. Trusted composition now binds a
+storage restriction to the original guard. The guard resolves the exact
+selected path's signed root and graft layers with its selected interpretation
+and domain-dependent defaults before content reads or external file-backing
+preparation. Read-driver/cache adapters preserve that restriction and the
+original authorization witnesses. The restriction grants no Read authority and
+changes no effective property or frozen Store method.
+
+Configured native SDK startup now prepares every exposure under that restriction
+before opening any native cache domain. Successful fixtures explicitly sign
+`wipe=none`; a separate fixture retains the real private `zero` default. A new
+independent native VM check requires that default to refuse with no snapshot,
+policy-record change or persistent object admission. Its existing 30-second
+actor, 240-second driver and 300-second host bounds remain unchanged, as do all
+existing maintained-service scenarios and assertions. The owning surface gate
+additionally requires the signed-policy regression to observe zero actual
+chunk/manifest reads through the complete driver and refusal of external
+backing preparation and SDK startup. Native and mandatory application
+qualification on this change remain required. No trunk task is accepted.
+
+The authenticated worker receipt qualification at `2d92f7aaa5` also passes:
+scoped transport in 703.020 seconds and the worker network boundary in 702.498
+seconds. Independent review matches all 8,067 immutable source files, 5,358
+base and 5,342 surface inputs, the actual installed Cargo ELFs and every
+original witness, including bounded idle receipt timeout/cancellation with
+retained socket aliases. These are component results; production worker
+launch, complete sandbox and mounted FUSE remain unqualified.
+
+On the signed-policy change, strict all-feature Linux/CLI lint passes in 5.18
+seconds and the configured repository integration target's strict lint passes
+in 1.00 second. The pure native policy regression passes, covering the private
+zero default, the public none default, graft overrides and all four erasure
+values. The actual configured SDK fixture compiles successfully. Complete
+native source inventory includes the added policy case (129 total base cases);
+Python syntax and diff checks pass. These checks do not execute the new native
+refusal or the signed repository integration case.
+
+The owning host-cache gates and sealed wipe-on-release gate now consume the
+new native signed-wipe proof, so host configuration tests alone cannot qualify
+that requirement. Public Linux documentation also passes with warnings denied
+in 21.56 seconds.

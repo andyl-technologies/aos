@@ -825,6 +825,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 return Err(denied(&snapshot.authority_reference, Verb::Read));
             }
         }
+        #[cfg(feature = "std")]
+        self.check_read_storage(snapshot, path)?;
+
         match content {
             ContentRef::Inline(digest) => {
                 self.read_chunk(snapshot, path, digest, size, true, observation)
