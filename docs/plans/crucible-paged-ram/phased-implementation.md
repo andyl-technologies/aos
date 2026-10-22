@@ -599,8 +599,10 @@ The Rust decoder agrees with every case and reproduces all nine accepted byte
 strings exactly; the TSV SHA256 is pinned separately. The full 269-test protocol
 suite and strict all-target Clippy pass after replacing the test's randomized
 name set with an ordered set. The initial Clippy refusal remains retained.
-This adds a tenth root-transfer case to the counted ABI group; C compilation
-and execution remain unqualified at this source checkpoint.
+This adds a tenth root-transfer case to the counted ABI group. The complete
+ABI conformance gate passes at `kxzxdxkfjr7mgwiaqq0ynax6si920zpl`, including
+all 269 protocol tests, guest round trips and the host/guest API compilation
+matrix. C compilation and execution remain unqualified at this source checkpoint.
 
 The refreshed inventory at `9c6xv6gc2b9skkwd163y3jiaaka0ra30` verifies 497
 bindings: 465 model, thirteen format and nineteen native, across 243 requirements.
