@@ -78,7 +78,8 @@ impl LiveWhiteboxState {
         )
         .map_err(callback_error)?;
         let reply = routed.reply;
-        let mut writer = LiveGuestMemoryWriter::new(self.apis, event.current_icount());
+        let mut writer =
+            LiveGuestMemoryWriter::new(self.apis.write_memory_vaddr, event.current_icount());
         self.doorbell
             .inject_guest_input_slice(
                 &self.guest_introspection.input_capability,

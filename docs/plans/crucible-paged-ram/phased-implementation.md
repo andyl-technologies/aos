@@ -69,6 +69,30 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Typed actual guest-write failures
+
+The live callback and resumed per-vCPU writers retain coordinate mismatches and
+Native write refusals as typed fields. Their failure paths no longer allocate
+formatted Strings. Each writer retains only the actual QEMU write function it
+uses. Validation, reply consumption, guest-write ordering and complete rendered
+diagnostics remain unchanged. The public guest-write error is a non-exhaustive
+enum; its reporting-only `message` method now returns `Cow<str>`, borrowing
+original backend diagnostics and formatting typed causes only on that explicit
+call. This coordinated Rust API change does not alter either process ABI.
+
+The existing reply-failure control still requires the original custom backend
+buffer through its source chain. It additionally exercises both actual writer
+implementations: coordinate mismatches make no Native call, and a refused
+per-vCPU call retains the exact vCPU, address, original workspace pointer,
+reservation length and resume count. The consumed ring entry remains consumed
+while the pending catalog request and completion count remain unchanged.
+All 1,177 plugin tests and compilation of every plugin target pass. The final
+fifteen adapter controls pass after the test helpers' readability adjustment.
+The 1,120-line test module has a content-bound responsibility review. The
+containing Runtime remains 18,936 bytes, alignment eight, with 9,552 inline
+white-box bytes. Engineering hygiene passes; required packaged compilation is running. No case name, binding or policy exception changes. Remaining dynamic
+payloads and complete operation/resource funding remain open.
+
 #### Typed selectable service failures
 
 The live and combined catalog services retain their original catalog and
@@ -93,8 +117,16 @@ and the original authority diagnostic buffer through `new` and `message`.
 All 1,177 plugin tests and compilation of every plugin target pass. The expanded
 1,016-line adapter test file has a content-bound responsibility review; the
 production catalog shrinks to 1,311 implementation lines. The first hygiene run
-correctly refused the missing test-file review. Its corrected check and required
-application compilation are pending. The final fifteen adapter controls pass,
+correctly refused the missing test-file review. The corrected check passes.
+Required application compilation passes at `9spq6h5a233ddh6q208gh7iyc4124f40`.
+All 5,313 committed Rust/TOML inputs at
+`3d18b5cb87e1d1143a8838b4f5c4f27ed0349160` match immutable source
+`b77b1fxr3r93sjxp77pnxjaxzwvr1q61`, with comparison record SHA-256
+`41a54d89adeb1f31e95284dc922fed87e9bd6f2b33a6c2fc5b2adf7b8cebf11e`.
+ABI conformance passes at `yx01d33c46l6j6jh8dy13nbyl0491m2y`.
+The fresh exact supervision check passes at `0d0wgdbgcasxjpsq1n9rbzv7f6fh5ijf`;
+independent inspection confirms all nine groups and 327 cases.
+The final fifteen adapter controls pass,
 and the actual containing Runtime remains 18,936 bytes, alignment eight, with
 9,552 inline white-box bytes. No case name or binding changes. Original
 backend/catalog dynamic payloads and complete operational funding remain open.
@@ -122,8 +154,9 @@ white-box state at 9,552 bytes. Required packaged compilation passes at
 `nch5aq9n42p0xh76xszqxcxhk4px0v9h`, with comparison record SHA-256
 `d3ce65a32dc59c80d37e158f426875375a03d86c499dd757461c3e163bba3335`.
 ABI conformance passes at `77wafcqjalp9mw5v6ccqmfcybkqjmw6y`.
-The fresh exact supervision check is in progress. No test case name, binding or
-policy exception is added. Backend/service-created dynamic
+The fresh exact supervision check passes at `3vq80dqrjq33l51nrxd5paa12fl9gj8y`.
+Independent inspection of its actual inventory confirms nine groups and all
+327 cases. No test case name, binding or policy exception is added. Backend/service-created dynamic
 payloads and full operational funding remain open; this does not admit CPU work.
 
 #### Borrowed pending transport

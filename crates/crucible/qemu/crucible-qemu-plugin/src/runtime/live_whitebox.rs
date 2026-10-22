@@ -128,7 +128,7 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
     let state = unsafe { state.as_mut() };
     let completed = state.selectable.as_mut().map_or(Ok(None), |selectable| {
         let mut writer = selectable::LiveSelectableGuestMemoryWriter::new(
-            state.apis,
+            state.apis.write_memory_vaddr_for_vcpu,
             vcpu_index,
             current_icount,
         );

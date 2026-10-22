@@ -35,10 +35,7 @@ impl LiveWhiteboxState {
             .app_random
             .as_mut()
             .ok_or(LiveWhiteboxError::AppRandomNotConfigured)?;
-        let mut writer = LiveGuestMemoryWriter {
-            apis: self.apis,
-            current_icount: raw_icount,
-        };
+        let mut writer = LiveGuestMemoryWriter::new(self.apis.write_memory_vaddr, raw_icount);
         let node_name = app_random.decisions.node_name().to_owned();
         let outcome = handle_whitebox_app_random_payload(
             &self.doorbell,
@@ -90,14 +87,17 @@ impl LiveWhiteboxMarkerShmemProducer {
 }
 
 pub(super) struct LiveGuestMemoryWriter {
-    apis: LiveWhiteboxApis,
+    write_memory: super::api::QemuWriteMemoryVaddrFn,
     current_icount: u64,
 }
 
 impl LiveGuestMemoryWriter {
-    pub(super) const fn new(apis: LiveWhiteboxApis, current_icount: u64) -> Self {
+    pub(super) const fn new(
+        write_memory: super::api::QemuWriteMemoryVaddrFn,
+        current_icount: u64,
+    ) -> Self {
         Self {
-            apis,
+            write_memory,
             current_icount,
         }
     }
@@ -111,17 +111,17 @@ impl WhiteboxGuestInputWriter for LiveGuestMemoryWriter {
         payload: &[u8],
     ) -> Result<(), WhiteboxGuestInputWriteError> {
         if delivery_icount != self.current_icount {
-            return Err(WhiteboxGuestInputWriteError::new(format!(
-                "delivery icount {delivery_icount} differs from callback icount {}",
-                self.current_icount
-            )));
+            return Err(WhiteboxGuestInputWriteError::CallbackIcountMismatch {
+                delivery_icount,
+                callback_icount: self.current_icount,
+            });
         }
         if !matches!(range.address_space(), GuestMemoryAddressSpace::Virtual) {
             return Err(WhiteboxGuestInputWriteError::from_static(
                 "live white-box writer requires a virtual reply range",
             ));
         }
-        if !(self.apis.write_memory_vaddr)(range.guest_address(), payload.as_ptr(), payload.len()) {
+        if !(self.write_memory)(range.guest_address(), payload.as_ptr(), payload.len()) {
             return Err(WhiteboxGuestInputWriteError::from_static(
                 "qemu_plugin_crucible_write_memory_vaddr failed",
             ));

@@ -392,6 +392,27 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
         }
     }
 
+    thread_local! {
+        static NATIVE_WRITES: Cell<usize> = const { Cell::new(0) };
+        static LAST_NATIVE_WRITE: Cell<(u32, u64, usize, usize)> = const { Cell::new((0, 0, 0, 0)) };
+    }
+
+    extern "C" fn reject_native_write(
+        vcpu: u32,
+        address: u64,
+        payload: *const u8,
+        len: usize,
+    ) -> bool {
+        NATIVE_WRITES.set(NATIVE_WRITES.get() + 1);
+        LAST_NATIVE_WRITE.set((vcpu, address, payload as usize, len));
+        false
+    }
+
+    extern "C" fn reject_callback_write(_address: u64, _payload: *const u8, _len: usize) -> bool {
+        NATIVE_WRITES.set(NATIVE_WRITES.get() + 1);
+        false
+    }
+
     let mut ring = ReplyRing::new();
     let mut state = live_state(&restored_plan()?, ring.consumer())?;
     state.restore_continuation()?;
@@ -437,6 +458,89 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
     assert!(writer.refusal.is_none());
     assert_eq!(ring.header.read_index(), 1);
     assert!(state.catalog().pending_request().is_some());
+    assert_eq!(state.catalog().total_completed_requests(), 1);
+
+    let range = state.catalog().pending_request().unwrap().reply_range();
+    let mut native_writer = LiveSelectableGuestMemoryWriter::new(reject_native_write, 2, 1_000_137);
+    let drift = native_writer
+        .write_whitebox_input(1_000_136, range, &[])
+        .unwrap_err();
+    assert_eq!(
+        drift,
+        WhiteboxGuestInputWriteError::ResumeIcountMismatch {
+            delivery_icount: 1_000_136,
+            resume_icount: 1_000_137,
+        }
+    );
+    assert_eq!(
+        drift.to_string(),
+        "white-box guest input write failed: delivery icount 1000136 differs from resume icount 1000137"
+    );
+    assert_eq!(NATIVE_WRITES.get(), 0);
+
+    let mut callback_writer =
+        app_random::LiveGuestMemoryWriter::new(reject_callback_write, u64::MAX);
+    let drift = callback_writer
+        .write_whitebox_input(u64::MAX - 1, range, &[])
+        .unwrap_err();
+    assert_eq!(
+        drift,
+        WhiteboxGuestInputWriteError::CallbackIcountMismatch {
+            delivery_icount: u64::MAX - 1,
+            callback_icount: u64::MAX,
+        }
+    );
+    assert_eq!(
+        drift.message(),
+        "delivery icount 18446744073709551614 differs from callback icount 18446744073709551615"
+    );
+    assert_eq!(NATIVE_WRITES.get(), 0);
+
+    ring.publish(WhiteboxMarkerEntry::new(
+        1_000_087,
+        2,
+        WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
+        &reply.encode()?,
+    )?)?;
+    let mut workspace = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
+    let error = state
+        .deliver_reply(1_000_137, 2, &mut native_writer, &mut workspace)
+        .unwrap_err();
+    let original = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<WhiteboxGuestInputWriteError>())
+        .expect("the actual writer's typed refusal remains inspectable");
+    assert_eq!(
+        original,
+        &WhiteboxGuestInputWriteError::VirtualReplyWriteRejected {
+            vcpu_index: 2,
+            guest_address: range.guest_address(),
+            payload_len: range.len(),
+            resume_icount: 1_000_137,
+        }
+    );
+    assert_eq!(NATIVE_WRITES.get(), 1);
+    assert_eq!(
+        LAST_NATIVE_WRITE.get(),
+        (
+            2,
+            range.guest_address(),
+            workspace.as_ptr() as usize,
+            range.len()
+        )
+    );
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "safe white-box callback failed: selectable guest reply write failed at retained coordinate (700, 2) during resume (1000137, 2): white-box guest input write failed: qemu_plugin_crucible_write_memory_vaddr_for_vcpu failed for vCPU 2 at guest virtual address {:#x} with {} bytes at resume icount 1000137",
+            range.guest_address(),
+            range.len()
+        )
+    );
+    assert_eq!(ring.header.read_index(), 2);
+    assert_eq!(
+        state.catalog().pending_request().unwrap().reply_range(),
+        range
+    );
     assert_eq!(state.catalog().total_completed_requests(), 1);
     Ok(())
 }

@@ -74,15 +74,19 @@ pub(crate) struct LiveSelectableReplyShmemConsumer {
 }
 
 pub(super) struct LiveSelectableGuestMemoryWriter {
-    apis: LiveWhiteboxApis,
+    write_memory: super::api::QemuWriteMemoryVaddrForVcpuFn,
     vcpu_index: u32,
     current_icount: u64,
 }
 
 impl LiveSelectableGuestMemoryWriter {
-    pub(super) const fn new(apis: LiveWhiteboxApis, vcpu_index: u32, current_icount: u64) -> Self {
+    pub(super) const fn new(
+        write_memory: super::api::QemuWriteMemoryVaddrForVcpuFn,
+        vcpu_index: u32,
+        current_icount: u64,
+    ) -> Self {
         Self {
-            apis,
+            write_memory,
             vcpu_index,
             current_icount,
         }
@@ -97,10 +101,10 @@ impl WhiteboxGuestInputWriter for LiveSelectableGuestMemoryWriter {
         payload: &[u8],
     ) -> Result<(), crate::WhiteboxGuestInputWriteError> {
         if delivery_icount != self.current_icount {
-            return Err(crate::WhiteboxGuestInputWriteError::new(format!(
-                "delivery icount {delivery_icount} differs from resume icount {}",
-                self.current_icount
-            )));
+            return Err(crate::WhiteboxGuestInputWriteError::ResumeIcountMismatch {
+                delivery_icount,
+                resume_icount: self.current_icount,
+            });
         }
         if !matches!(
             range.address_space(),
@@ -110,19 +114,20 @@ impl WhiteboxGuestInputWriter for LiveSelectableGuestMemoryWriter {
                 "live selectable writer requires a virtual reply range",
             ));
         }
-        if !(self.apis.write_memory_vaddr_for_vcpu)(
+        if !(self.write_memory)(
             self.vcpu_index,
             range.guest_address(),
             payload.as_ptr(),
             payload.len(),
         ) {
-            return Err(crate::WhiteboxGuestInputWriteError::new(format!(
-                "qemu_plugin_crucible_write_memory_vaddr_for_vcpu failed for vCPU {} at guest virtual address {:#x} with {} bytes at resume icount {}",
-                self.vcpu_index,
-                range.guest_address(),
-                payload.len(),
-                self.current_icount,
-            )));
+            return Err(
+                crate::WhiteboxGuestInputWriteError::VirtualReplyWriteRejected {
+                    vcpu_index: self.vcpu_index,
+                    guest_address: range.guest_address(),
+                    payload_len: payload.len(),
+                    resume_icount: self.current_icount,
+                },
+            );
         }
         Ok(())
     }
@@ -342,7 +347,8 @@ impl LiveSelectableState {
         reply_buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<SelectableDoorbellOutcome, LiveWhiteboxError> {
         let capability = self.capability;
-        let mut writer = app_random::LiveGuestMemoryWriter::new(apis, event.current_icount());
+        let mut writer =
+            app_random::LiveGuestMemoryWriter::new(apis.write_memory_vaddr, event.current_icount());
         prepared
             .serve_with_reply_buffer(&capability, self, &mut writer, reply_buffer)
             .map_err(|source| LiveWhiteboxError::SelectableCallback { source })

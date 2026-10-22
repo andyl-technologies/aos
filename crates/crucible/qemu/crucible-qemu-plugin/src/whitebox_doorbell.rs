@@ -44,6 +44,8 @@ use thiserror::Error;
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
 mod guest_input;
+mod guest_input_error;
+pub use guest_input_error::WhiteboxGuestInputWriteError;
 mod marker_error;
 pub use marker_error::WhiteboxMarkerSinkError;
 
@@ -1984,37 +1986,6 @@ pub trait WhiteboxGuestInputWriter {
         range: GuestMemoryRange,
         payload: &[u8],
     ) -> Result<(), WhiteboxGuestInputWriteError>;
-}
-
-/// A loud white-box guest-input write failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("white-box guest input write failed: {message}")]
-pub struct WhiteboxGuestInputWriteError {
-    message: std::borrow::Cow<'static, str>,
-}
-
-impl WhiteboxGuestInputWriteError {
-    /// Builds a guest-input write error.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: std::borrow::Cow::Owned(message.into()),
-        }
-    }
-
-    /// Retains a static backend diagnostic without allocating a string.
-    #[must_use]
-    pub const fn from_static(message: &'static str) -> Self {
-        Self {
-            message: std::borrow::Cow::Borrowed(message),
-        }
-    }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Result of attempting one white-box guest input delivery.
