@@ -14,8 +14,8 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
         MIGRATIONS.len(),
-        10,
-        "released migrations include explicit mailbox ownership"
+        11,
+        "released migrations include durable controller leases"
     );
     let connection = Connection::open_in_memory().unwrap();
     connection

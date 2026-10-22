@@ -63,7 +63,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportCacheNarinfosRequest,
     ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -71,6 +71,14 @@ impl RpcService {
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_admin(auth, &cache).await?;
+        self.claim_controller_fence(
+            &claims,
+            "cache_narinfos",
+            &req.cache_id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         self.register_cache_narinfos_authorized(&cache, &req.narinfos)
             .await
     }
