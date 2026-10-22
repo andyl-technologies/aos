@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use terrane_format::auth::Verb;
-use terrane_format::refs::{RefClass, RefLogRecord, RefName};
+use terrane_format::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
 use super::{AdvanceError, Coordinator};
 use crate::store::{Clock, CorruptSubject, RefWatch, Store, StoreErrorKind, StoreFailure};
@@ -30,6 +30,13 @@ pub struct GuardedWatch<'a, S, C, F> {
     surface: String,
     next_sequence: Option<u64>,
     closed: bool,
+}
+
+// A pending event is untrusted output until the same whole horizon survives
+// closing authorization. It cannot advance the cursor or authorize later I/O.
+struct PendingEvent {
+    record: RefLogRecord,
+    horizon: RefRecord,
 }
 
 impl<S: Store, C: Clock, F> Coordinator<S, C, F> {
@@ -76,40 +83,16 @@ impl<S: Store, C: WatchClock, F> GuardedWatch<'_, S, C, F> {
     /// # Errors
     /// Returns denial after token expiry or ACL revocation, corruption for a
     /// committed sequence gap, and storage or clock errors without closing an
-    /// otherwise live subscription.
+    /// otherwise live subscription. Authorization is checked again after log
+    /// I/O. A changed whole head returns `Unavailable`; a refused attempt never
+    /// advances the delivery cursor, so callers may retry the same sequence.
     pub async fn next(&mut self) -> Result<Option<RefLogRecord>, StoreFailure> {
         loop {
             if self.closed {
                 return Ok(None);
             }
-            let authorized = self
-                .coordinator
-                .guard()
-                .authorize(&self.reference, &self.token, Verb::Read, &[], &self.surface)
-                .await?;
-            if let Some(head) = authorized.record() {
-                let sequence = *self.next_sequence.get_or_insert(head.seq);
-                if sequence <= head.seq {
-                    let records = self
-                        .coordinator
-                        .store()
-                        .ref_log_read(&self.reference, sequence)
-                        .await?;
-                    let record = records
-                        .into_iter()
-                        .find(|record| record.record.seq == sequence)
-                        .ok_or_else(|| self.corrupt())?;
-                    if record.record.home != head.home
-                        || (sequence == head.seq && record.record != *head)
-                    {
-                        return Err(self.corrupt());
-                    }
-                    // The exact committed horizon gates emission. Durable
-                    // append-first records beyond it remain invisible.
-                    self.next_sequence =
-                        Some(sequence.checked_add(1).ok_or_else(|| self.corrupt())?);
-                    return Ok(Some(record));
-                }
+            if let Some(pending) = self.read_pending().await? {
+                return self.emit(pending).await.map(Some);
             }
             self.coordinator
                 .guard()
@@ -127,6 +110,63 @@ impl<S: Store, C: WatchClock, F> GuardedWatch<'_, S, C, F> {
         }
     }
 
+    async fn read_pending(&self) -> Result<Option<PendingEvent>, StoreFailure> {
+        let authorized = self
+            .coordinator
+            .guard()
+            .authorize(&self.reference, &self.token, Verb::Read, &[], &self.surface)
+            .await?;
+        let Some(head) = authorized.record() else {
+            return Ok(None);
+        };
+        let sequence = self.next_sequence.unwrap_or(head.seq);
+        if sequence > head.seq {
+            return Ok(None);
+        }
+
+        let records = self
+            .coordinator
+            .store()
+            .ref_log_read(&self.reference, sequence)
+            .await?;
+        let record = records
+            .into_iter()
+            .find(|record| record.record.seq == sequence)
+            .ok_or_else(|| self.corrupt())?;
+        if record.record.home != head.home || (sequence == head.seq && record.record != *head) {
+            return Err(self.corrupt());
+        }
+
+        Ok(Some(PendingEvent {
+            record,
+            horizon: head.clone(),
+        }))
+    }
+
+    async fn emit(&mut self, pending: PendingEvent) -> Result<RefLogRecord, StoreFailure> {
+        // Reflog I/O can outlive token authority or race a policy/head change.
+        // Refuse the entire attempt before exposing an entry or moving its
+        // cursor; the same sequence remains available to a fresh retry.
+        let current = self
+            .coordinator
+            .guard()
+            .authorize(&self.reference, &self.token, Verb::Read, &[], &self.surface)
+            .await?;
+        if current.record() != Some(&pending.horizon) {
+            return Err(StoreFailure::new(StoreErrorKind::Unavailable {
+                retry_after: None,
+            }));
+        }
+        let next_sequence = pending
+            .record
+            .record
+            .seq
+            .checked_add(1)
+            .ok_or_else(|| self.corrupt())?;
+        self.next_sequence = Some(next_sequence);
+        Ok(pending.record)
+    }
+
     fn corrupt(&self) -> StoreFailure {
         StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::RefName(
             self.reference.clone(),
@@ -141,3 +181,6 @@ impl<S: Store + Sync, C: Clock + Sync, F: Sync> RefWatch for GuardedWatch<'_, S,
         GuardedWatch::next(self).await
     }
 }
+
+#[cfg(all(test, feature = "tokio", unix))]
+mod tests;

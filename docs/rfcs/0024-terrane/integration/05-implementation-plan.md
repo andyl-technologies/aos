@@ -12309,3 +12309,44 @@ executables across 59 packages, compilation only. Its local 4,096-entry ordinary
 diagnostic passes in 1,226.61 seconds under the unchanged 1,800-second bound,
 including the final independent byte checks. The adversarial diagnostic and
 source-bound six-population qualification remain pending.
+
+
+#### Closing authorization before SDK watch delivery
+
+The single-ref SDK watch now separates a pending log observation from delivery.
+After the actual backend log read it reauthorizes current Read and compares the
+complete observed horizon, including epoch, home, policy and candidate selector.
+Revocation or expiry refuses delivery; a changed whole head returns unavailable.
+Neither refusal advances the cursor, so a fresh successful retry can still emit
+every committed sequence. The existing current-first behavior, idle wait, gap
+checks and explicit close remain in place. This does not implement multi-ref
+Distribution WatchRefs, resume tokens or a bounded reflog storage interface.
+
+Three new native cases exercise the same private observation and delivery paths
+around actual durable publication: a changed horizon followed by gap-free retry,
+current ACL revocation, and genuine signed token expiry after the log read.
+They join the three existing cases in the owning `ref-watch` gate. The new
+changed-head, revocation and expiry cases pass locally in 2.69, 5.32 and 6.22
+seconds respectively under the unchanged 240-second local bound. All three
+existing watch and committed-log controls pass on the same actual SDK artifact. Strict
+SDK/Linux/CLI all-target Clippy, native `std,wasm`, actual WebAssembly-target
+checking and Nix evaluation pass. Frozen owning-gate and required application
+target qualification remain pending. No task acceptance changes.
+
+The preceding ref-enumeration change at `e5578c0b2c` passes frozen qualification
+in 176.57 seconds and independent review of all five actual cases, 7,934 immutable
+source files and 5,237 crate inputs. Its proof binds the actual Cargo artifact
+and execution logs but does not retain the executed ELF bytes. Required
+application-target compilation remains pending. The targeted-retirement change
+at `78ca820b84` also passes native GC conformance in 5,004.65 seconds; independent
+review binds its sixteen selected cases to 7,922 source files, 5,229 inputs and
+the actual retained SDK ELF. Both local 4,096-entry grouped-read diagnostics now
+pass within the unchanged 1,800-second bound: ordinary 1,226.61 seconds and
+adversarial 1,292.51 seconds. These diagnostics do not replace the still-running
+source-bound six-population qualification or the failed older aggregate run.
+
+The native authentication change at `b537097ad5` now also passes required
+application-target compilation in 1,662.61 seconds. Independent review matches
+7,928 immutable source files and actual Cargo compilation records for 184 test
+executables across 59 packages. Application-target outputs retain compiler
+metadata, not executable bytes; these counts establish compilation only.

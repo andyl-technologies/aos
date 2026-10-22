@@ -53,9 +53,12 @@ in {
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_watch_emits_current_then_waits_and_fills_every_committed_sequence
+    run_ref_test ref_advance::watch::tests::changed_horizon_refuses_pending_event_and_retry_preserves_every_sequence
+    run_ref_test ref_advance::watch::tests::revoked_current_acl_refuses_pending_event_without_advancing_cursor
+    run_ref_test ref_advance::watch::tests::expiry_after_log_read_refuses_pending_event_without_advancing_cursor
     run_ref_test bucket::tests::missing_reflog_with_committed_horizon_is_corruption
     run_ref_test bucket::tests::committed_reflog_must_match_the_complete_ref_record
-    printf 'PASS: current-first live watch and committed reflog gap validation\n' > "$out/result"
+    printf 'PASS: current-first watch, closing current authority and committed reflog gap validation\n' > "$out/result"
   '';
 
   commit-order = bucketSdkGate "commit-order" ''
