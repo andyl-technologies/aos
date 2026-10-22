@@ -1,6 +1,12 @@
 exports_files(["repositories.bzl"])
 
 platform(
+    name = "aarch64_linux",
+    constraint_values = ["@platforms//cpu:aarch64", "@platforms//os:linux"],
+    visibility = ["//visibility:public"],
+)
+
+platform(
     name = "wasm32",
     constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
     visibility = ["//visibility:public"],

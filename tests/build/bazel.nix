@@ -241,10 +241,20 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all wasm.all recovery];} ''
-      mkdir -p "$out"
-      printf 'PASS\n' > "$out/result"
-    '';
+    all =
+      pkgs.runCommand "aos-bazel-checks" {
+        buildDeps =
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all wasm.all recovery]
+          ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
+            (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
+          ];
+      } ''
+        mkdir -p "$out"
+        printf 'PASS\n' > "$out/result"
+      '';
+  }
+  // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
+    cross-linux = import ./_bazel-cross-linux.nix {inherit pkgs;};
   }
   // pkgs.lib.optionalAttrs (sharedBazelCacheDir != null) {
     cache = import ./_bazel-cache.nix {inherit pkgs workspace;};

@@ -403,6 +403,31 @@ it requires zero unknown expression/pattern types and no analyzer panics.
 Passing native Linux outputs and configuration fingerprints are retained in
 `tests/evidence/native-linux-developer-tools.json`.
 
+## Linux cross toolchain qualification
+
+`mkAosBazelCrossToolchains { targetPackages = ...; }` extends the native tool
+repository with a Linux target compiler, standard library, C/C++ linker and
+sysroot. It uses the target stdenv's scheduler-hosted cross tools; public target
+tool packages contain target-hosted executables and cannot serve that role.
+Every target action includes the realized cross compiler closure identity.
+Generators and procedural macros continue to select native execution tools.
+
+On x86_64 Linux, `checks.build.bazel.cross-linux.all` builds the fixture's Rust,
+C++ and Rust/C++ binaries for `//tools/bazel/toolchains:aarch64_linux`. The check
+verifies their AArch64 ELF headers, foreign standard-library inputs, native
+proc-macro selection, sandbox execution and expected output under AOS-built
+QEMU linux-user. A native-only tool repository must reject the same target.
+The combined Bazel suite includes this check on that execution platform.
+The standalone entry point is `tools/bazel/tests/cross-linux.nix`.
+`tests/evidence/native-linux-aarch64-toolchain.json` retains the combined pass,
+artifact/runtime checks, native fallback rejection, and fresh native cache proofs.
+
+This qualifies the x86_64 Linux to AArch64 Linux adapter and fixture runtime.
+It does not yet qualify full application families, cross editor workflows,
+Darwin, or the reverse execution/target pairing. Normal workspaces still select
+only their supplied toolchains; adding a platform label cannot enable a host
+compiler fallback or fetch a missing compiler.
+
 ## Shared AOS libraries
 
 `checks.build.bazel.shared.all` qualifies `aos-core`, `aos-artifact-evidence`,

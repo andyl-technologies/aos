@@ -1838,7 +1838,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
-      inherit (bazelSupport) mkAosBazelToolchains aosBazelModules aosBazelToolchains;
+      inherit (bazelSupport) mkAosBazelToolchains mkAosBazelCrossToolchains aosBazelModules aosBazelToolchains;
       inherit (bazelSupport) mkAosBazelWorkspace mkAosBazelBuild;
       inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
       inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;

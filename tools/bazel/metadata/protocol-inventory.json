@@ -16736,7 +16736,7 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "d5d9f5af11f827fb0987711aa993d860fc311cbd663e9c09924ed9f759e5e2fb",
+    "MODULE.bazel": "29716377174787cc0d4e286fa9335dcbfc0bc1e9b0371af24386a3d379b03776",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel": "64760e4fc77d2a8b698035f7577767ef20cf1a2558b8f25dea1e7726f93f068e",
     "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel": "8aa374fd4a1d4a57287905042e167c63b43b4f287477fb5abd6eda12ea7be6cd",
@@ -16755,7 +16755,8 @@
     "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
     "tools/bazel/rules/test.bzl": "96d07d4d0a44690820128d18c49fc5643bd6b47a6b758d3456bfa90c42f677ce",
     "tools/bazel/testing/BUILD.bazel": "07d3ea2b5f8d5eb65646d8b6ddd2480dfd88440b2288467be5ba66b2c534e6bc",
-    "tools/bazel/toolchains/BUILD.bazel": "938bc6f138b93acafddd2346324677c05fcbac61a7c5b4883c9bf7bfa3ccc04a",
+    "tools/bazel/toolchains/BUILD.bazel": "53b32d7edbd41d1537c11b068ed9d62f702b0059505b691385e948a4c18fe415",
+    "tools/bazel/toolchains/BUILD.cross.bazel": "5617d0599b38dbd4a5355dabf0871903ab27f2fa35f8f0676605eace0905ed71",
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "26b39f8ea8da0fd774baa862caa1937c13c6af0e7bd6f94fb0f0a15e65a60128",
     "tools/bazel/toolchains/empty_cc.bzl": "fc2e979400ecbbc42540859c1a1eb4a9e67e50a79adef5299bda8b0594125404",
     "tools/bazel/toolchains/repositories.bzl": "276eb076b91a0221f95b3b2b6235e837e50eb5d4577512ec12833731b494f98f"
