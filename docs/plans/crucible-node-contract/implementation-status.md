@@ -3275,6 +3275,27 @@ Independent whole-holder funding, genuine Initial/Recipe production, private
 receipt verification and the remaining full RFC obligations remain unfinished.
 No new full-library, configured runtime or VM qualification is claimed here.
 
+## Guarded Controller Bootstrap materialization
+
+Commit `467b346280` retains the materialization attempt and exact row in the
+original Controller owner before fallible checks. Construction moves the same
+assignment and proof into retained DOM and literal banks. Identity, typed inputs,
+original Hello cut and the still-unregistered physical slot are checked after
+either outcome; failed construction preserves initialized outputs.
+
+All 202 affected client, 209 connection and 26 Bootstrap ACK controls pass in
+standard mode. Raw-JSON runs pass seventeen original-cut and two materialization
+row controls. Transport/Engine/Daemon all-feature/all-target checking and all six
+architecture gates pass. The required application gate compiles 180 test
+executables across 58 packages, including 71 integration targets. All 387 owned
+Rust/Cargo inputs match committed `467b346280` and its captured source. That gate
+runs no tests.
+
+Whole Source funding, SDK registration/publication ownership, genuine
+Initial/Recipe production, private receipt verification and the remaining full
+RFC obligations remain unfinished. This checkpoint adds no full-library,
+configured runtime or VM qualification.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
