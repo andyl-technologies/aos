@@ -55,8 +55,8 @@ async fn run_async(
     inputs: &Inputs,
     original: Option<Vec<u8>>,
 ) -> FixtureResult<()> {
-    if inputs.domain != "tenant:scoped-file" || original.is_some() {
-        return Err("scoped file requires its fresh dedicated domain".into());
+    if inputs.domain != "tenant:sealed-consumer" || original.is_none() {
+        return Err("scoped file requires the completed whole-file consumer domain".into());
     }
     let completed = owner.recover().await?;
     owner.resume_recovered(completed).await?;

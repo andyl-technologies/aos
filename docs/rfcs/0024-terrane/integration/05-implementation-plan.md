@@ -12918,9 +12918,9 @@ inode, a real policy advance that refuses disclosure, and an authorized selectio
 from another domain that leaves physical pin policy unchanged. An already
 returned descriptor remains readable through later refusal and physical release.
 The root observer independently compares the returned inode observation with the
-publisher-owned file, its original bytes, ownership and mode. The new domain is
-appended to the existing domain inventory; all preceding project assignments,
-selectors, native library controls and runtime bounds remain unchanged. Strict
+publisher-owned file, its original bytes, ownership and mode. The additional
+selector preserves existing project assignments, native library controls and
+runtime bounds. Strict
 native all-target Clippy, formatting and Python syntax checks pass. Runtime and
 committed-source qualification remain pending. This supplies neither an exposure
 lease nor a mounted FUSE surface or task acceptance.
@@ -12935,3 +12935,14 @@ by passing component cases. Required application-target compilation at
 source files and 184 compiler records across 59 packages. Frozen scoped SDK
 metadata qualification at `da56eb46f2` and its required application build are
 still running.
+
+
+The first scoped native VM passes all 128 native library cases, then refuses
+administrative provisioning before the new runtime case: an additional domain
+exceeds the host helper's fixed 1,024-directory scaffold bound. The fixture now
+reopens the completed warm-consumer domain through genuine recovery and Resume
+before publishing the new scoped file. Its independent observer also requires
+both earlier whole-file inodes and their bytes to remain unchanged. The helper's
+production bound, global domain inventory, project assignments and runtime
+limits remain unchanged. The failed provisioning run is retained; corrected
+committed-source runtime qualification remains pending.

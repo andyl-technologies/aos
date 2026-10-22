@@ -111,7 +111,6 @@ CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-re
 CASES += ["read-through"]
 CASES += ["sealed-consumer"]
 CASES += ["sealed-consumer-cold"]
-CASES += ["scoped-file"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1514,12 +1513,17 @@ def main():
                 "whole-file consumers lack their two actual immutable publisher-owned inodes")
         # This isolated domain has no dependency on the other component cases.
         cold_consumer_helper["run"](sys.modules[__name__], uuid, cold_consumer_originals)
-        scoped_file = actor("scoped-file", "scoped-file", uuid)
+        # Reopen the completed warm domain instead of expanding the global
+        # administrative scaffold beyond its fixed 1,024-directory ceiling.
+        scoped_originals = {path: (path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest())
+                            for path in sealed_files}
+        scoped_file = actor("sealed-consumer", "scoped-file", uuid)
         require("PASS actual signed scoped file returns original sealed inode; changed policy denies disclosure, foreign domain leaves physical policy unchanged, retained descriptor survives release" in scoped_file,
                 "missing actual SDK-authorized native file backing witness")
         scoped_inodes = [line for line in scoped_file.splitlines()
                          if line.startswith("SCOPED_FILE_INODE ")]
-        scoped_files = list((root("scoped-file") / "sealed").glob("*/*"))
+        scoped_files = [path for path in (root("sealed-consumer") / "sealed").glob("*/*")
+                        if path not in scoped_originals]
         require(len(scoped_files) == len(scoped_inodes) == 1,
                 "scoped file lacks one independently observed original inode")
         scoped_path = scoped_files[0]
@@ -1529,6 +1533,9 @@ def main():
                 and scoped_stat.st_uid == scoped_stat.st_gid == 841
                 and scoped_stat.st_nlink == 1 and scoped_stat.st_mode & 0o7777 == 0o400,
                 "scoped backing differs from the original publisher-owned inode")
+        require(all((path.stat().st_ino, hashlib.sha256(path.read_bytes()).hexdigest()) == original
+                    for path, original in scoped_originals.items()),
+                "scoped backing reopen replaced or changed an earlier whole-file inode")
         print("PASS independent observer matches SDK-authorized backing to the original immutable publisher inode", flush=True)
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
