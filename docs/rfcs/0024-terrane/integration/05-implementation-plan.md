@@ -14295,3 +14295,32 @@ The earlier `79b7477a83` application and full native host-cache checks pass in
 184 application records, 5,334 native bound inputs and four actual installed
 Cargo ELFs, with all 128 library cases and 92 fixture selectors. None of these
 checkpoint passes changes the failed owning surface results or trunk acceptance.
+
+Scoped worker Send now has a separate native component fixture and
+`checks.terrane.integration.scoped-worker-channel`. Its administrative fixture
+launcher captures an actual child and pidfd before irreversibly dropping to
+UID 840, groups 844/845, empty capability sets and no-new-privileges. Ordinary
+native inspection, confinement, recovery and acknowledged Resume follow that
+drop. The child runs as UID 848 over original private seqpacket endpoints.
+Only native fixture builds enable the thread identity-transition APIs; the
+deployed roles acquire no launcher or additional privilege.
+
+The fixture creates a genuine signed repository, canonical mapped root and
+durable exposure, and actually publishes its sealed inline body. The public
+worker channel and client exchange the original index and exact scoped file
+through normal guarded preparation, closing Read and serialized owner Send.
+A native-only control then finishes a third grant's genuine authorization,
+holds the actual physical worker and submits actual Drain before actual Send.
+Both submissions must remain pending behind that hold. Only successful durable
+draining followed by permission-denied final Send satisfies the control;
+backpressure, timeout and every other result fail it. The original worker must
+still read its previous file and mapped metadata after channel disconnection,
+and its observed device/inode pairs must match durable original bindings.
+Child exit must leave the physical obligations unchanged.
+
+Formatting, strict Linux all-target Clippy in both feature profiles, Python
+syntax and Nix formatting/evaluation pass. The new check has its own finite
+90-second VM and 30-second actor; existing checks' bounds are unchanged.
+Native execution and mandatory application-target qualification remain pending.
+This is a component join, not the production broker factory, worker sandbox,
+FUSE mount, exposure lifecycle acceptance or a completed trunk task.

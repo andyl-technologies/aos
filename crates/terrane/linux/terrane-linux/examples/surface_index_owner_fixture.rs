@@ -19,6 +19,9 @@ mod repository_fixture;
 #[path = "surface_index_owner_fixture/scoped.rs"]
 mod scoped;
 
+#[path = "surface_index_owner_fixture/scoped_worker.rs"]
+mod scoped_worker;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -44,6 +47,14 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "worker-child" {
+        return scoped_worker::child();
+    }
+    let launched = if mode == "worker-send" {
+        Some(scoped_worker::launch()?)
+    } else {
+        None
+    };
     require_empty_capabilities()?;
     let confinement = std::sync::Arc::new(quota_confinement::install()?);
     eprintln!("SURFACE_STAGE mode={mode} phase=native-inspection");
@@ -82,6 +93,7 @@ fn main() -> Result<()> {
             | "file-closure"
             | "cold-closure"
             | "index-closure"
+            | "worker-send"
     ) {
         return Err("unknown surface-owner selector".into());
     }
@@ -108,6 +120,9 @@ fn main() -> Result<()> {
     eprintln!("SURFACE_STAGE mode={mode} phase=resume");
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
+    if let Some(launched) = launched {
+        return runtime.block_on(scoped_worker::verify(launched, &owner, &inputs));
+    }
     if mode == "cold-closure" {
         return exposure::cold_closure::verify(owner, &runtime, &inputs, policy, confinement);
     }

@@ -4,6 +4,9 @@
 //! exercises the private socket layer; it grants no repository authorization,
 //! exposure lease, production worker sandbox or FUSE mount acceptance.
 
+/// Orders a genuine prepared grant behind an actual durable drain transition.
+pub mod scoped;
+
 use super::{
     BackingRequest, ExposureContext, RequestedBacking, WorkerClient, WorkerIdentity,
     socket::Endpoint,

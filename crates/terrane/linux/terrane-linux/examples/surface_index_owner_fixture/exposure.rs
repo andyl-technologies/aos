@@ -40,7 +40,7 @@ pub(super) mod cold_closure;
 #[path = "exposure/file_closure.rs"]
 pub(super) mod file_closure;
 
-fn limits() -> RootNodeLimits {
+pub(super) fn limits() -> RootNodeLimits {
     RootNodeLimits {
         max_entries: 16,
         max_metadata_bytes: 65536,
@@ -300,7 +300,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     Ok(())
 }
 
-async fn snapshot(inputs: &config::Inputs) -> Result<CacheState> {
+pub(super) async fn snapshot(inputs: &config::Inputs) -> Result<CacheState> {
     CacheState::load(
         &TokioLocalFs,
         &inputs.root.join("state/cache"),
@@ -310,7 +310,7 @@ async fn snapshot(inputs: &config::Inputs) -> Result<CacheState> {
     .ok_or_else(|| "durable exposure snapshot missing".into())
 }
 
-fn now() -> Result<u64> {
+pub(super) fn now() -> Result<u64> {
     Ok(TokioClock.now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 

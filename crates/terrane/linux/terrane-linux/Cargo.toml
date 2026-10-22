@@ -18,7 +18,7 @@ tokio = { workspace = true, optional = true }
 surface-fuse = []
 tokio = ["dep:tokio", "terrane-sdk/tokio"]
 # Native proof executables run in isolated guests, outside deployed role builds.
-native-test-fixtures = ["tokio"]
+native-test-fixtures = ["tokio", "rustix/thread"]
 
 [[example]]
 name = "publication_fixture"
