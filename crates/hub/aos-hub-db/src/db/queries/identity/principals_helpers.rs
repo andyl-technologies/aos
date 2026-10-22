@@ -3,6 +3,36 @@
 use super::*;
 
 impl Database {
+    /// Creates a user address reserved for one provider identity.
+    pub(in crate::db) async fn create_provisional_oidc_user(
+        &self,
+        verifier_id: &str,
+        subject: &str,
+    ) -> Result<i64> {
+        let digest = aos_hub_model::auth::token::sha256_hex(&format!("{verifier_id}\n{subject}"));
+        let email = format!("oidc-{digest}@identity.invalid");
+
+        self.backend
+            .execute_insert(
+                "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)",
+                &vals![email, unix_now()],
+            )
+            .await
+    }
+
+    /// Returns a live user row whose profile address matches `email`.
+    pub(in crate::db) async fn user_by_profile_email(&self, email: &str) -> Result<Option<i64>> {
+        self.backend
+            .query_opt(
+                "SELECT id FROM users WHERE email = ?1 AND deleted_at IS NULL",
+                &vals![email],
+            )
+            .await
+            .context("loading user by profile email")?
+            .map(|row| row.get(0))
+            .transpose()
+    }
+
     /// Inserts a verifier-bound OIDC identity for a user.
     pub(in crate::db) async fn insert_oidc_identity(
         &self,

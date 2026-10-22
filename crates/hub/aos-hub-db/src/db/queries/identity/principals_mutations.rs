@@ -3,7 +3,7 @@
 use super::*;
 
 impl Database {
-    /// Look up a non-deleted user's id by email.
+    /// Looks up the live user who has verified control of an email address.
     ///
     /// Soft-deleted users (those with `deleted_at` set) are not returned.
     ///
@@ -13,7 +13,9 @@ impl Database {
     pub async fn user_by_email(&self, email: &str) -> Result<Option<i64>> {
         self.backend
             .query_opt(
-                "SELECT id FROM users WHERE email = ?1 AND deleted_at IS NULL",
+                "SELECT u.id FROM user_mailboxes mailbox
+                 JOIN users u ON u.id = mailbox.user_id
+                 WHERE mailbox.email = ?1 AND u.deleted_at IS NULL",
                 &vals![email],
             )
             .await
@@ -254,21 +256,17 @@ impl Database {
     /// 2. Otherwise, when `email` is IdP-*verified* and its domain is captured
     ///    by `org_id`, the identity links to the existing user with that email
     ///    ([`IdentityLink::Linked`]).
-    /// 3. Otherwise, when `allow_jit`, a *fresh* user and identity are created
-    ///    ([`IdentityLink::Created`]) — JIT never reconciles onto an existing
-    ///    user by email. If the asserted email already belongs to a user, the
-    ///    login is refused (the only safe email→user link is step 2's verified
-    ///    captured-domain path); a self-hosted IdP could otherwise assert a
-    ///    victim's address and graft onto their account.
+    /// 3. Otherwise, when `allow_jit`, a fresh user and identity are created
+    ///    ([`IdentityLink::Created`]). A verified address under a captured
+    ///    domain becomes that user's mailbox. Every other address remains
+    ///    provider profile metadata and the user receives an internal address.
     ///
     /// Returns `Ok(None)` when no identity exists, no auto-link applies, and
     /// `allow_jit` is false — the caller rejects the login.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure, or when `allow_jit` JIT would
-    /// collide onto a pre-existing account by email (see step 3) — the caller
-    /// maps the error to a denied login.
+    /// Returns an error on database failure.
     pub async fn link_or_create_identity(
         &self,
         verifier_id: &str,
@@ -304,54 +302,44 @@ impl Database {
             }
         }
         // 2. Auto-link a verified email on a captured domain to an existing user.
-        if email_verified {
-            if let Some(addr) = email {
-                let domain = addr.rsplit_once('@').map(|(_, d)| d.to_lowercase());
-                let captured = match &domain {
-                    Some(d) => self.org_for_domain(d).await? == Some(org_id),
-                    None => false,
-                };
-                if captured {
-                    if let Some(user_id) = self.user_by_email(addr).await? {
-                        self.insert_oidc_identity(
-                            verifier_id,
-                            issuer,
-                            subject,
-                            user_id,
-                            email,
-                            now,
-                        )
-                        .await?;
-                        return Ok(Some(IdentityLink::Linked(user_id)));
+        let captured_email = if email_verified {
+            match email {
+                Some(address) => {
+                    let domain = address
+                        .rsplit_once('@')
+                        .map(|(_, value)| value.to_lowercase());
+                    match domain {
+                        Some(domain) if self.org_for_domain(&domain).await? == Some(org_id) => {
+                            Some(address)
+                        }
+                        _ => None,
                     }
                 }
+                None => None,
+            }
+        } else {
+            None
+        };
+        if let Some(address) = captured_email {
+            if let Some(user_id) = self.user_by_email(address).await? {
+                self.insert_oidc_identity(verifier_id, issuer, subject, user_id, email, now)
+                    .await?;
+                return Ok(Some(IdentityLink::Linked(user_id)));
             }
         }
         // 3. JIT-provision a brand-new user + identity.
         if !allow_jit {
             return Ok(None);
         }
-        // A user needs an email (the users table requires a unique address);
-        // synthesize a stable, non-colliding pseudo-address from the identity
-        // when the IdP supplies none, so JIT never fails for a bare profile.
-        let user_email = match email {
-            Some(addr) => addr.to_string(),
-            None => format!("{subject}@{}", issuer_host(issuer)),
+        // A captured provider may establish a new mailbox owner. Other claims
+        // remain profile metadata and receive an internal, non-routable user
+        // address so later mailbox proof creates an independent account.
+        let user_id = if let Some(address) = captured_email {
+            self.create_user(address, None).await?
+        } else {
+            self.create_provisional_oidc_user(verifier_id, subject)
+                .await?
         };
-        // JIT must *create* a user — never reconcile onto an existing one by
-        // email. A self-hosted IdP can assert any address, so grafting a new
-        // `(iss, sub)` onto a pre-existing account by matching email is an
-        // account-takeover primitive: the safe email→user link is step 2's
-        // verified-domain path alone. If the asserted email already belongs to
-        // a user, refuse — the account holder must capture and verify the
-        // domain to link the IdP, not have JIT silently adopt it.
-        if self.user_by_email(&user_email).await?.is_some() {
-            bail!(
-                "an account with this email already exists and cannot be \
-                 just-in-time linked; verify the email's domain to link it"
-            );
-        }
-        let user_id = self.create_user(&user_email, None).await?;
         self.insert_oidc_identity(verifier_id, issuer, subject, user_id, email, now)
             .await?;
         Ok(Some(IdentityLink::Created(user_id)))
@@ -396,12 +384,25 @@ impl Database {
     /// Returns an error on database failure, including a unique-constraint
     /// violation when `email` is already registered.
     pub async fn create_user(&self, email: &str, display_name: Option<&str>) -> Result<i64> {
+        let user_id = portable_relational_id(uuid::Uuid::new_v4());
+        let now = unix_now();
         self.backend
-            .execute_insert(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![email, display_name, unix_now()],
-            )
-            .await
+            .checked_batch(&[
+                Statement::new(
+                    "INSERT INTO users (id, email, display_name, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    vals![user_id, email, display_name, now],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO user_mailboxes (email, user_id, verified_at)
+                     VALUES (?1, ?2, ?3)",
+                    vals![email, user_id, now],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        Ok(user_id)
     }
 
     /// Soft-delete a user, failing if they are the sole owner of any org.
