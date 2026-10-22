@@ -83,4 +83,4 @@ pub(crate) use retention::{
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};
 #[cfg(feature = "surface-fuse")]
-pub use surface_index::NativeSurfaceIndex;
+pub use surface_index::{NativeRootIndex, NativeSurfaceIndex};

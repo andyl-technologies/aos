@@ -13550,3 +13550,27 @@ admission, closing-policy denial and foreign-domain refusal pass alongside all
 original admission, recovery, quota and retirement witnesses. This VM does not
 execute the base image's 128-case library inventory. The owning root proof and
 mandatory application-target compilation remain pending at that checkpoint.
+
+
+Frozen qualification at `a219fbd89a` passes all 22 structural and eight inode
+cases in 101.62 seconds. The sealed-mapping ext4 VM passes in 155.96 seconds.
+Independent reviews match all 8,009 immutable source files, 5,290 bound inputs
+and each actual retained Cargo ELF, including the measured zero-allocation
+first-touch witness in the real UID 840/capability-free guest. Required
+application-target compilation remains pending for that checkpoint.
+
+Signed-root preparation now also maps the admitted original descriptor privately
+before its complete SDK Read finishes. The opaque returned root mapping retains
+the selected signed commit and original cache receipt. It exposes only borrowed
+checked metadata and prevents warm retirement until the mapping is dropped.
+No pathname reopen, raw descriptor, durable exposure lease or enduring Read is
+granted. The actual signed native fixture checks original signed file metadata,
+changed-policy denial before returning a mapping, foreign-domain refusal and
+mapping-only retention after the separate admission receipt is dropped.
+Qualification for this increment remains pending.
+
+
+Strict all-feature Linux all-target Clippy, formatting, Python syntax and the
+complete native source inventory pass locally for the signed mapping bridge.
+The native VM now requires its new witness explicitly; source compilation is
+not substituted for runtime admission and mapping qualification.

@@ -15,6 +15,8 @@ pub(super) mod eviction;
 pub(super) mod recovery;
 mod scoped;
 
+pub use scoped::NativeRootIndex;
+
 use super::{
     consumer::state,
     index_io::close_checked,

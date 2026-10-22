@@ -36,8 +36,6 @@ pub use manifest_source::NativeManifestSource;
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "native-test-fixtures")]
 pub use owner::NativePolicyStall;
-#[cfg(all(feature = "tokio", feature = "surface-fuse"))]
-pub use owner::NativeSurfaceIndex;
 #[cfg(feature = "tokio")]
 pub use owner::SurfaceIndexPolicy;
 #[cfg(feature = "tokio")]
@@ -61,6 +59,8 @@ pub use owner::{
     NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource, NativeResumeError,
     NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport, RetainedManifest,
 };
+#[cfg(all(feature = "tokio", feature = "surface-fuse"))]
+pub use owner::{NativeRootIndex, NativeSurfaceIndex};
 pub use quota::ProjectQuota;
 #[cfg(feature = "tokio")]
 pub use ready::NativeReady;

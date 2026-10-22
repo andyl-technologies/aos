@@ -4,9 +4,10 @@ use super::{
     Result, config,
     repository_fixture::{MAIN, RepositoryFixture},
 };
-use std::fs;
+use std::{fs, io};
 use terrane_format::surface::ViewTarget;
 use terrane_linux::host_cache::NativeMetadataOwner;
+use terrane_linux::structural_index::Kind;
 use terrane_sdk::{
     repository::{Error, RootNodeLimits},
     store::StoreErrorKind,
@@ -29,6 +30,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let root = selection.metadata().root();
+    let commit = selection.metadata().commit();
 
     let admitted = owner.prepare_surface_index(selection).await?;
     admitted.check_native_backing()?;
@@ -40,15 +42,55 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    let mapped = owner.prepare_surface_mapping(selection).await?;
+    mapped.check_native_backing()?;
+    if mapped.commit() != commit
+        || mapped.key() != admitted.key()
+        || mapped.index().root_hash() != root
+    {
+        return Err("mapped index differs from original signed commit and admitted key".into());
+    }
+    let entry = mapped
+        .index()
+        .lookup(b"file")
+        .ok_or("signed mapped file absent")?;
+    if !matches!(entry.kind(), Kind::File { size, .. } if size == b"signed surface source".len() as u64)
+    {
+        return Err("mapped index lost actual signed file metadata".into());
+    }
+
+    let selection = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
+    let mapping_selection = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
     fixture.commit(b"actual later policy head").await?;
     if !matches!(owner.prepare_surface_index(selection).await,
         Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. }))
     {
         return Err("surface index escaped a changed actual policy head".into());
     }
+    if !matches!(owner.prepare_surface_mapping(mapping_selection).await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. }))
+    {
+        return Err("mapped index escaped a changed actual policy head".into());
+    }
     admitted.check_native_backing()?;
     let first_key = admitted.key();
     drop(admitted);
+    let policy = inputs.root.join("state/cache/records.toml");
+    let before = fs::read(&policy)?;
+    if !matches!(owner.evict_surface_index(first_key).await,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        || fs::read(&policy)? != before
+        || mapped.index().lookup(b"file").is_none()
+    {
+        return Err("live mapped root failed to retain original cache receipt".into());
+    }
+    drop(mapped);
     if !owner.evict_surface_index(first_key).await? {
         return Err("signed original index absent from actual cache".into());
     }
@@ -58,7 +100,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
-    let latest = owner.prepare_surface_index(selection).await?;
+    let latest = owner.prepare_surface_mapping(selection).await?;
     let latest_key = latest.key();
     drop(latest);
     if !owner.evict_surface_index(latest_key).await? {
@@ -71,13 +113,15 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, foreign.authority.token(), "sdk", limits())
         .await?;
-    let policy = inputs.root.join("state/cache/records.toml");
     let before = fs::read(&policy)?;
-    if owner.prepare_surface_index(selection).await.is_ok() || fs::read(policy)? != before {
+    if owner.prepare_surface_mapping(selection).await.is_ok() || fs::read(policy)? != before {
         return Err("foreign signed root changed original physical cache policy".into());
     }
     println!(
         "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation"
+    );
+    println!(
+        "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop"
     );
     Ok(())
 }

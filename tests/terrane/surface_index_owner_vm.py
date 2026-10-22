@@ -126,6 +126,7 @@ def main():
                 "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge",
                 "PASS warm surface eviction refuses retained receipts without effects and releases exact mapped charge only after final unmap",
                 "PASS actual signed root admits canonical index; changed policy denies disclosure and foreign domain causes no physical mutation",
+                "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop",
             ],
             "cap": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
