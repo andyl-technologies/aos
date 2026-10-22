@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 416 committed bindings: 397 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 417 committed bindings: 398 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -414,6 +414,19 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Complete lazy resource-refusal diagnostics
+
+Fault-result allocation, fault-event record and scenario-resource errors retained
+numeric coordinates but their runtime Display fell through to the empty authored
+message. Display now renders those retained fields only when requested, including
+the independent Original post. An explicitly authored message keeps precedence.
+The error representation, coordinates, ownership and operation behavior are
+unchanged. A fixed stack-output control checks all three diagnostics before and
+after a post refusal without allocating during formatting. Focused compilation,
+application compilation and exact supervision remain pending. All three focused
+runtime-error controls and content-bound engineering hygiene pass.
+This does not supply complete stderr or output-buffer funding.
+
 #### Compact typed parent-Park QMP context
 
 The two existing parent-Park adapter refusal sites retain their context in a
@@ -422,8 +435,15 @@ the existing diagnostic text. The initiating typed cause and independent post
 remain available through the original error chain, without boxing, discarded
 coordinates or a lint waiver. The focused allocation/error-chain control passes
 for both actual contexts and verifies that inline QMP errors stay below 128 bytes.
-All 137 QMP unit controls and host target compilation pass. Application,
-engineering-hygiene, exact-supervision and canonical license checks remain pending. This representation change supplies no new operation or custody.
+All 137 QMP unit controls and host target compilation pass. Engineering hygiene
+passes after refreshing the content-bound review for the unchanged transport
+implementation and its error re-export; the initial stale-digest failure is
+retained. Mandatory application compilation passes at
+`0czsv04w1aqgbq7h13f81kxfxj31sjbc`; all 5,300 committed Rust/TOML inputs at
+`f4bb9a10f6c67f7412f2ef269a34b2d5190f64fb` match immutable source
+`xj9vcv8alwpwvh20im90zp3dyvp798xs`. The comparison record has SHA-256
+`052934c30fdce24d93e6540bc904dda73cf85ada9e9387091f58caeb2bc2a664`.
+Exact-supervision and canonical license checks remain pending. This representation change supplies no new operation or custody.
 
 #### Borrowed fixed marker refusal diagnostics
 

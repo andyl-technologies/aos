@@ -66,6 +66,35 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
             {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
+            QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(requested, configured)
+                if self.message.is_empty() =>
+            {
+                write!(
+                    formatter,
+                    "{} failed: cannot reserve {requested} QEMU fault-result bytes against limit {configured}",
+                    self.operation,
+                )
+            }
+            QemuAsyncDriverRuntimeErrorDetail::FaultEventStorage(
+                current,
+                requested,
+                configured,
+            ) if self.message.is_empty() => write!(
+                formatter,
+                "{} failed: cannot stage {requested} QEMU fault event records at current {current} against limit {configured}",
+                self.operation,
+            ),
+            QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
+                field,
+                current,
+                requested,
+                configured,
+                hard,
+            ) if self.message.is_empty() => write!(
+                formatter,
+                "{} failed: cannot reserve {requested} units of `{field}` at current {current}; configured {configured}, hard {hard}",
+                self.operation,
+            ),
             _ => write!(formatter, "{} failed: {}", self.operation, self.message),
         }?;
         if let Some(post) = self.supervision_post {
@@ -589,6 +618,90 @@ mod tests {
             Some(&source),
         );
         Ok(())
+    }
+
+    struct DiagnosticBuffer {
+        bytes: [u8; 512],
+        length: usize,
+    }
+
+    impl std::fmt::Write for DiagnosticBuffer {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let end = self.length.checked_add(text.len()).ok_or(std::fmt::Error)?;
+            self.bytes
+                .get_mut(self.length..end)
+                .ok_or(std::fmt::Error)?
+                .copy_from_slice(text.as_bytes());
+            self.length = end;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn resource_refusals_render_saved_coordinates_without_allocating() {
+        use std::fmt::Write as _;
+        use crucible_host_resources::host_supervision::HostSupervisionError;
+
+        for (mut error, expected) in [
+            (
+                QemuAsyncDriverRuntimeError::fault_result_storage(5, 7),
+                "reserve fault preparation result failed: cannot reserve 5 QEMU fault-result bytes against limit 7",
+            ),
+            (
+                QemuAsyncDriverRuntimeError::fault_event_storage(3, 5, 7),
+                "stage fault occurrence event failed: cannot stage 5 QEMU fault event records at current 3 against limit 7",
+            ),
+            (
+                QemuAsyncDriverRuntimeError::resource_limit("storage_request_bytes", 3, 5, 7, 11),
+                "reserve host I/O resource failed: cannot reserve 5 units of `storage_request_bytes` at current 3; configured 7, hard 11",
+            ),
+        ] {
+            let mut diagnostic = DiagnosticBuffer {
+                bytes: [0; 512],
+                length: 0,
+            };
+
+            let (result, counts) =
+                TestAllocationObserver::count(|| write!(&mut diagnostic, "{error}"));
+
+            result.unwrap();
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert_eq!(&diagnostic.bytes[..diagnostic.length], expected.as_bytes());
+            assert!(error.message().is_empty());
+
+            let detail = error.detail.clone();
+            error = error.with_operational_supervision_post(HostSupervisionError::InvalidBudget);
+            let expected_with_post = format!(
+                "{expected}; independent host operation postcheck failed: invalid host operation budget"
+            );
+            diagnostic.length = 0;
+
+            let (result, counts) =
+                TestAllocationObserver::count(|| write!(&mut diagnostic, "{error}"));
+
+            result.unwrap();
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert_eq!(
+                &diagnostic.bytes[..diagnostic.length],
+                expected_with_post.as_bytes()
+            );
+            assert_eq!(error.detail, detail);
+            assert_eq!(
+                error.operational_supervision_post(),
+                Some(HostSupervisionError::InvalidBudget)
+            );
+
+            error.message = Cow::Borrowed("authored backend detail");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{} failed: authored backend detail; independent host operation postcheck failed: invalid host operation budget",
+                    error.operation
+                )
+            );
+        }
     }
 
     #[test]
