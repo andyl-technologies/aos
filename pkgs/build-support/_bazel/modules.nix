@@ -4,6 +4,7 @@
   lib,
 }: let
   inventory = builtins.fromJSON (builtins.readFile ../../../third_party/bazel/modules.json);
+  manifestExtractor = import ./rust-helper.nix {pkgs = pkgs.buildPackages;};
   prepare = name: entry: let
     source = entry.source;
     archive = pkgs.fetchurl {
@@ -108,6 +109,18 @@
                   raise ValueError("rules_rust analyzer build metadata patch no longer applies")
               analyzer.write_text(source.replace(original, replacement))
               PY
+              # Compile the unchanged upstream helper once in Nix, rather
+              # than rebuilding its dependency graph in every empty Bazel
+              # output base. This remains an explicit executable action input.
+              helper=cargo/private/cargo_toml_variable_extractor
+              cat > "$helper/BUILD.bazel" <<'BUILD'
+              exports_files(["cargo_toml_variable_extractor"], visibility = ["//visibility:public"])
+              BUILD
+              cat > "$helper/cargo_toml_variable_extractor" <<'HELPER'
+              #!${pkgs.bash}/bin/bash
+              exec ${manifestExtractor}/bin/cargo_toml_variable_extractor "$@"
+              HELPER
+              chmod +x "$helper/cargo_toml_variable_extractor"
             ''}
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/source_only.py} "$out"
           '';

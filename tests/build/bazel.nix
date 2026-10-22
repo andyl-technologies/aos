@@ -35,6 +35,7 @@ in
   rec {
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
+    manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
@@ -268,7 +269,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
           ];

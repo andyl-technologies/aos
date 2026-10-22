@@ -12,7 +12,13 @@ roots, with no cache service. Accache remains available for non-Bazel builds.
 The root workspace uses Bzlmod with Bazel 9.2.0, rules_rust 0.71.2, and
 rules_cc 0.2.17. Nix fetches the hashed source inventory under
 `third_party/bazel/`, applies the registry patches, and removes bundled
-compiled tools. Rust helpers used by the rules compile from source too.
+compiled tools. Rust helpers used by the rules compile from source too. Nix
+builds the unchanged upstream Cargo-manifest environment extractor once from
+the same pinned rules archive and source dependencies. The rules receive it
+as an explicit executable input, avoiding its repeated dependency compilation
+in empty Bazel output bases. Its standalone, workspace-inheritance and empty
+manifest fixtures match the environment supplied by upstream Cargo;
+`checks.build.bazel.manifest-extractor` checks that boundary.
 The native Linux adapter supplies AOS Rust, GCC, binutils, libc, and GCC
 runtime libraries. Other platform adapters remain to be qualified.
 
@@ -134,6 +140,11 @@ with the source-built developer tools and WASM adapter present. Cross-derivation
 reuse, overlapping concurrent builds, and all nine existing invalidation cases
 pass against the updated compiler closure. These are correctness experiments;
 their individual timings do not replace repeated family performance baselines.
+
+`tests/evidence/native-linux-prebuilt-manifest-extractor.json` retains the
+passing combined suite, device/editor parity, upstream helper fixtures,
+cross-derivation reuse, concurrent use and nine invalidation cases with the
+Nix-built helper. This qualification does not establish a speedup.
 
 ## Updating rule dependencies
 
