@@ -2866,6 +2866,45 @@ Actual request correlation/assignment, complete proof verification, genuine
 enclosing Source/Birth funding, opaque Initial/Recipe, bootstrap dispatch and
 publication, all later native phases and full RFC acceptance remain unfinished.
 
+## Original bootstrap SDK correlation qualification
+
+Commit `192ad35873` retains the first actual typed bootstrap request in an SDK
+`CorrelationGuard` constructed from the same admitted original connection.
+Negotiated IDs and declared extension keys are borrowed from that SDK before
+cloning. The guard reserves the actual Envelope once under the original
+normalization, Host-plan, literal, strict-Value and typed-decoder guards.
+
+Both attempt occurrences are spent before guards. Construction and receive
+outcomes receive actual retained-state observation and terminal authority checks.
+Refusal fences the guard while preserving every accepted request record; a fresh
+external attempt cannot retry the spent original occurrence. This is transport
+correlation DATA: proof MAC acceptance, opaque Source funding, native phase
+permission and bootstrap ACK publication remain separate implementation work.
+
+The independent Source/native initial formulas include the complete correlation
+row. Its tree quote uses the ordinary census's largest `(Id, Envelope)` layout
+for all eight trees, including nested body/proof maps and the actual declared
+extension-key set. No policy cap, original deadline or later phase partition was
+increased.
+
+Qualification of that exact commit completed with:
+
+- 1,975 transport unit tests passed in each of the standard and `raw_value`
+  configurations; 16 intentional ignores in each configuration.
+- The correlation control covers 18 independent inherited-channel flights,
+  including admission refusal, expiry and revocation at construction and receive
+  boundaries, missing typed input, changed cut and guarded-loan refusal.
+- Independent initial construction, retained-lifetime arithmetic, exact-peak,
+  short-credit, actual tree-census and concrete Copy-result checks passed.
+- Transport, engine and daemon all-feature/all-target compilation passed.
+- All six phase-1 architecture checks and owned-source formatting passed.
+- The required application-target gate compiled 180 test executables from 58
+  packages, including 71 integration targets.
+- All 330 tracked Rust/Cargo inputs matched both the committed bytes and the
+  application gate's captured Nix source.
+
+No new VM or configured engine/daemon runtime qualification is claimed here.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
