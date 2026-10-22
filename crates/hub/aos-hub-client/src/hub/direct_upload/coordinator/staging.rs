@@ -9,9 +9,9 @@ use std::future::Future;
 use aos_transfer::direct_upload::DirectClientError;
 use futures_util::future::join_all;
 
-// Each batch also fans out within Native. Leave foreground-window headroom
-// for those nested operations while allowing independent metadata to overlap.
-pub(super) const MAX_PARALLEL_BATCHES: usize = 2;
+// Small advertised control batches still share one admitted descriptor wave
+// and the coordinator's global provider limits across independent metadata.
+pub(super) const MAX_PARALLEL_BATCHES: usize = 8;
 
 /// Finishes every dispatched neighbor before reporting a failed batch.
 ///

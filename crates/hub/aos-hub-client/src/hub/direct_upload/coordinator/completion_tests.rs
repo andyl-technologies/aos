@@ -175,8 +175,16 @@ fn reply(
     stream.write_all(&bytes).unwrap();
 }
 
-#[tokio::test]
-async fn reopened_content_barrier_skips_confirmed_completions_and_preserves_visibility() {
+struct Fixture {
+    directory: std::path::PathBuf,
+    checkpoint: std::path::PathBuf,
+    listener: TcpListener,
+    hub: HubClient,
+    profile: DirectProviderProfile,
+    capabilities: DirectUploadCapabilities,
+}
+
+fn fixture() -> Fixture {
     let directory =
         std::env::temp_dir().join(format!("aos-content-barrier-{}", rand::random::<u64>()));
     std::fs::create_dir(&directory).unwrap();
@@ -219,6 +227,27 @@ async fn reopened_content_barrier_skips_confirmed_completions_and_preserves_visi
         maximum_part_bytes: WireInteger::new(MAX_DIRECT_PART_BYTES),
         profiles: vec![profile.clone()],
     };
+
+    Fixture {
+        directory,
+        checkpoint,
+        listener,
+        hub,
+        profile,
+        capabilities,
+    }
+}
+
+#[tokio::test]
+async fn reopened_content_barrier_skips_confirmed_completions_and_preserves_visibility() {
+    let Fixture {
+        directory,
+        checkpoint,
+        listener,
+        hub,
+        profile,
+        capabilities,
+    } = fixture();
 
     let first = DirectUploadCoordinator::open(
         &hub,
@@ -325,5 +354,152 @@ async fn reopened_content_barrier_skips_confirmed_completions_and_preserves_visi
     assert_eq!(captured[6].items, vec![content_original]);
     assert_eq!(captured[7].items, vec![pending_original]);
     drop(normal);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn metadata_completion_pages_overlap_and_preserve_every_original() {
+    let Fixture {
+        directory,
+        checkpoint,
+        listener,
+        hub,
+        profile,
+        capabilities,
+    } = fixture();
+    let coordinator =
+        DirectUploadCoordinator::open(&hub, capabilities, &checkpoint, ProviderOptions::default())
+            .await
+            .unwrap();
+    let mut originals = Vec::new();
+    for index in 0..9 {
+        originals.push(
+            retain_completion(
+                &coordinator,
+                &profile,
+                &format!("metadata-{index}"),
+                index + 1,
+                &format!("web/packages/{index}.json"),
+                DirectDependencyPhase::Visibility,
+            )
+            .await,
+        );
+    }
+    let worker = std::thread::spawn(move || {
+        let mut seen = std::collections::BTreeSet::new();
+        // No first response is sent until every page in this bounded group has
+        // arrived over a real HTTP connection.
+        for count in [8, 1] {
+            let requests: Vec<_> = (0..count).map(|_| request(&listener)).collect();
+            for (mut stream, batch) in requests {
+                assert_eq!(batch.items.len(), 1);
+                let original = originals
+                    .iter()
+                    .find(|(item, _)| item.session == batch.items[0].session)
+                    .unwrap();
+                assert_eq!(batch.items[0], original.0);
+                assert!(seen.insert(original.0.session.session_id.clone()));
+                reply(
+                    &mut stream,
+                    &batch,
+                    DirectSessionStatus {
+                        state: DirectSessionState::Committed,
+                        resource_version: WireInteger::new(2),
+                        ..original.1.clone()
+                    },
+                );
+            }
+        }
+        assert_eq!(seen.len(), 9);
+    });
+    coordinator.finish(Duration::from_secs(10)).await.unwrap();
+    worker.join().unwrap();
+    drop(coordinator);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test]
+async fn failed_metadata_completion_drains_neighbors_before_returning_or_dispatching_more() {
+    let Fixture {
+        directory,
+        checkpoint,
+        listener,
+        hub,
+        profile,
+        capabilities,
+    } = fixture();
+    let coordinator =
+        DirectUploadCoordinator::open(&hub, capabilities, &checkpoint, ProviderOptions::default())
+            .await
+            .unwrap();
+    let mut originals = Vec::new();
+    for index in 0..9 {
+        originals.push(
+            retain_completion(
+                &coordinator,
+                &profile,
+                &format!("metadata-{index}"),
+                index + 1,
+                &format!("web/packages/{index}.json"),
+                DirectDependencyPhase::Visibility,
+            )
+            .await,
+        );
+    }
+    let (refused, refusal) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let mut requests: Vec<_> = (0..8).map(|_| request(&listener)).collect();
+        let (mut stream, batch) = requests.remove(0);
+        let body = encode_direct_control(&DirectUploadResponse {
+            operation_id: batch.operation_id,
+            sessions: Vec::new(),
+            grants: Vec::new(),
+            errors: vec![DirectItemError {
+                item_id: batch.items[0].operation_id.clone(),
+                code: DirectItemErrorCode::BlockedUnknown,
+            }],
+        })
+        .unwrap();
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        stream.write_all(&body).unwrap();
+        refused.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(5)).unwrap();
+        for (mut stream, batch) in requests {
+            let original = originals
+                .iter()
+                .find(|(item, _)| item.session == batch.items[0].session)
+                .unwrap();
+            assert_eq!(batch.items[0], original.0);
+            reply(
+                &mut stream,
+                &batch,
+                DirectSessionStatus {
+                    state: DirectSessionState::Committed,
+                    resource_version: WireInteger::new(2),
+                    ..original.1.clone()
+                },
+            );
+        }
+        listener
+    });
+    let mut work = tokio::spawn(async move {
+        let result = coordinator.finish(Duration::from_secs(10)).await;
+        (coordinator, result)
+    });
+    refusal.await.unwrap();
+    tokio::select! {
+        _ = &mut work => panic!("a refusal must not cancel dispatched neighbors"),
+        _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+    }
+    release.send(()).unwrap();
+    let (coordinator, result) = work.await.unwrap();
+    assert_eq!(result, Err(DirectClientError::Blocked));
+    let listener = worker.join().unwrap();
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    drop(coordinator);
     std::fs::remove_dir_all(directory).unwrap();
 }
