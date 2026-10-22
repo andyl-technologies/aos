@@ -72,9 +72,10 @@
     relative = lib.removePrefix "${rootString}/" absolute;
     base = baseNameOf path;
     excluded =
-      builtins.elem base [".git" ".worktrees" ".claude" ".direnv" "__pycache__" ".pytest_cache" "target" "node_modules" "result"]
+      builtins.elem base [".git" ".worktrees" ".claude" ".direnv" "__pycache__" ".pytest_cache" "target" "node_modules"]
       || lib.hasPrefix "bazel-" base
-      || lib.hasPrefix "result-" base;
+      # Nested result modules are source; Nix output links live at the root.
+      || (dirOf absolute == rootString && (base == "result" || lib.hasPrefix "result-" base));
     selected = builtins.any (input:
       relative == input || lib.hasPrefix "${input}/" relative || lib.hasPrefix "${relative}/" input)
     paths;
