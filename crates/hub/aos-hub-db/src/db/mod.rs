@@ -5,7 +5,7 @@
 //!
 //! - **System of record** — `registries`, `channel_floors`, the
 //!   phase-2a tenancy tables `orgs`, `projects`, `users`,
-//!   `user_identities`, `service_accounts`, `memberships`, and
+//!   `user_mailboxes`, `user_identities`, `service_accounts`, `memberships`, and
 //!   `invitations`, the phase-2b authentication tables `tokens`,
 //!   `sessions`, `device_codes`, and `magic_links`, and the phase-2c
 //!   `bindings` and topology-placement tables that bind a surface to
@@ -536,6 +536,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
 /// | 9 | `migration-0009-oidc-verifier-identities.sql` | OIDC identities and flows bound to verifier configuration. |
+/// | 10 | `migration-0010-user-mailboxes.sql` | Verified mailbox ownership independent from provider profiles. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -546,6 +547,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
     include_str!("migration-0009-oidc-verifier-identities.sql"),
+    include_str!("migration-0010-user-mailboxes.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -1207,15 +1209,6 @@ fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
         incarnation_id: row.get(14)?,
         mutation_plan_id: row.get(15)?,
     })
-}
-
-/// The host portion of an issuer URL, for synthesizing a JIT pseudo-email
-/// when the IdP supplies no address. Falls back to the raw issuer string.
-fn issuer_host(issuer: &str) -> String {
-    url::Url::parse(issuer)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_else(|| issuer.replace(['/', ':'], "."))
 }
 
 /// The `change_requests` columns, in the order [`row_to_changeset`] reads.

@@ -91,7 +91,7 @@ struct IdpState {
     /// token; the nonce is taken from the authorize redirect.
     sub: Arc<Mutex<String>>,
     email: Arc<Mutex<Option<String>>>,
-    email_verified: Arc<Mutex<bool>>,
+    email_verified: Arc<Mutex<Option<bool>>>,
     groups: Arc<Mutex<Vec<String>>>,
     aud_override: Arc<Mutex<Option<String>>>,
     iss_override: Arc<Mutex<Option<String>>>,
@@ -106,7 +106,7 @@ impl IdpState {
             issuer: issuer.to_string(),
             sub: Arc::new(Mutex::new("idp-subject-1".into())),
             email: Arc::new(Mutex::new(Some("alice@acme.com".into()))),
-            email_verified: Arc::new(Mutex::new(true)),
+            email_verified: Arc::new(Mutex::new(Some(true))),
             groups: Arc::new(Mutex::new(Vec::new())),
             aud_override: Arc::new(Mutex::new(None)),
             iss_override: Arc::new(Mutex::new(None)),
@@ -152,7 +152,7 @@ async fn token(State(idp): State<IdpState>) -> Response {
         iat: now,
         nonce: idp.last_nonce.lock().unwrap().clone(),
         email: idp.email.lock().unwrap().clone(),
-        email_verified: Some(*idp.email_verified.lock().unwrap()),
+        email_verified: *idp.email_verified.lock().unwrap(),
         groups: idp.groups.lock().unwrap().clone(),
     };
     let mut header = Header::new(Algorithm::RS256);
@@ -697,53 +697,81 @@ async fn identity_link_existing_then_link_paths() {
 }
 
 #[tokio::test]
-async fn jit_refuses_to_graft_onto_existing_account_by_email() {
-    // A self-hosted IdP asserting an existing address must not make a new
-    // identity resolve to the account that already owns that address.
+async fn provider_profile_does_not_replace_an_existing_mailbox_owner() {
     let db = Database::open_in_memory().await.unwrap();
-    let attacker_org = db.create_org("attacker", "Attacker Inc").await.unwrap();
+    let org_id = db.create_org("external", "External").await.unwrap();
 
-    // Victim user already exists (e.g. created via a different org's SSO).
-    let victim = db.create_user("ceo@othercorp.com", None).await.unwrap();
+    let mailbox_owner = db.create_user("owner@othercorp.com", None).await.unwrap();
 
-    let denied = db
+    let link = db
         .link_or_create_identity(
             TEST_VERIFIER_ID,
-            "https://attacker-idp",
-            "sub-attacker",
-            Some("ceo@othercorp.com"),
-            // Even a *claimed*-verified email must not link: the attacker controls
-            // the IdP and the email_verified flag, and never captured othercorp.com.
+            "https://external-idp",
+            "external-subject",
+            Some("owner@othercorp.com"),
             true,
-            attacker_org,
-            true, // allow_jit on
+            org_id,
+            true,
         )
-        .await;
+        .await
+        .unwrap()
+        .unwrap();
+    let provider_user = link.user_id();
 
-    assert!(
-        denied.is_err(),
-        "JIT must refuse to link an asserted email belonging to another user"
-    );
-    // No identity row was grafted onto the victim, and the victim's id was not
-    // returned — no session could have been minted as them.
+    assert_ne!(provider_user, mailbox_owner);
     assert_eq!(
-        db.identity_user(TEST_VERIFIER_ID, "sub-attacker")
+        db.identity_user(TEST_VERIFIER_ID, "external-subject")
             .await
             .unwrap(),
-        None,
-        "a denied JIT must not create a verifier-subject identity row"
+        Some(provider_user)
     );
-    // The victim's account is untouched and still resolves only by its email.
     assert_eq!(
-        db.user_by_email("ceo@othercorp.com").await.unwrap(),
-        Some(victim)
+        db.user_by_email("owner@othercorp.com").await.unwrap(),
+        Some(mailbox_owner)
     );
+    db.set_user_password(provider_user, "profile-hash")
+        .await
+        .unwrap();
+    assert_eq!(
+        db.user_for_password("owner@othercorp.com").await.unwrap(),
+        None
+    );
+
+    let org = db.org_by_id(org_id).await.unwrap().unwrap();
+    db.create_invitation(
+        org_id,
+        "owner@othercorp.com",
+        &org.stable_id,
+        "viewer",
+        "mailbox-invitation",
+        i64::MAX,
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .accept_invitation(
+            "mailbox-invitation",
+            org_id,
+            provider_user,
+            "owner@othercorp.com",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(db
+        .accept_invitation(
+            "mailbox-invitation",
+            org_id,
+            mailbox_owner,
+            "owner@othercorp.com",
+        )
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
-async fn jit_provisions_a_fresh_user_for_a_new_email() {
-    // Regression: a genuinely new SSO user (no pre-existing account) still
-    // provisions a fresh user + identity when allow_jit is on.
+async fn unverified_email_remains_profile_metadata() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
 
@@ -754,7 +782,7 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
             "https://idp",
             "sub-dana",
             Some("dana@newcomer.com"),
-            true,
+            false,
             org_id,
             true,
         )
@@ -765,17 +793,66 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
         IdentityLink::Created(id) => id,
         other => panic!("expected a freshly created user, got {other:?}"),
     };
-    // The fresh user and its verifier-subject identity both exist.
-    assert_eq!(
-        db.user_by_email("dana@newcomer.com").await.unwrap(),
-        Some(new_user)
-    );
+    // The provider profile exists without claiming the supplied mailbox.
+    assert_eq!(db.user_by_email("dana@newcomer.com").await.unwrap(), None);
     assert_eq!(
         db.identity_user(TEST_VERIFIER_ID, "sub-dana")
             .await
             .unwrap(),
         Some(new_user)
     );
+
+    let mailbox_owner = db.find_or_create_user("dana@newcomer.com").await.unwrap();
+    assert_ne!(mailbox_owner, new_user);
+    assert_eq!(
+        db.identity_user(TEST_VERIFIER_ID, "sub-dana")
+            .await
+            .unwrap(),
+        Some(new_user)
+    );
+}
+
+#[tokio::test]
+async fn captured_verified_email_creates_a_mailbox_owner() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("captured", "Captured").await.unwrap();
+    db.add_org_domain(org_id, "captured.example").await.unwrap();
+    db.verify_org_domain("captured.example").await.unwrap();
+
+    let link = db
+        .link_or_create_identity(
+            TEST_VERIFIER_ID,
+            "https://idp.example",
+            "captured-subject",
+            Some("user@captured.example"),
+            true,
+            org_id,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        db.user_by_email("user@captured.example").await.unwrap(),
+        Some(link.user_id())
+    );
+}
+
+#[tokio::test]
+async fn missing_email_verification_remains_profile_metadata() {
+    let (idp_base, idp) = spawn_idp().await;
+    *idp.email_verified.lock().unwrap() = None;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+
+    let login = run_flow(&db, &test_http(), "http://hub.example.com", org_id)
+        .await
+        .unwrap();
+
+    assert!(login.provisioned);
+    assert_eq!(db.user_by_email("alice@acme.com").await.unwrap(), None);
 }
 
 #[tokio::test]
