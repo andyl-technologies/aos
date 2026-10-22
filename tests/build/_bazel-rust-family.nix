@@ -52,6 +52,39 @@ in rec {
     inherit workspace;
     targets = map (name: "${label name}:format") names;
   };
+  editor = let
+    targets = pkgs.lib.concatMap (name:
+      ["${label name}:lib" "${label name}:unit_binary"]
+      ++ map (target: target + "_binary") (directoryTargets name "tests")
+      ++ directoryTargets name "examples")
+    names;
+  in
+    pkgs.runCommand "${pname}-editor" {buildDeps = [pkgs.python3];} ''
+      mkdir workspace
+      cp -a ${workspace.source}/. workspace/
+      chmod -R u+w workspace
+      cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
+        --config ${workspace.configuration} --workspace "$PWD/workspace" \
+        --output-base "$TMPDIR/editor/bazel" --nix-sandbox --batch \
+        --rust-project-output "$PWD/rust-project.json" \
+        -- build ${pkgs.lib.escapeShellArgs targets}
+      # Cargo is a failing stub. Proc macros and generated inputs must already
+      # have been produced by the configured Bazel graph above.
+      CARGO=${workspace.toolchains}/bin/cargo \
+        RUSTC=${workspace.toolchains}/bin/rustc RAYON_NUM_THREADS=4 \
+        ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD" \
+          --disable-build-scripts \
+          --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
+          > "$out/analysis.log" 2>&1
+      ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_family_editor.py} \
+        --project rust-project.json --workspace "$PWD/workspace" \
+        --inventory ${tests}/inventory.json --analysis-log "$out/analysis.log" \
+        --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
+        --output "$out/graph.json"
+      cp rust-project.json "$out/rust-project.json"
+    '';
   cargo = import ./_bazel-cargo-oracle.nix {
     inherit pkgs;
     pname = "${pname}-cargo-oracle";

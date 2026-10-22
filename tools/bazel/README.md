@@ -446,6 +446,15 @@ it requires zero unknown expression/pattern types and no analyzer panics.
 `developer-evidence` retains the nonempty doctest and formatter results, and
 `developer-policy` verifies the lint contract and its rejection cases.
 
+`checks.build.bazel.device.editor` exports the connected device family,
+including its libraries, unit tests, integration tests and ABI-header example.
+It compares every first-party root and feature set with the compiled inventory,
+checks procedural-macro artifacts, and runs the source-built analyzer with
+Cargo disabled. `graph.json` records inference counts as well as graph parity.
+The initial full-family run has no analyzer panics but has unknown and partial
+types; this is a graph and analyzer smoke check, not complete semantic editor
+qualification. That remaining gap must be resolved before a production cutover.
+
 Passing native Linux outputs and configuration fingerprints are retained in
 `tests/evidence/native-linux-developer-tools.json`.
 

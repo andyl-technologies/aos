@@ -1,0 +1,102 @@
+"""Checks a connected family's editor roots against its compiled feature graph."""
+
+import argparse
+import json
+from pathlib import Path
+import re
+
+
+def analysis_statistics(log):
+    """Retains incomplete inference counts instead of equating exit zero with parity."""
+    result = {}
+    for category in ["exprs", "pats"]:
+        matches = re.findall(
+            rf"{category}: (\d+), \?\?ty: (\d+) \(\d+%\), \?ty: (\d+) \(\d+%\)", log,
+        )
+        if len(matches) != 1:
+            raise ValueError(f"missing unique analyzer statistics for {category}")
+        total, unknown, partial = map(int, matches[0])
+        if total == 0 or unknown + partial > total:
+            raise ValueError(f"invalid analyzer statistics for {category}")
+        result[category] = {"total": total, "unknown": unknown, "partial": partial}
+    panics = re.findall(r"panics: (\d+)", log)
+    if panics != ["0"]:
+        raise ValueError(f"analyzer did not finish without panics: {panics}")
+    result["panics"] = 0
+    result["complete_inference"] = all(
+        result[category]["unknown"] == result[category]["partial"] == 0
+        for category in ["exprs", "pats"]
+    )
+    return result
+
+
+def verify(project, inventory, packages, workspace):
+    """Returns graph evidence after checking roots, features, and macro inputs."""
+    expected = {}
+    for directory in packages.values():
+        prefix = f"//{directory}:"
+        for target in inventory["configured_targets"]:
+            if not target["label"].startswith(prefix):
+                continue
+            name = target["label"].removeprefix(prefix)
+            if name == "lib":
+                root = f"{directory}/src/lib.rs"
+            elif target["kind"] == "rust_test" and name != "unit_binary":
+                root = f"{directory}/tests/{name.removesuffix('_binary')}.rs"
+            elif target["kind"] == "rust_binary":
+                root = f"{directory}/examples/{name}.rs"
+            else:
+                continue
+            features = sorted(target["features"])
+            if root in expected and expected[root] != features:
+                raise ValueError(f"ambiguous compiled features for {root}")
+            expected[root] = features
+
+    actual = {}
+    macros = []
+    for crate in project["crates"]:
+        root = Path(crate["root_module"])
+        if not root.is_file():
+            raise ValueError(f"editor root does not exist: {root}")
+        if crate["is_proc_macro"]:
+            macro = Path(crate["proc_macro_dylib_path"])
+            if not macro.is_file():
+                raise ValueError(f"editor proc macro does not exist: {macro}")
+            macros.append(crate["display_name"])
+        if not root.is_relative_to(workspace):
+            continue
+        relative = root.relative_to(workspace).as_posix()
+        if not any(relative.startswith(directory + "/") for directory in packages.values()):
+            continue
+        if relative in actual:
+            raise ValueError(f"duplicate editor root: {relative}")
+        actual[relative] = sorted(
+            cfg[len('feature="'):-1]
+            for cfg in crate["cfg"] if cfg.startswith('feature="') and cfg.endswith('"')
+        )
+    if actual != expected:
+        raise ValueError(f"editor/compiled root or feature mismatch: {actual!r} != {expected!r}")
+    if not expected:
+        raise ValueError("no family editor roots were checked")
+    if not Path(project["sysroot_src"], "core/src/lib.rs").is_file():
+        raise ValueError("source-built Rust sysroot sources are missing")
+    return {"roots": actual, "proc_macros": sorted(macros), "crate_count": len(project["crates"])}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ["project", "inventory", "packages", "workspace", "output"]:
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--analysis-log", type=Path)
+    options = parser.parse_args()
+    report = verify(
+        json.loads(options.project.read_text()), json.loads(options.inventory.read_text()),
+        json.loads(options.packages.read_text()), options.workspace.resolve(),
+    )
+    if options.analysis_log:
+        report["analysis"] = analysis_statistics(options.analysis_log.read_text())
+    options.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+
+
+if __name__ == "__main__":
+    main()

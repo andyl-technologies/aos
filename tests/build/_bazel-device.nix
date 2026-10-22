@@ -66,10 +66,11 @@ in
   family
   // {
     inherit license-policy;
-    all = pkgs.runCommand "aos-bazel-device-qualified-checks" {buildDeps = [family.all license-policy];} ''
+    all = pkgs.runCommand "aos-bazel-device-qualified-checks" {buildDeps = [family.all family.editor license-policy];} ''
       mkdir -p "$out"
       cp -r ${family.all}/evidence "$out/evidence"
       cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
       cp -r ${license-policy} "$out/license-policy"
+      cp -r ${family.editor} "$out/editor"
     '';
   }
