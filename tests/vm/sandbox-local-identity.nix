@@ -39,35 +39,25 @@
     cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "${packageFlags} --lib";
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     # Match the production package and workspace runner for large test frames.
     RUST_MIN_STACK = "33554432";
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     # Preserve the feature-enabled executables before the check phase compiles
     # distinct default-feature test binaries into the same Cargo target tree.
-    postBuild = ''
-      mkdir kernel-fixtures
-      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_controller_runtime aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_publisher aos_sandbox_mount aos_sandbox_network; do
-        # Keep the guest fixture basename stable across Cargo package moves.
-        artifact_prefix=$crate
-        if [ "$crate" = aos_sandbox ]; then
-          artifact_prefix=aos_sandbox_controller_domain
-        fi
-
-        count=0
-        for candidate in target/debug/deps/"$artifact_prefix"-*; do
-          if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-            install -m 0755 "$candidate" "kernel-fixtures/$crate"
-            count=$((count + 1))
-          fi
-        done
-        if [ "$count" -ne 1 ]; then
-          echo "expected exactly one $crate unit-test executable, found $count" >&2
-          exit 1
-        fi
-      done
-    '';
+    postBuild = lib.concatMapStringsSep "\n" (crate: let
+      # The guest command names predate the Controller crate split.
+      basename =
+        if crate == "aos-sandbox-controller-domain"
+        then "aos_sandbox"
+        else builtins.replaceStrings ["-"] ["_"] crate;
+    in
+      import ../fleet/_cargo-libtest-artifact.nix {
+        inherit lib pkgs crate;
+        destination = "kernel-fixtures/${basename}";
+      })
+    packages;
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 kernel-fixtures/* "$out/bin/"
@@ -91,25 +81,16 @@
     cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "-p aos-sandbox-services --lib --no-default-features --features host";
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     # Match the production package and workspace runner for large test frames.
     RUST_MIN_STACK = "33554432";
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
-    postBuild = ''
-      mkdir kernel-fixtures
-      count=0
-      for candidate in target/debug/deps/aos_sandbox_services-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" kernel-fixtures/aos_sandbox_services_host
-          count=$((count + 1))
-        fi
-      done
-      if [ "$count" -ne 1 ]; then
-        echo "expected exactly one Host service unit-test executable, found $count" >&2
-        exit 1
-      fi
-    '';
+    postBuild = import ../fleet/_cargo-libtest-artifact.nix {
+      inherit lib pkgs;
+      crate = "aos-sandbox-services";
+      destination = "kernel-fixtures/aos_sandbox_services_host";
+    };
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 kernel-fixtures/aos_sandbox_services_host "$out/bin/"
