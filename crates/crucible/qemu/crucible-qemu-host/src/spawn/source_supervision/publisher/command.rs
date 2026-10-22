@@ -178,10 +178,8 @@ impl<Custody> SessionBody<Custody> {
         words[PUBLICATION_WORD]
             .compare_exchange(0, 1_u64.to_be(), Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| OperationFailure::Geometry)?;
-        for (index, chunk) in offer.bytes.chunks_exact(8).enumerate().skip(1) {
-            let mut bytes = [0; 8];
-            bytes.copy_from_slice(chunk);
-            words[PUBLICATION_WORD + index].store(u64::from_ne_bytes(bytes), Ordering::SeqCst);
+        for (index, chunk) in offer.bytes.as_chunks::<8>().0.iter().enumerate().skip(1) {
+            words[PUBLICATION_WORD + index].store(u64::from_ne_bytes(*chunk), Ordering::SeqCst);
         }
         words[PUBLICATION_WORD].store(publication.sequence.to_be(), Ordering::SeqCst);
         let offer = self

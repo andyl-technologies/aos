@@ -552,10 +552,8 @@ fn publish_payload_if_changed(
     }
 
     let mut unchanged = expected != 0;
-    for (word, bytes) in words[1..].iter().zip(payload.chunks_exact(8)) {
-        let mut value = [0; 8];
-        value.copy_from_slice(bytes);
-        unchanged &= word.load(Ordering::SeqCst) == u64::from_be_bytes(value).to_be();
+    for (word, bytes) in words[1..].iter().zip(payload.as_chunks::<8>().0.iter()) {
+        unchanged &= word.load(Ordering::SeqCst) == u64::from_be_bytes(*bytes).to_be();
     }
 
     if u64::from_be(words[0].load(Ordering::SeqCst)) != expected {
@@ -573,10 +571,8 @@ fn publish_payload_if_changed(
     // Invalidation can win before entry or during the bounded payload walk.
     // Neither transition may replace its terminal sequence with a live one.
     transition_sequence(&words[0], expected, sequence - 1)?;
-    for (word, bytes) in words[1..].iter().zip(payload.chunks_exact(8)) {
-        let mut value = [0; 8];
-        value.copy_from_slice(bytes);
-        word.store(u64::from_be_bytes(value).to_be(), Ordering::SeqCst);
+    for (word, bytes) in words[1..].iter().zip(payload.as_chunks::<8>().0.iter()) {
+        word.store(u64::from_be_bytes(*bytes).to_be(), Ordering::SeqCst);
     }
     transition_sequence(&words[0], sequence - 1, sequence)?;
     Ok(sequence)

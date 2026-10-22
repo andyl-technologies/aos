@@ -27,11 +27,9 @@ fn returned() -> PublisherReturn {
 }
 
 fn write_return(body: &SessionBody<()>, bytes: &[u8; PUBLISHER_RETURN_BYTES]) {
-    for (index, chunk) in bytes.chunks_exact(8).enumerate() {
-        let mut word = [0; 8];
-        word.copy_from_slice(chunk);
+    for (index, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
         body.command_words().unwrap()[RETURN_WORD + index]
-            .store(u64::from_ne_bytes(word), Ordering::SeqCst);
+            .store(u64::from_ne_bytes(*chunk), Ordering::SeqCst);
     }
 }
 

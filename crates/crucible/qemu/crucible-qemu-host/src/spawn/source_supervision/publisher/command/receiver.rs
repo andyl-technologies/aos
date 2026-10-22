@@ -96,7 +96,7 @@ impl<Custody> SessionBody<Custody> {
             return Err(OperationFailure::Geometry);
         }
         let mut bytes = [0; PUBLISHER_RETURN_BYTES];
-        for (index, chunk) in bytes.chunks_exact_mut(8).enumerate() {
+        for (index, chunk) in bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             chunk.copy_from_slice(
                 &words[RETURN_WORD + index]
                     .load(Ordering::SeqCst)
