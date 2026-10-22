@@ -3406,6 +3406,35 @@ integration targets. All 404 owned Rust/Cargo inputs match committed
 The remaining Source, genuine Initial/Recipe and full RFC obligations remain
 unfinished. No new full-library, configured runtime or VM qualification follows.
 
+## Fixed Bootstrap context encoding
+
+Commit `9e515d6e6a` encodes the complete validated Bootstrap ACK context in a
+fixed 873-byte buffer before hashing it. Digest fields use the defining URL-safe
+unpadded `Bytes` spelling; funding fields retain their exact decimal strings and
+all fields retain canonical order. Context encoding constructs no temporary JSON
+tree or heap buffer. The defining counter includes the real fixed buffer and
+formatter controls; existing conservative dynamic-work terms remain charged.
+
+Independent canonical-JSON controls cover 256 digest patterns, every individual
+binding, decimal width boundaries and invalid contexts. Complete standard and
+raw-JSON Transport library runs each pass 2,077 tests with zero failures, no
+filtering and 16 existing ignores. Transport/Engine/Daemon all-feature/all-target
+checking, changed-file formatting and all six architecture gates pass. The
+required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 408 owned Rust/Cargo inputs match the
+committed revision and its actual captured source. That gate runs no tests.
+
+The requirement-index gate added by `aee9f43da2` and strengthened by
+`9d78e3ad81` also passes its eleven controls and all 382 defining RFC anchors.
+It enforces exact locations, declared tasks and suites, and each family's RFC
+primary suites. Twenty-six capability rows now include protocol suite P in their
+planned coverage. All 382 statuses remain planning annotations; this consistency
+check supplies no backend acceptance or implementation completion evidence.
+
+Private Source verification, genuine Initial/Recipe production and the remaining
+full RFC obligations remain unfinished. No new configured runtime or VM
+qualification follows from these results.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
