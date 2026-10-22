@@ -25,6 +25,32 @@ use anyhow::{Context, Result};
 
 use crate::registry::pack;
 use crate::registry::transport::{RegistryRead, RegistryTransport};
+
+const MAX_PACK_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_PACK_OUTPUT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_SYNC_DOWNLOAD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+struct DownloadBudget {
+    remaining: u64,
+}
+
+impl DownloadBudget {
+    fn new(maximum: u64) -> Self {
+        Self { remaining: maximum }
+    }
+
+    fn per_file_limit(&self) -> u64 {
+        self.remaining.min(MAX_PACK_DOWNLOAD_BYTES)
+    }
+
+    fn charge(&mut self, bytes: u64) -> Result<()> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .context("registry sync exceeded its download budget")?;
+        Ok(())
+    }
+}
 use aos_transfer::progress::{TransferObserver, TransferProgress};
 
 /// The ordered fetch steps chosen to materialize a target release.
@@ -269,13 +295,23 @@ pub async fn resolve_objects_with_progress(
             });
         }
     };
+    let mut download_budget = DownloadBudget::new(MAX_SYNC_DOWNLOAD_BYTES);
 
     for base in deltas_at(target) {
         if !retained.contains(&base) {
             continue;
         }
         set_phase(progress, "Downloading registry delta");
-        match fetch_delta(repo_dir, &transport, target, &base, progress).await {
+        match fetch_delta(
+            repo_dir,
+            &transport,
+            target,
+            &base,
+            progress,
+            &mut download_budget,
+        )
+        .await
+        {
             Ok(Some(step)) => {
                 observer.info(&format!(
                     "Fetched registry delta {base} -> {target} via AOS pack"
@@ -296,12 +332,29 @@ pub async fn resolve_objects_with_progress(
 
     let anchor = anchor_for(target);
     set_phase(progress, "Downloading registry release pack");
-    match fetch_full_pack(repo_dir, &transport, &anchor, progress).await {
+    match fetch_full_pack(
+        repo_dir,
+        &transport,
+        &anchor,
+        progress,
+        &mut download_budget,
+    )
+    .await
+    {
         Ok(Some(full_step)) => {
             let mut steps = vec![full_step];
             if anchor != *target {
                 set_phase(progress, "Downloading registry delta");
-                match fetch_delta(repo_dir, &transport, target, &anchor, progress).await {
+                match fetch_delta(
+                    repo_dir,
+                    &transport,
+                    target,
+                    &anchor,
+                    progress,
+                    &mut download_budget,
+                )
+                .await
+                {
                     Ok(Some(delta_step)) => steps.push(delta_step),
                     Ok(None) => {
                         let fallback =
@@ -349,6 +402,7 @@ async fn fetch_delta(
     target: &semver::Version,
     base: &semver::Version,
     progress: Option<&TransferProgress>,
+    download_budget: &mut DownloadBudget,
 ) -> Result<Option<FetchStep>> {
     let release = release_path(target);
     for compressed in [true, false] {
@@ -360,14 +414,22 @@ async fn fetch_delta(
         } else {
             pack_path.clone()
         };
-        if !download_optional_to_file(transport, &relative, &download_path, progress).await? {
+        if !download_optional_to_file(
+            transport,
+            &relative,
+            &download_path,
+            progress,
+            download_budget,
+        )
+        .await?
+        {
             continue;
         }
         if let Some(progress) = progress {
             progress.activity_phase("Indexing registry delta");
         }
         if compressed {
-            pack::zstd_decompress(&download_path, None)
+            pack::zstd_decompress(&download_path, None, MAX_PACK_OUTPUT_BYTES)
                 .await
                 .context("decompressing delta pack")?;
         }
@@ -391,6 +453,7 @@ async fn fetch_full_pack(
     transport: &dyn RegistryRead,
     version: &semver::Version,
     progress: Option<&TransferProgress>,
+    download_budget: &mut DownloadBudget,
 ) -> Result<Option<FetchStep>> {
     let release = release_path(version);
     let info_path = format!("releases/{release}/objects/info/packs");
@@ -404,7 +467,15 @@ async fn fetch_full_pack(
 
     let pack_relative = format!("releases/{release}/objects/pack/{pack_name}");
     let pack_path = local_pack_path(repo_dir, &pack_name)?;
-    if !download_optional_to_file(transport, &pack_relative, &pack_path, progress).await? {
+    if !download_optional_to_file(
+        transport,
+        &pack_relative,
+        &pack_path,
+        progress,
+        download_budget,
+    )
+    .await?
+    {
         return Ok(None);
     }
 
@@ -464,8 +535,20 @@ async fn download_optional_to_file(
     relative: &str,
     dest: &Path,
     progress: Option<&TransferProgress>,
+    budget: &mut DownloadBudget,
 ) -> Result<bool> {
-    transport.download_optional(relative, dest, progress).await
+    let maximum_bytes = budget.per_file_limit();
+    let downloaded = transport
+        .download_optional(relative, dest, maximum_bytes, progress)
+        .await?;
+    if downloaded {
+        let bytes = tokio::fs::metadata(dest)
+            .await
+            .with_context(|| format!("reading downloaded size for {}", dest.display()))?
+            .len();
+        budget.charge(bytes)?;
+    }
+    Ok(downloaded)
 }
 
 fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
@@ -517,6 +600,16 @@ fn push_unique(versions: &mut Vec<semver::Version>, version: semver::Version) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_budget_accepts_exact_limit_and_rejects_more() {
+        let mut budget = DownloadBudget::new(4);
+
+        budget.charge(4).unwrap();
+
+        assert_eq!(budget.per_file_limit(), 0);
+        assert!(budget.charge(1).is_err());
+    }
 
     fn version(input: &str) -> semver::Version {
         semver::Version::parse(input).unwrap()

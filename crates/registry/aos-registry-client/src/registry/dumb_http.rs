@@ -45,6 +45,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
 #[cfg(test)]
@@ -61,12 +62,40 @@ use crate::registry::transport::{RegistryRead, RegistryTransport};
 /// malicious or broken origin advertising an unbounded graph. Real registries
 /// are far smaller; the visited set already prevents cycles.
 const MAX_OBJECTS: usize = 2_000_000;
+const MAX_PACKS: usize = 64;
+const MAX_PACK_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_LOOSE_COMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_LOOSE_INFLATED_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_SYNC_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Maximum object downloads in flight at once. Dumb-HTTP is latency-bound (one
 /// GET per object), so the graph walk fetches each breadth-first level
 /// concurrently; this caps the fan-out to stay friendly to static origins
 /// (S3/garage/nginx) while still hiding round-trip latency.
 const MAX_CONCURRENCY: usize = 24;
+
+struct SyncBudget {
+    used: AtomicU64,
+    maximum: u64,
+}
+
+impl SyncBudget {
+    fn new(maximum: u64) -> Self {
+        Self {
+            used: AtomicU64::new(0),
+            maximum,
+        }
+    }
+
+    fn charge(&self, bytes: u64) -> Result<()> {
+        self.used
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes).filter(|next| *next <= self.maximum)
+            })
+            .map_err(|_| anyhow::anyhow!("registry sync exceeded {} byte limit", self.maximum))?;
+        Ok(())
+    }
+}
 
 /// Fetch `refspecs` from a dumb-HTTP(S) registry at `base_url` into the bare
 /// repository at `repo_dir`.
@@ -139,10 +168,11 @@ pub async fn fetch_with_optional_head(
         client.clone(),
     ));
     let reader = RegistryTransport::new(base_url)?.with_engine(engine);
+    let budget = SyncBudget::new(MAX_SYNC_BYTES);
 
     set_phase(progress, "Reading registry references");
-    let advertised = fetch_info_refs(&reader, base_url, progress).await?;
-    let head = fetch_head_oid(&reader, &advertised, progress).await?;
+    let advertised = fetch_info_refs(&reader, base_url, progress, &budget).await?;
+    let head = fetch_head_oid(&reader, &advertised, progress, &budget).await?;
 
     // Resolve every refspec to (oid, optional destination ref).
     let mut targets: Vec<(String, Option<String>)> = Vec::new();
@@ -171,23 +201,14 @@ pub async fn fetch_with_optional_head(
         // already have. A handful of large requests instead of one round trip
         // per loose object; libgit2's indexer verifies each pack on commit.
         set_phase(progress, "Discovering registry packs");
-        let advertised = fetch_pack_list(&reader, base_url, progress).await?;
+        let advertised = fetch_pack_list(&reader, base_url, progress, &budget).await?;
         let pack_dir = objects_dir.join("pack");
         let new_packs: Vec<String> = advertised
             .into_iter()
             .filter(|name| !pack_dir.join(name).exists())
             .collect();
         if !new_packs.is_empty() {
-            let reader = &reader;
             set_phase(progress, "Downloading registry packs");
-            let packs: Vec<Vec<u8>> = stream::iter(new_packs.into_iter())
-                .map(|name| async move { fetch_pack(reader, base_url, &name, progress).await })
-                .buffer_unordered(MAX_CONCURRENCY)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>>>()?;
-            let repo_path = repo_dir.to_path_buf();
             // The pack phase is a fast-path optimization. libgit2's streaming
             // indexer can intermittently reject an otherwise-complete pack with a
             // generic write error; rather than failing the whole sync, fall
@@ -200,10 +221,19 @@ pub async fn fetch_with_optional_head(
             }
             // A new pack can change how even existing OIDs are reconstructed.
             verified.invalidate();
-            let indexed =
-                tokio::task::spawn_blocking(move || repo::index_packs_blocking(&repo_path, &packs))
-                    .await
-                    .context("pack-indexing task panicked")?;
+            let mut indexed = Ok(());
+            for name in new_packs {
+                let pack = fetch_pack(&reader, base_url, &name, progress, &budget).await?;
+                let repo_path = repo_dir.to_path_buf();
+                indexed = tokio::task::spawn_blocking(move || {
+                    repo::index_packs_blocking(&repo_path, std::slice::from_ref(&pack))
+                })
+                .await
+                .context("pack-indexing task panicked")?;
+                if indexed.is_err() {
+                    break;
+                }
+            }
             if indexed.is_ok() {
                 missing = verified.missing_objects(&target_oids).await?;
             }
@@ -225,10 +255,11 @@ pub async fn fetch_with_optional_head(
             }
             let objects_dir = &objects_dir;
             let reader = &reader;
+            let budget = &budget;
             verified.invalidate();
             stream::iter(missing.into_iter())
                 .map(|oid| async move {
-                    fetch_loose(reader, base_url, objects_dir, &oid, progress).await
+                    fetch_loose(reader, base_url, objects_dir, &oid, progress, &budget).await
                 })
                 .buffer_unordered(MAX_CONCURRENCY)
                 .collect::<Vec<_>>()
@@ -273,6 +304,7 @@ async fn read_object(
     relative: &str,
     maximum_bytes: u64,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
     let Some(body) = reader.read_optional(relative, maximum_bytes).await? else {
         return Ok((reqwest::StatusCode::NOT_FOUND, Vec::new()));
@@ -280,6 +312,7 @@ async fn read_object(
     if let Some(progress) = progress {
         progress.inc(body.len() as u64);
     }
+    budget.charge(body.len() as u64)?;
     Ok((reqwest::StatusCode::OK, body))
 }
 
@@ -294,10 +327,12 @@ async fn fetch_loose(
     objects_dir: &Path,
     oid: &str,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<()> {
     let loose_path = loose_object_path(objects_dir, oid)?;
-    let compressed = fetch_object(reader, base_url, oid, progress).await?;
-    let inflated = inflate(&compressed).with_context(|| format!("inflating object {oid}"))?;
+    let compressed = fetch_object(reader, base_url, oid, progress, budget).await?;
+    let inflated = inflate(&compressed, MAX_LOOSE_INFLATED_BYTES)
+        .with_context(|| format!("inflating object {oid}"))?;
     verify_oid(oid, &inflated)?;
     write_loose_verbatim(&loose_path, &compressed).await
 }
@@ -310,18 +345,28 @@ async fn fetch_pack_list(
     reader: &RegistryTransport,
     base_url: &str,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<Vec<String>> {
     let url = join_cache_url(base_url, "objects/info/packs");
-    let (status, body) =
-        read_object(reader, "objects/info/packs", 8 * 1024 * 1024, progress).await?;
+    let (status, body) = read_object(
+        reader,
+        "objects/info/packs",
+        8 * 1024 * 1024,
+        progress,
+        budget,
+    )
+    .await?;
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
     if !status.is_success() {
         bail!("fetching {url} failed with {status}");
     }
-    let body = String::from_utf8_lossy(&body);
+    parse_pack_list(&body)
+}
 
+fn parse_pack_list(body: &[u8]) -> Result<Vec<String>> {
+    let body = String::from_utf8_lossy(body);
     let mut names = Vec::new();
     for line in body.lines() {
         let line = line.trim();
@@ -329,6 +374,9 @@ async fn fetch_pack_list(
         if let Some(name) = line.strip_prefix("P ") {
             let name = name.trim();
             if name.ends_with(".pack") && is_safe_pack_name(name) {
+                if names.len() >= MAX_PACKS {
+                    bail!("registry advertises more than {MAX_PACKS} packs");
+                }
                 names.push(name.to_string());
             } else {
                 bail!("malformed pack name in objects/info/packs: {name:?}");
@@ -347,10 +395,17 @@ async fn fetch_pack(
     base_url: &str,
     name: &str,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<Vec<u8>> {
     let url = join_cache_url(base_url, &format!("objects/pack/{name}"));
-    let (status, body) =
-        read_object(reader, &format!("objects/pack/{name}"), u64::MAX, progress).await?;
+    let (status, body) = read_object(
+        reader,
+        &format!("objects/pack/{name}"),
+        MAX_PACK_BYTES,
+        progress,
+        budget,
+    )
+    .await?;
     if !status.is_success() {
         bail!("fetching pack {url} failed with {status}");
     }
@@ -375,9 +430,11 @@ async fn fetch_info_refs(
     reader: &RegistryTransport,
     base_url: &str,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<HashMap<String, String>> {
     let url = join_cache_url(base_url, "info/refs");
-    let (status, body) = read_object(reader, "info/refs", 32 * 1024 * 1024, progress).await?;
+    let (status, body) =
+        read_object(reader, "info/refs", 32 * 1024 * 1024, progress, budget).await?;
     if !status.is_success() {
         bail!("fetching {url} failed with {status}");
     }
@@ -407,8 +464,9 @@ async fn fetch_head_oid(
     reader: &RegistryTransport,
     advertised: &HashMap<String, String>,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<Option<String>> {
-    let (status, body) = read_object(reader, "HEAD", 4096, progress).await?;
+    let (status, body) = read_object(reader, "HEAD", 4096, progress, budget).await?;
     if !status.is_success() {
         return Ok(None);
     }
@@ -469,10 +527,12 @@ async fn fetch_object(
     base_url: &str,
     oid: &str,
     progress: Option<&TransferProgress>,
+    budget: &SyncBudget,
 ) -> Result<Vec<u8>> {
     let path = format!("objects/{}/{}", &oid[..2], &oid[2..]);
     let url = join_cache_url(base_url, &path);
-    let (status, body) = read_object(reader, &path, u64::MAX, progress).await?;
+    let (status, body) =
+        read_object(reader, &path, MAX_LOOSE_COMPRESSED_BYTES, progress, budget).await?;
     if !status.is_success() {
         bail!("fetching object {url} failed with {status}");
     }
@@ -486,12 +546,27 @@ fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
 }
 
 /// Inflate a zlib-compressed loose object into `"<type> <size>\0<body>"`.
-fn inflate(compressed: &[u8]) -> Result<Vec<u8>> {
+fn inflate(compressed: &[u8], maximum_bytes: u64) -> Result<Vec<u8>> {
     let mut decoder = flate2::read::ZlibDecoder::new(compressed);
     let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .context("zlib decompression failed")?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = decoder
+            .read(&mut buffer)
+            .context("zlib decompression failed")?;
+        if read == 0 {
+            break;
+        }
+        let next = (out.len() as u64)
+            .checked_add(read as u64)
+            .context("inflated object size overflow")?;
+        if next > maximum_bytes {
+            bail!("inflated object exceeds {maximum_bytes} byte limit");
+        }
+        out.try_reserve(read)
+            .context("reserving inflated object storage")?;
+        out.extend_from_slice(&buffer[..read]);
+    }
     Ok(out)
 }
 
@@ -545,6 +620,41 @@ fn validate_oid(oid: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_budget_accepts_exact_limit_and_rejects_more() {
+        let budget = SyncBudget::new(4);
+
+        budget.charge(4).unwrap();
+
+        assert!(budget.charge(1).is_err());
+    }
+
+    #[test]
+    fn inflated_objects_enforce_exact_output_limit() {
+        use std::io::Write as _;
+
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+        encoder.write_all(b"abcd").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        assert_eq!(inflate(&compressed, 4).unwrap(), b"abcd");
+        let error = inflate(&compressed, 3).unwrap_err();
+        assert!(error.to_string().contains("3 byte limit"), "{error:#}");
+    }
+
+    #[test]
+    fn pack_listing_rejects_more_than_the_policy_limit() {
+        let mut listing = String::new();
+        for index in 0..=MAX_PACKS {
+            listing.push_str(&format!("P pack-{index:064x}.pack\n"));
+        }
+
+        let error = parse_pack_list(listing.as_bytes()).unwrap_err();
+
+        assert!(error.to_string().contains("more than"), "{error:#}");
+        assert!(error.to_string().contains(&MAX_PACKS.to_string()));
+    }
 
     #[test]
     fn validate_oid_accepts_sha256() {

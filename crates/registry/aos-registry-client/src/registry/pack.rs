@@ -1,8 +1,9 @@
 //! Verified registry pack acquisition and decompression.
 
 use anyhow::{Context, Result, bail};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use tokio::process::Command;
+
 /// Compression level used for the zstd transport wrapper.
 pub const ZSTD_LEVEL: &str = "-22";
 /// Long-distance window used by producer and consumer.
@@ -70,9 +71,14 @@ fn full_pack_blocking(repo: &Path, release_commit: &str, out_dir: &Path) -> Resu
 ///
 /// # Errors
 ///
-/// Returns an error if `path` has no filename, does not end in `.zst`, or
-/// the `zstd` command fails.
-pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf> {
+/// Returns an error if `path` has no filename, does not end in `.zst`, cannot
+/// be decoded, or expands beyond `maximum_bytes`. The destination is replaced
+/// only after decoding succeeds.
+pub async fn zstd_decompress(
+    path: &Path,
+    dict: Option<&Path>,
+    maximum_bytes: u64,
+) -> Result<PathBuf> {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         bail!("zstd path has no filename: {}", path.display());
     };
@@ -80,16 +86,82 @@ pub async fn zstd_decompress(path: &Path, dict: Option<&Path>) -> Result<PathBuf
         bail!("zstd path does not end in .zst: {}", path.display());
     };
     let out = path.with_file_name(stripped);
-
-    let mut cmd = Command::new("zstd");
-    cmd.arg("-d").arg(format!("--long={ZSTD_LONG}"));
-    if let Some(dict) = dict {
-        cmd.arg("-D").arg(dict);
-    }
-    cmd.arg("-f").arg("-o").arg(&out).arg(path);
-
-    run_status(cmd, "zstd decompress").await?;
+    let input = path.to_path_buf();
+    let dictionary = dict.map(Path::to_path_buf);
+    let output = out.clone();
+    tokio::task::spawn_blocking(move || {
+        decompress_zstd_bounded(&input, dictionary.as_deref(), &output, maximum_bytes)
+    })
+    .await
+    .context("zstd decompression task panicked")??;
     Ok(out)
+}
+
+fn decompress_zstd_bounded(
+    input: &Path,
+    dictionary: Option<&Path>,
+    output: &Path,
+    maximum_bytes: u64,
+) -> Result<()> {
+    let parent = output
+        .parent()
+        .context("zstd output path has no parent directory")?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".registry-decompress-")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating temporary output in {}", parent.display()))?;
+    let source = std::fs::File::open(input)
+        .with_context(|| format!("opening compressed pack {}", input.display()))?;
+
+    if let Some(dictionary) = dictionary {
+        let dictionary = std::fs::read(dictionary)
+            .with_context(|| format!("reading zstd dictionary {}", dictionary.display()))?;
+        let mut decoder =
+            zstd::stream::read::Decoder::with_dictionary(BufReader::new(source), &dictionary)
+                .context("initializing zstd dictionary decoder")?;
+        copy_bounded(&mut decoder, &mut temporary, maximum_bytes)?;
+    } else {
+        let mut decoder =
+            zstd::stream::read::Decoder::new(source).context("initializing zstd decoder")?;
+        copy_bounded(&mut decoder, &mut temporary, maximum_bytes)?;
+    }
+
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .context("syncing decompressed pack")?;
+    temporary
+        .persist(output)
+        .map_err(|error| anyhow::anyhow!("installing decompressed pack: {error}"))?;
+    Ok(())
+}
+
+fn copy_bounded(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    maximum_bytes: u64,
+) -> Result<u64> {
+    let mut total = 0u64;
+    let mut buffer = [0u8; 128 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .context("decompressing zstd pack")?;
+        if read == 0 {
+            break;
+        }
+        let next = total
+            .checked_add(read as u64)
+            .context("decompressed pack size overflow")?;
+        if next > maximum_bytes {
+            bail!("decompressed pack exceeds {maximum_bytes} byte limit");
+        }
+        writer
+            .write_all(&buffer[..read])
+            .context("writing decompressed pack")?;
+        total = next;
+    }
+    Ok(total)
 }
 
 /// Complete a thin pack with bases from `repo`.
@@ -142,17 +214,33 @@ pub async fn index_pack(repo: &Path, pack: &Path) -> Result<()> {
     .context("index-pack task panicked")?
 }
 
-/// Run a command and fail with its stderr if it exits non-zero.
-async fn run_status(mut cmd: Command, label: &str) -> Result<()> {
-    let output = cmd
-        .output()
-        .await
-        .with_context(|| format!("running {label}"))?;
-    if !output.status.success() {
-        bail!(
-            "{label} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim(),
-        );
+#[cfg(test)]
+mod tests {
+    use super::zstd_decompress;
+
+    #[tokio::test]
+    async fn zstd_decompression_enforces_exact_output_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let compressed = directory.path().join("exact.pack.zst");
+        let encoded = zstd::stream::encode_all(&b"abcd"[..], 1).unwrap();
+        std::fs::write(&compressed, encoded).unwrap();
+
+        let output = zstd_decompress(&compressed, None, 4).await.unwrap();
+
+        assert_eq!(std::fs::read(output).unwrap(), b"abcd");
     }
-    Ok(())
+
+    #[tokio::test]
+    async fn zstd_decompression_removes_over_limit_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let compressed = directory.path().join("oversized.pack.zst");
+        let output = directory.path().join("oversized.pack");
+        let encoded = zstd::stream::encode_all(&b"abcd"[..], 1).unwrap();
+        std::fs::write(&compressed, encoded).unwrap();
+
+        let error = zstd_decompress(&compressed, None, 3).await.unwrap_err();
+
+        assert!(error.to_string().contains("3 byte limit"), "{error:#}");
+        assert!(!output.exists());
+    }
 }
