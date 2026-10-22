@@ -13321,3 +13321,16 @@ ignored by their original annotations. Cross-graft refusal also covers equal
 root hashes at different occurrences. No all-feature host-native runtime pass
 is inferred from these selected checks; the six broader local failures above
 remain recorded.
+
+Frozen version-2 qualification at `037bc54017` passes the structural proof in
+91.90 seconds and the actual sealed-mapping ext4 VM in 134.18 seconds, each
+with all 9,318 tracked files unchanged. Independent review checks all 7,992
+immutable source files and 5,276 bound inputs for each artifact. The structural
+proof executes all 20 structural and five inode cases and retains its exact
+Cargo ELF. The guest runs the actual mapping executable as UID 840 without
+capabilities, verifies recorded fields and canonical alias-to-inode assignment,
+and preserves the original descriptor refusals, replacement custody and unmap
+controls. Review matches the installed ELF to the actual Cargo artifact and
+requires every guest witness. These are component passes; neither a cache pin
+nor a mounted exposure is inferred. Required application-target compilation
+on this same checkpoint remains in progress.
