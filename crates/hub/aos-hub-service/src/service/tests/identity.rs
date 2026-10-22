@@ -3,6 +3,63 @@
 use super::*;
 
 #[tokio::test]
+async fn cached_token_resolution_rechecks_retirement_and_expiry() {
+    let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
+    let kv = Arc::new(crate::kv::InMemoryKv::new());
+    let service = service.with_kv(kv);
+    let owner_id = db
+        .create_user("cached-token-owner@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let owner = Principal::user(owner_id);
+
+    let (retired_id, retired_secret) = db
+        .create_token(owner, "instance", &[Permission::Read], None, None)
+        .await
+        .unwrap();
+    assert!(service
+        .validate_token_cached(&retired_secret)
+        .await
+        .unwrap()
+        .is_some());
+
+    db.revoke_token(&retired_id).await.unwrap();
+    assert!(service
+        .validate_token_cached(&retired_secret)
+        .await
+        .unwrap()
+        .is_none());
+
+    let expires_at = aos_hub_model::clock::now_unix_secs() + 2;
+    let (_expired_id, expired_secret) = db
+        .create_token(
+            owner,
+            "instance",
+            &[Permission::Read],
+            None,
+            Some(expires_at),
+        )
+        .await
+        .unwrap();
+    assert!(service
+        .validate_token_cached(&expired_secret)
+        .await
+        .unwrap()
+        .is_some());
+
+    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+    assert!(db.validate_token(&expired_secret).await.unwrap().is_none());
+    assert!(service
+        .validate_token_cached(&expired_secret)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn reporter_apply_recovers_after_mutation_and_revokes_an_inactive_principal() {
     let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
     let org_id = db
