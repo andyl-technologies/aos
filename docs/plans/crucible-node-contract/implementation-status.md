@@ -2946,6 +2946,57 @@ No new VM or configured engine/daemon runtime qualification is claimed here.
 Genuine Source/Birth funding, opaque Initial/Recipe production, actual bootstrap
 reply publication and the remaining full RFC acceptance criteria remain open.
 
+## Original bootstrap reply and retained response frame
+
+Commit `863b5161e4` extends `aef72d0ccc` with the original bootstrap reply's
+retained frame preparation. The verified first request produces BootstrapResult18
+and a complete four-field common response body. The response echoes its actual
+correlation fields, uses sequence 2 from the actual SDK, and carries the distinct
+receipt18 extension bound to the original verified context and assigned response.
+Every output is stored before validation and remains in its original attempt on
+refusal. Proof verification and preparation complete only after the enclosing
+original Source, Host, SDK and channel terminal guards.
+
+A separate journal reserves the closed response shape's canonical byte bound
+and actual frame descriptors before encoding. It retains the sealed serializer
+tree, measured canonical length, four-byte prefix, original request ID and encoded
+body. The writer never grows a new output bank. Actual live SDK byte/nesting
+ceilings restrict measurement, with the original launch limits checked separately.
+A failed measurement or encoding retains its count or byte prefix and spends its
+attempt. The prepared slot records zero transferred bytes and incomplete I/O;
+the original Hello journal keeps its own pair.
+
+The independent Source/native initial calculations include actual typed outputs,
+serializer trees, retained frame backing, constructor partials, canonical work
+and concrete borrowed controls. Failed normalization and completed decoding keep
+their independent lifetime maxima. Proof construction borrows immutable decoded
+bodies once inside the full correlation loan; duplicate pre-step test censuses
+are removed while every output and terminal census remain. The original cut,
+policy cap and four later partitions remain unchanged.
+
+Qualification of the exact committed inputs completed with:
+
+- Standard and `serde_json/raw_value` transport suites each pass 1,985 tests
+  with 16 intentional ignores (584.08 s and 580.01 s).
+- The reply control covers 61 independent inherited-channel flights: complete
+  and reactive peers, changed cut, missing proof, and admission refusal, expiry
+  and revocation at 19 construction/preparation boundaries.
+- The separate proof control covers 46 inherited-channel flights. Maximal reply
+  population, independent lifetime/initial formulas, exact/short credit,
+  retained failure prefixes and parser-equivalent nesting controls pass.
+- Transport, engine and daemon all-feature/all-target compilation passes (2m13s).
+- All six phase-1 architecture checks and eight owned-file formatting checks pass.
+- The required `rust.aos-test-targets` gate passes: 180 executable test artifacts
+  across 58 application crates, including 71 integration targets.
+- All 340 tracked Rust/Cargo inputs match the committed bytes and the application
+  gate's captured Nix source.
+
+The earlier `aef72d0ccc` raw-value run failed a completed proof context inspection;
+the corrected committed inputs above pass both complete suites. No new VM or
+configured engine/daemon runtime qualification is claimed. Actual bootstrap reply
+reservation/publication, current Native18 ownership, genuine Source/Birth funding,
+opaque Initial/Recipe production and the remaining full RFC criteria remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
