@@ -197,15 +197,23 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/auth/sso",
-            post(|State(state): State<SharedState>, start, form| {
-                send_bridge(handlers::login_sso(from_state(state), start, form))
+            post(|State(state): State<SharedState>, headers, start, form| {
+                send_bridge(handlers::login_sso(from_state(state), headers, start, form))
             }),
         )
         .route(
             "/auth/oidc/start",
             get(
-                |State(state): State<SharedState>, start: RequestStart, query: Query<_>| {
-                    send_bridge(handlers::oidc_start(from_state(state), start, query))
+                |State(state): State<SharedState>,
+                 headers,
+                 start: RequestStart,
+                 query: Query<_>| {
+                    send_bridge(handlers::oidc_start(
+                        from_state(state),
+                        headers,
+                        start,
+                        query,
+                    ))
                 },
             ),
         )

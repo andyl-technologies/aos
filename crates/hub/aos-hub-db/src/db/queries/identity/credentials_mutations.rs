@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Largest number of expired OIDC flows removed by one maintenance pass.
+const MAX_OIDC_FLOW_PRUNE_BATCH: i64 = 1_000;
+
 impl Database {
     // -- auth: passwords (migration v18) -------------------------------------
 
@@ -281,7 +284,8 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure, including a `state` collision.
+    /// Returns an error on database failure, a `state` collision, or when the
+    /// pending-flow limit for the organization or hub has been reached.
     pub async fn create_oidc_flow(
         &self,
         state: &str,
@@ -295,25 +299,73 @@ impl Database {
     ) -> Result<()> {
         let now = unix_now();
         self.backend
-            .execute(
-                "INSERT INTO oidc_flows
+            .checked_batch(&[
+                CheckedStatement::unchecked(
+                    "UPDATE hub_schema_identity SET identity = identity WHERE identity = ?1",
+                    vals![SCHEMA_IDENTITY],
+                ),
+                CheckedStatement::exact(
+                    "INSERT INTO oidc_flows
              (state, org_id, verifier_id, nonce, code_verifier,
               browser_binding_hash, redirect_after, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                &vals![
-                    state,
-                    org_id,
-                    verifier_id,
-                    nonce,
-                    code_verifier,
-                    browser_binding_hash,
-                    redirect_after,
-                    now,
-                    now + ttl_secs
-                ],
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+             WHERE (SELECT COUNT(*) FROM oidc_flows
+                    WHERE org_id = ?2 AND expires_at > ?8) < ?10
+               AND (SELECT COUNT(*) FROM oidc_flows
+                    WHERE expires_at > ?8) < ?11",
+                    vals![
+                        state,
+                        org_id,
+                        verifier_id,
+                        nonce,
+                        code_verifier,
+                        browser_binding_hash,
+                        redirect_after,
+                        now,
+                        now + ttl_secs,
+                        MAX_PENDING_OIDC_FLOWS_PER_ORG,
+                        MAX_PENDING_OIDC_FLOWS_TOTAL
+                    ],
+                    1,
+                ),
+            ])
+            .await
+            .context("staging OIDC flow within pending-flow limits")?;
+        Ok(())
+    }
+
+    /// Removes a bounded batch of expired OIDC login flows.
+    ///
+    /// Rows are selected through the expiry index in oldest-first order. The
+    /// nested selection remains portable to MySQL, which rejects deleting
+    /// directly from a table referenced by the same statement's subquery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `limit` is outside `1..=1000` or on database
+    /// failure.
+    pub async fn prune_expired_oidc_flows(&self, now: i64, limit: i64) -> Result<u64> {
+        anyhow::ensure!(
+            (1..=MAX_OIDC_FLOW_PRUNE_BATCH).contains(&limit),
+            "OIDC flow prune limit must be between 1 and {MAX_OIDC_FLOW_PRUNE_BATCH}"
+        );
+
+        let deleted = self
+            .backend
+            .execute(
+                "DELETE FROM oidc_flows
+                 WHERE state IN (
+                   SELECT state FROM (
+                     SELECT state FROM oidc_flows
+                     WHERE expires_at <= ?1
+                     ORDER BY expires_at, state
+                     LIMIT ?2
+                   ) AS expired_oidc_flows
+                 )",
+                &vals![now, limit],
             )
             .await?;
-        Ok(())
+        Ok(deleted)
     }
 
     /// Consumes an OIDC flow by its `state` and browser-binding digest.

@@ -3,6 +3,119 @@
 use super::*;
 
 #[tokio::test]
+async fn oidc_pending_flow_limit_serializes_the_last_slot() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = db.create_org("oidc-cap", "OIDC Cap").await.unwrap();
+    let binding_hash = "0".repeat(64);
+
+    for ordinal in 0..(MAX_PENDING_OIDC_FLOWS_PER_ORG - 1) {
+        db.create_oidc_flow(
+            &format!("seed-{ordinal}"),
+            org_id,
+            "verifier",
+            "nonce",
+            "code-verifier",
+            &binding_hash,
+            None,
+            600,
+        )
+        .await
+        .unwrap();
+    }
+
+    let create = |state: &'static str| {
+        let db = Arc::clone(&db);
+        let binding_hash = binding_hash.clone();
+        async move {
+            db.create_oidc_flow(
+                state,
+                org_id,
+                "verifier",
+                "nonce",
+                "code-verifier",
+                &binding_hash,
+                None,
+                600,
+            )
+            .await
+        }
+    };
+    let (left, right) = tokio::join!(create("race-left"), create("race-right"));
+
+    assert_ne!(
+        left.is_ok(),
+        right.is_ok(),
+        "exactly one contender wins the last pending-flow slot"
+    );
+    let count: i64 = db
+        .backend
+        .query_opt(
+            "SELECT COUNT(*) FROM oidc_flows WHERE org_id = ?1",
+            &vals![org_id],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, MAX_PENDING_OIDC_FLOWS_PER_ORG);
+}
+
+#[tokio::test]
+async fn oidc_flow_cleanup_is_bounded_and_preserves_live_single_use_flows() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("oidc-retention", "OIDC Retention")
+        .await
+        .unwrap();
+    let binding_hash = "0".repeat(64);
+
+    for state in ["expired-a", "expired-b", "expired-c"] {
+        db.create_oidc_flow(
+            state,
+            org_id,
+            "verifier",
+            "nonce",
+            "code-verifier",
+            &binding_hash,
+            None,
+            -1,
+        )
+        .await
+        .unwrap();
+    }
+    db.create_oidc_flow(
+        "live",
+        org_id,
+        "verifier",
+        "nonce",
+        "code-verifier",
+        &binding_hash,
+        Some("/settings"),
+        600,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 2);
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 1);
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 0);
+
+    let live = db
+        .take_oidc_flow("live", &binding_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(live.redirect_after.as_deref(), Some("/settings"));
+    assert!(db
+        .take_oidc_flow("live", &binding_hash)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(db.prune_expired_oidc_flows(unix_now(), 0).await.is_err());
+}
+
+#[tokio::test]
 async fn orgs_projects_and_principals_roundtrip() {
     let db = Database::open_in_memory().await.unwrap();
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
