@@ -141,7 +141,7 @@ async fn cache_info_requires_view_read_permission() {
 }
 
 #[tokio::test]
-async fn upload_progress_requires_view_read_permission() {
+async fn upload_progress_requires_view_build_permission() {
     let directory = tempfile::tempdir().unwrap();
     let state = test_state(&directory);
     let alpha_reader = access_token(&state, &["alpha"], &["read"]);
@@ -155,11 +155,11 @@ async fn upload_progress_requires_view_read_permission() {
     );
     assert_eq!(
         request_status(Arc::clone(&state), "HEAD", uri, Some(&alpha_builder)).await,
-        StatusCode::FORBIDDEN
+        StatusCode::NOT_FOUND
     );
     assert_eq!(
         request_status(state, "HEAD", uri, Some(&alpha_reader)).await,
-        StatusCode::NOT_FOUND
+        StatusCode::FORBIDDEN
     );
 }
 
