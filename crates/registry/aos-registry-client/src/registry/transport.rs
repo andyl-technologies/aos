@@ -56,11 +56,13 @@ pub trait RegistryRead: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid paths, failed transfers, or local I/O errors.
+    /// Returns an error for invalid paths, failed transfers, oversized data, or
+    /// local I/O errors.
     async fn download_optional(
         &self,
         relative: &str,
         destination: &Path,
+        max_bytes: u64,
         progress: Option<&TransferProgress>,
     ) -> Result<bool>;
 }
@@ -189,6 +191,7 @@ impl RegistryRead for RegistryTransport {
         &self,
         relative: &str,
         destination: &Path,
+        max_bytes: u64,
         progress: Option<&TransferProgress>,
     ) -> Result<bool> {
         let url = self.object_url(relative)?;
@@ -200,7 +203,8 @@ impl RegistryRead for RegistryTransport {
             .prefix(".registry-download-")
             .tempfile_in(parent)?
             .into_temp_path();
-        let request = TransferRequest::get_to_file(&url, temporary.to_path_buf());
+        let mut request = TransferRequest::get_to_file(&url, temporary.to_path_buf());
+        request.maximum_bytes = Some(max_bytes);
         let observer = RegistryDownloadProgress {
             progress,
             previous: std::sync::atomic::AtomicU64::new(0),
@@ -293,11 +297,20 @@ mod tests {
             let destination = root.path().join("downloaded");
             assert!(
                 reader
-                    .download_optional("object", &destination, None)
+                    .download_optional("object", &destination, 64, None)
                     .await
                     .unwrap()
             );
             assert_eq!(std::fs::read(destination).unwrap(), b"registry bytes");
+
+            let oversized_destination = root.path().join("oversized-download");
+            assert!(
+                reader
+                    .download_optional("object", &oversized_destination, 3, None)
+                    .await
+                    .is_err()
+            );
+            assert!(!oversized_destination.exists());
         }
     }
 
@@ -345,6 +358,36 @@ mod tests {
 
             assert_eq!(response.status, 403);
             assert_eq!(response.body.len(), maximum.min(8192) as usize);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn chunked_http_reads_respect_the_byte_limit() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        for (maximum, succeeds) in [(8, true), (7, false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                stream.read(&mut request).await.unwrap();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            });
+            let reader = RegistryTransport::new(&format!("http://{address}")).unwrap();
+
+            let result = reader.read_optional("object", maximum).await;
+            if succeeds {
+                assert_eq!(result.unwrap().unwrap(), b"abcdefgh");
+            } else {
+                assert!(result.is_err());
+            }
             server.await.unwrap();
         }
     }
