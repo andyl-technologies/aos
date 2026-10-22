@@ -15262,3 +15262,22 @@ inputs, the actual installed Cargo ELF and all original enrollment and release
 witnesses. The final recovered-inline explicit-import lint also passes in 5.02
 seconds. Cold-native
 qualification, cold manifest retirement and broader trunk obligations remain open.
+
+
+#### Recovered cleanup preserves the original in-flight turn
+
+Both `b9abb98ac2` native release runs fail: warm release in 318.666 seconds and
+cold release in 319.968 seconds. All original enrollment controls, both-domain
+second-consumer controls, public retention and actual original cold recovery
+reach their witnesses. Final private cleanup then refuses with `encoded admission
+requires current running custody`. The new inline registry cleanup incorrectly
+requests a healthy admission context while its original validated retirement
+turn remains marked in flight before reconciliation. Even an empty recovered
+registry triggers that check, explaining the warm regression.
+
+Cleanup now borrows the original physical owner's retained publisher session,
+matching existing completed-publication cleanup, instead of acquiring a new
+healthy admission context during the active turn. Original physical-worker and
+typed final-removal checks still precede exact registered-alias validation and
+resource release. Both failed receipts remain retained; fresh exact-source warm
+and cold qualification are required. No task is accepted by this correction.
