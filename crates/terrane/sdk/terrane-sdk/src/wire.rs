@@ -22,6 +22,10 @@ pub mod status;
 #[cfg(feature = "tokio")]
 pub mod authentication;
 
+/// Completes bounded native RPC reads before exposing private representations.
+#[cfg(feature = "tokio")]
+pub mod client;
+
 /// Binds complete native services to bounded loopback or TLS 1.3 listeners.
 #[cfg(feature = "tokio")]
 pub mod transport;

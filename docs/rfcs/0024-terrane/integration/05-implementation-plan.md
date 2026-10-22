@@ -12469,3 +12469,42 @@ case at 1,800.074 seconds. Later targeted-retirement and grouped-read focused
 runs pass those cases within their unchanged bounds. That does not replace the
 required full aggregate on the current implementation; its qualification remains
 open. The older failure and retained diagnostics remain recorded.
+
+
+#### Native bounded bundle RPC completion
+
+The generated native ContentService client now has a bounded GetBundle receive
+path. It requires explicit positive timeout, frame and decoded-element limits
+before connecting, retains metadata privately, and completes only after the
+protocol decoder accepts successful terminal metadata. Plain body EOF, malformed
+termination, transport failure, cancellation, invalid metadata and aggregate
+byte exhaustion return no partial result. One absolute Tokio deadline covers
+connection and reception without resetting on progress. Synchronous configured
+schema validation is not preempted, but its late result is refused.
+
+All ten actual loopback HTTP socket cases pass locally under the existing
+thirty-second selector bound. They exercise the generated client, actual
+protocol decoder and configured MetadataValidator, including connection closure
+on timeout and cancellation, all-held empty results, and refusal before any
+connection for invalid call bounds. An initial element-budget fixture incorrectly
+expected borrowed singular protobuf fields to consume the repeated-element
+budget; it was replaced with an aggregate-byte exhaustion witness. The failed
+diagnostic remains recorded separately; production behavior was unchanged.
+Strict SDK/Linux/CLI all-target Clippy, native portable and actual WebAssembly
+checking, Rust/Nix formatting and check evaluation pass. Frozen bundle-client
+and required application-target qualification remain pending.
+
+This helper returns validated private representations. It does not establish
+signatures, graph closure, current permission, Original custody or admission,
+and the socket fixture is not an authorized repository server. Full GetBundle
+server traversal and deployed protocol conformance remain open. No task
+acceptance changes.
+
+All six frozen native index populations at `a9b9cdb9f5` now pass in 5,763.04
+seconds overall, including both 4,096-item populations within their unchanged
+1,800-second bounds. Independent review matches 7,926 immutable source files,
+5,231 bound inputs and actual SDK runtime evidence. This focused result does
+not replace current full aggregate qualification. Required application-target
+compilation at `2a3c545c58` passes in 1,582.10 seconds, matching 7,943 immutable
+source files and 184 compiler artifact records across 59 packages; executable
+bytes are not retained by that application compilation check.
