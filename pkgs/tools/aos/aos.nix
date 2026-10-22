@@ -714,7 +714,7 @@
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
           # and split-output private links preserve their own argv[0], which
-          # selects the corresponding parser in crates/aos/cli/aos-cli/src/apm.rs.
+          # selects the corresponding parser in crates/cli/aos-cli/src/apm.rs.
           mv \
             "$apm/bin/.apm-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped"

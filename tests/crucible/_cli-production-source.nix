@@ -2,7 +2,7 @@
 {lib}:
 import ./_rust-source.nix {
   inherit lib;
-  entry = ../../crates/crucible/control/crucible-cli/src/main.rs;
-  fragmentDirs = [../../crates/crucible/control/crucible-cli/src/cli];
+  entry = ../../crates/crucible/crucible-cli/src/main.rs;
+  fragmentDirs = [../../crates/crucible/crucible-cli/src/cli];
   includeTests = false;
 }

@@ -145,7 +145,7 @@ two VM tests that hard-code the old default (`tests/vm/apm/registry.nix`,
   tempdir `FsBackend` (not a hand mock). Concurrency is structural — no timing
   asserts.
 
-### B2. `crates/aos/cli/aos-cli/tests/apr_cache_cli.rs` integration (the §13 matrix)
+### B2. `crates/cli/aos-cli/tests/apr_cache_cli.rs` integration (the §13 matrix)
 Drive with `--json` and assert on report fields, not log scraping.
 - **(b) skip counts** — extend the v1→v2 overlapping-closure test: second
   release's `cache.remote_skipped > 0`, `cache.nars == <only-new>`.

@@ -9,10 +9,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   preemptionTest = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_preemption_resolve.rs)
-    (builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_preemption_identity.rs)
+    (builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs)
+    (builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_preemption_identity.rs)
   ];
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,7 +39,7 @@
         needle = "never clamps or defers";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "preemption application evidence";
         needle = "pub struct SchedulerPreemptionApplication";
@@ -85,13 +85,13 @@
         needle = "preemption_requests={}";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "preemption application exported";
         needle = "SchedulerPreemptionApplication";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_preemption_resolve.rs" preemptionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs" preemptionTest [
       {
         label = "focused preemption RESOLVE test";
         needle = "scheduler-side preemption RESOLVE";
@@ -149,7 +149,7 @@
         needle = "VirtualTime { ticks: 4 }";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_preemption_resolve.rs" preemptionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs" preemptionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

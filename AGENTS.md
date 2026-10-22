@@ -184,7 +184,7 @@ target directory, Rust incremental compilation, and accache. Leading `--no-go-ca
 The CLI passes each enabled path to the matching language builder. Opted-in
 CMake applications use accache; toolchains keep their ordinary identities.
 Accache caches nonincremental Rust actions; incremental invocations pass through. See
-[`tools/accache/README.md`](tools/accache/README.md) for coverage and diagnostics.
+[`crates/accache/accache/README.md`](crates/accache/accache/README.md) for coverage and diagnostics.
 
 Run `cache init` once per machine; it sets up directories and ACLs without
 building a compiler or starting a host service. The host cache path must be

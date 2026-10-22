@@ -22,10 +22,10 @@
     inherit lib;
     component = "streaming";
   };
-  streamingTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs;
+  streamingTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs;
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -50,7 +50,7 @@
         needle = "`T-API-4` is green through `checks.crucible.phase5.apiStreamingEquivalence`";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "streaming module exported";
         needle = "pub mod streaming";
@@ -64,7 +64,7 @@
         needle = "validate_control_watch_send_equivalence";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" apiClient [
       {
         label = "Control attach client method";
         needle = "fn control_attach(";
@@ -98,7 +98,7 @@
         needle = ''"/crucible.rpc/send"'';
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "streaming session facade";
         needle = "pub struct InProcessStreamingSession";
@@ -156,7 +156,7 @@
         needle = "event_log.subscribe";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingTest [
       {
         label = "capability equivalence test";
         needle = "control_and_watch_send_advertise_identical_command_capabilities";
@@ -182,7 +182,7 @@
         needle = "SendRequest::new";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC Control attach coverage";
         needle = "RPC Control attach should decode";

@@ -81,8 +81,8 @@
   git-backed change requests; quotas/backup/offboarding.
 - **Date:** 2026-06-12 (Phase 5 addendum: 2026-06-15; wasm spike + Connect-JSON transport decision: 2026-06-16)
 - **PR:** [#99](https://github.com/andyl-technologies/aos/pull/99)
-- **Audience:** anyone working on `crates/aos/registry/` (registry formats, verified reads, and APR authoring)
-  or `crates/aos/packages/aos-package-manager/` (APM installation), `crates/aos/packages/aos-build-server/`, `crates/aos/packages/aos-build-api/`,
+- **Audience:** anyone working on `crates/registry/` (registry formats, verified reads, and APR authoring)
+  or `crates/packages/aos-package-manager/` (APM installation), `crates/packages/aos-build-server/`, `crates/packages/aos-build-api/`,
   `crates/hub/`, or the
   registry docs under `docs/registry/`.
 

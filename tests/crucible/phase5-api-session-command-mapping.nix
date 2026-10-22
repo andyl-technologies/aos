@@ -14,8 +14,8 @@
     inherit lib;
     component = "exports";
   };
-  sessionMapping = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/session_mapping.rs;
-  sessionMappingTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_session_mapping.rs;
+  sessionMapping = builtins.readFile ../../crates/crucible/crucible-control-api/src/session_mapping.rs;
+  sessionMappingTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_session_mapping.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -35,7 +35,7 @@
         needle = "`T-API-2` is green through `checks.crucible.phase5.apiSessionCommandMapping`";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "session mapping module exported";
         needle = "pub mod session_mapping";
@@ -45,7 +45,7 @@
         needle = "validate_thin_api_mapping";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/session_mapping.rs" sessionMapping [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/session_mapping.rs" sessionMapping [
       {
         label = "API method enum";
         needle = "pub enum ApiMethod";
@@ -95,7 +95,7 @@
         needle = "pub fn validate_thin_api_mapping";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_session_mapping.rs" sessionMappingTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_session_mapping.rs" sessionMappingTest [
       {
         label = "thin wrapper validation test";
         needle = "api_session_mapping_validates_thin_wrapper_contract";

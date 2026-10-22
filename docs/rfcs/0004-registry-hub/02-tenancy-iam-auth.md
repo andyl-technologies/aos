@@ -58,7 +58,7 @@ Two principal planes that never cross:
   computed from `memberships` per request — role changes take effect
   immediately, no static scopes.
 - **Machines** keep the existing `aos-build-server` pattern
-  (`crates/aos/packages/aos-build-server/src/auth.rs`, `tokens.rs`): `aos_`-prefixed
+  (`crates/packages/aos-build-server/src/auth.rs`, `tokens.rs`): `aos_`-prefixed
   provisioning tokens, hashed at rest, exchanged at `/oauth2/token` for
   short-TTL JWTs — with scope generalized from `views` to
   `{path_prefix, permissions[]}` (e.g. `acme/infra/prod` +
