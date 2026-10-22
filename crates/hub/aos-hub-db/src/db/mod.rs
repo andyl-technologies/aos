@@ -535,6 +535,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
 /// | 9 | `migration-0009-session-authentication.sql` | Browser-session authentication evidence. |
+/// | 10 | `migration-0010-passkey-reauthentication.sql` | Passkey-registration session bindings. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -545,6 +546,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
     include_str!("migration-0009-session-authentication.sql"),
+    include_str!("migration-0010-passkey-reauthentication.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -1254,11 +1256,25 @@ fn row_to_oidc_flow(row: &Row) -> Result<OidcFlowRecord> {
 }
 
 fn row_to_webauthn_challenge(row: &Row) -> Result<WebauthnChallengeRecord> {
+    let session_id_hash: Option<String> = row.get(4)?;
+    let reauthentication_generation: Option<i64> = row.get(5)?;
+    let registration_binding = match (session_id_hash, reauthentication_generation) {
+        (Some(session_id_hash), Some(reauthentication_generation)) => {
+            Some(WebauthnChallengeBinding {
+                session_id_hash,
+                reauthentication_generation,
+            })
+        }
+        (None, None) => None,
+        _ => anyhow::bail!("webauthn challenge session binding is malformed"),
+    };
+
     Ok(WebauthnChallengeRecord {
         challenge: row.get(0)?,
         user_id: row.get(1)?,
         kind: row.get(2)?,
         expires_at: row.get(3)?,
+        registration_binding,
     })
 }
 

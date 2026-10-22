@@ -375,7 +375,9 @@ impl Database {
     /// `kind` is `"registration"` or `"assertion"`; `user_id` is the
     /// registering user for a registration ceremony, or `None` for a
     /// usernameless assertion ceremony (the user is resolved from the presented
-    /// credential at verify). The challenge is consumed exactly once by
+    /// credential at verify). Registration ceremonies carry the browser-session
+    /// binding that authorized them; assertion ceremonies pass `None`. The
+    /// challenge is consumed exactly once by
     /// [`Database::take_webauthn_challenge`].
     ///
     /// # Errors
@@ -388,13 +390,31 @@ impl Database {
         user_id: Option<i64>,
         kind: &str,
         ttl_secs: i64,
+        registration_binding: Option<&WebauthnChallengeBinding>,
     ) -> Result<()> {
         let now = unix_now();
+        let (session_id_hash, reauthentication_generation) =
+            registration_binding.map_or((None, None), |binding| {
+                (
+                    Some(binding.session_id_hash.as_str()),
+                    Some(binding.reauthentication_generation),
+                )
+            });
         self.backend
             .execute(
-                "INSERT INTO webauthn_challenges (challenge, user_id, kind, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-                &vals![challenge, user_id, kind, now, now + ttl_secs],
+                "INSERT INTO webauthn_challenges
+                 (challenge, user_id, kind, created_at, expires_at,
+                  session_id_hash, reauthentication_generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &vals![
+                    challenge,
+                    user_id,
+                    kind,
+                    now,
+                    now + ttl_secs,
+                    session_id_hash,
+                    reauthentication_generation
+                ],
             )
             .await?;
         Ok(())
@@ -430,7 +450,8 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT challenge, user_id, kind, expires_at
+                    "SELECT challenge, user_id, kind, expires_at,
+                            session_id_hash, reauthentication_generation
                      FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
                     &vals![challenge, kind],
                 )
@@ -455,7 +476,8 @@ impl Database {
             self.backend
                 .query_opt(
                     "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2
-                     RETURNING challenge, user_id, kind, expires_at",
+                     RETURNING challenge, user_id, kind, expires_at,
+                               session_id_hash, reauthentication_generation",
                     &vals![challenge, kind],
                 )
                 .await

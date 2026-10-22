@@ -16,7 +16,7 @@ impl Database {
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
                         s.created_at, s.last_seen_at, s.authentication_method,
-                        s.authentication_provider
+                        s.authentication_provider, s.reauthentication_generation
                  FROM sessions s JOIN users u ON u.id = s.user_id
                  WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
                 &vals![hash],
@@ -32,6 +32,7 @@ impl Database {
                     last_authenticated_at: row.get(2)?,
                     expires_at: row.get(3)?,
                     authentication: SessionAuthentication::from_database(&method, provider)?,
+                    reauthentication_generation: row.get(8)?,
                 };
                 let created_at: i64 = row.get(4)?;
                 let last_seen_at: i64 = row.get(5)?;
