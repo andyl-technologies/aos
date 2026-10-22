@@ -22,7 +22,8 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
     PacketNativeImport18BootstrapMaterializationRowData,
     PacketNativeImport18BootstrapRawResponseData, PacketNativeImport18BootstrapReceiveRowData,
     PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapReservationRowData,
-    PacketNativeImport18BootstrapSdkRowData, PacketNativeImport18BootstrapSealingData,
+    PacketNativeImport18BootstrapResponseDecodeData, PacketNativeImport18BootstrapSdkRowData,
+    PacketNativeImport18BootstrapSdkSettlementRowData, PacketNativeImport18BootstrapSealingData,
 };
 use crate::retained_metadata::{
     aliases::MetadataSharedKind, requested_metadata_backing_storage_data,
@@ -41,6 +42,8 @@ mod publication;
 mod receive;
 #[path = "bootstrap/reservation.rs"]
 mod reservation;
+#[path = "bootstrap/sdk_settlement.rs"]
+mod sdk_settlement;
 #[path = "bootstrap/signing.rs"]
 mod signing;
 #[path = "bootstrap/storage.rs"]
@@ -79,6 +82,11 @@ pub struct OriginalNativeImport18Bootstrap {
     receive_started: bool,
     raw_response: Option<PacketNativeImport18BootstrapRawResponseData>,
     received: bool,
+    settlement_row: Option<PacketNativeImport18BootstrapSdkSettlementRowData>,
+    settlement_started: bool,
+    decoded_response: Option<PacketNativeImport18BootstrapResponseDecodeData>,
+    settled_request: Option<Envelope>,
+    sdk_settled: bool,
     retained: bool,
     failed: bool,
 }
@@ -132,6 +140,11 @@ impl CnpController {
             receive_started: false,
             raw_response: None,
             received: false,
+            settlement_row: None,
+            settlement_started: false,
+            decoded_response: None,
+            settled_request: None,
+            sdk_settled: false,
             retained: false,
             failed: true,
         });
@@ -197,6 +210,11 @@ impl OriginalNativeImport18Bootstrap {
             receive_started: _,
             raw_response,
             received: _,
+            settlement_row: _,
+            settlement_started: _,
+            decoded_response,
+            settled_request,
+            sdk_settled: _,
             retained: _,
             failed: _,
         } = self;
@@ -216,6 +234,10 @@ impl OriginalNativeImport18Bootstrap {
         if let Some(raw) = raw_response {
             raw.observe_retained_into_data(&mut observer)?;
         }
+        if let Some(decoded) = decoded_response {
+            decoded.observe_retained_into_data(&mut observer)?;
+        }
+        observer.observe(settled_request)?;
         Ok(observer.finish())
     }
 
@@ -225,7 +247,9 @@ impl OriginalNativeImport18Bootstrap {
     /// Refuses a foreign creator process or thread.
     pub fn retained_metadata_counter_scratch_data(&self) -> Result<usize, ProviderError> {
         self.row.controller.ensure_current()?;
-        Ok(if self.receive_started {
+        Ok(if self.settlement_started {
+            CnpController::original_native_import18_bootstrap_sdk_settlement_counter_scratch_data()
+        } else if self.receive_started {
             CnpController::original_native_import18_bootstrap_receive_counter_scratch_data()
         } else if self.sdk_started || self.publication_started {
             CnpController::original_native_import18_bootstrap_sdk_counter_scratch_data()

@@ -178,7 +178,11 @@ fn check_retained(
     Ok(())
 }
 
-fn authenticate_terminal(
+/// Checks original identity/cut and the actual still-pending raw response.
+///
+/// # Errors
+/// Refuses changed identity, time, raw literal or pending SDK request.
+pub(super) fn authenticate_terminal(
     controller: &CnpController,
     hello: &OriginalHelloJournal,
     owner: &OriginalNativeImport18Bootstrap,

@@ -429,3 +429,50 @@ fn maximum_width_initial_data_stays_within_the_independent_quote() {
     );
     assert!(owner.retained_requested_bytes_data().unwrap() <= history.requested_storage[0]);
 }
+
+#[test]
+fn defining_decoder_tree_populations_reprice_actual_outputs_under_the_sdk_layout() {
+    use crate::retained_metadata::requested_storage::tree_storage_data;
+    use std::mem::align_of;
+    let (original, raw) = operands();
+    let (result, owner) = decode(&original, &raw);
+    result.unwrap();
+    let mut observer = MetadataObserver::new();
+    owner.observe_retained_into_data(&mut observer).unwrap();
+    let facts = observer.finish();
+    assert_eq!([facts.tree_containers, facts.tree_entries], [9, 25]);
+    let component = native_import18_bootstrap_response_decode_quote_data(usize::MAX).unwrap();
+    let ordinary = component.requested_storage_data();
+    let enclosing = component
+        .requested_storage_under_tree_layout_data(
+            size_of::<Id>() + size_of::<Envelope>(),
+            align_of::<Id>().max(align_of::<Envelope>()),
+        )
+        .unwrap();
+    let plain_trees = tree_storage_data(
+        facts.tree_containers,
+        facts.tree_entries,
+        facts.maximum_tree_key_value_bytes,
+        facts.maximum_tree_entry_alignment,
+    )
+    .unwrap();
+    let sdk_trees = tree_storage_data(
+        facts.tree_containers,
+        facts.tree_entries,
+        size_of::<Id>() + size_of::<Envelope>(),
+        align_of::<Id>().max(align_of::<Envelope>()),
+    )
+    .unwrap();
+
+    assert_eq!(enclosing[0] - ordinary[0], sdk_trees - plain_trees);
+    assert_eq!(&enclosing[1..], &ordinary[1..]);
+    let mut combined = facts;
+    combined.maximum_tree_key_value_bytes = size_of::<Id>() + size_of::<Envelope>();
+    combined.maximum_tree_entry_alignment = align_of::<Id>().max(align_of::<Envelope>());
+    assert!(
+        size_of::<PacketNativeImport18BootstrapResponseDecodeData>()
+            + requested_metadata_backing_storage_data(&combined).unwrap()
+            <= enclosing[0]
+    );
+    owner.authenticate_raw_data(&original, &raw).unwrap();
+}

@@ -45,8 +45,13 @@ const _: fn(PacketNativeImport18BootstrapAckState) = |state| match state {
 // then truncates its length to 32 without shrinking its allocation.
 const DIGEST_CAPACITY: usize = ((43usize / 4) + 1) * 3;
 
+// The typed Envelope has no outer serialized Envelope object. Its common
+// completed body keeps an independently cloned result and empty extension map.
+const ENVELOPE_TREES: [usize; 2] = [6, 18];
+const COMPLETED_BODY_TREES: [usize; 2] = [3, 7];
+
 /// Names component demand without admitting raw input or issuing Source credit.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PacketNativeImport18BootstrapResponseDecodeRowData {
     pub(super) axes: [usize; 3],
 }
@@ -55,6 +60,34 @@ impl PacketNativeImport18BootstrapResponseDecodeRowData {
     /// Returns retained, simultaneous transient and fixed-control requested bytes.
     pub const fn requested_storage_data(self) -> [usize; 3] {
         self.axes
+    }
+
+    /// Prices the defining output maps under an enclosing typed tree census.
+    ///
+    /// # Errors
+    /// Refuses unsupported tree layout or checked storage arithmetic overflow.
+    pub(crate) fn requested_storage_under_tree_layout_data(
+        self,
+        entry_bytes: usize,
+        entry_alignment: usize,
+    ) -> Result<[usize; 3], ProviderError> {
+        let containers = sum(&[ENVELOPE_TREES[0], COMPLETED_BODY_TREES[0]])?;
+        let entries = sum(&[ENVELOPE_TREES[1], COMPLETED_BODY_TREES[1]])?;
+        let plain = trees(containers, entries)?;
+        let enclosing = tree_storage_data(
+            containers,
+            entries,
+            entry_bytes.max(size_of::<String>() + size_of::<Value>()),
+            entry_alignment
+                .max(align_of::<String>())
+                .max(align_of::<Value>()),
+        )?;
+        let mut axes = self.axes;
+        axes[0] = axes[0]
+            .checked_sub(plain)
+            .and_then(|bytes| bytes.checked_add(enclosing))
+            .ok_or_else(exhausted)?;
+        Ok(axes)
     }
 }
 
@@ -69,8 +102,14 @@ impl PacketNativeImport18BootstrapResponseDecodeRowData {
 pub fn native_import18_bootstrap_response_decode_quote_data(
     maximum: usize,
 ) -> Result<PacketNativeImport18BootstrapResponseDecodeRowData, ProviderError> {
-    let envelope = sum(&[trees(6, 18)?, envelope_text()?])?;
-    let body = sum(&[trees(3, 7)?, result_text()?])?;
+    let envelope = sum(&[
+        trees(ENVELOPE_TREES[0], ENVELOPE_TREES[1])?,
+        envelope_text()?,
+    ])?;
+    let body = sum(&[
+        trees(COMPLETED_BODY_TREES[0], COMPLETED_BODY_TREES[1])?,
+        result_text()?,
+    ])?;
     let request = sum(&[
         NATIVE_IMPORT18_BOOTSTRAP_REQUEST_SCHEMA.len(),
         DIGEST_CAPACITY,
@@ -205,6 +244,18 @@ fn envelope_text() -> Result<usize, ProviderError> {
 pub(super) fn retained_data(
     attempt: &PacketNativeImport18BootstrapResponseDecodeData,
 ) -> Result<usize, ProviderError> {
+    let mut observer = MetadataObserver::new();
+    observe_data(attempt, &mut observer)?;
+    sum(&[
+        size_of::<PacketNativeImport18BootstrapResponseDecodeData>(),
+        requested_metadata_backing_storage_data(&observer.finish())?,
+    ])
+}
+
+pub(super) fn observe_data(
+    attempt: &PacketNativeImport18BootstrapResponseDecodeData,
+    observer: &mut MetadataObserver<'_>,
+) -> Result<(), ProviderError> {
     let PacketNativeImport18BootstrapResponseDecodeData {
         row: _,
         step: _,
@@ -217,7 +268,6 @@ pub(super) fn retained_data(
         decoded: _,
         failed: _,
     } = attempt;
-    let mut observer = MetadataObserver::new();
     if let Some(envelope) = envelope {
         let Envelope {
             protocol,
@@ -246,7 +296,7 @@ pub(super) fn retained_data(
         observer.observe(extensions)?;
     }
     if let Some(request) = request {
-        PacketNativeImport18BootstrapRetainedData::Request(request).observe_data(&mut observer)?;
+        PacketNativeImport18BootstrapRetainedData::Request(request).observe_data(observer)?;
     }
     if let Some(body) = body {
         match body {
@@ -262,15 +312,12 @@ pub(super) fn retained_data(
         }
     }
     if let Some(result) = result {
-        PacketNativeImport18BootstrapRetainedData::Result(result).observe_data(&mut observer)?;
+        PacketNativeImport18BootstrapRetainedData::Result(result).observe_data(observer)?;
     }
     if let Some(receipt) = receipt {
-        PacketNativeImport18BootstrapRetainedData::Receipt(receipt).observe_data(&mut observer)?;
+        PacketNativeImport18BootstrapRetainedData::Receipt(receipt).observe_data(observer)?;
     }
-    sum(&[
-        size_of::<PacketNativeImport18BootstrapResponseDecodeData>(),
-        requested_metadata_backing_storage_data(&observer.finish())?,
-    ])
+    Ok(())
 }
 
 /// Names actual borrowed decode, preflight, inspection, census and quote controls.
@@ -295,6 +342,11 @@ pub fn native_import18_bootstrap_response_decode_counter_scratch_data() -> usize
         + size_of::<std::iter::Map<serde_json::map::Iter<'static>, BorrowedFieldMapper>>()
         + size_of::<MetadataObserver<'static>>() + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
         + size_of::<[usize; 6]>() + size_of::<[usize; 35]>() + size_of::<[usize; 5]>()
+        + size_of::<[[usize; 2]; 2]>() + size_of::<Result<[usize; 3], ProviderError>>()
+        + size_of::<serde_json::map::Iter<'static>>()
+        + size_of::<std::collections::btree_map::Iter<'static, String, Value>>()
+        + size_of::<(&String, &Value)>() * 2
+        + size_of::<Option<&Map<String, Value>>>()
         + size_of::<std::iter::Chain<std::array::IntoIter<&str, 4>, std::array::IntoIter<&str, 3>>>()
         + size_of::<std::iter::Chain<std::iter::Chain<std::array::IntoIter<&str, 4>, std::array::IntoIter<&str, 1>>, std::array::IntoIter<&str, 6>>>()
         + size_of::<std::slice::Iter<'static, usize>>() + size_of::<&[usize]>()

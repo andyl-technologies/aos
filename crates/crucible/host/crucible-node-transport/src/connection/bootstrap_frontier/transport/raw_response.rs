@@ -191,6 +191,36 @@ impl<S: ProviderStream> Connection<S> {
         original: &Envelope,
         raw: &Raw,
     ) -> Result<(), ProviderError> {
+        self.authenticate_bootstrap_response_literal_data(raw)?;
+        self.guard.original_bootstrap_pending_data(original)
+    }
+
+    /// Checks settled SDK custody beside the same raw and decoded response.
+    ///
+    /// # Errors
+    /// Refuses changed literal, typed correspondence, moved request or SDK state.
+    pub(crate) fn authenticate_original_bootstrap_sdk_settlement_data(
+        &self,
+        original: &Envelope,
+        raw: &Raw,
+        moved: &Envelope,
+        decoded: &PacketNativeImport18BootstrapResponseDecodeData,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_bootstrap_response_literal_data(raw)?;
+        decoded.authenticate_raw_data(original, &raw.frame.as_ref().ok_or_else(refused)?.value)?;
+        if moved != original {
+            return Err(refused());
+        }
+        self.guard.original_bootstrap_received_data(
+            moved,
+            decoded
+                .borrowed_history_data()
+                .envelope
+                .ok_or_else(refused)?,
+        )
+    }
+
+    fn authenticate_bootstrap_response_literal_data(&self, raw: &Raw) -> Result<(), ProviderError> {
         raw.owner.ensure_current()?;
         let frame = raw.frame.as_ref().ok_or_else(refused)?;
         if raw.failed
@@ -208,7 +238,25 @@ impl<S: ProviderStream> Connection<S> {
         {
             return Err(refused());
         }
-        self.authenticate_native_import18_raw_data(original, frame)
+        self.authenticate_original_bootstrap_endpoint_data()?;
+        self.native_import18_selection_data()?;
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| refused())?;
+        let (last, observed) = bank.frames().enumerate().last().ok_or_else(refused)?;
+        if Some(last) != raw.slot
+            || observed.direction != FrameDirection::Incoming
+            || !observed.complete
+            || observed.transferred != frame.bytes.len().checked_add(4).ok_or_else(refused)?
+            || observed.bytes.get(..4) != Some(raw.header.as_slice())
+            || observed.bytes.get(4..) != Some(frame.bytes.as_slice())
+        {
+            return Err(refused());
+        }
+        Ok(())
     }
 
     fn read_bootstrap_response(&mut self, raw: &mut Raw) -> Result<(), ProviderError> {

@@ -256,6 +256,49 @@ impl PacketNativeImport18BootstrapResponseDecodeData {
     pub fn retained_requested_bytes_data(&self) -> Result<usize, ProviderError> {
         storage::retained_data(self)
     }
+
+    /// Checks successful typed decoding against the unchanged retained raw tree.
+    ///
+    /// # Errors
+    /// Refuses incomplete decoding or changed closed header, body or extensions.
+    pub(crate) fn authenticate_raw_data(
+        &self,
+        original: &Envelope,
+        raw: &Value,
+    ) -> Result<(), ProviderError> {
+        if !self.decoded || self.failed {
+            return Err(refused());
+        }
+        preflight::inspect_data(original, raw)?;
+        let envelope = self.envelope.as_ref().ok_or_else(refused)?;
+        envelope.validate()?;
+        original.matches_response(envelope)?;
+        if envelope.sequence.get() != 2
+            || envelope.method != Method::NativeImport18Bootstrap
+            || raw.get("body").and_then(Value::as_object) != Some(&envelope.body)
+            || !raw
+                .get("extensions")
+                .and_then(Value::as_object)
+                .is_some_and(|extensions| {
+                    extensions.len() == envelope.extensions.len()
+                        && extensions.iter().eq(envelope.extensions.iter())
+                })
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Adds every actual decoder output and failed prefix to an enclosing census.
+    ///
+    /// # Errors
+    /// Refuses unsupported common-body variants or checked traversal exhaustion.
+    pub(crate) fn observe_retained_into_data(
+        &self,
+        observer: &mut MetadataObserver<'_>,
+    ) -> Result<(), ProviderError> {
+        storage::observe_data(self, observer)
+    }
 }
 
 fn refused() -> ProviderError {

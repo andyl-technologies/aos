@@ -69,6 +69,16 @@ pub struct OriginalNativeImport18BootstrapHistoryData<'a> {
     pub raw_response: Option<&'a PacketNativeImport18BootstrapRawResponseData>,
     /// Reports guarded raw receipt independently of SDK settlement or Source MACs.
     pub received: bool,
+    /// Borrows the exact independently admitted typed/SDK settlement row.
+    pub settlement_row: Option<&'a PacketNativeImport18BootstrapSdkSettlementRowData>,
+    /// Reports spent settlement entry independently of its surviving outputs.
+    pub settlement_started: bool,
+    /// Borrows all typed decoder outputs, including failed prefixes.
+    pub decoded_response: Option<&'a PacketNativeImport18BootstrapResponseDecodeData>,
+    /// Borrows the actual moved SDK pending request after either outcome.
+    pub settled_request: Option<&'a Envelope>,
+    /// Reports guarded SDK settlement without claiming private Source completion.
+    pub sdk_settled: bool,
     /// Borrows the moved assignment, proof, DOM and literal after either outcome.
     pub sealing: Option<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapSealingHistoryData<'a>>,
     /// Reports only successful typed-owner retention, never bootstrap completion.
@@ -152,6 +162,11 @@ impl OriginalNativeImport18Bootstrap {
             receive_started: self.receive_started,
             raw_response: self.raw_response.as_ref(),
             received: self.received,
+            settlement_row: self.settlement_row.as_ref(),
+            settlement_started: self.settlement_started,
+            decoded_response: self.decoded_response.as_ref(),
+            settled_request: self.settled_request.as_ref(),
+            sdk_settled: self.sdk_settled,
             sealing: self
                 .sealing
                 .as_ref()

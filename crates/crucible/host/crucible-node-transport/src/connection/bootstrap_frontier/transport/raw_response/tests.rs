@@ -78,6 +78,14 @@ fn complete_raw_response_preserves_literal_and_dom_before_actual_sdk_settlement(
         pending_pointer
     );
     assert!(connection.guard.pending_requests().next().is_none());
+    connection
+        .authenticate_original_bootstrap_sdk_settlement_data(
+            &original,
+            raw,
+            retained_request.as_ref().unwrap(),
+            decoded.as_ref().unwrap(),
+        )
+        .unwrap();
 }
 
 #[test]
@@ -283,4 +291,86 @@ fn combined_raw_sdk_and_real_incident_census_uses_the_actual_largest_tree_layout
         "actual {actual}, quote {:?}",
         row.axes
     );
+}
+
+#[test]
+fn settled_guard_refuses_foreign_typed_data_changed_raw_or_moved_request_without_losing_outputs() {
+    use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::native_import18_bootstrap_response_decode_into_data;
+    for fault in 0..4 {
+        let (_lease, mut connection, mut peer, original, request) = published();
+        let value = response(&original, &request);
+        let body = serde_json::to_vec(&value).unwrap();
+        peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+        peer.write_all(&body).unwrap();
+        let mut output = None;
+        connection
+            .receive_original_bootstrap_response_into_data(
+                &original,
+                &row(),
+                usize::MAX,
+                &mut output,
+            )
+            .unwrap();
+        let mut raw = output.take().unwrap();
+        let mut decoded = None;
+        let mut moved = None;
+        let component = native_import18_bootstrap_response_decode_quote_data(usize::MAX).unwrap();
+        connection
+            .decode_original_bootstrap_raw_into_data(
+                &original,
+                raw.frame.as_ref().unwrap(),
+                &component,
+                usize::MAX,
+                (&mut decoded, &mut moved),
+            )
+            .unwrap();
+        let decoded = decoded.unwrap();
+        let moved = moved.unwrap();
+        let raw_pointer = raw.frame.as_ref().unwrap().bytes.as_ptr();
+        let moved_pointer = moved.request_id.0.as_ref().unwrap().as_str().as_ptr();
+        connection
+            .authenticate_original_bootstrap_sdk_settlement_data(&original, &raw, &moved, &decoded)
+            .unwrap();
+        let mut foreign = None;
+        let mut foreign_request = moved.clone();
+        match fault {
+            0 => {
+                let mut changed = value.clone();
+                changed["extensions"][super::super::NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT]["mac"] =
+                    serde_json::to_value(crucible_node_format::Bytes::new(vec![9; 32])).unwrap();
+                native_import18_bootstrap_response_decode_into_data(
+                    &original,
+                    &changed,
+                    &component,
+                    usize::MAX,
+                    &mut foreign,
+                )
+                .unwrap();
+            }
+            1 => raw.header[0] ^= 1,
+            2 => foreign_request.request_id.0 = Some(Id::new("foreign").unwrap()),
+            3 => connection.guard.fence(),
+            _ => unreachable!(),
+        }
+
+        assert!(
+            connection
+                .authenticate_original_bootstrap_sdk_settlement_data(
+                    &original,
+                    &raw,
+                    if fault == 2 { &foreign_request } else { &moved },
+                    foreign.as_ref().unwrap_or(&decoded),
+                )
+                .is_err(),
+            "fault {fault}"
+        );
+
+        assert_eq!(raw.frame.as_ref().unwrap().bytes.as_ptr(), raw_pointer);
+        assert_eq!(
+            moved.request_id.0.as_ref().unwrap().as_str().as_ptr(),
+            moved_pointer
+        );
+        assert!(decoded.borrowed_history_data().decoded);
+        assert!(connection.guard.pending_requests().next().is_none());
+    }
 }

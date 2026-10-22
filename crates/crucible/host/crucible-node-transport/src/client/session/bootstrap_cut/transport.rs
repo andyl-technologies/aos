@@ -327,6 +327,26 @@ impl ClientSession {
         received
     }
 
+    /// Checks actual SDK settlement and raw/typed correspondence under the same cut.
+    ///
+    /// # Errors
+    /// Refuses changed original time, literal, typed response or moved SDK request.
+    pub(in crate::client) fn authenticate_original_bootstrap_sdk_settlement_data(
+        &self,
+        original: &Envelope,
+        cut: OperationalDeadline,
+        raw: &PacketNativeImport18BootstrapRawResponseData,
+        moved: &Envelope,
+        decoded: &PacketNativeImport18BootstrapResponseDecodeData,
+    ) -> Result<(), ProviderError> {
+        let deadline = self.authenticate_original_bootstrap_effect_cut_data(cut, 3);
+        let settled = self
+            .connection
+            .authenticate_original_bootstrap_sdk_settlement_data(original, raw, moved, decoded);
+        deadline?;
+        settled
+    }
+
     /// Retains closed decoding and moves the actual SDK original before return.
     ///
     /// # Errors
