@@ -9958,7 +9958,9 @@ launches; the earlier two-CPU runs cannot qualify the declared physical bank.
 The CPU schema regression passes at
 `/nix/store/kivixbw6iih8rnqhd1zj7xw9g2306bdm-fleet-spec-check-0`;
 core evaluation and formatting also pass. Actual 16-CPU guest checks remain
-pending.
+pending. The Host check uses `nproc --all`, like the existing funded startup
+and offline tests, to measure installed CPUs independently of the agent's
+process restrictions.
 
 The clean hardware-profile artifact check passes at
 `/nix/store/jwf6bpg4q8qwwv2xs27c4j4mcl0cr5nz-sandbox-nix-offline-hardware-profile-check`.

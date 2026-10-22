@@ -245,7 +245,7 @@ in {
       vm.wait_for_unit("multi-user.target", timeout=180)
       vm.succeed("test -f /sys/fs/selinux/enforce")
       assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
-      assert int(vm.succeed("nproc").strip()) == 16
+      assert int(vm.succeed("nproc --all").strip()) == 16
       memory_kib = int(vm.succeed("awk '/^MemTotal:/ {print $2}' /proc/meminfo").strip())
       assert memory_kib * 1024 >= ${toString fundedPolicy.capacity.memory-bytes}
       available_storage = int(vm.succeed("df -B1 --output=avail /var | tail -n 1").strip())
