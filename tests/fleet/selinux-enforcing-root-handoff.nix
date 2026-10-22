@@ -85,12 +85,14 @@
     # initrd dependencies inside the switch-root transaction and conflicts.
     after = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
     before = ["initrd-switch-root.target"];
-    unitConfig.IgnoreOnIsolate = "yes";
-    serviceConfig = {
-      Type = "notify";
+    unitConfig = {
+      IgnoreOnIsolate = "yes";
       # Switch-root broadcasts SIGTERM after isolating the target. The attack
       # must remain alive until PID1 reaches the qualification-only pin gate.
       SurviveFinalKillSignal = true;
+    };
+    serviceConfig = {
+      Type = "notify";
       ExecStart = postPinCommand "switch-root";
       StandardOutput = "journal+console";
       StandardError = "journal+console";

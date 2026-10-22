@@ -9910,11 +9910,16 @@ alias rejection. Full Rust target compilation passes at
 Installed reruns remain required for this repair.
 
 The post-pin handoff adversary now retains its procfs and target descriptors
-in one C process, survives switch-root's final signal broadcast, and publishes
+in one C process, requests survival of switch-root's final signal broadcast, and publishes
 its continuation only after all replacement-byte checks finish. This avoids
 executing additional dynamic tools after replacing the parent's loader. The
 helper builds through AOS with warnings treated as errors; its installed
 switch-root and reexec attacks remain unqualified until the rerun completes.
+The clean installed rerun stalls before its agent: PID1 reports that
+`SurviveFinalKillSignal` was incorrectly placed in `[Service]` and ignores it.
+The fixture now puts it in `[Unit]`, alongside `IgnoreOnIsolate`, as required
+by the selected manager. Installed survival and both attacks still require a
+passing rerun.
 The Host library check now follows the versioned DSO symlink when comparing
 the actual library inodes, modes and security contexts. Its prior installed run
 passed byte comparison but stopped while reading the symlink's context.
