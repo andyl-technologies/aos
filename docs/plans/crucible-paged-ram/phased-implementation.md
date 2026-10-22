@@ -737,6 +737,14 @@ ABI group and requirement binding include the new case. Inventory
 thirteen format and nineteen native. The same 148 requirements remain uncovered
 and none fully qualified; no selected receiver or paid landing is admitted.
 
+The fresh engineering-hygiene evaluation first refused the stale source-review
+digest for `host_supervision.rs`. Review against the previously approved source
+confirms that the change adds the once-only Cleanup issuer latch to its existing
+budget owner and initializes it only for a genuine new supervisor or budget
+owner. Delegation and reservation remain in the focused child. The corrected
+content-bound review passes at `zcvijji792yblcv5r97p578pnwrl3izi`; no source
+behavior, size threshold or lint allowance changes.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
