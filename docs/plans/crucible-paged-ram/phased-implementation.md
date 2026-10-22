@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `ec33e02897` imports conventional `45e353b75a`, tree `12361245`. Independent review matches all 78,233 tracked source entries, 26,862 evidence files, twelve literal evidence links and 34 sealed artifacts. The complete Source floor is 298,798 bytes; the cumulative ledger contains 426 created files. | Ordinary-fork quiescence, nonwaiting physical custody, Setup7 parsing, Original registration posts and physical service5 compose with genuine configured links. Packaged atomic reconstruction, the cumulative license ledger, all 187 Source cases and ABI conformance pass for this committed import. Native custody qualification remains in progress. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
+| Native integration | Signed atomic `ec33e02897` imports conventional `45e353b75a`, tree `12361245`. Independent review matches all 78,233 tracked source entries, 26,862 evidence files, twelve literal evidence links and 34 sealed artifacts. The complete Source floor is 298,798 bytes; the cumulative ledger contains 426 created files. | Ordinary-fork quiescence, nonwaiting physical custody, Setup7 parsing, Original registration posts and physical service5 compose with genuine configured links. Packaged atomic reconstruction, the cumulative license ledger, all 187 Source cases and ABI conformance pass for this committed import. Native custody passes 28 components, including the former discard deadlock control, then fails linking the cleanup bridge because two genuine Source dependencies are absent from its extracted fixture. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -132,8 +132,19 @@ Packaged atomic reconstruction passes at
 `frmq3zmnpr3b4ymczsgyblm5h5zal1qh`; the cumulative license ledger passes at
 `drpshm98l1pddb3s4m1glqyqc3v1aaz6`. The packaged Source suite passes all 187
 cases at `647ay4jjcn00h45wd1s63mhm6ssx957n`, and ABI conformance passes at
-`pin5k79h3gbz10r0rhms2lllw1z6dx73`. Native custody qualification remains in
-progress. Strict license-boundary qualification fails at controller Clippy
+`pin5k79h3gbz10r0rhms2lllw1z6dx73`. Packaged Native custody passes 28
+components, including the discard resize-member control that formerly timed
+out, then fails at the actual `executor-cleanup-bridge` positive link. The
+fixture's extracted `executor_cleanup_begin`/`executor_cleanup_end` now require
+`qemu_crucible_source_executor_cleanup_enter_v1` and
+`qemu_crucible_source_executor_cleanup_returned_v1`; its link supplies neither.
+The failure occurs in 0.529 seconds under its unchanged 180-second and six-GiB
+aggregate bound. No remaining-component or complete-suite pass is claimed.
+The full failing derivation is
+`xrym83aig29my6w8xnnf87qqpl54srj2-crucible-qemu-native-custody-unit-11.1.1`.
+A correction must retain the fixture's factual-query scope and genuine
+Source refusal without an accepting replacement for the missing owners.
+Strict license-boundary qualification fails at controller Clippy
 (909 library and 963 test errors); its canonical boundary assertions did not
 run. Later stack-recipient and matched-member stages are excluded from this
 cohort. Genuine Module/Core issuance, selected
