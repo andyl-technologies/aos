@@ -2425,36 +2425,36 @@ impl Database {
             statements.push(Self::controller_lease_guard_statement(fence)?);
         }
         statements.extend([
-                Statement::new(
-                    "UPDATE gateways SET observed_generation = ?2,
+            Statement::new(
+                "UPDATE gateways SET observed_generation = ?2,
                  reconciliation_state = ?3, reconciliation_error = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
                  WHERE id = ?1 AND desired_generation = ?2 AND resource_version = ?6
                    AND EXISTS (SELECT 1 FROM gateway_revisions
                      WHERE gateway_id = ?1 AND generation = ?2)",
-                    vals![
-                        gateway_id,
-                        generation,
-                        state,
-                        error,
-                        now,
-                        expected_resource_version
-                    ],
-                )
-                .expecting(1),
-                Database::topology_event_statement(&crate::db::NewTopologyEvent {
-                    event_id: &event_id,
-                    event_name: "topology.gateway.reconciled",
-                    owner_scope_key: &affected.owner_scope_key,
-                    resource_kind: "gateway",
-                    resource_stable_id: gateway_id,
-                    resource_generation_key: generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "storage-gateway-controller",
-                    payload_json: &payload,
-                    occurred_at: now,
-                }),
+                vals![
+                    gateway_id,
+                    generation,
+                    state,
+                    error,
+                    now,
+                    expected_resource_version
+                ],
+            )
+            .expecting(1),
+            Database::topology_event_statement(&crate::db::NewTopologyEvent {
+                event_id: &event_id,
+                event_name: "topology.gateway.reconciled",
+                owner_scope_key: &affected.owner_scope_key,
+                resource_kind: "gateway",
+                resource_stable_id: gateway_id,
+                resource_generation_key: generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "storage-gateway-controller",
+                payload_json: &payload,
+                occurred_at: now,
+            }),
         ]);
         self.backend.checked_batch(&statements).await?;
         self.gateway(gateway_id)

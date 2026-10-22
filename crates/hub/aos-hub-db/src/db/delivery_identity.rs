@@ -2579,32 +2579,32 @@ impl Database {
             statements.push(Self::controller_lease_guard_statement(fence)?);
         }
         statements.extend([
-                Statement::new(
-                    "UPDATE network_policy_observations SET state = ?3,
+            Statement::new(
+                "UPDATE network_policy_observations SET state = ?3,
                      protected_transport_observed = ?4, trusted_ingress_observed = ?5,
                      observed_at = CASE WHEN observed_at >= ?6 THEN observed_at + 1 ELSE ?6 END,
                      error = ?7 WHERE boundary_id = ?1 AND revision = ?2
                        AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?8)",
-                    vals![
-                        boundary_id,
-                        revision,
-                        state,
-                        protected_transport_observed,
-                        trusted_ingress_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE network_policy_revision_lifecycle
+                vals![
+                    boundary_id,
+                    revision,
+                    state,
+                    protected_transport_observed,
+                    trusted_ingress_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE network_policy_revision_lifecycle
                      SET resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?3",
-                    vals![boundary_id, revision, expected_version],
-                )
-                .expecting(1),
+                vals![boundary_id, revision, expected_version],
+            )
+            .expecting(1),
         ]);
         self.backend.checked_batch(&statements).await?;
         let observed = self
@@ -4856,8 +4856,8 @@ impl Database {
             statements.push(Self::controller_lease_guard_statement(fence)?);
         }
         statements.extend([
-                Statement::new(
-                    "INSERT INTO endpoint_generation_observations
+            Statement::new(
+                "INSERT INTO endpoint_generation_observations
                      (endpoint_id, observed_generation, boundary_id, boundary_revision,
                       state, listener_observed, tls_observed, observed_at, error)
                      SELECT e.id, ?2, e.network_policy_id, ?3, ?4, ?5, ?6, ?7, ?8
@@ -4877,21 +4877,21 @@ impl Database {
                          THEN endpoint_generation_observations.observed_at + 1
                          ELSE excluded.observed_at END,
                        error = excluded.error",
-                    vals![
-                        endpoint_id,
-                        observed_generation,
-                        boundary_revision,
-                        state,
-                        listener_observed,
-                        tls_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE endpoint_observations SET observed_generation = ?2,
+                vals![
+                    endpoint_id,
+                    observed_generation,
+                    boundary_revision,
+                    state,
+                    listener_observed,
+                    tls_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE endpoint_observations SET observed_generation = ?2,
                  boundary_revision = ?3, state = ?4, listener_observed = ?5,
                  tls_observed = ?6,
                  observed_at = CASE WHEN observed_at >= ?7 THEN observed_at + 1 ELSE ?7 END,
@@ -4900,40 +4900,40 @@ impl Database {
                      JOIN endpoint_revisions r ON r.endpoint_id = e.id
                        AND r.generation = ?2 AND r.boundary_revision = ?3
                      WHERE e.id = ?1 AND e.resource_version = ?9)",
-                    vals![
-                        endpoint_id,
-                        observed_generation,
-                        boundary_revision,
-                        state,
-                        listener_observed,
-                        tls_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE endpoints SET resource_version = resource_version + 1,
+                vals![
+                    endpoint_id,
+                    observed_generation,
+                    boundary_revision,
+                    state,
+                    listener_observed,
+                    tls_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE endpoints SET resource_version = resource_version + 1,
                  updated_at = ?3 WHERE id = ?1 AND resource_version = ?2
                    AND EXISTS (SELECT 1 FROM endpoint_observations
                      WHERE endpoint_id = ?1 AND observed_generation IS NOT NULL)",
-                    vals![endpoint_id, expected_version, now],
-                )
-                .expecting(1),
-                Database::topology_event_statement(&crate::db::NewTopologyEvent {
-                    event_id: &topology_event_id,
-                    event_name: "topology.endpoint.reconciled",
-                    owner_scope_key: &current.owner_scope_key,
-                    resource_kind: "endpoint",
-                    resource_stable_id: endpoint_id,
-                    resource_generation_key: observed_generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "delivery-endpoint-controller",
-                    payload_json: &topology_event_payload,
-                    occurred_at: now,
-                }),
+                vals![endpoint_id, expected_version, now],
+            )
+            .expecting(1),
+            Database::topology_event_statement(&crate::db::NewTopologyEvent {
+                event_id: &topology_event_id,
+                event_name: "topology.endpoint.reconciled",
+                owner_scope_key: &current.owner_scope_key,
+                resource_kind: "endpoint",
+                resource_stable_id: endpoint_id,
+                resource_generation_key: observed_generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "delivery-endpoint-controller",
+                payload_json: &topology_event_payload,
+                occurred_at: now,
+            }),
         ]);
         self.backend.checked_batch(&statements).await?;
         let endpoint = self

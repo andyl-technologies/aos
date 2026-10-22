@@ -290,22 +290,22 @@ impl Database {
         let validated_at = matches!(state, "valid" | "invalid").then(unix_now);
         let observation = if let Some(version) = expected_observation_version {
             Statement::new(
-                    "UPDATE binding_write_observations
+                "UPDATE binding_write_observations
                      SET state = ?4, validated_at = ?5, error = ?6,
                          observation_version = observation_version + 1
                      WHERE binding_id = ?1 AND revision = ?2
                        AND observation_version = ?3",
                 vals![binding_id, revision, version, state, validated_at, error],
-                )
+            )
         } else {
             Statement::new(
-                    "INSERT INTO binding_write_observations
+                "INSERT INTO binding_write_observations
                      (binding_id, revision, state, validated_at, error)
                      SELECT binding_id, revision, ?3, ?4, ?5
                      FROM binding_write_revisions
                      WHERE binding_id = ?1 AND revision = ?2",
                 vals![binding_id, revision, state, validated_at, error],
-                )
+            )
         };
         let mut statements = Vec::with_capacity(2);
         if let Some(fence) = fence {

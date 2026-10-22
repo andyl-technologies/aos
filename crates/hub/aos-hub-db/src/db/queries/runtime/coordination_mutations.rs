@@ -1444,20 +1444,20 @@ impl Database {
             bail!("write-authority reconciliation error must contain 1-4096 UTF-8 bytes");
         }
         let mutation = Statement::new(
-                "UPDATE surface_write_authorities
+            "UPDATE surface_write_authorities
              SET reconciliation_state = 'failed', reconciliation_error = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
              WHERE id = ?1 AND resource_version = ?2 AND desired_generation = ?3
                AND reconciliation_state = 'pending'
                AND (observed_generation IS NULL OR desired_generation > observed_generation)",
             vals![
-                    authority_id,
-                    expected_version,
-                    desired_generation,
-                    error,
-                    unix_now()
-                ],
-            )
+                authority_id,
+                expected_version,
+                desired_generation,
+                error,
+                unix_now()
+            ],
+        )
         .expecting(1);
         let mut statements = Vec::with_capacity(2);
         if let Some(fence) = fence {
