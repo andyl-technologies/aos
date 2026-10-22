@@ -12673,3 +12673,21 @@ Required application compilation at `2cd2940a91` and `578961f905` passes in
 1,656.55 and 1,111.27 seconds respectively; each independently matches 7,958
 source files and 184 compiler artifact records across 59 packages. These
 application outputs retain compilation records rather than executable bytes.
+
+#### Canonical structural tree compilation
+
+The structural compiler now consumes actual immutable ordinary Trees or raw
+Node inventories. Raw inputs undergo domain-separated identity checks and full
+canonical reconstruction, including internal child summaries, before graft
+expansion. Repeated grafts retain their distinct paths and governing roots;
+missing or misbound roots, incompatible chunk geometry and excessive graft
+depth are refused. Metadata, retained entries, expanded paths and output bytes
+have explicit bounds. No chunk or manifest body reader participates.
+
+All fifteen local cases pass, including a literal v1 empty-index byte example,
+valid 10,000-entry internal trees, individually hashed Nodes with false child
+summaries, nested and repeated grafts, and the 64-edge depth limit. Strict Linux
+all-target Clippy with Tokio and FUSE features and Rust formatting pass. Frozen
+owning qualification and required application compilation remain pending.
+Root authentication, authorization of metadata disclosure, host index custody,
+live exposure pinning and the actual worker remain open; no task is accepted.

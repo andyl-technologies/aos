@@ -13,9 +13,13 @@
 
 mod compile;
 mod mapping;
+mod nodes;
+mod tree;
 
 pub use compile::compile;
 pub use mapping::{MappedIndex, MappingError};
+pub use nodes::compile_nodes;
+pub use tree::compile_tree;
 
 use std::fmt;
 

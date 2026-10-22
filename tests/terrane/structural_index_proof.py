@@ -18,6 +18,14 @@ CASES = [
     "every_truncation_and_hostile_header_offset_is_rejected",
     "forged_parent_child_and_arena_relationships_are_rejected",
     "arbitrary_short_inputs_and_single_byte_mutations_never_panic",
+    "trees::canonical_nested_grafts_compile_without_any_file_content_input",
+    "trees::repeated_grafts_expand_at_distinct_paths_with_one_governing_root",
+    "trees::absent_misbound_nonordinary_and_wrong_geometry_grafts_are_refused",
+    "trees::expanded_entries_bytes_and_full_paths_obey_compiler_limits",
+    "trees::maximum_graft_depth_is_supported_and_the_next_edge_is_refused",
+    "trees::raw_nodes_compile_only_after_actual_identity_and_graft_validation",
+    "trees::raw_nodes_check_internal_summaries_after_individual_hashes_match",
+    "trees::raw_node_budget_charges_all_keys_before_decoding_or_expansion",
 ]
 PREFIX = "structural_index::tests::"
 

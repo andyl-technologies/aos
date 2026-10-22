@@ -4,6 +4,8 @@
 
 use super::*;
 
+mod trees;
+
 fn fixture() -> Vec<u8> {
     compile(
         [7; 32],
@@ -142,6 +144,27 @@ fn content_kind_size_symlink_bytes_and_graft_governance_survive_roundtrip() {
 #[test]
 fn empty_tree_and_exact_compiler_bounds_are_supported() {
     let bytes = compile([0; 32], &[], 1, HEADER + 32 + ENTRY).unwrap();
+    // Independent v1 wire example: 68-byte header, 32-byte root, one 52-byte
+    // directory entry, empty arenas and no child indices. Offsets are literal
+    // specification values rather than values supplied by the encoder.
+    let mut golden = [0u8; 152];
+    golden[..12].copy_from_slice(b"TRIX\x01\0\0\0\x01\0\0\0");
+    for (slot, value) in [
+        (12, 68),
+        (20, 100),
+        (28, 100),
+        (36, 100),
+        (44, 100),
+        (52, 152),
+        (60, 152),
+    ] {
+        golden[slot] = value;
+    }
+    golden[112] = 1;
+    golden[124..132].fill(0xff);
+    golden[140..144].fill(0xff);
+    assert_eq!(bytes, golden);
+
     let index = Index::open(&bytes).unwrap();
 
     assert_eq!(index.len(), 1);
