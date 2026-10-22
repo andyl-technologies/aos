@@ -2221,8 +2221,16 @@ comparisons pass, and the complete Format suite passes 67 tests with one existin
 ignore, including three new integration controls for both collection types,
 Unicode ordering, depth/array limits and every refused output prefix.
 
-Full qualification is pending. The bounded retained output owner, prospective
-complete construction row, original-root publication/containment transition and
+Commit `9255eee791` passes both complete Transport configurations: 1,922 tests
+each, zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, scoped formatting, all six architecture checks
+and the required application test-target build pass. The gate compiles 180 test
+executables across 58 packages, including 71 integration targets; it executes no
+tests. All 263 owned Rust/Cargo inputs match the committed tree and exact captured
+application source. No new VM or configured Engine/Daemon runtime run is claimed.
+
+The bounded retained output owner, prospective complete construction row,
+original-root publication/containment transition and
 genuine enclosing Source/Birth funding remain to be connected. This codec grants
 no SDK, Source, policy, Initial/Recipe, ACK or native readiness.
 
