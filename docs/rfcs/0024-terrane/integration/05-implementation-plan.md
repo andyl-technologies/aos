@@ -14324,3 +14324,17 @@ syntax and Nix formatting/evaluation pass. The new check has its own finite
 Native execution and mandatory application-target qualification remain pending.
 This is a component join, not the production broker factory, worker sandbox,
 FUSE mount, exposure lifecycle acceptance or a completed trunk task.
+
+At `5ed2fed9b9`, the complete owning surface VM passes in 634.10 seconds
+with unchanged frozen source and the original VM and existing actor bounds.
+Independent review matches 8,042 immutable source files, 5,335 base inputs,
+5,319 surface inputs, four base Cargo ELFs and the actual surface executable
+digest `27f4f21b34aa161f1bd55726e76d330c77ba6920c90c67b372a76302b98ae7d0`.
+All required runtime witnesses occur at their exact expected counts, including
+actual sealed-file closure, cold draining recovery and independent index-only
+closure with unrelated custody preserved. Application-target compilation at
+the same checkpoint passes in 631.13 seconds; review matches the same source
+and all 184 test compiler records across 59 packages. These passes supersede
+the owning surface failure for that checkpoint, while its earlier failures
+remain retained. They do not qualify the subsequent scoped worker fixture,
+production broker, mounted FUSE or full exposure lifecycle.
