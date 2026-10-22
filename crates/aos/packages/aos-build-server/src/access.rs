@@ -9,6 +9,7 @@
 use std::fs;
 
 use anyhow::{Context, Result};
+use aos_nix::StoreHash;
 
 use crate::views::ViewManager;
 
@@ -25,7 +26,7 @@ use crate::views::ViewManager;
 /// Returns an error if the system clock is before the Unix epoch, or if an
 /// existing metadata file cannot be read, parsed as JSON, or atomically
 /// rewritten.
-pub fn update_access(views: &ViewManager, view: &str, hash: &str) -> Result<()> {
+pub fn update_access(views: &ViewManager, view: &str, hash: &StoreHash) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .context("system clock error")?

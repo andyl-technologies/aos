@@ -18,7 +18,7 @@ use futures_util::{Stream, StreamExt};
 
 use aos_build_api::aos::cache::v1::*;
 use aos_nar::info as core_narinfo;
-use aos_nix::aos_nix_env;
+use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
 use crate::compress::{self, Compression};
@@ -26,7 +26,6 @@ use crate::narinfo;
 use crate::pack;
 use crate::routes::AppState;
 use crate::services;
-use crate::views::ViewManager;
 
 /// Boxed server-streaming response used by the generated service traits.
 type ResponseStream<T> = Pin<Box<dyn Stream<Item = Result<T, ConnectError>> + Send>>;
@@ -87,7 +86,12 @@ impl CacheService for CacheServiceImpl {
         req: ServiceRequest<'_, GetNarInfoRequest>,
     ) -> ServiceResult<impl Encodable<NarInfo> + Send + use<'a>> {
         let view: &str = req.view;
-        let store_hash: &str = req.store_hash;
+        let store_hash: StoreHash = req.store_hash.parse().map_err(|error| {
+            ConnectError::new(
+                ErrorCode::InvalidArgument,
+                format!("invalid store hash: {error}"),
+            )
+        })?;
 
         let view_config = self
             .state
@@ -99,7 +103,7 @@ impl CacheService for CacheServiceImpl {
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -111,7 +115,7 @@ impl CacheService for CacheServiceImpl {
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in store"))?;
 
         // Update access metadata (best-effort).
-        let _ = access::update_access(&self.state.views, view, store_hash);
+        let _ = access::update_access(&self.state.views, view, &store_hash);
 
         let narinfo_text = narinfo::format_narinfo(
             &info,
@@ -210,11 +214,11 @@ impl CacheService for CacheServiceImpl {
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("import failed: {e}")))?;
 
         // Create a temporary GC root.
-        if let Some(hash) = ViewManager::store_path_hash(&imported) {
+        if let Ok(hash) = StoreHash::from_store_path(&imported) {
             let _ = self
                 .state
                 .views
-                .create_tmp_root(&view_name, hash, &imported);
+                .create_tmp_root(&view_name, &hash, &imported);
         }
 
         Response::ok(UploadResponse {
@@ -259,20 +263,12 @@ impl CacheService for CacheServiceImpl {
             ));
         };
 
-        let store_hash = match name.split('-').next() {
-            Some(h) if !h.is_empty() => h,
-            _ => {
-                return Err(ConnectError::new(
-                    ErrorCode::InvalidArgument,
-                    "invalid NAR filename",
-                ));
-            }
-        };
+        let store_hash = parse_nar_filename(name)?;
 
         let store_path = self
             .state
             .views
-            .check_visibility(view, store_hash)
+            .check_visibility(view, &store_hash)
             .map_err(|e| ConnectError::new(ErrorCode::Internal, format!("visibility check: {e}")))?
             .ok_or_else(|| ConnectError::new(ErrorCode::NotFound, "path not in view"))?;
 
@@ -353,8 +349,8 @@ impl CacheService for CacheServiceImpl {
 
         // Create temporary GC roots for all imported paths.
         for path in &paths {
-            if let Some(hash) = ViewManager::store_path_hash(path) {
-                let _ = self.state.views.create_tmp_root(&view_name, hash, path);
+            if let Ok(hash) = StoreHash::from_store_path(path) {
+                let _ = self.state.views.create_tmp_root(&view_name, &hash, path);
             }
         }
 
@@ -365,6 +361,28 @@ impl CacheService for CacheServiceImpl {
             ..Default::default()
         })
     }
+}
+
+fn parse_nar_filename(name: &str) -> Result<StoreHash, ConnectError> {
+    if name.is_empty()
+        || !name.is_ascii()
+        || !name
+            .bytes()
+            .all(|character| character.is_ascii_alphanumeric() || character == b'-')
+    {
+        return Err(ConnectError::new(
+            ErrorCode::InvalidArgument,
+            "invalid NAR filename",
+        ));
+    }
+
+    let hash = name.split_once('-').map_or(name, |(hash, _suffix)| hash);
+    hash.parse().map_err(|error| {
+        ConnectError::new(
+            ErrorCode::InvalidArgument,
+            format!("invalid NAR filename: {error}"),
+        )
+    })
 }
 
 /// Parses rendered narinfo text into a proto `NarInfo` message.
@@ -432,7 +450,29 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_narinfo_to_proto;
+    use super::{parse_nar_filename, parse_narinfo_to_proto};
+
+    #[test]
+    fn rpc_nar_filenames_require_a_canonical_store_hash() {
+        let valid_hash = "0123456789abcdfghijklmnpqrsvwxyz";
+        assert_eq!(
+            parse_nar_filename(&format!("{valid_hash}-sha256-deadbeef"))
+                .unwrap()
+                .as_str(),
+            valid_hash
+        );
+
+        for filename in [
+            "../00000000000000000000000000000000",
+            "/00000000000000000000000000000000",
+            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-sha256-deadbeef",
+        ] {
+            assert!(
+                parse_nar_filename(filename).is_err(),
+                "accepted {filename:?}"
+            );
+        }
+    }
 
     #[test]
     fn narinfo_proto_preserves_download_metadata() {

@@ -162,7 +162,7 @@ fn run_view_gc(
         max_store_size: None,
         max_paths: None,
     };
-    let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
+    let view_mgr = ViewManager::new(root.clone(), vec![view_config])?;
 
     // Step 1: Expire TTL roots
     let spinner = printer.activity("checking TTL expiry");
@@ -288,13 +288,13 @@ fn pin_root(_nix: &NixRunner, printer: &Printer, view: &str, store_path: &str) -
         max_store_size: None,
         max_paths: None,
     };
-    let view_mgr = ViewManager::new(root.clone(), vec![view_config]);
+    let view_mgr = ViewManager::new(root.clone(), vec![view_config])?;
 
-    let hash =
-        ViewManager::store_path_hash(store_path).context("extracting hash from store path")?;
+    let hash = aos_nix::StoreHash::from_store_path(store_path)
+        .context("extracting hash from store path")?;
 
     // Create the GC root symlink.
-    view_mgr.create_gc_root(view, "bin", hash, store_path)?;
+    view_mgr.create_gc_root(view, "bin", &hash, store_path)?;
 
     // Write metadata with no expires_at (permanent).
     let now = SystemTime::now()
@@ -308,7 +308,7 @@ fn pin_root(_nix: &NixRunner, printer: &Printer, view: &str, store_path: &str) -
         "access_count": 0,
         "pinned": true,
     });
-    view_mgr.write_metadata(view, "bin", hash, &meta)?;
+    view_mgr.write_metadata(view, "bin", &hash, &meta)?;
 
     printer.success(&format!(
         "Pinned {store_path} in view '{view}' (permanent, no TTL)"

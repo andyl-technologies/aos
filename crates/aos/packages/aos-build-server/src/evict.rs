@@ -463,13 +463,13 @@ pub fn evict_until_budget(
 
             // Also remove unique paths' roots.
             for path in &candidate.unique_paths {
-                if let Some(hash) = ViewManager::store_path_hash(path) {
+                if let Ok(hash) = aos_nix::StoreHash::from_store_path(path) {
                     let link = views
                         .root()
                         .join("gcroots")
                         .join(view)
                         .join("bin")
-                        .join(hash);
+                        .join(hash.as_str());
                     let meta = views
                         .root()
                         .join("meta")
