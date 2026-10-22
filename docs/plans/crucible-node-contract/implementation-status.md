@@ -3728,8 +3728,10 @@ the committed revision and its registered captured source.
 
 The complete raw-JSON Transport suite passes all 2,083 tests, with zero failures,
 16 existing ignores and no filtering, in 426.09 seconds. The complete standard
-suite is still running. Sources and executables remain stable after compilation
-finishes. These component results establish no refreshed configured runtime,
+suite also passes all 2,083 tests, with zero failures, the same 16 existing
+ignores and no filtering, in 427.77 seconds. Sources and executables remained
+stable throughout both runs after compilation finished. These component results
+establish no refreshed configured runtime,
 VM, complete Source/native restoration or full RFC qualification.
 
 ## Original launch custody and shared startup geometry
