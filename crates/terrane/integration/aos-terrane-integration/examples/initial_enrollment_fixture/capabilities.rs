@@ -1,7 +1,7 @@
-//! Checks genuine administrative SDK reopen after final native enrollment.
+//! Checks fail-closed administrative SDK reopen after final native enrollment.
 //!
-//! The configured protected Original performs its own startup probes and typed
-//! publication. Ordinary selected-data observations below are assertions only;
+//! The configured Original refuses its changed payload custody through the real
+//! native fence. Ordinary selected-data observations below are assertions only;
 //! they do not grant a serving role publication or collection authority.
 
 use super::{
@@ -14,13 +14,8 @@ use std::{
     io::{self, Read},
     os::unix::fs::MetadataExt,
     path::Path,
-    time::{Duration, UNIX_EPOCH},
 };
-use terrane_format::{
-    bucket::{BucketCapabilities, BucketKey},
-    chunking::ChunkProfile,
-    gc::publication::PortableSnapshot,
-};
+use terrane_format::chunking::ChunkProfile;
 use terrane_linux::host_quota::{NativeProject, open_host_path};
 use terrane_sdk::{
     bucket::{
@@ -28,21 +23,24 @@ use terrane_sdk::{
         portable_reader::{PortableReadLimits, ValidatedPortableBucket, validate_existing},
     },
     repository::MetadataValidator,
-    store::{Clock, TokioClock, TokioLocalFs},
+    store::{StoreErrorKind, TokioClock, TokioLocalFs},
 };
 
-/// Reopens both actual Originals and checks their exact single probe publication.
+/// Requires both real Originals to refuse changed custody without publication.
 ///
 /// # Errors
-/// Returns protected registration, bounded validation, native I/O or SDK errors.
+/// Returns the actual final native-fence refusal after both preservation controls.
+/// Other registration, validation and I/O failures stop the fixture immediately.
 ///
 /// # Panics
-/// Panics if the real reopen changes unrelated selected data or native custody.
+/// Panics if a reopen succeeds, refuses for another reason or changes selected
+/// data or native custody.
 pub(super) async fn run() -> io::Result<()> {
     terrane_linux::host_quota::initial_enrollment::require_initial_host_root()?;
     let case = Case::existing("positive")?;
     let claims = Claims::read_saved(&case)?;
     claims.verify_members()?;
+    let mut last_refusal = None;
 
     for owner in 0..2 {
         stage("capabilities baseline before");
@@ -55,56 +53,35 @@ pub(super) async fn run() -> io::Result<()> {
         let registration_identity = identity(&registration.metadata()?);
         let registration_bytes = read_bounded(&registration_path)?;
         let before = observe(&case, owner).await?;
-        let mut expected = capabilities(&before)?;
-        let baseline = seconds()?;
-        assert!(expected.probed_at <= baseline);
-
-        // Force a real timestamp delta even when enrollment and reopening occur
-        // in the same clock second. The supervisor retains its original bound.
-        while seconds()? <= baseline {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        let start = seconds()?;
         stage("capabilities Original reopen before");
-        let bucket = FileBucket::open(
+        let refusal = FileBucket::open(
             case.bucket(owner, SEED),
             TokioLocalFs,
             TokioClock,
             MetadataValidator::new(ChunkProfile::cdc_1m(SEED)),
         )
         .await
-        .map_err(source_error)?;
-        drop(bucket);
-        stage("capabilities Original reopen after");
+        .err()
+        .ok_or_else(|| {
+            io::Error::other("enrolled payload custody unexpectedly authorized Original reopening")
+        })?;
+        assert!(matches!(refusal.kind(), StoreErrorKind::Unavailable { .. }));
+        let native = std::error::Error::source(&refusal)
+            .and_then(|error| error.downcast_ref::<io::Error>())
+            .ok_or_else(|| io::Error::other("Original refusal lacks native I/O provenance"))?;
+        assert_eq!(native.kind(), io::ErrorKind::Other);
+        assert_eq!(native.to_string(), "unsafe native physical fence");
+        stage("capabilities Original native-fence refusal");
 
-        let end = seconds()?;
         let after = observe(&case, owner).await?;
-        let actual = capabilities(&after)?;
-        assert!((start..=end).contains(&actual.probed_at));
-        assert!(expected.probed_at < actual.probed_at);
-        expected.probed_at = actual.probed_at;
-        assert_eq!(actual, expected);
+        assert_eq!(before.checkpoint(), after.checkpoint());
         assert_eq!(before.profile(), after.profile());
         assert_eq!(before.selected_history(), after.selected_history());
         assert_eq!(
-            before
-                .selected_entries()
-                .filter(|(key, _)| *key != "CAPABILITIES")
-                .collect::<Vec<_>>(),
-            after
-                .selected_entries()
-                .filter(|(key, _)| *key != "CAPABILITIES")
-                .collect::<Vec<_>>()
+            before.selected_entries().collect::<Vec<_>>(),
+            after.selected_entries().collect::<Vec<_>>()
         );
-
-        let snapshot = snapshot(&after)?;
-        assert_eq!(snapshot.predecessor.as_ref(), Some(before.checkpoint()));
-        assert_eq!(snapshot.projection.len(), 1);
-        assert_eq!(snapshot.projection[0].key, "CAPABILITIES");
-        assert_eq!(
-            snapshot.projection[0].value,
-            Some(actual.encode().map_err(source_error)?)
-        );
+        last_refusal = Some(source_error(refusal));
 
         let current = open_host_path(&case.root(owner), true)?;
         let current_metadata = current.metadata()?;
@@ -119,9 +96,9 @@ pub(super) async fn run() -> io::Result<()> {
     }
 
     println!(
-        "PASS enrolled public and private Originals perform typed capability CAS with exact predecessor, timestamp-only delta and unchanged native custody"
+        "PASS both enrolled Originals refuse changed payload custody through the actual native fence without changing selected bytes, registration or native custody"
     );
-    Ok(())
+    Err(last_refusal.ok_or_else(|| io::Error::other("no Original refusal was observed"))?)
 }
 
 async fn observe(case: &Case, owner: usize) -> io::Result<ValidatedPortableBucket> {
@@ -139,24 +116,6 @@ async fn observe(case: &Case, owner: usize) -> io::Result<ValidatedPortableBucke
     )
     .await
     .map_err(source_error)
-}
-
-fn capabilities(observation: &ValidatedPortableBucket) -> io::Result<BucketCapabilities> {
-    let key = BucketKey::parse("CAPABILITIES").map_err(source_error)?;
-    let bytes = observation
-        .selected_value(&key)
-        .flatten()
-        .ok_or_else(|| io::Error::other("validated projection lacks capabilities"))?;
-    BucketCapabilities::decode(bytes).map_err(source_error)
-}
-
-fn snapshot(observation: &ValidatedPortableBucket) -> io::Result<PortableSnapshot> {
-    let bytes = read_bounded(&observation.root().join(&observation.checkpoint().key))?;
-    assert_eq!(
-        blake3::hash(&bytes).as_bytes(),
-        &observation.checkpoint().digest
-    );
-    PortableSnapshot::decode(&bytes).map_err(source_error)
 }
 
 fn identity(metadata: &Metadata) -> (u64, u64, u32, u32, u32) {
@@ -178,12 +137,4 @@ fn read_bounded(path: &Path) -> io::Result<Vec<u8>> {
         return Err(io::Error::other("native fixture input exceeds bound"));
     }
     Ok(bytes)
-}
-
-fn seconds() -> io::Result<u64> {
-    TokioClock
-        .now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(source_error)
 }

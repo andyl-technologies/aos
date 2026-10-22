@@ -14807,3 +14807,24 @@ administrative UID runs this control. No raw rename, copied authority, mode
 change or serving-role publication permission is introduced. The existing
 30-second actor and complete VM bounds remain in force. Native qualification
 is pending; this adds no deployed role, collection or task acceptance.
+
+
+#### Actual Original custody refusal after enrollment
+
+The capability-update experiment at `30296ebd32` fails its native VM in 414.25
+seconds. All enrollment and native content controls complete, then the genuine
+SDK opener returns an Unavailable error sourced by `unsafe native physical
+fence`. Enrollment transfers payload custody to distinct cache roles; the
+Original mutation lane retains its stricter native custody requirements.
+No capability publication succeeds. The original failure and exact source
+remain retained. Its owning module evaluation passes in 24.34 seconds.
+
+The corrected control exercises the actual SDK refusal in both enrolled
+domains and requires its exact native error provenance. It checks unchanged
+selected pointer, complete selected bytes and history, original root identity,
+project and protected registration before returning the real refusal. The
+supervisor retains an explicit unqualified capability-update result; neither
+an arbitrary error nor a synthetic unsupported result can satisfy this control.
+Native fencing and final enrollment permissions are unchanged. Qualification
+of this negative control is pending; it grants no writable host Original or
+task acceptance.

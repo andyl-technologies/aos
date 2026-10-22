@@ -98,7 +98,7 @@ def stop(process):
             process.wait(timeout=3)
 
 
-def run_case(selector, command):
+def run_case(selector, command, expected_pass=True):
     """Requires exit status and the exact terminal witness under output/deadline caps."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                start_new_session=True)
@@ -123,12 +123,17 @@ def run_case(selector, command):
         print(text, end="", flush=True)
     witness = "INITIAL_ENROLLMENT_PASS " + selector
     lines = text.splitlines()
-    require(process.returncode == 0 and lines and lines[-1] == witness
-            and lines.count(witness) == 1,
-            "missing exact successful physical witness: " + selector)
-    if selector == "capabilities-update":
-        require(lines.count("PASS enrolled public and private Originals perform typed capability CAS with exact predecessor, timestamp-only delta and unchanged native custody") == 1,
-                "missing typed Original capability publication witness")
+    if expected_pass:
+        require(process.returncode == 0 and lines and lines[-1] == witness
+                and lines.count(witness) == 1,
+                "missing exact successful physical witness: " + selector)
+    else:
+        require(selector == "capabilities-update" and process.returncode != 0
+                and not any(line.startswith("INITIAL_ENROLLMENT_PASS ") for line in lines)
+                and "unsafe native physical fence" in text
+                and lines.count("PASS both enrolled Originals refuse changed payload custody through the actual native fence without changing selected bytes, registration or native custody") == 1,
+                "missing actual Original native-fence refusal and preservation witness")
+        print("UNQUALIFIED capabilities-update: actual Original native-fence refusal", flush=True)
 
 
 def broker_ready(process):
@@ -289,7 +294,7 @@ def main():
         run_case("foreign-private", role_command("foreign-private", 842, []))
         configured_publication()
         run_case("verify-positive", admin_command("verify-positive"))
-        run_case("capabilities-update", admin_command("capabilities-update"))
+        run_case("capabilities-update", admin_command("capabilities-update"), expected_pass=False)
         require(broker.poll() is None, "actual quota broker exited during queries")
         print("PASS bounded initial enrollment component evidence; NativeReady/BKT15/task acceptance remain unqualified", flush=True)
     finally:
