@@ -177,7 +177,7 @@ type aos_sandbox_git_gateway_credential_t;
 allow init_t aos_sandbox_git_gateway_exec_t:file { execute execute_no_trans getattr map open read };
 allow init_t aos_sandbox_git_gateway_t:process transition;
 allow init_t aos_sandbox_git_gateway_t:process2 nnp_transition;
-allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_git_gateway_t self:process { fork getattr getsched sigchld signal };
 allow aos_sandbox_git_gateway_t init_t:fd use;
 allow aos_sandbox_git_gateway_t init_t:unix_stream_socket write;
@@ -243,7 +243,7 @@ type aos_sandbox_controller_runtime_t;
 allow init_t aos_sandbox_controller_exec_t:file { execute execute_no_trans getattr map open read };
 allow init_t aos_sandbox_controller_t:process transition;
 allow init_t aos_sandbox_controller_t:process2 nnp_transition;
-allow aos_sandbox_controller_t aos_sandbox_controller_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_controller_t aos_sandbox_controller_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_controller_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_controller_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_controller_t init_t:fd use;
@@ -305,7 +305,7 @@ type aos_sandbox_storage_runtime_t;
 allow init_t aos_sandbox_storage_exec_t:file { execute execute_no_trans getattr map open read };
 allow init_t aos_sandbox_storage_t:process transition;
 allow init_t aos_sandbox_storage_t:process2 nnp_transition;
-allow aos_sandbox_storage_t aos_sandbox_storage_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_storage_t aos_sandbox_storage_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_storage_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_storage_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_storage_t init_t:fd use;
@@ -401,7 +401,7 @@ allow init_t aos_sandbox_policy_authority_t:dir { getattr search open read lock 
 allow init_t aos_sandbox_policy_authority_t:file { getattr open read lock ioctl };
 allow init_t aos_sandbox_policy_authority_t:lnk_file { getattr read };
 
-allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_policy_authority_t self:process { fork getattr getsched setrlimit sigchld signal };
 allow aos_sandbox_policy_authority_t self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
 allow aos_sandbox_policy_authority_t init_t:fd use;
@@ -505,7 +505,7 @@ allow aos_sandbox_controller_t aos_method46_controller_helper_t:dir { getattr op
 # PTRACE_MODE_READ/task image inspection, never process:ptrace/attach. Image
 # observation occurs before public HELLO and before the child becomes nondumpable.
 allow aos_sandbox_controller_t aos_method46_controller_helper_t:file { getattr open read };
-allow aos_method46_controller_helper_t aos_method46_helper_exec_t:file { entrypoint getattr map open read };
+allow aos_method46_controller_helper_t aos_method46_helper_exec_t:file { entrypoint execute getattr map open read };
 type_transition aos_sandbox_controller_t aos_method46_helper_exec_t:process aos_method46_controller_helper_t;
 allow aos_method46_controller_helper_t aos_sandbox_controller_t:process sigchld;
 allow aos_method46_controller_helper_t aos_sandbox_controller_t:fd use;
@@ -545,7 +545,7 @@ allow aos_sandbox_storage_t aos_method46_storage_helper_t:dir { getattr open rea
 # PTRACE_MODE_READ/task image inspection, never process:ptrace/attach. Image
 # observation occurs before public HELLO and before the child becomes nondumpable.
 allow aos_sandbox_storage_t aos_method46_storage_helper_t:file { getattr open read };
-allow aos_method46_storage_helper_t aos_method46_helper_exec_t:file { entrypoint getattr map open read };
+allow aos_method46_storage_helper_t aos_method46_helper_exec_t:file { entrypoint execute getattr map open read };
 type_transition aos_sandbox_storage_t aos_method46_helper_exec_t:process aos_method46_storage_helper_t;
 allow aos_method46_storage_helper_t aos_sandbox_storage_t:process sigchld;
 allow aos_method46_storage_helper_t aos_sandbox_storage_t:fd use;

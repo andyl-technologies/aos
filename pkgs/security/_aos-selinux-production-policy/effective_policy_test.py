@@ -704,6 +704,29 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.subTest(access=access):
                 self.assert_forbidden_allow_rejected(access)
 
+    def test_fixed_elf_roles_require_mapping_without_reexec(self) -> None:
+        for domain, executable in effective_policy.owner_policy.FIXED_ELF_ENTRIES:
+            for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):
+                with self.subTest(domain=domain, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(domain, executable, "file", permission)
+                    )
+
+            for access in (
+                effective_policy.Access(domain, executable, "file", "execute_no_trans"),
+                effective_policy.Access(domain, domain, "process", "transition"),
+            ):
+                with self.subTest(access=access):
+                    policy = self._storage_policy()
+                    policy.allows[access] = [FakeRule("unexpected fixed ELF reexec")]
+                    # Root's independent custody cut may reject before the
+                    # ordinary negative-access scan reaches this same edge.
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "forbidden allow exists|foreign normal Root custody grant exists",
+                    ):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_offline_preparer_requires_mapping_without_reexec(self) -> None:
         owner = effective_policy.owner_policy
         for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):

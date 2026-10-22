@@ -10,7 +10,7 @@ type aos_sandbox_policy_recovery_runtime_t;
 
 allow init_t aos_sandbox_policy_recovery_t:process transition;
 allow init_t aos_sandbox_policy_recovery_t:process2 { nnp_transition nosuid_transition };
-allow aos_sandbox_policy_recovery_t aos_sandbox_policy_authority_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_policy_recovery_t aos_sandbox_policy_authority_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_policy_recovery_t { lib_t ld_so_t }:file { execute getattr map open read };
 allow aos_sandbox_policy_recovery_t { root_t usr_t etc_t var_t var_lib_t var_run_t device_t }:dir { getattr open search };
 allow aos_sandbox_policy_recovery_t null_device_t:chr_file { getattr open read write };

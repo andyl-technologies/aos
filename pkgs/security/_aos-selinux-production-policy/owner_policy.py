@@ -15,6 +15,18 @@ OWNERS = ("controller", "storage", "policy_authority")
 HELPERS = ("controller", "storage")
 OWNER_DOMAINS = tuple(f"aos_sandbox_{role}_t" for role in OWNERS)
 HELPER_DOMAINS = tuple(f"aos_method46_{role}_helper_t" for role in HELPERS)
+
+# ELF text mappings use the new role after exec's credential transition.
+# These closed pairs grant no execute_no_trans or additional process entry.
+FIXED_ELF_ENTRIES = (
+    *zip(OWNER_DOMAINS, (f"aos_sandbox_{role}_exec_t" for role in OWNERS)),
+    *((domain, "aos_method46_helper_exec_t") for domain in HELPER_DOMAINS),
+    ("aos_sandbox_git_gateway_t", "aos_sandbox_git_gateway_exec_t"),
+    (recovery_policy.DOMAIN, recovery_policy.EXECUTABLE),
+    *((f"aos_sandbox_{role}_signer_t", f"aos_sandbox_{role}_signer_exec_t")
+      for role in ("source", "cache")),
+)
+
 PREPARER_DOMAINS = (
     "aos_sandbox_cache_view_preparer_t",
     "aos_sandbox_source_view_preparer_t",
@@ -733,7 +745,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         for foreign_role in HELPERS:
             if foreign_role != role:
                 negative.append(Access(helper, f"aos_sandbox_{foreign_role}_t", "fd", "use"))
-        negative.append(Access(helper, "aos_method46_helper_exec_t", "file", "execute"))
+
+    for domain, executable in FIXED_ELF_ENTRIES:
+        positive.extend(accesses(
+            domain, executable, "file", ("execute", "getattr", "map", "open", "read"),
+        ))
+        negative.append(Access(domain, executable, "file", "execute_no_trans"))
+        negative.append(Access(domain, domain, "process", "transition"))
 
     for domain in ENFORCING:
         negative.extend(accesses(domain, "security_t", "file", ("append", "setattr", "write")))

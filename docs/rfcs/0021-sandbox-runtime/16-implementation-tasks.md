@@ -10756,3 +10756,14 @@ helper mapping rule. It still cannot execute_no_trans, transition to itself,
 or execute arbitrary binaries. Mutation checks require every mapping permission
 and reject both forms of reexec. Compiled-policy and installed hardware retries
 remain required; this correction supplies no TPM or public lifecycle receipt.
+
+
+The confirmed kernel exec ordering also applies to the nine existing fixed ELF
+role/image pairs: Controller, Storage, Root, their two method-46 helpers, Gateway,
+Root history recovery, and Source/Cache signers. Their literal mapping rules now
+include execute after transition. The checker requires all six mapping/entry
+permissions and rejects each pair's execute_no_trans and self-transition. The
+method-46 helper's former execute denial is replaced by these reexec cuts; it
+could not map its own text under that denial. Shell preparer/tool entry rules,
+foreign process edges, mount transition permissions, credentials and caps are
+unchanged. Installed qualification remains pending for each affected role.
