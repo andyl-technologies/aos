@@ -680,11 +680,6 @@ in {
     lifecycle.succeed(
         f"{IP} -n aos-observe-managed link set {managed_sandbox} down"
     )
-    assert lifecycle.succeed(
-        f"{FIXTURE} observer-kernel-run managed {managed_root} {managed_pin} "
-        f"{IP} {NFT} {FIXTURE} {OBSERVER} {GATE_OBJECT}"
-    ).strip() == "KERNEL_OBSERVER_OK managed"
-
     # Neighbor equality is a plan postcondition of the complete kernel
     # validator. The inventory-only observer above proves stable peer custody.
     managed_kernel_observation = (
@@ -700,8 +695,24 @@ in {
         assert expected in output, output
 
     def assert_managed_kernel_restored():
-        output = lifecycle.succeed(managed_kernel_observation).strip()
-        assert output == "KERNEL_OBSERVER_OK managed", output
+        status, stdout, stderr = lifecycle.execute(managed_kernel_observation)
+        if status != 0:
+            # Retain the native fenced-state inventory in a failed test log;
+            # the immutable reader's own rejection remains the test failure.
+            queries = (
+                "-details link",
+                "address",
+                "-6 neighbor",
+                "route show table all",
+                "-6 route show table all",
+            )
+            for prefix in (f"{IP}", f"{IP} -n aos-observe-managed"):
+                for query in queries:
+                    print(lifecycle.succeed(f"{prefix} -j {query}"))
+        assert status == 0, stdout + stderr
+        assert stdout.strip() == b"KERNEL_OBSERVER_OK managed", stdout
+
+    assert_managed_kernel_restored()
 
     lifecycle.succeed(
         f"{IP} -n aos-observe-managed -6 neighbor del "

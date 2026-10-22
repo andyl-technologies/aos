@@ -433,6 +433,7 @@ fn decode_link(value: &Value) -> Result<ObservedLinkV1, NetworkKernelReaderError
     let mtu = required_u32(object, "mtu")?;
     let flags = required_array(object, "flags")?;
     let mac = parse_mac(required_string(object, "address")?)?;
+    let up = flags.iter().any(|flag| flag.as_str() == Some("UP"));
 
     let (peer_ifindex, peer_namespace_id, kind) = if name == "lo" {
         if required_string(object, "link_type")? != "loopback"
@@ -443,7 +444,7 @@ fn decode_link(value: &Value) -> Result<ObservedLinkV1, NetworkKernelReaderError
         (0, None, "loopback".to_owned())
     } else {
         if required_string(object, "link_type")? != "ether"
-            || !string_array_equals(flags, &["BROADCAST", "MULTICAST", "UP", "LOWER_UP"])
+            || !string_array_equals(flags, veth_flags(up))
         {
             return invalid("veth flags or link-layer type are inconsistent");
         }
@@ -461,7 +462,7 @@ fn decode_link(value: &Value) -> Result<ObservedLinkV1, NetworkKernelReaderError
         }
         (peer_ifindex, Some(peer_namespace_id), kind)
     };
-    let ipv6_address_generation = validate_link_metadata(object, &kind)?;
+    let ipv6_address_generation = validate_link_metadata(object, &kind, up)?;
 
     Ok(ObservedLinkV1 {
         ifindex,
@@ -471,9 +472,19 @@ fn decode_link(value: &Value) -> Result<ObservedLinkV1, NetworkKernelReaderError
         kind,
         mtu,
         mac,
-        up: true,
+        up,
         ipv6_address_generation,
     })
+}
+
+fn veth_flags(up: bool) -> &'static [&'static str] {
+    // Prepared and fenced pairs are down; armed pairs have carrier on both
+    // ends. Partial carrier transitions do not establish a stable observation.
+    if up {
+        &["BROADCAST", "MULTICAST", "UP", "LOWER_UP"]
+    } else {
+        &["BROADCAST", "MULTICAST"]
+    }
 }
 
 const LINK_FIELDS: &[&str] = &[
@@ -512,10 +523,18 @@ const LINK_FIELDS: &[&str] = &[
 fn validate_link_metadata(
     object: &Map<String, Value>,
     kind: &str,
+    up: bool,
 ) -> Result<ObservedIpv6AddressGenerationV1, NetworkKernelReaderError> {
     let loopback = kind == "loopback";
     if required_string(object, "qdisc")? != "noqueue"
-        || required_string(object, "operstate")? != if loopback { "UNKNOWN" } else { "UP" }
+        || required_string(object, "operstate")?
+            != if loopback {
+                "UNKNOWN"
+            } else if up {
+                "UP"
+            } else {
+                "DOWN"
+            }
         || required_string(object, "linkmode")? != "DEFAULT"
         || required_string(object, "group")? != "default"
         || required_string(object, "broadcast")?
@@ -665,12 +684,19 @@ fn validate_address_link_record(
     let expected_flags = if loopback {
         &["LOOPBACK", "UP", "LOWER_UP"][..]
     } else {
-        &["BROADCAST", "MULTICAST", "UP", "LOWER_UP"][..]
+        veth_flags(link.up)
     };
     if required_u32(object, "mtu")? != link.mtu
         || !string_array_equals(required_array(object, "flags")?, expected_flags)
         || required_string(object, "qdisc")? != "noqueue"
-        || required_string(object, "operstate")? != if loopback { "UNKNOWN" } else { "UP" }
+        || required_string(object, "operstate")?
+            != if loopback {
+                "UNKNOWN"
+            } else if link.up {
+                "UP"
+            } else {
+                "DOWN"
+            }
         || required_string(object, "group")? != "default"
         || required_string(object, "link_type")? != if loopback { "loopback" } else { "ether" }
         || parse_mac(required_string(object, "address")?)? != link.mac
@@ -1379,6 +1405,56 @@ mod tests {
             ObservedIpv6AddressGenerationV1::None
         );
         assert_eq!(addresses.len(), 1);
+    }
+
+    #[test]
+    fn fenced_veth_state_is_retained_and_address_state_must_agree() {
+        let encode_ip_json = |records: &Value| {
+            let mut bytes = serde_json::to_vec(records).unwrap();
+            bytes.push(b'\n');
+            bytes
+        };
+        let fence_veth = |bytes: &[u8]| {
+            let mut records: Value = serde_json::from_slice(bytes).unwrap();
+            for link in records.as_array_mut().unwrap() {
+                if link["ifname"] != "lo" {
+                    link["flags"] = serde_json::json!(["BROADCAST", "MULTICAST"]);
+                    link["operstate"] = Value::from("DOWN");
+                }
+            }
+            encode_ip_json(&records)
+        };
+        let link_json = fence_veth(MANAGED_LINKS);
+        let address_json = fence_veth(MANAGED_ADDRESSES);
+
+        let links = decode_links(&link_json).unwrap();
+        let addresses =
+            decode_addresses(&address_json, &links, ObservedNetworkNamespaceV1::Sandbox).unwrap();
+
+        assert!(links.iter().all(|link| link.up == (link.name == "lo")));
+        assert!(!addresses.is_empty());
+        assert!(
+            decode_addresses(
+                MANAGED_ADDRESSES,
+                &links,
+                ObservedNetworkNamespaceV1::Sandbox,
+            )
+            .is_err()
+        );
+
+        let mut inconsistent: Value = serde_json::from_slice(&link_json).unwrap();
+        let veth_index = inconsistent
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|link| link["ifname"] != "lo")
+            .unwrap();
+        inconsistent[veth_index]["operstate"] = Value::from("UP");
+        assert!(decode_links(&encode_ip_json(&inconsistent)).is_err());
+
+        inconsistent[veth_index]["operstate"] = Value::from("DOWN");
+        inconsistent[veth_index]["flags"] = serde_json::json!(["BROADCAST", "MULTICAST", "PROMISC"]);
+        assert!(decode_links(&encode_ip_json(&inconsistent)).is_err());
     }
 
     #[test]
