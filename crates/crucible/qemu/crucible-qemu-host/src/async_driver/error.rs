@@ -31,6 +31,11 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
             {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
+            QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source)
+                if self.message.is_empty() =>
+            {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) if self.message.is_empty() => {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
@@ -56,6 +61,7 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source) => Some(source),
             _ => self.supervision_post.as_ref().map(|source| source as _),
@@ -67,6 +73,7 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
 enum QemuAsyncDriverRuntimeErrorDetail {
     HostSupervision(crucible_host_resources::host_supervision::HostSupervisionError),
     MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
+    BoundaryAction(crucible_qemu_protocol::boundary_action::ActionDecodeError),
     NodeSlot(crucible_qemu_shmem::NodeSlotError),
     FingerprintSample(crucible_qemu_shmem::FingerprintSampleError),
     #[default]
@@ -81,6 +88,31 @@ impl QemuAsyncDriverRuntimeError {
     #[must_use]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Retains an action observation refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn boundary_action(
+        operation: &'static str,
+        source: crucible_qemu_protocol::boundary_action::ActionDecodeError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the action cause independently of a later Original post.
+    #[must_use]
+    pub const fn boundary_action_source(
+        &self,
+    ) -> Option<&crucible_qemu_protocol::boundary_action::ActionDecodeError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source) => Some(source),
+            _ => None,
+        }
     }
 
     /// Retains a node publication refusal without allocating diagnostic text.

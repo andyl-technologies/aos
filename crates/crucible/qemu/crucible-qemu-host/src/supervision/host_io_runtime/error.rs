@@ -51,6 +51,89 @@ mod tests {
     use std::os::unix::fs::FileExt;
 
     #[test]
+    fn actual_action_preview_refusal_keeps_typed_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_qemu_protocol::boundary_action::ActionDecodeError;
+        use crucible_qemu_shmem::{
+            NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
+            NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        };
+
+        for (generation, frontier, capture) in [(u32::MAX, 0_u64, 0_u32), (2, 1, 1), (2, 0, 3)] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let node_offset = usize::try_from(layout.node_slots_off)?;
+            let ack_offset = node_offset + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET;
+            let frontier_offset =
+                node_offset + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET;
+            let capture_offset = node_offset + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET;
+            // These are malformed or exhausted wire observations, not an
+            // issued action. Preview must refuse before the sampler publishes.
+            bytes[ack_offset..ack_offset + 4].copy_from_slice(&generation.to_ne_bytes());
+            bytes[frontier_offset..frontier_offset + 8].copy_from_slice(&frontier.to_ne_bytes());
+            bytes[capture_offset..capture_offset + 4].copy_from_slice(&capture.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe action preview refusal",
+            )?;
+            supervisor.cancel()?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                runtime
+                    .capture_execution_fingerprint(&deadline, std::time::Duration::from_secs(1))
+                    .expect_err("actual mapped preview refuses the observation")
+                    .with_operational_supervision_post(
+                        original
+                            .wait_slice()
+                            .expect_err("same Original is canceled"),
+                    )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(error.boundary_action_source(), Some(&ActionDecodeError));
+            assert_eq!(
+                std::error::Error::source(&error).and_then(|cause| cause.downcast_ref()),
+                Some(&ActionDecodeError),
+            );
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "publish current execution fingerprint failed: {ActionDecodeError}; independent host operation postcheck failed: {post}"
+                ),
+            );
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn actual_publication_exhaustion_retains_typed_causes_and_original_post_without_allocation()
     -> Result<(), Box<dyn std::error::Error>> {
         for fingerprint_exhausted in [false, true] {

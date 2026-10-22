@@ -64,7 +64,7 @@ impl QemuLiveHostIoRuntime {
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .preview_action_token(frontier, Some(fingerprint_request))
-            .map_err(|source| QemuAsyncDriverRuntimeError::new(operation, source.to_string()))?;
+            .map_err(|source| QemuAsyncDriverRuntimeError::boundary_action(operation, source))?;
         let loan = actions.lend(self, deadline, Some(fingerprint_request))?;
         deadline.remaining(operation)?.ok_or_else(|| {
             QemuAsyncDriverRuntimeError::new(operation, "capture operation has expired")

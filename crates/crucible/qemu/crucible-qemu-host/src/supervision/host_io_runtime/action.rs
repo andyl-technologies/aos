@@ -253,7 +253,7 @@ impl QemuLiveHostIoRuntime {
             .map_err(map_slot_error)?
             .preview_action_token(frontier, capture)
             .map_err(|error| {
-                QemuAsyncDriverRuntimeError::new("preview control token", error.to_string())
+                QemuAsyncDriverRuntimeError::boundary_action("preview control token", error)
             })?;
         source
             .begin_action(mapping, self.vm_slot, token, frontier, capture, primary)
