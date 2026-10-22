@@ -17,13 +17,15 @@
     test "$(cat ${initialEnrollmentProof.reassembly}/result)" = PASS
     test "$(cat ${initialEnrollmentProof.sdk}/result)" = PASS
     test "$(cat ${initialEnrollmentProof.sdkWipe}/result)" = PASS
+    test "$(cat ${initialEnrollmentProof.privateRelease}/result)" = PASS
     mkdir -p "$out/nix-support"
     printf '%s\n' \
       ${hostCacheProof.native} \
       ${initialEnrollmentProof.native} \
       ${initialEnrollmentProof.reassembly} \
       ${initialEnrollmentProof.sdk} \
-      ${initialEnrollmentProof.sdkWipe} > "$out/nix-support/native-proofs"
+      ${initialEnrollmentProof.sdkWipe} \
+      ${initialEnrollmentProof.privateRelease} > "$out/nix-support/native-proofs"
   '';
   gate = name: module: names: message:
     nativeSdkGate name ''

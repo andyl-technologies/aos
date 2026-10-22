@@ -424,7 +424,7 @@ def run(driver, image, wipe_only=False):
     for name, refused, mode, payload in cases:
         root = parent / name
         setup = ("setup-default-wipe" if name == "wipe-default" else
-                 "setup-manifest" if payload == large else "setup")
+                 "setup-manifest-public" if payload == large else "setup-public")
         actor(driver, image, name + "-setup",
               ["configured-sdk-cache-example", setup, root, 840])
         config = root / "config.toml"
@@ -481,7 +481,11 @@ def run(driver, image, wipe_only=False):
             path = root / ("snapshot-" + item) / "file"
             driver.require(path.read_bytes() == payload and path.stat().st_uid == 840,
                            "native SDK snapshot differs from independent original payload")
-        sealed = driver.ROOT / "positive/private/sealed"
+        # Persistent-cache controls use a genuine signed public repository.
+        # Private lifetime is independently checked through actual final release.
+        domain = tomllib.loads(config.read_text())["local_repository"]["domain"]
+        driver.require(domain == "public", "cache retention control lacks a signed public root")
+        sealed = driver.ROOT / "positive/public/sealed"
         candidates = [path for path in sealed.rglob("*")
                       if path.is_file() and path.stat().st_size == len(payload)
                       and path.read_bytes() == payload]

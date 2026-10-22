@@ -30,6 +30,7 @@ const SELECTORS: &[&str] = &[
     "publisher-positive",
     "publisher-reassembly",
     "reassembly-public-private",
+    "release-public-private",
     "ready-public-private",
     "open-public-private",
     "verify-positive",
@@ -79,6 +80,7 @@ pub(super) fn run() -> io::Result<()> {
         "publisher-positive" => publisher::run(),
         "publisher-reassembly" => publisher::run_reassembly(),
         "reassembly-public-private" => publisher::prepare_reassembly(),
+        "release-public-private" => publisher::prepare_release(),
         "ready-public-private" => publisher::prepare(),
         "open-public-private" => publisher::prepare_objects(),
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {

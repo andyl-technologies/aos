@@ -1,6 +1,7 @@
 {
   nativeSdkGate,
   portableSharedModes,
+  initialEnrollmentProof,
   ...
 }: let
   native = label: names:
@@ -34,6 +35,9 @@ in {
       "shared_private_open_refuses_before_touching_missing_root"
       "residence_composition::portable_resident_routes_preserve_domain_and_reachability_before_lookup"
     ]}
+    test "$(cat ${initialEnrollmentProof.privateRelease}/result)" = PASS
+    mkdir -p "$out/nix-support"
+    printf '%s\n' ${initialEnrollmentProof.privateRelease} > "$out/nix-support/private-release-proof"
     printf 'PASS: independent scoped directory routes and private-cache refusal\n' > "$out/result"
   '';
 }

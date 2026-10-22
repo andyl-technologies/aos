@@ -215,6 +215,7 @@ pub(in crate::host_cache::owner) async fn background(
         }
         result?;
     }
+    super::super::publication::eviction::private_background(executor).await?;
     Ok(())
 }
 

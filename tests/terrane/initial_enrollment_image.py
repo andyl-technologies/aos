@@ -26,7 +26,7 @@ PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
 SELECTORS = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting",
              "reused-project", "partial-quota", "initialize-positive", "initialize-existing",
              "initialize-unsafe-parent", "serve-positive", "publisher-positive",
-             "publisher-reassembly", "reassembly-public-private",
+             "publisher-reassembly", "reassembly-public-private", "release-public-private",
              "ready-public-private", "open-public-private", "verify-positive",
              "read-public", "read-private", "read-publisher", "foreign-private",
              "capabilities-update"]

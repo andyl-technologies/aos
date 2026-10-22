@@ -15144,3 +15144,40 @@ content-driver calls, a stronger refusal boundary, while retaining the three
 actual policy checks and zero body-read assertions. This correction requires a
 new owning-gate run; the failed receipt remains retained. No trunk task is
 accepted by these component results.
+
+
+#### Private publication release without quota pressure
+
+DOM-15 requires private sealed objects to leave the cache after their last
+consumer releases. The physical worker now selects unprotected completed
+private publications independently of FIFO pressure. The existing original
+cache permit, live-pin checks, shared-source extraction, publisher retirement
+acknowledgments and actual quota reconciliation remain mandatory. Background
+consumer maintenance schedules this work; public FIFO selection is unchanged.
+Accepted retirement remains physically owned after cancellation or failure.
+
+A separate native ext4 scenario exercises two genuine independent leases over
+one original fs-verity inode in each domain. It requires the second lease to
+prevent early retirement, revoked leases to refuse new backing, a retained
+read-only descriptor to preserve original bytes and physical project charge,
+private unlink without pressure, and a measured charge decrease only after
+tracked backing closure. The root supervisor independently requires exactly the
+public inode to remain. No explicit eviction request can supply this proof.
+The existing 30-second actor, 240-second driver and 300-second host limits remain.
+
+Persistent SDK cache controls now initialize actual signed public repositories,
+including their configured original authority and domain, rather than assuming
+private bodies may persist after consumer release. All previous service,
+namespace, lower-failure, circuit, payload and kernel-sealing assertions remain.
+The reassembly census obtains real independent private consumer grants after
+its original no-synthetic-grant assertions, retaining all six original inode
+observations through the external census. The separate release scenario proves
+the corresponding final-consumer behavior. Host owning gates, domain isolation
+and sealed wipe-on-release now require the new native proof.
+
+Strict all-feature Linux lint, the integration example's strict lint and the
+configured SDK fixture's strict feature profile pass. The actual integration
+fixture compiles in 83 seconds. Python syntax, the complete 129-case native
+source inventory and Nix formatting pass. Native execution on this increment
+remains required. Cold adopted private-body retirement and crash/retained-reference
+qualification remain separate open obligations; no trunk task is accepted.

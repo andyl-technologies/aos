@@ -104,6 +104,10 @@ pub(super) async fn exercise(
         assert_eq!(object.handle().read_at(&mut [0], actual.len() as u64)?, 0);
         assert!(object.handle().write_at(b"forbidden", 0).is_err());
 
+        // The root supervisor observes every original inode after this finite
+        // actor returns. Private objects need a real independent consumer lease
+        // through that observation; publication alone promises no idle cache.
+        let _census = retain_for_census(store, identity).await?;
         let report = object.into_cache().await.map_err(io::Error::other)?;
         assert_eq!(
             report.released_source_admissions,
@@ -202,4 +206,33 @@ async fn load_policy(
     .await
     .map_err(io::Error::other)?
     .ok_or_else(|| io::Error::other("reassembly lost its actual durable policy"))
+}
+
+/// Retains genuine private consumer protection through the external inode census.
+async fn retain_for_census(
+    store: &NativeContentStore,
+    identity: &Identity,
+) -> io::Result<Option<terrane_linux::host_cache::NativeSealedObjectLease>> {
+    if !store
+        .ready()
+        .layout()
+        .layout()
+        .domain()
+        .starts_with("private:")
+    {
+        return Ok(None);
+    }
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(30)
+        .ok_or_else(|| io::Error::other("census lease expiry overflows"))?;
+    store
+        .ready()
+        .owner()
+        .pin_sealed_object(identity.clone(), expires)
+        .await
+        .map(Some)
 }

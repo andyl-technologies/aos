@@ -469,6 +469,7 @@ in {
   integration.initial-enrollment-image = initialEnrollmentProof.image;
   integration.native-initial-enrollment = initialEnrollmentProof.native;
   integration.native-reassembly = initialEnrollmentProof.reassembly;
+  integration.native-private-release = initialEnrollmentProof.privateRelease;
   integration.native-sdk-cache = initialEnrollmentProof.sdk;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;

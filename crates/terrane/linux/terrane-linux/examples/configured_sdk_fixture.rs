@@ -97,17 +97,32 @@ fn dispatch() -> FixtureResult<&'static str> {
     }
     let root = Path::new(root);
     match command.as_str() {
-        "setup" | "setup-manifest" | "setup-default-wipe" => {
+        "setup"
+        | "setup-manifest"
+        | "setup-default-wipe"
+        | "setup-public"
+        | "setup-manifest-public" => {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            if command == "setup-manifest" {
-                runtime.block_on(setup_payload(root, owner, &payload::manifest(), true))?;
-            } else if command == "setup-default-wipe" {
-                runtime.block_on(setup_payload(root, owner, PAYLOAD, false))?;
+            let domain = if command.ends_with("-public") {
+                "public"
             } else {
-                runtime.block_on(setup(root, owner))?;
-            }
+                "private:fixture"
+            };
+            let manifest = payload::manifest();
+            let payload = if command.starts_with("setup-manifest") {
+                manifest.as_slice()
+            } else {
+                PAYLOAD
+            };
+            runtime.block_on(setup_payload(
+                root,
+                owner,
+                payload,
+                domain,
+                command != "setup-default-wipe",
+            ))?;
             Ok("PASS: separate-process configured SDK fixture setup")
         }
         "run" => {
@@ -140,14 +155,11 @@ fn dispatch() -> FixtureResult<&'static str> {
     }
 }
 
-async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
-    setup_payload(root, owner, PAYLOAD, true).await
-}
-
 async fn setup_payload(
     root: &Path,
     owner: u32,
     payload: &[u8],
+    domain: &str,
     explicit_wipe_none: bool,
 ) -> FixtureResult<()> {
     fs::create_dir(root)?;
@@ -181,7 +193,7 @@ async fn setup_payload(
         },
         LocalRepositoryPolicy {
             store_name: "fixture".into(),
-            domain: "private:fixture".into(),
+            domain: domain.into(),
             default_private_domain: "private:fixture".into(),
             acl: vec![("fixture-owner".into(), 31)],
             locality: Locality::default(),
@@ -249,7 +261,7 @@ async fn setup_payload(
     write_private(&root.join("expected.commit"), &commit)?;
     write_private(
         &root.join("config.toml"),
-        configuration(root, owner).as_bytes(),
+        configuration(root, owner, domain).as_bytes(),
     )?;
     publication::save(root)?;
     drop(repository);
@@ -257,7 +269,7 @@ async fn setup_payload(
     Ok(())
 }
 
-fn configuration(root: &Path, owner: u32) -> String {
+fn configuration(root: &Path, owner: u32, domain: &str) -> String {
     let root = root.display();
     format!(
         r#"store = "bucket(file://{root}/bucket)"
@@ -281,7 +293,7 @@ issuer = "configured-sdk-fixture"
 key_id = "initial"
 owner_uid = {owner}
 store_name = "fixture"
-domain = "private:fixture"
+domain = "{domain}"
 default_private_domain = "private:fixture"
 current_reference = "{MAIN}"
 policy_authority = "{MAIN}"

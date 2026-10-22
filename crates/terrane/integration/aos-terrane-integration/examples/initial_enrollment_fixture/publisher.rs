@@ -109,11 +109,16 @@ pub(super) fn prepare_reassembly() -> io::Result<()> {
     prepare_with(Preparation::Reassembly)
 }
 
+pub(super) fn prepare_release() -> io::Result<()> {
+    prepare_with(Preparation::Release)
+}
+
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
     Objects,
     Reassembly,
+    Release,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -124,18 +129,20 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     let case = Case::existing("positive")?;
     // The separate reassembly scenario exercises an explicit one-second
     // retirement policy. Original enrollment keeps its thirty-second policy.
-    let retirement_grace_ms = if matches!(preparation, Preparation::Reassembly) {
-        1_000
-    } else {
-        30_000
-    };
-    let consumer_release_grace_seconds = if matches!(preparation, Preparation::Reassembly) {
-        1
-    } else {
-        30
-    };
+    let retirement_grace_ms =
+        if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
+            1_000
+        } else {
+            30_000
+        };
+    let consumer_release_grace_seconds =
+        if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
+            1
+        } else {
+            30
+        };
     let mut host = configuration(&case, retirement_grace_ms, consumer_release_grace_seconds);
-    if matches!(preparation, Preparation::Reassembly) {
+    if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
         host.reassembly = Reassembly::Always;
     }
     let plan = NativeCachePlan::from_host(&host, terrane_format::refs::Locality::default())?;
@@ -171,6 +178,9 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             Preparation::Objects => runtime.block_on(content::exercise_objects(store, &profile))?,
             Preparation::Reassembly => {
                 runtime.block_on(content::exercise_reassembly(&configured, &profile))?
+            }
+            Preparation::Release => {
+                runtime.block_on(content::exercise_release(store, &profile, domain))?
             }
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.

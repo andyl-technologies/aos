@@ -54,6 +54,9 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
     assert_eq!(report.released_source_admissions, 1);
     assert!(consumer_owners(store).await?.is_subset(&before));
     super::super::assert_cache_grace(store, &identity, report.release_grace_ends_at).await?;
+    // Preserve the preceding no-synthetic-grant sealing assertions. Only the
+    // later external census obtains its own actual private consumer grant.
+    let _census = super::retain_for_census(store, &identity).await?;
     store.ready().validate_portable().await?;
     println!(
         "PASS actual native nonempty inline sealing without a new consumer grant; bytes=1337 released_admissions=1"

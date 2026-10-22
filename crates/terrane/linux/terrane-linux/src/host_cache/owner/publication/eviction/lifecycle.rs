@@ -142,7 +142,7 @@ pub(in crate::host_cache::owner) async fn run(
     let units = graph::capture(executor)?;
     let encoded_units = encoded::capture(executor)?;
     let surface_units = surface::capture(executor)?;
-    let (config, owner) = {
+    let (config, owner, private) = {
         let custody = executor
             .custody()
             .lock()
@@ -150,6 +150,12 @@ pub(in crate::host_cache::owner) async fn run(
         (
             custody.preparation.config.policy,
             custody.preparation.config.quota_owner.clone(),
+            matches!(
+                terrane_format::properties::Domain::parse(
+                    custody.preparation.config.location.domain(),
+                ),
+                Ok(terrane_format::properties::Domain::Private(_))
+            ),
         )
     };
     if incoming > config.capacity {
@@ -203,12 +209,30 @@ pub(in crate::host_cache::owner) async fn run(
         config.capacity - incoming
     };
     let required = total.saturating_sub(target);
-    let candidates = executor
+    // DOM-15 gives private sealed objects no idle lifetime after their real
+    // protection closes. Selection never grants retirement: the original permit
+    // below still rejects live pins, shared sources and non-cache custody.
+    let mut candidates = if private {
+        units
+            .iter()
+            .filter(|unit| !unit.protected)
+            .map(|unit| unit.key.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let pressure_candidates = executor
         .cache
         .queue
         .as_mut()
         .ok_or_else(|| invalid("native FIFO absent"))?
         .candidates(required);
+    let mut seen: BTreeSet<_> = candidates.iter().cloned().collect();
+    candidates.extend(
+        pressure_candidates
+            .into_iter()
+            .filter(|key| seen.insert(key.clone())),
+    );
     let mut units: BTreeMap<_, _> = units
         .into_iter()
         .map(|unit| (unit.key.clone(), unit))

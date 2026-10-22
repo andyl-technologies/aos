@@ -4,6 +4,8 @@
 mod objects;
 #[path = "content/reassembly.rs"]
 mod reassembly;
+#[path = "content/release.rs"]
+mod release;
 #[path = "content/repeated.rs"]
 mod repeated;
 
@@ -311,4 +313,13 @@ async fn metadata_policy(
     .await
     .map_err(io::Error::other)?
     .ok_or_else(|| io::Error::other("metadata deduplication lost original durable policy"))
+}
+
+/// Exercises independent grants and retained descriptors through final release.
+pub(super) async fn exercise_release(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    release::exercise(store, profile, domain).await
 }

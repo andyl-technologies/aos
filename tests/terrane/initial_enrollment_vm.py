@@ -196,7 +196,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -215,6 +215,12 @@ def configured_publication():
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
                 wipe_only=SCENARIO == "sdk-wipe")
+        elif SCENARIO == "private-release":
+            run_case("release-public-private", role_command("release-public-private", 840, [844, 845]))
+            files = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
+            require(len(files) == 1 and files[0][0] == "public" and files[0][5] == 1337,
+                    "final release did not erase the actual private inode while retaining public cache")
+            print("PASS root observed private sealed erasure and retained public inode after actual consumer and backing closure", flush=True)
         elif SCENARIO == "reassembly":
             before = sealed_snapshot()
             run_case("reassembly-public-private", role_command("reassembly-public-private", 840, [844, 845]))
@@ -269,7 +275,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "sdk", "sdk-wipe", "surface"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "sdk", "sdk-wipe", "surface"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix

@@ -47,6 +47,8 @@
         then "terrane-native-initial-enrollment-ext4"
         else if scenario == "reassembly"
         then "terrane-native-reassembly-ext4"
+        else if scenario == "private-release"
+        then "terrane-native-private-release-ext4"
         else if scenario == "surface"
         then "terrane-native-configured-surface-index-ext4"
         else if scenario == "sdk-wipe"
@@ -132,6 +134,7 @@ in {
   inherit image;
   native = nativeFor "enrollment";
   reassembly = nativeFor "reassembly";
+  privateRelease = nativeFor "private-release";
   sdk = nativeFor "sdk";
   sdkWipe = nativeFor "sdk-wipe";
   surface = nativeFor "surface";
