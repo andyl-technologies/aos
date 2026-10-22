@@ -151,10 +151,13 @@
   root = pkgs.runCommand "aos-host-worker-payload-root" {} ''
     ${pkgs.grep}/bin/grep -aFq '${pkgs.systemd}/lib/systemd/systemd' \
       '${qualificationInit}/bin/qualification-init'
-    mkdir -p "$out/etc/systemd/system" "$out/usr/lib" "$out/sbin" "$out/nix/store" "$out/var"
+    mkdir -p "$out/etc/systemd/system" "$out/usr/lib" "$out/usr/libexec" "$out/sbin" "$out/nix/store" "$out/var"
     cp ${payloadTarget}/default.target "$out/etc/systemd/system/default.target"
     cp ${payloadService}/qualification.service "$out/etc/systemd/system/qualification.service"
     ln -s ${qualificationInit}/bin/qualification-init "$out/sbin/init"
+    # The closed directory profile enters this fixed bootstrap before guest
+    # systemd. This fixture checks its descriptors without authenticating Agent.
+    ln -s ${qualificationInit}/bin/qualification-init "$out/usr/libexec/aos-sandbox-guest-init"
     printf 'NAME=AOS-host-worker-qualification\nID=aos-host-worker-qualification\n' > "$out/usr/lib/os-release"
     ln -s ../usr/lib/os-release "$out/etc/os-release"
     printf '${incarnation}\n' > "$out/etc/machine-id"
