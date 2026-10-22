@@ -208,25 +208,55 @@
       ' "$collectRoot/messages.jsonl" > "$collectRoot/artifacts"
       # A selection that publishes nothing means the filter above is wrong.
       test -s "$collectRoot/artifacts"
+      # Hash, copy, and strip the executables in parallel; each one is
+      # independent and most are large. Every job finishes before the next
+      # invocation can relink an uplifted path. Copies land under a
+      # temporary name and are renamed into place, so two artifacts with
+      # the same digest cannot interleave their writes.
+      : > "$collectRoot/collect.failed"
+      jobs_dir="$collectRoot/collect.jobs"
+      rm -rf "$jobs_dir"
+      mkdir -p "$jobs_dir"
+      job=0
       while IFS="$(printf '\037')" read -r role kind name package executable required; do
-        test -n "$package" && test -f "$executable"
-        digest=$(sha256sum "$executable" | cut -d ' ' -f 1)
-        case $executable in
-          *.so) stored="libexec/$digest-''${executable##*/}" ;;
-          *) stored="libexec/$digest-$name" ;;
-        esac
-        if [ ! -e "$collectRoot/$stored" ]; then
-          cp "$executable" "$collectRoot/$stored"
-          # The workspace test profile asks for no debug info; the DWARF
-          # here comes from prebuilt std and is about 95% of each file.
-          # Symbols stay, so backtraces still name functions.
-          chmod u+w "$collectRoot/$stored"
-          strip --strip-debug "$collectRoot/$stored"
-        fi
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "$selection_id" "$role" "$kind" "$name" "$package" "$stored" "$required" \
-          >> "$collectRoot/manifest.unsorted"
+        job=$((job + 1))
+        # errexit does not apply inside a `||` list, so each step checks.
+        (
+          { test -n "$package" && test -f "$executable"; } || exit 1
+          digest=$(sha256sum "$executable" | cut -d ' ' -f 1)
+          [ -n "$digest" ] || exit 1
+          case $executable in
+            *.so) stored="libexec/$digest-''${executable##*/}" ;;
+            *) stored="libexec/$digest-$name" ;;
+          esac
+          if [ ! -e "$collectRoot/$stored" ]; then
+            staged="$collectRoot/$stored.$job.tmp"
+            cp "$executable" "$staged" || exit 1
+            # The workspace test profile asks for no debug info; the DWARF
+            # here comes from prebuilt std and is about 95% of each file.
+            # Symbols stay, so backtraces still name functions.
+            chmod u+w "$staged" || exit 1
+            strip --strip-debug "$staged" || exit 1
+            mv -f "$staged" "$collectRoot/$stored" || exit 1
+          fi
+          printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$selection_id" "$role" "$kind" "$name" "$package" "$stored" "$required" \
+            > "$jobs_dir/$job" || exit 1
+        ) < /dev/null || echo "$executable" >> "$collectRoot/collect.failed" &
+        while [ "$(jobs -rp | wc -l)" -ge "$NIX_BUILD_CORES" ]; do
+          wait -n || true
+        done
       done < "$collectRoot/artifacts"
+      wait
+      if [ -s "$collectRoot/collect.failed" ]; then
+        echo "failed to collect:" >&2
+        cat "$collectRoot/collect.failed" >&2
+        exit 1
+      fi
+      # Every artifact must have produced its manifest row.
+      test "$(find "$jobs_dir" -type f | wc -l)" -eq "$job"
+      cat "$jobs_dir"/* >> "$collectRoot/manifest.unsorted"
+      rm -rf "$jobs_dir"
     }
 
     ${lib.concatMapStringsSep "\n" (invocation: "collect_invocation ${shellQuote invocation.id} ${shellQuote (toString invocation.collect)} ${invocation.command}") invocations}
@@ -338,18 +368,23 @@
     keep=" ''${buildInputs[*]:-} ''${propagatedBuildInputs[*]:-} ''${nukeRefsKeep[*]:-} "
     scrub_roots=("$out/libexec")
     [ ! -d "$out/doctests" ] || scrub_roots+=("$out/doctests")
-    find "''${scrub_roots[@]}" -type f | while read -r file; do
-      { grep -aoE '/nix/store/[0-9a-z]{32}-' "$file" || true; } | LC_ALL=C sort -u \
-        | while read -r prefix; do
-            hash=''${prefix#/nix/store/}
-            hash=''${hash%-}
-            set -- /nix/store/"$hash"-*
-            [ -e "$1" ] || continue
-            case $keep in *" $1 "*) continue ;; esac
-            chmod u+w "$file"
-            LC_ALL=C sed -i "s|/nix/store/$hash-|/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-|g" "$file"
-          done
-    done
+    # Files are independent, so they are scrubbed in parallel.
+    export keep
+    find "''${scrub_roots[@]}" -type f -print0 \
+      | xargs -0 -r -n 1 -P "$NIX_BUILD_CORES" ${bash}/bin/bash -c '
+          set -eu
+          file=$1
+          { grep -aoE "/nix/store/[0-9a-z]{32}-" "$file" || true; } | LC_ALL=C sort -u \
+            | while read -r prefix; do
+                hash=''${prefix#/nix/store/}
+                hash=''${hash%-}
+                set -- /nix/store/"$hash"-*
+                [ -e "$1" ] || continue
+                case $keep in *" $1 "*) continue ;; esac
+                chmod u+w "$file"
+                LC_ALL=C sed -i "s|/nix/store/$hash-|/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-|g" "$file"
+              done
+        ' scrub
 
     # Test executables are most of a family and compress about fivefold;
     # the runner decompresses each into the gate's writable copy, which it
@@ -357,7 +392,8 @@
     # scan, so the paths that exist (run-time libraries, not fixtures) are
     # recorded in plain text first.
     mkdir -p "$out/nix-support"
-    find "$out/libexec" -type f -exec grep -aohE '/nix/store/[0-9a-z]{32}-[^/[:space:][:cntrl:]"]+' {} + \
+    find "$out/libexec" -type f -print0 \
+      | xargs -0 -r -n 8 -P "$NIX_BUILD_CORES" grep -aohE '/nix/store/[0-9a-z]{32}-[^/[:space:][:cntrl:]"]+' \
       | LC_ALL=C sort -u | while read -r reference; do
           [ ! -e "$reference" ] || printf '%s\n' "$reference"
         done > "$out/nix-support/executable-references"
