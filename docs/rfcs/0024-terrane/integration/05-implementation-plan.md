@@ -15325,3 +15325,25 @@ review matches all 8,070 immutable source files and 185 test targets across 59
 packages. The isolated `3cfedf8f5c` cleanup correction is pushed and its actual
 cold/warm release checks are running. Earlier failures remain retained. No
 additional trunk task is accepted by this increment.
+
+
+#### Cold manifest seed honors genuine source-consumer grace
+
+Both `3cfedf8f5c` actual warm and cold-inline release VMs pass in 249.038 and
+249.314 seconds with unchanged bounds. Independent reviews match all 8,071
+immutable source files, 5,351 bound inputs and the installed original Cargo ELF.
+The independent cold actor reopens the actual original inode; private release,
+second-consumer protection, public retention and physical charge decrease after
+actual backing closure all pass. These results resolve the retained in-flight
+cleanup failures at `b9abb98ac2`.
+
+The `230375f940` manifest release VM fails during its seed actor. Actual manifest
+validation holds source consumers through durable release grace; the fixture
+then requests source handoff too early and receives `standalone body remains
+retained by an actual consumer`. No recovered-manifest cleanup executes. The
+fixture now uses the existing reassembly helper to wait for observed durable
+deadlines and reconcile real leases before preparing the sealed object. Native
+pin checks and all original deadlines remain unchanged. The failed receipt is
+retained; a fresh exact-source manifest pass remains required. Warm and
+cold-inline VMs at `230375f940` report actual native success; complete immutable
+reviews and application compilation remain pending. No task is accepted.

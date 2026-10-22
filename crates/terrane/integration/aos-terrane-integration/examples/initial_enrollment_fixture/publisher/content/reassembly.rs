@@ -151,7 +151,10 @@ async fn admit_manifest(
 }
 
 /// Waits for observed durable deadlines, then asks the real owner to reconcile.
-async fn wait_consumer_grace(store: &NativeContentStore) -> io::Result<()> {
+///
+/// # Errors
+/// Refuses unreadable policy, invalid deadlines and failed lease reconciliation.
+pub(super) async fn wait_consumer_grace(store: &NativeContentStore) -> io::Result<()> {
     let state = load_policy(store).await?;
     let deadline = state
         .leases

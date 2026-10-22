@@ -57,6 +57,9 @@ pub(super) async fn seed(
         .await
         .map_err(io::Error::other)?;
     assert_eq!(actual, identity);
+    // Manifest validation holds genuine source consumers through release grace.
+    // Observe their durable deadlines before moving those original sources.
+    super::super::reassembly::wait_consumer_grace(store).await?;
     let NativePreparedObject::Sealed(object) = store
         .prepare_object(&identity, terrane_sdk::host::cache::ReassemblyMode::Never)
         .await
