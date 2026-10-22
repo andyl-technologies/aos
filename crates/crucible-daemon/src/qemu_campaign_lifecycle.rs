@@ -2096,6 +2096,54 @@ fn replay_decision_detail(decision: Option<&Decision>) -> String {
     }
 }
 
+/// Summarizes the decisions within eight entries of `index`, one per entry.
+///
+/// Each entry is `position:kind` with the fields that order it: a delivery
+/// order's time and its consumer/producer/sequence keys, or a draw's stream
+/// name. Values are omitted; a reordering shows as the same entries at
+/// different positions.
+fn replay_decision_window(
+    history: &crucible::History<Decision>,
+    index: usize,
+    length: usize,
+) -> String {
+    const RADIUS: usize = 8;
+
+    let start = index.saturating_sub(RADIUS);
+    let end = index.saturating_add(RADIUS).min(length);
+    (start..end)
+        .filter_map(|position| history.get(position).map(|decision| (position, decision)))
+        .map(|(position, decision)| {
+            let summary = match decision {
+                Decision::DeliveryOrder(order) => {
+                    let keys = order
+                        .order
+                        .iter()
+                        .map(|key| {
+                            format!(
+                                "{}<-{}#{}",
+                                key.consumer.node.name,
+                                key.producer.node.name.chars().take(14).collect::<String>(),
+                                key.sequence
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("+");
+                    format!("order@{}:{keys}", order.at.ticks)
+                }
+                Decision::RngDraw(draw) => {
+                    format!("rng:{}", draw.stream.name.replace('\n', ";"))
+                }
+                Decision::Override(_) => String::from("override"),
+                Decision::Preemption(_) => String::from("preemption"),
+                Decision::Selection(_) => String::from("selection"),
+            };
+            format!("{position}:{summary}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[derive(Clone, Copy)]
 struct GuestSelectableReplayContext<'a> {
     phase: GuestSelectableReplayPhase,

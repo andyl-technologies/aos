@@ -1148,6 +1148,16 @@ pub(super) fn wait_for_request_attempt(
             if !explanation["observation"].is_null() {
                 return Ok(Some(explanation));
             }
+            if explanation["runtime"]["phase"] == "terminal-failure" {
+                // A terminal attempt never publishes an observation; report
+                // why it ended instead of waiting out the stall window.
+                return Err(format!(
+                    "request {request} attempt {attempt} ended in terminal failure: {}; {}",
+                    explanation["runtime"],
+                    service_failure_rows(service)
+                )
+                .into());
+            }
             state.push_str(&format!(
                 " {attempt}={}",
                 explanation["runtime"]["phase"]
@@ -1155,10 +1165,24 @@ pub(super) fn wait_for_request_attempt(
                     .unwrap_or("unknown")
             ));
         }
+        watch.sample_guest_progress(|| service_guest_progress(service));
         watch.observe(&state)?;
         Ok(None)
     })?;
     completed.ok_or_else(|| watch.safety_cap_expired().into())
+}
+
+/// Collects the service rows that explain a branch attempt's replay route.
+fn service_failure_rows(service: &CampaignServiceChild) -> String {
+    service
+        .stderr_tail()
+        .lines()
+        .filter(|line| {
+            line.starts_with("CRUCIBLE-HOT-FORK-DECLINE-V1 ")
+                || line.starts_with("CRUCIBLE-REPLAY-DIVERGENCE-V1 ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(super) fn require_network_effect(

@@ -743,6 +743,19 @@ where
 // never selects or mutates modeled execution.
 // crucible-lint: allow clippy-disallowed-method -- test-only monotonic timing cannot influence modeled state.
 #[cfg_attr(test, allow(clippy::disallowed_methods))]
+/// Names why a whole-world hot fork declined an attempt.
+///
+/// A decline is not a failure: the router falls back to an anchored or thin
+/// replay. The row tells an operator which replay ran and why.
+fn note_hot_fork_decline(reason: &str) {
+    use std::io::Write as _;
+
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-DECLINE-V1 reason={reason}"
+    );
+}
+
 fn launch_concurrent_node<G>(
     source: QemuNodeSetPreparedHotForkSource<'_>,
     launch: ConcurrentNodeLaunch<G>,
@@ -848,6 +861,7 @@ where
             input.start(),
             crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
         ) {
+            note_hot_fork_decline("after-attempt-start");
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
         let runtime_basis = context
@@ -868,6 +882,7 @@ where
         {
             let edge = parent.schedule.len();
             if ancestor::configuration_carried_decision(input, selected, edge, edge).is_some() {
+                note_hot_fork_decline("configuration-carried-edge");
                 return Ok(QemuHotForkWorldLifecycleStart::Declined);
             }
         }
@@ -880,6 +895,7 @@ where
             None => self.checkout_published_ancestor(input, &source_key)?,
         };
         let Some((source_lease, source_key, start_origin)) = checkout else {
+            note_hot_fork_decline("no-exact-or-ancestor-source");
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         };
         let source_world = source_lease.source_owner();
@@ -900,6 +916,7 @@ where
             drop(source);
             drop(source_world);
             self.sources.restore(source_lease);
+            note_hot_fork_decline("source-configuration-mismatch");
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
         let continuation = match source.fork_continuation() {
