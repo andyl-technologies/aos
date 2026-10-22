@@ -36,7 +36,7 @@ in rec {
     cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
     if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
       --config ${workspace.configuration} --workspace "$PWD/workspace" \
-      --output-base "$TMPDIR/reject-native" --nix-sandbox \
+      --output-base "$TMPDIR/reject-native" --nix-sandbox --batch \
       -- build //tools/bazel/tests/fixture:native_app --nobuild \
       > "$out/rejected-native-compiler.log" 2>&1; then
       printf '%s\n' 'WASM analysis unexpectedly admitted a native C++ dependency' >&2

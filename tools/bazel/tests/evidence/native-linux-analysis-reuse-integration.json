@@ -1,0 +1,449 @@
+{
+  "benchmark_cleanup_tests": 4,
+  "cache_summary": {
+    "consumer": {
+      "AosPythonGenerate:disk cache hit": 1,
+      "CppArchive:disk cache hit": 1,
+      "CppCompile:disk cache hit": 1,
+      "CppCompile:linux-sandbox": 1,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:disk cache hit": 6,
+      "Rustc:linux-sandbox": 1
+    },
+    "producer": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    },
+    "uncached": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    }
+  },
+  "checks": {
+    "all": "/nix/store/z06prw5r9jrva01dlacz6m1wifqk4psr-aos-bazel-checks",
+    "cli": "/nix/store/hhqnzbha13ywiqkqvy9lzkkn2j3dnmhl-aos-dev-cli-check-0",
+    "concurrent": "/nix/store/jjbjhwp2br66wp848mwg21migj13lidl-aos-bazel-concurrent-cache-proof",
+    "cross_derivation": "/nix/store/4x76370zl0gfafk4kz8dn92hq16mifji-aos-bazel-cross-derivation-cache-proof",
+    "invalidation": "/nix/store/rdqcw06ln4ijkq2zsii46yzy242p3yq0-aos-bazel-cache-invalidation-matrix"
+  },
+  "concurrent_overlap_seconds": 8.136787367,
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/build.nix": "d8407337de431262ea31f9f30309e3be5728cf9209cbf9c2fc5645ee713610dc",
+    "pkgs/build-support/_bazel/workspace.nix": "93b949b8088168cfd148c6ad5a683cbf91a405875a34f8e78e16c26e90003396",
+    "tools/bazel/bench/measure_pilot.py": "f9ad2a70aae6cf8a93614fd35af7e7ea8b7cb69c7d8e5d6c0e17d0a4669c501d",
+    "tools/bazel/launcher.py": "9e23e4f644f1d461edd8003c3675646205c4f50914fc8c1e0dbf17174c344999",
+    "tools/dev/lib/bazel.bash": "ec7266e3afbe9c85c83dae6860da62af2730e676537a640c22b9866c8064d987"
+  },
+  "developer_reuse": [
+    {
+      "command": "first",
+      "pid": 54
+    },
+    {
+      "command": "second",
+      "pid": 54
+    }
+  ],
+  "limitations": [
+    "Leaf compile-loop timings exclude Nix evaluation, preparation and installation.",
+    "Larger-family and end-to-end acceptance budgets remain required before production cutover.",
+    "First concurrent trial was rejected because the builders did not overlap; isolated fresh trial passed."
+  ],
+  "nix_phase_reuse": {
+    "consumer": {
+      "build": "/nix/store/p7b1kfjh827zl0y7p4r7qbx6k5vmxx3s-aos-bazel-cache-consumer-1",
+      "phases": {
+        "configured-discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.3781153329910012
+        },
+        "discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.12792660199920647
+        },
+        "metrics": {
+          "pid": 11,
+          "wall_seconds": 6.3395883300108835
+        }
+      }
+    },
+    "producer": {
+      "build": "/nix/store/l0fz8xhz8wmbj2nm61sgail437511gdc-aos-bazel-cache-producer-1",
+      "phases": {
+        "configured-discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.4602982350043021
+        },
+        "discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.13575506101187784
+        },
+        "metrics": {
+          "pid": 11,
+          "wall_seconds": 8.276530322997132
+        }
+      }
+    },
+    "uncached": {
+      "build": "/nix/store/5h5584pb6n3dwlsa6aig9hhcr9h935zd-aos-bazel-cache-uncached-1",
+      "phases": {
+        "configured-discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.3532470630016178
+        },
+        "discovery-metrics": {
+          "pid": 11,
+          "wall_seconds": 0.12965327000711113
+        },
+        "metrics": {
+          "pid": 11,
+          "wall_seconds": 8.196332516003167
+        }
+      }
+    }
+  },
+  "performance": {
+    "budgets": "not established; requires family end-to-end acceptance measurements",
+    "configuration": {
+      "accache": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache",
+      "accache_manifest": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+      "bazel_config": "/nix/store/xz5n6h5nw9ih3992d5w49r7sc50gpyha-aos-bazel-configuration.json",
+      "bazel_source": "/nix/store/mby4bjpd8vx1lngdxwyzwgyhqy5vislx-aos-bazel-workspace",
+      "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+      "cargo_source": "/nix/store/ravnqcjkar01kdwh4civ82zwinwv50vk-crucible-cargo-src",
+      "jobs": 4,
+      "launcher": "/nix/store/sy4w1yw1rnl54q50nn9y43cgzcsw675d-launcher.py",
+      "prepared_lock": "/nix/store/vrs2ff3fkdw9jd3dqc9wifxa7919pbsj-aos-bazel-prepared-lock-1/MODULE.bazel.lock",
+      "profiles": {
+        "bazel": "Bazel fastbuild defaults, local disk action cache, private output base",
+        "bazel-server": "Bazel fastbuild, private persistent JVM, 2 GiB heap limit, 60-second idle limit, explicit shutdown",
+        "cargo-incremental": "Cargo dev defaults, incremental, no compiler wrapper",
+        "cargo-incremental-debug0": "Cargo dev with debug=0, incremental, no compiler wrapper",
+        "cargo-nonincremental-accache": "Cargo dev defaults, nonincremental, local accache"
+      },
+      "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+      "trial": "boot-reuse-integrated-20261022-a",
+      "vendor": "/nix/store/iv2pbjym87cqx1dw6a76n9sljz23k7lf-aos-workspace-vendor",
+      "versions": {
+        "bazel": "9.2.0",
+        "rust": "1.98.1"
+      }
+    },
+    "distributions": {
+      "bazel-server:cold": {
+        "maximum": 9.703695213000174,
+        "median": 8.63868612999795,
+        "minimum": 8.598455030994955,
+        "samples": [
+          8.598455030994955,
+          9.703695213000174,
+          8.63868612999795
+        ]
+      },
+      "bazel-server:fresh-build-directory": {
+        "maximum": 5.871675343005336,
+        "median": 5.738953352993121,
+        "minimum": 5.425467367997044,
+        "samples": [
+          5.871675343005336,
+          5.738953352993121,
+          5.425467367997044
+        ]
+      },
+      "bazel-server:implementation-edit": {
+        "maximum": 0.8693982410040917,
+        "median": 0.7043898510019062,
+        "minimum": 0.7024503260035999,
+        "samples": [
+          0.8693982410040917,
+          0.7043898510019062,
+          0.7024503260035999
+        ]
+      },
+      "bazel-server:public-api-edit": {
+        "maximum": 1.6436337930063019,
+        "median": 1.4359550079971086,
+        "minimum": 1.4327072339947335,
+        "samples": [
+          1.4327072339947335,
+          1.4359550079971086,
+          1.6436337930063019
+        ]
+      },
+      "bazel-server:second-worktree": {
+        "maximum": 5.787343144998886,
+        "median": 5.633842926996294,
+        "minimum": 5.267198360001203,
+        "samples": [
+          5.787343144998886,
+          5.267198360001203,
+          5.633842926996294
+        ]
+      },
+      "bazel-server:warm": {
+        "maximum": 0.3241936669946881,
+        "median": 0.3240912860055687,
+        "minimum": 0.3178788840014022,
+        "samples": [
+          0.3241936669946881,
+          0.3240912860055687,
+          0.3178788840014022
+        ]
+      },
+      "bazel:cold": {
+        "maximum": 10.204001641002833,
+        "median": 8.300684176996583,
+        "minimum": 8.300528613006463,
+        "samples": [
+          8.300684176996583,
+          8.300528613006463,
+          10.204001641002833
+        ]
+      },
+      "bazel:fresh-build-directory": {
+        "maximum": 5.411056703000213,
+        "median": 5.380032968008891,
+        "minimum": 5.144313142998726,
+        "samples": [
+          5.411056703000213,
+          5.380032968008891,
+          5.144313142998726
+        ]
+      },
+      "bazel:implementation-edit": {
+        "maximum": 4.669710842994391,
+        "median": 4.555400497993105,
+        "minimum": 4.518758402002277,
+        "samples": [
+          4.518758402002277,
+          4.669710842994391,
+          4.555400497993105
+        ]
+      },
+      "bazel:public-api-edit": {
+        "maximum": 5.4186897720064735,
+        "median": 5.064206073002424,
+        "minimum": 4.902832794003189,
+        "samples": [
+          4.902832794003189,
+          5.064206073002424,
+          5.4186897720064735
+        ]
+      },
+      "bazel:second-worktree": {
+        "maximum": 5.331475102997501,
+        "median": 5.047771849000128,
+        "minimum": 4.822929706991999,
+        "samples": [
+          4.822929706991999,
+          5.047771849000128,
+          5.331475102997501
+        ]
+      },
+      "bazel:warm": {
+        "maximum": 4.137178347998997,
+        "median": 4.097185458987951,
+        "minimum": 4.056514171999879,
+        "samples": [
+          4.097185458987951,
+          4.056514171999879,
+          4.137178347998997
+        ]
+      },
+      "cargo-incremental-debug0:cold": {
+        "maximum": 0.7819462019979255,
+        "median": 0.7710381150100147,
+        "minimum": 0.7587801769986982,
+        "samples": [
+          0.7587801769986982,
+          0.7819462019979255,
+          0.7710381150100147
+        ]
+      },
+      "cargo-incremental-debug0:fresh-build-directory": {
+        "maximum": 0.8536159340001177,
+        "median": 0.8333091079985024,
+        "minimum": 0.7859050210099667,
+        "samples": [
+          0.8536159340001177,
+          0.8333091079985024,
+          0.7859050210099667
+        ]
+      },
+      "cargo-incremental-debug0:implementation-edit": {
+        "maximum": 0.4788982650061371,
+        "median": 0.4281805409991648,
+        "minimum": 0.3852509839925915,
+        "samples": [
+          0.3852509839925915,
+          0.4788982650061371,
+          0.4281805409991648
+        ]
+      },
+      "cargo-incremental-debug0:public-api-edit": {
+        "maximum": 0.5529534899978898,
+        "median": 0.5251775380020263,
+        "minimum": 0.5071295399975497,
+        "samples": [
+          0.5529534899978898,
+          0.5251775380020263,
+          0.5071295399975497
+        ]
+      },
+      "cargo-incremental-debug0:second-worktree": {
+        "maximum": 0.3304292679968057,
+        "median": 0.2851716959994519,
+        "minimum": 0.28166173900535796,
+        "samples": [
+          0.28166173900535796,
+          0.3304292679968057,
+          0.2851716959994519
+        ]
+      },
+      "cargo-incremental-debug0:warm": {
+        "maximum": 0.2738951920036925,
+        "median": 0.2601113139971858,
+        "minimum": 0.25043331799679436,
+        "samples": [
+          0.2601113139971858,
+          0.2738951920036925,
+          0.25043331799679436
+        ]
+      },
+      "cargo-incremental:cold": {
+        "maximum": 1.0782937280018814,
+        "median": 0.9944635739957448,
+        "minimum": 0.9363003589969594,
+        "samples": [
+          0.9944635739957448,
+          0.9363003589969594,
+          1.0782937280018814
+        ]
+      },
+      "cargo-incremental:fresh-build-directory": {
+        "maximum": 1.0187331459892448,
+        "median": 0.9271703119884478,
+        "minimum": 0.8700909249891993,
+        "samples": [
+          1.0187331459892448,
+          0.8700909249891993,
+          0.9271703119884478
+        ]
+      },
+      "cargo-incremental:implementation-edit": {
+        "maximum": 0.4680381979997037,
+        "median": 0.45425593899562955,
+        "minimum": 0.451278510998236,
+        "samples": [
+          0.45425593899562955,
+          0.451278510998236,
+          0.4680381979997037
+        ]
+      },
+      "cargo-incremental:public-api-edit": {
+        "maximum": 0.6229844829940703,
+        "median": 0.5812230570008978,
+        "minimum": 0.554010317006032,
+        "samples": [
+          0.554010317006032,
+          0.5812230570008978,
+          0.6229844829940703
+        ]
+      },
+      "cargo-incremental:second-worktree": {
+        "maximum": 0.3452827930013882,
+        "median": 0.3029506729944842,
+        "minimum": 0.2672528169932775,
+        "samples": [
+          0.3452827930013882,
+          0.3029506729944842,
+          0.2672528169932775
+        ]
+      },
+      "cargo-incremental:warm": {
+        "maximum": 0.3451120559911942,
+        "median": 0.28587538600550033,
+        "minimum": 0.2841434399888385,
+        "samples": [
+          0.28587538600550033,
+          0.2841434399888385,
+          0.3451120559911942
+        ]
+      },
+      "cargo-nonincremental-accache:cold": {
+        "maximum": 1.2620275499939453,
+        "median": 1.1633398410049267,
+        "minimum": 1.0530144899967127,
+        "samples": [
+          1.1633398410049267,
+          1.2620275499939453,
+          1.0530144899967127
+        ]
+      },
+      "cargo-nonincremental-accache:fresh-build-directory": {
+        "maximum": 1.1681495520024328,
+        "median": 1.1253448509960435,
+        "minimum": 1.0803066520020366,
+        "samples": [
+          1.1681495520024328,
+          1.1253448509960435,
+          1.0803066520020366
+        ]
+      },
+      "cargo-nonincremental-accache:implementation-edit": {
+        "maximum": 0.5745608870056458,
+        "median": 0.49851160700200126,
+        "minimum": 0.4796012049919227,
+        "samples": [
+          0.4796012049919227,
+          0.5745608870056458,
+          0.49851160700200126
+        ]
+      },
+      "cargo-nonincremental-accache:public-api-edit": {
+        "maximum": 0.9915774499968393,
+        "median": 0.9726298730092822,
+        "minimum": 0.9099527829966974,
+        "samples": [
+          0.9099527829966974,
+          0.9915774499968393,
+          0.9726298730092822
+        ]
+      },
+      "cargo-nonincremental-accache:second-worktree": {
+        "maximum": 0.3419383609871147,
+        "median": 0.29748086699692067,
+        "minimum": 0.29493132600327954,
+        "samples": [
+          0.3419383609871147,
+          0.29493132600327954,
+          0.29748086699692067
+        ]
+      },
+      "cargo-nonincremental-accache:warm": {
+        "maximum": 0.31261617300333455,
+        "median": 0.3073410100041656,
+        "minimum": 0.27325202799693216,
+        "samples": [
+          0.3073410100041656,
+          0.31261617300333455,
+          0.27325202799693216
+        ]
+      }
+    },
+    "raw_report": "/nix/store/8mpd80ng3rdw4qz5pmrmw95qc0vfwmhi-aos-bazel-pilot-performance-1/report.json",
+    "raw_report_sha256": "a95da18b1c89e73a1c47437a68d2020f007e982fbf2eadbb9b979176459bf48e",
+    "sample_count": 90
+  },
+  "platform": "x86_64-linux",
+  "policy_tests": 53,
+  "release_disposable_output_removed": true,
+  "schema_version": 1,
+  "scope": "private analysis process reuse in Nix and developer entry points; local disk action cache only"
+}

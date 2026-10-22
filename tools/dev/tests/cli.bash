@@ -130,7 +130,7 @@ fi
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel query //example:all
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><query><//example:all>'
 bash "$root/tools/dev/aos-dev" --release bazel test //example:tests
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><test><//example:tests>'
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--batch><--><test><//example:tests>'
 qualification_output=$(tail -n 1 "$AOS_DEV_TEST_BAZEL_ENV_LOG")
 test ! -e "${qualification_output%/output}"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel rust-project //example:lib

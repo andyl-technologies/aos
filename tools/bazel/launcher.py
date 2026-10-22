@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--workspace", required=True, type=Path)
     parser.add_argument("--output-base", required=True, type=Path)
     parser.add_argument("--cache", type=Path)
+    parser.add_argument("--batch", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--prepare-lock", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--nix-sandbox", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--shadow-workspace", action="store_true")
@@ -95,7 +96,7 @@ def main():
         parser.error("a Bazel command is required")
     if arguments[0] not in {"build", "test", "run", "query", "cquery", "aquery", "mod", "info", "clean", "version", "help", "shutdown"}:
         parser.error("unsupported offline Bazel command")
-    batch = config.get("batch", True)
+    batch = config.get("batch", True) if options.batch is None else options.batch
     if arguments[0] == "shutdown" and batch:
         parser.error("shutdown requires a configuration with batch=false")
 

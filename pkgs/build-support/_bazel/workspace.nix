@@ -13,6 +13,7 @@
   toolchains ? defaultToolchains,
   repositories ? defaultRepositories,
   jobs ? 4,
+  batch ? false,
   analysisTargets ? null,
   targetPlatform ? null,
 }: let
@@ -123,35 +124,37 @@
       then []
       else [child]) (builtins.attrNames entries);
   layout = builtins.toFile "aos-bazel-source-layout.json" (builtins.toJSON (walk ""));
-  configuration = pkgs.writeTextFile {
-    name = "aos-bazel-configuration.json";
-    text = builtins.toJSON {
-      bazel = "${pkgs.bazel}/bin/bazel";
-      bazel_version = pkgs.bazel.version;
-      jdk = toString pkgs.openjdk;
-      bash = "${pkgs.bash}/bin/bash";
-      registry = toString (pkgs.runCommand "aos-bazel-offline-registry" {} ''
-        mkdir -p "$out"
-        printf '{}\n' > "$out/bazel_registry.json"
-      '');
-      rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
-      inherit jobs;
-      target_platform = targetPlatform;
-      # Bazel's test setup and XML writer use these tools too. Never fall back
-      # to the daemon's or developer's PATH when a test starts.
-      path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [
-        pkgs.bash
-        pkgs.coreutils
-        pkgs.binutils
-        pkgs.findutils
-        pkgs.grep
-        pkgs.sed
-        pkgs.procps-ng
-      ]);
-      modules = builtins.mapAttrs (_: toString) modules;
-      repositories = builtins.mapAttrs (_: toString) (repositories // {aos_tools = toolchains;});
+  configurationFor = batch:
+    pkgs.writeTextFile {
+      name = "aos-bazel-configuration.json";
+      text = builtins.toJSON {
+        bazel = "${pkgs.bazel}/bin/bazel";
+        bazel_version = pkgs.bazel.version;
+        jdk = toString pkgs.openjdk;
+        bash = "${pkgs.bash}/bin/bash";
+        registry = toString (pkgs.runCommand "aos-bazel-offline-registry" {} ''
+          mkdir -p "$out"
+          printf '{}\n' > "$out/bazel_registry.json"
+        '');
+        rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
+        inherit jobs batch;
+        target_platform = targetPlatform;
+        # Bazel's test setup and XML writer use these tools too. Never fall back
+        # to the daemon's or developer's PATH when a test starts.
+        path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [
+          pkgs.bash
+          pkgs.coreutils
+          pkgs.binutils
+          pkgs.findutils
+          pkgs.grep
+          pkgs.sed
+          pkgs.procps-ng
+        ]);
+        modules = builtins.mapAttrs (_: toString) modules;
+        repositories = builtins.mapAttrs (_: toString) (repositories // {aos_tools = toolchains;});
+      };
     };
-  };
+  configuration = configurationFor batch;
   preparedLock = pkgs.mkDerivation {
     pname = "aos-bazel-prepared-lock";
     version = "1";
@@ -179,7 +182,7 @@
               path.touch()
           PY
           ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
-            --config ${configuration} --workspace "$PWD/workspace" \
+            --config ${configurationFor true} --workspace "$PWD/workspace" \
             --output-base "$TMPDIR/bazel" --nix-sandbox --prepare-lock -- build --nobuild \
           ${lib.escapeShellArgs selectedTargets}
           mkdir -p "$out"
@@ -190,7 +193,7 @@
   };
 in
   assert validInventory; {
-    inherit source toolchains configuration preparedLock;
+    inherit source toolchains configuration preparedLock batch;
     # The initial fixtures deliberately use conservative directory selections.
     # Production consumers require the configured-graph inventory before cutover.
     sourceSelection =

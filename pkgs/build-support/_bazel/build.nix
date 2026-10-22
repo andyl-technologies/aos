@@ -42,6 +42,22 @@ in
             cp -a "$src"/. workspace/
             chmod -R u+w workspace
             cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
+            ${lib.optionalString (!(workspace.batch or true)) ''
+              aos_bazel_workspace="$PWD/workspace"
+              cleanup_bazel() {
+                aos_bazel_status=$?
+                trap - EXIT
+                if ! ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
+                  --config ${workspace.configuration} --workspace "$aos_bazel_workspace" \
+                  --output-base "$TMPDIR/bazel" --nix-sandbox -- shutdown \
+                  > "$TMPDIR/bazel-shutdown.log" 2>&1; then
+                  cat "$TMPDIR/bazel-shutdown.log" >&2
+                  if [ "$aos_bazel_status" -eq 0 ]; then aos_bazel_status=1; fi
+                fi
+                exit "$aos_bazel_status"
+              }
+              trap cleanup_bazel EXIT
+            ''}
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
               --config ${workspace.configuration} --workspace "$PWD/workspace" \
               --output-base "$TMPDIR/bazel" --nix-sandbox \

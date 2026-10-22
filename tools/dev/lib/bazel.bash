@@ -32,6 +32,7 @@ aos_dev_bazel() (
   mkdir -p "$output_parent"
 
   local -a cache_options=()
+  local -a lifecycle_options=()
   if [[ $aos_dev_mode == development ]]; then
     output_base="$output_parent/$identity/output"
     if [[ $aos_dev_bazel_cache == true ]]; then
@@ -39,13 +40,14 @@ aos_dev_bazel() (
       cache_options=(--cache "$aos_dev_cache_dir/bazel")
     fi
   else
+    lifecycle_options=(--batch)
     output_base=$(mktemp -d "$output_parent/qualification.XXXXXXXX")/output
     trap 'rm -rf -- "${output_base%/output}"' EXIT
   fi
 
   status=0
   AOS_DEV_ROOT="$aos_dev_root" AOS_BAZEL_OUTPUT_BASE="$output_base" \
-    "$launcher/bin/aos-bazel" "${cache_options[@]}" "${project_options[@]}" -- "$@" || status=$?
+    "$launcher/bin/aos-bazel" "${cache_options[@]}" "${lifecycle_options[@]}" "${project_options[@]}" -- "$@" || status=$?
 
   return "$status"
 )

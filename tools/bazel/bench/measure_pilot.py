@@ -107,10 +107,10 @@ def measure_series(configuration, mode, repetition, scratch, output, servers):
     records.mkdir()
     bazel = mode.startswith("bazel")
     bazel_config = configuration["bazel_config"]
-    if mode == "bazel-server":
+    if bazel:
         policy = json.loads(Path(bazel_config).read_text())
-        policy["batch"] = False
-        bazel_config = root / "server-config.json"
+        policy["batch"] = mode != "bazel-server"
+        bazel_config = root / "bazel-config.json"
         bazel_config.write_text(json.dumps(policy))
     bazel_config = str(bazel_config)
     workspace = root / "first-worktree"

@@ -121,6 +121,24 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("batch=false", result.stderr)
         self.assertFalse(self.capture.exists())
 
+    def test_release_batch_option_overrides_private_server_configuration(self):
+        configuration = json.loads(self.config.read_text())
+        configuration["batch"] = False
+        self.config.write_text(json.dumps(configuration))
+
+        result = self.invoke(["build", "//:example"], ["--batch"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertIn("--batch", arguments)
+        self.assertNotIn("--max_idle_secs=60", arguments)
+
+    def test_private_server_option_overrides_batch_default(self):
+        result = self.invoke(["shutdown"], ["--no-batch"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertNotIn("--batch", arguments)
+        self.assertEqual(arguments[-1], "shutdown")
+
     def test_remote_cache_and_toolchain_overrides_are_rejected(self):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",

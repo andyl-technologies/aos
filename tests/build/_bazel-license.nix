@@ -12,7 +12,7 @@ pkgs.runCommand "aos-bazel-license-boundary-analysis" {buildDeps = [pkgs.python3
   for target in bad_host bad_plugin bad_protocol; do
     if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
       --config ${workspace.configuration} --workspace "$PWD/workspace" \
-      --output-base "$TMPDIR/$target/bazel" --nix-sandbox \
+      --output-base "$TMPDIR/$target/bazel" --nix-sandbox --batch \
       -- build "//tools/bazel/tests/fixture/license_negative:$target" --nobuild \
       > "$out/$target.log" 2>&1; then
       echo "prohibited license-domain link passed analysis: $target" >&2

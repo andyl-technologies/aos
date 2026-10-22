@@ -100,7 +100,7 @@ in
       mkdir -p "$out"
       ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
         --config ${workspace.configuration} --workspace "$PWD/workspace" \
-        --output-base "$TMPDIR/editor/bazel" --nix-sandbox \
+        --output-base "$TMPDIR/editor/bazel" --nix-sandbox --batch \
         --rust-project-output "$PWD/rust-project.json" \
         -- build //tools/bazel/tests/fixture:rust_app //tools/bazel/tests/fixture:native_app //tools/bazel/tests/fixture:rust_test_binary
       ${pkgs.python3}/bin/python3 - "$PWD/rust-project.json" <<'PYTHON'
@@ -176,7 +176,7 @@ in
       for target in host_clock unwrap; do
         if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
           --config ${workspace.configuration} --workspace "$PWD/workspace" \
-          --output-base "$TMPDIR/$target/bazel" --nix-sandbox \
+          --output-base "$TMPDIR/$target/bazel" --nix-sandbox --batch \
           -- build "//tools/bazel/tests/fixture/lint_negative:''${target}_check" \
           > "$out/$target.log" 2>&1; then
           echo "workspace Clippy violation was accepted: $target" >&2

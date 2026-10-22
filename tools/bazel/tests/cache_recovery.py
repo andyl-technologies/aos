@@ -58,7 +58,7 @@ class RecoveryTrial:
             sys.executable, str(self.options.launcher),
             "--config", str(self.options.config), "--workspace", str(workspace),
             "--output-base", str(directory / "output"), "--cache", str(self.cache),
-            "--nix-sandbox", "--metrics", str(evidence / "metrics.json"),
+            "--nix-sandbox", "--batch", "--metrics", str(evidence / "metrics.json"),
             "--", "build", "//tools/bazel/tests/fixture:package",
             "--execution_log_json_file=" + str(evidence / "execution.json"),
             "--build_event_json_file=" + str(evidence / "events.json"),

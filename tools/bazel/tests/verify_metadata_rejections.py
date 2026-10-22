@@ -50,7 +50,7 @@ def verify(arguments):
         result = subprocess.run([
             sys.executable, str(arguments.launcher), "--config", str(arguments.config),
             "--workspace", str(arguments.workspace), "--output-base", str(arguments.output_base),
-            "--nix-sandbox", "--", "build", "//tools/bazel/tests/fixture:probe",
+            "--nix-sandbox", "--batch", "--", "build", "//tools/bazel/tests/fixture:probe",
         ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
         (arguments.output / (name + ".log")).write_text(result.stdout)
         if result.returncode == 0 or expected not in result.stdout:

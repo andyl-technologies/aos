@@ -510,4 +510,21 @@ The retained JVM improves repeated commands in one worktree; creating a new
 execution base still pays startup costs. Its `/proc` CPU counters and resident
 memory are recorded separately from the waited launcher/client resource usage,
 since a persistent process does not appear in the latter. These remain initial
-compile-loop measurements, with batch mode still the default launcher policy.
+compile-loop measurements; larger-family and end-to-end budgets remain open.
+
+Nix workspaces and `aos-dev bazel` now retain a private JVM between commands
+against the same output base. Nix builders shut it down on exit, preserving a
+failed build's status and rejecting a successful build if shutdown fails.
+Preparing the lock and standalone analysis/recovery probes use batch execution.
+`aos-dev --release bazel` also forces batch execution before removing its
+temporary output directory. Development processes expire after 60 idle seconds;
+`aos-dev bazel shutdown` closes one explicitly. Only the action disk cache is
+shared across worktrees or derivations; each process and execution tree remains
+private. This adds no cache service.
+
+`native-linux-analysis-reuse-integration.json` retains the integration checks,
+same-process evidence for each Nix phase, an 8.1-second overlap between independent
+builders, and a second 90-sample measurement. It also records actual developer
+build reuse and release-directory cleanup. The initial concurrent attempt was
+rejected because scheduling did not overlap its participants; a fresh isolated
+trial passed the unchanged verifier.
