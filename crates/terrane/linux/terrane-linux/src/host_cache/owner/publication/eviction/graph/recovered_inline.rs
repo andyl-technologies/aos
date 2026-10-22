@@ -51,10 +51,12 @@ pub(super) fn extend(
                 body: Arc::clone(body),
                 members: Vec::new(),
                 recovered_inline: Vec::new(),
+                recovered_manifests: Vec::new(),
                 allocated: 0,
                 protected: false,
                 shared_chunks: BTreeSet::new(),
                 metadata: BTreeMap::new(),
+                cold_metadata: BTreeSet::new(),
                 reconstruction: BTreeSet::new(),
                 chunks: owner
                     .state

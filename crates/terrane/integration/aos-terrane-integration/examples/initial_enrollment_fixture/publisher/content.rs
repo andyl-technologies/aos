@@ -21,6 +21,22 @@ use terrane_sdk::store::{
     InvalidReason, MetaUpload, StoreErrorKind,
 };
 
+pub(super) async fn seed_manifest_release(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    release::seed_manifest(store, profile, domain).await
+}
+
+pub(super) async fn recovered_manifest_release(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    release::recovered_manifest(store, profile, domain).await
+}
+
 pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile) -> io::Result<()> {
     let plaintext = vec![23; 32769];
     let identity = TERRANE_V1

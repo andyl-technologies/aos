@@ -575,6 +575,7 @@ async fn finish(executor: &mut NativeOwnerExecutor, key: &str) -> io::Result<boo
     release_members(executor, &original, &receipt, &completion)?;
     executor.unregister_retired_publications(&original.members, &receipt, &completion)?;
     executor.unregister_retired_inline(&original.recovered_inline, &receipt, &completion)?;
+    executor.unregister_retired_manifests(&original.recovered_manifests, &receipt, &completion)?;
     executor
         .cache
         .pending
@@ -656,15 +657,23 @@ async fn finish_policy(
             .lock()
             .map_err(|_| invalid("retired cache policy poisoned"))?;
         super::super::residence::check_snapshot(&owner)?;
+        unit.check_cold_metadata(&owner)?;
         let mut next = owner.state.clone();
         next.residences.retain(|row| row.object != hash);
-        for (id, metadata) in &unit.metadata {
+        for metadata in unit.reconstruction_metadata() {
             metadata.check_registration(&owner)?;
-            let token = state::hex(id);
+            completion.check_metadata(metadata)?;
+            let token = state::hex(metadata.retention_id());
             let purpose = format!("metadata:{token}");
             next.pins.retain(|pin| pin.owner != purpose);
             next.leases.retain(|lease| lease.owner != purpose);
             next.reservations.retain(|hold| hold.id != token);
+        }
+        for token in &unit.cold_metadata {
+            let purpose = format!("metadata:{token}");
+            next.pins.retain(|pin| pin.owner != purpose);
+            next.leases.retain(|lease| lease.owner != purpose);
+            next.reservations.retain(|hold| &hold.id != token);
         }
         next.encoded_len(owner.preparation.config.state)
             .map_err(io::Error::other)?;
@@ -678,7 +687,7 @@ async fn finish_policy(
             .lock()
             .map_err(|_| invalid("retired metadata custody poisoned"))?;
         owner.release_retired_metadata(
-            &unit.metadata.values().cloned().collect::<Vec<_>>(),
+            &unit.reconstruction_metadata().collect::<Vec<_>>(),
             completion,
         )?
     };

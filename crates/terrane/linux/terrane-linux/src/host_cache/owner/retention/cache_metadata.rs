@@ -12,7 +12,7 @@ impl Custody {
     /// protection. Returned descriptors must drop outside the embedded-state lock.
     pub(in crate::host_cache::owner) fn release_retired_metadata(
         &mut self,
-        metadata: &[Arc<RetainedManifest>],
+        metadata: &[&RetainedManifest],
         completion: &CacheBodyCompletion,
     ) -> io::Result<Vec<Arc<NativeManifestSource>>> {
         super::super::publication::residence::check_snapshot(self)?;

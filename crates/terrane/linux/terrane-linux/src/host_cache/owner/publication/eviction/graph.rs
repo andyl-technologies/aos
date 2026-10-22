@@ -1,4 +1,4 @@
-//! Derives allocation units from original publications and recovered inline custody.
+//! Derives allocation units from original publications and verified recovery custody.
 //!
 //! Canonical metadata supplies actual dependency edges. Policy rows can protect
 //! an already verified unit but cannot create one, select an inode or supply a
@@ -12,6 +12,7 @@ use crate::{
             consumer::state as policy,
             retention::{Custody, NativeOwnerExecutor},
         },
+        recovery_inspection::VerifiedRecoveryManifest,
     },
     publisher_local::client::PeerPublishedObject,
 };
@@ -24,6 +25,7 @@ use std::{
 use terrane_sdk::host::cache::HostDomainLocation;
 
 mod recovered_inline;
+mod recovered_manifest;
 
 /// Retains one actual native allocation and all original publication jobs.
 ///
@@ -40,6 +42,8 @@ pub(super) struct Unit {
     pub(super) members: Vec<Arc<Mutex<PublicationJob>>>,
     /// Original adopted inline receipts retained by the actual recovery registry.
     pub(super) recovered_inline: Vec<Arc<PeerPublishedObject<HostDomainLocation>>>,
+    /// Actual independently verified recovered body/metadata pairs.
+    pub(super) recovered_manifests: Vec<Arc<VerifiedRecoveryManifest>>,
     /// Exact synchronized allocated blocks of this inode alone.
     pub(super) allocated: u64,
     /// Durable content promises other than this unit's own reconstruction pins.
@@ -48,8 +52,39 @@ pub(super) struct Unit {
     pub(super) shared_chunks: BTreeSet<String>,
     /// Original metadata promises owned by the actual dependent publications.
     pub(super) metadata: BTreeMap<[u8; 16], Arc<RetainedManifest>>,
+    /// Exact original cold metadata groups correlated with verified body/pack pairs.
+    pub(super) cold_metadata: BTreeSet<String>,
     reconstruction: BTreeSet<String>,
     pub(super) chunks: BTreeSet<String>,
+}
+
+impl Unit {
+    /// Rechecks that original cold groups have not changed before policy cleanup.
+    ///
+    /// # Errors
+    /// Refuses changed promises, extra dependents or missing original cold policy.
+    pub(super) fn check_cold_metadata(&self, owner: &Custody) -> io::Result<()> {
+        let actual = self
+            .recovered_manifests
+            .iter()
+            .flat_map(|manifest| recovered_manifest::cold_holds(owner, manifest))
+            .collect::<BTreeSet<_>>();
+        if actual != self.cold_metadata {
+            return Err(invalid(
+                "retired manifest changed original cold metadata promises",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Borrows actual metadata custody without constructing ordinary receipts.
+    pub(super) fn reconstruction_metadata(&self) -> impl Iterator<Item = &RetainedManifest> {
+        self.metadata.values().map(Arc::as_ref).chain(
+            self.recovered_manifests
+                .iter()
+                .map(|manifest| manifest.body().retained().backing().retirement_metadata()),
+        )
+    }
 }
 
 /// Captures and synchronizes genuine cached units under physical exclusion.
@@ -93,10 +128,12 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
                     body: Arc::clone(body),
                     members: Vec::new(),
                     recovered_inline: Vec::new(),
+                    recovered_manifests: Vec::new(),
                     allocated: 0,
                     protected: false,
                     shared_chunks: BTreeSet::new(),
                     metadata: BTreeMap::new(),
+                    cold_metadata: BTreeSet::new(),
                     reconstruction: BTreeSet::new(),
                     chunks: owner
                         .state
@@ -137,6 +174,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
             }
         }
         recovered_inline::extend(executor, &owner, &mut units, &mut by_inode)?;
+        recovered_manifest::extend(executor, &owner, &mut units, &mut by_inode)?;
         // Recovered manifests also depend on chunk residences. Their actual
         // registered metadata must remain protected during inline retirement.
         for manifest in executor.verified_manifests() {
@@ -180,6 +218,7 @@ pub(super) fn capture(executor: &NativeOwnerExecutor) -> io::Result<Vec<Unit>> {
 }
 
 pub(super) use recovered_inline::check as check_recovered_inline;
+pub(super) use recovered_manifest::check as check_recovered_manifest;
 
 /// Rechecks live promises while allowing exact draining-body namespace retirement.
 pub(super) fn protected(owner: &Custody, unit: &Unit) -> io::Result<bool> {

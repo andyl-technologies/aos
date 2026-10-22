@@ -121,6 +121,14 @@ pub(super) fn recovered_release() -> io::Result<()> {
     prepare_with(Preparation::RecoveredRelease)
 }
 
+pub(super) fn seed_manifest_release() -> io::Result<()> {
+    prepare_with(Preparation::SeedManifestRelease)
+}
+
+pub(super) fn recovered_manifest_release() -> io::Result<()> {
+    prepare_with(Preparation::RecoveredManifestRelease)
+}
+
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
@@ -129,6 +137,8 @@ enum Preparation {
     Release,
     SeedRelease,
     RecoveredRelease,
+    SeedManifestRelease,
+    RecoveredManifestRelease,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -145,6 +155,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::Release
             | Preparation::SeedRelease
             | Preparation::RecoveredRelease
+            | Preparation::SeedManifestRelease
+            | Preparation::RecoveredManifestRelease
     ) {
         1_000
     } else {
@@ -156,6 +168,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::Release
             | Preparation::SeedRelease
             | Preparation::RecoveredRelease
+            | Preparation::SeedManifestRelease
+            | Preparation::RecoveredManifestRelease
     ) {
         1
     } else {
@@ -168,6 +182,8 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             | Preparation::Release
             | Preparation::SeedRelease
             | Preparation::RecoveredRelease
+            | Preparation::SeedManifestRelease
+            | Preparation::RecoveredManifestRelease
     ) {
         host.reassembly = Reassembly::Always;
     }
@@ -213,6 +229,12 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             }
             Preparation::RecoveredRelease => {
                 runtime.block_on(content::recovered_release(store, domain))?
+            }
+            Preparation::SeedManifestRelease => {
+                runtime.block_on(content::seed_manifest_release(store, &profile, domain))?
+            }
+            Preparation::RecoveredManifestRelease => {
+                runtime.block_on(content::recovered_manifest_release(store, &profile, domain))?
             }
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.

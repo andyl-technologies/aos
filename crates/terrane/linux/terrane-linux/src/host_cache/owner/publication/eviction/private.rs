@@ -2,7 +2,7 @@
 //!
 //! The physical worker retains every original publication, descriptor and charge
 //! through ordinary retirement acknowledgments. Completed private publications
-//! and original recovered inline bodies enter that protocol without quota pressure.
+//! and original recovered bodies enter that protocol without quota pressure.
 
 use super::super::invalid;
 use crate::host_cache::owner::retention::NativeOwnerExecutor;
@@ -34,7 +34,8 @@ pub(in crate::host_cache::owner) async fn background(
         return Ok(());
     }
 
-    let mut cached = !executor.inline_registry().is_empty();
+    let mut cached =
+        !executor.inline_registry().is_empty() || !executor.verified_manifests().is_empty();
     for resource in executor.publication_jobs() {
         let job = resource
             .lock()

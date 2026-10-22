@@ -16,7 +16,7 @@ use std::{
 };
 use terrane_format::{
     chunking::ChunkProfile,
-    identity::{IdentityKind, TERRANE_V1},
+    identity::{Identity, IdentityKind, TERRANE_V1},
 };
 use terrane_linux::{
     host_cache::{
@@ -27,6 +27,25 @@ use terrane_linux::{
 use terrane_sdk::store::{
     ChunkPosition, ChunkUpload, Clock, ContentStore, ContentUpload, TokioClock,
 };
+
+#[path = "release_manifest.rs"]
+mod manifest;
+
+pub(super) async fn seed_manifest(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    manifest::seed(store, profile, domain).await
+}
+
+pub(super) async fn recovered_manifest(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    manifest::recovered(store, profile, domain).await
+}
 
 pub(super) async fn exercise(
     store: &NativeContentStore,
@@ -106,6 +125,15 @@ pub(super) async fn recovered(store: &NativeContentStore, domain: &str) -> io::R
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &plaintext)
         .map_err(io::Error::other)?;
+    recover_material(store, domain, identity, plaintext).await
+}
+
+async fn recover_material(
+    store: &NativeContentStore,
+    domain: &str,
+    identity: Identity,
+    plaintext: Vec<u8>,
+) -> io::Result<()> {
     let expires = TokioClock
         .now()
         .duration_since(UNIX_EPOCH)

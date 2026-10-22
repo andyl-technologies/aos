@@ -18,6 +18,65 @@ pub(crate) struct PublisherCacheRetirementTurn<'turn> {
 }
 
 impl NativeOwnerExecutor {
+    /// Closes actual recovered manifest registries after final removal acknowledgment.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing original pairs or unrelated removed bodies.
+    pub(in crate::host_cache::owner) fn unregister_retired_manifests(
+        &mut self,
+        manifests: &[Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>],
+        pending: &Arc<PendingCacheBody>,
+        completion: &Arc<crate::publisher_local::client::CacheBodyCompletion>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        completion.check_removed(pending)?;
+        // The original retirement turn is still in flight. Its typed removal
+        // reply authorizes cleanup before reconciliation restores healthy state.
+        let session = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("retired manifest custody poisoned"))?
+            .preparation
+            .publisher_session();
+        for manifest in manifests {
+            if !self
+                .verified_manifests
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, manifest))
+            {
+                return Err(io::Error::other("retired manifest lost original registry"));
+            }
+            pending.check_alias(&session, &manifest.body().retained().body_arc())?;
+        }
+
+        let bodies = manifests
+            .iter()
+            .map(|manifest| manifest.body().retained().body_arc())
+            .collect::<Vec<_>>();
+        let metadata = manifests
+            .iter()
+            .map(|manifest| manifest.body().retained().backing().retirement_metadata())
+            .collect::<Vec<_>>();
+        self.verified_manifests.retain(|registered| {
+            !manifests
+                .iter()
+                .any(|manifest| Arc::ptr_eq(registered, manifest))
+        });
+        self.manifest_bodies
+            .retain(|registered| !bodies.iter().any(|body| Arc::ptr_eq(registered, body)));
+        self.manifest_backings.retain(|registered| {
+            !metadata
+                .iter()
+                .any(|retained| registered.backing().retention_id() == retained.retention_id())
+        });
+        self.manifest_sources.retain(|registered| {
+            !metadata
+                .iter()
+                .any(|retained| Arc::ptr_eq(registered, &retained.source))
+        });
+        Ok(())
+    }
+
     /// Closes original adopted inline registry entries after acknowledged removal.
     ///
     /// # Errors

@@ -196,7 +196,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "sdk", "sdk-wipe", "surface"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -215,13 +215,16 @@ def configured_publication():
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
                 wipe_only=SCENARIO == "sdk-wipe")
-        elif SCENARIO == "cold-private-release":
-            run_case("seed-release-public-private", role_command("seed-release-public-private", 840, [844, 845]))
+        elif SCENARIO in ["cold-private-release", "cold-manifest-release"]:
+            manifest = SCENARIO == "cold-manifest-release"
+            seed_selector = "seed-manifest-release-public-private" if manifest else "seed-release-public-private"
+            recovered_selector = "recovered-manifest-release-public-private" if manifest else "recovered-release-public-private"
+            run_case(seed_selector, role_command(seed_selector, 840, [844, 845]))
             seeded = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
             require(len(seeded) == 2 and {row[0] for row in seeded} == {"public", "private"}
-                    and all(row[5] == 1337 for row in seeded),
+                    and all(row[5] == (262145 if manifest else 1337) for row in seeded),
                     "cold release seed lacks original sealed inodes in both domains")
-            run_case("recovered-release-public-private", role_command("recovered-release-public-private", 840, [844, 845]))
+            run_case(recovered_selector, role_command(recovered_selector, 840, [844, 845]))
             after = [row for row in sealed_snapshot() if (row[4] & 0o170000) == 0o100000]
             require(after == [row for row in seeded if row[0] == "public"],
                     "cold release replaced a public inode or retained private backing")
@@ -286,7 +289,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "sdk", "sdk-wipe", "surface"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "sdk", "sdk-wipe", "surface"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix

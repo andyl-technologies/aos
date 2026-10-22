@@ -28,6 +28,7 @@ SELECTORS = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting"
              "initialize-unsafe-parent", "serve-positive", "publisher-positive",
              "publisher-reassembly", "reassembly-public-private", "release-public-private",
              "seed-release-public-private", "recovered-release-public-private",
+             "seed-manifest-release-public-private", "recovered-manifest-release-public-private",
              "ready-public-private", "open-public-private", "verify-positive",
              "read-public", "read-private", "read-publisher", "foreign-private",
              "capabilities-update"]

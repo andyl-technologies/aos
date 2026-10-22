@@ -49,6 +49,8 @@
         then "terrane-native-reassembly-ext4"
         else if scenario == "cold-private-release"
         then "terrane-native-cold-private-release-ext4"
+        else if scenario == "cold-manifest-release"
+        then "terrane-native-cold-manifest-release-ext4"
         else if scenario == "private-release"
         then "terrane-native-private-release-ext4"
         else if scenario == "surface"
@@ -138,6 +140,7 @@ in {
   reassembly = nativeFor "reassembly";
   privateRelease = nativeFor "private-release";
   coldPrivateRelease = nativeFor "cold-private-release";
+  coldManifestRelease = nativeFor "cold-manifest-release";
   sdk = nativeFor "sdk";
   sdkWipe = nativeFor "sdk-wipe";
   surface = nativeFor "surface";

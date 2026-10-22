@@ -121,6 +121,55 @@ impl ColdPolicy {
             .map(|hold| hold.bytes)
     }
 
+    /// Compares original metadata promises with a separately verified body/pack pair.
+    ///
+    /// These tokens are policy data only. They authorize no native operation;
+    /// cleanup additionally requires original registered backing, acknowledged
+    /// Resume and the actual body's typed final-removal completion. Unrecognized
+    /// or changed groups remain protected, including extra dependent pins.
+    pub(super) fn retained_metadata_holds(
+        &self,
+        current: &CacheState,
+        charge_owner: &str,
+        bytes: u64,
+        object: &str,
+        pack: &str,
+    ) -> BTreeSet<String> {
+        let mut matched = BTreeSet::new();
+        let expected = BTreeSet::from([object, pack]);
+        let deadline = super::RETAINED_LEASE_DEADLINE;
+        for hold in &self.state.reservations {
+            if hold.owner != charge_owner
+                || hold.bytes != bytes
+                || hold.id.len() != 32
+                || !hold
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                continue;
+            }
+            let purpose = format!("metadata:{}", hold.id);
+            let unchanged_hold = current
+                .reservations
+                .iter()
+                .filter(|row| row.id == hold.id)
+                .count()
+                == 1
+                && current.reservations.iter().any(|row| {
+                    row.id == hold.id && row.owner == hold.owner && row.bytes == hold.bytes
+                });
+            if !unchanged_hold
+                || !metadata_group_matches(&self.state, &purpose, &expected, deadline)
+                || !metadata_group_matches(current, &purpose, &expected, deadline)
+            {
+                continue;
+            }
+            matched.insert(hold.id.clone());
+        }
+        matched
+    }
+
     /// Adds the genuine new bootstrap hold while preserving every cold record.
     ///
     /// # Errors
@@ -199,6 +248,34 @@ impl ColdPolicy {
     }
 }
 
+/// Recognizes only the complete two-pin metadata promise, with no extra dependents.
+fn metadata_group_matches(
+    state: &CacheState,
+    purpose: &str,
+    expected: &BTreeSet<&str>,
+    deadline: u64,
+) -> bool {
+    let leases = state
+        .leases
+        .iter()
+        .filter(|row| row.owner == purpose)
+        .collect::<Vec<_>>();
+    let pins = state
+        .pins
+        .iter()
+        .filter(|row| row.owner == purpose)
+        .collect::<Vec<_>>();
+    leases.len() == 1
+        && leases[0].expires == deadline
+        && pins.len() == 2
+        && pins.iter().all(|pin| pin.expires == deadline)
+        && pins
+            .iter()
+            .map(|pin| pin.hash.as_str())
+            .collect::<BTreeSet<_>>()
+            == *expected
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -274,6 +351,71 @@ mod tests {
         assert!(cold.reconcile(&[], &["44".repeat(32)]).is_err());
         assert!(cold.reconcile(&[], &["33".repeat(32)]).is_ok());
         assert_eq!(cold.state.pins[0].hash, "33".repeat(32));
+
+        // Exact cold groups can be compared only as data. A separately verified
+        // native body/pack and final removal still supply all cleanup authority.
+        let token = "ab".repeat(16);
+        let purpose = format!("metadata:{token}");
+        let object = "11".repeat(32);
+        let pack = "22".repeat(32);
+        let mut original = CacheState::default();
+        original.reservations.push(ReservationRecord {
+            id: token.clone(),
+            owner: "fixture".into(),
+            bytes: 4096,
+        });
+        original.leases.push(LeaseRecord {
+            owner: purpose.clone(),
+            expires: super::super::RETAINED_LEASE_DEADLINE,
+        });
+        for hash in [&object, &pack] {
+            original.pins.push(PinRecord {
+                owner: purpose.clone(),
+                hash: hash.clone(),
+                expires: super::super::RETAINED_LEASE_DEADLINE,
+            });
+        }
+        let cold = ColdPolicy {
+            state: Arc::new(original.clone()),
+        };
+        assert_eq!(
+            cold.retained_metadata_holds(&original, "fixture", 4096, &object, &pack),
+            BTreeSet::from([token])
+        );
+        assert!(
+            cold.retained_metadata_holds(&original, "foreign", 4096, &object, &pack)
+                .is_empty()
+        );
+        assert!(
+            cold.retained_metadata_holds(&original, "fixture", 8192, &object, &pack)
+                .is_empty()
+        );
+        assert!(
+            cold.retained_metadata_holds(&original, "fixture", 4096, &pack, &pack)
+                .is_empty()
+        );
+        let mut changed = original.clone();
+        changed.pins.push(PinRecord {
+            owner: purpose,
+            hash: "33".repeat(32),
+            expires: super::super::RETAINED_LEASE_DEADLINE,
+        });
+        assert!(
+            cold.retained_metadata_holds(&changed, "fixture", 4096, &object, &pack)
+                .is_empty()
+        );
+        let mut changed = original.clone();
+        changed.leases[0].expires -= 1;
+        assert!(
+            cold.retained_metadata_holds(&changed, "fixture", 4096, &object, &pack)
+                .is_empty()
+        );
+        assert_eq!(cold.state.pins.len(), 2);
+        assert_eq!(
+            cold.state.leases[0].expires,
+            super::super::RETAINED_LEASE_DEADLINE
+        );
+        assert_eq!(cold.state.reservations[0].bytes, 4096);
     }
 
     #[test]

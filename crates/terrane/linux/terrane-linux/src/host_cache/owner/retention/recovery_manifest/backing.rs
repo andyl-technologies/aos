@@ -17,6 +17,15 @@ pub(crate) struct RecoveryManifestBackingRetention {
 }
 
 impl RecoveryManifestBackingRetention {
+    /// Borrows actual metadata registration for acknowledged retirement cleanup.
+    ///
+    /// This does not clone an ordinary receipt or restore its former recovery
+    /// phase. The caller must retain the original verified body and Running
+    /// barrier, and require the typed final-removal reply before releasing it.
+    pub(in crate::host_cache::owner) fn retirement_metadata(&self) -> &RetainedManifest {
+        &self.retained
+    }
+
     /// Transfers durable custody from a genuine consumed phase-bound receipt.
     ///
     /// Only the effect guard calls this after reconciliation or explicit failure.

@@ -15281,3 +15281,47 @@ healthy admission context during the active turn. Original physical-worker and
 typed final-removal checks still precede exact registered-alias validation and
 resource release. Both failed receipts remain retained; fresh exact-source warm
 and cold qualification are required. No task is accepted by this correction.
+
+
+#### Original recovered manifest retirement
+
+Private cold manifests now join retirement through their actual independently
+verified registry entries and registered body/metadata pairs. The original
+Running/bootstrap barrier, exact layout/claim/incarnation/inode checks and native
+permit remain required. Retained recovery metadata is borrowed only for original
+retirement cleanup; no ordinary retention receipt or publication job is cloned
+or constructed from a cold record. Unknown or additional dependent promises
+remain protective.
+
+Original cold metadata groups are compared against the actual verified body and
+pack: exact charge owner, allowance, canonical token, one retained lease and two
+retained pins must match unchanged current policy. The original cold snapshot
+is comparison data, never native authority. Only the actual final-removal reply
+permits removal of those matched groups and the current metadata registration.
+Final cleanup rechecks the complete matched old-group set. Actual verified, body,
+backing and source registry entries close only after correlated removal; retained
+consumer backing continues owning physical allocation until real closure.
+
+A separate native scenario seeds a genuine 262,145-byte single-chunk manifest in
+both domains, then reopens the original body in an independent actor without
+replacement publication. It retains two independent consumer grants and actual
+backing, requires private project-charge release after closure and checks exact
+old/current metadata pin, lease and hold removal. Public original inode and
+metadata retention remain controls. Root supervision compares the exact original
+public inode across both actors. Original actor/driver/host bounds are unchanged.
+This scenario is registered but not yet qualified or an owning-gate prerequisite.
+
+The expanded existing pure cold-metadata test passes, including foreign owners,
+wrong allowances, another pack, additional dependents and changed expiry. Frozen
+state contracts are unchanged. Final strict Linux and integration profiles pass
+in 6.03 and 3.42 seconds; warnings-denied public documentation passes in 11.46
+seconds. The actual integration fixture compiles in 38.18 seconds before the
+final equivalent cleanup-legibility edits. Nix formatting, Python syntax and
+the complete 129-case native source inventory pass. Exact-source native release,
+maintained SDK regression and required application compilation remain required.
+
+The `08c22e6f76` required application build passes in 721.399 seconds; independent
+review matches all 8,070 immutable source files and 185 test targets across 59
+packages. The isolated `3cfedf8f5c` cleanup correction is pushed and its actual
+cold/warm release checks are running. Earlier failures remain retained. No
+additional trunk task is accepted by this increment.

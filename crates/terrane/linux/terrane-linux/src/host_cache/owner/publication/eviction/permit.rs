@@ -78,7 +78,10 @@ impl<'unit> CachePermit<'unit> {
                 ));
             }
         }
-        if unit.members.is_empty() && unit.recovered_inline.is_empty() {
+        if unit.members.is_empty()
+            && unit.recovered_inline.is_empty()
+            && unit.recovered_manifests.is_empty()
+        {
             return Err(invalid("cache unit has no original native registry"));
         }
         for body in &unit.recovered_inline {
@@ -91,6 +94,20 @@ impl<'unit> CachePermit<'unit> {
             {
                 return Err(invalid(
                     "cache permit changed original recovered inline allocation",
+                ));
+            }
+        }
+        for manifest in &unit.recovered_manifests {
+            graph::check_recovered_manifest(executor, &owner, manifest)?;
+            let body = manifest.body().retained().body();
+            let actual = body.handle().metadata()?;
+            let original = unit.body.handle().metadata()?;
+            if (actual.dev(), actual.ino()) != (original.dev(), original.ino())
+                || body.claim().descriptor() != unit.body.claim().descriptor()
+                || body.incarnation() != unit.body.incarnation()
+            {
+                return Err(invalid(
+                    "cache permit changed original recovered manifest allocation",
                 ));
             }
         }

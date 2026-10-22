@@ -33,6 +33,8 @@ const SELECTORS: &[&str] = &[
     "release-public-private",
     "seed-release-public-private",
     "recovered-release-public-private",
+    "seed-manifest-release-public-private",
+    "recovered-manifest-release-public-private",
     "ready-public-private",
     "open-public-private",
     "verify-positive",
@@ -85,6 +87,8 @@ pub(super) fn run() -> io::Result<()> {
         "release-public-private" => publisher::prepare_release(),
         "seed-release-public-private" => publisher::seed_release(),
         "recovered-release-public-private" => publisher::recovered_release(),
+        "seed-manifest-release-public-private" => publisher::seed_manifest_release(),
+        "recovered-manifest-release-public-private" => publisher::recovered_manifest_release(),
         "ready-public-private" => publisher::prepare(),
         "open-public-private" => publisher::prepare_objects(),
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {
