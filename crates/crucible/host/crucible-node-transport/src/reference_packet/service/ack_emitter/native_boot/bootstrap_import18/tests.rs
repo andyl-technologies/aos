@@ -90,6 +90,24 @@ fn child(case: &str, wire: &[u8]) {
         None
     };
 
+    // Building Hello also reconstructs the independent launch fixture. Finish
+    // that parent-only work before the child starts its original deadline.
+    let prepared_hello = if case.starts_with("initial_hello_request_")
+        || case.starts_with("initial_hello_registrar_")
+        || case.starts_with("initial_hello_sdk_request_")
+        || case.starts_with("initial_hello_result_")
+        || case.starts_with("initial_hello_envelope_")
+        || case.starts_with("initial_hello_response_")
+        || case.starts_with("initial_hello_verifier_")
+        || case.starts_with("initial_hello_admission_")
+        || case.starts_with("initial_hello_publication_")
+        || case.starts_with("initial_policy_")
+    {
+        Some(initial_reconstruction::hello_request_body_data(case))
+    } else {
+        None
+    };
+
     let (mut parent, inherited) = UnixStream::pair().unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -123,18 +141,7 @@ fn child(case: &str, wire: &[u8]) {
     let mut proof_hello = None;
     drop(command);
     if let Some(peer) = &mut public_peer {
-        if case.starts_with("initial_hello_request_")
-            || case.starts_with("initial_hello_registrar_")
-            || case.starts_with("initial_hello_sdk_request_")
-            || case.starts_with("initial_hello_result_")
-            || case.starts_with("initial_hello_envelope_")
-            || case.starts_with("initial_hello_response_")
-            || case.starts_with("initial_hello_verifier_")
-            || case.starts_with("initial_hello_admission_")
-            || case.starts_with("initial_hello_publication_")
-            || case.starts_with("initial_policy_")
-        {
-            let body = initial_reconstruction::hello_request_body_data(case);
+        if let Some(body) = prepared_hello {
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
             if case.contains("_normalizations_host_proof_")
