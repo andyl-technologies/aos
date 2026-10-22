@@ -12967,3 +12967,27 @@ native operations before a later process reopens the domain. No cold policy row,
 verified-source check, namespace bound or runtime deadline is removed or relaxed.
 The failed run is retained; the handoff correction still requires native runtime
 and application-target qualification.
+
+
+#### Actual FUSE kernel contract probe
+
+The separate `terrane.integration.native-fuse-kernel` component boots the
+current AOS 7.2.3 kernel with source-built tools. Its bounded Linux 7.40 UAPI
+server registers a real read-only, permanently fs-verity-sealed AOS executable,
+immediately closes its worker descriptor, and verifies complete passthrough
+bytes and mmap without receiving a userspace data read. An actual overlay mounts
+above this FUSE filesystem and executes the sealed binary successfully. This is
+a privileged kernel-contract probe, not the production mount broker, scoped
+native owner, exposure worker or acceptance of `T-RISK-4` or a FUSE task.
+
+The passing precommit probe also closes the backing ID and aborts the actual
+connection. A new lookup and an existing direct-I/O control return `ENOTCONN`;
+the existing passthrough descriptor and mapping still return their original
+bytes. This contradicts FUSE-48's blanket claim about open descriptors. A
+concrete amendment to retain physical custody and charges through actual kernel
+closure is awaiting approval; the normative specification is unchanged. Earlier
+probe failures retain their logs: premature pre-mount server startup, a missing
+overlay STATFS reply, Python vfork suspending its own server, and invoking the
+multicall executable under an unknown name. The corrected probe keeps its
+30-second outer bound and five-second subprocess bounds. Frozen-source review
+is still required before treating this as committed qualification.

@@ -454,6 +454,7 @@ in {
   integration.native-configured-sdk = configuredSdkProof.native;
   integration.host-cache-image = hostCacheProof.image;
   integration.native-host-cache = hostCacheProof.native;
+  integration.native-fuse-kernel = import ./fuse-kernel.nix {inherit pkgs lib;};
   integration.publisher-local-image = publisherLocalProof.image;
   integration.publisher-local-multuid = publisherLocalProof.multiUid;
   integration.native-publisher-local = publisherLocalProof.native;
