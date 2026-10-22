@@ -161,31 +161,23 @@ impl GuestIntrospectionDoorbellFrame {
         &self,
     ) -> Result<[u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES], GuestIntrospectionDoorbellError>
     {
-        let record = self
-            .record
-            .as_ref()
-            .map(GuestIntrospectionRecord::encode)
-            .transpose()
-            .map_err(GuestIntrospectionDoorbellError::Record)?;
-        if self.kind.carries_record() != record.is_some() {
+        let mut output = [0_u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES];
+        let record_len = match self.record.as_ref() {
+            Some(record) => record
+                .encode_into_slice(&mut output[GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES..])
+                .map_err(GuestIntrospectionDoorbellError::Record)?,
+            None => 0,
+        };
+        if self.kind.carries_record() != self.record.is_some() {
             return Err(GuestIntrospectionDoorbellError::KindRecordMismatch { kind: self.kind });
-        }
-        let record_len = record.as_ref().map_or(0, Vec::len);
-        if record_len > GUEST_INTROSPECTION_MAX_RECORD_BYTES {
-            return Err(GuestIntrospectionDoorbellError::RecordTooLarge { len: record_len });
         }
         let record_len = u32::try_from(record_len).map_err(|_error| {
             GuestIntrospectionDoorbellError::RecordTooLarge { len: record_len }
         })?;
-        let mut output = [0_u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES];
         output[..4].copy_from_slice(&GUEST_INTROSPECTION_DOORBELL_MAGIC);
         output[4..6].copy_from_slice(&GUEST_INTROSPECTION_DOORBELL_VERSION.to_le_bytes());
         output[6] = self.kind.wire_value();
         output[8..12].copy_from_slice(&record_len.to_le_bytes());
-        if let Some(record) = record {
-            let end = GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES + record.len();
-            output[GUEST_INTROSPECTION_DOORBELL_HEADER_BYTES..end].copy_from_slice(&record);
-        }
         Ok(output)
     }
 

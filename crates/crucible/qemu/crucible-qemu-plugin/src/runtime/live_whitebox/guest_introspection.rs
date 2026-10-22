@@ -142,11 +142,12 @@ fn route_exchange(
             record
                 .validate_guest_response()
                 .map_err(PluginIoError::fatal)?;
-            let encoded = record.encode().map_err(PluginIoError::fatal)?;
+            // Preserve record refusal precedence before inspecting the sequence.
+            record.encoded_len().map_err(PluginIoError::fatal)?;
             let following_sequence = next_response_sequence
                 .checked_add(1)
                 .ok_or_else(|| PluginIoError::fatal("response sequence overflow"))?;
-            let entry = GuestIntrospectionEntry::new(*next_response_sequence, &encoded)
+            let entry = GuestIntrospectionEntry::from_record(*next_response_sequence, record)
                 .map_err(PluginIoError::fatal)?;
             match rings.enqueue_response(entry) {
                 Ok(()) => {}

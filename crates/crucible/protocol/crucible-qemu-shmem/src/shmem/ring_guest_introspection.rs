@@ -6,9 +6,7 @@
 //! no process-private object crosses the mapping.
 
 use super::*;
-use crucible_qemu_protocol::guest_introspection::{
-    GuestIntrospectionError, GuestIntrospectionRecord,
-};
+use crucible_qemu_protocol::guest_introspection::{GuestIntrospectionError, GuestIntrospectionRecord};
 
 /// Maximum complete guest-introspection record bytes in one entry.
 pub const GUEST_INTROSPECTION_ENTRY_DATA_BYTES: usize = MAX_FRAME_DATA;
@@ -91,6 +89,36 @@ const _: () = assert!(GUEST_INTROSPECTION_ENTRY_SIZE == 4672);
 const _: () = assert!(GUEST_INTROSPECTION_ENTRY_ALIGN == 64);
 
 impl GuestIntrospectionEntry {
+    /// Encodes a validated record directly into a new fixed-size entry.
+    ///
+    /// This uses the canonical record encoder without a temporary byte vector
+    /// or decoding the caller's existing owned fields into another record.
+    ///
+    /// # Errors
+    /// Returns invalid-sequence or malformed-record errors when the sequence
+    /// is zero or the record's fields or complete encoded length are invalid.
+    pub fn from_record(
+        sequence: u64,
+        record: &GuestIntrospectionRecord,
+    ) -> Result<Self, GuestIntrospectionEntryError> {
+        if sequence == 0 {
+            return Err(GuestIntrospectionEntryError::InvalidSequence);
+        }
+        let mut entry = Self {
+            sequence,
+            ..Self::default()
+        };
+        let length = record
+            .encode_into_slice(&mut entry.data)
+            .map_err(|source| GuestIntrospectionEntryError::MalformedRecord { source })?;
+        entry.len =
+            u16::try_from(length).map_err(|_| GuestIntrospectionEntryError::RecordTooLarge {
+                len: length,
+                capacity: GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
+            })?;
+        Ok(entry)
+    }
+
     /// Builds an entry from one complete bounded protocol record.
     ///
     /// # Errors
@@ -218,7 +246,8 @@ pub enum GuestIntrospectionEntryError {
 mod tests {
     use super::*;
     use crucible_qemu_protocol::guest_introspection::{
-        GuestIntrospectionMessage, GuestIntrospectionRecord,
+        GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+        GUEST_INTROSPECTION_MAX_ARG_BYTES, GUEST_INTROSPECTION_MAX_CHUNK_BYTES,
     };
 
     fn close_record(channel_id: u64) -> Vec<u8> {
@@ -246,6 +275,58 @@ mod tests {
         assert_eq!(entry.sequence(), 7);
         assert_eq!(entry.record(), Ok(record.as_slice()));
         assert_eq!(entry.validate(), Ok(entry));
+    }
+
+    #[test]
+    fn direct_record_entry_matches_canonical_bytes_and_zeroed_padding() {
+        let record = GuestIntrospectionRecord::new(
+            7,
+            GuestIntrospectionMessage::Output {
+                stream: GuestOutputStream::Stderr,
+                bytes: vec![0x5a; GUEST_INTROSPECTION_MAX_CHUNK_BYTES],
+            },
+        )
+        .unwrap();
+        let encoded = record.encode().unwrap();
+
+        let entry = GuestIntrospectionEntry::from_record(u64::MAX, &record).unwrap();
+
+        assert_eq!(
+            entry,
+            GuestIntrospectionEntry::new(u64::MAX, &encoded).unwrap()
+        );
+        assert_eq!(entry.sequence(), u64::MAX);
+        assert_eq!(entry.record().unwrap(), encoded);
+        assert!(entry.data[encoded.len()..].iter().all(|byte| *byte == 0));
+        assert_eq!(entry._pad, [0; 6]);
+        assert_eq!(entry._reserved, [0; 48]);
+    }
+
+    #[test]
+    fn direct_record_entry_rejects_zero_sequence_and_oversize_record() {
+        let record = GuestIntrospectionRecord::new(7, GuestIntrospectionMessage::Close).unwrap();
+        assert_eq!(
+            GuestIntrospectionEntry::from_record(0, &record),
+            Err(GuestIntrospectionEntryError::InvalidSequence)
+        );
+
+        let oversized = GuestIntrospectionRecord::new(
+            7,
+            GuestIntrospectionMessage::Exec {
+                argv: vec!["x".repeat(GUEST_INTROSPECTION_MAX_ARG_BYTES); 2],
+                record_transcript: false,
+            },
+        )
+        .unwrap();
+
+        let refused = GuestIntrospectionEntry::from_record(1, &oversized);
+
+        assert!(matches!(
+            refused,
+            Err(GuestIntrospectionEntryError::MalformedRecord {
+                source: GuestIntrospectionError::RecordTooLarge { .. }
+            })
+        ));
     }
 
     #[test]

@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 426 committed bindings: 407 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 430 committed bindings: 411 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Reader, deferred return and cleanup composition
 
@@ -478,6 +478,26 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Direct fixed-storage guest-introspection encoding
+
+The canonical record encoder now writes directly into caller-owned slices after
+validating every field, the complete length and destination capacity. The owned
+Vec encoder shares the same canonical implementation. Doorbell replies encode
+into their fixed frame, and live response entries encode into their fixed ring
+storage without an intermediate encoded Vec or a second owned record decode.
+The existing wire editions, layout, padding and sequence refusal order remain
+unchanged. Decode allocations, error payloads and complete operation funding
+remain open.
+
+Four controls cover independent literal bytes, unchanged destination tails,
+pre-mutation capacity and field refusals, maximum-chunk canonical entries with
+zeroed padding, and zero-sequence/oversized-record refusals. Every existing
+record variant also compares owned and fixed encodings. The nine focused
+protocol controls, seven shared-memory controls and all 122 white-box controls
+pass. Every protocol, shared-memory and plugin target compiles, and engineering
+hygiene passes. Mandatory application compilation, ABI conformance, canonical
+license checking and the exact 313-case supervision run are being checked.
+
 #### Borrowed live guest-introspection replies
 
 The live guest-introspection callback now passes the original encoded 4,608-byte
@@ -492,9 +512,13 @@ The fixed-frame control verifies the writer sees the original slice address,
 bytes, range and delivery icount exactly once. A separate control covers all
 pre-write refusals, early delivery and the original modeled writer error.
 All 122 focused white-box tests and every plugin target's compilation pass.
-The exact doorbell ABI inventory becomes 64. Engineering hygiene, mandatory
-application compilation, ABI conformance and the exact 309-case supervision
-run are in progress.
+The exact doorbell ABI inventory becomes 64. Engineering hygiene passes;
+ABI conformance passes at `m9rw1vv4v7f3ck2dgmp1wmwzg60gmni7`, and mandatory
+application compilation passes at `w1nhclmwm8fnmj4aicjx4bai8kd12p22`.
+All 5,304 committed Rust/TOML files match immutable source
+`8hmig3n6ir4633klj2w64rg2rx3lb57c`. The comparison record has SHA-256
+`5ce6d28f1fc9674374b88186c29a56109600485bdd91c6086c65087e0c20347b`.
+The exact 309-case supervision run is being collected.
 
 #### Callback failure reporting
 
@@ -509,8 +533,12 @@ descriptor deadline and full diagnostic lifetime qualification remain open.
 Three controls exercise exact output through a real socket, a short write and a
 kernel refusal. All 54 focused live white-box tests, every plugin target's
 compilation and content-bound engineering hygiene pass. Mandatory application
-compilation and the exact 307-case supervision run are in progress. These
-components grant no Native Source, executor or cleanup authority.
+compilation passes at `1wsyi8v01mvr9dsh98jlayn142l75gw1`; all 5,302 committed
+Rust/TOML files match immutable source `01n6dsspl7vf79qfxhm1bxsgqcr8vw6d`.
+The comparison record has SHA-256
+`d0e344d8b3cb15079f5858f7603be56223f9d2a1e5dd4377a526037e62f2ae01`.
+The exact 307-case supervision run is being collected. These components grant
+no Native Source, executor or cleanup authority.
 
 #### Typed marker entry validation
 

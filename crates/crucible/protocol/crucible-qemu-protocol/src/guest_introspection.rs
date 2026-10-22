@@ -17,6 +17,8 @@
 
 use thiserror::Error;
 
+mod slice_encoder;
+
 /// Four-byte magic identifying a guest-introspection record.
 pub const GUEST_INTROSPECTION_MAGIC: [u8; 4] = *b"CRGI";
 /// Current guest-introspection protocol version.
@@ -398,45 +400,8 @@ impl GuestIntrospectionRecord {
                 available,
             });
         }
-        let (kind, flags) = message_header(&self.message);
-        output.extend_from_slice(&GUEST_INTROSPECTION_MAGIC);
-        output.extend_from_slice(&GUEST_INTROSPECTION_PROTOCOL_VERSION.to_le_bytes());
-        output.push(kind);
-        output.push(flags);
-        output.extend_from_slice(&self.channel_id.to_le_bytes());
-        output.extend_from_slice(&((length - GUEST_INTROSPECTION_HEADER_LEN) as u32).to_le_bytes());
-        match &self.message {
-            GuestIntrospectionMessage::Features(features) => {
-                output.extend_from_slice(&features.bits.to_le_bytes());
-                output.extend_from_slice(&features.max_channels.to_le_bytes());
-            }
-            GuestIntrospectionMessage::Exec { argv, .. } => append_argv(output, argv),
-            GuestIntrospectionMessage::Pty {
-                argv,
-                columns,
-                rows,
-                ..
-            } => {
-                output.extend_from_slice(&columns.to_le_bytes());
-                output.extend_from_slice(&rows.to_le_bytes());
-                append_argv(output, argv);
-            }
-            GuestIntrospectionMessage::Input(bytes)
-            | GuestIntrospectionMessage::Output { bytes, .. } => output.extend_from_slice(bytes),
-            GuestIntrospectionMessage::Resize { columns, rows } => {
-                output.extend_from_slice(&columns.to_le_bytes());
-                output.extend_from_slice(&rows.to_le_bytes());
-            }
-            GuestIntrospectionMessage::Exit { status, signal } => {
-                output.extend_from_slice(&status.to_le_bytes());
-                output.extend_from_slice(&signal.unwrap_or(0).to_le_bytes());
-            }
-            GuestIntrospectionMessage::Error { code, message } => {
-                output.extend_from_slice(&code.wire_value().to_le_bytes());
-                output.extend_from_slice(message.as_bytes());
-            }
-            GuestIntrospectionMessage::Ssh { .. } | GuestIntrospectionMessage::Close => {}
-        }
+
+        self.encode_reserved(output, length);
         Ok(())
     }
 
@@ -681,15 +646,6 @@ fn validate_argv(argv: &[String]) -> Result<(), GuestIntrospectionError> {
         }
     }
     Ok(())
-}
-
-fn append_argv(output: &mut Vec<u8>, argv: &[String]) {
-    // The caller validated these integer bounds and reserved the whole record.
-    output.extend_from_slice(&(argv.len() as u16).to_le_bytes());
-    for argument in argv {
-        output.extend_from_slice(&(argument.len() as u16).to_le_bytes());
-        output.extend_from_slice(argument.as_bytes());
-    }
 }
 
 fn decode_argv(payload: &[u8]) -> Result<Vec<String>, GuestIntrospectionError> {
@@ -951,6 +907,10 @@ mod tests {
             let bytes = record
                 .encode()
                 .unwrap_or_else(|error| panic!("record should encode: {error}"));
+            let mut fixed = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES + 1];
+            let length = record.encode_into_slice(&mut fixed).unwrap();
+            assert_eq!(&fixed[..length], bytes);
+            assert!(fixed[length..].iter().all(|byte| *byte == 0xa5));
             assert_eq!(
                 GuestIntrospectionRecord::decode(&bytes),
                 Ok(record),
@@ -1074,6 +1034,63 @@ mod tests {
         ));
         assert!(output.is_empty());
         assert_eq!(output.capacity(), 0);
+        let mut fixed = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES];
+        assert!(matches!(
+            record.encode_into_slice(&mut fixed),
+            Err(GuestIntrospectionError::RecordTooLarge { .. })
+        ));
+        assert!(fixed.iter().all(|byte| *byte == 0xa5));
         Ok(())
+    }
+
+    #[test]
+    fn slice_encoding_matches_literal_record_and_preserves_tail() {
+        let record = GuestIntrospectionRecord::new(7, GuestIntrospectionMessage::Close).unwrap();
+        let expected = [
+            0x43, 0x52, 0x47, 0x49, 1, 0, 7, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let mut output = [0xa5; 32];
+
+        let length = record.encode_into_slice(&mut output).unwrap();
+
+        assert_eq!(length, expected.len());
+        assert_eq!(&output[..length], expected);
+        assert_eq!(&output[length..], &[0xa5; 12]);
+    }
+
+    #[test]
+    fn slice_encoding_refuses_capacity_and_invalid_fields_before_mutation() {
+        let record = GuestIntrospectionRecord::new(7, GuestIntrospectionMessage::Close).unwrap();
+        let mut short = [0xa5; GUEST_INTROSPECTION_HEADER_LEN - 1];
+
+        let refused = record.encode_into_slice(&mut short);
+
+        assert_eq!(
+            refused,
+            Err(GuestIntrospectionError::OutputCapacity {
+                required: GUEST_INTROSPECTION_HEADER_LEN,
+                available: short.len(),
+            })
+        );
+        assert!(short.iter().all(|byte| *byte == 0xa5));
+
+        let invalid = GuestIntrospectionRecord {
+            channel_id: 7,
+            message: GuestIntrospectionMessage::Input(vec![
+                0;
+                GUEST_INTROSPECTION_MAX_CHUNK_BYTES + 1
+            ]),
+        };
+        let mut output = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES];
+
+        let refused = invalid.encode_into_slice(&mut output);
+
+        assert_eq!(
+            refused,
+            Err(GuestIntrospectionError::ChunkTooLarge {
+                len: GUEST_INTROSPECTION_MAX_CHUNK_BYTES + 1,
+            })
+        );
+        assert!(output.iter().all(|byte| *byte == 0xa5));
     }
 }
