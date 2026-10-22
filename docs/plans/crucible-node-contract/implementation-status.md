@@ -3568,6 +3568,23 @@ inputs match the committed revision and its actual captured source. The
 application gate executes no tests. These results supply no configured runtime,
 VM, Source/native restoration or full RFC qualification.
 
+## Downstream Bootstrap normalization setup
+
+Commit `b766ca7222` separates downstream fixture preparation from the dedicated
+normalization tests' independent wire and canonical-hash oracles. Preparation
+still executes the complete production normalization under the original cut,
+checks every phase and actual retained output, and requires all five completed
+digests. Dedicated normalization flights retain every independent comparison
+and refusal control. Codec setup failures now identify the last retained step
+and original-cut expiry. Production checks and deadlines remain unchanged.
+
+Transport/Engine/Daemon all-feature/all-target checking, owned-file formatting
+and all six architecture gates pass. The required application gate compiles
+180 test executables across 58 packages, including 71 integration targets.
+All 437 owned Rust/Cargo inputs match the committed revision and its actual
+captured source. That gate executes no tests. Complete runtime requalification
+is pending; the previous raw reply failure remains unqualified.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
