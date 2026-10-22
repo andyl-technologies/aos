@@ -19,6 +19,8 @@ mod records;
 mod purpose;
 mod setup;
 
+pub mod quantum;
+
 use crate::boundary_action::{ACTION_BYTES, ActionObservation};
 
 pub use records::{PublisherLoanIdentity, PublisherOutcome, PublisherReturn, PublisherTerminal};
