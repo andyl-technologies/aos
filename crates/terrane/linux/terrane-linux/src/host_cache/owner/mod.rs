@@ -37,6 +37,7 @@ mod recovery_state_parent;
 mod resume_error;
 mod retention;
 mod snapshot;
+mod status;
 #[cfg(feature = "surface-fuse")]
 mod surface_index;
 
@@ -83,6 +84,7 @@ pub(crate) use retention::{
     RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};
+pub use status::NativeCacheStatus;
 #[cfg(feature = "surface-fuse")]
 pub use surface_index::{
     NativeExposureLease, NativeExposureReconciliation, NativeExposureRootBacking, NativeRootIndex,

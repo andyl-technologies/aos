@@ -52,13 +52,14 @@ pub(crate) use owner::{
 pub use owner::{
     CompletedRecovery, IndexRepairPolicy, NativeAdmissionHandoffError,
     NativeAdmissionHandoffReport, NativeCacheEvictionReport, NativeCacheHandoffError,
-    NativeCacheHandoffReport, NativeCacheOwnerConfig, NativeCachePreparation, NativeChunkAdmission,
-    NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeChunkFetchRequest,
-    NativeConsumerLease, NativeFetchedChunk, NativeFileBacking, NativeIndexRepairReport,
-    NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
-    NativeMetadataAdmission, NativeMetadataAdmissionError, NativeMetadataOwner,
-    NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource, NativeResumeError,
-    NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport, RetainedManifest,
+    NativeCacheHandoffReport, NativeCacheOwnerConfig, NativeCachePreparation, NativeCacheStatus,
+    NativeChunkAdmission, NativeChunkAdmissionError, NativeChunkAdmissionTicket,
+    NativeChunkFetchRequest, NativeConsumerLease, NativeFetchedChunk, NativeFileBacking,
+    NativeIndexRepairReport, NativeInlinePublication, NativeLeaseAccounting,
+    NativeManifestPublication, NativeMetadataAdmission, NativeMetadataAdmissionError,
+    NativeMetadataOwner, NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource,
+    NativeResumeError, NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport,
+    RetainedManifest,
 };
 #[cfg(all(feature = "tokio", feature = "surface-fuse"))]
 pub use owner::{

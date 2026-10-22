@@ -133,6 +133,14 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    let before_status = snapshot(&inputs)?;
+    if runtime.block_on(owner.status()).is_ok() || snapshot(&inputs)? != before_status {
+        return Err(io::Error::other(
+            "pre-Resume status succeeded or changed original policy",
+        ));
+    }
+    emit("PASS actual pre-Resume status refused without policy mutation")?;
+
     match mode {
         "recover-quarantine" | "refuse-quarantine" => {
             super::recovery::quarantine::run(mode, &owner, &runtime, &inputs, original)?;

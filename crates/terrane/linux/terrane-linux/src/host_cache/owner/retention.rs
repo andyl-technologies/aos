@@ -84,6 +84,10 @@ pub(super) enum Command {
     CheckRunning {
         response: oneshot::Sender<io::Result<()>>,
     },
+    /// Observes current policy and freshly authenticated project usage.
+    Status {
+        response: oneshot::Sender<io::Result<super::NativeCacheStatus>>,
+    },
     #[cfg(feature = "surface-fuse")]
     SurfaceExposure(super::surface_index::exposure::Request),
     #[cfg(feature = "surface-fuse")]
@@ -407,6 +411,9 @@ impl NativeMetadataOwner {
                     match command {
                         Command::CheckRunning { response } => {
                             let _ = response.send(super::health::check(&executor));
+                        }
+                        Command::Status { response } => {
+                            let _ = response.send(super::status::observe(&executor));
                         }
                         #[cfg(feature = "surface-fuse")]
                         Command::SurfaceExposure(request) => {

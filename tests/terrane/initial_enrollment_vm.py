@@ -284,6 +284,14 @@ def configured_publication():
         else:
             before_ready = sealed_snapshot()
             run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
+            ready_log = (ROOT / "proof-logs/ready-public-private.log").read_text()
+            for populated in ["false", "true"]:
+                for domain in ["public", "private:fixture"]:
+                    witness = (
+                        "PASS actual native status fresh quota query and unchanged synchronized policy, "
+                        "populated=" + populated + " for " + domain)
+                    require(ready_log.splitlines().count(witness) == 1,
+                            "missing exact actual native status observation: " + domain)
             sealed_after = sealed_snapshot()
             before_paths = {(row[0], row[1]): row for row in before_ready}
             after_paths = {(row[0], row[1]): row for row in sealed_after}

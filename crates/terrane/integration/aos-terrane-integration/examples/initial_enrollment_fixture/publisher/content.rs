@@ -331,6 +331,57 @@ async fn metadata_policy(
     .ok_or_else(|| io::Error::other("metadata deduplication lost original durable policy"))
 }
 
+/// Checks real status against the synchronized ledger without inventing counters.
+pub(super) async fn exercise_status(
+    store: &NativeContentStore,
+    domain: &str,
+    populated: bool,
+) -> io::Result<()> {
+    let owner = store.ready().owner();
+    let first = owner.status().await?;
+    let records = store
+        .ready()
+        .layout()
+        .layout()
+        .root()
+        .join("state/cache/records.toml");
+    let before = std::fs::read(&records)?;
+    let second = owner.status().await?;
+    let after = metadata_policy(store).await?;
+
+    // This fixture observes newly established promises well before their grace
+    // deadlines. Neither status request may write the synchronized policy.
+    assert_eq!(before, std::fs::read(&records)?);
+    assert_eq!(first.generation, second.generation);
+    assert!(second.quota_request_id > first.quota_request_id);
+    assert_eq!(second.domain, domain);
+    assert_eq!(second.hard_limit_bytes, super::super::config::LIMIT);
+    assert_eq!(second.capacity_bytes, 24 * 1024 * 1024);
+    assert!(second.charged_reserved_bytes > 0);
+    assert!(second.charged_inodes > 0);
+    assert_eq!(second.pins, after.pins.len());
+    assert_eq!(second.leases, after.leases.len());
+    assert_eq!(second.residences, after.residences.len());
+    assert_eq!(second.reservations, after.reservations.len());
+    assert_eq!(second.active_exposures, 0);
+    assert_eq!(second.draining_exposures, 0);
+    let reserved = after.reservations.iter().try_fold(0_u64, |sum, row| {
+        sum.checked_add(row.bytes)
+            .ok_or_else(|| io::Error::other("fixture reservation sum overflow"))
+    })?;
+    assert_eq!(second.reservation_bytes, reserved);
+    if populated {
+        assert!(second.pins > 0);
+        assert!(second.leases > 0);
+        assert!(second.reservations > 1);
+    }
+
+    println!(
+        "PASS actual native status fresh quota query and unchanged synchronized policy, populated={populated} for {domain}"
+    );
+    Ok(())
+}
+
 /// Exercises independent grants and retained descriptors through final release.
 pub(super) async fn exercise_release(
     store: &NativeContentStore,

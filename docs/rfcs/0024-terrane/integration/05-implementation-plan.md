@@ -8720,9 +8720,18 @@ creator. Both corrections are pushed through `8dc8dd6311`; the actual compiled
 with every original case retained. The fresh full-cache ext4 VM at
 `8dc8dd6311` now passes, with complete source, four-executable and runtime review;
 all 129 unit cases execute, and all 92 fixture selectors remain in its bound
-inventory. Eleven owning gates are running from that frozen checkout. No full
-owning-gate or feature-matrix success is claimed. Complete production role composition,
-unresolved cold kernel custody and later trunk milestones remain open.
+inventory. Its eleven-component request subsequently fails on the old native
+enrollment namespace expectation. Measured inode evidence supports its correction;
+the `cba326c877` enrollment VM passes with complete 8,079-file, 5,358-input,
+actual-executable and 17-case review. At `5c427bfc16`, the owning blame gate and
+all six CLI workflows pass with complete source/compiler-record review. Required
+application compilation passes at both preceding blame checkpoints, each with
+185 actual test targets across 59 packages and all 8,079 source files checked.
+Fresh eleven-component and application requests continue at `5c427bfc16`.
+The new native status observation has strict lint, fixture compilation and public
+documentation checks, but requires fresh native qualification. No full current
+owning-gate or feature-matrix success is claimed. Complete production role
+composition, unresolved cold kernel custody and later trunk milestones remain open.
 
 The dated entries below preserve earlier checkpoints and provisional results;
 the current status and task checkboxes govern acceptance.
@@ -15687,3 +15696,59 @@ It also verifies all three credential files remain unchanged. Each write uses
 the original publication policy and deadline. No assertion, selected case,
 authorization check or production timeout is removed or relaxed. Fresh owning
 runtime qualification is required for this fixture correction.
+
+
+#### Guarded graph audit qualification and native status observation
+
+At frozen `5c427bfc16`, `obs-blame` passes in 508.786 seconds. Complete review
+matches all 8,079 immutable source files, both selected SDK cases, the complete
+CLI provenance scenario, and the three actual Cargo artifacts. The independent
+six-case CLI workflow also passes in 491.453 seconds; its complete review matches
+the same 8,079 immutable source files, all six exact execution logs, the full
+compiled inventory and both actual CLI compiler artifacts. Neither result asserts a
+retained executed-ELF hash or ext4 deployment. The successful CLI scenario
+executes both the parent-ordered two-merge audit and the independent nested-path
+replacement lifecycle, along with unchanged credentials and empty-output
+refusals. OBS-13 is implemented and its owning gate passes at this checkpoint;
+T-OBS-1 remains open for the rest of its status, logging and metric obligations.
+The earlier failed invocations remain retained. One later workflow request
+selects the wrong gate namespace and fails in 2.281 seconds before compilation;
+the separately retained successful request uses the registered
+`terrane.integration.local-cli-workflow` target. Mandatory application
+compilation and the eleven-component T2 request continue on frozen source.
+
+The native owner now provides a serialized `status` observation for subsequent
+status and metric composition. Only the actual physical owner selects its
+synchronized generation and policy counts. It reauthenticates fresh complete
+project quota through the retained helper client and checks original Running,
+root, snapshot and bootstrap custody before and after observation. Kernel
+charged-and-reserved bytes and inodes, enforced limits, logical cache capacity,
+distinct future reservation bytes, pins, leases, residences, and active/draining
+exposure counts remain separate. The report contains no content hashes,
+credentials or native backing handles and grants no release or quota authority.
+Query correlation IDs are scoped to the retained client; they are not global
+sequences or capabilities. Normal due maintenance may precede the queue turn;
+the status command itself changes no policy.
+
+The real enrollment fixture checks both domains before and after actual content
+admission, compares every reported policy count to the independently loaded
+synchronized ledger, requires a fresh helper request, unchanged generation and
+byte-identical policy, and tests positive retained pins, leases and reservations.
+Its supervisor requires all four actual status witnesses. The full-cache actor
+also requires pre-Resume status refusal with unchanged original policy before
+its existing controls. No timeout, actor or prior assertion is relaxed. These
+new native controls require fresh VM qualification. The host-local API does not
+complete a remote status endpoint, derived-property completeness, protocol
+status or T-OBS-1 by itself.
+
+At the same frozen checkpoint, requirement ownership and gate-registry checks
+pass: all 97 tasks cite declared IDs, all 1,082 mandatory requirements have task
+owners, all 292 specification gates map to AOS checks, and all 69 T0/T1 floor
+gates remain present. This validates coverage bookkeeping, not implementation
+or acceptance of the later trunk tasks.
+
+The native status increment passes Rust formatting, strict Linux all-feature and
+all-target Clippy, strict enrollment-fixture Clippy, actual enrollment-fixture
+compilation, public Linux documentation, Python syntax and `git diff --check`.
+No native fixture is executed on the host. Fresh native and mandatory
+application qualification remain pending for the committed increment.

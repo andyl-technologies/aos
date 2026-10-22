@@ -260,11 +260,13 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
                     matches!(preparation, Preparation::RecoveredManifestPressure),
                 ))?,
             Preparation::Content => {
+                runtime.block_on(content::exercise_status(store, domain, false))?;
                 // Exercise direct sealing on the first genuine Running owner.
                 // Another cold reopen would add an unrelated recovery workload
                 // to this deliberately bounded 64-record content fixture.
                 runtime.block_on(content::exercise_sealed(&configured))?;
                 runtime.block_on(content::exercise(store, &profile))?;
+                runtime.block_on(content::exercise_status(store, domain, true))?;
             }
         }
         runtime.block_on(store.ready().validate_portable())?;
