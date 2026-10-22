@@ -15,7 +15,13 @@ use super::*;
 use crate::envelope::{MessageKind, Method};
 use crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
 
+mod envelope_projection;
 mod projection;
+pub use envelope_projection::{
+    PacketNativeImport18BootstrapEnvelopeProjectionData,
+    native_import18_bootstrap_envelope_projection_counter_scratch_data,
+    native_import18_bootstrap_envelope_projection_data,
+};
 pub use projection::{
     PacketNativeImport18BootstrapAckProjectionData,
     native_import18_bootstrap_ack_constructor_transient_data,
