@@ -80,6 +80,10 @@ in {
   config = lib.mkIf cfg.enable {
     assertions = [
       {
+        assertion = config.aos.sandbox.resourceBank.policy != null;
+        message = "Offline installation requires an explicit finite image-owned resource policy before PID1 can admit its manual jobs.";
+      }
+      {
         assertion =
           selinux.enable
           && selinux.mode == "enforcing"

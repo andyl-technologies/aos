@@ -9877,6 +9877,20 @@ returns Access denied. That test now requires the denial and retained absence
 of candidate state. It does not claim an installed active-owner preparation
 refusal; that case still needs the genuinely provisioned Nix runtime.
 
+The corrected offline test reaches its first genuine manual start, where PID1
+refuses job admission because that installation image has no resource policy.
+Offline installation now requires an explicit finite immutable bank policy.
+The base bank may be installed without an enabled Controller only for this
+standalone manual owner; every online subdivision retains its enabled-owner
+requirements. The fixture uses the existing policy producer and the original
+finite six base vectors, retaining its unused Controller reservation. Its
+unchanged target Controller fragment remains installed and inactive. Missing
+funding, a missing installation owner and online subdivisions without their
+Controller are rejected by the hardware-profile check. Core evaluation passes;
+the artifact and installed runs remain pending. The test also compares the
+byte-valued manager diagnostic correctly and does not reset a never-loaded
+preparation unit before its first start.
+
 That Root run then fails native host activation while querying `srv.mount`:
 `LoadUnit` does not retain an inactive unit, so PID1 can collect it before the
 owned-definition checks. Native resource handling now uses `RefUnit` to load

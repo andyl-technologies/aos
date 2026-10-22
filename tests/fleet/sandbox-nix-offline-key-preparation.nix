@@ -8,10 +8,11 @@
   runtimeSystem = (import ./_sandbox-funded-system.nix {inherit lib pkgs systems;}).extendModules {
     modules = [{systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];}];
   };
+  installationPolicy = runtimeSystem.config.aos.sandbox.resourceBank.policy;
+  controllerReference = runtimeSystem.config.systemd.services.aos-sandboxd;
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
-  controllerReference = runtimeSystem.config.systemd.services.aos-sandboxd;
   publicInputs =
     pkgs.runCommand "sandbox-nix-offline-preparation-public-inputs" {
       buildDeps = [pkgs.python3];
@@ -44,6 +45,7 @@
           _qualificationAdmissionRelease = true;
         };
         aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+          systemd = config.aos.manager.selected.package;
           aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
           aos-selinux-runtime-roots = config.aos.security.selinux._runtimeRootsProvisioner;
           admissionUnit = "";
@@ -64,12 +66,15 @@
           };
         };
         aos.sandbox.nixOfflinePrepare.enable = true;
-        # Install the genuine target-image Controller fragment unchanged,
-        # without its activation links or external runtime credentials. The
-        # reference target keeps the inactive unit loaded for PID1 readback;
-        # ordering alone never starts it. The Nix owner remains uninstalled.
-        # PID1 resolves this fixed name through the immutable manager inventory.
-        # An /etc-only fragment cannot supply that original image association.
+        # The installation image pays manager jobs through the normal finite
+        # bank producer. It has no online Nix owner or recovery recipient; the
+        # unused Controller envelope stays reserved, never repurposed as a loan.
+        aos.sandbox.resourceBank.policy = {
+          inherit (installationPolicy) node epoch capacity baseline controller components;
+        };
+        # Keep the unchanged genuine target-image Controller in PID1's
+        # immutable inventory without activation or runtime private inputs.
+        # This offline fixture establishes no online or V11 startup readiness.
         systemd.services.aos-sandboxd = {
           inherit (controllerReference) environment serviceConfig unitConfig jobScripts;
           enableDefaultPath = false;
@@ -184,7 +189,7 @@ in {
         "systemd-run --unit=aos-sandbox-nixd.service --collect "
         "--slice=aos-control.slice ${pkgs.coreutils}/bin/sleep infinity"
     )
-    assert status != 0 and "Access denied" in diagnostic, (status, diagnostic)
+    assert status != 0 and b"Access denied" in diagnostic, (status, diagnostic)
     vm.succeed(f"test ! -e {root}")
     vm.wait_until_succeeds(
         "! ${pkgs.systemd}/bin/busctl call org.freedesktop.systemd1 "
@@ -193,7 +198,6 @@ in {
         timeout=30,
     )
 
-    vm.succeed(f"systemctl reset-failed {unit}")
     vm.succeed(f"systemctl start {unit}")
     vm.wait_until_succeeds(
         f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "

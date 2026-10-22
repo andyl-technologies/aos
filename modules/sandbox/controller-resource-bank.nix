@@ -550,8 +550,15 @@ in {
         message = "Shared resource enrollment requires the existing immutable enforcing PID1/Controller trust boundary.";
       }
       {
-        assertion = config.aos.sandbox.controllerService.enable;
-        message = "Shared resource enrollment requires the existing fixed Controller service.";
+        assertion =
+          config.aos.sandbox.controllerService.enable
+          || (config.aos.sandbox.nixOfflinePrepare.enable
+            && cfg.policy.hostService == null
+            && cfg.policy.hostControl == null);
+        # Installation jobs precede the online owners. They still pay manager
+        # jobs through the same finite bank, retaining the unused Controller
+        # envelope. Online subdivisions require their original enabled owners.
+        message = "Shared resource enrollment requires the fixed Controller, or a standalone offline installation with the base finite bank and no online subdivisions.";
       }
       {
         assertion =

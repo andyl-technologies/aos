@@ -7,6 +7,23 @@
   offline = import ../fleet/sandbox-nix-offline-key-preparation.nix {
     inherit lib pkgs systems;
   };
+  accepts = system: builtins.all (check: check.assertion) system.config.assertions;
+  withoutFunding = offline.machines.vm.system.extendModules {
+    modules = [{aos.sandbox.resourceBank.policy = lib.mkForce null;}];
+  };
+  withoutInstallationOwner = offline.machines.vm.system.extendModules {
+    modules = [{aos.sandbox.nixOfflinePrepare.enable = lib.mkForce false;}];
+  };
+  withOnlineSubdivision = offline.machines.vm.system.extendModules {
+    modules = [
+      ({config, ...}: {
+        aos.sandbox.resourceBank.policy = {
+          hostService = lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (_: 1);
+          hostControl = lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (_: 1);
+        };
+      })
+    ];
+  };
   caseFor = command: let
     system = offline.machines.vm.system.extendModules {
       modules = [{aos.sandbox.nixOfflinePrepare.command = command;}];
@@ -19,11 +36,20 @@
       text = cfg.systemd.units."aos-sandbox-nix-floor-provision.service".text;
     };
   in
+    assert !accepts withoutFunding;
+    assert !accepts withoutInstallationOwner;
+    assert !accepts withOnlineSubdivision;
     assert builtins.all (check: check.assertion) cfg.assertions;
     assert service.DeviceAllow == ["/dev/tpmrm0 rw"];
     assert service.PrivateDevices == false;
+    assert cfg.aos.sandbox.resourceBank.policy != null;
+    assert cfg.environment.etc."aos/resource-bootstrap-v1".source
+    == "${cfg.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
+    assert !cfg.aos.sandbox.nixBroker.enable;
     assert builtins.length service.OpenFile == 2;
-    assert builtins.isString cfg.environment.etc."systemd/system/aos-sandboxd.service".source;
+    assert cfg.systemd.units."aos-sandboxd.service".text != "";
+    assert cfg.systemd.services.aos-sandboxd.wantedBy == [];
+    assert cfg.systemd.services.aos-sandboxd.requiredBy == [];
     assert cfg.systemd.services.aos-sandbox-nix-floor-provision.wantedBy == [];
     assert cfg.systemd.services.aos-sandbox-nix-floor-provision.requiredBy == []; {
       inherit profile unit;
