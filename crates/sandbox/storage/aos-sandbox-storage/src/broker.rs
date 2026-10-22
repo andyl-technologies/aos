@@ -9155,6 +9155,15 @@ mod tests {
             admission_clock.wall_seconds(),
         );
         write_public_fixture_file(&fixture_directory.join("apply-request.pb"), &create_request);
+        let apply_bindings = aos_sandbox_api::aos::sandbox::local::v1::BrokerSemanticBindingsV1 {
+            storage_catalog_generation: catalog.generation(),
+            storage_catalog_digest: catalog.digest().as_bytes().to_vec(),
+            ..Default::default()
+        };
+        write_public_fixture_file(
+            &fixture_directory.join("apply-bindings.pb"),
+            &apply_bindings.encode_to_vec(),
+        );
         let public_create_artifacts = BrokerAuthorizationArtifactsV1 {
             broker_plan: create_artifacts.broker_plan().to_vec(),
             broker_plan_signature: create_artifacts.broker_plan_signature().to_vec(),
@@ -9633,7 +9642,16 @@ mod tests {
             &fs::read(directory.join(format!("{prefix}-artifacts.pb"))).unwrap(),
         )
         .unwrap();
-        let packet = encode_authorized_request_envelope(
+
+        // Apply must pass the same catalog-bound client admission as an
+        // ordinary request before this fixture can test the broker's refusal.
+        let bindings = (method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY).then(|| {
+            aos_sandbox_api::aos::sandbox::local::v1::BrokerSemanticBindingsV1::decode_from_slice(
+                &fs::read(directory.join("apply-bindings.pb")).unwrap(),
+            )
+            .unwrap()
+        });
+        let packet = aos_sandbox_protocol::encode_authorized_request_envelope_with_bindings_v1(
             ProtocolId::StorageBroker,
             method,
             &body,
@@ -9644,6 +9662,7 @@ mod tests {
                 ownership_lease: &artifacts.ownership_lease,
                 ownership_lease_signature: &artifacts.ownership_lease_signature,
             },
+            bindings.as_ref(),
         )
         .unwrap();
         storage_rpc_session::reject_unavailable_method(method, &packet);
