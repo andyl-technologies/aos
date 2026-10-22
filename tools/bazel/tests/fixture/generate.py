@@ -1,8 +1,19 @@
 """Emits equivalent native/Rust constants from a declared source value."""
 
 import argparse
+import errno
 import os
 from pathlib import Path
+import subprocess
+
+
+try:
+    subprocess.run(["/bin/sh", "-c", "exit 0"], check=False, capture_output=True)
+except OSError as error:
+    if error.errno not in {errno.EACCES, errno.ENOENT, errno.ENOEXEC}:
+        raise
+else:
+    raise RuntimeError("Bazel action could execute the compatibility /bin/sh")
 
 
 parser = argparse.ArgumentParser(description=__doc__)

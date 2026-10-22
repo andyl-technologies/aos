@@ -1,0 +1,52 @@
+{
+  "cache_summary": {
+    "consumer": {
+      "AosPythonGenerate:disk cache hit": 1,
+      "CppArchive:disk cache hit": 1,
+      "CppCompile:disk cache hit": 1,
+      "CppCompile:linux-sandbox": 1,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:disk cache hit": 6,
+      "Rustc:linux-sandbox": 1
+    },
+    "producer": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    },
+    "uncached": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    }
+  },
+  "checks": {
+    "all": "/nix/store/fr7k8vjvfihxakq7hwa9ljinvcw1lxjw-aos-bazel-checks",
+    "concurrent": "/nix/store/jkw2z9ha80zz26lv4a0jghy1y70prqnn-aos-bazel-concurrent-cache-proof",
+    "cross_derivation": "/nix/store/zkg6y3rw2k7x11pvvqyr18xcp7hymjyz-aos-bazel-cross-derivation-cache-proof",
+    "fixture": "/nix/store/a7bspc1as867xzkv56mgilqhfpcxdx91-aos-bazel-fixtures-1",
+    "invalidation": "/nix/store/z67ipzrg1vy8zs1aixgpn96snwwhj3xy-aos-bazel-cache-invalidation-matrix"
+  },
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "2ce6b82e65c404b84a74f32a9d71a45498f57839ac25b86daf2990d38220f2c6",
+    "tests/build/bazel.nix": "5cb96bb656ea8c771109279229a2e56d51ae85df80d6eebdd070e804f0197223",
+    "tools/bazel/launcher.py": "065e465ca968d2fe9eb5ea92261867c5f7256769eb1def7058bb5aee8dc615be",
+    "tools/bazel/tests/fixture/generate.py": "b82da6d123225c4049dfc5b7891ca637c16ea6c828119e7ad471d29fb26740eb",
+    "tools/bazel/tests/test_launcher.py": "433d1162645afd65b23521398f4a33825b220ba176cc16927d5625d5644ac35b"
+  },
+  "observations": [
+    "Both rules_rust bootstrap and doctest scripts use the source-built AOS Bash interpreter.",
+    "Every Bazel action blocks /bin/sh; an uncached generator must fail to execute that path.",
+    "The outer Nix sandbox can expose a compatibility /bin/sh; it is not used as the action interpreter.",
+    "Fresh concurrent writers and all nine existing invalidation cases pass with this action policy."
+  ],
+  "overlap_seconds": 8.676006668,
+  "platform": "x86_64-linux",
+  "policy_tests": 53,
+  "schema_version": 1,
+  "scope": "AOS shell bootstrap and action sandbox policy with local disk cache reuse"
+}

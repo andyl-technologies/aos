@@ -65,6 +65,7 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("--disk_cache=", arguments)
         self.assertIn("--nocache_test_results", arguments)
         self.assertIn("--sandbox_default_allow_network=false", arguments)
+        self.assertIn("--sandbox_block_path=/bin/sh", arguments)
         self.assertIn("--override_repository=aos_tools=/declared/toolchains", arguments)
 
     def test_local_cache_policy_precedes_program_arguments(self):
@@ -143,7 +144,8 @@ class LauncherTests(unittest.TestCase):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",
                        "--genrule_strategy=standalone", "--bes_backend=grpc://example.invalid",
-                       "--flagfile=/unreviewed/flags", "--flag_alias=custom=registry"]:
+                       "--flagfile=/unreviewed/flags", "--flag_alias=custom=registry",
+                       "--sandbox_block_path="]:
             with self.subTest(option=option):
                 result = self.invoke(["build", "//:example", option])
                 self.assertNotEqual(result.returncode, 0)

@@ -46,6 +46,12 @@ lock covering setup and execution per output base. Only the disk action cache
 is shared across independent builds. Release mode uses a temporary output base
 and requests no shared cache.
 
+The pinned `rules_rust` doctest writer and bootstrap process wrapper use
+AOS-built Bash explicitly. Actions block `/bin/sh`, including when a Nix client
+mounts a compatibility shell. The generator fixture attempts to execute that
+path and requires rejection before emitting its outputs. This keeps a daemon's
+compatibility mount from concealing an undeclared interpreter dependency.
+
 Production consumers retain their Cargo or direct-rustc recipes. These fixtures do not establish
 production feature parity, cross-platform support, or completion of the RFC. The remaining platform/invalidation checks and
 family-specific performance budgets remain required before production cutover.

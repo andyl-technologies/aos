@@ -75,6 +75,16 @@
               if source.count(original) != 1:
                   raise ValueError("rules_rust doctest interpreter patch no longer applies")
               writer.write_text(source.replace(original, "#!" + sys.argv[1]))
+
+              # The bootstrap wrapper can run before rules_rust has compiled
+              # its native process wrapper. Its fallback must also use an AOS
+              # shell when the Nix client provides no compatibility /bin/sh.
+              bootstrap = Path("util/process_wrapper/private/process_wrapper.sh")
+              source = bootstrap.read_text()
+              original = "#!/bin/sh\n"
+              if not source.startswith(original) or source.count(original) != 1:
+                  raise ValueError("rules_rust bootstrap interpreter patch no longer applies")
+              bootstrap.write_text("#!" + sys.argv[1] + "\n" + source[len(original):])
               PY
             ''}
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/source_only.py} "$out"

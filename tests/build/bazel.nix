@@ -58,6 +58,26 @@ in
       cp ${precise}/inventory.json "$out/inventory.json"
     '';
     toolchains = pkgs.aosBazelToolchains;
+    shell-bootstrap = pkgs.runCommand "aos-bazel-bootstrap-shell-policy" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 - ${pkgs.aosBazelModules.rules_rust} "$out" <<'PYTHON'
+      import json
+      from pathlib import Path
+      import sys
+
+      root = Path(sys.argv[1])
+      bootstrap = root / "util/process_wrapper/private/process_wrapper.sh"
+      assert bootstrap.read_text().splitlines()[0] == "#!${pkgs.bash}/bin/bash"
+      writer = root / "rust/private/rustdoc/rustdoc_test_writer.rs"
+      assert "#!${pkgs.bash}/bin/bash" in writer.read_text()
+      assert "#!/usr/bin/env bash" not in writer.read_text()
+      (Path(sys.argv[2]) / "evidence.json").write_text(json.dumps({
+          "compatibility_bin_sh_present": Path("/bin/sh").exists(),
+          "bootstrap_interpreter": bootstrap.read_text().splitlines()[0],
+      }, indent=2, sort_keys=True) + "\n")
+      PYTHON
+      printf 'PASS\n' > "$out/result"
+    '';
     fixtures = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-fixtures";
       inherit workspace;
@@ -244,7 +264,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
           ];

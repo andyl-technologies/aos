@@ -107,7 +107,8 @@ def main():
                  "--crosstool_top", "--host_crosstool_top", "--workspace_status_command",
                  "--bes_", "--genrule_strategy", "--test_strategy",
                  "--flagfile", "--flag_alias", "--default_override",
-                 "--dynamic_local_strategy", "--dynamic_remote_strategy", "--sandbox_add_mount_pair")
+                 "--dynamic_local_strategy", "--dynamic_remote_strategy", "--sandbox_add_mount_pair",
+                 "--sandbox_block_path")
     bazel_arguments = arguments[:arguments.index("--")] if "--" in arguments else arguments
     if any(argument.startswith(forbidden) for argument in bazel_arguments):
         parser.error("toolchain/environment overrides and remote services are not supported")
@@ -171,6 +172,7 @@ def main():
             policy.append(f"--platforms={config['target_platform']}")
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
+            "--sandbox_block_path=/bin/sh",
             "--@rules_rust//rust/settings:clippy.toml=//tools/bazel/rules:clippy.toml",
             "--@rules_rust//rust/settings:rustfmt.toml=//tools/bazel/rules:rustfmt.toml",
             # Nix already isolates the network. Reusing that namespace also
