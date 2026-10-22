@@ -1,4 +1,4 @@
-##! Matching libc, loader and headers for the experimental bounded-thread provider.
+##! Matching libc, loader and headers for the experimental bounded allocation providers.
 {
   stdenv,
   bison,
@@ -25,6 +25,11 @@
     name = "glibc-crucible-2.39";
     patches = [./glibc-patches/bounded-pthread-2.39.patch];
 
+    # This path is an exported versioned array: embedding a store prefix changes
+    # its ABI size. Keep the canonical runtime path and stage the alias separately.
+    extraConfigureFlags = ["--localedir=/usr/share/locale"];
+    extraInstallFlags = [''inst_localedir="$out/share/locale"''];
+
     # Bound each compiler/test process without borrowing memory from tmpfs.
     preConfigure = ''
       ulimit -v 2097152
@@ -35,7 +40,15 @@
       qualification="$out/share/glibc-crucible/qualification"
       mkdir -p "$qualification"
 
+      # This configured GCC carries its real unwinder in libgcc.a. Derive the
+      # archive from that compiler; no fabricated libgcc_eh alias is needed.
+      bounded_static_archive="$(${stdenv.gcc}/bin/gcc -print-libgcc-file-name)"
+      test -f "$bounded_static_archive"
+      printf '%s\n' "$bounded_static_archive" > "$qualification/static-archive.path"
+      sha256sum "$bounded_static_archive" > "$qualification/static-archive.sha256"
+
       for bounded_case in \
+        malloc/tst-malloc-bounded \
         nptl/tst-pthread-bounded \
         nptl/tst-basic1 nptl/tst-join1 nptl/tst-join2 \
         nptl/tst-key1 nptl/tst-key3 nptl/tst-tls3 nptl/tst-attr3 \
@@ -45,7 +58,8 @@
         make -j1 SHELL="$CONFIG_SHELL" \
           AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true \
           MAKEINFO="${texinfo}/bin/makeinfo" \
-          sysdep-library-path="${gcc-libs}/lib" test t="$bounded_case"
+          sysdep-library-path="${gcc-libs}/lib" \
+          static-gnulib-tests="$bounded_static_archive" test t="$bounded_case"
 
         # glibc's single-test target can return zero for a failing test.
         # Require the actual runner's original exit status and PASS result.
@@ -63,6 +77,15 @@
         cp "$bounded_case.test-result" "$qualification/$bounded_name.test-result"
         cp "$bounded_case.out" "$qualification/$bounded_name.out"
       done
+
+      # Retain the actual complete ABI outcome. The separate qualification
+      # derivation fails on any negative status; a component build is no waiver.
+      bounded_abi_status=0
+      make -j1 SHELL="$CONFIG_SHELL" \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true \
+        MAKEINFO="${texinfo}/bin/makeinfo" check-abi \
+        > "$qualification/check-abi.log" 2>&1 || bounded_abi_status=$?
+      printf '%s\n' "$bounded_abi_status" > "$qualification/check-abi.status"
     '';
   };
 in
@@ -90,9 +113,11 @@ in
       runtime.passthru
       // {
         boundedPthreadVersion = 1;
+        boundedApplicationVersion = 1;
+        boundedProcessVersion = 1;
         # Private TCB changes require this runtime's matching loader and headers.
         requiresMatchingLoader = true;
-        sourceCommit = "dae19eda3e0ca54dc8198ef83e8ba1a6c187441e";
+        sourceCommit = "fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2";
         evidenceSources =
           runtime.passthru.evidenceSources
           ++ [
@@ -102,6 +127,6 @@ in
     meta =
       runtime.meta
       // {
-        description = "GNU C Library with experimental caller-backed pthread storage";
+        description = "GNU C Library with experimental caller-backed pthread and application storage";
       };
   }

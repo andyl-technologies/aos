@@ -1,35 +1,57 @@
-# Bounded-thread libc patch licenses
+# Bounded-provider libc patch licenses
 
-`bounded-pthread-2.39.patch` applies the signed upstream-source commits
-`ce6644ba7f40ac9436a9cc0bb2c30b69bf8f977a` and
-`dae19eda3e0ca54dc8198ef83e8ba1a6c187441e` to glibc 2.39,
-base `128392568abf34075115815f007376f50489fdcf`. The resulting Git tree is
-`54b4ee8cfae3fd4241985304b0edc70e0150e992`. Both commits carry the
-author's DCO sign-off. The complete upstream source and this exact patch are
-retained as package source evidence. Upstream `COPYING`, `COPYING.LIB`,
-`LICENSES` and existing per-file notices remain in that source.
+`bounded-pthread-2.39.patch` is the complete glibc 2.39 difference from base
+`128392568abf34075115815f007376f50489fdcf` to signed source
+`fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`, tree
+`a2876d353f8b886f016ddbf93a1e515da1959c87`. Applying the canonical patch
+with the index produces that exact tree. The source range contains these
+signed, DCO-certified commits, in order:
 
-The following ledger covers every changed or added upstream file. All carry
-LGPL-2.1-or-later terms, either their preserved explicit file notice or the
-new file's explicit SPDX identifier. It does not change the licenses of
-other glibc files or transfer libc implementation into the host protocol.
+- `ce6644ba7f40ac9436a9cc0bb2c30b69bf8f977a`
+- `dae19eda3e0ca54dc8198ef83e8ba1a6c187441e`
+- `02b2c0402b0d7d79478b09718cc6fb0f77da54f7`
+- `eed10dad7a5f2ebf9968ecf993ab7d30880ed88b`
+- `908402f575492f462e74a39e46384ab12aa023bb`
+- `39425b83aec13492400eccc0ea96d920f236099c`
+- `fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`
 
-| Upstream path | Change | License |
+The complete upstream source and exact patch remain package source evidence.
+Upstream `COPYING`, `COPYING.LIB`, `LICENSES` and existing per-file notices
+remain in that source. This ledger covers all 46 modified or added paths.
+Internal forwarding headers and build/ABI data retain GNU C Library scope;
+files with explicit notices retain those notices. The unmarked RPC source
+retains the upstream repository notices; no new per-file license is invented.
+Libc implementation remains outside the host protocol.
+
+| Upstream path | Change | License or retained scope |
 | --- | --- | --- |
 | `dlfcn/dlerror.c` | Modified | LGPL-2.1-or-later |
 | `dlfcn/libc_dlerror_result.c` | Modified | LGPL-2.1-or-later |
 | `elf/dl-libc.c` | Modified | LGPL-2.1-or-later |
 | `elf/dl-tls.c` | Modified | LGPL-2.1-or-later |
-| `include/pthread-bounded-internal.h` | Added | LGPL-2.1-or-later |
+| `include/malloc-bounded-internal.h` | Added | LGPL-2.1-or-later |
+| `include/malloc-bounded-process.h` | Added | LGPL-2.1-or-later |
+| `include/malloc-bounded.h` | Added | LGPL-2.1-or-later |
+| `include/pthread-bounded-internal.h` | Added | GNU C Library; COPYING.LIB and retained notices |
 | `include/pthread-bounded.h` | Added | LGPL-2.1-or-later |
+| `malloc/Makefile` | Modified | LGPL-2.1-or-later |
+| `malloc/README.bounded-application` | Added | LGPL-2.1-or-later |
+| `malloc/Versions` | Modified | GNU C Library; COPYING.LIB and retained notices |
 | `malloc/arena.c` | Modified | LGPL-2.1-or-later |
+| `malloc/malloc-bounded-internal.h` | Added | LGPL-2.1-or-later |
+| `malloc/malloc-bounded-process.h` | Added | LGPL-2.1-or-later |
+| `malloc/malloc-bounded.c` | Added | LGPL-2.1-or-later |
+| `malloc/malloc-bounded.h` | Added | LGPL-2.1-or-later |
 | `malloc/malloc.c` | Modified | LGPL-2.1-or-later |
+| `malloc/tst-malloc-bounded-glib.c` | Added | LGPL-2.1-or-later |
+| `malloc/tst-malloc-bounded.c` | Added | LGPL-2.1-or-later |
 | `nptl/Makefile` | Modified | LGPL-2.1-or-later |
 | `nptl/README.bounded-pthread` | Added | LGPL-2.1-or-later |
-| `nptl/Versions` | Modified | LGPL-2.1-or-later |
+| `nptl/Versions` | Modified | GNU C Library; COPYING.LIB and retained notices |
 | `nptl/allocatestack.c` | Modified | LGPL-2.1-or-later |
 | `nptl/descr.h` | Modified | LGPL-2.1-or-later |
 | `nptl/nptl_deallocate_tsd.c` | Modified | LGPL-2.1-or-later |
+| `nptl/pthread-bounded-create.c` | Added | LGPL-2.1-or-later |
 | `nptl/pthread-bounded-internal.h` | Added | LGPL-2.1-or-later |
 | `nptl/pthread-bounded.c` | Added | LGPL-2.1-or-later |
 | `nptl/pthread-bounded.h` | Added | LGPL-2.1-or-later |
@@ -46,8 +68,8 @@ other glibc files or transfer libc implementation into the host protocol.
 | `stdlib/cxa_thread_atexit_impl.c` | Modified | LGPL-2.1-or-later |
 | `string/strerror_l.c` | Modified | LGPL-2.1-or-later |
 | `string/strsignal.c` | Modified | LGPL-2.1-or-later |
-| `sunrpc/rpc_thread.c` | Modified | LGPL-2.1-or-later |
+| `sunrpc/rpc_thread.c` | Modified | Retained upstream COPYING, COPYING.LIB and LICENSES |
 | `sysdeps/unix/sysv/linux/tls-internal.c` | Modified | LGPL-2.1-or-later |
-| `sysdeps/unix/sysv/linux/x86_64/64/libc.abilist` | Modified | LGPL-2.1-or-later |
+| `sysdeps/unix/sysv/linux/x86_64/64/libc.abilist` | Modified | GNU C Library; COPYING.LIB and retained notices |
 
-Patch SHA-256: `c6874ac723b6c41d4b708a203c578db3449e323c2c9b42be14527a6bef3b3301`.
+Patch SHA-256: `1a3d7eff85e2d57be5f34864593cc3732530760c298e282b820155e38a86d754`.

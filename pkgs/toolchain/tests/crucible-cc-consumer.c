@@ -3,11 +3,13 @@
 #include <assert.h>
 #include <errno.h>
 #include <pthread-bounded.h>
+#include <malloc-bounded-process.h>
 #include <sched.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <time.h>
+#include <unistd.h>
 
 _Static_assert(sizeof(struct pthread_bounded_config) == 136, "config ABI");
 _Static_assert(sizeof(struct pthread_bounded_receipt) == 368, "receipt ABI");
@@ -83,8 +85,42 @@ static void check_born_thread(pthread_bounded_t *control, uint64_t incarnation)
     assert(pthread_bounded_query_np(control, incarnation, &receipt) == ESRCH);
 }
 
+static void check_process_inventory(void)
+{
+    malloc_bounded_process_t *owner = malloc_bounded_process_np();
+    struct malloc_bounded_process_info info;
+    size_t total = 0;
+    unsigned int kinds = 0;
+
+    assert(owner != NULL);
+    assert(malloc_bounded_process_current_np(owner, getpid(), &info) == 0);
+    assert(info.version == MALLOC_BOUNDED_PROCESS_VERSION);
+    assert(info.size == sizeof(info) && info.owner == owner);
+    assert(info.process == getpid() && info.objects == MALLOC_BOUNDED_PROCESS_OBJECTS);
+
+    for (size_t index = 0; index < info.objects; ++index) {
+        const struct malloc_bounded_process_object *object = &info.object[index];
+        assert(object->kind >= MALLOC_BOUNDED_PROCESS_APPLICATION);
+        assert(object->kind <= MALLOC_BOUNDED_PROCESS_IDENTITY);
+        assert((kinds & (1u << object->kind)) == 0);
+        kinds |= 1u << object->kind;
+        assert(object->reserved == 0 && object->base != 0 && object->bytes != 0);
+        assert(object->alignment != 0 &&
+               (object->alignment & (object->alignment - 1)) == 0);
+        assert(object->base % object->alignment == 0);
+        assert(object->bytes <= UINTPTR_MAX - object->base);
+        assert(object->bytes <= SIZE_MAX - total);
+        total += object->bytes;
+    }
+
+    assert(kinds == 14 && total == info.total_bytes);
+    assert(malloc_bounded_process_current_np(owner, 0, &info) == ESTALE);
+}
+
 int main(void)
 {
+    check_process_inventory();
+
     struct pthread_bounded_config config = {
         .version = PTHREAD_BOUNDED_VERSION,
         .size = sizeof(config),

@@ -390,6 +390,16 @@ Clippy passes. The ABI gate requires
 both exact test groups before executing them. This is transport syntax and
 correspondence, not authenticated installation or native entry authority.
 
+The separate Setup-nine encoder/decoder now preserves the exact 125-byte
+frame, incarnation-bearing footer, and optional workspace position. Its Unix
+sender accepts exactly eight or nine borrowed descriptors and refuses malformed
+or mixed editions before sending. Four framing controls and two real SCM_RIGHTS
+controls pass; all 227 protocol tests and strict protocol Clippy pass. The ABI
+gate requires those exact groups independently of the existing codec controls.
+These byte and physical-alias checks do not issue a delegation or activate
+Setup nine; the genuine retained-parent installer and complete runtime profile
+remain required.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree
@@ -412,17 +422,6 @@ quarantined virtual addresses or permit child reuse. All 179 sealed payloads
 match independent review proof
 `a73f9728cd6028dcfdc9c1cabd75fa155f16f2197b147ff836a3e12c1fbb5d33`.
 
-The separate Setup-nine encoder/decoder now preserves the exact 125-byte
-frame, incarnation-bearing footer, and optional workspace position. Its Unix
-sender accepts exactly eight or nine borrowed descriptors and refuses malformed
-or mixed editions before sending. Four framing controls and two real SCM_RIGHTS
-controls pass; all 227 protocol tests and strict protocol Clippy pass. The ABI
-gate requires those exact groups independently of the existing codec controls.
-These byte and physical-alias checks do not issue a delegation or activate
-Setup nine; the genuine retained-parent installer and complete runtime profile
-remain required.
-
-
 The additive complete-process API in signed source
 `fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`, tree
 `a2876d353f8b886f016ddbf93a1e515da1959c87`, passes a fresh full build,
@@ -437,6 +436,25 @@ payloads match independent review. The ABI check remains failed: nineteen
 passes and the private locale-prefix size change from 18 to 62 bytes. Whole
 ELF/page/TLS ownership, one same-parent union payment and complete runtime
 profile admission remain required; the object inventory supplies none of them.
+
+The package now imports the complete verified seven-commit source range through
+that complete-process revision, with all 46 changed paths in its license ledger.
+It derives the real static test unwinder from the configured compiler, runs the
+application control as well as the existing pthread and ordinary controls, and
+retains the original complete ABI log and status. A separate
+`checks.crucible.phase7.glibcBoundedAbi` refuses any nonzero ABI result.
+The installed compiler consumer also queries the canonical complete-process
+inventory through the public header and matching runtime.
+
+The earlier prefix-sensitive ABI failure is an exported
+`_nl_default_dirname@@GLIBC_2.2.5` array, not a private-symbol exception. The
+package configures the canonical `/usr/share/locale` runtime message path and
+stages `locale.alias` under its output using installation-only `inst_localedir`;
+it preserves all normal locale/charmap source installation. This leaves the
+compiled runtime path unchanged during installation. Deployment must provide
+that canonical message path or explicit domain bindings. The new hermetic
+package build and complete ABI check are pending; preceding component results
+do not qualify this package configuration.
 
 #### Installed bounded-pthread QEMU consumer
 

@@ -1,62 +1,5 @@
-From ce6644ba7f40ac9436a9cc0bb2c30b69bf8f977a Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 22 Oct 2026 07:10:12 -0700
-Subject: [PATCH 1/2] Add bounded supplied-stack pthread storage and terminal
- return
-
-Add an explicit strict interface backed by a caller-retained physical arena. Route thread DTV, dynamic TLS, extra TSD, destructor nodes and priority bookkeeping through enforced finite requests, retaining canonical birth and physical-return facts.
-
-Use nonwaiting registry and terminal lock attempts, preserve joined threads with outstanding cleanup debt, reject retained-span aliases and stale incarnations, and refuse unsupported heap and per-thread state producers before their ordinary paths.
-
-Build the complete library with one compiler lane and a two-GiB per-process address-space ceiling. The real bounded controls and eleven targeted ordinary regressions pass. Nineteen ABI checks pass; libc check-abi retains the documented private-prefix LOCALEDIR data-size mismatch. Creation, TLS lookup, user callbacks and arbitrary caller profiles remain explicitly unqualified for nonwaiting execution.
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- dlfcn/dlerror.c                               |  16 +
- dlfcn/libc_dlerror_result.c                   |  11 +
- elf/dl-libc.c                                 |  17 +
- elf/dl-tls.c                                  |  81 +-
- include/pthread-bounded-internal.h            |   1 +
- include/pthread-bounded.h                     |   1 +
- malloc/arena.c                                |  16 +
- malloc/malloc.c                               |  80 ++
- nptl/Makefile                                 |   9 +
- nptl/README.bounded-pthread                   | 352 +++++++
- nptl/Versions                                 |   6 +
- nptl/allocatestack.c                          |  32 +-
- nptl/descr.h                                  |   3 +
- nptl/nptl_deallocate_tsd.c                    |   6 +-
- nptl/pthread-bounded-internal.h               | 262 ++++++
- nptl/pthread-bounded.c                        | 560 ++++++++++++
- nptl/pthread-bounded.h                        | 149 +++
- nptl/pthread_create.c                         |  54 +-
- nptl/pthread_detach.c                         |   3 +
- nptl/pthread_join_common.c                    |   3 +
- nptl/pthread_setspecific.c                    |  11 +-
- nptl/tpp.c                                    |   8 +-
- nptl/tst-pthread-bounded-mod.c                |  26 +
- nptl/tst-pthread-bounded.c                    | 863 ++++++++++++++++++
- resolv/res-close.c                            |  16 +
- resolv/res_init.c                             |   9 +
- resolv/resolv_context.c                       |  23 +
- stdlib/cxa_thread_atexit_impl.c               |  21 +-
- string/strerror_l.c                           |   9 +
- string/strsignal.c                            |   9 +
- sunrpc/rpc_thread.c                           |  20 +
- sysdeps/unix/sysv/linux/tls-internal.c        |  11 +
- .../unix/sysv/linux/x86_64/64/libc.abilist    |   4 +
- 33 files changed, 2672 insertions(+), 20 deletions(-)
- create mode 100644 include/pthread-bounded-internal.h
- create mode 100644 include/pthread-bounded.h
- create mode 100644 nptl/README.bounded-pthread
- create mode 100644 nptl/pthread-bounded-internal.h
- create mode 100644 nptl/pthread-bounded.c
- create mode 100644 nptl/pthread-bounded.h
- create mode 100644 nptl/tst-pthread-bounded-mod.c
- create mode 100644 nptl/tst-pthread-bounded.c
-
 diff --git a/dlfcn/dlerror.c b/dlfcn/dlerror.c
-index 26965af..565055b 100644
+index 26965af8421115377047b475e49d6f7215684ba1..565055babbcbd4941975e1fa9e45c74877a3090c 100644
 --- a/dlfcn/dlerror.c
 +++ b/dlfcn/dlerror.c
 @@ -27,10 +27,19 @@
@@ -94,7 +37,7 @@ index 26965af..565055b 100644
    if (result != NULL)
      {
 diff --git a/dlfcn/libc_dlerror_result.c b/dlfcn/libc_dlerror_result.c
-index 8351fea..fe60f53 100644
+index 8351feadf0aa692e1243bdb90c41f5fde4a07260..fe60f5382163772543341147d21bccd5800120b1 100644
 --- a/dlfcn/libc_dlerror_result.c
 +++ b/dlfcn/libc_dlerror_result.c
 @@ -17,6 +17,8 @@
@@ -123,7 +66,7 @@ index 8351fea..fe60f53 100644
      {
        if (__libc_dlerror_result != dl_action_result_malloc_failed)
 diff --git a/elf/dl-libc.c b/elf/dl-libc.c
-index 3c048cc..bd6351d 100644
+index 3c048cc6c1791a60ae4610269bf0b85d062bea68..bd6351da3cfc5277dca2ff5da1b79145ec5003cb 100644
 --- a/elf/dl-libc.c
 +++ b/elf/dl-libc.c
 @@ -20,6 +20,7 @@
@@ -165,7 +108,7 @@ index 3c048cc..bd6351d 100644
    args.name = name;
    args.mode = mode;
 diff --git a/elf/dl-tls.c b/elf/dl-tls.c
-index 7b3dd9a..b6863b8 100644
+index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea5552f9a1 100644
 --- a/elf/dl-tls.c
 +++ b/elf/dl-tls.c
 @@ -28,6 +28,7 @@
@@ -229,7 +172,7 @@ index 7b3dd9a..b6863b8 100644
    if (dtv != NULL)
      {
        /* This is the initial length of the dtv.  */
-@@ -476,14 +514,30 @@ extern dtv_t _dl_static_dtv[];
+@@ -476,14 +514,33 @@ extern dtv_t _dl_static_dtv[];
  #endif
  
  static dtv_t *
@@ -237,6 +180,9 @@ index 7b3dd9a..b6863b8 100644
 +_dl_resize_dtv (dtv_t *dtv, size_t max_modid,
 +                struct __pthread_bounded *bounded)
  {
++  if (bounded == NULL && THREAD_SELF->application != NULL)
++    _dl_fatal_printf ("application backing cannot fund DTV growth: ABORT\n");
++
    /* Resize the dtv.  */
    dtv_t *newp;
    size_t newsize = max_modid + DTV_SURPLUS;
@@ -262,7 +208,7 @@ index 7b3dd9a..b6863b8 100644
      {
        /* This is the initial dtv that was either statically allocated in
  	 __libc_setup_tls or allocated during rtld startup using the
-@@ -537,7 +591,8 @@ _dl_allocate_tls_init (void *result, bool init_tls)
+@@ -537,7 +594,8 @@ _dl_allocate_tls_init (void *result, bool init_tls)
    if (dtv[-1].counter < GL(dl_tls_max_dtv_idx))
      {
        /* Resize the dtv.  */
@@ -272,7 +218,7 @@ index 7b3dd9a..b6863b8 100644
  
        /* Install this new dtv in the thread data structures.  */
        INSTALL_DTV (result, &dtv[-1]);
-@@ -635,14 +690,15 @@ void
+@@ -635,14 +693,15 @@ void
  _dl_deallocate_tls (void *tcb, bool dealloc_tcb)
  {
    dtv_t *dtv = GET_DTV (tcb);
@@ -290,7 +236,7 @@ index 7b3dd9a..b6863b8 100644
  
    if (dealloc_tcb)
      free (*tcb_to_pointer_to_free_location (tcb));
-@@ -673,6 +729,14 @@ rtld_hidden_def (_dl_deallocate_tls)
+@@ -673,6 +732,17 @@ rtld_hidden_def (_dl_deallocate_tls)
  static struct dtv_pointer
  allocate_dtv_entry (size_t alignment, size_t size)
  {
@@ -302,10 +248,13 @@ index 7b3dd9a..b6863b8 100644
 +      return (struct dtv_pointer) { pointer, pointer };
 +    }
 +
++  if (THREAD_SELF->application != NULL)
++    _dl_fatal_printf ("application backing cannot fund dynamic TLS: ABORT\n");
++
    if (powerof2 (alignment) && alignment <= _Alignof (max_align_t))
      {
        /* The alignment is supported by malloc.  */
-@@ -806,7 +870,7 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+@@ -806,7 +876,7 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
  		    continue;
  
  		  /* Resizing the dtv aborts on failure: bug 16134.  */
@@ -314,7 +263,7 @@ index 7b3dd9a..b6863b8 100644
  
  		  assert (modid <= dtv[-1].counter);
  
-@@ -819,7 +883,8 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+@@ -819,7 +889,8 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
  		 dtv entry free it.  Note: this is not AS-safe.  */
  	      /* XXX Ideally we will at some point create a memory
  		 pool.  */
@@ -324,22 +273,529 @@ index 7b3dd9a..b6863b8 100644
  	      dtv[modid].pointer.val = TLS_DTV_UNALLOCATED;
  	      dtv[modid].pointer.to_free = NULL;
  
+diff --git a/include/malloc-bounded-internal.h b/include/malloc-bounded-internal.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3db9fc67f9e794641132af5cf0651c17e398cc48
+--- /dev/null
++++ b/include/malloc-bounded-internal.h
+@@ -0,0 +1,18 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <malloc/malloc-bounded-internal.h>
+diff --git a/include/malloc-bounded-process.h b/include/malloc-bounded-process.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5947e3b657a66d9227b7b947fb1be0ea94e874d8
+--- /dev/null
++++ b/include/malloc-bounded-process.h
+@@ -0,0 +1,18 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <malloc/malloc-bounded-process.h>
+diff --git a/include/malloc-bounded.h b/include/malloc-bounded.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..797d82a33c0d284a05742fb1e9ad66ff4f37143d
+--- /dev/null
++++ b/include/malloc-bounded.h
+@@ -0,0 +1,18 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <malloc/malloc-bounded.h>
 diff --git a/include/pthread-bounded-internal.h b/include/pthread-bounded-internal.h
 new file mode 100644
-index 0000000..b724c27
+index 0000000000000000000000000000000000000000..b724c27bdc9848ce7e4238e4daa88513ee7abf3b
 --- /dev/null
 +++ b/include/pthread-bounded-internal.h
 @@ -0,0 +1 @@
 +#include <nptl/pthread-bounded-internal.h>
 diff --git a/include/pthread-bounded.h b/include/pthread-bounded.h
 new file mode 100644
-index 0000000..aee95a1
+index 0000000000000000000000000000000000000000..aee95a1b787f65b259134608e9fd5e979c338de5
 --- /dev/null
 +++ b/include/pthread-bounded.h
 @@ -0,0 +1 @@
 +#include <nptl/pthread-bounded.h>
+diff --git a/malloc/Makefile b/malloc/Makefile
+index c83ade5f10063113da2a280ffcdaf75b189c390a..3c56cbbcd40fc56def02d5f4e68ec2472c88badc 100644
+--- a/malloc/Makefile
++++ b/malloc/Makefile
+@@ -23,7 +23,8 @@ subdir	:= malloc
+ include ../Makeconfig
+ 
+ dist-headers := malloc.h
+-headers := $(dist-headers) obstack.h mcheck.h
++headers := $(dist-headers) obstack.h mcheck.h \
++           malloc-bounded.h malloc-bounded-process.h
+ tests := mallocbug tst-malloc tst-valloc tst-calloc tst-obstack \
+ 	 tst-malloc-check tst-mallocfork tst-trim1 \
+ 	 tst-malloc-usable tst-realloc tst-reallocarray tst-posix_memalign \
+@@ -47,7 +48,7 @@ tests := mallocbug tst-malloc tst-valloc tst-calloc tst-obstack \
+ 	 tst-memalign-3 \
+ 	 tst-aligned-alloc
+ 
+-tests-static := \
++tests-static := tst-malloc-bounded \
+ 	 tst-interpose-static-nothread \
+ 	 tst-interpose-static-thread \
+ 	 tst-aligned-alloc-static
+@@ -57,7 +58,7 @@ ifeq ($(have-GLIBC_2.23)$(build-shared),yesyes)
+ tests += tst-mallocstate tst-compathooks-off tst-compathooks-on
+ endif
+ 
+-tests-internal := tst-scratch_buffer
++tests-internal := tst-scratch_buffer tst-malloc-bounded
+ 
+ # The dynarray framework is only available inside glibc.
+ tests-internal += \
+@@ -134,7 +135,7 @@ tests-exclude-mcheck = tst-mallocstate \
+ tests-mcheck = $(filter-out $(tests-exclude-mcheck) $(tests-static), $(tests))
+ endif
+ 
+-routines = malloc mcheck mtrace obstack reallocarray \
++routines = malloc malloc-bounded mcheck mtrace obstack reallocarray \
+   scratch_buffer_grow scratch_buffer_grow_preserve \
+   scratch_buffer_set_array_size \
+   dynarray_at_failure \
+@@ -370,3 +371,6 @@ tst-mallocstate-malloc-check-ENV = LD_PRELOAD=$(objpfx)libc_malloc_debug.so
+ # libc_malloc_debug.so.
+ $(objpfx)tst-mallocstate: $(objpfx)libc_malloc_debug.so
+ $(objpfx)tst-mallocstate-malloc-check: $(objpfx)libc_malloc_debug.so
++
++# Keep the actual libc calls in bounded storage controls observable.
++CFLAGS-tst-malloc-bounded.c += -fno-builtin
+diff --git a/malloc/README.bounded-application b/malloc/README.bounded-application
+new file mode 100644
+index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f8100f0a63d5
+--- /dev/null
++++ b/malloc/README.bounded-application
+@@ -0,0 +1,354 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++Caller-backed application allocation children: source-review stage
++=================================================================
++
++This revision is UNCOMPILED and its controls are UNEXECUTED.  It provides
++an additive storage component, not an accepting QEMU/Source/RR/application
++profile.  Previous dae19 pthread results, installed artifacts and ABI results
++qualify that previous revision only.  They do not qualify this new libc/loader
++pair, its changed thread descriptor, its global footprint or these symbols.
++No caller may infer a containing parent or semantic operation permission from
++libc initialization, a pointer, thread id, copied receipt or allocation count.
++
++The native caller supplies separately admitted, exclusively retained actual
++application backing under its real process parent.  The application child is
++distinct from pthread metadata, supplied-stack storage and their custody.
++libc cannot authenticate a QEMU/Source parent.  The caller retains its real
++parent binding and all original debit/backing/post histories before effects.
++
++Physical layout and finite bounds
++--------------------------------
++
++MALLOC_BOUNDED_VERSION 1 adds malloc-bounded.h and twelve GLIBC_2.39 symbols:
++layout, init, query, allocate, allocation, reallocate, release, attach,
++attachment, detach, bind and tryretire, all with suffix _np.  Existing ordinary
++unattached entry points retain their behavior.  Only Linux/x86-64 LP64 init
++is supported; only that ABI list is extended.  No other architecture is qualified.
++
++The actual arena contains, in order:
++  sizeof (struct __malloc_bounded)
++  requests * sizeof (struct allocation)
++  attachments * sizeof (struct attachment)
++  monotonically allocated payload and actual alignment padding.
++
++Initialization checks every addition/multiplication and reserves
++requests * (max (request_bytes, 1) + alignment - 1) payload/padding bytes,
++plus all actual records/control.  Alignment is a positive power of two at
++least max_align_t; request_bytes cannot exceed PTRDIFF_MAX.  Counts are
++CUMULATIVE, not just simultaneous live counts.  Realloc really allocates a
++new record/payload before copying and releasing the original; refusal leaves
++the original live and unchanged.  No physical record or block is reused.
++Zero-size allocation uses one actual byte and one record.  There is no heap,
++mmap, loader or unpriced bookkeeping fallback inside the allocator.
++
++A separate process-lifetime application_state contains 128 immutable slot
++identities/ranges plus serial, refusal/uncertainty counters and explicit
++64-byte alignment/padding.  Even a returned arena consumes its slot forever.
++The current LP64 field layout yields the following SOURCE-derived sizes:
++
++  configuration                  40 bytes, alignment 8
++  application receipt           168 bytes, alignment 8
++  application control           216 bytes, alignment 8
++  allocation record              48 bytes, alignment 8
++  attachment record              32 bytes, alignment 8
++  process slot                   48 bytes, alignment 8
++  process object               6208 bytes, alignment 64 (padding included)
++  pthread owner application field 8 bytes
++  pthread descriptor app field    8 bytes before enclosing TLS/TCB padding
++
++These are not compiler/ELF measurements.  malloc_bounded_layout_np reports the
++compiled sizeof/alignment, complete pthread control and pthread descriptor
++sizes.  The previous metadata control was 544 bytes; the source adds one
++pointer (expected 552 before compiler confirmation).  The prior measured
++thread descriptor was 2432 bytes; its new total and resulting static TLS/TCB
++alignment increment must be measured with the actual compiler.  New ELF .bss
++placement/alignment, fixed registry cost, complete TLS geometry and the final
++loaded libc/loader footprint must enter the real Source/QEMU process floor
++before any profile could accept.  No per-role scalar allowance pays these
++process globals, serials, locks or TLS increments implicitly.
++
++Address quarantine is a distinct retained resource
++-----------------------------------------------
++
++Every admitted application extent is permanently tombstoned in this process.
++Init rejects overlap with every old application extent, including returned
++ones.  registry_used/capacity/slot and address_quarantined remain factual.
++registration_removed means canonical live membership was removed; it does
++NOT rearm the global slot or make the address reusable.  Exhaustion is ENOSPC
++before writes, with no wrap, eviction or alternate registry.
++
++libc_custody_returned relinquishes libc's access/custody only.  It does not unmap,
++free, madvise or perform the containing owner's actual return.  The caller
++must retain the virtual-address reservation through actual process reap.
++It must not unmap/remap, reinitialize, lend the extent to an ordinary allocator,
++or reuse the numeric address for another object in this process.  A containing
++owner that cannot retain this VA/quarantine debt cannot admit this component.
++Physical-page return, VA debt and independent return posts remain separate
++caller facts.  Thus this component does not provide whole-child rearm/reuse.
++A raw free lacks an allocation generation; its exactly-once last-reference
++contract remains required even with process-lifetime quarantine.  Checked calls
++add the expected canonical child incarnation and allocation id.
++
++The raw routing classifier acquires each immutable process slot extent.  Init
++publishes its immutable base and initial active state before the release
++publication of that extent.  Neither base nor extent is replaced or cleared.
++Successful retirement clears active slot.bytes and the canonical owner under
++the gate, retaining the permanent numeric classifier.  A later raw free,
++realloc or malloc_usable_size on that known retired extent refuses without
++reading returned arena metadata or entering ordinary ptmalloc.  Realloc returns
++NULL/ESTALE; usable-size returns zero; void free retains process uncertainty
++and a refusal lower bound.  Retired-range, refusal and uncertain-slot aggregates
++remain queryable through the layout API, which uses process storage only.
++They are not per-child return posts or proof that raw pointers are valid.
++
++Every such post-lifetime raw access remains invalid C use.  Negative routing
++does not authenticate pointer generations, extend a lifetime, rearm a slot,
++return a reservation, or create storage/operation authority.  Checked calls on
++the retired canonical control return ESRCH before control dereference.  The
++containing owner must still close every producer BEFORE custody retirement.
++
++Potential final-lifetime reuse contract, not implemented
++-------------------------------------------------------
++
++The permanent reservation is a restriction of this component, not a claim
++that an ordinary valid C allocation requires indefinite stale-pointer safety.
++A future reusable child could end its lifetime under an exclusive containing
++owner after every actual producer has closed, every callback/finalizer and
++RCU/cache/context last use has completed, every scoped/bound attachment has
++returned, every physical allocation has returned and all independent posts
++are known.  That owner would retain the original backing and canonical child
++through this final cut, authenticate expected child/allocation/attachment
++incarnations while live, and serialize retirement against every participant.
++It would then perform and record its real physical backing/VA/debit return
++before admitting another child, using a fresh nonwrapping incarnation.
++
++After such a genuine final lifetime, using a stale raw pointer is invalid C
++use; raw free cannot prove a pointer generation.  This does not justify
++reusing blocks during an active child, weakening checked active-child ABA
++checks, inferring producer closure from zero live counts, or treating a
++copied receipt as the containing owner's authority.  A real reusable design
++also needs a nonwaiting publication/reclamation protocol for slot/range
++classification readers before replacing process registry entries.  No such
++protocol, exclusive parent proof, final-last-use integration or reusable
++retirement ABI is implemented here.  Current tombstones and VA debt remain
++mandatory and the 128-admission cumulative limit remains unchanged.
++
++Canonical membership and nonwaiting cuts
++--------------------------------------
++
++The shared actual pthread registration gate serializes both registries,
++reciprocal span validation and publication.  Every acquisition is a single
++atomic exchange, never a retry/spin/futex.  Lookup compares the nominated
++control against finite canonical entries before dereference, then authenticates
++its nonwrapping incarnation.  Checked record lookup authenticates the exact
++pointer/id without dereferencing a nominated pointer or invented prefix.
++
++All new checked writable outputs exclude every retained metadata arena/stack,
++all application extents including quarantine, the entire aligned application
++process object, and the metadata registry/serial/shared lock.  Registration
++and supplied-stack reservation enforce reciprocal exclusions before writes.
++Libc cannot enumerate the native caller's foreign control extents: the caller
++must retain and exclude those through its actual parent/child protocol too.
++Ordinary C allocator output pointers retain their ordinary writable-memory
++contract; these routines are not a process memory-isolation boundary.
++
++Range classification while the gate is busy reads only process-lifetime
++atomics.  Slots/ranges are not replaced.  It never reads possibly returned
++arena metadata.  A busy checked operation returns EBUSY before effect.  Void
++raw free cannot communicate a no-effect status: on gate contention it records
++sticky uncertainty/quarantine and retains the live record.  Even a later
++known checked release and equal allocated/released counts cannot erase that
++uncertainty or permit terminal return.  Malformed/duplicate/foreign frees
++retain sticky debt; no foreign free is silently treated as successful return.
++The refusal counter is a saturated monotonic lower bound: one strong CAS,
++with competing increments permitted to coalesce, no retry and no wrap.
++
++Attachments and actual TLS/TSD terminal return
++--------------------------------------------
++
++Scoped attach returns a cumulative attachment nonce; detach requires that exact
++current nonce and child incarnation.  A stale same-child detach cannot close a
++later scope.  Nested attachment, replacement and accidental cross-parent
++replacement refuse.  Ordinary pthread_create does not inherit attachments.
++The native caller may attach a genuinely admitted Main preparation or a typed
++RCU/callback producer; an allocation-owned pointer grants storage return target,
++not callback/operation permission.  Heterogeneous ordinary RCU work stays on its
++ordinary route; callbacks execute outside allocator gates.
++
++bind authenticates both application and READY pthread controls/incarnations
++and saves a canonical application attachment before any thread-creation effect.
++Its nonce and per-attachment query bind the exact actual pthread owner.  The
++child gets this pin before entry, including setup failure/never-entered birth.
++It cannot explicitly detach a thread-bound pin.  The pin remains through exit
++notifiers, __call_tls_dtors, __nptl_deallocate_tsd, __libc_thread_freeres and the
++actual kernel exit.  Only successful genuine pthread_bounded_tryretire_np,
++after known no-birth or actual kernel join plus list/TLS/metadata closure,
++marks the pin returned.  User return, notifier/registry departure, stopped CPU,
++clear-tid alone, copied receipt or child self-report cannot return that pin.
++Uncertain pthread cleanup retains it.  Escaping a scoped attachment without
++detach also retains it; no destructor tries to manufacture missing lifetime.
++
++All five bounded metadata producers still use their original metadata owner:
++DTV, dynamic TLS, second-level TSD, TLS destructor nodes and priority bookkeeping.
++Scoped ordinary Main attachment does not silently fund missing metadata:
++ordinary pthread construction, missing second-level TSD/TPP and new TLS dtor
++nodes refuse ENOTSUP.  Lazy Main DTV growth/dynamic TLS lacks a recoverable ABI
++and takes the loader's truthful fatal path before heap allocation.  It may not
++be priced as application storage.  Ordinary unattached paths stay unchanged.
++Bounded pthread loader/destructor/control allocation remains metadata-local.
++The original strict resolver/RPC/error/ordinary foreign-free refusals remain;
++application storage does not waive those execution-profile restrictions.
++
++History and non-claims
++----------------------
++
++Canonical per-allocation queries preserve actual address, id, size/alignment,
++creator attachment, release attempts and known release; per-attachment queries
++preserve exact pthread owner/incarnation and actual return.  Receipts retain
++first_error separately from live/returned facts, refusal lower bounds and sticky
++invalid/uncertain release debt.  Successful later physical facts do not erase
++negative history.  The caller retains independent post attempted/returned/status
++and consumed facts itself; libc does not fabricate those posts.
++
++Tryretire requires zero actual live allocations and attachments plus no invalid
++or uncertain release debt.  It returns only libc arena custody and retains
++process slot/VA quarantine.  Process/context TCG objects, PageDesc/radix/qht/QTree,
++plugin/random state, finalizers and RCU last use remain the caller's actual
++containing-owner obligations.  Neither kernel join nor a zero allocator live
++count establishes producer closure or global cache return.
++
++Creation, loader lookup, callback execution, destructor code and stop/drain
++progress can wait.  Only allocator/registry cuts and terminal polling are
++nonwaiting; there is no whole-RR execution/exit nonwaiting claim.  Arbitrary
++application lifetime allocations, callback volume, GLib no-fail exhaustion,
++feature-dependent allocator paths and process quiescence are not universally
++bounded by this component.  GLib g_malloc/g_new failure remains fatal by its
++real API, never accepted execution or an excuse to disable supported features.
++
++Concrete controls: source only, not results
++-----------------------------------------
++
++tst-malloc-bounded is an internal STATIC libc test so it can hold the actual
++shared gate.  -fno-builtin preserves real allocation calls.  It exercises:
++  real cumulative exhaustion with no fallback; alignment and calloc overflow;
++  realloc failure preserving old bytes, real move/copy/old release;
++  scoped pin nonce/nesting/stale detach; Main-created storage freed by another
++  ordinary pthread; actual checked gate refusal and later factual return;
++  duplicate/interior/raw-busy release debt, including known releases with
++  equal counters but sticky quarantine; peer-live outputs preserving bytes;
++  canonical pointer refusal, tombstoned-address refusal before PROT_NONE write;
++  invalid raw free/realloc/usable on an actually PROT_NONE retired arena, with
++  no ordinary allocator fallback, queryable process debt and stale-control ESRCH;
++  guarded supplied-stack birth, TLS dtor plus second-level TSD allocation
++  remaining metadata-local while real application objects return; held TSD
++  destructor, actual kernel exit with application pin still retained, then
++  matching provider retirement; known no-birth pin return; and all 128 actual
++  process slots exhausted without clearing old reservations or touching the
++  first refused arena/outputs.
++
++The external tst-malloc-bounded-glib.c uses actual configured public GLib
++headers/DSOs, not copied implementations or allocator shims.  It calls real
++DSO g_malloc/g_malloc0/g_realloc/g_free, growing GArray/GHashTable, seeded GRand
++copy/free, g_strdup_printf and actual __vasprintf_chk with 10000-byte growth.
++Every canonical produced allocation is inspected for real arena custody,
++producer pin and known return before retirement.  It must compile with
++-D_GNU_SOURCE -UNDEBUG -fno-builtin against the newly built public libc header,
++matching complete startup/static support, loader and libc, plus the reviewed
++GLib-2.82.4 development include/glib-2.0 and lib/glib-2.0/include directories.
++The actual DSO path, full ELF binding/dependency closure, input/output hashes
++and raw exit/diagnostic must be retained when executed.  It is deliberately
++not a default glibc build dependency.  The older installed dae19 runtime lacks
++these symbols and cannot qualify this source.
++
++Before execution, independently review/freeze these sources, allocate one
++compiler explicitly, make a private regular source/build copy, retain the
++2-GiB per-process cap and standard source-built dependencies, and preserve all
++first outcomes.  No compiler, new libc installation or runtime control has
++been run for this revision.  Follow-up controls must include bound dynamic
++TLS/DTV growth, born-never-entered setup failure with app binding, actual GLib
++TSD tail, intentional no-fail GLib exhaustion/fatal outcome, signal reentry,
++negative independent caller posts and actual complete loaded-runtime geometry.
++Existing strict and ordinary pthread tests must be rerun; old PASS is not new
++qualification.  Missing producers, resource lanes or last-use closure refuse.
++
++Static archive dependency boundary
++
++The first full build of revision 908402f stopped at the required static
++support/test-run-command link: ordinary malloc pulled the application router,
++then the metadata registry object, then bounded pthread creation and its
++cancellation unwinder.  libgcc's _Unwind_Resume conflicted with the intentional
++static support stubs for programs which do not use cancellation.  This was a
++real link failure, not a memory limit or an accepted test exception.
++
++Bounded creation now occupies a separate archive member.  Registry, allocation,
++attachment and terminal-owner operations retain their actual shared helpers;
++only a creation reference pulls pthread creation and cancellation dependencies.
++Public symbols, metadata/application routing and the static support stubs stay
++unchanged.  Qualification requires a fresh full build including the original
++support/test-run-command link, in addition to the finite controls above.
++
++Canonical complete process inventory
++
++The additive malloc-bounded-process.h interface leaves the original v1 layout
++and process_bytes field unchanged.  That field still measures the application
++registry alone.  malloc_bounded_process_np directly returns this loaded
++provider's actual immutable process owner.  Current authenticates that exact
++singleton address before reading nominated memory, checks the actual getpid
++observation against the caller's expected process, then takes the shared gate
++once and validates its entire output before writing anything.
++
++The fixed inventory contains three complete compiled objects: application
++registry (all permanent classifiers, counters, serial and activation state),
++shared pthread registry (all128 pointers, serial, shared gate and explicit
++container padding), and the immutable process identity/control itself.  There
++is no separate hidden descriptor table.  The snapshot's inline inventory is
++caller storage.  Total object bytes use checked addition; each actual base,
++sizeof and alignment is reported, rather than copying the historical1056-byte
++metadata object observation.  The full objects, including container padding
++and readonly identity, are excluded by reciprocal admission and all checked
++writable-output cuts.  No allocator or callback runs under these cuts.
++
++This inventory does not allocate/fund process storage.  The genuine containing
++owner must retain the direct singleton and independently authenticated native
++process-generation/loaded-libc binding, account for these actual objects once
++under the same actual resource parent, and preserve that account until process
++reap.  Copied inventory fields, PID, slot counts and owner addresses grant no
++semantic operation, storage child, debit/refund or hot-fork adoption.  Object
++spans can share ELF pages with other libc data; matching ELF mapping/page/TLS
++floors remain separately required.  There is no process-owner retirement or
++rearm API, no alias to an unrelated parent's account, and no generation proof
++for a stale address reused outside the valid canonical process lifetime.
++
++After fork the inherited singleton address is numerically equal, but Current
++with the parent's saved PID refuses ESTALE without publishing output.  A
++query using the child's actual PID only observes that child; it cannot
++reconcile inherited physical backing, reservations, pins or Source debits.
++Actual hot-fork adoption and complete parent/process custody remain with the
++caller's independently reviewed lifetime protocol.  All supported execution
++features and ordinary unattached allocation behavior remain present.
++
++New finite source controls check direct canonical identity, exact actual
++container membership/geometry, complete-object/padding/readonly output alias
++refusal with bytes preserved, peer-live application alias refusal, held real
++gate EBUSY with unchanged output, nominated invalid owner before dereference,
++and real fork preserving numeric singleton while rejecting parent identity.
++These controls are unexecuted until a newly allocated compiler lane qualifies
++this exact revision.  Prior39425 component qualification is preserved and does
++not establish this changed global layout or its installed public ABI.  No
++Source issuance or complete runtime profile is admitted by source review.
+diff --git a/malloc/Versions b/malloc/Versions
+index c763395c6df02a9086fbfeef2af7c4fcc77f7149..b19dc0164ddc6b5ae85d01fcb8c50f42d1140535 100644
+--- a/malloc/Versions
++++ b/malloc/Versions
+@@ -67,6 +67,22 @@ libc {
+   GLIBC_2.33 {
+     mallinfo2;
+   }
++  GLIBC_2.39 {
++    malloc_bounded_process_np;
++    malloc_bounded_process_current_np;
++    malloc_bounded_init_np;
++    malloc_bounded_layout_np;
++    malloc_bounded_query_np;
++    malloc_bounded_allocate_np;
++    malloc_bounded_allocation_np;
++    malloc_bounded_reallocate_np;
++    malloc_bounded_release_np;
++    malloc_bounded_attach_np;
++    malloc_bounded_attachment_np;
++    malloc_bounded_detach_np;
++    malloc_bounded_bind_np;
++    malloc_bounded_tryretire_np;
++  }
+   GLIBC_PRIVATE {
+     # Internal startup hook for libpthread.
+     __libc_malloc_pthread_startup;
 diff --git a/malloc/arena.c b/malloc/arena.c
-index cfb1ff8..64789e5 100644
+index cfb1ff885450aa786bde2830bc8f47237fb038cc..64789e52f72718a41b811057f1e88b695d8bec8e 100644
 --- a/malloc/arena.c
 +++ b/malloc/arena.c
 @@ -891,6 +891,22 @@ arena_get_retry (mstate ar_ptr, size_t bytes)
@@ -365,22 +821,1324 @@ index cfb1ff8..64789e5 100644
    /* Shut down the thread cache first.  This could deallocate data for
       the thread arena, so do this before we put the arena on the free
       list.  */
+diff --git a/malloc/malloc-bounded-internal.h b/malloc/malloc-bounded-internal.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..13ac1b535977153b68429101f8fe9c8b5fbeea11
+--- /dev/null
++++ b/malloc/malloc-bounded-internal.h
+@@ -0,0 +1,60 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _MALLOC_BOUNDED_INTERNAL_H
++#define _MALLOC_BOUNDED_INTERNAL_H 1
++
++#include <malloc-bounded.h>
++#include <malloc-bounded-process.h>
++#include <stdbool.h>
++#include <tls.h>
++
++/* The shared gate excludes both registries, reciprocal overlap and output
++   publication.  No owner is dereferenced before canonical membership.  */
++#define __PTHREAD_BOUNDED_REGISTRATIONS 128
++
++/* One real complete object includes registry/serial/gate padding.  Its
++   identity and full extent are shared by routing and public inventory.  */
++struct __attribute__ ((aligned (64))) __pthread_bounded_registry
++{
++  struct __pthread_bounded *owner[__PTHREAD_BOUNDED_REGISTRATIONS];
++  uint64_t serial;
++  int lock;
++};
++extern struct __pthread_bounded_registry __pthread_bounded_process_registry
++  attribute_hidden;
++#define __pthread_bounded_registration_lock \
++  (__pthread_bounded_process_registry.lock)
++extern bool __pthread_bounded_external_span_locked (const void *, size_t)
++  attribute_hidden;
++extern bool __malloc_bounded_external_span_locked (const void *, size_t)
++  attribute_hidden;
++extern int __pthread_bounded_bind_application_locked
++  (pthread_bounded_t *, uint64_t, void *) attribute_hidden;
++extern void __malloc_bounded_pthread_return_locked (void *) attribute_hidden;
++
++/* RESULT is always written for a handled allocation, including refusal.
++   A false return is the only permission to enter ordinary allocator code.  */
++extern bool __malloc_bounded_route_allocate (size_t, size_t, void **)
++  attribute_hidden;
++extern bool __malloc_bounded_route_reallocate (void *, size_t, void **)
++  attribute_hidden;
++extern bool __malloc_bounded_route_release (void *) attribute_hidden;
++extern bool __malloc_bounded_route_usable (void *, size_t *) attribute_hidden;
++extern bool __malloc_bounded_attached (void) attribute_hidden;
++extern void __malloc_bounded_allocation_refused (int) attribute_hidden;
++#endif
+diff --git a/malloc/malloc-bounded-process.h b/malloc/malloc-bounded-process.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6339d9600e9ed822c6ed21c42f8f8badcb5eecb
+--- /dev/null
++++ b/malloc/malloc-bounded-process.h
+@@ -0,0 +1,87 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _MALLOC_BOUNDED_PROCESS_H
++#define _MALLOC_BOUNDED_PROCESS_H 1
++
++#include <stddef.h>
++#include <stdint.h>
++#include <sys/types.h>
++
++__BEGIN_DECLS
++
++#define MALLOC_BOUNDED_PROCESS_VERSION 1
++#define MALLOC_BOUNDED_PROCESS_OBJECTS 3
++
++typedef const struct __malloc_bounded_process malloc_bounded_process_t;
++
++enum malloc_bounded_process_object_kind
++{
++  MALLOC_BOUNDED_PROCESS_APPLICATION = 1,
++  MALLOC_BOUNDED_PROCESS_PTHREAD = 2,
++  MALLOC_BOUNDED_PROCESS_IDENTITY = 3
++};
++
++/* Actual complete compiled objects, including their own padding.  Objects
++   can share ELF pages with unrelated libc data; this is not a page mapping
++   or a substitute for the containing process's actual ELF/TLS floor.  */
++struct malloc_bounded_process_object
++{
++  unsigned int kind;
++  unsigned int reserved;
++  uintptr_t base;
++  size_t bytes;
++  size_t alignment;
++};
++
++struct malloc_bounded_process_info
++{
++  unsigned int version;
++  unsigned int size;
++  malloc_bounded_process_t *owner;
++  pid_t process;
++  unsigned int objects;
++  size_t total_bytes;
++  size_t application_capacity;
++  size_t pthread_capacity;
++  struct malloc_bounded_process_object object[MALLOC_BOUNDED_PROCESS_OBJECTS];
++};
++
++/* Direct canonical process-lifetime identity of this loaded provider.
++   Neither its address nor an inventory snapshot grants an allocation,
++   parent debit, semantic operation, hot-fork adoption or backing return.
++   The containing owner binds this actual identity and matching loaded libc
++   to its independently authenticated native process lifetime and funds the
++   complete process inventory exactly once under the real resource parent.
++   There is no process-owner retirement/rearm or address reuse in that life.  */
++extern malloc_bounded_process_t *malloc_bounded_process_np (void) __THROW;
++
++/* Authenticate OWNER by exact canonical membership before dereference.
++   EXPECTED_PROCESS must match the actual current getpid result; a parent's
++   inherited pointer/PID pair refuses after fork.  PID is an observation,
++   not a Source generation or permission.  Querying with a child's PID does
++   not reconcile inherited backing/debits or authorize hot-fork adoption.
++   The caller separately retains the actual process-generation/ELF binding.
++   Current takes one nonwaiting gate attempt and validates the complete
++   output against every retained/fixed provider span before writing it.
++   A copied snapshot never substitutes for this checked canonical query.  */
++extern int malloc_bounded_process_current_np
++  (malloc_bounded_process_t *, pid_t,
++   struct malloc_bounded_process_info *) __THROW;
++
++__END_DECLS
++#endif
+diff --git a/malloc/malloc-bounded.c b/malloc/malloc-bounded.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e474a68512a
+--- /dev/null
++++ b/malloc/malloc-bounded.c
+@@ -0,0 +1,957 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <malloc-bounded-internal.h>
++#include <atomic.h>
++#include <pthread-bounded-internal.h>
++#include <errno.h>
++#include <shlib-compat.h>
++#include <string.h>
++#include <unistd.h>
++
++#define APPLICATION_SLOTS 128
++
++struct allocation
++{
++  uintptr_t pointer;
++  size_t bytes;
++  size_t alignment;
++  size_t attachment;
++  size_t release_attempts;
++  bool released;
++};
++
++struct attachment
++{
++  struct __malloc_bounded *owner;
++  uintptr_t thread_control;
++  uint64_t thread_incarnation;
++  bool bound;
++  bool returned;
++};
++
++struct __malloc_bounded
++{
++  struct malloc_bounded_config config;
++  struct malloc_bounded_receipt fact;
++  size_t slot;
++};
++
++/* Range classification during gate contention reads only process-lifetime
++   atomics, never nominated or possibly returned backing.  A valid pending
++   free remains live until an actual release succeeds.  The caller retains
++   lifetime custody and must not race retirement with a producer still using
++   its pointers.  No record or block is reused within one incarnation.  */
++struct application_slot
++{
++  struct __malloc_bounded *owner;
++  uintptr_t base;
++  size_t extent;
++  size_t bytes;
++  size_t refusals;
++  unsigned int uncertain;
++  bool used;
++};
++
++/* One separately paid process object, including its explicit padding.  Slots
++   are never reused during this process lifetime, even after arena return.  */
++struct __attribute__ ((aligned (64))) application_registry
++{
++  struct application_slot slot[APPLICATION_SLOTS];
++  uint64_t serial;
++  int active;
++};
++static struct application_registry application_state;
++
++/* The loaded provider owns this immutable identity until process reap.
++   A fork inherits its address, but not the parent's native process binding.  */
++struct __malloc_bounded_process
++{
++  unsigned int version;
++};
++/* A distinct section prevents -fmerge-all-constants from coalescing this
++   address-bearing identity with an unrelated constant object.  */
++static malloc_bounded_process_t process_owner
++  __attribute__ ((section (".rodata.bounded_process"), used))
++  = { MALLOC_BOUNDED_PROCESS_VERSION };
++
++#define registry application_state.slot
++#define next_incarnation application_state.serial
++#define enabled application_state.active
++
++static bool
++try_gate (void)
++{
++  return atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) == 0;
++}
++
++static void
++ungate (void)
++{
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
++}
++
++static bool
++overlap (uintptr_t a, size_t na, uintptr_t b, size_t nb)
++{
++  return na != 0 && nb != 0 && (a <= b ? b - a < na : a - b < nb);
++}
++
++static void
++refusal (size_t slot)
++{
++  size_t value = atomic_load_relaxed (&registry[slot].refusals);
++  if (value != SIZE_MAX)
++    __atomic_compare_exchange_n (&registry[slot].refusals, &value, value + 1,
++                                 false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
++}
++
++static int
++range_slot (const void *pointer)
++{
++  uintptr_t address = (uintptr_t) pointer;
++  for (size_t i = 0; i < APPLICATION_SLOTS; ++i)
++    {
++      /* Extent publishes the immutable base and survives custody return.  */
++      size_t bytes = atomic_load_acquire (&registry[i].extent);
++      uintptr_t base = atomic_load_relaxed (&registry[i].base);
++      if (address >= base && address - base < bytes)
++        return i;
++    }
++  return -1;
++}
++
++bool
++__malloc_bounded_external_span_locked (const void *pointer, size_t bytes)
++{
++  uintptr_t address = (uintptr_t) pointer;
++  if (overlap (address, bytes, (uintptr_t) &application_state,
++               sizeof (application_state))
++      || overlap (address, bytes, (uintptr_t) &process_owner,
++                   sizeof (process_owner)))
++    return false;
++  for (size_t i = 0; i < APPLICATION_SLOTS; ++i)
++    if (registry[i].used
++        && overlap (address, bytes, registry[i].base, registry[i].extent))
++      return false;
++  return true;
++}
++
++static struct __malloc_bounded *
++lookup (malloc_bounded_t *nominated, uint64_t incarnation, int *status)
++{
++  for (size_t i = 0; i < APPLICATION_SLOTS; ++i)
++    if (registry[i].owner == nominated && nominated != NULL)
++      {
++        if (nominated->fact.incarnation != incarnation)
++          {
++            *status = ESTALE;
++            return NULL;
++          }
++        *status = 0;
++        return nominated;
++      }
++  *status = ESRCH;
++  return NULL;
++}
++
++static void
++error (struct __malloc_bounded *owner, int status)
++{
++  if (owner->fact.first_error == 0)
++    owner->fact.first_error = status;
++}
++
++static struct allocation *
++allocations (struct __malloc_bounded *owner)
++{
++  return (struct allocation *) (owner + 1);
++}
++
++static struct attachment *
++attachments (struct __malloc_bounded *owner)
++{
++  return (struct attachment *) (allocations (owner) + owner->config.requests);
++}
++
++static struct attachment *
++current (void)
++{
++  return atomic_load_acquire (&enabled) ? THREAD_SELF->application : NULL;
++}
++
++bool
++__malloc_bounded_attached (void)
++{
++  return current () != NULL;
++}
++
++void
++__malloc_bounded_allocation_refused (int status)
++{
++  struct attachment *pin = current ();
++  if (pin != NULL)
++    {
++      refusal (pin->owner->slot);
++      if (try_gate ())
++        {
++          error (pin->owner, status);
++          ungate ();
++        }
++    }
++}
++
++static void
++snapshot (struct __malloc_bounded *owner, struct malloc_bounded_receipt *out)
++{
++  *out = owner->fact;
++  out->refusals = atomic_load_relaxed (&registry[owner->slot].refusals);
++  out->uncertain_release = atomic_load_acquire (&registry[owner->slot].uncertain);
++  out->registry_slot = owner->slot;
++  out->registry_used = next_incarnation;
++  out->registry_capacity = APPLICATION_SLOTS;
++}
++
++malloc_bounded_process_t *
++__malloc_bounded_process_np (void)
++{
++  return &process_owner;
++}
++versioned_symbol (libc, __malloc_bounded_process_np, malloc_bounded_process_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_process_current_np (malloc_bounded_process_t *owner,
++                                     pid_t expected_process,
++                                     struct malloc_bounded_process_info *out)
++{
++  /* No nominated owner memory is read until exact canonical membership.  */
++  if (owner != &process_owner)
++    return ESRCH;
++  pid_t process = __getpid ();
++  if (expected_process != process)
++    return ESTALE;
++  if (!try_gate ())
++    return EBUSY;
++
++  int status = EINVAL;
++  if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++    goto done;
++
++  struct malloc_bounded_process_info info =
++    { .version = MALLOC_BOUNDED_PROCESS_VERSION, .size = sizeof (info),
++      .owner = &process_owner, .process = process,
++      .objects = MALLOC_BOUNDED_PROCESS_OBJECTS,
++      .application_capacity = APPLICATION_SLOTS,
++      .pthread_capacity = __PTHREAD_BOUNDED_REGISTRATIONS,
++      .object =
++        { { MALLOC_BOUNDED_PROCESS_APPLICATION, 0,
++            (uintptr_t) &application_state, sizeof (application_state),
++            _Alignof (struct application_registry) },
++          { MALLOC_BOUNDED_PROCESS_PTHREAD, 0,
++            (uintptr_t) &__pthread_bounded_process_registry,
++            sizeof (__pthread_bounded_process_registry),
++            _Alignof (struct __pthread_bounded_registry) },
++          { MALLOC_BOUNDED_PROCESS_IDENTITY, 0,
++            (uintptr_t) &process_owner, sizeof (process_owner),
++            _Alignof (struct __malloc_bounded_process) } } };
++  for (size_t i = 0; i < info.objects; ++i)
++    if (__builtin_add_overflow (info.total_bytes, info.object[i].bytes,
++                                &info.total_bytes))
++      {
++        status = EOVERFLOW;
++        goto done;
++      }
++
++  *out = info;
++  status = 0;
++ done:
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_process_current_np,
++                  malloc_bounded_process_current_np, GLIBC_2_39);
++
++int
++__malloc_bounded_layout_np (struct malloc_bounded_layout *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  size_t retired_ranges = 0;
++  size_t retired_refusals = 0;
++  size_t retired_uncertain = 0;
++  for (size_t i = 0; i < APPLICATION_SLOTS; ++i)
++    if (registry[i].used && registry[i].owner == NULL)
++      {
++        ++retired_ranges;
++        size_t count = atomic_load_relaxed (&registry[i].refusals);
++        retired_refusals = count > SIZE_MAX - retired_refusals
++                           ? SIZE_MAX : retired_refusals + count;
++        retired_uncertain += atomic_load_acquire (&registry[i].uncertain) != 0;
++      }
++  int status = 0;
++  if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++    status = EINVAL;
++  else
++    *out = (struct malloc_bounded_layout)
++      { MALLOC_BOUNDED_VERSION, sizeof (*out), APPLICATION_SLOTS,
++        next_incarnation, retired_ranges, retired_refusals, retired_uncertain,
++        sizeof (application_state),
++        _Alignof (struct application_registry), sizeof (struct __malloc_bounded),
++        sizeof (struct allocation), sizeof (struct attachment),
++        sizeof (struct pthread), sizeof (THREAD_SELF->application),
++        sizeof (struct __pthread_bounded) };
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_layout_np, malloc_bounded_layout_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_init_np (void *backing, size_t bytes,
++                          const struct malloc_bounded_config *config,
++                          malloc_bounded_t **out, uint64_t *incarnation)
++{
++#if !defined __linux__ || !defined __x86_64__ || !defined __LP64__
++  return ENOTSUP;
++#else
++  uintptr_t base = (uintptr_t) backing;
++  if (config == NULL || backing == NULL || out == NULL || incarnation == NULL
++      || config->version != MALLOC_BOUNDED_VERSION
++      || config->size != sizeof (*config)
++      || base % _Alignof (struct __malloc_bounded) != 0
++      || bytes > UINTPTR_MAX - base
++      || config->alignment < _Alignof (max_align_t)
++      || (config->alignment & (config->alignment - 1)) != 0
++      || config->request_bytes > PTRDIFF_MAX)
++    return EINVAL;
++
++  size_t records, pins, per_request, payload, required;
++  if (__builtin_mul_overflow (config->requests, sizeof (struct allocation),
++                              &records)
++      || __builtin_mul_overflow (config->attachments, sizeof (struct attachment),
++                                  &pins)
++      || __builtin_add_overflow (config->request_bytes == 0 ? 1
++                                 : config->request_bytes,
++                                 config->alignment - 1, &per_request)
++      || __builtin_mul_overflow (config->requests, per_request, &payload)
++      || __builtin_add_overflow (sizeof (struct __malloc_bounded), records,
++                                 &required)
++      || __builtin_add_overflow (required, pins, &required)
++      || __builtin_add_overflow (required, payload, &required))
++    return EOVERFLOW;
++  if (required > bytes)
++    return ENOMEM;
++  if (!try_gate ())
++    return EBUSY;
++  int status = EINVAL;
++  if (!__pthread_bounded_external_span_locked (backing, bytes)
++      || !__pthread_bounded_external_span_locked (out, sizeof (*out))
++      || !__pthread_bounded_external_span_locked (incarnation,
++                                                  sizeof (*incarnation))
++      || overlap (base, bytes, (uintptr_t) config, sizeof (*config))
++      || overlap (base, bytes, (uintptr_t) out, sizeof (*out))
++      || overlap (base, bytes, (uintptr_t) incarnation, sizeof (*incarnation))
++      || overlap ((uintptr_t) out, sizeof (*out), (uintptr_t) incarnation,
++                  sizeof (*incarnation)))
++    goto done;
++  status = ENOSPC;
++  for (size_t i = 0; i < APPLICATION_SLOTS; ++i)
++    if (!registry[i].used)
++      {
++        if (next_incarnation == UINT64_MAX)
++          {
++            status = EOVERFLOW;
++            break;
++          }
++        struct __malloc_bounded *owner = backing;
++        memset (owner, 0, sizeof (*owner) + records + pins);
++        owner->config = *config;
++        owner->slot = i;
++        owner->fact.version = MALLOC_BOUNDED_VERSION;
++        owner->fact.size = sizeof (owner->fact);
++        owner->fact.incarnation = ++next_incarnation;
++        owner->fact.backing = base;
++        owner->fact.backing_bytes = bytes;
++        owner->fact.address_quarantined = 1;
++        owner->fact.used = sizeof (*owner) + records + pins;
++        registry[i].used = true;
++        registry[i].owner = owner;
++        atomic_store_relaxed (&registry[i].refusals, 0);
++        atomic_store_relaxed (&registry[i].base, base);
++        atomic_store_release (&registry[i].bytes, bytes);
++        /* Publish the permanent classifier only after its immutable base
++           and initial live state.  This extent is never cleared/replaced.  */
++        atomic_store_release (&registry[i].extent, bytes);
++        atomic_store_release (&enabled, 1);
++        *out = owner;
++        *incarnation = owner->fact.incarnation;
++        status = 0;
++        break;
++      }
++ done:
++  ungate ();
++  return status;
++#endif
++}
++versioned_symbol (libc, __malloc_bounded_init_np, malloc_bounded_init_np,
++                  GLIBC_2_39);
++
++static int
++allocate (struct __malloc_bounded *owner, size_t bytes, size_t alignment,
++          struct malloc_bounded_token *out)
++{
++  if (owner->fact.allocation_attempts != SIZE_MAX)
++    ++owner->fact.allocation_attempts;
++  if (alignment == 0 || (alignment & (alignment - 1)) != 0)
++    return EINVAL;
++  if (alignment < _Alignof (max_align_t))
++    alignment = _Alignof (max_align_t);
++  if (bytes > owner->config.request_bytes || alignment > owner->config.alignment
++      || owner->fact.allocated == owner->config.requests)
++    return ENOMEM;
++  size_t physical = bytes == 0 ? 1 : bytes;
++  size_t used = owner->fact.used;
++  uintptr_t base = owner->fact.backing;
++  size_t remaining = owner->fact.backing_bytes - used;
++  if (alignment - 1 > remaining)
++    return ENOMEM;
++  uintptr_t address = (base + used + alignment - 1) & ~(alignment - 1);
++  size_t offset = address - base;
++  if (physical > owner->fact.backing_bytes - offset)
++    return ENOMEM;
++  size_t index = owner->fact.allocated;
++  struct attachment *pin = current ();
++  size_t producer = pin != NULL && pin->owner == owner
++                    ? pin - attachments (owner) + 1 : 0;
++  allocations (owner)[index] = (struct allocation)
++    { address, bytes, alignment, producer, 0, false };
++  owner->fact.used = offset + physical;
++  ++owner->fact.allocated;
++  ++owner->fact.live;
++  *out = (struct malloc_bounded_token) { (void *) address, index + 1 };
++  return 0;
++}
++
++static struct allocation *
++find (struct __malloc_bounded *owner, struct malloc_bounded_token token)
++{
++  if (token.allocation == 0 || token.allocation > owner->fact.allocated)
++    return NULL;
++  struct allocation *record = allocations (owner) + token.allocation - 1;
++  return record->pointer == (uintptr_t) token.pointer ? record : NULL;
++}
++
++static int
++release (struct __malloc_bounded *owner, struct malloc_bounded_token token)
++{
++  struct allocation *record = find (owner, token);
++  if (record != NULL && record->release_attempts != SIZE_MAX)
++    ++record->release_attempts;
++  if (record == NULL || record->released)
++    {
++      if (owner->fact.invalid_releases != SIZE_MAX)
++        ++owner->fact.invalid_releases;
++      return EPROTO;
++    }
++  record->released = true;
++  ++owner->fact.released;
++  --owner->fact.live;
++  return 0;
++}
++
++static int
++reallocate (struct __malloc_bounded *owner, struct malloc_bounded_token old,
++            size_t bytes, struct malloc_bounded_token *out)
++{
++  if (old.pointer == NULL && old.allocation == 0)
++    return allocate (owner, bytes, _Alignof (max_align_t), out);
++  struct allocation *record = find (owner, old);
++  if (record == NULL || record->released)
++    return EINVAL;
++  if (bytes == 0)
++    {
++      int status = release (owner, old);
++      *out = (struct malloc_bounded_token) { NULL, 0 };
++      return status;
++    }
++  int status = allocate (owner, bytes, _Alignof (max_align_t), out);
++  if (status == 0)
++    {
++      memcpy (out->pointer, old.pointer, bytes < record->bytes
++                                        ? bytes : record->bytes);
++      release (owner, old);
++    }
++  return status;
++}
++
++int
++__malloc_bounded_allocate_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                              size_t bytes, size_t alignment,
++                              struct malloc_bounded_token *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        status = allocate (owner, bytes, alignment, out);
++      if (status != 0)
++        error (owner, status);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_allocate_np, malloc_bounded_allocate_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_reallocate_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                                struct malloc_bounded_token old, size_t bytes,
++                                struct malloc_bounded_token *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        status = reallocate (owner, old, bytes, out);
++      if (status != 0)
++        error (owner, status);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_reallocate_np,
++                  malloc_bounded_reallocate_np, GLIBC_2_39);
++
++int
++__malloc_bounded_allocation_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                               uint64_t allocation,
++                               struct malloc_bounded_allocation *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (allocation == 0 || allocation > owner->fact.allocated
++          || !__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        {
++          struct allocation *record = allocations (owner) + allocation - 1;
++          *out = (struct malloc_bounded_allocation)
++            { incarnation, allocation, record->pointer, record->bytes,
++              record->alignment, record->attachment, record->release_attempts,
++              record->released };
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_allocation_np,
++                  malloc_bounded_allocation_np, GLIBC_2_39);
++
++int
++__malloc_bounded_release_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                             struct malloc_bounded_token token)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      status = release (owner, token);
++      if (status != 0)
++        error (owner, status);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_release_np, malloc_bounded_release_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_attach_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                            uint64_t *attachment_out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (attachment_out,
++                                                    sizeof (*attachment_out)))
++        status = EINVAL;
++      else if (current () != NULL)
++        status = EALREADY;
++      else if (owner->fact.attachments_used == owner->config.attachments)
++        status = ENOSPC;
++      else
++        {
++          struct attachment *pin = attachments (owner)
++                                    + owner->fact.attachments_used++;
++          *pin = (struct attachment) { owner, 0, 0, false, false };
++          *attachment_out = owner->fact.attachments_used;
++          ++owner->fact.attached;
++          THREAD_SELF->application = pin;
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_attach_np, malloc_bounded_attach_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_detach_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                            uint64_t attachment)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      struct attachment *pin = current ();
++      if (pin == NULL || pin->owner != owner || pin->bound
++          || attachment == 0 || attachment > owner->fact.attachments_used
++          || pin != attachments (owner) + attachment - 1)
++        status = EPERM;
++      else
++        {
++          pin->returned = true;
++          --owner->fact.attached;
++          THREAD_SELF->application = NULL;
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_detach_np, malloc_bounded_detach_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_bind_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                          pthread_bounded_t *thread, uint64_t thread_incarnation,
++                          uint64_t *attachment_out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (attachment_out,
++                                                    sizeof (*attachment_out)))
++        status = EINVAL;
++      else if (owner->fact.attachments_used == owner->config.attachments)
++        status = ENOSPC;
++      else
++        {
++          struct attachment *pin = attachments (owner)
++                                    + owner->fact.attachments_used;
++          status = __pthread_bounded_bind_application_locked
++            (thread, thread_incarnation, pin);
++          if (status == 0)
++            {
++              *pin = (struct attachment)
++                { owner, (uintptr_t) thread, thread_incarnation, true, false };
++              ++owner->fact.attachments_used;
++              *attachment_out = owner->fact.attachments_used;
++              ++owner->fact.attached;
++              ++owner->fact.bound_threads;
++            }
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_bind_np, malloc_bounded_bind_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_attachment_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                               uint64_t attachment,
++                               struct malloc_bounded_attachment *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (attachment == 0 || attachment > owner->fact.attachments_used
++          || !__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        {
++          struct attachment *pin = attachments (owner) + attachment - 1;
++          *out = (struct malloc_bounded_attachment)
++            { incarnation, attachment, pin->thread_control,
++              pin->thread_incarnation, pin->bound, pin->returned };
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_attachment_np,
++                  malloc_bounded_attachment_np, GLIBC_2_39);
++
++/* Called only at the successful canonical pthread retirement cut, after
++   actual no-birth or kernel join, TLS return and stack-list return.  */
++void
++__malloc_bounded_pthread_return_locked (void *attachment)
++{
++  if (attachment != NULL)
++    {
++      struct attachment *pin = attachment;
++      pin->returned = true;
++      --pin->owner->fact.attached;
++      ++pin->owner->fact.terminal_threads;
++    }
++}
++
++int
++__malloc_bounded_query_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                           struct malloc_bounded_receipt *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        snapshot (owner, out);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_query_np, malloc_bounded_query_np,
++                  GLIBC_2_39);
++
++int
++__malloc_bounded_tryretire_np (malloc_bounded_t *nominated, uint64_t incarnation,
++                               struct malloc_bounded_receipt *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  if (owner != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        {
++          status = owner->fact.invalid_releases != 0
++                   || atomic_load_acquire (&registry[owner->slot].uncertain)
++                   ? EPROTO
++                   : owner->fact.live != 0 || owner->fact.attached != 0
++                     ? EBUSY : 0;
++          if (status == 0)
++            {
++              registry[owner->slot].owner = NULL;
++              atomic_store_release (&registry[owner->slot].bytes, 0);
++              owner->fact.registration_removed = 1;
++              owner->fact.libc_custody_returned = 1;
++            }
++          else
++            error (owner, status);
++          snapshot (owner, out);
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_tryretire_np, malloc_bounded_tryretire_np,
++                  GLIBC_2_39);
++
++static struct malloc_bounded_token
++raw_token (struct __malloc_bounded *owner, void *pointer)
++{
++  for (size_t i = 0; i < owner->fact.allocated; ++i)
++    if (allocations (owner)[i].pointer == (uintptr_t) pointer)
++      return (struct malloc_bounded_token) { pointer, i + 1 };
++  return (struct malloc_bounded_token) { pointer, 0 };
++}
++
++bool
++__malloc_bounded_route_allocate (size_t bytes, size_t alignment, void **out)
++{
++  struct attachment *pin = current ();
++  if (pin == NULL)
++    return false;
++  struct __malloc_bounded *owner = pin->owner;
++  int status = EBUSY;
++  *out = NULL;
++  if (try_gate ())
++    {
++      struct malloc_bounded_token token;
++      status = allocate (owner, bytes, alignment, &token);
++      if (status == 0)
++        *out = token.pointer;
++      else
++        error (owner, status);
++      ungate ();
++    }
++  if (status != 0)
++    {
++      refusal (owner->slot);
++      __set_errno (status);
++    }
++  return true;
++}
++
++bool
++__malloc_bounded_route_release (void *pointer)
++{
++  int slot = range_slot (pointer);
++  if (slot < 0)
++    {
++      struct attachment *pin = current ();
++      if (pin == NULL)
++        return false;
++      /* Unknown ownership must survive even if the shared gate is busy.  */
++      atomic_store_release (&registry[pin->owner->slot].uncertain, 1);
++      refusal (pin->owner->slot);
++      struct __pthread_bounded *thread = __pthread_bounded_current ();
++      if (thread != NULL)
++        __pthread_bounded_refuse_heap (thread, pointer);
++      return true;
++    }
++  if (!try_gate ())
++    {
++      /* Without the gate, even the nominated allocation's validity is
++         unknown.  Preserve quarantine independently of successful later
++         releases; equal counters cannot erase this uncertainty.  */
++      atomic_store_release (&registry[slot].uncertain, 1);
++      refusal (slot);
++      return true;
++    }
++  /* Membership can end between range classification and gate acquisition.
++     Only the process slot, never returned arena metadata, survives that cut.  */
++  slot = range_slot (pointer);
++  struct __malloc_bounded *owner = slot < 0 ? NULL : registry[slot].owner;
++  if (owner != NULL)
++    {
++      int status = release (owner, raw_token (owner, pointer));
++      if (status != 0)
++        error (owner, status);
++    }
++  else if (slot >= 0)
++    {
++      atomic_store_release (&registry[slot].uncertain, 1);
++      refusal (slot);
++    }
++  ungate ();
++  return true;
++}
++
++bool
++__malloc_bounded_route_reallocate (void *pointer, size_t bytes, void **out)
++{
++  if (pointer == NULL)
++    return __malloc_bounded_route_allocate (bytes, _Alignof (max_align_t), out);
++  int slot = range_slot (pointer);
++  if (slot < 0)
++    {
++      /* An attached producer cannot mutate an unrelated ordinary allocation.  */
++      if (current () == NULL)
++        return false;
++      *out = NULL;
++      __malloc_bounded_allocation_refused (EXDEV);
++      struct __pthread_bounded *thread = __pthread_bounded_current ();
++      if (thread != NULL)
++        __pthread_bounded_refuse_heap (thread, NULL);
++      __set_errno (EXDEV);
++      return true;
++    }
++  *out = NULL;
++  int status = EBUSY;
++  if (try_gate ())
++    {
++      struct __malloc_bounded *owner = registry[slot].owner;
++      if (owner == NULL)
++        {
++          atomic_store_release (&registry[slot].uncertain, 1);
++          status = ESTALE;
++        }
++      else
++        {
++          struct malloc_bounded_token token;
++          struct attachment *pin = current ();
++          status = bytes != 0 && (pin == NULL || pin->owner != owner) ? EXDEV
++                   : reallocate (owner, raw_token (owner, pointer), bytes,
++                                  &token);
++          if (status == 0)
++            *out = token.pointer;
++          else
++            error (owner, status);
++        }
++      ungate ();
++    }
++  if (status != 0)
++    {
++      refusal (slot);
++      __set_errno (status);
++    }
++  return true;
++}
++
++bool
++__malloc_bounded_route_usable (void *pointer, size_t *out)
++{
++  int slot = range_slot (pointer);
++  if (slot < 0)
++    return false;
++  *out = 0;
++  if (!try_gate ())
++    {
++      refusal (slot);
++      return true;
++    }
++  struct __malloc_bounded *owner = registry[slot].owner;
++  if (owner != NULL)
++    {
++      struct allocation *record = find (owner, raw_token (owner, pointer));
++      if (record != NULL && !record->released)
++        *out = record->bytes;
++    }
++  else
++    {
++      atomic_store_release (&registry[slot].uncertain, 1);
++      refusal (slot);
++    }
++  ungate ();
++  return true;
++}
+diff --git a/malloc/malloc-bounded.h b/malloc/malloc-bounded.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..01af6cb60a259ff5303936a2d784619738c9e02a
+--- /dev/null
++++ b/malloc/malloc-bounded.h
+@@ -0,0 +1,173 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _MALLOC_BOUNDED_H
++#define _MALLOC_BOUNDED_H 1
++
++#include <stddef.h>
++#include <stdint.h>
++#include <pthread-bounded.h>
++
++__BEGIN_DECLS
++
++#define MALLOC_BOUNDED_VERSION 1
++
++typedef struct __malloc_bounded malloc_bounded_t;
++
++/* Actual compiled storage geometry.  Process storage and its registry slots
++   are separate from the per-child backing supplied at initialization.  */
++struct malloc_bounded_layout
++{
++  unsigned int version;
++  unsigned int size;
++  size_t registry_capacity;
++  size_t registry_used;
++  size_t retired_ranges;
++  size_t retired_refusals;
++  size_t retired_uncertain;
++  size_t process_bytes;
++  size_t process_alignment;
++  size_t control_bytes;
++  size_t allocation_bytes;
++  size_t attachment_bytes;
++  size_t thread_descriptor_bytes;
++  size_t thread_application_pointer_bytes;
++  size_t pthread_control_bytes;
++};
++
++/* Cumulative request and attachment counts, not simultaneous live counts.
++   All records, payloads and worst-case padding must fit actual backing.  */
++struct malloc_bounded_config
++{
++  unsigned int version;
++  unsigned int size;
++  size_t requests;
++  size_t request_bytes;
++  size_t alignment;
++  size_t attachments;
++};
++
++struct malloc_bounded_token
++{
++  void *pointer;
++  uint64_t allocation;
++};
++
++struct malloc_bounded_attachment
++{
++  uint64_t incarnation;
++  uint64_t attachment;
++  uintptr_t thread_control;
++  uint64_t thread_incarnation;
++  unsigned int bound;
++  unsigned int returned;
++};
++
++struct malloc_bounded_allocation
++{
++  uint64_t incarnation;
++  uint64_t allocation;
++  uintptr_t pointer;
++  size_t bytes;
++  size_t alignment;
++  size_t attachment;
++  size_t release_attempts;
++  unsigned int released;
++};
++
++/* Snapshot only: neither this receipt nor a token creates parent authority.
++   libc_custody_returned ends libc access; it does not return reusable backing
++   or perform the caller's independent containing-owner return operation.
++   Every admitted address extent stays quarantined until process reap: the
++   caller must retain its VA reservation, even after libc returns custody.
++   No reinitialization, remapping, ordinary allocator reuse or stale-pointer
++   reuse of that numeric extent is permitted in this process lifetime.
++   Raw free/realloc/usable-size access after custody return remains invalid.
++   Retained numeric ranges route to bounded refusal without arena access;
++   this supplies no pointer-generation authentication or reuse authority.  */
++struct malloc_bounded_receipt
++{
++  unsigned int version;
++  unsigned int size;
++  uint64_t incarnation;
++  uintptr_t backing;
++  size_t backing_bytes;
++  size_t used;
++  size_t allocation_attempts;
++  size_t allocated;
++  size_t released;
++  size_t live;
++  size_t attached;
++  size_t attachments_used;
++  size_t bound_threads;
++  size_t terminal_threads;
++  size_t refusals;
++  size_t invalid_releases;
++  size_t registry_slot;
++  size_t registry_used;
++  size_t registry_capacity;
++  unsigned int uncertain_release;
++  int first_error;
++  unsigned int registration_removed;
++  unsigned int libc_custody_returned;
++  unsigned int address_quarantined;
++};
++
++/* Linux x86-64 LP64.  All writable outputs must be outside every retained
++   metadata/application arena, stack and fixed registry.  No block or admitted address is reused
++   during this process lifetime; callers enforce exactly-once last reference
++   for raw free.  Checked release additionally authenticates allocation id.  */
++extern int malloc_bounded_layout_np (struct malloc_bounded_layout *) __THROW;
++extern int malloc_bounded_init_np
++  (void *, size_t, const struct malloc_bounded_config *,
++   malloc_bounded_t **, uint64_t *) __THROW;
++extern int malloc_bounded_query_np
++  (malloc_bounded_t *, uint64_t, struct malloc_bounded_receipt *) __THROW;
++extern int malloc_bounded_allocate_np
++  (malloc_bounded_t *, uint64_t, size_t, size_t,
++   struct malloc_bounded_token *) __THROW;
++extern int malloc_bounded_reallocate_np
++  (malloc_bounded_t *, uint64_t, struct malloc_bounded_token, size_t,
++   struct malloc_bounded_token *) __THROW;
++extern int malloc_bounded_allocation_np
++  (malloc_bounded_t *, uint64_t, uint64_t,
++   struct malloc_bounded_allocation *) __THROW;
++extern int malloc_bounded_release_np
++  (malloc_bounded_t *, uint64_t, struct malloc_bounded_token) __THROW;
++
++/* Scoped producer attachment for preparation/callback execution.  It is
++   not inherited by pthread_create.  Nested attachment, including the same
++   child, refuses.  Detach cannot release a thread-bound attachment.  */
++extern int malloc_bounded_attach_np
++  (malloc_bounded_t *, uint64_t, uint64_t *) __THROW;
++extern int malloc_bounded_detach_np
++  (malloc_bounded_t *, uint64_t, uint64_t) __THROW;
++extern int malloc_bounded_attachment_np
++  (malloc_bounded_t *, uint64_t, uint64_t,
++   struct malloc_bounded_attachment *) __THROW;
++
++/* Save a real application pin on a READY canonical pthread owner BEFORE
++   creation.  It survives no-birth/partial birth and every TLS/TSD tail;
++   only successful authenticated pthread retirement returns that pin.  */
++extern int malloc_bounded_bind_np
++  (malloc_bounded_t *, uint64_t, pthread_bounded_t *, uint64_t,
++   uint64_t *) __THROW;
++extern int malloc_bounded_tryretire_np
++  (malloc_bounded_t *, uint64_t, struct malloc_bounded_receipt *) __THROW;
++
++__END_DECLS
++#endif
 diff --git a/malloc/malloc.c b/malloc/malloc.c
-index bcb6e5b..00ba18d 100644
+index bcb6e5b83ca9777df3c1ade273d821d5b742b2fb..8d1bdfefdcbf9a77d3b9ecd262c3e36e8a3a0c56 100644
 --- a/malloc/malloc.c
 +++ b/malloc/malloc.c
-@@ -238,6 +238,10 @@
+@@ -238,6 +238,11 @@
  
  /* For ALIGN_UP et. al.  */
  #include <libc-pointer-arith.h>
 +#if IS_IN (libc)
 +# include <pthread-bounded-internal.h>
++# include <malloc-bounded-internal.h>
 +# include <sys/single_threaded.h>
 +#endif
  
  /* For DIAG_PUSH/POP_NEEDS_COMMENT et al.  */
  #include <libc-diag.h>
-@@ -3209,6 +3213,16 @@ tcache_next (tcache_entry *e)
+@@ -3209,6 +3214,16 @@ tcache_next (tcache_entry *e)
  static void
  tcache_thread_shutdown (void)
  {
@@ -397,7 +2155,7 @@ index bcb6e5b..00ba18d 100644
    int i;
    tcache_perthread_struct *tcache_tmp = tcache;
  
-@@ -3288,10 +3302,31 @@ tcache_thread_shutdown (void)
+@@ -3288,10 +3303,36 @@ tcache_thread_shutdown (void)
  
  #endif /* !USE_TCACHE  */
  
@@ -423,83 +2181,141 @@ index bcb6e5b..00ba18d 100644
  void *
  __libc_malloc (size_t bytes)
  {
++  void *bounded_result;
++  if (__malloc_bounded_route_allocate (bytes, _Alignof (max_align_t),
++                                        &bounded_result))
++    return bounded_result;
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    mstate ar_ptr;
    void *victim;
  
-@@ -3363,6 +3398,9 @@ __libc_free (void *mem)
+@@ -3363,6 +3404,12 @@ __libc_free (void *mem)
    if (mem == 0)                              /* free(0) has no effect */
      return;
  
++  if (__malloc_bounded_route_release (mem))
++    return;
++
 +  if (bounded_heap_refused (mem))
 +    return;
 +
    /* Quickly check that the freed pointer matches the tag for the memory.
       This gives a useful double-free detection.  */
    if (__glibc_unlikely (mtag_enabled))
-@@ -3405,6 +3443,9 @@ libc_hidden_def (__libc_free)
+@@ -3405,6 +3452,13 @@ libc_hidden_def (__libc_free)
  void *
  __libc_realloc (void *oldmem, size_t bytes)
  {
++  void *bounded_result;
++  if (__malloc_bounded_route_reallocate (oldmem, bytes, &bounded_result))
++    return bounded_result;
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    mstate ar_ptr;
    INTERNAL_SIZE_T nb;         /* padded request size */
  
-@@ -3541,6 +3582,9 @@ libc_hidden_def (__libc_realloc)
+@@ -3541,6 +3595,13 @@ libc_hidden_def (__libc_realloc)
  void *
  __libc_memalign (size_t alignment, size_t bytes)
  {
++  void *bounded_result;
++  if (__malloc_bounded_route_allocate (bytes, alignment, &bounded_result))
++    return bounded_result;
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    if (!__malloc_initialized)
      ptmalloc_init ();
  
-@@ -3554,6 +3598,9 @@ void *
+@@ -3554,6 +3615,13 @@ void *
  weak_function
  aligned_alloc (size_t alignment, size_t bytes)
  {
++  void *bounded_result;
++  if (__malloc_bounded_route_allocate (bytes, alignment, &bounded_result))
++    return bounded_result;
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    if (!__malloc_initialized)
      ptmalloc_init ();
  
-@@ -3664,6 +3711,9 @@ _mid_memalign (size_t alignment, size_t bytes, void *address)
+@@ -3664,6 +3732,14 @@ _mid_memalign (size_t alignment, size_t bytes, void *address)
  void *
  __libc_valloc (size_t bytes)
  {
++  void *bounded_result;
++  if (__malloc_bounded_route_allocate (bytes, GLRO (dl_pagesize),
++                                        &bounded_result))
++    return bounded_result;
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    if (!__malloc_initialized)
      ptmalloc_init ();
  
-@@ -3675,6 +3725,9 @@ __libc_valloc (size_t bytes)
+@@ -3675,6 +3751,25 @@ __libc_valloc (size_t bytes)
  void *
  __libc_pvalloc (size_t bytes)
  {
++  if (__malloc_bounded_attached ())
++    {
++      size_t page = GLRO (dl_pagesize);
++      size_t rounded;
++      if (__builtin_add_overflow (bytes, page - 1, &rounded))
++        {
++          __malloc_bounded_allocation_refused (ENOMEM);
++          __set_errno (ENOMEM);
++          return NULL;
++        }
++      void *bounded_result;
++      __malloc_bounded_route_allocate (rounded & -(uintptr_t) page, page,
++                                       &bounded_result);
++      return bounded_result;
++    }
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    if (!__malloc_initialized)
      ptmalloc_init ();
  
-@@ -3697,6 +3750,9 @@ __libc_pvalloc (size_t bytes)
+@@ -3697,6 +3792,26 @@ __libc_pvalloc (size_t bytes)
  void *
  __libc_calloc (size_t n, size_t elem_size)
  {
++  if (__malloc_bounded_attached ())
++    {
++      size_t bounded_bytes;
++      if (__builtin_mul_overflow (n, elem_size, &bounded_bytes))
++        {
++          __malloc_bounded_allocation_refused (ENOMEM);
++          __set_errno (ENOMEM);
++          return NULL;
++        }
++      void *bounded_result;
++      __malloc_bounded_route_allocate (bounded_bytes, _Alignof (max_align_t),
++                                       &bounded_result);
++      if (bounded_result != NULL)
++        memset (bounded_result, 0, bounded_bytes);
++      return bounded_result;
++    }
++
 +  if (bounded_heap_refused (NULL))
 +    return NULL;
 +
    mstate av;
    mchunkptr oldtop;
    INTERNAL_SIZE_T sz, oldtopsize;
-@@ -5206,6 +5262,9 @@ mtrim (mstate av, size_t pad)
+@@ -5206,6 +5321,9 @@ mtrim (mstate av, size_t pad)
  int
  __malloc_trim (size_t s)
  {
@@ -509,17 +2325,21 @@ index bcb6e5b..00ba18d 100644
    int result = 0;
  
    if (!__malloc_initialized)
-@@ -5247,6 +5306,9 @@ musable (void *mem)
+@@ -5247,6 +5365,13 @@ musable (void *mem)
  size_t
  __malloc_usable_size (void *m)
  {
++  size_t bounded_size;
++  if (__malloc_bounded_route_usable (m, &bounded_size))
++    return bounded_size;
++
 +  if (bounded_heap_refused (NULL))
 +    return 0;
 +
    if (m == NULL)
      return 0;
    return musable (m);
-@@ -5324,6 +5386,9 @@ int_mallinfo (mstate av, struct mallinfo2 *m)
+@@ -5324,6 +5449,9 @@ int_mallinfo (mstate av, struct mallinfo2 *m)
  struct mallinfo2
  __libc_mallinfo2 (void)
  {
@@ -529,7 +2349,7 @@ index bcb6e5b..00ba18d 100644
    struct mallinfo2 m;
    mstate ar_ptr;
  
-@@ -5349,6 +5414,9 @@ libc_hidden_def (__libc_mallinfo2)
+@@ -5349,6 +5477,9 @@ libc_hidden_def (__libc_mallinfo2)
  struct mallinfo
  __libc_mallinfo (void)
  {
@@ -539,7 +2359,7 @@ index bcb6e5b..00ba18d 100644
    struct mallinfo m;
    struct mallinfo2 m2 = __libc_mallinfo2 ();
  
-@@ -5374,6 +5442,9 @@ __libc_mallinfo (void)
+@@ -5374,6 +5505,9 @@ __libc_mallinfo (void)
  void
  __malloc_stats (void)
  {
@@ -549,7 +2369,7 @@ index bcb6e5b..00ba18d 100644
    int i;
    mstate ar_ptr;
    unsigned int in_use_b = mp_.mmapped_mem, system_b = in_use_b;
-@@ -5557,6 +5628,9 @@ do_set_hugetlb (size_t value)
+@@ -5557,6 +5691,9 @@ do_set_hugetlb (size_t value)
  int
  __libc_mallopt (int param_number, int value)
  {
@@ -559,17 +2379,30 @@ index bcb6e5b..00ba18d 100644
    mstate av = &main_arena;
    int res = 1;
  
-@@ -5781,6 +5855,9 @@ malloc_printerr (const char *str)
+@@ -5781,6 +5918,22 @@ malloc_printerr (const char *str)
  int
  __posix_memalign (void **memptr, size_t alignment, size_t size)
  {
++  if (__malloc_bounded_attached ())
++    {
++      if (alignment == 0 || alignment % sizeof (void *) != 0
++          || (alignment & (alignment - 1)) != 0)
++        return EINVAL;
++      void *bounded_result;
++      __malloc_bounded_route_allocate (size, alignment, &bounded_result);
++      if (bounded_result == NULL)
++        return errno;
++      *memptr = bounded_result;
++      return 0;
++    }
++
 +  if (bounded_heap_refused (NULL))
 +    return ENOTSUP;
 +
    void *mem;
  
    if (!__malloc_initialized)
-@@ -5812,6 +5889,9 @@ weak_alias (__posix_memalign, posix_memalign)
+@@ -5812,6 +5965,9 @@ weak_alias (__posix_memalign, posix_memalign)
  int
  __malloc_info (int options, FILE *fp)
  {
@@ -579,8 +2412,746 @@ index bcb6e5b..00ba18d 100644
    /* For now, at least.  */
    if (options != 0)
      return EINVAL;
+diff --git a/malloc/tst-malloc-bounded-glib.c b/malloc/tst-malloc-bounded-glib.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e106bfe22325004c98634960f4d5d21c61f4a27
+--- /dev/null
++++ b/malloc/tst-malloc-bounded-glib.c
+@@ -0,0 +1,145 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++/* External integration control, deliberately not a default glibc test.
++   Compile against the actual configured GLib public headers and DSO, using
++   the matching newly built libc and loader.  See README.bounded-application.
++   This file must not be qualified by linking the old installed dae19 libc.  */
++#include <glib.h>
++#include <malloc-bounded.h>
++#include <assert.h>
++#include <dlfcn.h>
++#include <errno.h>
++#include <stdarg.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++
++#define BACKING_BYTES (16 * 1024 * 1024)
++
++extern int __vasprintf_chk (char **, int, const char *, va_list);
++
++static int
++checked_format (char **out, const char *format, ...)
++{
++  va_list args;
++  va_start (args, format);
++  int status = __vasprintf_chk (out, 1, format, args);
++  va_end (args);
++  return status;
++}
++
++static void
++inside (void *backing, const void *pointer)
++{
++  assert ((uintptr_t) pointer >= (uintptr_t) backing);
++  assert ((uintptr_t) pointer - (uintptr_t) backing < BACKING_BYTES);
++}
++
++int
++main (void)
++{
++  /* Load and resolve the real configured DSO before attaching: loader
++     namespace/constructors are not application-child admission effects.  */
++  Dl_info origin;
++  assert (dladdr ((void *) g_malloc, &origin) != 0);
++  assert (strstr (origin.dli_fname, "libglib-2.0.so") != NULL);
++  printf ("GLib allocator DSO: %s\n", origin.dli_fname);
++  fflush (stdout);
++
++  void *backing = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
++                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  assert (backing != MAP_FAILED);
++  struct malloc_bounded_config config =
++    { MALLOC_BOUNDED_VERSION, sizeof (config), 128, 65536, 4096, 2 };
++  malloc_bounded_t *owner;
++  uint64_t incarnation, pin;
++  assert (malloc_bounded_init_np (backing, BACKING_BYTES, &config, &owner,
++                                  &incarnation) == 0);
++  assert (malloc_bounded_attach_np (owner, incarnation, &pin) == 0);
++
++  /* Actual DSO malloc/calloc/realloc/free, including allocated size macros. */
++  unsigned char *data = g_malloc0 (64);
++  inside (backing, data);
++  for (size_t i = 0; i < 64; ++i)
++    assert (data[i] == 0);
++  memset (data, 0x39, 64);
++  data = g_realloc (data, 256);
++  inside (backing, data);
++  assert (data[63] == 0x39);
++  g_free (data);
++  void *plain = g_malloc (17);
++  inside (backing, plain);
++  g_free (plain);
++
++  GArray *array = g_array_sized_new (FALSE, FALSE, sizeof (uint64_t), 1);
++  for (uint64_t i = 0; i < 129; ++i)
++    g_array_append_val (array, i);
++  inside (backing, array);
++  inside (backing, array->data);
++  assert (g_array_index (array, uint64_t, 128) == 128);
++  g_array_free (array, TRUE);
++
++  GHashTable *table = g_hash_table_new (g_direct_hash, g_direct_equal);
++  inside (backing, table);
++  for (uintptr_t i = 1; i <= 129; ++i)
++    g_hash_table_insert (table, (void *) i, (void *) (i + 1));
++  assert (g_hash_table_lookup (table, (void *) 129) == (void *) 130);
++  g_hash_table_remove_all (table);
++  g_hash_table_unref (table);
++
++  GRand *random = g_rand_new_with_seed (41);
++  GRand *copy = g_rand_copy (random);
++  inside (backing, random);
++  inside (backing, copy);
++  assert (g_rand_int (random) == g_rand_int (copy));
++  g_rand_free (random);
++  g_rand_free (copy);
++
++  /* Real GLib formatted-string path imports __vasprintf_chk; direct call
++     additionally forces hidden libc malloc/realloc and result transfer.  */
++  char *string = g_strdup_printf ("%010000d", 7);
++  inside (backing, string);
++  assert (strlen (string) == 10000 && string[9999] == '7');
++  g_free (string);
++  string = NULL;
++  assert (checked_format (&string, "%010000d", 9) == 10000);
++  inside (backing, string);
++  assert (string[9999] == '9');
++  free (string);
++
++  struct malloc_bounded_receipt fact;
++  assert (malloc_bounded_detach_np (owner, incarnation, pin) == 0);
++  assert (malloc_bounded_query_np (owner, incarnation, &fact) == 0);
++  assert (fact.allocated > 8 && fact.live == 0);
++  for (uint64_t i = 1; i <= fact.allocated; ++i)
++    {
++      struct malloc_bounded_allocation allocation;
++      assert (malloc_bounded_allocation_np (owner, incarnation, i,
++                                            &allocation) == 0);
++      inside (backing, (void *) allocation.pointer);
++      assert (allocation.released == 1 && allocation.attachment == pin);
++    }
++  assert (malloc_bounded_tryretire_np (owner, incarnation, &fact) == 0);
++  assert (fact.libc_custody_returned && fact.registration_removed);
++  assert (fact.address_quarantined);
++  assert (mprotect (backing, BACKING_BYTES, PROT_NONE) == 0);
++  puts ("PASS: actual GLib DSO and __vasprintf_chk application storage");
++  return 0;
++}
+diff --git a/malloc/tst-malloc-bounded.c b/malloc/tst-malloc-bounded.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e3d4708fc
+--- /dev/null
++++ b/malloc/tst-malloc-bounded.c
+@@ -0,0 +1,581 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <malloc-bounded.h>
++#include <malloc-bounded-internal.h>
++#include <pthread-bounded-internal.h>
++#include <support/check.h>
++#include <support/capture_subprocess.h>
++#include <support/xthread.h>
++#include <atomic.h>
++#include <errno.h>
++#include <malloc.h>
++#include <sched.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#define BACKING_BYTES (1024 * 1024)
++
++struct fixture
++{
++  void *backing;
++  malloc_bounded_t *owner;
++  uint64_t incarnation;
++};
++
++static struct malloc_bounded_config
++configuration (size_t requests)
++{
++  return (struct malloc_bounded_config)
++    { MALLOC_BOUNDED_VERSION, sizeof (struct malloc_bounded_config),
++      requests, 256, 4096, 8 };
++}
++
++static struct fixture
++fixture (size_t requests)
++{
++  struct fixture f = { 0 };
++  f.backing = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
++                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (f.backing != MAP_FAILED);
++  struct malloc_bounded_config config = configuration (requests);
++  TEST_COMPARE (malloc_bounded_init_np (f.backing, BACKING_BYTES, &config,
++                                       &f.owner, &f.incarnation), 0);
++  return f;
++}
++
++static void
++retire (struct fixture *f)
++{
++  struct malloc_bounded_receipt fact;
++  TEST_COMPARE (malloc_bounded_tryretire_np (f->owner, f->incarnation, &fact), 0);
++  TEST_COMPARE (fact.live, 0);
++  TEST_COMPARE (fact.attached, 0);
++  TEST_COMPARE (fact.libc_custody_returned, 1);
++  TEST_COMPARE (fact.registration_removed, 1);
++  TEST_COMPARE (fact.address_quarantined, 1);
++  /* Keep the actual address reservation through process reap.  */
++  TEST_COMPARE (mprotect (f->backing, BACKING_BYTES, PROT_NONE), 0);
++}
++
++struct process_observation
++{
++  malloc_bounded_process_t *owner;
++  pid_t process;
++};
++
++static void
++fork_process_control (void *argument)
++{
++  struct process_observation *parent = argument;
++  struct malloc_bounded_process_info info, saved;
++  memset (&info, 0x5a, sizeof (info));
++  memcpy (&saved, &info, sizeof (info));
++  /* The inherited numeric address is unchanged; actual process binding is
++     not.  Neither a fresh query nor the child's PID grants adoption.  */
++  TEST_VERIFY (malloc_bounded_process_np () == parent->owner);
++  TEST_COMPARE (malloc_bounded_process_current_np (parent->owner,
++                                                   parent->process, &info),
++                ESTALE);
++  TEST_COMPARE (memcmp (&info, &saved, sizeof (info)), 0);
++  TEST_COMPARE (malloc_bounded_process_current_np (parent->owner, getpid (),
++                                                   &info), 0);
++  TEST_COMPARE (info.process, getpid ());
++}
++
++static void
++process_controls (void)
++{
++  malloc_bounded_process_t *owner = malloc_bounded_process_np ();
++  struct malloc_bounded_process_info info, saved;
++  TEST_VERIFY_EXIT (owner != NULL);
++  TEST_VERIFY (malloc_bounded_process_np () == owner);
++  TEST_COMPARE (malloc_bounded_process_current_np (owner, getpid (), &info), 0);
++  TEST_VERIFY (info.owner == owner);
++  TEST_COMPARE (info.version, MALLOC_BOUNDED_PROCESS_VERSION);
++  TEST_COMPARE (info.size, sizeof (info));
++  TEST_COMPARE (info.objects, MALLOC_BOUNDED_PROCESS_OBJECTS);
++  TEST_COMPARE (info.application_capacity, 128);
++  TEST_COMPARE (info.pthread_capacity, __PTHREAD_BOUNDED_REGISTRATIONS);
++
++  struct malloc_bounded_layout layout;
++  TEST_COMPARE (malloc_bounded_layout_np (&layout), 0);
++  size_t total = 0;
++  unsigned int kinds = 0;
++  for (size_t i = 0; i < info.objects; ++i)
++    {
++      struct malloc_bounded_process_object object = info.object[i];
++      TEST_COMPARE (object.reserved, 0);
++      TEST_VERIFY_EXIT (object.kind >= MALLOC_BOUNDED_PROCESS_APPLICATION
++                        && object.kind <= MALLOC_BOUNDED_PROCESS_IDENTITY);
++      TEST_VERIFY ((kinds & (1u << object.kind)) == 0);
++      kinds |= 1u << object.kind;
++      TEST_VERIFY_EXIT (object.bytes != 0 && object.alignment != 0);
++      TEST_COMPARE (object.base % object.alignment, 0);
++      TEST_VERIFY (!__builtin_add_overflow (total, object.bytes, &total));
++      if (object.kind == MALLOC_BOUNDED_PROCESS_PTHREAD)
++        {
++          TEST_COMPARE (object.base,
++                         (uintptr_t) &__pthread_bounded_process_registry);
++          TEST_COMPARE (object.bytes,
++                         sizeof (__pthread_bounded_process_registry));
++          TEST_COMPARE (object.alignment,
++                         _Alignof (struct __pthread_bounded_registry));
++        }
++      if (object.kind == MALLOC_BOUNDED_PROCESS_IDENTITY)
++        TEST_COMPARE (object.base, (uintptr_t) owner);
++
++      /* Test the actual whole object, including padding and immutable
++         identity bytes.  Every nominated output refuses before a write.  */
++      unsigned char bytes[16384];
++      TEST_VERIFY_EXIT (object.bytes <= sizeof (bytes));
++      memcpy (bytes, (void *) object.base, object.bytes);
++      TEST_COMPARE (malloc_bounded_process_current_np (owner, getpid (),
++                      (void *) object.base), EINVAL);
++      TEST_COMPARE (malloc_bounded_layout_np ((void *) object.base), EINVAL);
++      TEST_COMPARE (malloc_bounded_layout_np
++                      ((void *) (object.base + object.bytes - 1)), EINVAL);
++      if (object.bytes >= layout.control_bytes)
++        {
++          struct malloc_bounded_config config = configuration (0);
++          config.attachments = 0;
++          malloc_bounded_t *child = (void *) 1;
++          uint64_t incarnation = UINT64_MAX;
++          TEST_COMPARE (malloc_bounded_init_np ((void *) object.base,
++                            object.bytes, &config, &child, &incarnation), EINVAL);
++          TEST_COMPARE ((uintptr_t) child, 1);
++          TEST_COMPARE (incarnation, UINT64_MAX);
++        }
++      TEST_COMPARE (memcmp (bytes, (void *) object.base, object.bytes), 0);
++    }
++  TEST_COMPARE (info.total_bytes, total);
++  TEST_VERIFY (info.total_bytes > layout.process_bytes);
++
++  memcpy (&saved, &info, sizeof (info));
++  TEST_COMPARE (malloc_bounded_process_current_np ((void *) 1, getpid (),
++                                                   &info), ESRCH);
++  TEST_COMPARE (memcmp (&info, &saved, sizeof (info)), 0);
++  pid_t foreign = getpid () == 1 ? 2 : 1;
++  TEST_COMPARE (malloc_bounded_process_current_np (owner, foreign, &info),
++                ESTALE);
++  TEST_COMPARE (memcmp (&info, &saved, sizeof (info)), 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 1);
++  int status = malloc_bounded_process_current_np (owner, getpid (), &info);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
++  TEST_COMPARE (status, EBUSY);
++  TEST_COMPARE (memcmp (&info, &saved, sizeof (info)), 0);
++
++  struct process_observation parent = { owner, getpid () };
++  struct support_capture_subprocess child = support_capture_subprocess
++    (fork_process_control, &parent);
++  support_capture_subprocess_check (&child, "process identity", 0, sc_allow_none);
++  support_capture_subprocess_free (&child);
++}
++
++static void
++allocation_controls (void)
++{
++  struct fixture f = fixture (4);
++  struct malloc_bounded_token token, moved;
++  TEST_COMPARE (malloc_bounded_allocate_np (f.owner, f.incarnation, 32, 64,
++                                           &token), 0);
++  TEST_COMPARE ((uintptr_t) token.pointer % 64, 0);
++  memset (token.pointer, 0x5a, 32);
++  TEST_COMPARE (malloc_bounded_reallocate_np (f.owner, f.incarnation, token,
++                                             257, &moved), ENOMEM);
++  TEST_COMPARE (((unsigned char *) token.pointer)[31], 0x5a);
++  TEST_COMPARE (malloc_bounded_reallocate_np (f.owner, f.incarnation, token,
++                                             128, &moved), 0);
++  TEST_COMPARE (((unsigned char *) moved.pointer)[31], 0x5a);
++  struct malloc_bounded_allocation original;
++  TEST_COMPARE (malloc_bounded_allocation_np (f.owner, f.incarnation,
++                                             token.allocation, &original), 0);
++  TEST_COMPARE (original.released, 1);
++  TEST_COMPARE (original.release_attempts, 1);
++  TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, moved), 0);
++
++  uint64_t pin, next;
++  TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &pin), 0);
++  TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &next), EALREADY);
++  unsigned char *zero = calloc (8, 8);
++  TEST_VERIFY_EXIT (zero != NULL);
++  for (size_t i = 0; i < 64; ++i)
++    TEST_COMPARE (zero[i], 0);
++  free (zero);
++  void *aligned = NULL;
++  TEST_COMPARE (posix_memalign (&aligned, 4096, 33), 0);
++  TEST_COMPARE ((uintptr_t) aligned % 4096, 0);
++  free (aligned);
++  /* Both actual requests have consumed the remaining cumulative records.  */
++  void *exhausted = malloc (1);
++  TEST_VERIFY (exhausted == NULL);
++  TEST_COMPARE (errno, ENOMEM);
++  volatile size_t huge = SIZE_MAX;
++  TEST_VERIFY (calloc (huge, 2) == NULL);
++  TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, pin), 0);
++  TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &next), 0);
++  TEST_VERIFY (next != pin);
++  TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, pin), EPERM);
++  TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, next), 0);
++  retire (&f);
++}
++
++static void *
++remote_free (void *pointer)
++{
++  free (pointer);
++  return NULL;
++}
++
++static void
++release_controls (void)
++{
++  struct fixture f = fixture (4);
++  struct malloc_bounded_token token;
++  TEST_COMPARE (malloc_bounded_allocate_np (f.owner, f.incarnation, 21, 16,
++                                           &token), 0);
++  pthread_t worker = xpthread_create (NULL, remote_free, token.pointer);
++  xpthread_join (worker);
++  struct malloc_bounded_receipt fact;
++  TEST_COMPARE (malloc_bounded_query_np (f.owner, f.incarnation, &fact), 0);
++  TEST_COMPARE (fact.released, 1);
++  TEST_COMPARE (fact.live, 0);
++
++  TEST_COMPARE (malloc_bounded_allocate_np (f.owner, f.incarnation, 22, 16,
++                                           &token), 0);
++  /* Hold the actual gate.  Checked release reports a known no-effect
++     refusal, preserves the live record and permits a later real release.  */
++  atomic_store_release (&__pthread_bounded_registration_lock, 1);
++  int refused = malloc_bounded_release_np (f.owner, f.incarnation, token);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
++  TEST_COMPARE (refused, EBUSY);
++  TEST_COMPARE (malloc_bounded_query_np (f.owner, f.incarnation, &fact), 0);
++  TEST_COMPARE (fact.live, 1);
++  TEST_COMPARE (malloc_bounded_tryretire_np (f.owner, f.incarnation, &fact), EBUSY);
++  TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, token), 0);
++  retire (&f);
++}
++
++static void
++identity_controls (void)
++{
++  struct fixture f = fixture (1);
++  struct fixture peer = fixture (1);
++  struct malloc_bounded_receipt fact;
++  unsigned char saved[64];
++  memcpy (saved, peer.backing, sizeof (saved));
++  TEST_COMPARE (malloc_bounded_process_current_np (malloc_bounded_process_np (),
++                                                   getpid (), peer.backing),
++                EINVAL);
++  TEST_COMPARE (memcmp (saved, peer.backing, sizeof (saved)), 0);
++  TEST_COMPARE (malloc_bounded_query_np (f.owner, f.incarnation,
++                    (struct malloc_bounded_receipt *) peer.backing), EINVAL);
++  TEST_COMPARE (memcmp (saved, peer.backing, sizeof (saved)), 0);
++  struct malloc_bounded_config config = configuration (1);
++  malloc_bounded_t *other;
++  uint64_t incarnation;
++  TEST_COMPARE (malloc_bounded_init_np (peer.backing, BACKING_BYTES, &config,
++                                        &other, &incarnation), EINVAL);
++  TEST_COMPARE (memcmp (saved, peer.backing, sizeof (saved)), 0);
++  TEST_COMPARE (malloc_bounded_query_np ((void *) 1, f.incarnation, &fact), ESRCH);
++  TEST_COMPARE (malloc_bounded_tryretire_np (f.owner, f.incarnation, &fact), 0);
++  uint64_t old = f.incarnation;
++  TEST_COMPARE (mprotect (f.backing, BACKING_BYTES, PROT_NONE), 0);
++  TEST_COMPARE (malloc_bounded_init_np (f.backing, BACKING_BYTES, &config,
++                                        &f.owner, &f.incarnation), EINVAL);
++  TEST_COMPARE (malloc_bounded_query_np (f.owner, old, &fact), ESRCH);
++  retire (&peer);
++}
++
++static void
++invalid_release_child (void *argument)
++{
++  struct fixture f = fixture (1);
++  struct malloc_bounded_token token;
++  TEST_COMPARE (malloc_bounded_allocate_np (f.owner, f.incarnation, 1, 16,
++                                           &token), 0);
++  if (argument == NULL)
++    {
++      TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, token), 0);
++      TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, token),
++                    EPROTO);
++    }
++  else if ((uintptr_t) argument == 1)
++    {
++      uint64_t pin;
++      TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &pin), 0);
++      free ((char *) token.pointer + 1);
++      TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, pin), 0);
++    }
++  else
++    {
++      atomic_store_release (&__pthread_bounded_registration_lock, 1);
++      free (token.pointer);
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
++      TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, token), 0);
++    }
++  struct malloc_bounded_receipt fact;
++  TEST_COMPARE (malloc_bounded_tryretire_np (f.owner, f.incarnation, &fact), EPROTO);
++  TEST_COMPARE (fact.libc_custody_returned, 0);
++  /* Deliberate uncertain storage stays retained through process reap.  */
++}
++
++extern int __cxa_thread_atexit_impl (void (*) (void *), void *, void *);
++extern void *__dso_handle;
++
++static void
++tls_destructor (void *pointer)
++{
++  free (pointer);
++}
++
++static pthread_key_t keys[33];
++static unsigned int destructor_entered;
++static unsigned int destructor_release;
++
++static void
++destructor (void *pointer)
++{
++  atomic_store_release (&destructor_entered, 1);
++  while (!atomic_load_acquire (&destructor_release))
++    sched_yield ();
++  free (pointer);
++}
++
++static void *
++bound_worker (void *unused)
++{
++  (void) unused;
++  void *tls_data = malloc (17);
++  TEST_VERIFY_EXIT (tls_data != NULL);
++  TEST_COMPARE (__cxa_thread_atexit_impl (tls_destructor, tls_data,
++                                         &__dso_handle), 0);
++  void *data = malloc (41);
++  TEST_VERIFY_EXIT (data != NULL);
++  TEST_COMPARE (pthread_setspecific (keys[32], data), 0);
++  return NULL;
++}
++
++static void
++terminal_controls (void)
++{
++  struct fixture app = fixture (8);
++  void *metadata = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (metadata != MAP_FAILED);
++  struct pthread_bounded_config config =
++    { .version = PTHREAD_BOUNDED_VERSION, .size = sizeof (config),
++      .flags = PTHREAD_BOUNDED_STRICT };
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    config.limit[i] = (struct pthread_bounded_limit) { 8, 4096, 64 };
++  pthread_bounded_t *thread_owner;
++  uint64_t thread_incarnation;
++  TEST_COMPARE (pthread_bounded_init_np (metadata, BACKING_BYTES, &config,
++                                        &thread_owner, &thread_incarnation), 0);
++  uint64_t pin;
++  TEST_COMPARE (malloc_bounded_bind_np (app.owner, app.incarnation, thread_owner,
++                                        thread_incarnation, &pin), 0);
++  struct malloc_bounded_attachment attachment;
++  TEST_COMPARE (malloc_bounded_attachment_np (app.owner, app.incarnation, pin,
++                                              &attachment), 0);
++  TEST_COMPARE (attachment.thread_control, (uintptr_t) thread_owner);
++  TEST_COMPARE (attachment.thread_incarnation, thread_incarnation);
++  TEST_COMPARE (attachment.returned, 0);
++
++  for (size_t i = 0; i < 33; ++i)
++    TEST_COMPARE (pthread_key_create (&keys[i], destructor), 0);
++  size_t page = sysconf (_SC_PAGESIZE);
++  void *mapping = mmap (NULL, BACKING_BYTES + 2 * page, PROT_NONE,
++                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (mapping != MAP_FAILED);
++  TEST_COMPARE (mprotect ((char *) mapping + page, BACKING_BYTES,
++                          PROT_READ | PROT_WRITE), 0);
++  pthread_attr_t attributes;
++  xpthread_attr_init (&attributes);
++  TEST_COMPARE (pthread_attr_setstack (&attributes, (char *) mapping + page,
++                                       BACKING_BYTES), 0);
++  pthread_t thread;
++  struct pthread_bounded_receipt thread_fact;
++  TEST_COMPARE (pthread_bounded_create_np (thread_owner, thread_incarnation,
++                                          &thread, &attributes, bound_worker,
++                                          NULL, &thread_fact), 0);
++  while (!atomic_load_acquire (&destructor_entered))
++    sched_yield ();
++  struct malloc_bounded_receipt fact;
++  TEST_COMPARE (malloc_bounded_tryretire_np (app.owner, app.incarnation, &fact),
++                EBUSY);
++  TEST_COMPARE (fact.attached, 1);
++  TEST_COMPARE (fact.live, 1);
++  TEST_COMPARE (pthread_bounded_tryretire_np (thread_owner, thread_incarnation,
++                                             NULL, &thread_fact), EBUSY);
++  TEST_VERIFY (thread_fact.allocation[PTHREAD_BOUNDED_TSD].allocated != 0);
++  TEST_COMPARE (fact.allocated, 2);
++  TEST_COMPARE (thread_fact.allocation[PTHREAD_BOUNDED_DESTRUCTOR].allocated, 1);
++  TEST_COMPARE (thread_fact.allocation[PTHREAD_BOUNDED_DESTRUCTOR].released, 1);
++  atomic_store_release (&destructor_release, 1);
++  /* Actual kernel clear-tid alone must leave the application pin retained.  */
++  while (atomic_load_acquire (&((struct pthread *) thread)->tid) != 0)
++    sched_yield ();
++  TEST_COMPARE (malloc_bounded_query_np (app.owner, app.incarnation, &fact), 0);
++  TEST_COMPARE (fact.live, 0);
++  TEST_COMPARE (fact.attached, 1);
++  TEST_COMPARE (pthread_bounded_tryretire_np (thread_owner, thread_incarnation,
++                                             NULL, &thread_fact), 0);
++  TEST_COMPARE (thread_fact.joined, 1);
++  TEST_COMPARE (thread_fact.tls_returned, 1);
++  TEST_COMPARE (malloc_bounded_attachment_np (app.owner, app.incarnation, pin,
++                                              &attachment), 0);
++  TEST_COMPARE (attachment.returned, 1);
++  retire (&app);
++  for (size_t i = 0; i < 33; ++i)
++    TEST_COMPARE (pthread_key_delete (keys[i]), 0);
++  xpthread_attr_destroy (&attributes);
++  TEST_COMPARE (munmap (metadata, BACKING_BYTES), 0);
++  TEST_COMPARE (munmap (mapping, BACKING_BYTES + 2 * page), 0);
++}
++
++static void
++no_birth_controls (void)
++{
++  struct fixture app = fixture (0);
++  void *metadata = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (metadata != MAP_FAILED);
++  struct pthread_bounded_config config =
++    { .version = PTHREAD_BOUNDED_VERSION, .size = sizeof (config),
++      .flags = PTHREAD_BOUNDED_STRICT };
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    config.limit[i].alignment = 16;
++  pthread_bounded_t *owner;
++  uint64_t incarnation, pin;
++  TEST_COMPARE (pthread_bounded_init_np (metadata, BACKING_BYTES, &config,
++                                        &owner, &incarnation), 0);
++  TEST_COMPARE (malloc_bounded_bind_np (app.owner, app.incarnation, owner,
++                                        incarnation, &pin), 0);
++  pthread_t thread;
++  struct pthread_bounded_receipt fact;
++  TEST_COMPARE (pthread_bounded_create_np (owner, incarnation, &thread, NULL,
++                                          bound_worker, NULL, &fact), EINVAL);
++  TEST_COMPARE (fact.born, 0);
++  struct malloc_bounded_receipt app_fact;
++  TEST_COMPARE (malloc_bounded_tryretire_np (app.owner, app.incarnation,
++                                             &app_fact), EBUSY);
++  TEST_COMPARE (app_fact.attached, 1);
++  TEST_COMPARE (pthread_bounded_tryretire_np (owner, incarnation, NULL, &fact), 0);
++  struct malloc_bounded_attachment attachment;
++  TEST_COMPARE (malloc_bounded_attachment_np (app.owner, app.incarnation, pin,
++                                              &attachment), 0);
++  TEST_COMPARE (attachment.returned, 1);
++  retire (&app);
++  TEST_COMPARE (munmap (metadata, BACKING_BYTES), 0);
++}
++
++static void
++retired_range_controls (void)
++{
++  struct malloc_bounded_layout before, after;
++  TEST_COMPARE (malloc_bounded_layout_np (&before), 0);
++  struct fixture f = fixture (1);
++  struct malloc_bounded_token token;
++  TEST_COMPARE (malloc_bounded_allocate_np (f.owner, f.incarnation, 16, 16,
++                                           &token), 0);
++  volatile uintptr_t retired_address = (uintptr_t) token.pointer;
++  TEST_COMPARE (malloc_bounded_release_np (f.owner, f.incarnation, token), 0);
++  retire (&f);
++
++  /* The entire returned arena is PROT_NONE.  Known numeric quarantine must
++     refuse these invalid post-lifetime calls without reading that arena or
++     presenting its pointers to ordinary ptmalloc.  */
++  free ((void *) retired_address);
++  void *result = realloc ((void *) retired_address, 32);
++  TEST_VERIFY (result == NULL);
++  TEST_COMPARE (errno, ESTALE);
++  TEST_COMPARE (malloc_usable_size ((void *) retired_address), 0);
++
++  TEST_COMPARE (malloc_bounded_layout_np (&after), 0);
++  TEST_COMPARE (after.retired_ranges, before.retired_ranges + 1);
++  TEST_VERIFY (after.retired_refusals >= before.retired_refusals + 3);
++  TEST_COMPARE (after.retired_uncertain, before.retired_uncertain + 1);
++  struct malloc_bounded_receipt fact;
++  TEST_COMPARE (malloc_bounded_query_np (f.owner, f.incarnation, &fact), ESRCH);
++}
++
++static void
++registry_exhaustion_controls (void)
++{
++  struct malloc_bounded_layout layout;
++  TEST_COMPARE (malloc_bounded_layout_np (&layout), 0);
++  TEST_COMPARE (layout.registry_capacity, 128);
++  TEST_COMPARE (layout.process_alignment, 64);
++  size_t page = sysconf (_SC_PAGESIZE);
++  struct malloc_bounded_config config = configuration (0);
++  config.attachments = 0;
++  for (size_t i = layout.registry_used; i < layout.registry_capacity; ++i)
++    {
++      void *backing = mmap (NULL, page, PROT_READ | PROT_WRITE,
++                            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++      TEST_VERIFY_EXIT (backing != MAP_FAILED);
++      malloc_bounded_t *owner;
++      uint64_t incarnation;
++      TEST_COMPARE (malloc_bounded_init_np (backing, page, &config, &owner,
++                                            &incarnation), 0);
++      struct malloc_bounded_receipt fact;
++      TEST_COMPARE (malloc_bounded_tryretire_np (owner, incarnation, &fact), 0);
++      TEST_COMPARE (fact.registry_used, i + 1);
++      TEST_COMPARE (fact.address_quarantined, 1);
++      TEST_COMPARE (mprotect (backing, page, PROT_NONE), 0);
++    }
++  void *backing = mmap (NULL, page, PROT_READ | PROT_WRITE,
++                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (backing != MAP_FAILED);
++  memset (backing, 0x5a, page);
++  malloc_bounded_t *owner = (void *) 1;
++  uint64_t incarnation = UINT64_MAX;
++  TEST_COMPARE (malloc_bounded_init_np (backing, page, &config, &owner,
++                                        &incarnation), ENOSPC);
++  TEST_COMPARE ((uintptr_t) owner, 1);
++  TEST_COMPARE (incarnation, UINT64_MAX);
++  for (size_t i = 0; i < page; ++i)
++    TEST_COMPARE (((unsigned char *) backing)[i], 0x5a);
++  TEST_COMPARE (munmap (backing, page), 0);
++}
++
++static int
++do_test (void)
++{
++  process_controls ();
++  for (uintptr_t i = 0; i < 3; ++i)
++    {
++      struct support_capture_subprocess child = support_capture_subprocess
++        (invalid_release_child, (void *) i);
++      support_capture_subprocess_check (&child, "release debt", 0, sc_allow_none);
++      support_capture_subprocess_free (&child);
++    }
++  allocation_controls ();
++  release_controls ();
++  identity_controls ();
++  terminal_controls ();
++  no_birth_controls ();
++  retired_range_controls ();
++  registry_exhaustion_controls ();
++  return 0;
++}
++
++#include <support/test-driver.c>
 diff --git a/nptl/Makefile b/nptl/Makefile
-index bf09603..ef853c7 100644
+index bf09603e7b94b2864ace6c78a584520740dc40bc..2627097216cd2aff8e7f0739386119b205199ec5 100644
 --- a/nptl/Makefile
 +++ b/nptl/Makefile
 @@ -27,6 +27,7 @@ headers := \
@@ -591,15 +3162,16 @@ index bf09603..ef853c7 100644
    pthread.h \
    semaphore.h \
    # headers
-@@ -63,6 +64,7 @@ routines = \
+@@ -63,6 +64,8 @@ routines = \
    old_pthread_cond_signal \
    old_pthread_cond_timedwait \
    old_pthread_cond_wait \
 +  pthread-bounded \
++  pthread-bounded-create \
    pthread_atfork \
    pthread_attr_copy \
    pthread_attr_destroy \
-@@ -371,6 +373,7 @@ tests-internal := \
+@@ -371,6 +374,7 @@ tests-internal := \
    tst-mutex8-static \
    tst-mutexpi8 \
    tst-mutexpi8-static \
@@ -607,7 +3179,7 @@ index bf09603..ef853c7 100644
    tst-robustpi8 \
    tst-rwlock19 \
    tst-rwlock20 \
-@@ -475,6 +478,7 @@ modules-names = \
+@@ -475,6 +479,7 @@ modules-names = \
    tst-audit-threads-mod2 \
    tst-compat-forwarder-mod \
    tst-execstack-threads-mod \
@@ -615,7 +3187,7 @@ index bf09603..ef853c7 100644
    tst-stack4mod \
    tst-tls3mod \
    tst-tls5mod \
-@@ -710,3 +714,8 @@ ifneq ($(filter %tests,$(MAKECMDGOALS)),)
+@@ -710,3 +715,8 @@ ifneq ($(filter %tests,$(MAKECMDGOALS)),)
  .NOTPARALLEL:
  endif
  endif
@@ -626,10 +3198,10 @@ index bf09603..ef853c7 100644
 +CFLAGS-tst-pthread-bounded.c += -fno-builtin
 diff --git a/nptl/README.bounded-pthread b/nptl/README.bounded-pthread
 new file mode 100644
-index 0000000..52bdecb
+index 0000000000000000000000000000000000000000..87bf2677c4c8f921e4ccb59ef7c7cb59c60b52a9
 --- /dev/null
 +++ b/nptl/README.bounded-pthread
-@@ -0,0 +1,352 @@
+@@ -0,0 +1,361 @@
 +Bounded supplied-stack pthreads, interface version 1
 +==================================================
 +
@@ -884,6 +3456,13 @@ index 0000000..52bdecb
 +empty, and TLS/error buffers remain NULL.  The no-state cleanup path reaches
 +no ordinary allocator or allocator global lock.
 +
++Allocation and release share one actual nonwaiting allocation try-lock.
++Signal-handler release reentry refuses with sticky cleanup debt instead of
++reading a partially constructed header or releasing a node twice.  Release
++validates alignment and the complete header and payload span before reading
++nominated metadata.  Asynchronous signal-handler allocation remains outside
++the supported caller profile; this lock cut limits damage from reentry.
++
 +Invalid, foreign or duplicate arena-node release also sets sticky
 +cleanup_blocked debt.  Equal allocated/released counters alone cannot return
 +backing after an uncertain TLS pointer release.  Terminal code withholds
@@ -926,7 +3505,9 @@ index 0000000..52bdecb
 +incarnation; stale-incarnation refusal; and fatal dynamic TLS exhaustion
 +rather than heap fallback; strict allocator/resolver/error refusals;
 +foreign-free retained debt; unexpected exit-tail state; raw kernel exit;
-+and independent-owner output alias rejection preserving live stack bytes.
++and independent-owner output alias rejection preserving live stack bytes;
++actual signal-handler release at a held allocation lock; duplicate release;
++and malformed alignment, prefix, endpoint and payload-size refusal.
 +These are implementation controls, not a complete
 +application profile or proof for an unexecuted platform.
 +
@@ -983,7 +3564,7 @@ index 0000000..52bdecb
 +path retains its original assertion and behavior.  Successful later runs do
 +not erase those first failures.
 diff --git a/nptl/Versions b/nptl/Versions
-index 3221de8..1b9795a 100644
+index 3221de89d134e0d3d4086cc3f21078377bd8bdac..1b9795a774c4882a9877344b95fa8ef56b57040c 100644
 --- a/nptl/Versions
 +++ b/nptl/Versions
 @@ -378,6 +378,12 @@ libc {
@@ -1000,7 +3581,7 @@ index 3221de8..1b9795a 100644
      __libc_alloca_cutoff;
      __lll_lock_wake_private;
 diff --git a/nptl/allocatestack.c b/nptl/allocatestack.c
-index f35a836..3d1eca9 100644
+index f35a8369bd5d197a36e9774c30468d2fb2271a48..3d1eca9c3ea3997899e3b8a033fa5ac9ba182121 100644
 --- a/nptl/allocatestack.c
 +++ b/nptl/allocatestack.c
 @@ -212,7 +212,8 @@ advise_stack_range (void *mem, size_t size, uintptr_t pd, size_t guardsize)
@@ -1074,21 +3655,24 @@ index f35a836..3d1eca9 100644
  }
  
 diff --git a/nptl/descr.h b/nptl/descr.h
-index 8cef958..197d583 100644
+index 8cef95810c81eb3b441450de7d7a7af3f771991b..c0a1a117ff421aed910cb411304b192f0b48e331 100644
 --- a/nptl/descr.h
 +++ b/nptl/descr.h
-@@ -323,6 +323,9 @@ struct pthread
+@@ -323,6 +323,12 @@ struct pthread
    /* True if events must be reported.  */
    bool report_events;
  
 +  /* Non-NULL only for explicitly admitted bounded threads.  */
 +  struct __pthread_bounded *bounded;
 +
++  /* Explicit application attachment; never inherited from the creator.  */
++  void *application;
++
    /* True if the user provided the stack.  */
    bool user_stack;
  
 diff --git a/nptl/nptl_deallocate_tsd.c b/nptl/nptl_deallocate_tsd.c
-index 4c3960b..3aa4746 100644
+index 4c3960b516a2583156722f85b6fab1e7284f5053..3aa4746add00e6142eae40061f0d2dd0a1c0e718 100644
 --- a/nptl/nptl_deallocate_tsd.c
 +++ b/nptl/nptl_deallocate_tsd.c
 @@ -16,6 +16,7 @@
@@ -1111,12 +3695,136 @@ index 4c3960b..3aa4746 100644
                THREAD_SETMEM_NC (self, specific, cnt, NULL);
              }
          }
+diff --git a/nptl/pthread-bounded-create.c b/nptl/pthread-bounded-create.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6945b63cd1e66b884b2feb990a208a69f0609494
+--- /dev/null
++++ b/nptl/pthread-bounded-create.c
+@@ -0,0 +1,118 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <pthreadP.h>
++#include <pthread-bounded-internal.h>
++#include <shlib-compat.h>
++
++/* Keep creation and cancellation dependencies out of ordinary allocation
++   and terminal-owner queries, including static support programs.  */
++
++static bool
++spans_overlap (uintptr_t first, size_t first_size,
++               uintptr_t second, size_t second_size)
++{
++  return first <= second ? second - first < first_size
++                         : first - second < second_size;
++}
++
++int
++__pthread_bounded_create_np (pthread_bounded_t *owner, uint64_t incarnation,
++                             pthread_t *thread,
++                             const pthread_attr_t *attr,
++                             void *(*start) (void *), void *arg,
++                             struct pthread_bounded_receipt *receipt)
++{
++  int slot;
++  int locked = __pthread_bounded_lock_control (owner, incarnation, &slot);
++  if (locked != 0)
++    return locked;
++
++  pthread_t created_thread = 0;
++  int status = __pthread_bounded_validate_outputs (receipt, thread,
++                                                    sizeof (*thread));
++  if (status != 0)
++    goto unlock;
++  status = EINVAL;
++  if (owner->state != __PTHREAD_BOUNDED_READY)
++    {
++      status = EALREADY;
++      goto observe;
++    }
++
++  owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
++  owner->fact.create_attempted = 1;
++  if (THREAD_SELF->report_events)
++    {
++      status = ENOTSUP;
++      goto failed;
++    }
++
++  if (thread == NULL || attr == NULL || start == NULL
++      || spans_overlap ((uintptr_t) thread, sizeof (*thread),
++                        owner->fact.backing, owner->fact.backing_bytes))
++    goto failed;
++
++  const struct pthread_attr *internal = (const struct pthread_attr *) attr;
++  uintptr_t top = (uintptr_t) internal->stackaddr;
++  size_t bytes = internal->stacksize;
++  if ((internal->flags & ATTR_FLAG_STACKADDR) == 0
++      || (internal->flags & ATTR_FLAG_DETACHSTATE) != 0
++      || bytes == 0 || top < bytes
++      || spans_overlap (top - bytes, bytes,
++                        owner->fact.backing, owner->fact.backing_bytes)
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) receipt, sizeof (*receipt))
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) thread, sizeof (*thread))
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) attr, sizeof (*attr)))
++    goto failed;
++
++  status = __pthread_bounded_reserve_stack (owner, top - bytes, bytes);
++  if (status != 0)
++    goto failed;
++
++  owner->state = __PTHREAD_BOUNDED_CREATING;
++  status = __pthread_create_bounded (&created_thread, attr, start, arg, owner);
++  if (status == 0)
++    owner->state = __PTHREAD_BOUNDED_ACTIVE;
++  else if (!owner->fact.born)
++    owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
++
++ failed:
++  owner->fact.create_status = status;
++  if (status != 0)
++    __pthread_bounded_error (owner, status);
++ observe:
++  {
++    int post = __pthread_bounded_publish_receipt (owner, receipt,
++                                                 status == 0 ? thread : NULL,
++                                                 created_thread);
++    if (post != 0)
++      {
++        __pthread_bounded_error (owner, post);
++        if (status == 0)
++          status = post;
++      }
++  }
++ unlock:
++  atomic_store_release (&owner->lock, 0);
++  return status;
++}
++versioned_symbol (libc, __pthread_bounded_create_np, pthread_bounded_create_np,
++                  GLIBC_2_39);
 diff --git a/nptl/pthread-bounded-internal.h b/nptl/pthread-bounded-internal.h
 new file mode 100644
-index 0000000..5646854
+index 0000000000000000000000000000000000000000..200023d0d44cbbca780c229e8e778ae188fe5580
 --- /dev/null
 +++ b/nptl/pthread-bounded-internal.h
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,295 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -1170,6 +3878,7 @@ index 0000000..5646854
 +  int allocation_lock;
 +  enum __pthread_bounded_state state;
 +  struct pthread *pd;
++  void *application;
 +  struct pthread_bounded_config config;
 +  struct pthread_bounded_receipt fact;
 +};
@@ -1290,38 +3999,57 @@ index 0000000..5646854
 +  return NULL;
 +}
 +
-+/* Storage stays physically consumed until retirement.  No ordinary free,
-+   allocator cache, callback, lock, or heap fallback is reached here.  */
++/* Storage stays physically consumed until retirement.  Allocation and
++   release share one try-lock, including signal-handler reentry.  An
++   interrupted release is retained debt, never a successful physical free.  */
 +static inline bool
 +__pthread_bounded_release (struct __pthread_bounded *owner, void *pointer)
 +{
 +  if (pointer == NULL)
 +    return true;
 +
-+  uintptr_t address = (uintptr_t) pointer;
-+  uintptr_t base = owner->fact.backing;
-+  size_t prefix = sizeof (struct __pthread_bounded_block);
-+  if (address < base || address - base < sizeof (*owner) + prefix
-+      || address - base > owner->fact.arena_used)
++  int error = EPROTO;
++  if (atomic_exchange_acquire (&owner->allocation_lock, 1) != 0)
 +    {
 +      atomic_store_release (&owner->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (owner, EPROTO);
++      __pthread_bounded_error (owner, EBUSY);
 +      return false;
 +    }
++
++  uintptr_t address = (uintptr_t) pointer;
++  uintptr_t base = owner->fact.backing;
++  size_t used = owner->fact.arena_used;
++  size_t capacity = owner->fact.backing_bytes;
++  size_t prefix = sizeof (struct __pthread_bounded_block);
++
++  /* Validate the complete aligned header before reading nominated metadata.
++     Subtraction checks avoid wrapping either endpoint of the span.  */
++  if (used < sizeof (*owner) || used > capacity
++      || capacity > UINTPTR_MAX - base || address < base
++      || address % _Alignof (struct __pthread_bounded_block) != 0)
++    goto failed;
++  size_t offset = address - base;
++  if (offset > used || offset < sizeof (*owner)
++      || prefix > offset - sizeof (*owner))
++    goto failed;
 +
 +  struct __pthread_bounded_block *block
 +    = (struct __pthread_bounded_block *) pointer - 1;
 +  if (block->owner != owner || block->released
-+      || block->kind >= PTHREAD_BOUNDED_KINDS)
-+    {
-+      atomic_store_release (&owner->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (owner, EPROTO);
-+      return false;
-+    }
++      || (unsigned int) block->kind >= PTHREAD_BOUNDED_KINDS
++      || block->size > used - offset)
++    goto failed;
 +
 +  block->released = true;
 +  atomic_fetch_add_relaxed (&owner->fact.allocation[block->kind].released, 1);
++  atomic_store_release (&owner->allocation_lock, 0);
 +  return true;
++
++ failed:
++  atomic_store_release (&owner->fact.cleanup_blocked, 1);
++  __pthread_bounded_error (owner, error);
++  atomic_store_release (&owner->allocation_lock, 0);
++  return false;
 +}
 +
 +/* CREATE and RETIRE hold the control lock.  The child updates only the
@@ -1375,16 +4103,29 @@ index 0000000..5646854
 +#undef COPY
 +}
 +
++/* Creation is a separate archive member so allocator routing does not pull
++   pthread creation and its cancellation unwinder into static programs.  */
++extern int __pthread_bounded_lock_control (struct __pthread_bounded *, uint64_t,
++                                           int *) attribute_hidden;
++extern int __pthread_bounded_reserve_stack (struct __pthread_bounded *, uintptr_t,
++                                            size_t) attribute_hidden;
++extern int __pthread_bounded_validate_outputs (struct pthread_bounded_receipt *,
++                                               void *, size_t) attribute_hidden;
++extern int __pthread_bounded_publish_receipt (struct __pthread_bounded *,
++                                              struct pthread_bounded_receipt *,
++                                              pthread_t *, pthread_t)
++  attribute_hidden;
++
 +extern int __pthread_create_bounded (pthread_t *, const pthread_attr_t *,
 +                                     void *(*) (void *), void *,
 +                                     struct __pthread_bounded *) attribute_hidden;
 +#endif
 diff --git a/nptl/pthread-bounded.c b/nptl/pthread-bounded.c
 new file mode 100644
-index 0000000..03b458e
+index 0000000000000000000000000000000000000000..f46b9c558afe5226cbb2d0d49b560366e4d6e8cd
 --- /dev/null
 +++ b/nptl/pthread-bounded.c
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,514 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -1407,14 +4148,15 @@ index 0000000..03b458e
 +#include <nptl-stack.h>
 +#include <ldsodefs.h>
 +#include <shlib-compat.h>
++#include <malloc-bounded-internal.h>
 +
 +/* Registration is a real finite admission resource.  Lookup compares the
 +   nominated address before dereferencing it.  Callers serialize lifetime
 +   operations on a control and retain its arena until final return.  */
-+#define BOUNDED_REGISTRATIONS 128
-+static struct __pthread_bounded *registered[BOUNDED_REGISTRATIONS];
-+static uint64_t next_incarnation;
-+static int registration_lock;
++#define BOUNDED_REGISTRATIONS __PTHREAD_BOUNDED_REGISTRATIONS
++struct __pthread_bounded_registry __pthread_bounded_process_registry;
++#define registered __pthread_bounded_process_registry.owner
++#define next_incarnation __pthread_bounded_process_registry.serial
 +
 +static int
 +registration (struct __pthread_bounded *owner)
@@ -1430,10 +4172,11 @@ index 0000000..03b458e
 +
 +/* The registry lock pins a nominated control until its own try-lock is
 +   held.  All lock acquisition is a single attempt, including final return.  */
-+static int
-+lock_control (struct __pthread_bounded *owner, uint64_t incarnation, int *slot)
++int
++__pthread_bounded_lock_control (struct __pthread_bounded *owner, uint64_t incarnation,
++                                int *slot)
 +{
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    return EBUSY;
 +
 +  *slot = registration (owner);
@@ -1448,7 +4191,7 @@ index 0000000..03b458e
 +        }
 +    }
 +
-+  atomic_store_release (&registration_lock, 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +  return status;
 +}
 +
@@ -1463,14 +4206,16 @@ index 0000000..03b458e
 +/* Reserve the supplied mapping against every still-retained arena and
 +   stack.  The registry and actual owner, rather than a copied receipt,
 +   establish whether a span is already in custody.  */
-+static int
-+reserve_stack (struct __pthread_bounded *owner, uintptr_t base, size_t bytes)
++int
++__pthread_bounded_reserve_stack (struct __pthread_bounded *owner, uintptr_t base,
++                                 size_t bytes)
 +{
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    return EBUSY;
 +
-+  int status = 0;
-+  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++  int status = __pthread_bounded_external_span_locked ((void *) base, bytes)
++               ? 0 : EBUSY;
++  for (size_t i = 0; status == 0 && i < BOUNDED_REGISTRATIONS; ++i)
 +    {
 +      struct __pthread_bounded *other = atomic_load_acquire (&registered[i]);
 +      if (other != NULL
@@ -1490,18 +4235,22 @@ index 0000000..03b458e
 +      owner->fact.stack = base;
 +      owner->fact.stack_bytes = bytes;
 +    }
-+  atomic_store_release (&registration_lock, 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +  return status;
 +}
 +
 +/* Output validation and writes share the registry lock.  A separately
 +   admitted owner cannot begin occupying an output span between the check
 +   and the write.  Only canonical registry entries supply peer geometry.  */
-+static bool
-+external_span_locked (const void *pointer, size_t bytes)
++bool
++__pthread_bounded_external_span_locked (const void *pointer, size_t bytes)
 +{
 +  uintptr_t address = (uintptr_t) pointer;
-+  if (pointer == NULL || bytes > UINTPTR_MAX - address)
++  if (pointer == NULL || bytes > UINTPTR_MAX - address
++      || !__malloc_bounded_external_span_locked (pointer, bytes)
++      || spans_overlap (address, bytes,
++                         (uintptr_t) &__pthread_bounded_process_registry,
++                         sizeof (__pthread_bounded_process_registry)))
 +    return false;
 +
 +  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
@@ -1521,30 +4270,30 @@ index 0000000..03b458e
 +outputs_locked (struct pthread_bounded_receipt *receipt,
 +                void *extra, size_t extra_bytes)
 +{
-+  return external_span_locked (receipt, sizeof (*receipt))
++  return __pthread_bounded_external_span_locked (receipt, sizeof (*receipt))
 +    && (extra == NULL
-+        || (external_span_locked (extra, extra_bytes)
++        || (__pthread_bounded_external_span_locked (extra, extra_bytes)
 +            && !spans_overlap ((uintptr_t) extra, extra_bytes,
 +                               (uintptr_t) receipt, sizeof (*receipt))));
 +}
 +
-+static int
-+validate_outputs (struct pthread_bounded_receipt *receipt,
-+                  void *extra, size_t extra_bytes)
++int
++__pthread_bounded_validate_outputs (struct pthread_bounded_receipt *receipt,
++                                    void *extra, size_t extra_bytes)
 +{
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    return EBUSY;
 +  int status = outputs_locked (receipt, extra, extra_bytes) ? 0 : EINVAL;
-+  atomic_store_release (&registration_lock, 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +  return status;
 +}
 +
-+static int
-+publish_receipt (struct __pthread_bounded *owner,
-+                 struct pthread_bounded_receipt *receipt,
-+                 pthread_t *thread, pthread_t value)
++int
++__pthread_bounded_publish_receipt (struct __pthread_bounded *owner,
++                                   struct pthread_bounded_receipt *receipt,
++                                   pthread_t *thread, pthread_t value)
 +{
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    return EBUSY;
 +  int status = outputs_locked (receipt, thread, sizeof (*thread)) ? 0 : EINVAL;
 +  if (status == 0)
@@ -1553,7 +4302,7 @@ index 0000000..03b458e
 +        *thread = value;
 +      __pthread_bounded_snapshot (owner, receipt);
 +    }
-+  atomic_store_release (&registration_lock, 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +  return status;
 +}
 +
@@ -1606,16 +4355,23 @@ index 0000000..03b458e
 +  if (required > bytes)
 +    return ENOMEM;
 +
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    return EBUSY;
 +
-+  if (!external_span_locked (control, sizeof (*control))
-+      || !external_span_locked (incarnation_out, sizeof (*incarnation_out))
++  if (!__pthread_bounded_external_span_locked (control, sizeof (*control))
++      || !__pthread_bounded_external_span_locked (incarnation_out,
++                                                  sizeof (*incarnation_out))
 +      || spans_overlap ((uintptr_t) control, sizeof (*control),
 +                         (uintptr_t) incarnation_out, sizeof (*incarnation_out)))
 +    {
-+      atomic_store_release (&registration_lock, 0);
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +      return EINVAL;
++    }
++
++  if (!__pthread_bounded_external_span_locked (backing, bytes))
++    {
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
++      return EBUSY;
 +    }
 +
 +  /* Initialization must not overwrite an arena already in libc custody.  */
@@ -1628,7 +4384,7 @@ index 0000000..03b458e
 +              || spans_overlap (address, bytes,
 +                                other->fact.stack, other->fact.stack_bytes)))
 +        {
-+          atomic_store_release (&registration_lock, 0);
++          atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +          return EBUSY;
 +        }
 +    }
@@ -1636,7 +4392,7 @@ index 0000000..03b458e
 +  uint64_t incarnation = atomic_load_relaxed (&next_incarnation);
 +  if (incarnation == UINT64_MAX)
 +    {
-+      atomic_store_release (&registration_lock, 0);
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +      return EOVERFLOW;
 +    }
 +  /* Registration serializes the sole writer.  No CAS retry is needed.  */
@@ -1662,13 +4418,13 @@ index 0000000..03b458e
 +        {
 +          *control = owner;
 +          *incarnation_out = owner->fact.incarnation;
-+          atomic_store_release (&registration_lock, 0);
++          atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +          return 0;
 +        }
 +    }
 +
 +  owner->magic = 0;
-+  atomic_store_release (&registration_lock, 0);
++  atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +  return EAGAIN;
 +#endif
 +}
@@ -1676,100 +4432,15 @@ index 0000000..03b458e
 +                  GLIBC_2_39);
 +
 +int
-+__pthread_bounded_create_np (pthread_bounded_t *owner, uint64_t incarnation,
-+                             pthread_t *thread,
-+                             const pthread_attr_t *attr,
-+                             void *(*start) (void *), void *arg,
-+                             struct pthread_bounded_receipt *receipt)
-+{
-+  int slot;
-+  int locked = lock_control (owner, incarnation, &slot);
-+  if (locked != 0)
-+    return locked;
-+
-+  pthread_t created_thread = 0;
-+  int status = validate_outputs (receipt, thread, sizeof (*thread));
-+  if (status != 0)
-+    goto unlock;
-+  status = EINVAL;
-+  if (owner->state != __PTHREAD_BOUNDED_READY)
-+    {
-+      status = EALREADY;
-+      goto observe;
-+    }
-+
-+  owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
-+  owner->fact.create_attempted = 1;
-+  if (THREAD_SELF->report_events)
-+    {
-+      status = ENOTSUP;
-+      goto failed;
-+    }
-+
-+  if (thread == NULL || attr == NULL || start == NULL
-+      || spans_overlap ((uintptr_t) thread, sizeof (*thread),
-+                        owner->fact.backing, owner->fact.backing_bytes))
-+    goto failed;
-+
-+  const struct pthread_attr *internal = (const struct pthread_attr *) attr;
-+  uintptr_t top = (uintptr_t) internal->stackaddr;
-+  size_t bytes = internal->stacksize;
-+  if ((internal->flags & ATTR_FLAG_STACKADDR) == 0
-+      || (internal->flags & ATTR_FLAG_DETACHSTATE) != 0
-+      || bytes == 0 || top < bytes
-+      || spans_overlap (top - bytes, bytes,
-+                        owner->fact.backing, owner->fact.backing_bytes)
-+      || spans_overlap (top - bytes, bytes,
-+                        (uintptr_t) receipt, sizeof (*receipt))
-+      || spans_overlap (top - bytes, bytes,
-+                        (uintptr_t) thread, sizeof (*thread))
-+      || spans_overlap (top - bytes, bytes,
-+                        (uintptr_t) attr, sizeof (*attr)))
-+    goto failed;
-+
-+  status = reserve_stack (owner, top - bytes, bytes);
-+  if (status != 0)
-+    goto failed;
-+
-+  owner->state = __PTHREAD_BOUNDED_CREATING;
-+  status = __pthread_create_bounded (&created_thread, attr, start, arg, owner);
-+  if (status == 0)
-+    owner->state = __PTHREAD_BOUNDED_ACTIVE;
-+  else if (!owner->fact.born)
-+    owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
-+
-+ failed:
-+  owner->fact.create_status = status;
-+  if (status != 0)
-+    __pthread_bounded_error (owner, status);
-+ observe:
-+  {
-+    int post = publish_receipt (owner, receipt,
-+                                status == 0 ? thread : NULL, created_thread);
-+    if (post != 0)
-+      {
-+        __pthread_bounded_error (owner, post);
-+        if (status == 0)
-+          status = post;
-+      }
-+  }
-+ unlock:
-+  atomic_store_release (&owner->lock, 0);
-+  return status;
-+}
-+versioned_symbol (libc, __pthread_bounded_create_np, pthread_bounded_create_np,
-+                  GLIBC_2_39);
-+
-+int
 +__pthread_bounded_query_np (pthread_bounded_t *owner, uint64_t incarnation,
 +                            struct pthread_bounded_receipt *receipt)
 +{
 +  int slot;
-+  int locked = lock_control (owner, incarnation, &slot);
++  int locked = __pthread_bounded_lock_control (owner, incarnation, &slot);
 +  if (locked != 0)
 +    return locked;
 +
-+  int status = publish_receipt (owner, receipt, NULL, 0);
++  int status = __pthread_bounded_publish_receipt (owner, receipt, NULL, 0);
 +  atomic_store_release (&owner->lock, 0);
 +  return status;
 +}
@@ -1782,11 +4453,12 @@ index 0000000..03b458e
 +                               struct pthread_bounded_receipt *receipt)
 +{
 +  int slot;
-+  int locked = lock_control (owner, incarnation, &slot);
++  int locked = __pthread_bounded_lock_control (owner, incarnation, &slot);
 +  if (locked != 0)
 +    return locked;
 +
-+  int status = validate_outputs (receipt, result, sizeof (*result));
++  int status = __pthread_bounded_validate_outputs (receipt, result,
++                                                    sizeof (*result));
 +  if (status != 0)
 +    goto unlock;
 +  status = EINVAL;
@@ -1898,7 +4570,7 @@ index 0000000..03b458e
 +        goto observe;
 +      }
 +
-+  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++  if (atomic_exchange_acquire (&__pthread_bounded_registration_lock, 1) != 0)
 +    {
 +      status = EBUSY;
 +      goto observe;
@@ -1906,12 +4578,16 @@ index 0000000..03b458e
 +
 +  if (!outputs_locked (receipt, result, sizeof (*result)))
 +    {
-+      atomic_store_release (&registration_lock, 0);
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +      status = EINVAL;
 +      goto observe;
 +    }
 +  if (owner->fact.born && result != NULL)
 +    *result = pd->result;
++  __malloc_bounded_pthread_return_locked (owner->application);
++  owner->application = NULL;
++  if (pd != NULL)
++    pd->application = NULL;
 +  atomic_store_release (&registered[slot], NULL);
 +  owner->fact.registration_returned = 1;
 +  owner->fact.stack_returned = owner->fact.stack_bytes != 0;
@@ -1927,11 +4603,11 @@ index 0000000..03b458e
 +    {
 +      __pthread_bounded_snapshot (owner, receipt);
 +      atomic_store_release (&owner->lock, 0);
-+      atomic_store_release (&registration_lock, 0);
++      atomic_store_release (&__pthread_bounded_registration_lock, 0);
 +      return status;
 +    }
 +  {
-+    int post = publish_receipt (owner, receipt, NULL, 0);
++    int post = __pthread_bounded_publish_receipt (owner, receipt, NULL, 0);
 +    if (post != 0)
 +      {
 +        __pthread_bounded_error (owner, post);
@@ -1945,9 +4621,28 @@ index 0000000..03b458e
 +}
 +versioned_symbol (libc, __pthread_bounded_tryretire_np,
 +                  pthread_bounded_tryretire_np, GLIBC_2_39);
++
++/* The caller holds the shared registration gate.  Membership precedes every
++   nominated owner dereference, and birth cannot race the owner try-lock.  */
++int
++__pthread_bounded_bind_application_locked (pthread_bounded_t *owner,
++                                          uint64_t incarnation, void *pin)
++{
++  if (registration (owner) < 0)
++    return ESRCH;
++  if (atomic_exchange_acquire (&owner->lock, 1) != 0)
++    return EBUSY;
++  int status = owner->fact.incarnation != incarnation ? ESTALE
++               : owner->state != __PTHREAD_BOUNDED_READY
++                 || owner->application != NULL ? EALREADY : 0;
++  if (status == 0)
++    owner->application = pin;
++  atomic_store_release (&owner->lock, 0);
++  return status;
++}
 diff --git a/nptl/pthread-bounded.h b/nptl/pthread-bounded.h
 new file mode 100644
-index 0000000..ef04db1
+index 0000000000000000000000000000000000000000..ef04db1b624f2c4741cd07b47396efcec1e4066b
 --- /dev/null
 +++ b/nptl/pthread-bounded.h
 @@ -0,0 +1,149 @@
@@ -2101,18 +4796,19 @@ index 0000000..ef04db1
 +__END_DECLS
 +#endif
 diff --git a/nptl/pthread_create.c b/nptl/pthread_create.c
-index 1d3665d..c52479f 100644
+index 1d3665d5edb684e3de0e070763914a90b47545c7..80593ae61cb4dc0029a8a9258b6c44427bcd90d4 100644
 --- a/nptl/pthread_create.c
 +++ b/nptl/pthread_create.c
-@@ -42,6 +42,7 @@
+@@ -42,6 +42,8 @@
  #include <shlib-compat.h>
  
  #include <stap-probe.h>
 +#include <pthread-bounded-internal.h>
++#include <malloc-bounded-internal.h>
  
  
  /* Globally enabled events.  */
-@@ -294,6 +295,9 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
+@@ -294,6 +296,9 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
        .stack_size = stacksize,
        .tls = (uintptr_t) tp,
      };
@@ -2122,7 +4818,7 @@ index 1d3665d..c52479f 100644
    int ret = __clone_internal (&args, &start_thread, pd);
    if (__glibc_unlikely (ret == -1))
      return errno;
-@@ -301,6 +305,8 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
+@@ -301,6 +306,8 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
    /* It's started now, so if we fail below, we'll have to let it clean itself
       up.  */
    *thread_ran = true;
@@ -2131,7 +4827,7 @@ index 1d3665d..c52479f 100644
  
    /* Now we have the possibility to set scheduling parameters etc.  */
    if (attr != NULL)
-@@ -432,6 +438,9 @@ start_thread (void *arg)
+@@ -432,6 +439,9 @@ start_thread (void *arg)
  
        LIBC_PROBE (pthread_start, 3, (pthread_t) pd, pd->start_routine, pd->arg);
  
@@ -2141,7 +4837,7 @@ index 1d3665d..c52479f 100644
        /* Run the code the user provided.  */
        void *ret;
        if (pd->c11)
-@@ -457,6 +466,10 @@ start_thread (void *arg)
+@@ -457,6 +467,10 @@ start_thread (void *arg)
    /* Clean up any state libc stored in thread-local variables.  */
    __libc_thread_freeres ();
  
@@ -2152,7 +4848,7 @@ index 1d3665d..c52479f 100644
    /* Report the death of the thread if this is wanted.  */
    if (__glibc_unlikely (pd->report_events))
      {
-@@ -620,9 +633,10 @@ report_thread_creation (struct pthread *pd)
+@@ -620,10 +634,17 @@ report_thread_creation (struct pthread *pd)
  }
  
  
@@ -2164,9 +4860,16 @@ index 1d3665d..c52479f 100644
 +                         void *(*start_routine) (void *), void *arg,
 +                         struct __pthread_bounded *bounded)
  {
++  if (bounded == NULL && __malloc_bounded_attached ())
++    {
++      __malloc_bounded_allocation_refused (ENOTSUP);
++      return ENOTSUP;
++    }
++
    void *stackaddr = NULL;
    size_t stacksize = 0;
-@@ -652,7 +666,7 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+ 
+@@ -652,7 +673,7 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
      }
  
    struct pthread *pd = NULL;
@@ -2175,7 +4878,15 @@ index 1d3665d..c52479f 100644
    int retval = 0;
  
    if (__glibc_unlikely (err != 0))
-@@ -842,6 +856,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+@@ -680,6 +701,7 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+   /* Store the address of the start routine and the parameter.  Since
+      we do not start the function directly the stillborn thread will
+      get the information from its thread descriptor.  */
++  pd->application = bounded == NULL ? NULL : bounded->application;
+   pd->start_routine = start_routine;
+   pd->arg = arg;
+   pd->c11 = c11;
+@@ -842,6 +864,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
  
    if (__glibc_unlikely (retval != 0))
      {
@@ -2198,7 +4909,7 @@ index 1d3665d..c52479f 100644
        if (thread_ran)
  	/* State (c) and we not have PD ownership (see CONCURRENCY NOTES
  	   above).  We can assert that STOPPED_START must have been true
-@@ -899,6 +929,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+@@ -899,6 +937,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
  
    return retval;
  }
@@ -2222,7 +4933,7 @@ index 1d3665d..c52479f 100644
  libc_hidden_ver (__pthread_create_2_1, __pthread_create)
  #ifndef SHARED
 diff --git a/nptl/pthread_detach.c b/nptl/pthread_detach.c
-index 25eea52..a05a949 100644
+index 25eea5263b430b4fdb503dbd5e4e4ae252ec924b..a05a949c4d389cc29f061cba8f26599e1ae9aad8 100644
 --- a/nptl/pthread_detach.c
 +++ b/nptl/pthread_detach.c
 @@ -25,6 +25,9 @@ ___pthread_detach (pthread_t th)
@@ -2236,7 +4947,7 @@ index 25eea52..a05a949 100644
    if (INVALID_NOT_TERMINATED_TD_P (pd))
      /* Not a valid thread handle.  */
 diff --git a/nptl/pthread_join_common.c b/nptl/pthread_join_common.c
-index 9c685c7..d74439f 100644
+index 9c685c79cfd194154d1b39be18b084f287917f04..d74439f59fc21ca8f6ca4456e9d104247ea9a982 100644
 --- a/nptl/pthread_join_common.c
 +++ b/nptl/pthread_join_common.c
 @@ -39,6 +39,9 @@ __pthread_clockjoin_ex (pthread_t threadid, void **thread_return,
@@ -2250,18 +4961,19 @@ index 9c685c7..d74439f 100644
    if (INVALID_NOT_TERMINATED_TD_P (pd))
      /* Not a valid thread handle.  */
 diff --git a/nptl/pthread_setspecific.c b/nptl/pthread_setspecific.c
-index ae1d79c..23807ed 100644
+index ae1d79c118475bc15c8f41a80421ee500ec1fc08..f1ab1e31eaa1a828cace96421051a855bbb94616 100644
 --- a/nptl/pthread_setspecific.c
 +++ b/nptl/pthread_setspecific.c
-@@ -19,6 +19,7 @@
+@@ -19,6 +19,8 @@
  #include <stdlib.h>
  #include "pthreadP.h"
  #include <shlib-compat.h>
 +#include <pthread-bounded-internal.h>
++#include <malloc-bounded-internal.h>
  
  int
  ___pthread_setspecific (pthread_key_t key, const void *value)
-@@ -65,9 +66,13 @@ ___pthread_setspecific (pthread_key_t key, const void *value)
+@@ -65,9 +67,18 @@ ___pthread_setspecific (pthread_key_t key, const void *value)
  	       be NULL.  We can save the memory allocation.  */
  	    return 0;
  
@@ -2273,24 +4985,30 @@ index ae1d79c..23807ed 100644
 +              (self->bounded, PTHREAD_BOUNDED_TSD,
 +               PTHREAD_KEY_2NDLEVEL_SIZE * sizeof (*level2),
 +               _Alignof (struct pthread_key_data));
++          else if (__malloc_bounded_attached ())
++            {
++              __malloc_bounded_allocation_refused (ENOTSUP);
++              return ENOTSUP;
++            }
 +          else
 +            level2 = calloc (PTHREAD_KEY_2NDLEVEL_SIZE, sizeof (*level2));
  	  if (level2 == NULL)
  	    return ENOMEM;
  
 diff --git a/nptl/tpp.c b/nptl/tpp.c
-index 0cae7d8..cc5cfbf 100644
+index 0cae7d804b8db737c56be587db99c751aea6591b..c61625410065b8d1d1384ec064e80031be63755e 100644
 --- a/nptl/tpp.c
 +++ b/nptl/tpp.c
-@@ -20,6 +20,7 @@
+@@ -20,6 +20,8 @@
  #include <atomic.h>
  #include <errno.h>
  #include <pthreadP.h>
 +#include <pthread-bounded-internal.h>
++#include <malloc-bounded-internal.h>
  #include <sched.h>
  #include <stdlib.h>
  #include <atomic.h>
-@@ -73,7 +74,12 @@ __pthread_tpp_change_priority (int previous_prio, int new_prio)
+@@ -73,7 +75,17 @@ __pthread_tpp_change_priority (int previous_prio, int new_prio)
        size_t size = sizeof *tpp;
        size += (fifo_max_prio - fifo_min_prio + 1)
  	      * sizeof (tpp->priomap[0]);
@@ -2299,6 +5017,11 @@ index 0cae7d8..cc5cfbf 100644
 +        tpp = __pthread_bounded_allocate
 +          (self->bounded, PTHREAD_BOUNDED_PRIORITY, size,
 +           _Alignof (struct priority_protection_data));
++      else if (__malloc_bounded_attached ())
++        {
++          __malloc_bounded_allocation_refused (ENOTSUP);
++          return ENOTSUP;
++        }
 +      else
 +        tpp = calloc (size, 1);
        if (tpp == NULL)
@@ -2306,7 +5029,7 @@ index 0cae7d8..cc5cfbf 100644
        tpp->priomax = fifo_min_prio - 1;
 diff --git a/nptl/tst-pthread-bounded-mod.c b/nptl/tst-pthread-bounded-mod.c
 new file mode 100644
-index 0000000..b3606f0
+index 0000000000000000000000000000000000000000..b3606f02b4bc332ffda825ef939240ad9a386fca
 --- /dev/null
 +++ b/nptl/tst-pthread-bounded-mod.c
 @@ -0,0 +1,26 @@
@@ -2338,10 +5061,10 @@ index 0000000..b3606f0
 +}
 diff --git a/nptl/tst-pthread-bounded.c b/nptl/tst-pthread-bounded.c
 new file mode 100644
-index 0000000..1f67d38
+index 0000000000000000000000000000000000000000..111a759e5f5299234070d244d4ca7acd11f4cb18
 --- /dev/null
 +++ b/nptl/tst-pthread-bounded.c
-@@ -0,0 +1,863 @@
+@@ -0,0 +1,954 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -3178,472 +5901,6 @@ index 0000000..1f67d38
 +  release_fixture (&test);
 +}
 +
-+static int
-+do_test (void)
-+{
-+  loader_state = dlsym (RTLD_DEFAULT, "_rtld_global");
-+  TEST_VERIFY_EXIT (loader_state != NULL);
-+  printf ("bounded layout: control=%zu block=%zu config=%zu receipt=%zu "
-+          "pthread=%zu\n", sizeof (pthread_bounded_t),
-+          sizeof (struct __pthread_bounded_block),
-+          sizeof (struct pthread_bounded_config),
-+          sizeof (struct pthread_bounded_receipt), sizeof (struct pthread));
-+  struct pthread_bounded_receipt receipt;
-+  TEST_COMPARE (pthread_bounded_query_np
-+                ((pthread_bounded_t *) (uintptr_t) 1, 1, &receipt), ESRCH);
-+  test_refusal_contention ();
-+  test_unfunded_dtv ();
-+  test_born_never_entered ();
-+  test_enforced_requests ();
-+  test_strict_refusals ();
-+  test_retained_unknown_debt ();
-+  test_terminal_and_growth ();
-+  test_fatal_tls_exhaustion ();
-+  test_fatal_rpc_refusal ();
-+  return 0;
-+}
-+
-+#define TIMEOUT 30
-+#include <support/test-driver.c>
-diff --git a/resolv/res-close.c b/resolv/res-close.c
-index 5cd4b2f..934c4ab 100644
---- a/resolv/res-close.c
-+++ b/resolv/res-close.c
-@@ -83,6 +83,8 @@
-  */
- 
- #include <resolv-internal.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- #include <resolv_context.h>
- #include <resolv_conf.h>
- #include <not-cancel.h>
-@@ -93,6 +95,13 @@
- void
- __res_iclose (res_state statp, bool free_addr)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return;
-+    }
-+
-   if (statp->_vcsock >= 0)
-     {
-       __close_nocancel_nostatus (statp->_vcsock);
-@@ -129,6 +138,13 @@ libc_hidden_def (__res_nclose)
- void
- __res_thread_freeres (void)
- {
-+  if (__pthread_bounded_current () != NULL && _res.nscount != 0)
-+    {
-+      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
-+      return;
-+    }
-+
-   __resolv_context_freeres ();
- 
-   if (_res.nscount == 0)
-diff --git a/resolv/res_init.c b/resolv/res_init.c
-index 263263d..344ac99 100644
---- a/resolv/res_init.c
-+++ b/resolv/res_init.c
-@@ -85,6 +85,8 @@
- #include <ctype.h>
- #include <netdb.h>
- #include <resolv/resolv-internal.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- #include <res_hconf.h>
- #include <stdio.h>
- #include <stdio_ext.h>
-@@ -619,6 +621,13 @@ __resolv_conf_load (struct __res_state *preinit,
- int
- __res_vinit (res_state statp, int preinit)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return -1;
-+    }
-+
-   struct resolv_conf *conf;
-   if (preinit && has_preinit_values (statp))
-     /* For the preinit case, we cannot use the cached configuration
-diff --git a/resolv/resolv_context.c b/resolv/resolv_context.c
-index d62d8cc..79f497f 100644
---- a/resolv/resolv_context.c
-+++ b/resolv/resolv_context.c
-@@ -17,6 +17,8 @@
-    <https://www.gnu.org/licenses/>.  */
- 
- #include <resolv_context.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- #include <resolv_conf.h>
- #include <resolv-internal.h>
- 
-@@ -175,6 +177,13 @@ context_reuse (void)
- static struct resolv_context *
- context_get (bool preinit)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return NULL;
-+    }
-+
-   if (current != NULL)
-     return context_reuse ();
- 
-@@ -206,6 +215,13 @@ libc_hidden_def (__resolv_context_get_preinit)
- struct resolv_context *
- __resolv_context_get_override (struct __res_state *resp)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return NULL;
-+    }
-+
-   /* NB: As explained asbove, context_alloc will put the context on
-      the current list.  */
-   struct resolv_context *ctx = context_alloc (resp);
-@@ -240,6 +256,13 @@ libc_hidden_def (__resolv_context_put)
- void
- __resolv_context_freeres (void)
- {
-+  if (__pthread_bounded_current () != NULL && (current != NULL))
-+    {
-+      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
-+      return;
-+    }
-+
-   /* Deallocate the entire chain of context objects.  */
-   struct resolv_context *ctx = current;
-   current = NULL;
-diff --git a/stdlib/cxa_thread_atexit_impl.c b/stdlib/cxa_thread_atexit_impl.c
-index c215bdd..7813c71 100644
---- a/stdlib/cxa_thread_atexit_impl.c
-+++ b/stdlib/cxa_thread_atexit_impl.c
-@@ -74,6 +74,8 @@
- 
- #include <stdio.h>
- #include <stdlib.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- #include <ldsodefs.h>
- #include <pointer_guard.h>
- 
-@@ -103,7 +105,19 @@ __cxa_thread_atexit_impl (dtor_func func, void *obj, void *dso_symbol)
-   PTR_MANGLE (func);
- 
-   /* Prepend.  */
--  struct dtor_list *new = calloc (1, sizeof (struct dtor_list));
-+  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
-+  struct dtor_list *new;
-+  if (bounded != NULL)
-+    new = __pthread_bounded_allocate
-+      (bounded, PTHREAD_BOUNDED_DESTRUCTOR, sizeof (*new),
-+       _Alignof (struct dtor_list));
-+  else
-+    new = calloc (1, sizeof (*new));
-+  /* This internal ABI returns an error to its generated-code caller.
-+     Bounded registration must not fall through to the heap or terminate
-+     the process merely because its admitted request count was exceeded.  */
-+  if (new == NULL && bounded != NULL)
-+    return ENOMEM;
-   if (__glibc_unlikely (new == NULL))
-     __libc_fatal ("Fatal glibc error: failed to register TLS destructor: "
- 		  "out of memory\n");
-@@ -160,7 +174,10 @@ __call_tls_dtors (void)
- 	 potential DSO unload in _dl_close_worker, which happens when
- 	 l_tls_dtor_count is 0.  See CONCURRENCY NOTES for more detail.  */
-       atomic_fetch_add_release (&cur->map->l_tls_dtor_count, -1);
--      free (cur);
-+      if (THREAD_SELF->bounded != NULL)
-+        __pthread_bounded_release (THREAD_SELF->bounded, cur);
-+      else
-+        free (cur);
-     }
- }
- libc_hidden_def (__call_tls_dtors)
-diff --git a/string/strerror_l.c b/string/strerror_l.c
-index 15cce26..63d2a45 100644
---- a/string/strerror_l.c
-+++ b/string/strerror_l.c
-@@ -20,6 +20,8 @@
- #include <stdio.h>
- #include <string.h>
- #include <tls-internal.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- 
- 
- static const char *
-@@ -36,6 +38,13 @@ translate (const char *str, locale_t loc)
- char *
- __strerror_l (int errnum, locale_t loc)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return (char *) "Error formatting is unavailable in a bounded thread";
-+    }
-+
-   int saved_errno = errno;
-   char *err = (char *) __get_errlist (errnum);
-   if (__glibc_unlikely (err == NULL))
-diff --git a/string/strsignal.c b/string/strsignal.c
-index 3114601..25a3793 100644
---- a/string/strsignal.c
-+++ b/string/strsignal.c
-@@ -21,11 +21,20 @@
- #include <string.h>
- #include <libintl.h>
- #include <tls-internal.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- 
- /* Return a string describing the meaning of the signal number SIGNUM.  */
- char *
- strsignal (int signum)
- {
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      __set_errno (ENOTSUP);
-+      return NULL;
-+    }
-+
-   const char *desc = __sigdescr_np (signum);
-   if (desc != NULL)
-     return _(desc);
-diff --git a/sunrpc/rpc_thread.c b/sunrpc/rpc_thread.c
-index a04b7ec..da7b627 100644
---- a/sunrpc/rpc_thread.c
-+++ b/sunrpc/rpc_thread.c
-@@ -1,5 +1,8 @@
- #include <stdio.h>
- #include <rpc/rpc.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
-+#include <sysdep.h>
- #include <assert.h>
- 
- #include <libc-lock.h>
-@@ -19,6 +22,13 @@ static __thread struct rpc_thread_variables *thread_rpc_vars
- void
- __rpc_thread_destroy (void)
- {
-+  if (__pthread_bounded_current () != NULL && (thread_rpc_vars != NULL))
-+    {
-+      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
-+      return;
-+    }
-+
- 	struct rpc_thread_variables *tvp = thread_rpc_vars;
- 
- 	if (tvp != NULL) {
-@@ -51,6 +61,16 @@ rpc_thread_multi (void)
- struct rpc_thread_variables *
- __rpc_thread_variables (void)
- {
-+  /* These legacy variable-accessor ABIs cannot return an operation error.
-+     Fail before once initialization or allocation instead of returning a
-+     fake shared variable object or dereferencing a failed allocation.  */
-+  if (__pthread_bounded_current () != NULL)
-+    {
-+      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
-+      INTERNAL_SYSCALL_CALL (exit_group, 127);
-+      __builtin_unreachable ();
-+    }
-+
- 	__libc_once_define (static, once);
- 	struct rpc_thread_variables *tvp = thread_rpc_vars;
- 
-diff --git a/sysdeps/unix/sysv/linux/tls-internal.c b/sysdeps/unix/sysv/linux/tls-internal.c
-index 81ebcdf..8b9153c 100644
---- a/sysdeps/unix/sysv/linux/tls-internal.c
-+++ b/sysdeps/unix/sysv/linux/tls-internal.c
-@@ -18,10 +18,21 @@
- 
- #include <string.h>
- #include <tls-internal.h>
-+#include <pthread-bounded-internal.h>
-+#include <tls.h>
- 
- void
- __glibc_tls_internal_free (void)
- {
-+  if (__pthread_bounded_current () != NULL
-+      && (THREAD_SELF->tls_state.strsignal_buf != NULL
-+          || THREAD_SELF->tls_state.strerror_l_buf != NULL))
-+    {
-+      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
-+      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
-+      return;
-+    }
-+
-   struct pthread *self = THREAD_SELF;
-   free (self->tls_state.strsignal_buf);
-   free (self->tls_state.strerror_l_buf);
-diff --git a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
-index aea7848..35198ff 100644
---- a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
-+++ b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
-@@ -2587,6 +2587,10 @@ GLIBC_2.39 pidfd_spawn F
- GLIBC_2.39 pidfd_spawnp F
- GLIBC_2.39 posix_spawnattr_getcgroup_np F
- GLIBC_2.39 posix_spawnattr_setcgroup_np F
-+GLIBC_2.39 pthread_bounded_create_np F
-+GLIBC_2.39 pthread_bounded_init_np F
-+GLIBC_2.39 pthread_bounded_query_np F
-+GLIBC_2.39 pthread_bounded_tryretire_np F
- GLIBC_2.39 stdc_bit_ceil_uc F
- GLIBC_2.39 stdc_bit_ceil_ui F
- GLIBC_2.39 stdc_bit_ceil_ul F
--- 
-2.54.0
-
-
-From dae19eda3e0ca54dc8198ef83e8ba1a6c187441e Mon Sep 17 00:00:00 2001
-From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 22 Oct 2026 07:14:53 -0700
-Subject: [PATCH 2/2] Serialize bounded releases and retain reentry debt
-
-Share the allocation try-lock with release, refuse busy release without touching node metadata, and retain sticky cleanup debt. Validate alignment, complete header and payload spans, and allocation kind before recording a logical release.
-
-Exercise real signal-handler release at the held allocation lock, duplicate release and malformed alignment, prefix, endpoint and size controls. The full one-lane build, bounded controls and eleven ordinary regression tests pass under the unchanged two-GiB per-process ceiling. The repeated ABI check retains its sole documented private-prefix locale-directory size difference.
-
-Signed-off-by: Dylan Plecki <dylan@andyl.com>
----
- nptl/README.bounded-pthread     | 11 +++-
- nptl/pthread-bounded-internal.h | 47 ++++++++++++-----
- nptl/tst-pthread-bounded.c      | 91 +++++++++++++++++++++++++++++++++
- 3 files changed, 134 insertions(+), 15 deletions(-)
-
-diff --git a/nptl/README.bounded-pthread b/nptl/README.bounded-pthread
-index 52bdecb..87bf267 100644
---- a/nptl/README.bounded-pthread
-+++ b/nptl/README.bounded-pthread
-@@ -252,6 +252,13 @@ state: tcache and thread_arena remain NULL, resolver and RPC state remain
- empty, and TLS/error buffers remain NULL.  The no-state cleanup path reaches
- no ordinary allocator or allocator global lock.
- 
-+Allocation and release share one actual nonwaiting allocation try-lock.
-+Signal-handler release reentry refuses with sticky cleanup debt instead of
-+reading a partially constructed header or releasing a node twice.  Release
-+validates alignment and the complete header and payload span before reading
-+nominated metadata.  Asynchronous signal-handler allocation remains outside
-+the supported caller profile; this lock cut limits damage from reentry.
-+
- Invalid, foreign or duplicate arena-node release also sets sticky
- cleanup_blocked debt.  Equal allocated/released counters alone cannot return
- backing after an uncertain TLS pointer release.  Terminal code withholds
-@@ -294,7 +301,9 @@ exact per-kind final logical release; same-backing reuse with a new
- incarnation; stale-incarnation refusal; and fatal dynamic TLS exhaustion
- rather than heap fallback; strict allocator/resolver/error refusals;
- foreign-free retained debt; unexpected exit-tail state; raw kernel exit;
--and independent-owner output alias rejection preserving live stack bytes.
-+and independent-owner output alias rejection preserving live stack bytes;
-+actual signal-handler release at a held allocation lock; duplicate release;
-+and malformed alignment, prefix, endpoint and payload-size refusal.
- These are implementation controls, not a complete
- application profile or proof for an unexecuted platform.
- 
-diff --git a/nptl/pthread-bounded-internal.h b/nptl/pthread-bounded-internal.h
-index 5646854..b5c64a2 100644
---- a/nptl/pthread-bounded-internal.h
-+++ b/nptl/pthread-bounded-internal.h
-@@ -171,38 +171,57 @@ __pthread_bounded_allocate (struct __pthread_bounded *owner,
-   return NULL;
- }
- 
--/* Storage stays physically consumed until retirement.  No ordinary free,
--   allocator cache, callback, lock, or heap fallback is reached here.  */
-+/* Storage stays physically consumed until retirement.  Allocation and
-+   release share one try-lock, including signal-handler reentry.  An
-+   interrupted release is retained debt, never a successful physical free.  */
- static inline bool
- __pthread_bounded_release (struct __pthread_bounded *owner, void *pointer)
- {
-   if (pointer == NULL)
-     return true;
- 
--  uintptr_t address = (uintptr_t) pointer;
--  uintptr_t base = owner->fact.backing;
--  size_t prefix = sizeof (struct __pthread_bounded_block);
--  if (address < base || address - base < sizeof (*owner) + prefix
--      || address - base > owner->fact.arena_used)
-+  int error = EPROTO;
-+  if (atomic_exchange_acquire (&owner->allocation_lock, 1) != 0)
-     {
-       atomic_store_release (&owner->fact.cleanup_blocked, 1);
--      __pthread_bounded_error (owner, EPROTO);
-+      __pthread_bounded_error (owner, EBUSY);
-       return false;
-     }
- 
-+  uintptr_t address = (uintptr_t) pointer;
-+  uintptr_t base = owner->fact.backing;
-+  size_t used = owner->fact.arena_used;
-+  size_t capacity = owner->fact.backing_bytes;
-+  size_t prefix = sizeof (struct __pthread_bounded_block);
-+
-+  /* Validate the complete aligned header before reading nominated metadata.
-+     Subtraction checks avoid wrapping either endpoint of the span.  */
-+  if (used < sizeof (*owner) || used > capacity
-+      || capacity > UINTPTR_MAX - base || address < base
-+      || address % _Alignof (struct __pthread_bounded_block) != 0)
-+    goto failed;
-+  size_t offset = address - base;
-+  if (offset > used || offset < sizeof (*owner)
-+      || prefix > offset - sizeof (*owner))
-+    goto failed;
-+
-   struct __pthread_bounded_block *block
-     = (struct __pthread_bounded_block *) pointer - 1;
-   if (block->owner != owner || block->released
--      || block->kind >= PTHREAD_BOUNDED_KINDS)
--    {
--      atomic_store_release (&owner->fact.cleanup_blocked, 1);
--      __pthread_bounded_error (owner, EPROTO);
--      return false;
--    }
-+      || (unsigned int) block->kind >= PTHREAD_BOUNDED_KINDS
-+      || block->size > used - offset)
-+    goto failed;
- 
-   block->released = true;
-   atomic_fetch_add_relaxed (&owner->fact.allocation[block->kind].released, 1);
-+  atomic_store_release (&owner->allocation_lock, 0);
-   return true;
-+
-+ failed:
-+  atomic_store_release (&owner->fact.cleanup_blocked, 1);
-+  __pthread_bounded_error (owner, error);
-+  atomic_store_release (&owner->allocation_lock, 0);
-+  return false;
- }
- 
- /* CREATE and RETIRE hold the control lock.  The child updates only the
-diff --git a/nptl/tst-pthread-bounded.c b/nptl/tst-pthread-bounded.c
-index 1f67d38..111a759 100644
---- a/nptl/tst-pthread-bounded.c
-+++ b/nptl/tst-pthread-bounded.c
-@@ -834,6 +834,96 @@ test_refusal_contention (void)
-   release_fixture (&test);
- }
- 
 +static pthread_bounded_t *release_signal_owner;
 +static void *release_signal_pointer;
 +static volatile sig_atomic_t release_signal_refused;
@@ -3734,17 +5991,362 @@ index 1f67d38..111a759 100644
 +    }
 +}
 +
- static int
- do_test (void)
- {
-@@ -848,6 +938,7 @@ do_test (void)
-   TEST_COMPARE (pthread_bounded_query_np
-                 ((pthread_bounded_t *) (uintptr_t) 1, 1, &receipt), ESRCH);
-   test_refusal_contention ();
++static int
++do_test (void)
++{
++  loader_state = dlsym (RTLD_DEFAULT, "_rtld_global");
++  TEST_VERIFY_EXIT (loader_state != NULL);
++  printf ("bounded layout: control=%zu block=%zu config=%zu receipt=%zu "
++          "pthread=%zu\n", sizeof (pthread_bounded_t),
++          sizeof (struct __pthread_bounded_block),
++          sizeof (struct pthread_bounded_config),
++          sizeof (struct pthread_bounded_receipt), sizeof (struct pthread));
++  struct pthread_bounded_receipt receipt;
++  TEST_COMPARE (pthread_bounded_query_np
++                ((pthread_bounded_t *) (uintptr_t) 1, 1, &receipt), ESRCH);
++  test_refusal_contention ();
 +  test_release_debt ();
-   test_unfunded_dtv ();
-   test_born_never_entered ();
-   test_enforced_requests ();
--- 
-2.54.0
-
++  test_unfunded_dtv ();
++  test_born_never_entered ();
++  test_enforced_requests ();
++  test_strict_refusals ();
++  test_retained_unknown_debt ();
++  test_terminal_and_growth ();
++  test_fatal_tls_exhaustion ();
++  test_fatal_rpc_refusal ();
++  return 0;
++}
++
++#define TIMEOUT 30
++#include <support/test-driver.c>
+diff --git a/resolv/res-close.c b/resolv/res-close.c
+index 5cd4b2f51462de3d735c5383e46dda655587c818..934c4abb1b3a101e34edcb64cff6108d34a22d28 100644
+--- a/resolv/res-close.c
++++ b/resolv/res-close.c
+@@ -83,6 +83,8 @@
+  */
+ 
+ #include <resolv-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <resolv_context.h>
+ #include <resolv_conf.h>
+ #include <not-cancel.h>
+@@ -93,6 +95,13 @@
+ void
+ __res_iclose (res_state statp, bool free_addr)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return;
++    }
++
+   if (statp->_vcsock >= 0)
+     {
+       __close_nocancel_nostatus (statp->_vcsock);
+@@ -129,6 +138,13 @@ libc_hidden_def (__res_nclose)
+ void
+ __res_thread_freeres (void)
+ {
++  if (__pthread_bounded_current () != NULL && _res.nscount != 0)
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   __resolv_context_freeres ();
+ 
+   if (_res.nscount == 0)
+diff --git a/resolv/res_init.c b/resolv/res_init.c
+index 263263d47472154557085a8115096348aa915e96..344ac994c73d7a427d36a921ab40a25c09f1762b 100644
+--- a/resolv/res_init.c
++++ b/resolv/res_init.c
+@@ -85,6 +85,8 @@
+ #include <ctype.h>
+ #include <netdb.h>
+ #include <resolv/resolv-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <res_hconf.h>
+ #include <stdio.h>
+ #include <stdio_ext.h>
+@@ -619,6 +621,13 @@ __resolv_conf_load (struct __res_state *preinit,
+ int
+ __res_vinit (res_state statp, int preinit)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return -1;
++    }
++
+   struct resolv_conf *conf;
+   if (preinit && has_preinit_values (statp))
+     /* For the preinit case, we cannot use the cached configuration
+diff --git a/resolv/resolv_context.c b/resolv/resolv_context.c
+index d62d8cc4655a4bad4034b81b1e286fe2006095b6..79f497f1e8f72ab41a614b1277e1ba5fbb9c6d7d 100644
+--- a/resolv/resolv_context.c
++++ b/resolv/resolv_context.c
+@@ -17,6 +17,8 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <resolv_context.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <resolv_conf.h>
+ #include <resolv-internal.h>
+ 
+@@ -175,6 +177,13 @@ context_reuse (void)
+ static struct resolv_context *
+ context_get (bool preinit)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   if (current != NULL)
+     return context_reuse ();
+ 
+@@ -206,6 +215,13 @@ libc_hidden_def (__resolv_context_get_preinit)
+ struct resolv_context *
+ __resolv_context_get_override (struct __res_state *resp)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   /* NB: As explained asbove, context_alloc will put the context on
+      the current list.  */
+   struct resolv_context *ctx = context_alloc (resp);
+@@ -240,6 +256,13 @@ libc_hidden_def (__resolv_context_put)
+ void
+ __resolv_context_freeres (void)
+ {
++  if (__pthread_bounded_current () != NULL && (current != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   /* Deallocate the entire chain of context objects.  */
+   struct resolv_context *ctx = current;
+   current = NULL;
+diff --git a/stdlib/cxa_thread_atexit_impl.c b/stdlib/cxa_thread_atexit_impl.c
+index c215bdd3dd81f8ce81a1ef3f209883ebd55cba1f..2138542a6d4dca715c9628d76572682baa6068e5 100644
+--- a/stdlib/cxa_thread_atexit_impl.c
++++ b/stdlib/cxa_thread_atexit_impl.c
+@@ -74,6 +74,9 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <pthread-bounded-internal.h>
++#include <malloc-bounded-internal.h>
++#include <tls.h>
+ #include <ldsodefs.h>
+ #include <pointer_guard.h>
+ 
+@@ -103,7 +106,24 @@ __cxa_thread_atexit_impl (dtor_func func, void *obj, void *dso_symbol)
+   PTR_MANGLE (func);
+ 
+   /* Prepend.  */
+-  struct dtor_list *new = calloc (1, sizeof (struct dtor_list));
++  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
++  struct dtor_list *new;
++  if (bounded != NULL)
++    new = __pthread_bounded_allocate
++      (bounded, PTHREAD_BOUNDED_DESTRUCTOR, sizeof (*new),
++       _Alignof (struct dtor_list));
++  else if (__malloc_bounded_attached ())
++    {
++      __malloc_bounded_allocation_refused (ENOTSUP);
++      return ENOTSUP;
++    }
++  else
++    new = calloc (1, sizeof (*new));
++  /* This internal ABI returns an error to its generated-code caller.
++     Bounded registration must not fall through to the heap or terminate
++     the process merely because its admitted request count was exceeded.  */
++  if (new == NULL && bounded != NULL)
++    return ENOMEM;
+   if (__glibc_unlikely (new == NULL))
+     __libc_fatal ("Fatal glibc error: failed to register TLS destructor: "
+ 		  "out of memory\n");
+@@ -160,7 +180,10 @@ __call_tls_dtors (void)
+ 	 potential DSO unload in _dl_close_worker, which happens when
+ 	 l_tls_dtor_count is 0.  See CONCURRENCY NOTES for more detail.  */
+       atomic_fetch_add_release (&cur->map->l_tls_dtor_count, -1);
+-      free (cur);
++      if (THREAD_SELF->bounded != NULL)
++        __pthread_bounded_release (THREAD_SELF->bounded, cur);
++      else
++        free (cur);
+     }
+ }
+ libc_hidden_def (__call_tls_dtors)
+diff --git a/string/strerror_l.c b/string/strerror_l.c
+index 15cce261e6b406a7f7f8b4aae8d215f513500bce..63d2a45fc2afda5c2b354335525525d61d68da70 100644
+--- a/string/strerror_l.c
++++ b/string/strerror_l.c
+@@ -20,6 +20,8 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ 
+ static const char *
+@@ -36,6 +38,13 @@ translate (const char *str, locale_t loc)
+ char *
+ __strerror_l (int errnum, locale_t loc)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return (char *) "Error formatting is unavailable in a bounded thread";
++    }
++
+   int saved_errno = errno;
+   char *err = (char *) __get_errlist (errnum);
+   if (__glibc_unlikely (err == NULL))
+diff --git a/string/strsignal.c b/string/strsignal.c
+index 31146015647c1d4a535d762bcaf84137a67b83ea..25a3793e24d4a24eb73185fb140468735b8ed4ad 100644
+--- a/string/strsignal.c
++++ b/string/strsignal.c
+@@ -21,11 +21,20 @@
+ #include <string.h>
+ #include <libintl.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ /* Return a string describing the meaning of the signal number SIGNUM.  */
+ char *
+ strsignal (int signum)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   const char *desc = __sigdescr_np (signum);
+   if (desc != NULL)
+     return _(desc);
+diff --git a/sunrpc/rpc_thread.c b/sunrpc/rpc_thread.c
+index a04b7ec47fa4760cac6a635f4373405372aa1a71..da7b62724a1b3c1dcb6c0d5c677705162cfd0185 100644
+--- a/sunrpc/rpc_thread.c
++++ b/sunrpc/rpc_thread.c
+@@ -1,5 +1,8 @@
+ #include <stdio.h>
+ #include <rpc/rpc.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
++#include <sysdep.h>
+ #include <assert.h>
+ 
+ #include <libc-lock.h>
+@@ -19,6 +22,13 @@ static __thread struct rpc_thread_variables *thread_rpc_vars
+ void
+ __rpc_thread_destroy (void)
+ {
++  if (__pthread_bounded_current () != NULL && (thread_rpc_vars != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+ 	struct rpc_thread_variables *tvp = thread_rpc_vars;
+ 
+ 	if (tvp != NULL) {
+@@ -51,6 +61,16 @@ rpc_thread_multi (void)
+ struct rpc_thread_variables *
+ __rpc_thread_variables (void)
+ {
++  /* These legacy variable-accessor ABIs cannot return an operation error.
++     Fail before once initialization or allocation instead of returning a
++     fake shared variable object or dereferencing a failed allocation.  */
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      INTERNAL_SYSCALL_CALL (exit_group, 127);
++      __builtin_unreachable ();
++    }
++
+ 	__libc_once_define (static, once);
+ 	struct rpc_thread_variables *tvp = thread_rpc_vars;
+ 
+diff --git a/sysdeps/unix/sysv/linux/tls-internal.c b/sysdeps/unix/sysv/linux/tls-internal.c
+index 81ebcdfbf894c1bc7cf5d4ee7c8d409fce18b6a1..8b9153c6cc44174f8005c33a224d0dd2f62cc197 100644
+--- a/sysdeps/unix/sysv/linux/tls-internal.c
++++ b/sysdeps/unix/sysv/linux/tls-internal.c
+@@ -18,10 +18,21 @@
+ 
+ #include <string.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ void
+ __glibc_tls_internal_free (void)
+ {
++  if (__pthread_bounded_current () != NULL
++      && (THREAD_SELF->tls_state.strsignal_buf != NULL
++          || THREAD_SELF->tls_state.strerror_l_buf != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   struct pthread *self = THREAD_SELF;
+   free (self->tls_state.strsignal_buf);
+   free (self->tls_state.strerror_l_buf);
+diff --git a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
+index aea7848ed6833407d4d8bb28a856d94ff5166ea6..8fc3c75a6cf4336d1b47ae3018535687fb01a371 100644
+--- a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
++++ b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
+@@ -2582,11 +2582,29 @@ GLIBC_2.38 strlcat F
+ GLIBC_2.38 strlcpy F
+ GLIBC_2.38 wcslcat F
+ GLIBC_2.38 wcslcpy F
++GLIBC_2.39 malloc_bounded_allocate_np F
++GLIBC_2.39 malloc_bounded_allocation_np F
++GLIBC_2.39 malloc_bounded_attach_np F
++GLIBC_2.39 malloc_bounded_attachment_np F
++GLIBC_2.39 malloc_bounded_bind_np F
++GLIBC_2.39 malloc_bounded_detach_np F
++GLIBC_2.39 malloc_bounded_init_np F
++GLIBC_2.39 malloc_bounded_layout_np F
++GLIBC_2.39 malloc_bounded_process_current_np F
++GLIBC_2.39 malloc_bounded_process_np F
++GLIBC_2.39 malloc_bounded_query_np F
++GLIBC_2.39 malloc_bounded_reallocate_np F
++GLIBC_2.39 malloc_bounded_release_np F
++GLIBC_2.39 malloc_bounded_tryretire_np F
+ GLIBC_2.39 pidfd_getpid F
+ GLIBC_2.39 pidfd_spawn F
+ GLIBC_2.39 pidfd_spawnp F
+ GLIBC_2.39 posix_spawnattr_getcgroup_np F
+ GLIBC_2.39 posix_spawnattr_setcgroup_np F
++GLIBC_2.39 pthread_bounded_create_np F
++GLIBC_2.39 pthread_bounded_init_np F
++GLIBC_2.39 pthread_bounded_query_np F
++GLIBC_2.39 pthread_bounded_tryretire_np F
+ GLIBC_2.39 stdc_bit_ceil_uc F
+ GLIBC_2.39 stdc_bit_ceil_ui F
+ GLIBC_2.39 stdc_bit_ceil_ul F
