@@ -696,17 +696,49 @@
       printf '%s %s %s %s\n' "$case_name" "$run_name" "$samples" "$cadence_hash" >> "$TMPDIR/case-results.txt"
 
       cp "$serial" "$out/serial-$label.log"
-      cp "$TMPDIR/trace-$label-cadence.jsonl" "$out/trace-$label-cadence.jsonl"
-      jq -c . "$trace" > "$out/trace-$label.jsonl"
       cp "$TMPDIR/qemu-args-$label.txt" "$out/qemu-args-$label.txt"
+      summarize_trace "$label" "$trace"
+
+      # Raw traces run to gigabytes. Every check reads them in this build,
+      # and --keep-failed retains them when one fails.
+      rm -f "$trace"
+    }
+
+    summarize_trace() {
+      label="$1"
+      raw_trace="$2"
+      cadence="$TMPDIR/trace-$label-cadence.jsonl"
+
+      # The structural check above admits only sample, RR handoff and final
+      # rows, so line scans count them cheaply on multi-gigabyte traces.
+      cadence_rows=$(wc -l < "$cadence")
+      rr_switch_rows=$(grep -c -F '{"kind":"rr_switch"' "$cadence" || true)
+      {
+        echo "label=$label"
+        echo "rows=$(wc -l < "$raw_trace")"
+        echo "cadence_rows=$cadence_rows"
+        echo "sample_rows=$((cadence_rows - rr_switch_rows))"
+        echo "rr_switch_rows=$rr_switch_rows"
+        echo "final_rows=$(grep -c -F '"final":true' "$raw_trace" || true)"
+        echo "final_row=$(grep -F '"final":true' "$raw_trace" || true)"
+        echo "trace_sha256=$(sha256sum "$raw_trace" | cut -d' ' -f1)"
+        echo "cadence_sha256=$(sha256sum "$cadence" | cut -d' ' -f1)"
+        echo "first_row=$(head -n 1 "$raw_trace")"
+        echo "last_cadence_row=$(tail -n 1 "$cadence")"
+      } > "$out/trace-$label.summary"
     }
 
     compare_case() {
       case_name="$1"
-      if ! diff -u "$TMPDIR/trace-$case_name-a-cadence.jsonl" "$TMPDIR/trace-$case_name-b-cadence.jsonl" > "$out/trace-$case_name.diff"; then
-        cat "$out/trace-$case_name.diff" >&2
+      trace_diff="$TMPDIR/trace-$case_name.diff"
+      if ! diff -u "$TMPDIR/trace-$case_name-a-cadence.jsonl" "$TMPDIR/trace-$case_name-b-cadence.jsonl" > "$trace_diff"; then
+        # A diverged pair can differ on millions of rows; the full diff stays
+        # under --keep-failed.
+        head -n 400 "$trace_diff" >&2
         fail "$case_name any-guest fingerprint mismatch"
       fi
+      rm -f "$trace_diff" "$TMPDIR/trace-$case_name-a-cadence.jsonl" \
+        "$TMPDIR/trace-$case_name-b-cadence.jsonl"
     }
 
     run_guest diskless a diskless
