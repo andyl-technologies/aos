@@ -180,6 +180,23 @@
 
           cc -std=gnu11 -O2 stock-disk-touch.c -o "$out/bin/stock-disk-touch"
 
+          # Powering off at the done marker ends each run at a guest
+          # coordinate instead of at the host's wall-clock QMP quit.
+          cat > stock-poweroff.c <<'STOCK_POWEROFF_C'
+          #include <stdio.h>
+          #include <sys/reboot.h>
+          #include <unistd.h>
+
+          int main(void) {
+            sync();
+            reboot(RB_POWER_OFF);
+            perror("reboot");
+            return 1;
+          }
+          STOCK_POWEROFF_C
+
+          cc -std=gnu11 -O2 stock-poweroff.c -o "$out/bin/stock-poweroff"
+
           cat > stock-mount.c <<'STOCK_MOUNT_C'
           #include <stdio.h>
           #include <sys/mount.h>
@@ -322,6 +339,8 @@
             esac
 
             echo 'AOS_ANY_GUEST_DONE'
+            stock-poweroff
+            echo 'AOS_ANY_GUEST_FAIL'
             while :; do
               :
             done
@@ -475,10 +494,12 @@
       } | socat -T 2 - "UNIX-CONNECT:$socket" >/dev/null 2>"$TMPDIR/qmp-quit.err" || true
     }
 
-    wait_for_qemu_exit() {
+    wait_for_guest_poweroff() {
       label="$1"
       waited=0
-      while [ "$waited" -lt 100 ]; do
+      # The guest powers off right after its done marker. A run that needs
+      # the host's QMP quit would end at a wall-clock-timed coordinate.
+      while [ "$waited" -lt 1200 ]; do
         if ! kill -0 "$qemu_pid" 2>/dev/null; then
           wait "$qemu_pid" || fail "$label QEMU exited unsuccessfully"
           qemu_pid=""
@@ -488,10 +509,11 @@
         waited=$((waited + 1))
       done
 
+      qmp_quit "$qmp_socket"
       kill "$qemu_pid" 2>/dev/null || true
       wait "$qemu_pid" 2>/dev/null || true
       qemu_pid=""
-      fail "$label QEMU did not exit after QMP quit"
+      fail "$label guest did not power off after its done marker"
     }
 
     vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
@@ -614,14 +636,23 @@
       wait_for_socket "$qmp_socket" || fail "$label QMP socket did not appear"
       wait_for_guest_ready "$serial" || fail "$label did not boot to ready marker"
       wait_for_guest_done "$serial" || fail "$label did not reach deterministic shutdown marker"
-      qmp_quit "$qmp_socket"
-      wait_for_qemu_exit "$label"
+      wait_for_guest_poweroff "$label"
 
       jq --argjson rr_switch_quantum "$RR_SWITCH_QUANTUM" -e -s '
-        [ .[] | select(.final != true) ] as $samples
+        # RR handoff rows carry their own schema; samples are the rest.
+        [ .[] | select(.final != true and .kind == null) ] as $samples
+        | [ .[] | select(.kind == "rr_switch") ] as $switches
         | [ .[] | select(.final == true) ] as $finals
         | ($samples | length) >= 1
         and ($finals | length) == 1
+        and ([ .[] | select(.kind != null and .kind != "rr_switch") ] | length) == 0
+        and all($switches[]; (
+          .from_vcpu == 0
+          and .to_vcpu == 0
+          and .rr_switch_quantum == $rr_switch_quantum
+          and .previous_rr_switch_quantum == $rr_switch_quantum
+          and .rr_cursor_position == 0
+        ))
         and all($samples[]; (
           .schema == "crucible.qemu.trace-fingerprint.v7"
           and .tracked_vcpus == 1
@@ -713,7 +744,7 @@
       echo guest_fixture_count=1
       echo launch_profile_count=2
       echo runs_per_guest=2
-      echo run_model=boot-cadence-run-twice-and-diff-through-host-qmp-quit-after-serial-marker
+      echo run_model=boot-cadence-run-twice-and-diff-through-guest-poweroff-after-serial-marker
       echo black_box_fingerprint_scope=diskless-generic-guest
       echo diskless_black_box_fingerprints_match=true
       echo cow_block_fingerprints_compared=true
@@ -730,7 +761,7 @@
       echo base_image_hash_after="$(cat "$TMPDIR/base-cow_block.after")"
       echo in_guest_crucible_agent_required=false
       echo in_guest_crucible_content_required=false
-      echo guest_boot_readiness=generic-init-serial-marker-with-host-qmp-quit
+      echo guest_boot_readiness=generic-init-serial-marker-with-guest-poweroff
       echo whitebox_contract_consumed=separate-host-plugin-doorbell-gate
       echo whitebox_real_qemu_any_guest_enabled=false
       echo whitebox_live_doorbell_events=0

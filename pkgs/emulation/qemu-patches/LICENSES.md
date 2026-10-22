@@ -87,6 +87,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-icount-rate.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-vcpu-service-time.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-idle-wait.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-icount-standalone-warp.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-halted-neighbor.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-mos6522-clock.c` | MIT | Explicit SPDX identifier |
 | `net/slirp-time.h` | MIT | Explicit SPDX identifier |

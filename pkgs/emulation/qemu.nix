@@ -1759,6 +1759,12 @@ in
               mkdir -p "$out/share/aos/crucible"
               cp rr-halted-neighbor.result \
                 "$out/share/aos/crucible/rr-halted-neighbor.result"
+              ${python3}/bin/python3 tests/unit/test-crucible-icount-standalone-warp.py \
+                > icount-standalone-warp.result
+              cat icount-standalone-warp.result
+              grep -Fxq 'ICOUNT_STANDALONE_WARP_PASS' icount-standalone-warp.result
+              cp icount-standalone-warp.result \
+                "$out/share/aos/crucible/icount-standalone-warp.result"
               build/tests/unit/test-rcu-list --tap -p /rcu/hot-fork/barrier
               build/tests/unit/test-coroutine --tap -p /locking/co-sleep
               build/tests/unit/test-crucible-vfio-timer --tap

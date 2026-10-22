@@ -1,6 +1,6 @@
-From f29ac248faf8e203611b5d40af2d6537a75dac3c Mon Sep 17 00:00:00 2001
+From 8d43e5ee8377d812ce108053a7064d4b9c951698 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 22 Oct 2026 17:35:56 +0000
+Date: Thu, 22 Oct 2026 19:54:02 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -25,6 +25,8 @@ A runnable vCPU also never moves its clock to a QEMU-owned deadline. The RR loop
 Shared-memory ABI 33 adds a hostward publication futex word and a count of parked host waiters to each node slot, carved from reserved bytes. The plugin increments the word after every node publication and control acknowledgement and wakes the host only when a waiter is registered, so the host parks until the node publishes instead of sleep-polling. QEMU itself does not read or write the new fields; this tree carries the generated headers so the build compares them byte for byte.
 
 The native console advance reader and its paired-clamp check admitted only the ceiling and authenticated-idle stop encodings. An exact-event advance, which the host publishes when a frame is due at a node's current boundary, therefore read as torn: the reader returned unavailable after its retries, the RR loop took its no-execution retry without reaching the plugin's budget, and the node spun without publishing while the host waited for it. Both checks now admit every current shared-memory stop condition through the exact event, and the plugin's budget keeps each condition's meaning. test-crucible-console-seal adds an exact-event advance that reads as owned with its stop preserved and accepts a sealed operation, while a larger stop stays unavailable.
+
+A standalone sim run, with no Crucible host registered, stopped retiring at its first all-halted wait and never booted to its ready marker. Two faults kept the virtual clock from reaching the guest's next timer. The idle warp returned early for every sim run because a host commands sim clock movement, so nothing advanced the clock without one. And when every vCPU halted, the RR loop woke the main loop so it could start the warp timer; the main loop's ready poll then published host work that woke the RR thread straight back, so rr_wait_io_event returned at its wake boundary on every pass and the two threads spun without reaching the idle boundary. Only a run whose plugin registered the host dispatch callbacks now skips the warp, and hosted runs are unchanged. A standalone run warps at the RR idle boundary to the next virtual timer deadline, advancing the sim tick bias because a sim clock rejects any icount bias. Its RR loop no longer wakes the main loop at an idle pass, and the main-loop poll, which runs at host-scheduled times, neither warps nor notifies the clock, whose notification would wake the poll again. The new test-crucible-icount-standalone-warp extracts the production warp body and the RR loop's idle wake: a standalone RR boundary warps to the deadline, the main-loop poll does nothing, every hosted call only notifies, expired or absent timers and other accelerators keep their handling, a refused tick advance stops the run, and only a standalone idle pass skips the main-loop wake. Six negative controls restore the unconditional return, ignore the host, warp or notify from the main loop, warp the icount bias, or wake the main loop from a standalone idle pass, and each fails.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -2171,7 +2173,7 @@ index 0000000000000000000000000000000000000000..8668bb73cf1245f809429f3130be163d
 +    errno = saved_errno;
 +}
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae28c78c7ff 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d2daf12a62c949aba704c3748c674b1f2b34d8eb 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,18 @@
@@ -3078,15 +3080,27 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
  
      assert(icount_enabled());
  
-@@ -331,18 +1060,32 @@ void icount_start_warp_timer(void)
+@@ -331,18 +1060,44 @@ void icount_start_warp_timer(void)
          }
      }
  
 -    /* We want to use the earliest deadline from ALL vm_clocks */
 +    if (strcmp(current_accel_name(), "sim") == 0) {
-+        /* Sim clock movement is commanded by the deterministic host. */
-+        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
-+        return;
++        if (crucible_sim_shmem_dispatch_registered()) {
++            /* Sim clock movement is commanded by the deterministic host. */
++            qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++            return;
++        }
++        if (!qemu_in_vcpu_thread()) {
++            /*
++             * A standalone sim run warps only at the RR idle boundary; the
++             * main-loop poll runs at host-scheduled times. The RR thread
++             * never parks with a virtual timer pending, and arming one kicks
++             * it, so the poll has nothing to wake. Notifying the clock here
++             * would wake the main AioContext and spin this poll forever.
++             */
++            return;
++        }
 +    }
 +
 +    /* Include every internal virtual timer at picosecond resolution. */
@@ -3116,8 +3130,19 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
          /*
           * Ensure QEMU_CLOCK_VIRTUAL proceeds even when the virtual CPU goes to
           * sleep.  Otherwise, the CPU might be waiting for a future timer
-@@ -360,12 +1103,17 @@ void icount_start_warp_timer(void)
+@@ -358,14 +1113,28 @@ void icount_start_warp_timer(void)
+              * It is useful when we want a deterministic execution time,
+              * isolated from host latencies.
               */
++            if (icount_crucible_sim_mode()) {
++                /* Sim time lives in the tick bias; the icount bias stays 0. */
++                if (!icount_crucible_advance_virtual_time_by_ticks(
++                        deadline_ps)) {
++                    error_report("Crucible sim idle warp exceeds the clock");
++                    exit(EXIT_FAILURE);
++                }
++                return;
++            }
              seqlock_write_lock(&timers_state.vm_clock_seqlock,
                                 &timers_state.vm_clock_lock);
 -            qatomic_set(&timers_state.qemu_icount_bias,
@@ -3136,7 +3161,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
              /*
               * We do stop VCPUs and only advance QEMU_CLOCK_VIRTUAL after some
               * "real" time, (related to the time left until the next event) has
-@@ -382,10 +1130,12 @@ void icount_start_warp_timer(void)
+@@ -382,10 +1151,12 @@ void icount_start_warp_timer(void)
              }
              seqlock_write_unlock(&timers_state.vm_clock_seqlock,
                                   &timers_state.vm_clock_lock);
@@ -3151,7 +3176,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
          qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
      }
  }
-@@ -421,15 +1171,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -421,15 +1192,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      bool sleep = qemu_opt_get_bool(opts, "sleep", true);
      bool align = qemu_opt_get_bool(opts, "align", false);
      long time_shift = -1;
@@ -3179,7 +3204,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
      if (align && !sleep) {
          error_setg(errp, "align=on and sleep=off are incompatible");
          return false;
-@@ -437,7 +1199,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -437,7 +1220,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (strcmp(option, "auto") != 0) {
          if (qemu_strtol(option, NULL, 0, &time_shift) < 0
@@ -3188,7 +3213,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
              error_setg(errp, "icount: Invalid shift value");
              return false;
          }
-@@ -450,6 +1212,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -450,6 +1233,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
      }
  
      icount_sleep = sleep;
@@ -3196,7 +3221,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
      if (icount_sleep) {
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
-@@ -459,6 +1222,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -459,6 +1243,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
  
      if (time_shift >= 0) {
          timers_state.icount_time_shift = time_shift;
@@ -3204,7 +3229,7 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..311aa7e94d19e939fb068eb722760ae2
          icount_enable_precise();
          return true;
      }
-@@ -485,12 +1249,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+@@ -485,12 +1270,22 @@ bool icount_configure(QemuOpts *opts, Error **errp)
                     qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + 1000);
      timers_state.icount_vm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                          icount_adjust_vm, NULL);
@@ -4242,10 +4267,10 @@ index 0000000000000000000000000000000000000000..3500c8a07beb162bbfbb615dc5b2de36
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61261c5f15 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..21cc7aa44ae0b80a0fa334855dda61c419ef4f07 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2135 @@
+@@ -27,45 +27,2141 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5041,9 +5066,6 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
  {
      CPUState *cpu;
  
--    CPU_FOREACH(cpu) {
--        tcg_kick_vcpu_thread(cpu);
--    };
 +    if (rr_crucible_sim_mode() &&
 +        icount_crucible_rr_switch_quantum() != 0) {
 +        /*
@@ -5109,9 +5131,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +        rr_crucible_sim_notify_dispatch_ceiling();
 +        return;
 +    }
-+    CPU_FOREACH(cpu) {
-+        tcg_kick_vcpu_thread(cpu);
-+    };
+     CPU_FOREACH(cpu) {
+         tcg_kick_vcpu_thread(cpu);
+     };
 +    if (rr_crucible_sim_mode()) {
 +        /* The direct kick is the durable wake state when no quantum is set. */
 +        rr_crucible_sim_notify_dispatch_ceiling();
@@ -5140,6 +5162,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +{
 +    return current_accel_is_sim() &&
 +           icount_enabled() == ICOUNT_PRECISE;
++}
++
++/* A sim run with no Crucible host commanding its clock. */
++static bool rr_crucible_sim_standalone(void)
++{
++    return rr_crucible_sim_mode() && !crucible_sim_shmem_dispatch_registered();
 +}
 +
 +static bool rr_crucible_sim_single_vcpu(void)
@@ -6025,16 +6053,27 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +    if (acquired_replay) {
 +        rr_replay_mutex_unlock();
 +    }
-+}
-+
-+/*
+ }
+ 
+ /*
+- * TCG vCPU kick timer
+- *
+- * The kick timer is responsible for moving single threaded vCPU
+- * emulation on to the next vCPU. If more than one vCPU is running a
+- * timer event we force a cpu->exit so the next vCPU can get
+- * scheduled.
+- *
+- * The timer is removed if all vCPUs are idle and restarted again once
+- * idleness is complete.
 + * Publishes a dispatch boundary, settled through the logical ceiling when
 + * nothing remains before it. The clock is never moved to the ceiling here.
-+ */
+  */
 +static void rr_crucible_sim_publish_dispatch_boundary(uint64_t current_icount)
 +{
 +    uint64_t logical_ceiling = crucible_sim_shmem_logical_ceiling();
-+
+ 
+-static QEMUTimer *rr_kick_vcpu_timer;
+-static CPUState *rr_current_cpu;
 +    if (rr_crucible_sim_settled_through(logical_ceiling)) {
 +        crucible_sim_shmem_publish_settled_icount(current_icount,
 +                                                  logical_ceiling);
@@ -6042,10 +6081,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +        crucible_sim_shmem_publish_current_icount(current_icount);
 +    }
 +}
-+
+ 
+-static inline int64_t rr_next_kick_time(void)
 +static bool rr_crucible_sim_complete_dispatch_boundary(
 +    CPUState **cpu_ptr, uint64_t current_icount)
-+{
+ {
+-    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
 +    rr_crucible_sim_publish_dispatch_boundary(current_icount);
 +    if (qemu_plugin_crucible_vmstop_pending()) {
 +        return true;
@@ -6058,19 +6099,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +    }
 +    rr_crucible_sim_wait_at_dispatch_ceiling();
 +    return true;
- }
- 
--/*
-- * TCG vCPU kick timer
-- *
-- * The kick timer is responsible for moving single threaded vCPU
-- * emulation on to the next vCPU. If more than one vCPU is running a
-- * timer event we force a cpu->exit so the next vCPU can get
-- * scheduled.
-- *
-- * The timer is removed if all vCPUs are idle and restarted again once
-- * idleness is complete.
-- */
++}
++
 +static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
 +                                          int64_t *cpu_budget,
 +                                          bool *icount_retry,
@@ -6078,9 +6108,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +{
 +    unsigned int runs = 0;
 +    CPUState *cpu = *cpu_ptr;
- 
--static QEMUTimer *rr_kick_vcpu_timer;
--static CPUState *rr_current_cpu;
++
 +    while (true) {
 +        bool retain_replay = rr_crucible_sim_quantum_dispatch_fence();
 +        int r;
@@ -6092,10 +6120,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +        uint64_t service_after;
 +        int64_t unthrottled_budget;
 +        bool ready_marker_boundary_requested;
- 
--static inline int64_t rr_next_kick_time(void)
--{
--    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
++
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_is_pending()) {
 +            if (rr_crucible_sim_complete_wake_boundary()) {
@@ -6400,7 +6425,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2174,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2180,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6433,7 +6458,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
      }
  }
  
-@@ -110,15 +2212,138 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2218,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6574,7 +6599,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
      }
  }
  
-@@ -140,6 +2365,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2371,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6593,7 +6618,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2421,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2427,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6602,7 +6627,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2443,203 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2449,203 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6674,7 +6699,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +int rr_hot_fork_restart_vcpu_thread(void)
 +{
 +    CPUState *cpu;
-+
+ 
 +    if (!single_tcg_cpu_thread || !single_tcg_halt_cond || !first_cpu ||
 +        !bql_locked()) {
 +        return -EINVAL;
@@ -6735,7 +6760,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +    }
 +    return 0;
 +}
- 
++
 +static G_NORETURN void rr_cpu_thread_loop(CPUState *cpu)
 +{
      while (1) {
@@ -6757,10 +6782,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +        bql_unlock();
 +        if (!rr_replay_mutex_owned) {
 +            rr_replay_mutex_lock();
-         }
++        }
 +        bql_lock();
- 
--        if (icount_enabled() && all_cpu_threads_idle()) {
++
 +        if (rr_crucible_sim_service_deferred_reset_handoff()) {
 +            continue;
 +        }
@@ -6778,8 +6802,9 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +            rr_replay_mutex_unlock();
 +            rr_crucible_sim_service_force_shutdown();
 +            continue;
-+        }
-+
+         }
+ 
+-        if (icount_enabled() && all_cpu_threads_idle()) {
 +        if (rr_crucible_sim_mode() &&
 +            qemu_plugin_time_advance_settle_is_pending()) {
 +            rr_replay_mutex_unlock();
@@ -6824,7 +6849,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2655,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2661,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6857,7 +6882,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2697,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2703,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -7014,7 +7039,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2839,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2845,141 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7141,10 +7166,14 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
 +
 +        rr_replay_mutex_unlock();
 +
-+        if (icount_enabled() && all_cpu_threads_idle()) {
++        if (icount_enabled() && all_cpu_threads_idle() &&
++            !rr_crucible_sim_standalone()) {
 +            /*
 +             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
 +             * in the main_loop, wake it up in order to start the warp timer.
++             * A standalone sim run warps at the RR idle boundary instead, and
++             * the main loop's ready poll would wake this thread straight
++             * back, so neither thread would ever reach that boundary.
 +             */
 +            qemu_notify_event();
 +        }
@@ -7154,7 +7183,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6206d5c84e014e05006dc042b3ef1c61
      }
  
      g_assert_not_reached();
-@@ -318,13 +2978,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2988,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -177377,6 +177406,413 @@ index 0000000000000000000000000000000000000000..e6bebd3a33e520eede13446effe1afb0
 +                    test_sim_fractional_instruction);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-icount-standalone-warp.py b/tests/unit/test-crucible-icount-standalone-warp.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..6f0a8c9291367f0866785d647f0aeb645ba79ae2
+--- /dev/null
++++ b/tests/unit/test-crucible-icount-standalone-warp.py
+@@ -0,0 +1,401 @@
++# Copyright (c) Andyl, Inc.
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise the production idle warp for hosted and standalone sim runs.
++
++A registered Crucible host owns sim clock movement, so the warp only notifies.
++Without a host, a standalone sim run must still reach a halted guest's timer:
++the RR idle boundary performs the deterministic no-sleep warp, while the
++host-scheduled main-loop poll does nothing, since a clock notification from it
++would wake the poll again. The RR loop's idle pass likewise stops waking the
++main loop, whose ready poll would wake the RR thread straight back before it
++reached that boundary. Each negative control mutates the production source and
++must fail one of those checks.
++
++Sim clocks keep their time in the sim tick bias and reject any icount bias, so
++the standalone warp advances the tick bias rather than the upstream icount bias.
++"""
++
++import argparse
++import os
++from pathlib import Path
++import shlex
++import subprocess
++import tempfile
++
++
++ROOT = Path(__file__).resolve().parents[2]
++SOURCE = ROOT / "accel/tcg/icount-common.c"
++RR_SOURCE = ROOT / "accel/tcg/tcg-accel-ops-rr.c"
++
++RR_NOTIFY_START = "        if (icount_enabled() && all_cpu_threads_idle() &&\n"
++RR_NOTIFY_GUARD = "            !rr_crucible_sim_standalone()) {\n"
++RR_NOTIFY_END = "            qemu_notify_event();\n        }\n"
++
++HOST_GUARD = (
++    '    if (strcmp(current_accel_name(), "sim") == 0) {\n'
++    "        if (crucible_sim_shmem_dispatch_registered()) {\n"
++)
++
++THREAD_GUARD = "        if (!qemu_in_vcpu_thread()) {\n"
++
++MAIN_LOOP_RETURN = (
++    "             * would wake the main AioContext and spin this poll forever.\n"
++    "             */\n"
++    "            return;\n"
++)
++
++SIM_TICK_WARP = (
++    "            if (icount_crucible_sim_mode()) {\n"
++    "                /* Sim time lives in the tick bias; the icount bias stays 0. */\n"
++)
++
++NEGATIVE_CONTROLS = {
++    # The original unconditional return leaves a standalone guest parked forever.
++    "unconditional-sim-return": (
++        HOST_GUARD,
++        '    if (strcmp(current_accel_name(), "sim") == 0) {\n'
++        "        if (true) {\n",
++    ),
++    # Ignoring the host would let the plugin's commanded clock be overtaken.
++    "ignore-host": (
++        HOST_GUARD,
++        '    if (strcmp(current_accel_name(), "sim") == 0) {\n'
++        "        if (false) {\n",
++    ),
++    # Warping from the main-loop poll ties guest time to host scheduling.
++    "ignore-thread": (THREAD_GUARD, "        if (false) {\n"),
++    # A main-loop clock notification wakes the poll that issued it.
++    "main-loop-notify": (
++        MAIN_LOOP_RETURN,
++        "             * would wake the main AioContext and spin this poll forever.\n"
++        "             */\n"
++        "            qemu_clock_notify(QEMU_CLOCK_VIRTUAL);\n"
++        "            return;\n",
++    ),
++    # Sim clocks reject an icount bias, so the upstream warp would abort them.
++    "icount-bias-warp": (
++        SIM_TICK_WARP,
++        "            if (false) {\n"
++        "                /* Sim time lives in the tick bias; the icount bias stays 0. */\n",
++    ),
++}
++
++
++def function_source(source: str, signature: str) -> str:
++    """Extract one production function for a small linked state-machine test."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start : index + 1]
++
++    raise AssertionError(f"unterminated production function: {signature}")
++
++
++TEST_PRELUDE = r"""
++#include <assert.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/wait.h>
++#include <unistd.h>
++
++#define QEMU_CLOCK_VIRTUAL 1
++#define QEMU_CLOCK_VIRTUAL_RT 2
++#define QEMU_TIMER_ATTR_EXTERNAL 1
++#define REPLAY_MODE_NONE 0
++#define REPLAY_MODE_PLAY 2
++#define CHECKPOINT_CLOCK_WARP_START 3
++#define TRACE_ICOUNT_VIRTUAL_WARP 4
++#define PICOSECONDS_PER_NANOSECOND 1000
++#define qatomic_read(pointer) (*(pointer))
++
++typedef struct TimersState {
++    int vm_clock_seqlock;
++    int vm_clock_lock;
++    int64_t qemu_icount;
++    uint64_t qemu_icount_bias_ps_hi;
++    uint64_t qemu_icount_bias_ps_lo;
++    int64_t vm_clock_warp_start;
++    int *icount_warp_timer;
++} TimersState;
++
++static TimersState timers_state = { .vm_clock_warp_start = -1 };
++static int replay_mode = REPLAY_MODE_NONE;
++static bool icount_sleep;
++static const char *accel_name = "sim";
++static bool host_registered;
++static bool on_vcpu_thread;
++static int64_t deadline_ps;
++static int64_t bias_ps;
++static int64_t tick_bias;
++static bool tick_advance_refused;
++static unsigned int notifications, deadline_queries, warnings;
++
++static int icount_enabled(void) { return 1; }
++static bool runstate_is_running(void) { return true; }
++static bool all_cpu_threads_idle(void) { return true; }
++static bool qtest_enabled(void) { return false; }
++static bool replay_checkpoint(int checkpoint) { return checkpoint == CHECKPOINT_CLOCK_WARP_START; }
++static bool replay_has_event(void) { return false; }
++static const char *current_accel_name(void) { return accel_name; }
++static bool crucible_sim_shmem_dispatch_registered(void) { return host_registered; }
++static bool qemu_in_vcpu_thread(void) { return on_vcpu_thread; }
++static int64_t qemu_clock_get_ns(int clock) { assert(clock == QEMU_CLOCK_VIRTUAL_RT); return 0; }
++static bool trace_event_get_state_backends(int event) { (void)event; return false; }
++static bool bdrv_has_in_flight(void) { return false; }
++static void seqlock_write_lock(int *seqlock, int *lock) { (void)seqlock; (void)lock; }
++static void seqlock_write_unlock(int *seqlock, int *lock) { (void)seqlock; (void)lock; }
++static int64_t icount_get_bias_ps_locked(void) { return bias_ps; }
++static void icount_set_bias_ps_locked(int64_t bias) { bias_ps = bias; }
++static void timer_mod_anticipate(int *timer, int64_t deadline) { (void)timer; (void)deadline; }
++
++static void trace_icount_virtual_warp(int64_t icount, uint64_t hi, uint64_t lo,
++                                      int64_t deadline, bool in_flight,
++                                      bool sleep)
++{
++    (void)icount; (void)hi; (void)lo; (void)deadline; (void)in_flight;
++    (void)sleep;
++}
++
++static bool icount_crucible_sim_mode(void)
++{
++    return strcmp(accel_name, "sim") == 0;
++}
++
++/* Production sim time lives in the tick bias and also notifies the clock. */
++static bool icount_crucible_advance_virtual_time_by_ticks(uint64_t delta)
++{
++    if (tick_advance_refused) {
++        return false;
++    }
++    tick_bias += (int64_t)delta;
++    notifications++;
++    return true;
++}
++
++static int64_t icount_add_ps_checked(int64_t bias, int64_t delta)
++{
++    return bias + delta;
++}
++
++static int64_t qemu_clock_deadline_ps_all(int clock, int attributes)
++{
++    assert(clock == QEMU_CLOCK_VIRTUAL);
++    assert(attributes == ~QEMU_TIMER_ATTR_EXTERNAL);
++    deadline_queries++;
++    return deadline_ps;
++}
++
++static void qemu_clock_notify(int clock)
++{
++    assert(clock == QEMU_CLOCK_VIRTUAL);
++    notifications++;
++}
++
++#define warn_report_once(...) (warnings++)
++#define error_report(...) (warnings++)
++"""
++
++TEST_MAIN = r"""
++static void reset(const char *name, bool host, bool vcpu, int64_t deadline)
++{
++    accel_name = name;
++    host_registered = host;
++    on_vcpu_thread = vcpu;
++    deadline_ps = deadline;
++    bias_ps = 1000;
++    tick_bias = 0;
++    tick_advance_refused = false;
++    notifications = deadline_queries = warnings = 0;
++}
++
++int main(void)
++{
++    /*
++     * Standalone sim at the RR idle boundary warps to the timer deadline
++     * through the sim tick bias; the icount bias stays untouched.
++     */
++    reset("sim", false, true, 5000);
++    icount_start_warp_timer();
++    assert(tick_bias == 5000 && bias_ps == 1000);
++    assert(notifications == 1 && deadline_queries == 1);
++
++    /*
++     * Standalone sim from the main-loop poll neither warps nor notifies: a
++     * notification would wake the poll that issued it.
++     */
++    reset("sim", false, false, 5000);
++    icount_start_warp_timer();
++    assert(tick_bias == 0 && bias_ps == 1000);
++    assert(notifications == 0 && deadline_queries == 0);
++
++    /* A registered host commands clock movement from every thread. */
++    reset("sim", true, true, 5000);
++    icount_start_warp_timer();
++    assert(bias_ps == 1000 && notifications == 1 && deadline_queries == 0);
++    reset("sim", true, false, 5000);
++    icount_start_warp_timer();
++    assert(bias_ps == 1000 && notifications == 1 && deadline_queries == 0);
++
++    /* Expired and absent timers keep their ordinary no-sleep handling. */
++    reset("sim", false, true, 0);
++    icount_start_warp_timer();
++    assert(bias_ps == 1000 && notifications == 1 && deadline_queries == 1);
++    reset("sim", false, true, -1);
++    icount_start_warp_timer();
++    assert(bias_ps == 1000 && notifications == 0 && warnings == 1);
++
++    /* Other accelerators keep the upstream main-loop warp. */
++    reset("tcg", false, false, 7000);
++    icount_start_warp_timer();
++    assert(bias_ps == 8000 && tick_bias == 0);
++    assert(notifications == 1 && deadline_queries == 1);
++
++    /* A refused sim advance stops the run instead of warping elsewhere. */
++    reset("sim", false, true, 5000);
++    tick_advance_refused = true;
++    if (fork() == 0) {
++        icount_start_warp_timer();
++        _exit(0);
++    }
++    int status;
++    assert(wait(&status) > 0);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_FAILURE);
++
++    puts("ICOUNT_STANDALONE_WARP_PASS");
++    return 0;
++}
++"""
++
++
++RR_PRELUDE = r"""
++#include <assert.h>
++#include <stdbool.h>
++#include <stdio.h>
++
++static bool sim_mode, host_registered, cpus_idle;
++static int icount_mode = 1;
++static unsigned int main_loop_wakes;
++
++static int icount_enabled(void) { return icount_mode; }
++static bool all_cpu_threads_idle(void) { return cpus_idle; }
++static bool rr_crucible_sim_mode(void) { return sim_mode; }
++static bool crucible_sim_shmem_dispatch_registered(void) { return host_registered; }
++static void qemu_notify_event(void) { main_loop_wakes++; }
++"""
++
++RR_MAIN = r"""
++static unsigned int idle_pass(bool sim, bool host, bool idle, int icount)
++{
++    sim_mode = sim;
++    host_registered = host;
++    cpus_idle = idle;
++    icount_mode = icount;
++    main_loop_wakes = 0;
++    rr_idle_pass();
++    return main_loop_wakes;
++}
++
++int main(void)
++{
++    /* A standalone sim RR thread never wakes the main loop to warp. */
++    assert(idle_pass(true, false, true, 1) == 0);
++
++    /* Hosted sim and ordinary icount keep the upstream wake. */
++    assert(idle_pass(true, true, true, 1) == 1);
++    assert(idle_pass(false, false, true, 1) == 1);
++
++    /* Runnable vCPUs and disabled icount never wake it. */
++    assert(idle_pass(false, false, false, 1) == 0);
++    assert(idle_pass(false, false, true, 0) == 0);
++    return 0;
++}
++"""
++
++
++def compile_and_run(
++    directory: Path, name: str, body: str,
++    prelude: str = TEST_PRELUDE, test_main: str = TEST_MAIN,
++) -> int:
++    """Build one fixture variant and return its exit status."""
++    fixture = directory / f"{name}.c"
++    binary = directory / name
++    fixture.write_text("\n\n".join((prelude, body, test_main)))
++    command = [
++        *shlex.split(os.environ.get("CC", "cc")),
++        "-std=gnu11",
++        "-Wall",
++        "-Wextra",
++        "-Werror",
++        "-Wno-unused-function",
++        str(fixture),
++        "-o",
++        str(binary),
++    ]
++    subprocess.run(command, check=True)
++    return subprocess.run(
++        [str(binary)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
++        timeout=10,
++    ).returncode
++
++
++def rr_idle_pass(source: str) -> str:
++    """Wrap the RR loop's idle main-loop wake and its standalone predicate."""
++    predicate = function_source(
++        source, "static bool rr_crucible_sim_standalone(void)"
++    )
++    start = source.index(RR_NOTIFY_START)
++    end = source.index(RR_NOTIFY_END, start) + len(RR_NOTIFY_END)
++    statement = source[start:end]
++    assert statement.count(RR_NOTIFY_GUARD) == 1, "RR idle wake guard changed"
++    return f"{predicate}\n\nstatic void rr_idle_pass(void)\n{{\n{statement}}}\n"
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--source", type=Path, default=SOURCE)
++    parser.add_argument("--rr-source", type=Path, default=RR_SOURCE)
++    arguments = parser.parse_args()
++    rr_body = rr_idle_pass(arguments.rr_source.read_text())
++    body = function_source(
++        arguments.source.read_text(), "void icount_start_warp_timer(void)"
++    )
++    assert body.count(HOST_GUARD) == 1, "production standalone warp guard changed"
++    assert body.count(THREAD_GUARD) == 1, "production standalone thread guard changed"
++    assert body.count(MAIN_LOOP_RETURN) == 1, "production main-loop return changed"
++    assert body.count(SIM_TICK_WARP) == 1, "production sim tick warp changed"
++
++    with tempfile.TemporaryDirectory(prefix="crucible-standalone-warp-") as path:
++        directory = Path(path)
++        assert compile_and_run(directory, "production", body) == 0
++
++        for name, (original, replacement) in NEGATIVE_CONTROLS.items():
++            mutated = body.replace(original, replacement)
++            if compile_and_run(directory, name, mutated) == 0:
++                raise SystemExit(f"negative control {name} unexpectedly passed")
++
++        rr = {"prelude": RR_PRELUDE, "test_main": RR_MAIN}
++        assert compile_and_run(directory, "rr-production", rr_body, **rr) == 0
++
++        # Waking the main loop lets its ready poll wake the RR thread straight
++        # back, so a standalone guest never reaches the idle warp.
++        unguarded = rr_body.replace(
++            RR_NOTIFY_GUARD, "            true) {\n"
++        )
++        if compile_and_run(directory, "rr-main-loop-wake", unguarded, **rr) == 0:
++            raise SystemExit("negative control rr-main-loop-wake unexpectedly passed")
++
++    print("ICOUNT_STANDALONE_WARP_PASS")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-icount-vmstate-version.py b/tests/unit/test-crucible-icount-vmstate-version.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..eff1ba165cbc29b439d9afd88700f868f0c3c305
