@@ -274,9 +274,36 @@ dirty-iterator launched lifecycle refusal remains. Genuine matched Module/Core/S
 post-Main terminal ownership, application and stack grants, worker last use,
 external reap, physical debit return and profile admission remain unqualified.
 
+#### Native fixture closure correction
+
+The signed atomic patch now selects `2564b502e49f7d164d07fcd64fdd4ec2bfad9545`,
+conventional source `e2803b5320ec454d6d50e719e758a69ab50701d0`, tree
+`a5bf76c20ff8ac6d08704cfe5a792503ede92555`. Eight Python files change;
+production C and headers remain identical to the installed consumer below.
+The pending-constructor fixture now emits its captured compiler diagnostic,
+and both it and the RR-parent fixture extract the actual stack-bank closure
+helper before its callers. Authentic transitive fingerprints are refreshed.
+The original complete Native refusal and the separate diagnostic-only attempt
+remain retained; the latter identifies the missing helper declaration.
+
+Independent review verifies all 24 sealed payloads, 78,240 tracked source
+entries and 72 literal links, 1,078 evidence files, signed stage identities,
+fixed atomic dates, canonical patch and single-prerequisite delivery bundle.
+Its proof is `25dc1a15c1f8711af91596db2a0185b6fad6ef864ef40b202e1918b75487ead9`.
+The exact corrected source passes the constructor positive and 54 intended
+assertions in 27.405 seconds, RR-parent positive and 29 classified omissions
+in 16.698 seconds, and stack-bank positive and 19 intended omissions in
+9.098 seconds. One sequential compiler retains the original 600-second suite,
+180-second compile, 30-second run, CORE zero and six-GiB process and sampled
+process-tree limits. Another 120 source extractions pass in 9.594 seconds
+without compilation. The focused checks use authenticated recovered configured
+inputs and no support archive. The 37-fixture source inventory is an audit;
+a fresh complete Native runtime pass remains required. Canonical atomic
+reconstruction and the unchanged 433-file license ledger pass.
+
 #### Installed bounded-pthread QEMU consumer
 
-The signed atomic patch now selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,
+The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,
 conventional source `48867e31f9a74fea78e6178a815bf64094389d51`, tree
 `72dd4ea029469cc144141cb69cab3a91ce2e26ae`. It adds the actual optional
 supplied-stack pthread consumer while preserving canonical stack debt and

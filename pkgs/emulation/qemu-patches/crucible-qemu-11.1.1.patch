@@ -1,20 +1,19 @@
-From 7a6b57edb01b7a5b6d06b11171ecf3a82bebde55 Mon Sep 17 00:00:00 2001
+From 2564b502e49f7d164d07fcd64fdd4ec2bfad9545 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose stack custody and installed bounded thread
- consumer
+Subject: [PATCH] crucible: retain stack debt and bounded-thread runtime
+ custody
 
-Retain the cumulative public Crucible implementation with canonical same-parent
-Main/RR stack debt, factual constructor return posts, and caller-backed native
-startup and registry storage. Add the matching installed bounded pthread ABI
-consumer for actual supplied-stack worker creation, canonical incarnation,
-notifier and registry departure, kernel join and external storage return.
+Keep canonical same-parent Main/RR stack lenders, factual return journals and
+paid external startup/registry storage. Add the optional installed bounded
+pthread consumer for genuine supplied-stack birth and kernel/TLS/notifier/
+registry retirement, preserving the ordinary pthread route.
 
-Qualify ordinary and installed-runtime component behavior separately from
-complete Source/RR admission. Preserve ordinary pthread behavior and refusal
-without genuine stack and application grants, finite TCG/callback allocation,
-real stop/drain and physical terminal owners. Bind literal fixture extraction
-to the final source and retain genuine publisher cleanup dependencies.
+Retain the actual stack-closure helper in constructor and RR-parent literal
+fixtures, expose captured constructor compiler diagnostics, and bind their
+final transitive extraction fingerprints. Complete Source application and
+stack issuance, finite RR allocation and stop/drain closure, physical parent
+retirement and external Main reap remain required before profile admission.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -239340,7 +239339,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4526ca9887cea1ec7ac0d6e40f6c26b9761ff0ba
+index 0000000000000000000000000000000000000000..9fabd1ba96f84fba604a1ff818403aebfebd33b7
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,132 @@
@@ -239376,7 +239375,7 @@ index 0000000000000000000000000000000000000000..4526ca9887cea1ec7ac0d6e40f6c26b9
 +    'include/plugins/qemu-plugin.h':
 +        'bbe8a30e142658fc95bf9ec0f6b3e9cc895065753f77fdff1eb869c1ec4f12f6',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
++        'a21f708615eb842cfba31d3036d942c4ca54ec944035d13dd85cf0697058c36d',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        'a1e251802b959f2917a36953a136124e48453a27384da90c3725a6f25f2ebc86',
 +}
@@ -295016,7 +295015,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d13f79348e0830d75afafe5b96ee62c0c33e65d4
+index 0000000000000000000000000000000000000000..38eb693180144e9cca6459d76f3ac4b4fceee67a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -295034,7 +295033,7 @@ index 0000000000000000000000000000000000000000..d13f79348e0830d75afafe5b96ee62c0
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
++        'a21f708615eb842cfba31d3036d942c4ca54ec944035d13dd85cf0697058c36d',
 +}
 +
 +FUNCTIONS = (
@@ -295122,7 +295121,7 @@ index 0000000000000000000000000000000000000000..d13f79348e0830d75afafe5b96ee62c0
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f547cddf0e636a5359a7cc827d5ce919e8e0e5eb
+index 0000000000000000000000000000000000000000..8cd24549b0970ddfd7def80e41670e750d993334
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -295153,7 +295152,7 @@ index 0000000000000000000000000000000000000000..f547cddf0e636a5359a7cc827d5ce919
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
++        'a21f708615eb842cfba31d3036d942c4ca54ec944035d13dd85cf0697058c36d',
 +}
 +
 +FUNCTIONS = (
@@ -295369,7 +295368,7 @@ index 0000000000000000000000000000000000000000..f547cddf0e636a5359a7cc827d5ce919
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7fc80e9be124e889749fb36700cd9c890f438714
+index 0000000000000000000000000000000000000000..9da905d5c047ac2dc560714262b353a85646cedb
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -295393,7 +295392,7 @@ index 0000000000000000000000000000000000000000..7fc80e9be124e889749fb36700cd9c89
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
++        'a21f708615eb842cfba31d3036d942c4ca54ec944035d13dd85cf0697058c36d',
 +}
 +
 +FUNCTIONS = (
@@ -295487,7 +295486,7 @@ index 0000000000000000000000000000000000000000..7fc80e9be124e889749fb36700cd9c89
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7838f01fca5a3bff1cb806bb4822d6695935dbfc
+index 0000000000000000000000000000000000000000..12bb02979266ca905204903af5481089a55988c0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,748 @@
@@ -295538,9 +295537,9 @@ index 0000000000000000000000000000000000000000..7838f01fca5a3bff1cb806bb4822d669
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
++        'a21f708615eb842cfba31d3036d942c4ca54ec944035d13dd85cf0697058c36d',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '1f85aa863353070de81f77a343ed037be803e5efc907101b77b12109324114ea',
++        'a39fbd7c90de69b1d624169e50c71bbbd259f8aa281da4c911e05c2ba6a020c4',
 +    'meson.build':
 +        'e1e7e6c51c370991d8417cb47a08f97c89badd313ff09e2ae649b9210d109737',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -296241,7 +296240,7 @@ index 0000000000000000000000000000000000000000..7838f01fca5a3bff1cb806bb4822d669
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..dbaac82c4a08182b96a5f4eef036a12b6564085b
+index 0000000000000000000000000000000000000000..bca8bdf935832467c361f1ca26103f8aa592889e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1646 @@
@@ -296323,7 +296322,7 @@ index 0000000000000000000000000000000000000000..dbaac82c4a08182b96a5f4eef036a12b
 +    'tests/unit/test-crucible-quantum-rr-terminal.py': '011d8c728ba2f91ac5788aaa658190308c4c73aac459ede8cff02a18d57d9133',
 +    'tests/unit/test-crucible-quantum-rr-execution.py': '6a075ce999e5c7876060540d6be1bf176d77a86af83856a2a2e0dfff4778aa25',
 +    'plugins/crucible-quantum-rr-parent.inc.h': 'ce376a472fc6f9f80d571113cf654cff1fb3ba0c89ccefd8087cc99e0de8ea5b',
-+    'tests/unit/test-crucible-quantum-rr-parent.py': 'a28304b5c9a4417dbb6e39e34f2c9c6fc0f524ac9698cf76a2aa52c117f936e0',
++    'tests/unit/test-crucible-quantum-rr-parent.py': '3589d069ab4997660e923aaf518f3b2e03fc04f38d820208d019f8c6e8d06087',
 +    'tests/unit/test-crucible-executor-cleanup-bridge.py':
 +        '97a2a0667ce78fe976410b83410ae644d0edda48b501e49736a5b37b90e5273d',
 +    'plugins/crucible-executor-cleanup-registration.inc.h':
@@ -296837,7 +296836,7 @@ index 0000000000000000000000000000000000000000..dbaac82c4a08182b96a5f4eef036a12b
 +    'plugins/crucible-pending-constructor.inc.h':
 +        'f53d88ecf464bed110cb580a29309bbfe833a0da1a348a6125c531ce19ad8d44',
 +    'tests/unit/test-crucible-pending-constructor.py':
-+        'b50dc7a0ed43c36f00edd21b2af6d163fa1f8f773449d3e15bf8a4281a836e84',
++        '59cd56c8bfbe4fca0b99294d064e8f6f36108c11d6b678de1e9f999db0b4612f',
 +    'plugins/crucible-pending-deferred.inc.h':
 +        '898acf3813900e4228ee930b4f33d84f54d0f67336a5525c2b3c5373311fd3b1',
 +    'tests/unit/test-crucible-pending-deferred.py':
@@ -348634,10 +348633,10 @@ index 0000000000000000000000000000000000000000..6ba342c2bd2289c5bc00348ef8452105
 +    main()
 diff --git a/tests/unit/test-crucible-pending-constructor.py b/tests/unit/test-crucible-pending-constructor.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d50742b6b16b57c351c3bba574d271208633b5a6
+index 0000000000000000000000000000000000000000..43906a1c7837aeee655eed083e5fdc279306df5f
 --- /dev/null
 +++ b/tests/unit/test-crucible-pending-constructor.py
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,493 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check literal constructor-custody leaves without an accepting operation owner.
 +
@@ -348654,6 +348653,7 @@ index 0000000000000000000000000000000000000000..d50742b6b16b57c351c3bba574d27120
 +import runpy
 +import shlex
 +import subprocess
++import sys
 +
 +
 +REFUSALS = r'''
@@ -348973,6 +348973,9 @@ index 0000000000000000000000000000000000000000..d50742b6b16b57c351c3bba574d27120
 +        "static int pending_constructor_post(",
 +    )
 +    body = extract["function"](
++        (source / "plugins/crucible-stack-bank.inc.h").read_text(),
++        "static bool stack_bank_borrowers_closed(") + "\n\n"
++    body += extract["function"](
 +        (source / "plugins/crucible-quantum-bank.inc.h").read_text(),
 +        "static bool quantum_bank_resources_closed(") + "\n\n"
 +    body += extract["function"](
@@ -349111,6 +349114,8 @@ index 0000000000000000000000000000000000000000..d50742b6b16b57c351c3bba574d27120
 +        compiled = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 +                                  timeout=180, preexec_fn=limit)
 +        (output / (name + ".compile.log")).write_bytes(compiled.stdout)
++        if compiled.returncode:
++            sys.stderr.buffer.write(compiled.stdout)
 +        compiled.check_returncode()
 +        result = subprocess.run([str(binary)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 +                                timeout=30, preexec_fn=limit)
@@ -361208,10 +361213,10 @@ index 0000000000000000000000000000000000000000..e666ac26d81576b7b7df2273ef12b84e
 +    main()
 diff --git a/tests/unit/test-crucible-quantum-rr-parent.py b/tests/unit/test-crucible-quantum-rr-parent.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4435968ae1909d91828bdb646555ff104c4d57f2
+index 0000000000000000000000000000000000000000..63836a375a9596544780d3032dc2d7eb2f860f94
 --- /dev/null
 +++ b/tests/unit/test-crucible-quantum-rr-parent.py
-@@ -0,0 +1,291 @@
+@@ -0,0 +1,292 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check real RR-parent geometry and retained debt without issuing an owner.
 +
@@ -361419,6 +361424,7 @@ index 0000000000000000000000000000000000000000..4435968ae1909d91828bdb646555ff10
 +              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1('))
 +    prefix += '\n' + extract['native_rr_output_dependencies'](root)
 +    body = '\n'.join([
++        selected('plugins/crucible-stack-bank.inc.h', ['static bool stack_bank_borrowers_closed(']),
 +        selected('plugins/crucible-quantum-bank.inc.h', ['static bool quantum_bank_resources_closed(']),
 +        selected('plugins/crucible-callback-child.inc.h', [
 +            'static bool callback_child_output_overlap(',

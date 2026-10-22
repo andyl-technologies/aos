@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "0e92512469c9a1d4213cb2a8449d0405e3eeb83bdf4526376f24cd638075d7d6";
-  subject = "crucible: compose stack custody and installed bounded thread consumer";
-  body = "Retain the cumulative public Crucible implementation with canonical same-parent\nMain/RR stack debt, factual constructor return posts, and caller-backed native\nstartup and registry storage. Add the matching installed bounded pthread ABI\nconsumer for actual supplied-stack worker creation, canonical incarnation,\nnotifier and registry departure, kernel join and external storage return.\n\nQualify ordinary and installed-runtime component behavior separately from\ncomplete Source/RR admission. Preserve ordinary pthread behavior and refusal\nwithout genuine stack and application grants, finite TCG/callback allocation,\nreal stop/drain and physical terminal owners. Bind literal fixture extraction\nto the final source and retain genuine publisher cleanup dependencies.";
-  commit = "7a6b57edb01b7a5b6d06b11171ecf3a82bebde55";
-  tree = "72dd4ea029469cc144141cb69cab3a91ce2e26ae";
+  sha256 = "0b76c7668f9c170e4536cc2a96bd74bc5de2c408ed0a0929b81f05e5b5ee483d";
+  subject = "crucible: retain stack debt and bounded-thread runtime custody";
+  body = "Keep canonical same-parent Main/RR stack lenders, factual return journals and\npaid external startup/registry storage. Add the optional installed bounded\npthread consumer for genuine supplied-stack birth and kernel/TLS/notifier/\nregistry retirement, preserving the ordinary pthread route.\n\nRetain the actual stack-closure helper in constructor and RR-parent literal\nfixtures, expose captured constructor compiler diagnostics, and bind their\nfinal transitive extraction fingerprints. Complete Source application and\nstack issuance, finite RR allocation and stop/drain closure, physical parent\nretirement and external Main reap remain required before profile admission.";
+  commit = "2564b502e49f7d164d07fcd64fdd4ec2bfad9545";
+  tree = "a5bf76c20ff8ac6d08704cfe5a792503ede92555";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-stack-installed-consumer-public-atomic";
+  branchRef = "dplecki/quantum-stack-consumer-fixture-public-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "c1cf17841430f9982bb218fc88bc81b946de5190041a80fdc8b68defc567e11e";
+  bundleSha256 = "fd7802da3811d84ac73fe4e966e929a6b5b9dac4ffc74ddcc9f8fcecab1bcb56";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
