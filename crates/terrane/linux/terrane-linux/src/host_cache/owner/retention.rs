@@ -81,6 +81,11 @@ pub struct NativeMetadataOwner {
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
     #[cfg(feature = "surface-fuse")]
+    EvictSurfaceIndex {
+        key: crate::structural_index::IndexKey,
+        response: oneshot::Sender<io::Result<bool>>,
+    },
+    #[cfg(feature = "surface-fuse")]
     CacheSurfaceIndex {
         root: terrane_format::identity::Digest,
         nodes: BTreeMap<terrane_format::identity::Digest, Vec<u8>>,
@@ -380,6 +385,12 @@ impl NativeMetadataOwner {
                     };
                     let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        #[cfg(feature = "surface-fuse")]
+                        Command::EvictSurfaceIndex { key, response } => {
+                            let result = runtime
+                                .block_on(super::surface_index::eviction::retire(&executor, key));
+                            let _ = response.send(result);
+                        }
                         #[cfg(feature = "surface-fuse")]
                         Command::CacheSurfaceIndex {
                             root,

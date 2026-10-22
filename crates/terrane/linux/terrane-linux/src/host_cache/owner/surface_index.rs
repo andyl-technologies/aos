@@ -11,6 +11,7 @@
 //! reservation id = surface-index:<random-operation-hex>
 //! ```
 
+pub(super) mod eviction;
 pub(super) mod recovery;
 
 use super::{

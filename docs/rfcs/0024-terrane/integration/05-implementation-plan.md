@@ -13423,3 +13423,21 @@ all-feature/all-target Clippy, Rust formatting, Python syntax and the corrected
 complete native source-declaration comparison. These checks do not execute the
 new kernel mapping, quota or restart controls; their frozen native run remains
 pending.
+
+Warm surface-index retirement now runs on the same physical command queue as
+admission. Original admission receipts and every clone prevent eviction without
+state or namespace effects. A funded snapshot precedes checked original-inode
+unlink; parent synchronization, descriptor closure and fresh project accounting
+precede release of the exact durable copy hold. Late failures retain faulted
+custody, and cancellation of a reply does not cancel queued physical work.
+Success does not report deallocated bytes because unrelated retained mappings
+can outlive unlink. This explicit maintenance primitive does not supply the
+remaining automatic eviction policy or durable exposure lease.
+
+The actual native fixture additionally checks receipt/clone refusal, retained
+mapped reads after warm retirement, absence of the copy hold, and exact block
+and inode release only after final unmap, followed by fresh canonical admission.
+Strict all-feature/all-target Clippy and Rust formatting pass locally. The
+first local compile exposed an overly narrow helper visibility; it is corrected
+without weakening checks. Frozen native runtime and required application-target
+qualification remain pending. No task acceptance changes.

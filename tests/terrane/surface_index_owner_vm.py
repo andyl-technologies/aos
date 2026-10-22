@@ -124,6 +124,7 @@ def main():
                 "PASS surface indexes are kernel immutable; warm reuse and invalid nodes cause no durable mutation or content fetch",
                 "PASS cold recovery retires index names and copy holds while retaining actual mapped bytes and project charge",
                 "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge",
+                "PASS warm surface eviction refuses retained receipts without effects and releases exact mapped charge only after final unmap",
             ],
             "cap": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
