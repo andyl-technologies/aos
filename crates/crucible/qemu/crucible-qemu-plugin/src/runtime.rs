@@ -376,7 +376,9 @@ pub(crate) struct OwnedCallbackRuntimeState {
     // Only explicit callback fixtures populate this Box model. Production
     // retains Source-owned child custody below and cannot publish a typed view.
     live_vcpu_time: Option<Pin<Box<live_callbacks::LiveVcpuTimeCallbackState>>>,
-    live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
+    // The complete before-birth runtime layout pays this inline body. Its
+    // address is published only after pinning, and preparation cannot replace it.
+    live_whitebox: Option<live_whitebox::LiveWhiteboxState>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
     mapping_excluded_from_child: AtomicBool,
@@ -1223,9 +1225,13 @@ impl OwnedCallbackRuntimeState {
         vcpu_count: u32,
         request_shutdown: QemuRequestShutdownFn,
     ) -> Result<&mut live_whitebox::LiveWhiteboxState, live_whitebox::LiveWhiteboxError> {
-        // SAFETY: assigning an independently heap-owned callback runtime does
-        // not move the pinned parent or its setup mapping.
+        // SAFETY: the parent is already pinned. This method initializes its inline
+        // white-box field once and never moves it after returning its address.
         let state = unsafe { self.get_unchecked_mut() };
+        if state.live_whitebox.is_some() {
+            return Err(live_whitebox::LiveWhiteboxError::StateAlreadyPublished);
+        }
+
         let live_vcpu_time = state
             .live_vcpu_time
             .as_ref()
@@ -1302,16 +1308,9 @@ impl OwnedCallbackRuntimeState {
                 args.campaign_marker_parking().is_on(),
             ),
         )?;
-        let mut callback_state = Box::pin(callback_state);
-        // SAFETY: the independently boxed state is pinned and retained by this
-        // process-lifetime owner before its address is registered with QEMU.
-        let callback_pointer = unsafe {
-            callback_state.as_mut().get_unchecked_mut() as *mut live_whitebox::LiveWhiteboxState
-        };
-        state.live_whitebox = Some(callback_state);
-        // SAFETY: `callback_pointer` points into the pinned allocation just
-        // retained by `state.live_whitebox`.
-        Ok(unsafe { &mut *callback_pointer })
+        // The containing runtime's before-birth allocation includes this full
+        // body. The guard above preserves its address for every later callback.
+        Ok(state.live_whitebox.insert(callback_state))
     }
 
     fn register_basic_block_coverage(
@@ -1347,7 +1346,7 @@ impl OwnedCallbackRuntimeState {
         let whitebox_translation = state
             .live_whitebox
             .as_mut()
-            .map(|whitebox| whitebox.as_mut().get_mut().translation_consumer());
+            .map(live_whitebox::LiveWhiteboxState::translation_consumer);
         state.coverage = Some(LiveBasicBlockCoverage::register_with_whitebox(
             plugin_id,
             callback,

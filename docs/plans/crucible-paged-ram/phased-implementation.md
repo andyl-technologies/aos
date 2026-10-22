@@ -656,6 +656,26 @@ execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
 
+#### Inline white-box callback storage
+
+The complete pinned callback Runtime now contains the optional white-box state
+inline. Its existing before-birth `Layout::new::<OwnedCallbackRuntimeState>()`
+therefore includes the full body; preparation no longer creates an unlisted
+independent Box. A second preparation refuses before borrowing mapped queues
+or consuming launch plans, preserving the address already handed to callbacks.
+The field is initialized only after the containing Runtime is pinned and remains
+beside the setup mapping. Coverage borrows its translation consumer from the
+same field. Two unsafe raw-pointer conversions are removed.
+
+All 1,177 plugin unit tests, compilation of every plugin test target and
+engineering hygiene pass. The existing prebirth controls continue checking the
+actual containing allocation and configured fixed/scaled rows. Mandatory
+application compilation is being collected. The cohesive Runtime source review
+records the changed geometry and exact digest. There are no new test bindings.
+Dynamic catalogs, decoded payloads, replies, diagnostics, allocator backing and
+creator stack/TLS still require complete real funding. Container inclusion does
+not create Source activation, a Quantum Original or Native eligibility.
+
 #### Selectable replies in caller-owned delivery storage
 
 Selectable reply encoding now validates its canonical length before allocating
