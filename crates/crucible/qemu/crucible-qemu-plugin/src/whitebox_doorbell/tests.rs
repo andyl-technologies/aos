@@ -1613,19 +1613,53 @@ impl BackendRngEvidenceSource for RecordingAppRandomSource {
 #[test]
 fn marker_sink_diagnostics_borrow_fixed_text_and_retain_owned_storage() {
     let fixed = WhiteboxMarkerSinkError::from_static("fixed marker refusal");
-    assert!(matches!(
-        fixed.message,
-        Cow::Borrowed("fixed marker refusal")
-    ));
+    assert_eq!(fixed.message(), "fixed marker refusal");
+    assert_eq!(fixed.clone().message().as_ptr(), fixed.message().as_ptr());
+    assert!(fixed.entry_validation_source().is_none());
 
     let message = String::from("owned backend marker refusal");
     let address = message.as_ptr();
     let owned = WhiteboxMarkerSinkError::new(message);
-    assert!(matches!(owned.message, Cow::Owned(_)));
+    assert!(owned.entry_validation_source().is_none());
     assert_eq!(owned.message().as_ptr(), address);
     assert_eq!(owned.message(), "owned backend marker refusal");
     assert_eq!(
         owned.to_string(),
         "white-box marker sink failed: owned backend marker refusal"
     );
+}
+
+#[test]
+fn marker_entry_diagnostics_retain_typed_causes_and_exact_coordinates() {
+    use crucible_qemu_shmem::WhiteboxMarkerEntryError;
+    use std::error::Error;
+
+    let causes = [
+        WhiteboxMarkerEntryError::PayloadLengthExceedsCapacity {
+            len: usize::MAX,
+            capacity: crucible_qemu_shmem::MAX_FRAME_DATA,
+        },
+        WhiteboxMarkerEntryError::NonzeroPayloadTail,
+        WhiteboxMarkerEntryError::NonzeroReservedBytes,
+    ];
+
+    for cause in causes {
+        let error = WhiteboxMarkerSinkError::from_entry_validation(cause.clone());
+        let copied = error.clone();
+
+        assert_eq!(copied, error);
+        assert_eq!(error.message(), "");
+        assert_eq!(error.entry_validation_source(), Some(&cause));
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<WhiteboxMarkerEntryError>()),
+            Some(&cause),
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("white-box marker sink failed: {cause}")
+        );
+        assert_eq!(copied.to_string(), error.to_string());
+    }
 }

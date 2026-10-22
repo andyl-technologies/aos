@@ -53,7 +53,7 @@ impl LiveWhiteboxMarkerShmemProducer {
         payload: &[u8],
     ) -> Result<(), WhiteboxMarkerSinkError> {
         let entry = WhiteboxMarkerEntry::new(tick_ps, vcpu_index, kind, payload)
-            .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
+            .map_err(WhiteboxMarkerSinkError::from_entry_validation)?;
         let (header, entries) = self.ring_parts();
         header
             .enqueue_whitebox_marker(entries, entry)
@@ -268,5 +268,36 @@ mod tests {
         assert_fixed_refusal(error, "live white-box marker queue rejected an entry");
 
         assert_eq!(header.dequeue_whitebox_marker(&entries[..2]).unwrap(), None);
+    }
+
+    #[test]
+    fn live_marker_producer_retains_oversize_cause_without_publishing() {
+        let header = RingHeader::new();
+        let mut entries = [WhiteboxMarkerEntry::default(); 2];
+        let payload = [0_u8; crucible_qemu_shmem::MAX_FRAME_DATA + 1];
+        // SAFETY: the test owns both mapped ranges through the producer's use.
+        let mut producer = unsafe {
+            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(&header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        };
+
+        let error = producer.record(9, 3, 4, &payload).unwrap_err();
+        let expected =
+            crucible_qemu_shmem::WhiteboxMarkerEntryError::PayloadLengthExceedsCapacity {
+                len: payload.len(),
+                capacity: crucible_qemu_shmem::MAX_FRAME_DATA,
+            };
+        assert_eq!(error.entry_validation_source(), Some(&expected));
+        assert_eq!(error.clone().entry_validation_source(), Some(&expected));
+        assert_eq!(header.dequeue_whitebox_marker(&entries).unwrap(), None);
+
+        producer.record(10, 3, 4, b"valid").unwrap();
+        let published = header.dequeue_whitebox_marker(&entries).unwrap().unwrap();
+        assert_eq!(published.current_icount(), 10);
+        assert_eq!(published.payload(), b"valid");
+        assert_eq!(header.dequeue_whitebox_marker(&entries).unwrap(), None);
     }
 }

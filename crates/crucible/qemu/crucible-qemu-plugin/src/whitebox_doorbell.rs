@@ -38,10 +38,12 @@ pub use crucible_qemu_protocol::{
     whitebox_doorbell_abi_for_architecture,
 };
 use crucible_qemu_shmem::MAX_FRAME_DATA;
-use std::borrow::Cow;
 use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
+
+mod marker_error;
+pub use marker_error::WhiteboxMarkerSinkError;
 
 mod selectable;
 pub use selectable::{
@@ -1912,37 +1914,6 @@ pub trait WhiteboxMarkerSink {
         &mut self,
         diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
     ) -> Result<(), WhiteboxMarkerSinkError>;
-}
-
-/// A loud marker-sink failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("white-box marker sink failed: {message}")]
-pub struct WhiteboxMarkerSinkError {
-    message: Cow<'static, str>,
-}
-
-impl WhiteboxMarkerSinkError {
-    /// Builds a marker-sink error retaining the supplied owned diagnostic.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: Cow::Owned(message.into()),
-        }
-    }
-
-    /// Builds a marker-sink error borrowing a fixed diagnostic without allocation.
-    #[must_use]
-    pub const fn from_static(message: &'static str) -> Self {
-        Self {
-            message: Cow::Borrowed(message),
-        }
-    }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// One explicit host-to-guest white-box input.
