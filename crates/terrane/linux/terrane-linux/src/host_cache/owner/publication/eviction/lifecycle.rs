@@ -67,7 +67,7 @@ impl NativeMetadataOwner {
 /// Reports actual cache transitions separately from complete project usage.
 #[derive(Clone, Copy, Debug)]
 pub struct NativeCacheEvictionReport {
-    /// Original native allocations renamed into pending retirement in this command.
+    /// Original native allocations entered into or completed through retirement.
     pub retired_allocations: usize,
     /// Fresh charged-and-reserved quota usage after actual synchronization.
     pub charged_reserved_bytes: u64,

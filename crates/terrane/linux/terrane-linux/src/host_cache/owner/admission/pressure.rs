@@ -21,22 +21,43 @@ use std::io;
 /// eviction and capacity that remains above the selected low-watermark target.
 pub(super) async fn prepare(executor: &mut NativeOwnerExecutor, payload: usize) -> io::Result<()> {
     let incoming = {
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| io::Error::other("admission pressure custody poisoned"))?;
+        owner.check_current()?;
+        state::incoming_hold(&owner, payload)?
+    };
+    prepare_hold(executor, incoming).await
+}
+
+/// Makes one host-pressure attempt for an already verified finite copy hold.
+///
+/// The caller retains its original verified input and chooses the actual
+/// configured future hold; this helper creates no reservation or native job.
+///
+/// # Errors
+/// Refuses stale custody, excess holds, failed eviction or unmet actual capacity.
+pub(in crate::host_cache::owner) async fn prepare_hold(
+    executor: &mut NativeOwnerExecutor,
+    incoming: u64,
+) -> io::Result<()> {
+    {
         let mut owner = executor
             .custody()
             .lock()
             .map_err(|_| io::Error::other("admission pressure custody poisoned"))?;
         owner.check_current()?;
         owner.preparation.recheck()?;
-        let incoming = state::incoming_hold(&owner, payload)?;
         if incoming > owner.preparation.config.policy.capacity {
             return Err(capacity());
         }
         match state::check_incoming(&owner, incoming) {
             Ok(()) => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::StorageFull => incoming,
+            Err(error) if error.kind() == io::ErrorKind::StorageFull => {}
             Err(error) => return Err(error),
         }
-    };
+    }
 
     // Repeated retirement while the same original FDs remain open would evict
     // more content without releasing quota. Let the owner's normal due-cut and

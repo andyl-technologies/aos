@@ -16,7 +16,7 @@ use std::{
 };
 use terrane_format::surface::ViewTarget;
 use terrane_linux::{
-    host_cache::{NativeMetadataOwner, SurfaceIndexPolicy},
+    host_cache::{NativeCacheOwnerConfig, NativeMetadataOwner, SurfaceIndexPolicy},
     host_quota::HostQuotaClient,
     structural_index::MappedIndex,
 };
@@ -50,6 +50,42 @@ pub(super) fn policy(mut policy: SurfaceIndexPolicy, baseline: u64) -> Result<Su
     Ok(policy)
 }
 
+/// Selects a genuine host-pressure boundary while leaving one index-cap slot.
+///
+/// # Errors
+/// Refuses overflowing actual calibration or an out-of-budget host policy.
+pub(super) fn admission_policy(
+    settings: &mut NativeCacheOwnerConfig,
+    mut policy: SurfaceIndexPolicy,
+) -> Result<SurfaceIndexPolicy> {
+    let allocation = measured("TERRANE_PRESSURE_ALLOCATION")?;
+    let full = policy.capacity_bytes;
+    policy.capacity_bytes = full
+        .checked_add(allocation)
+        .ok_or("admission index cap overflows")?;
+    // The initial recovery and each actual index have distinct configured
+    // holds. The third index's real hold crosses this host boundary by one
+    // allocation even though its separate index cap still has space.
+    settings.policy.capacity = policy
+        .future_hold_bytes
+        .checked_mul(3)
+        .and_then(|holds| holds.checked_add(config::HOLD))
+        .and_then(|holds| holds.checked_add(full))
+        .and_then(|bytes| bytes.checked_sub(allocation))
+        .filter(|bytes| *bytes <= config::HARD_LIMIT)
+        .ok_or("admission host capacity exceeds genuine project budget")?;
+    settings.policy.low_watermark = settings
+        .policy
+        .capacity
+        .checked_sub(policy.future_hold_bytes)
+        .ok_or("admission low watermark underflows")?;
+    settings.policy.probation_bytes = settings
+        .policy
+        .probation_bytes
+        .min(settings.policy.capacity);
+    Ok(policy)
+}
+
 /// Runs calibration or the actual bounded pressure control outside main's frame.
 ///
 /// # Errors
@@ -67,7 +103,7 @@ pub(super) fn run(
         if mode == "pressure-calibrate" {
             return calibrate(owner, inputs, baseline).await;
         }
-        verify(owner, inputs, policy, mode == "global-pressure").await
+        verify(owner, inputs, policy, mode).await
     }))
 }
 
@@ -110,8 +146,10 @@ async fn verify(
     owner: &NativeMetadataOwner,
     inputs: &config::Inputs,
     policy: SurfaceIndexPolicy,
-    global: bool,
+    mode: &str,
 ) -> Result<()> {
+    let global = mode == "global-pressure";
+    let admission = mode == "host-admission";
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
     fixture
         .commit(b"durable active root protected against automatic index eviction")
@@ -134,18 +172,21 @@ async fn verify(
     drop(active);
     drop(lease);
 
+    let active_state = exposure::snapshot(inputs).await?;
     let (cold_root, cold_nodes) = tree_with_content([8; 32])?;
     let cold = owner.cache_surface_index(cold_root, cold_nodes).await?;
     let cold_path = canonical_path(inputs, cold_root);
     let (incoming_root, incoming_nodes) = tree_with_content([9; 32])?;
     let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
     let full = quota_sample(&mut quota, inputs)?.0;
-    if full != policy.capacity_bytes
-        || cold.synchronized_inode_bytes() != measured("TERRANE_PRESSURE_ALLOCATION")?
-    {
+    let allocation = measured("TERRANE_PRESSURE_ALLOCATION")?;
+    let expected_full = policy
+        .capacity_bytes
+        .checked_sub(if admission { allocation } else { 0 })
+        .ok_or("pressure fill bound underflows")?;
+    if full != expected_full || cold.synchronized_inode_bytes() != allocation {
         return Err(format!(
-            "actual pressure fill differs from calibrated cap: {full} != {}",
-            policy.capacity_bytes
+            "actual pressure fill differs from calibrated bound: {full} != {expected_full}"
         )
         .into());
     }
@@ -157,7 +198,6 @@ async fn verify(
         .iter()
         .try_fold(0u64, |sum, hold| sum.checked_add(hold.bytes))
         .ok_or("pressure future holds overflow")?;
-    let allocation = measured("TERRANE_PRESSURE_ALLOCATION")?;
     let incoming = inputs
         .owner_config()?
         .policy
@@ -194,6 +234,15 @@ async fn verify(
         return Err("automatic pressure skipped genuine release grace".into());
     }
     tokio::time::sleep(inputs.owner_config()?.policy.release_grace).await;
+    let admitted = if admission {
+        Some(
+            owner
+                .cache_surface_index(incoming_root, incoming_nodes.clone())
+                .await?,
+        )
+    } else {
+        None
+    };
     if global {
         let retired = owner.evict_cached(incoming).await?;
         if retired.retired_allocations != 1
@@ -206,7 +255,9 @@ async fn verify(
             return Err("global pressure changed actual charge or an unrelated future hold".into());
         }
     }
-    refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    if !admission {
+        refused(owner, incoming_root, incoming_nodes.clone()).await?;
+    }
     if cold_path.exists()
         || !canonical_path(inputs, active_key.root()).exists()
         || mapping.index().lookup(b"file").is_none()
@@ -214,7 +265,18 @@ async fn verify(
     {
         return Err("automatic pressure lost active exposure or original retired mapping".into());
     }
-    if global {
+    if admission {
+        if quota_sample(&mut quota, inputs)?.0
+            != full
+                .checked_add(allocation)
+                .ok_or("admission charge overflows")?
+        {
+            return Err("automatic admission credited a still mapped original inode".into());
+        }
+        println!(
+            "PASS verified index admission requests bounded host eviction before funding; retained receipts and real grace refuse without mutation while the original mapped victim remains fully charged"
+        );
+    } else if global {
         println!(
             "PASS shared host FIFO selects the original derived index after real release grace while preserving active exposure and exact mapped charge"
         );
@@ -235,9 +297,14 @@ async fn verify(
         }
     })
     .await??;
-    let admitted = owner
-        .cache_surface_index(incoming_root, incoming_nodes)
-        .await?;
+    let admitted = match admitted {
+        Some(admitted) => admitted,
+        None => {
+            owner
+                .cache_surface_index(incoming_root, incoming_nodes)
+                .await?
+        }
+    };
     admitted.check_native_backing()?;
     let after = exposure::snapshot(inputs).await?;
     if after.exposures != obligations
@@ -248,7 +315,27 @@ async fn verify(
     {
         return Err("automatic pressure failed exact retry after actual final unmap".into());
     }
-    if global {
+    if admission {
+        if after.reservations.len() != active_state.reservations.len() + 1
+            || active_state.reservations.iter().any(|original| {
+                !after.reservations.iter().any(|row| {
+                    row.id == original.id
+                        && row.owner == original.owner
+                        && row.bytes == original.bytes
+                })
+            })
+            || after
+                .reservations
+                .iter()
+                .try_fold(0u64, |sum, hold| sum.checked_add(hold.bytes))
+                != Some(future)
+        {
+            return Err("automatic admission changed an unrelated funded obligation".into());
+        }
+        println!(
+            "PASS automatic host-pressure index admission preserves unrelated exposure and funding; actual final unmap releases exactly the original victim allocation"
+        );
+    } else if global {
         println!(
             "PASS shared host retirement releases only the original index future hold; actual final unmap precedes bounded index-cap retry with durable custody unchanged"
         );

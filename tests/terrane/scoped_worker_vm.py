@@ -103,7 +103,7 @@ def crash_actor(support, executable, environment):
             print(log_path.read_text(), flush=True)
 
 
-def pressure_actors(support, executable, environment_for):
+def pressure_actors(support, executable, environment_for, admission=False):
     """Calibrates a genuine project before exercising actual pressure elsewhere."""
     calibration = subprocess.run(support.role_command(840, [executable, "pressure-calibrate"]),
         env=environment_for("pressure-calibration"), text=True, capture_output=True, timeout=30)
@@ -119,7 +119,7 @@ def pressure_actors(support, executable, environment_for):
     snapshot, allocation = map(int, fields[1:])
     support.require(0 <= snapshot <= support.HARD and 0 < allocation <= support.HARD,
         "actual pressure measurements exceed the genuine project budget")
-    for case in ["pressure", "global-pressure"]:
+    for case in (["host-admission"] if admission else ["pressure", "global-pressure"]):
         environment = dict(environment_for(case),
             TERRANE_PRESSURE_SNAPSHOT=str(snapshot), TERRANE_PRESSURE_ALLOCATION=str(allocation))
         try:
@@ -134,12 +134,18 @@ def pressure_actors(support, executable, environment_for):
         print(result.stdout, end="", flush=True)
         print(result.stderr, end="", flush=True)
         expected = ["PASS surface admission requires actual recovery and acknowledged Resume"]
-        expected.extend([
-            "PASS shared host FIFO selects the original derived index after real release grace while preserving active exposure and exact mapped charge",
-            "PASS shared host retirement releases only the original index future hold; actual final unmap precedes bounded index-cap retry with durable custody unchanged"
-        ] if case == "global-pressure" else [
-            "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit",
-            "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"])
+        if admission:
+            expected.extend([
+                "PASS verified index admission requests bounded host eviction before funding; retained receipts and real grace refuse without mutation while the original mapped victim remains fully charged",
+                "PASS automatic host-pressure index admission preserves unrelated exposure and funding; actual final unmap releases exactly the original victim allocation"])
+        elif case == "global-pressure":
+            expected.extend([
+                "PASS shared host FIFO selects the original derived index after real release grace while preserving active exposure and exact mapped charge",
+                "PASS shared host retirement releases only the original index future hold; actual final unmap precedes bounded index-cap retry with durable custody unchanged"])
+        else:
+            expected.extend([
+                "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit",
+                "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"])
         support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
             "actual automatic index-pressure control failed: " + case)
 
@@ -158,12 +164,13 @@ def load(name, path):
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
     if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
-            and sys.argv[3] not in ["--crash", "--pressure"]):
-        raise RuntimeError("expected image, source and optional --crash or --pressure")
+            and sys.argv[3] not in ["--crash", "--pressure", "--admission"]):
+        raise RuntimeError("expected image, source and optional --crash, --pressure or --admission")
     image, source = map(Path, sys.argv[1:3])
     crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
     pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
-    case = "pressure" if pressure else "worker-crash" if crash else "scoped-worker"
+    admission = len(sys.argv) == 4 and sys.argv[3] == "--admission"
+    case = "host-admission" if admission else "pressure" if pressure else "worker-crash" if crash else "scoped-worker"
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
     support = load("scoped_native_support", image / "share/host_cache_vm.py")
@@ -173,7 +180,8 @@ def main():
     support.require(Path(__file__).read_bytes()
         == (source / "tests/terrane/scoped_worker_vm.py").read_bytes(),
         "installed scoped supervisor differs from immutable source")
-    support.CASES = ["pressure-calibration", "pressure", "global-pressure"] if pressure else [case]
+    support.CASES = (["pressure-calibration", "host-admission"] if admission
+        else ["pressure-calibration", "pressure", "global-pressure"] if pressure else [case])
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
@@ -235,11 +243,12 @@ def main():
                 and time.monotonic() < deadline,
                 "actual scoped helper or publisher failed readiness: " + prepared.stderr)
             time.sleep(0.02)
-        if pressure:
-            pressure_actors(support, executable, environment_for)
+        if pressure or admission:
+            pressure_actors(support, executable, environment_for, admission)
             support.verify_image()
             surface.verify_surface(image, source)
-            print("PASS native automatic index pressure component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
+            print("PASS native automatic host-admission pressure component; production broker, worker sandbox and FUSE remain unqualified" if admission else
+                "PASS native automatic index pressure component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
             return
         if crash:
             crash_actor(support, executable, environment)

@@ -248,6 +248,19 @@ pub(super) async fn admit(
         compiled
     };
     pressure::prepare(executor, compiled.bytes().len()).await?;
+    let hold = {
+        let owner = custody
+            .lock()
+            .map_err(|_| invalid("surface custody poisoned"))?;
+        state::check_ready(executor, &owner)?;
+        owner
+            .preparation
+            .config
+            .surface_index
+            .ok_or_else(|| invalid("surface policy absent"))?
+            .future_hold_bytes
+    };
+    super::admission::pressure::prepare_hold(executor, hold).await?;
     let key = compiled.key();
     let order = executor.next_allocation_order()?;
     let (generation, write) = {

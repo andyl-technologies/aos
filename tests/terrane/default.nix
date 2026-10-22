@@ -549,6 +549,15 @@ in {
         surfaceIndex = true;
       }).image;
   };
+  integration.surface-index-admission-pressure = import ./scoped-worker.nix {
+    inherit pkgs lib;
+    admission = true;
+    image =
+      (import ./host-cache-proof.nix {
+        inherit pkgs lib sourceGateWithInputs;
+        surfaceIndex = true;
+      }).image;
+  };
   integration.surface-index-pressure = import ./scoped-worker.nix {
     inherit pkgs lib;
     pressure = true;

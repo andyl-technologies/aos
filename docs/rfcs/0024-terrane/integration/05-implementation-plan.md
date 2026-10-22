@@ -14490,3 +14490,38 @@ The existing 120-second pressure VM and 60-second actor contracts are unchanged.
 Both strict Linux all-target feature profiles, formatting, Python syntax,
 Nix evaluation and all 128 native source declarations pass. Exact-source native
 and mandatory application qualification are pending; no trunk task is closed.
+
+
+Commit `e37c5014df` is pushed with shared-host derived-index selection and
+`073ad220ac` with the exact recovery-bootstrap expectation. Six checks now run
+on that clean frozen source: shared/index-cap pressure, complete surface owner,
+scoped grants, forced crash, full base native cache and mandatory application
+compilation. No runtime result for these changes is asserted yet.
+
+The corrected owning `publisher-sole-writer` gate at `c6c5da62dc` passes in
+2,356.76 seconds with unchanged source. Its actual native prerequisites and
+retained artifact review are being inspected; the previous failed aggregate
+remains failed. This checkpoint does not establish current-head host readiness.
+
+New verified index admissions now request bounded general host eviction before
+funding their configured future copy hold, using the same pressure routine as
+encoded admissions. Warm reuse still returns before this path. Canonical
+compilation and domain validation precede any eviction, and original checked
+retirement plus fresh full-project accounting must meet the selected target
+before reservation. Failure leaves no incoming index job or reservation.
+The separate index-cap check remains independent. The eviction report now
+describes both pending and completed original native retirement accurately.
+
+`checks.terrane.integration.surface-index-admission-pressure` adds a separate
+90-second VM and 60-second pressure actor, preserving every existing bound.
+Genuine calibration leaves one index-cap slot while the next index's actual
+configured future hold crosses the host capacity. Retained receipts and real
+release grace must refuse without durable mutation. After grace, automatic
+host selection must retire exactly the old index and admit the new one while
+its original external mapping remains charged. Actual final unmap must release
+exactly that allocation; the unrelated signed-root exposure and original
+metadata funding remain unchanged. This is a host-reservation test distinct
+from explicit eviction or index-cap pressure. Formatting, both strict Linux
+all-target profiles, Python syntax, Nix formatting/evaluation and all 128 native
+source declarations pass. Exact-source native and mandatory application
+qualification are pending; no trunk task is accepted by this component alone.
