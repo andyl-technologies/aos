@@ -6,6 +6,7 @@ mod deferred_cleanup;
 mod family;
 mod publisher;
 mod quantum;
+mod runtime_artifact;
 
 use crate::selectable_catalog_plan::{SelectablePlanContinuation, SelectablePlanLimits};
 

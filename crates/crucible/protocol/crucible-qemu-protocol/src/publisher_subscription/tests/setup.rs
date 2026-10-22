@@ -128,6 +128,9 @@ mod transport {
         send_quantum_publisher_setup_frame_with_descriptors,
         send_quantum_stack_setup_frame_with_descriptors,
     };
+    use crate::runtime_artifact::{
+        RuntimeArtifactSetup, send_runtime_artifact_setup_frame_with_descriptors,
+    };
     use std::io::{Read, Write};
     use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
     use std::os::unix::fs::MetadataExt;
@@ -144,7 +147,7 @@ mod transport {
             iov_base: bytes.as_mut_ptr().cast(),
             iov_len: bytes.len(),
         };
-        let mut control = crate::AncillaryBuffer::for_single_cmsg_fd_capacity(9).unwrap();
+        let mut control = crate::AncillaryBuffer::for_single_cmsg_fd_capacity(11).unwrap();
         // SAFETY: all-zero msghdr has null optional pointers; live buffers below
         // supply their matching writable extents for this synchronous recvmsg.
         let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
@@ -176,7 +179,7 @@ mod transport {
         // SAFETY: CMSG_LEN computes the fixed header extent without dereferencing.
         let fixed = unsafe { libc::CMSG_LEN(0) } as usize;
         let count = (length - fixed) / std::mem::size_of::<libc::c_int>();
-        assert!(count <= 9);
+        assert!(count <= 11);
         let mut descriptors = Vec::new();
         for index in 0..count {
             // SAFETY: the returned SCM_RIGHTS payload contains count fresh owned
@@ -199,6 +202,7 @@ mod transport {
         Quantum,
         Stack,
         DeferredCleanup,
+        RuntimeArtifact,
     }
 
     type Sender = fn(
@@ -208,12 +212,17 @@ mod transport {
     ) -> Result<crate::PreexecSetupHandover, crate::DescriptorHandoverError>;
 
     impl SetupEdition {
+        fn descriptor_count(self, workspace: bool) -> usize {
+            8 + usize::from(workspace) + if self == Self::RuntimeArtifact { 2 } else { 0 }
+        }
+
         fn sender(self) -> Sender {
             match self {
                 Self::Publisher => send_publisher_setup_frame_with_descriptors,
                 Self::Quantum => send_quantum_publisher_setup_frame_with_descriptors,
                 Self::Stack => send_quantum_stack_setup_frame_with_descriptors,
                 Self::DeferredCleanup => send_deferred_cleanup_setup_frame_with_descriptors,
+                Self::RuntimeArtifact => send_runtime_artifact_setup_frame_with_descriptors,
             }
         }
 
@@ -221,6 +230,14 @@ mod transport {
             let publisher = QuantumPublisherSetup { transport: value };
             match self {
                 Self::Publisher => value.encode(),
+                Self::RuntimeArtifact => RuntimeArtifactSetup {
+                    cleanup: DeferredCleanupSetup {
+                        publisher: value,
+                        delegation_incarnation: 17,
+                    },
+                }
+                .encode()
+                .map_err(|_| PublisherDecodeError),
                 Self::DeferredCleanup => DeferredCleanupSetup {
                     publisher: value,
                     delegation_incarnation: 17,
@@ -251,7 +268,7 @@ mod transport {
                 });
             }
             let frame = edition.encode(value)?;
-            let pairs = (0..if workspace { 9 } else { 8 })
+            let pairs = (0..edition.descriptor_count(workspace))
                 .map(|_| UnixStream::pair())
                 .collect::<std::io::Result<Vec<_>>>()?;
             let descriptors = pairs
@@ -309,13 +326,14 @@ mod transport {
         let encode = |value| edition.encode(value);
         let (host, mut peer) = UnixStream::pair()?;
         let frame = encode(setup())?;
-        for count in 0..=10 {
-            if count != 8 {
+        let ordinary_count = edition.descriptor_count(false);
+        for count in 0..=12 {
+            if count != ordinary_count {
                 assert!(send(host.as_raw_fd(), &frame, &vec![host.as_raw_fd(); count]).is_err());
             }
         }
-        let mut descriptors = [host.as_raw_fd(); 8];
-        for index in 0..8 {
+        let mut descriptors = vec![host.as_raw_fd(); ordinary_count];
+        for index in 0..ordinary_count {
             descriptors[index] = -1;
             assert!(send(host.as_raw_fd(), &frame, &descriptors).is_err());
             descriptors[index] = host.as_raw_fd();
@@ -329,7 +347,10 @@ mod transport {
             assert!(send(host.as_raw_fd(), &padding, &descriptors).is_err());
         }
 
-        if edition == SetupEdition::DeferredCleanup {
+        if matches!(
+            edition,
+            SetupEdition::DeferredCleanup | SetupEdition::RuntimeArtifact
+        ) {
             for invalid in [0, u64::MAX] {
                 let mut malformed = frame;
                 malformed[117..125].copy_from_slice(&invalid.to_be_bytes());
@@ -346,8 +367,9 @@ mod transport {
         });
         assert!(send(host.as_raw_fd(), &encode(with_workspace)?, &descriptors,).is_err());
         let workspace_frame = encode(with_workspace)?;
-        for count in 0..=10 {
-            if count != 9 {
+        let workspace_count = edition.descriptor_count(true);
+        for count in 0..=12 {
+            if count != workspace_count {
                 assert!(
                     send(
                         host.as_raw_fd(),
@@ -358,8 +380,8 @@ mod transport {
                 );
             }
         }
-        let mut workspace_descriptors = [host.as_raw_fd(); 9];
-        for index in 0..9 {
+        let mut workspace_descriptors = vec![host.as_raw_fd(); workspace_count];
+        for index in 0..workspace_count {
             workspace_descriptors[index] = -1;
             assert!(send(host.as_raw_fd(), &workspace_frame, &workspace_descriptors).is_err());
             workspace_descriptors[index] = host.as_raw_fd();
@@ -370,6 +392,7 @@ mod transport {
             SetupEdition::Quantum,
             SetupEdition::Stack,
             SetupEdition::DeferredCleanup,
+            SetupEdition::RuntimeArtifact,
         ] {
             if other != edition {
                 assert!(send(host.as_raw_fd(), &other.encode(setup())?, &descriptors).is_err());
@@ -400,6 +423,18 @@ mod transport {
     fn deferred_cleanup_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
     -> Result<(), Box<dyn std::error::Error>> {
         exercise_refusal(SetupEdition::DeferredCleanup)
+    }
+
+    #[test]
+    fn runtime_artifact_setup_sends_exact_ten_and_eleven_actual_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_transfer(SetupEdition::RuntimeArtifact)
+    }
+
+    #[test]
+    fn runtime_artifact_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_refusal(SetupEdition::RuntimeArtifact)
     }
 
     #[test]

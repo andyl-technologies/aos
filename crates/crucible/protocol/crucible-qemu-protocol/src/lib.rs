@@ -72,6 +72,7 @@ mod plugin_observation;
 pub mod plugin_setup_plan;
 mod preemption;
 pub mod publisher_subscription;
+pub mod runtime_artifact;
 pub mod ram_control;
 pub mod ram_fork;
 pub mod ram_page;

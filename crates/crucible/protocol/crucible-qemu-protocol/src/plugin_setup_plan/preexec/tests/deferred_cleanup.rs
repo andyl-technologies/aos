@@ -8,7 +8,7 @@ use crate::deferred_cleanup::{
 };
 use crate::publisher_subscription::PublisherPurpose;
 
-fn parts() -> (PluginSetupPlan, [u8; PURPOSE], DeferredCleanupPurpose) {
+pub(super) fn parts() -> (PluginSetupPlan, [u8; PURPOSE], DeferredCleanupPurpose) {
     let (plan, purpose) = issued_fixture_plan();
     let owner = |byte| DeferredCleanupIdentity {
         identity: [byte; 32],

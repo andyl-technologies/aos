@@ -664,6 +664,61 @@ in
                 -p crucible-qemu-protocol \
                 --lib plugin_setup_plan::deferred_cleanup::tests:: \
                 -- --test-threads=1
+              require_test_set 4 protocol-runtime-pair \
+                runtime_artifact::tests::runtime_pair_matches_all_public_vectors_and_exact_accepted_round_trips \
+                -p crucible-qemu-protocol --lib runtime_artifact::tests::runtime_pair
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib runtime_artifact::tests::runtime_pair \
+                -- --test-threads=1
+              require_test_set 1 protocol-runtime-setup \
+                runtime_artifact::tests::setup_ten_refuses_mixed_editions_and_preserves_dormant_footer \
+                -p crucible-qemu-protocol --lib runtime_artifact::tests::setup_ten
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib runtime_artifact::tests::setup_ten \
+                -- --test-threads=1
+              require_test_set 4 protocol-runtime-plan \
+                plugin_setup_plan::preexec::tests::runtime_artifact::runtime_plan_refuses_independently_valid_foreign_runtime_parents \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::runtime_artifact::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::runtime_artifact:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-runtime-plan-cap \
+                plugin_setup_plan::runtime_artifact::tests::artifact_extent_preserves_the_unchanged_aggregate_cap \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::runtime_artifact::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::runtime_artifact::tests:: \
+                -- --test-threads=1
+              require_test_set 2 protocol-runtime-transport \
+                publisher_subscription::tests::setup::transport::runtime_artifact_setup_sends_exact_ten_and_eleven_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::runtime_artifact_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::runtime_artifact_setup \
+                -- --test-threads=1
               require_test_set 8 host-quantum-role \
                 host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
                 -p crucible-host-resources --features private-measurement-domain \

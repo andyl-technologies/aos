@@ -400,6 +400,18 @@ These byte and physical-alias checks do not issue a delegation or activate
 Setup nine; the genuine retained-parent installer and complete runtime profile
 remain required.
 
+The distinct Setup-ten/plan-thirteen syntax now carries the immutable runtime
+pair as an exact 192-byte record and two appended borrowed descriptor roles.
+Its x86-64 file identities, nonwrapping generations and Source assignment must
+correspond to the same containing purpose. Plan thirteen retains the unchanged
+aggregate cap and existing body order; every other selected edition refuses it.
+Twelve new controls cover exact records, all 272 public vectors with two exact
+accepted round trips, malformed/mixed frames, foreign parents, optional workspace,
+aggregate overflow, and real ten/eleven-alias SCM_RIGHTS delivery. All 239
+protocol tests and strict protocol Clippy pass. Independent C-vector execution,
+actual prebirth artifact retention, loaded-image/TLS funding and the real
+retained-parent installer remain required before activating this edition.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree

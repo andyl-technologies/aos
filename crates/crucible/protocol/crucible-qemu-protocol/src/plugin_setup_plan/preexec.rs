@@ -54,6 +54,8 @@ pub(super) enum Edition {
     Quantum,
     /// Requires plan twelve and its distinct dormant delegation purpose.
     DeferredCleanup,
+    /// Requires plan thirteen and the appended immutable runtime-pair record.
+    RuntimeArtifact,
 }
 
 /// Parses the exact requested carrier and its corresponding purpose edition.
@@ -70,13 +72,26 @@ pub(super) fn decode_edition(
         Edition::Publisher => (b"CRUCSUP9", 9, true),
         Edition::Quantum => (b"CRUCSU10", 10, true),
         Edition::DeferredCleanup => (b"CRUCSU12", 12, true),
+        Edition::RuntimeArtifact => (b"CRUCSU13", 13, true),
     };
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
-    let header = if publisher { 48 } else { HEADER };
-    let tail = if matches!(edition, Edition::DeferredCleanup) {
+    let runtime = matches!(edition, Edition::RuntimeArtifact);
+    let header = if runtime {
+        56
+    } else if publisher {
+        48
+    } else {
+        HEADER
+    };
+    let tail = if matches!(edition, Edition::DeferredCleanup | Edition::RuntimeArtifact) {
         crate::deferred_cleanup::DEFERRED_CLEANUP_PURPOSE_BYTES
     } else if publisher {
         crate::publisher_subscription::PUBLISHER_PURPOSE_BYTES
+    } else {
+        0
+    };
+    let runtime_len = if runtime {
+        crate::runtime_artifact::RUNTIME_ARTIFACT_PAIR_BYTES
     } else {
         0
     };
@@ -95,6 +110,9 @@ pub(super) fn decode_edition(
     }
     if publisher && (read_u32(bytes, 40)? as usize != tail || read_u32(bytes, 44)? != 0) {
         return Err(invalid("publisher header"));
+    }
+    if runtime && (read_u32(bytes, 48)? as usize != runtime_len || read_u32(bytes, 52)? != 0) {
+        return Err(invalid("runtime-artifact header"));
     }
     let declared = read_u32(bytes, 16)? as usize;
     let app_len = read_u32(bytes, 20)? as usize;
@@ -120,7 +138,11 @@ pub(super) fn decode_edition(
         .checked_add(STARTUP_OPERATION_BYTES)
         .ok_or(invalid("lengths"))?;
     let purpose_end = startup_end.checked_add(PURPOSE).ok_or(invalid("lengths"))?;
-    if purpose_end.checked_add(tail) != Some(bytes.len()) {
+    if purpose_end
+        .checked_add(tail)
+        .and_then(|end| end.checked_add(runtime_len))
+        != Some(bytes.len())
+    {
         return Err(invalid("lengths"));
     }
     let startup = StartupOperation::decode(&bytes[workspace_end..startup_end])
@@ -133,10 +155,11 @@ pub(super) fn decode_edition(
 
     if publisher {
         let subscription = match edition {
-            Edition::DeferredCleanup => {
-                let purpose =
-                    crate::deferred_cleanup::DeferredCleanupPurpose::decode(&bytes[purpose_end..])
-                        .map_err(|_| invalid("deferred Cleanup purpose"))?;
+            Edition::DeferredCleanup | Edition::RuntimeArtifact => {
+                let purpose = crate::deferred_cleanup::DeferredCleanupPurpose::decode(
+                    &bytes[purpose_end..purpose_end + tail],
+                )
+                .map_err(|_| invalid("deferred Cleanup purpose"))?;
                 super::deferred_cleanup::validate_source_binding(
                     &purpose,
                     &bytes[startup_end..purpose_end],
@@ -154,6 +177,12 @@ pub(super) fn decode_edition(
                 .map_err(|_| invalid("publisher purpose"))?,
         };
         super::publisher::validate_binding(&subscription, &bytes[startup_end..purpose_end])?;
+        if runtime {
+            let pair =
+                crate::runtime_artifact::RuntimeArtifactPair::decode(&bytes[purpose_end + tail..])
+                    .map_err(|_| invalid("runtime-artifact pair"))?;
+            super::runtime_artifact::validate_binding(&pair, &subscription)?;
+        }
     }
 
     let app = AppRandomBranchPlan::decode(&bytes[header..app_end])
