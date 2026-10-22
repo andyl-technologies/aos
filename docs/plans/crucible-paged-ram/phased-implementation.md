@@ -544,9 +544,16 @@ the same context and are formatted only by their consumer.
 Three controls exercise actual routing refusal precedence, modeled ring failure
 with its complete Error source chain, and known request consumption followed by
 sequence overflow. All nine focused router tests, 126 white-box tests and every
-plugin test target's compilation pass. Hygiene, mandatory application
-compilation, ABI/license checking and the exact 322-case supervision run are
-being collected. This removes callback diagnostic construction on this path; it does
+plugin test target's compilation pass. Corrected content-bound engineering
+hygiene passes. Mandatory application compilation, ABI/license checking and
+the exact 322-case supervision run are being collected. All 5,308 committed
+Rust/TOML files at `0b2dc41ac5e3343dfebb98d1d7ebde8a89983c6c` match immutable
+application source `n48s1b82xdjclagrbz1r7z2yl2pirc77`; the comparison record has
+SHA-256 `fe13ce9c055fc63f6dfe8e1b025ad09455c3dccfa512c5e775d703f5e4fcc22e`. The first hygiene attempt rejected the stale whole-file
+Runtime review digest after its one-line typed-error re-export. Reviewing that
+exact diff and retaining the 2,593 implementation-line count corrects the
+content-bound review record; the scanner and thresholds are unchanged.
+This removes callback diagnostic construction on this path; it does
 not fund surrounding trap buffers, every guest-write error payload or complete
 operations and supplies no Native execution authority.
 
@@ -575,8 +582,8 @@ seven shared-memory controls and six live-router controls pass. All 123 white-bo
 Content-bound engineering hygiene passes. Canonical license checking stops at the unchanged
 909 host-library and 963 host-test Clippy errors; its boundary assertions do
 not run. ABI conformance passes at `6h6ydy3382gixqz06f52m37kn76j22lb`.
-Mandatory application compilation and the exact 319-case supervision run are
-being collected. All 5,307 committed Rust/TOML files at
+Mandatory application compilation passes at `2mna23zbrz1k9fgicnrrv0n5s1gcssws`;
+the exact 319-case supervision run is being collected. All 5,307 committed Rust/TOML files at
 `4189ebf43165ddfb08a669b6431878df8fccf72f` match immutable application source
 `s6aid5fgzgh6rjgjla0y2acbyaaxw2g4`; the comparison record has SHA-256
 `4621607d1c4ac8ca88ce6eafb0f68cef1801eee3782d358b8d29e5601f649dd7`.
