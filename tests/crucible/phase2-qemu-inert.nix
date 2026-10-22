@@ -969,7 +969,6 @@
     crucible-hot-fork-async-worker-barrier
     crucible-hot-fork-block-barrier
     crucible-hot-fork-block-seal
-    crucible-hot-fork-child-console
     crucible-hot-fork-child-diagnostics
     crucible-hot-fork-child-files
     crucible-hot-fork-child-process

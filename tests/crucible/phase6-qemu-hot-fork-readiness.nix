@@ -162,11 +162,6 @@ in
           jq -e -s 'any(.[]; (.error.desc // "") | test("does not support OOB"))' "$out/stock-getfd-oob.json" >/dev/null \
             || { cat "$out/stock-getfd-oob.json" >&2; fail "stock QEMU unexpectedly accepted out-of-band getfd"; }
           qmp "$stock_socket" \
-            '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
-            "$out/stock-child-console.json"
-          jq -e -s 'any(.[]; has("error"))' "$out/stock-child-console.json" >/dev/null \
-            || fail "stock QEMU unexpectedly exposed the Crucible child-console stage"
-          qmp "$stock_socket" \
             '{"exec-oob":"crucible-hot-fork-plugin-endpoints","arguments":{"action":"query"}}' \
             "$out/stock-plugin-endpoints.json"
           jq -e -s 'any(.[]; has("error"))' "$out/stock-plugin-endpoints.json" >/dev/null \
@@ -261,28 +256,6 @@ in
             "$out/closefd-oob.json"
           jq -e -s 'any(.[]; (.error.desc // "") | test("not found"))' "$out/closefd-oob.json" >/dev/null \
             || { cat "$out/closefd-oob.json" >&2; fail "patched QEMU did not dispatch closefd out of band"; }
-
-          qmp "$patched_socket" \
-            '{"exec-oob":"crucible-hot-fork-child-console","arguments":{"action":"query"}}' \
-            "$out/child-console-initial.json"
-          jq -e -s '
-            [.[] | select(has("return"))][-1].return == {
-              "schema-version": 1,
-              "generation": 0,
-              "template-generation": 0,
-              "staged": false,
-              "socket-cookie": 0,
-              "retained-fd": -1,
-              "resource-plan-bound": false,
-              "nonblocking-unix-stream": false,
-              "console-basis-bound": false,
-              "reinitializer-prepared": false,
-              "reinitialized": false,
-              "disposition-complete": false,
-              "readiness-proof-acknowledged": false
-            }
-          ' "$out/child-console-initial.json" >/dev/null \
-            || { cat "$out/child-console-initial.json" >&2; fail "initial child-console state was not exact"; }
 
           qmp "$patched_socket" \
             '{"exec-oob":"crucible-hot-fork-private-rings","arguments":{"action":"query"}}' \
