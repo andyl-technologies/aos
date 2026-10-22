@@ -14,7 +14,10 @@ use std::path::Path;
 use rustix::fs::{Mode, OFlags};
 use terrane_format::identity::Digest;
 use terrane_format::tree_builder::Tree;
-use terrane_format::tree_format::{ContentRef, Entry, EntryKind, LeafItem, TreeUse};
+use terrane_format::tree_format::{
+    Attribute, ContentRef, Entry, EntryKind, ExtendedAttribute, LeafItem, Property, TreeUse,
+};
+use terrane_linux::inode_policy::InodeTable;
 use terrane_linux::structural_index::{Kind, MappedIndex, MappingError, compile_nodes};
 use terrane_sdk::host::publication::VerityBinding;
 
@@ -103,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mapped = MappedIndex::open(read_fd()?, tree_root, &binding, bytes.len())?;
     assert_eq!(mappings(inode, device)?, before + 1);
     let index = mapped.index();
-    assert_eq!(index.len(), 5);
+    assert_eq!(index.len(), 6);
     assert_eq!(
         index.lookup(b"dir/file").ok_or("file missing")?.kind(),
         Kind::File {
@@ -127,6 +130,53 @@ fn main() -> Result<(), Box<dyn Error>> {
             .collect::<Vec<_>>(),
         [b"dir".as_slice(), b"other".as_slice()]
     );
+    let file_entry = index.lookup(b"dir/file").ok_or("file missing")?;
+    let alias = index
+        .lookup(b"dir/hardlink")
+        .ok_or("hard-link alias missing")?;
+    let recorded = file_entry.metadata()?;
+    assert_eq!(recorded.mode, Some(0o444));
+    assert_eq!(
+        recorded.attributes.get(b"uid"),
+        Some(b"\x18\x2a".as_slice())
+    );
+    assert_eq!(
+        recorded.xattrs.get(b"user.fixture"),
+        Some(b"recorded\0bytes".as_slice())
+    );
+    assert_eq!(
+        index
+            .lookup(b"dir")
+            .ok_or("directory missing")?
+            .metadata()?
+            .mode,
+        Some(0o555)
+    );
+    assert_eq!(
+        index
+            .lookup(b"")
+            .ok_or("root missing")?
+            .metadata()?
+            .root_properties
+            .get(b"x.outer"),
+        Some(b"\x01".as_slice())
+    );
+    let graft_metadata = index.lookup(b"other").ok_or("graft missing")?.metadata()?;
+    assert_eq!(
+        graft_metadata.root_properties.get(b"x.inner"),
+        Some(b"\x02".as_slice())
+    );
+    assert_eq!(
+        graft_metadata.graft_overrides.get(b"x.override"),
+        Some(b"\x03".as_slice())
+    );
+    let mut inodes = InodeTable::new(1)?;
+    let alias_inode = inodes.touch_entry(alias)?;
+    assert_eq!(inodes.touch_entry(file_entry)?, alias_inode);
+    assert_eq!(alias_inode.1.number(), 16);
+    assert_eq!(alias_inode.1.links(), 2);
+    assert_eq!(inodes.len(), 1);
+    println!("PASS: mapped recorded metadata and canonical hard-link inode assignment");
     assert!(OpenOptions::new().write(true).open(&path).is_err());
     assert!(file.set_len(0).is_err());
 
@@ -136,7 +186,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     std::fs::write(&path, b"different unsealed incarnation")?;
     assert_ne!(std::fs::metadata(&path)?.ino(), inode);
     assert_eq!(mapped.index().root_hash(), tree_root);
-    assert!(mapped.index().lookup(b"dir/file").is_some());
+    let retained_entry = mapped
+        .index()
+        .lookup(b"dir/hardlink")
+        .ok_or("retained alias missing")?;
+    assert_eq!(
+        retained_entry.metadata()?.attributes.get(b"uid"),
+        Some(b"\x18\x2a".as_slice())
+    );
+    assert_eq!(retained_entry.canonical_inode()?.path(), b"dir/file");
     assert!(matches!(
         MappedIndex::open(File::open(&path)?.into(), tree_root, &binding, 65536),
         Err(MappingError::Io(_))
@@ -172,7 +230,10 @@ fn compile_fixture() -> Result<CompiledFixture, Box<dyn Error>> {
                 target: b"../dir/file",
             },
         )],
-        None,
+        Some(vec![Property {
+            name: "x.inner",
+            value: b"\x02",
+        }]),
         4096,
         TreeUse::Ordinary,
     )?;
@@ -185,18 +246,33 @@ fn compile_fixture() -> Result<CompiledFixture, Box<dyn Error>> {
                     mode: 0o444,
                     size: 7,
                     content: ContentRef::Inline([3; 32]),
-                    link_id: None,
+                    link_id: Some(b"dir/file"),
+                },
+            ),
+            item(
+                b"dir/hardlink",
+                EntryKind::File {
+                    mode: 0o444,
+                    size: 7,
+                    content: ContentRef::Inline([3; 32]),
+                    link_id: Some(b"dir/file"),
                 },
             ),
             item(
                 b"other",
                 EntryKind::Tree {
                     root: graft.root_identity(),
-                    props: None,
+                    props: Some(vec![Property {
+                        name: "x.override",
+                        value: b"\x03",
+                    }]),
                 },
             ),
         ],
-        None,
+        Some(vec![Property {
+            name: "x.outer",
+            value: b"\x01",
+        }]),
         4096,
         TreeUse::Ordinary,
     )?;
@@ -218,10 +294,16 @@ fn item(path: &[u8], kind: EntryKind<'static>) -> LeafItem<'static> {
         key: path.to_vec(),
         entry: Entry {
             kind,
-            attrs: Vec::new(),
-            attrs_present: false,
-            xattrs: Vec::new(),
-            xattrs_present: false,
+            attrs: vec![Attribute {
+                name: "uid",
+                value: b"\x18\x2a",
+            }],
+            attrs_present: true,
+            xattrs: vec![ExtendedAttribute {
+                name: b"user.fixture",
+                value: b"recorded\0bytes",
+            }],
+            xattrs_present: true,
             provenance: None,
         },
     }

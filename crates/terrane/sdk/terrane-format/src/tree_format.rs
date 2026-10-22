@@ -292,6 +292,23 @@ fn digest(decoder: &mut Decoder<'_>) -> Result<Digest, Error> {
 /// # Errors
 /// Rejects noncanonical values, excluded property types, invalid text-map
 /// names, and claimed lengths exceeding the format's input limits.
+/// Validates one complete canonical property value without applying a registry.
+///
+/// This preserves unrecognized property names while enforcing the tree codec's
+/// value vocabulary and byte bound. It does not authorize or resolve policy.
+///
+/// # Errors
+/// Rejects oversized, malformed, noncanonical, trailing or unsupported values.
+pub fn validate_property_value(input: &[u8]) -> Result<(), Error> {
+    if input.len() > MAX_NODE_ITEMS_BYTES {
+        return Err(Error::Limit);
+    }
+    let mut decoder = Decoder::new(input);
+    property_value(&mut decoder)?;
+    decoder.finish()?;
+    Ok(())
+}
+
 pub(crate) fn property_value(decoder: &mut Decoder<'_>) -> Result<(), Error> {
     enum Frame<'a> {
         Values(usize),

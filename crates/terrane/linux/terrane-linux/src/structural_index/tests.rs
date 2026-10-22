@@ -4,6 +4,7 @@
 
 use super::*;
 
+mod metadata;
 mod trees;
 
 fn fixture() -> Vec<u8> {
@@ -135,7 +136,7 @@ fn content_kind_size_symlink_bytes_and_graft_governance_survive_roundtrip() {
         Error::Tree
     );
     assert_eq!(
-        index.entries - index.hashes,
+        index.metadata - index.hashes,
         64,
         "content and graft hashes are deduplicated"
     );
@@ -143,26 +144,35 @@ fn content_kind_size_symlink_bytes_and_graft_governance_survive_roundtrip() {
 
 #[test]
 fn empty_tree_and_exact_compiler_bounds_are_supported() {
-    let bytes = compile([0; 32], &[], 1, HEADER + 32 + ENTRY).unwrap();
-    // Independent v1 wire example: 68-byte header, 32-byte root, one 52-byte
-    // directory entry, empty arenas and no child indices. Offsets are literal
-    // specification values rather than values supplied by the encoder.
-    let mut golden = [0u8; 152];
-    golden[..12].copy_from_slice(b"TRIX\x01\0\0\0\x01\0\0\0");
+    let bytes = compile(
+        [0; 32],
+        &[],
+        1,
+        HEADER + 32 + ENTRY + super::metadata::MINIMUM,
+    )
+    .unwrap();
+    // Independent v2 wire example, with one empty 36-byte metadata record.
+    // Literal offsets keep this independent of the encoder's layout arithmetic.
+    let mut golden = [0u8; 228];
+    golden[..12].copy_from_slice(b"TRIX\x02\0\0\0\x01\0\0\0");
     for (slot, value) in [
-        (12, 68),
-        (20, 100),
-        (28, 100),
-        (36, 100),
-        (44, 100),
-        (52, 152),
-        (60, 152),
+        (12, 84u64),
+        (20, 116),
+        (28, 116),
+        (36, 116),
+        (44, 152),
+        (52, 228),
+        (60, 228),
+        (68, 116),
+        (76, 228),
     ] {
-        golden[slot] = value;
+        golden[slot..slot + 8].copy_from_slice(&value.to_le_bytes());
     }
-    golden[112] = 1;
-    golden[124..132].fill(0xff);
-    golden[140..144].fill(0xff);
+    golden[164] = 1;
+    golden[176..184].fill(0xff);
+    golden[192..196].fill(0xff);
+    golden[212] = 36;
+    golden[216..220].fill(0xff);
     assert_eq!(bytes, golden);
 
     let index = Index::open(&bytes).unwrap();
@@ -255,7 +265,7 @@ fn every_truncation_and_hostile_header_offset_is_rejected() {
             "accepted truncation {length}"
         );
     }
-    for slot in [12, 20, 28, 36, 44, 52, 60] {
+    for slot in [12, 20, 28, 36, 44, 52, 60, 68, 76] {
         let mut malformed = bytes.clone();
         malformed[slot..slot + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(
@@ -332,6 +342,17 @@ fn arbitrary_short_inputs_and_single_byte_mutations_never_panic() {
                 let entry = index.entry(position).unwrap();
                 assert!(index.lookup(entry.path()).is_some());
                 entry.governing_root().unwrap();
+                entry.canonical_inode().unwrap();
+                assert!(entry.link_count().unwrap() > 0);
+                let metadata = entry.metadata().unwrap();
+                for fields in [
+                    metadata.attributes,
+                    metadata.xattrs,
+                    metadata.root_properties,
+                    metadata.graft_overrides,
+                ] {
+                    assert_eq!(fields.iter().count(), fields.len() as usize);
+                }
                 if let Kind::Directory { .. } = entry.kind() {
                     for child in entry.children().unwrap() {
                         assert!(child.path() > entry.path());

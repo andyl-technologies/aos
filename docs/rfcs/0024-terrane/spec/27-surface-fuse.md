@@ -75,22 +75,30 @@ Index file layout (little-endian):
   header      magic "TRIX", u16 version, u16 flags, u32 entry_count,
               u64 root_hash_offset, u64 path_arena_offset,
               u64 target_arena_offset, u64 hash_arena_offset,
-              u64 entries_offset, u64 children_offset, u64 file_length
+              u64 entries_offset, u64 children_offset, u64 file_length,
+              u64 metadata_offset, u64 links_offset
   root        32-byte root hash
   path arena  concatenated full relative paths (no record delimiters)
   target      concatenated symlink targets
   hash arena  32-byte content hashes, deduplicated
+  metadata    recorded metadata blocks in entry-table order
   entries     fixed-width records sorted by path bytes:
               u64 path_off, u32 path_len, u8 kind, u8 flags,
               u16 reserved, u64 size, u64 content_off_or_hash_idx,
               u32 target_off, u32 target_len, u32 parent_idx,
-              u32 first_child_idx, u32 child_count
+              u32 first_child_idx, u32 child_count,
+              u64 metadata_off, u32 metadata_len, u32 canonical_inode_idx,
+              u32 first_link_idx, u32 link_count
   children    u32 entry-table indices, grouped by parent entry-table order
+  links       u32 file entry-table indices, grouped by canonical inode order
 ```
 
-Version 1 has a 68-byte header, zero header flags and 52-byte entry records.
+Version 2 has an 84-byte header, zero header flags and 76-byte entry records.
+Version 1 lacks recorded presentation metadata and hard-link membership;
+readers reject it and the serve process recompiles the derived index. The
+canonical tree format is unchanged.
 All offsets in the header are absolute byte offsets. Arenas and tables occur
-in the order shown, with no padding or trailing bytes. Path and target offsets
+in the order shown, with no padding or trailing bytes. Path, target and metadata offsets
 in entries are relative to their respective arenas. Hash references are indices
 into a strictly byte-sorted, deduplicated hash arena. The first entry is the
 root directory with an empty path and parent index `0xffffffff`; every other
@@ -117,6 +125,37 @@ flags, invalid paths and arena references, arithmetic overflow, overlapping
 runs, and truncated or trailing bytes before exposing entries. This permits
 globally sorted paths and contiguous direct-child iteration for nested trees
 without moving descendants into their parent's run (D-132).
+
+Each metadata block begins with a `u16 mode` and `u16 flags`, followed by
+four maps: attributes, xattrs, referenced-root properties and graft overrides.
+Flag bits 0, 1 and 2 record mode presence, attribute-map presence and xattr-map
+presence respectively; all other bits are rejected. An absent mode is zero;
+a present mode contains only permission and special bits (`0x0fff`). Each map
+has `u32 count`, `u32 byte_length`, then exactly that many fields. A field is
+`u16 name_length`, `u32 value_length`, name bytes and value bytes. Names are
+nonempty and in canonical length-then-byte order without duplicates. Attribute
+and property names are UTF-8 and their values retain complete canonical CBOR;
+xattr names and values retain raw bytes. Tree codec name, count and value
+bounds apply. Metadata blocks partition the arena without padding or overlap.
+Ordinary files and directories retain their recorded modes; root, graft and
+symlink defaults remain presentation policy. Root properties occur on the
+synthesized root and graft boundaries; graft overrides remain distinct from
+the referenced root's properties. Unknown fields are preserved. Readers check
+values at open; metadata access and field iteration borrow checked slices
+without CBOR decoding or allocation.
+
+Each file's `canonical_inode_idx` names the first full namespace path in its
+hard-link set, including the prefix of any graft expansion. Standalone files
+name themselves. Only canonical entries own nonempty link runs; aliases and
+nonfiles own empty runs. Nonfiles use `0xffffffff` as their canonical index.
+Runs partition the links array in entry-table order and each file occurs
+exactly once, in increasing entry order within its run, starting with the
+canonical entry. Aliases must have identical content, size, recorded metadata
+and governing graft occurrence, even when two occurrences have the same root
+hash. The canonical run length supplies exact file `st_nlink`;
+identical content without a recorded hard-link identity does not merge files.
+Repeated graft expansions retain distinct full paths and distinct inode sets.
+The reader checks membership before providing a canonical inode or link count.
 
 - **[FUSE-7]** The serve process MUST compile a structural index from the
   tree's nodes for every distinct root hash it serves and MUST store it in

@@ -13259,3 +13259,65 @@ complete structural attributes, metadata-derived link resolution, cache pins,
 backing transport and mount-broker custody remain required; no FUSE surface or
 T-FUSE-2 acceptance is claimed. Committed component and application-target
 qualification remain pending.
+
+The four owning host-tier gates at `599148dcc3` pass together in 2,606.36
+seconds with all 9,313 tracked files unchanged: layout, S3-FIFO eviction,
+verify-before-admit and crash recovery. Independent review checks all 7,987
+immutable source files, 21 exact nonignored SDK cases and the actual retained
+SDK executable, plus the source-bound inputs and installed executables of
+three native VM images. The aggregate newly executes initial enrollment and
+reassembly VMs and reuses the same checkpoint's passing full host-cache and
+SDK-cache VM artifacts. It does not rerun all four VMs or execute the complete
+1,248-case SDK inventory. Four-role deployment and complete T2 acceptance
+remain open.
+
+The committed inode-policy component at `c427cd8d88` passes its source-bound
+structural check in 97.01 seconds with all 9,315 tracked files unchanged.
+Independent review checks all 7,989 immutable source files, 5,273 bound inputs,
+the retained exact Cargo ELF and each of the 15 structural and five inode
+cases. Required workspace application-target compilation on that checkpoint
+is recorded separately; these component cases do not qualify a mounted FUSE
+surface.
+
+Structural-index version 2 now preserves recorded modes, canonical CBOR
+attributes, raw xattrs, referenced-root properties and distinct graft overrides.
+It retains unknown fields and explicit empty attribute/xattr maps. Fixed field
+headers permit borrowed metadata access and iteration without decoding CBOR;
+full validation occurs at index open. Metadata bytes participate in exact
+compiler bounds. The canonical tree format is unchanged; the derived index
+version changes because version 1 omitted these fields.
+
+Validated hard-link membership supplies each file's canonical full namespace
+path and exact link count. The reader rejects malformed runs, duplicate or
+missing members, noncanonical owners, changed alias metadata and cross-root
+aliases. Checked index entries now feed the bounded inode table directly.
+Identical content without a hard-link identity stays separate, and repeated
+grafts retain distinct prefixed identities. The sealed-mapping fixture adds
+recorded fields and actual alias-to-inode assignment under its unchanged
+UID, capability, size and time bounds. Source-bound structural, sealed-mapping
+and required application-target qualification remain pending for this version;
+index cache ownership, exposure authorization, worker dispatch, backing
+transport and mount-broker custody remain unimplemented. T-FUSE-2 stays open.
+
+An additional local all-feature native run passes 147 cases and fails six.
+Five failures explicitly require actual host UID zero; the sixth reports
+`EILSEQ` while enumerating a non-UTF-8 name under `LC_ALL=C`. This is a
+retained failed local run, not qualification of the host-native suite or a
+reason to weaken its identity checks. The changed structural/inode selectors,
+format tests and sealed-mapping guest are qualified separately in their
+intended environments.
+
+Required application-target compilation at `c427cd8d88` passes in 1,480.39
+seconds with all 9,315 tracked files unchanged. Independent review matches all
+7,989 immutable source files and 184 actual test-target compiler records across
+59 packages. This compiles unit and integration targets; no runtime execution
+or retained executable bytes are claimed by that compilation check.
+
+Local verification of version 2 passes all 20 structural cases and five inode
+cases with every native feature compiled, all 656 format library cases, Rust
+formatting and strict native all-feature/all-target Clippy. The surface-fuse
+library run separately passes 48 cases with three existing privileged cases
+ignored by their original annotations. Cross-graft refusal also covers equal
+root hashes at different occurrences. No all-feature host-native runtime pass
+is inferred from these selected checks; the six broader local failures above
+remain recorded.

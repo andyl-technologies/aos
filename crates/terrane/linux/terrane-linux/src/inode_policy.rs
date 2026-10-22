@@ -4,7 +4,8 @@
 //! access order. Presented inode numbers are allocated only when touched and
 //! never recycled, including after a kernel FORGET. Hard-link aliases must use
 //! their validated set's canonical first path. This module does not authenticate
-//! metadata, resolve link sets, operate a FUSE connection or register a surface.
+//! metadata, operate a FUSE connection or register a surface. Checked index
+//! entries provide canonical hard-link paths through [`InodeTable::touch_entry`].
 
 use std::{collections::BTreeMap, fmt};
 
@@ -107,6 +108,8 @@ pub enum Error {
     Collision,
     /// A link count is zero or differs from the same retained immutable entry.
     Links,
+    /// A checked structural entry cannot supply its canonical identity.
+    Index(crate::structural_index::Error),
 }
 
 impl fmt::Display for Error {
@@ -117,11 +120,19 @@ impl fmt::Display for Error {
             Self::Capacity => "connection inode limit exceeded",
             Self::Collision => "kernel node identity collision",
             Self::Links => "inconsistent canonical inode link count",
+            Self::Index(_) => "invalid structural inode metadata",
         })
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Index(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 /// Retains numbers for the entries touched on exactly one connection.
 ///
@@ -198,6 +209,27 @@ impl InodeTable {
         self.entries
             .insert(identity.node_id, (identity.digest, inode));
         Ok(inode)
+    }
+
+    /// Assigns an inode using only a checked index's canonical path and count.
+    ///
+    /// Hard-link aliases share one row. Repeated graft prefixes remain distinct.
+    /// The index's caller must separately authenticate and authorize its root;
+    /// structural validity alone does not grant access to an exposure.
+    ///
+    /// # Errors
+    /// Returns structural metadata errors and the same limit, count and collision
+    /// refusals as [`Self::touch`], without consuming an inode on failure.
+    pub fn touch_entry(
+        &mut self,
+        entry: crate::structural_index::Entry<'_>,
+    ) -> Result<(NodeIdentity, Inode), Error> {
+        let canonical = entry.canonical_inode().map_err(Error::Index)?;
+        let root = canonical.governing_root().map_err(Error::Index)?;
+        let identity = NodeIdentity::new(root, canonical.path())?;
+        let links = canonical.link_count().map_err(Error::Index)?;
+        let inode = self.touch(identity, links)?;
+        Ok((identity, inode))
     }
 
     /// Returns the number of distinct entries ever touched on this connection.

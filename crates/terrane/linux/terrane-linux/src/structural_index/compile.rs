@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use terrane_format::identity::Digest;
 use terrane_format::tree_format::{ContentRef, MAX_SYMLINK, validate_key};
 
+use super::metadata::Input;
 use super::{ENTRY, Error, HEADER, Index, Kind, NO_HASH, NONE, Record, VERSION};
 
 /// Compiles resolved, sorted tree metadata within explicit entry and byte bounds.
@@ -13,6 +14,9 @@ use super::{ENTRY, Error, HEADER, Index, Kind, NO_HASH, NONE, Record, VERSION};
 /// boundaries when resolving metadata; this function cannot reconstruct them
 /// from a flattened view or establish that the supplied root names that view.
 /// Limits include the synthesized root and the complete serialized file.
+/// These minimal records supply no recorded attributes or hard-link identity.
+/// Canonical tree callers use [`super::compile_tree`] or [`super::compile_nodes`]
+/// to retain that metadata instead of reconstructing it from flattened paths.
 ///
 /// # Errors
 /// Returns an error for invalid paths, absent or nondirectory parents, unsorted
@@ -24,6 +28,41 @@ pub fn compile(
     max_entries: u32,
     max_bytes: usize,
 ) -> Result<Vec<u8>, Error> {
+    if records.len() >= max_entries as usize || records.len() >= NONE as usize - 1 {
+        return Err(Error::Limit);
+    }
+    let minimum = records
+        .len()
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(ENTRY + super::metadata::MINIMUM))
+        .and_then(|size| size.checked_add(HEADER + 32))
+        .ok_or(Error::Limit)?;
+    if minimum > max_bytes {
+        return Err(Error::Limit);
+    }
+    let defaults: Vec<_> = records.iter().map(|_| Input::default()).collect();
+    let inputs: Vec<_> = defaults.iter().collect();
+    compile_metadata(
+        root,
+        records,
+        &Input::default(),
+        &inputs,
+        max_entries,
+        max_bytes,
+    )
+}
+
+pub(super) fn compile_metadata(
+    root: Digest,
+    records: &[Record<'_>],
+    root_metadata: &Input<'_>,
+    metadata: &[&Input<'_>],
+    max_entries: u32,
+    max_bytes: usize,
+) -> Result<Vec<u8>, Error> {
+    if records.len() != metadata.len() {
+        return Err(Error::Tree);
+    }
     let count = records.len().checked_add(1).ok_or(Error::Limit)?;
     if count > max_entries as usize || count >= NONE as usize {
         return Err(Error::Limit);
@@ -68,19 +107,56 @@ pub fn compile(
     let paths = HEADER + 32;
     let targets = paths.checked_add(path_bytes).ok_or(Error::Limit)?;
     let hash_start = targets.checked_add(target_bytes).ok_or(Error::Limit)?;
-    let entries = hashes
+    let metadata_start = hashes
         .len()
         .checked_mul(32)
         .and_then(|size| hash_start.checked_add(size))
+        .ok_or(Error::Limit)?;
+    let metadata_bytes =
+        metadata
+            .iter()
+            .try_fold(root_metadata.encoded_length()?, |size, input| {
+                size.checked_add(input.encoded_length()?)
+                    .ok_or(Error::Limit)
+            })?;
+    let entries = metadata_start
+        .checked_add(metadata_bytes)
         .ok_or(Error::Limit)?;
     let children = count
         .checked_mul(ENTRY)
         .and_then(|size| entries.checked_add(size))
         .ok_or(Error::Limit)?;
-    let length = records
+    let links = records
         .len()
         .checked_mul(4)
         .and_then(|size| children.checked_add(size))
+        .ok_or(Error::Limit)?;
+    let mut canonical = vec![NONE; count];
+    let mut link_counts = vec![0u32; count];
+    let mut file_count = 0usize;
+    for (position, (record, input)) in records.iter().zip(metadata).enumerate() {
+        if !matches!(record.kind, Kind::File { .. }) {
+            if input.canonical_path.is_some() {
+                return Err(Error::Tree);
+            }
+            continue;
+        }
+        let owner = match &input.canonical_path {
+            Some(path) => records
+                .binary_search_by_key(&path.as_slice(), |record| record.path)
+                .map_err(|_| Error::Tree)?,
+            None => position,
+        };
+        if owner > position || !matches!(records[owner].kind, Kind::File { .. }) {
+            return Err(Error::Tree);
+        }
+        canonical[position + 1] = (owner + 1) as u32;
+        link_counts[owner + 1] = link_counts[owner + 1].checked_add(1).ok_or(Error::Limit)?;
+        file_count += 1;
+    }
+    let length = file_count
+        .checked_mul(4)
+        .and_then(|size| links.checked_add(size))
         .ok_or(Error::Limit)?;
     if length > max_bytes {
         return Err(Error::Limit);
@@ -124,6 +200,8 @@ pub fn compile(
         (44, entries),
         (52, children),
         (60, length),
+        (68, metadata_start),
+        (76, links),
     ] {
         put64(&mut output, slot, value as u64);
     }
@@ -133,6 +211,9 @@ pub fn compile(
         output[start..start + 32].copy_from_slice(hash);
     }
 
+    let mut metadata_cursor = 0;
+    let mut link_cursor = 0u32;
+    let mut next_links = Vec::new();
     let mut path_cursor = 0;
     let mut target_cursor = 0;
     let mut child_cursor = 0;
@@ -152,6 +233,29 @@ pub fn compile(
             (records[position - 1].path, records[position - 1].kind)
         };
         let start = entries + position * ENTRY;
+        let input = if position == 0 {
+            root_metadata
+        } else {
+            metadata[position - 1]
+        };
+        let metadata_length = input.encoded_length()?;
+        let metadata_end = metadata_cursor + metadata_length;
+        input
+            .encode(&mut output[metadata_start + metadata_cursor..metadata_start + metadata_end])?;
+        put64(&mut output, start + 52, metadata_cursor as u64);
+        put32(
+            &mut output,
+            start + 60,
+            u32::try_from(metadata_length).map_err(|_| Error::Limit)?,
+        );
+        metadata_cursor = metadata_end;
+        put32(&mut output, start + 64, canonical[position]);
+        put32(&mut output, start + 68, link_cursor);
+        put32(&mut output, start + 72, link_counts[position]);
+        next_links.push(link_cursor);
+        link_cursor = link_cursor
+            .checked_add(link_counts[position])
+            .ok_or(Error::Limit)?;
         put64(&mut output, start, path_cursor as u64);
         put32(&mut output, start + 8, path.len() as u32);
         output[paths + path_cursor..paths + path_cursor + path.len()].copy_from_slice(path);
@@ -192,6 +296,15 @@ pub fn compile(
     for (position, &parent) in parents.iter().enumerate().skip(1) {
         let slot = &mut next_children[parent as usize];
         put32(&mut output, children + *slot as usize * 4, position as u32);
+        *slot += 1;
+    }
+
+    for (position, &owner) in canonical.iter().enumerate() {
+        if owner == NONE {
+            continue;
+        }
+        let slot = &mut next_links[owner as usize];
+        put32(&mut output, links + *slot as usize * 4, position as u32);
         *slot += 1;
     }
 

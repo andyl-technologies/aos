@@ -7,17 +7,20 @@
 //! root, seals an inode, pins a cache entry, or registers a FUSE surface.
 //!
 //! ```text
-//! TRIX v1: header | root hash | paths | symlink targets | hashes | entries | children
+//! TRIX v2: header | root | paths | targets | hashes | metadata | entries | children | links
 //! entries: full-path order; children: contiguous runs of entry-table indices
 //! ```
 
 mod compile;
+mod links;
 mod mapping;
+mod metadata;
 mod nodes;
 mod tree;
 
 pub use compile::compile;
 pub use mapping::{MappedIndex, MappingError};
+pub use metadata::{Field, Fields, FieldsIter, Metadata};
 pub use nodes::compile_nodes;
 pub use tree::compile_tree;
 
@@ -27,10 +30,10 @@ use terrane_format::identity::Digest;
 use terrane_format::tree_format::{ContentRef, MAX_SYMLINK, validate_key};
 
 /// The structural index format version.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
-const HEADER: usize = 68;
-const ENTRY: usize = 52;
+const HEADER: usize = 84;
+const ENTRY: usize = 76;
 const NONE: u32 = u32::MAX;
 const NO_HASH: u64 = u64::MAX;
 
@@ -95,6 +98,8 @@ pub struct Index<'a> {
     hashes: usize,
     entries: usize,
     children: usize,
+    metadata: usize,
+    links: usize,
 }
 
 impl<'a> Index<'a> {
@@ -125,6 +130,8 @@ impl<'a> Index<'a> {
             hashes: offset(bytes, 36)?,
             entries: offset(bytes, 44)?,
             children: offset(bytes, 52)?,
+            metadata: offset(bytes, 68)?,
+            links: offset(bytes, 76)?,
         };
         let entry_bytes = (index.count as usize)
             .checked_mul(ENTRY)
@@ -136,15 +143,19 @@ impl<'a> Index<'a> {
         if index.paths != HEADER + 32
             || index.paths > index.targets
             || index.targets > index.hashes
-            || index.hashes > index.entries
-            || !(index.entries - index.hashes).is_multiple_of(32)
+            || index.hashes > index.metadata
+            || index.metadata > index.entries
+            || !(index.metadata - index.hashes).is_multiple_of(32)
             || index.entries.checked_add(entry_bytes) != Some(index.children)
-            || index.children.checked_add(child_bytes) != Some(bytes.len())
+            || index.children.checked_add(child_bytes) != Some(index.links)
+            || index.links > bytes.len()
+            || !(bytes.len() - index.links).is_multiple_of(4)
         {
             return Err(Error::Encoding);
         }
 
         index.validate()?;
+        index.validate_links()?;
         Ok(index)
     }
 
@@ -208,6 +219,17 @@ impl<'a> Index<'a> {
         self.bytes.get(start..start + ENTRY).ok_or(Error::Encoding)
     }
 
+    fn metadata_bytes(&self, position: u32) -> Result<&'a [u8], Error> {
+        let record = self.record(position)?;
+        arena_slice(
+            self.bytes,
+            self.metadata,
+            self.entries,
+            offset(record, 52)?,
+            offset32(record, 60)?,
+        )
+    }
+
     fn hash(&self, position: u64) -> Result<Digest, Error> {
         let relative = usize::try_from(position)
             .map_err(|_| Error::Encoding)?
@@ -215,7 +237,7 @@ impl<'a> Index<'a> {
             .ok_or(Error::Encoding)?;
         let arena = self
             .bytes
-            .get(self.hashes..self.entries)
+            .get(self.hashes..self.metadata)
             .ok_or(Error::Encoding)?;
         let mut hash = [0; 32];
         hash.copy_from_slice(
@@ -285,6 +307,7 @@ impl<'a> Index<'a> {
     }
 
     fn validate(&self) -> Result<(), Error> {
+        let mut metadata_cursor = 0;
         let mut path_cursor = 0;
         let mut target_cursor = 0;
         let mut child_cursor = 0;
@@ -292,6 +315,33 @@ impl<'a> Index<'a> {
         for position in 0..self.count {
             let record = self.record(position)?;
             let (path, kind) = self.decode(position)?;
+            if offset(record, 52)? != metadata_cursor {
+                return Err(Error::Encoding);
+            }
+            let metadata_bytes = self.metadata_bytes(position)?;
+            metadata::validate(metadata_bytes)?;
+            let metadata = metadata::view(metadata_bytes)?;
+            let is_graft = matches!(
+                kind,
+                Kind::Directory {
+                    governing_root: Some(_)
+                }
+            );
+            let permits_mode = position != 0
+                && matches!(
+                    kind,
+                    Kind::File { .. }
+                        | Kind::Directory {
+                            governing_root: None
+                        }
+                );
+            if (metadata.mode.is_some() && !permits_mode)
+                || (position != 0 && !is_graft && !metadata.root_properties.is_empty())
+                || (!is_graft && !metadata.graft_overrides.is_empty())
+            {
+                return Err(Error::Encoding);
+            }
+            metadata_cursor += metadata_bytes.len();
             if offset(record, 0)? != path_cursor {
                 return Err(Error::Encoding);
             }
@@ -352,14 +402,15 @@ impl<'a> Index<'a> {
             }
             child_cursor = end;
         }
-        if path_cursor != self.targets - self.paths
+        if metadata_cursor != self.entries - self.metadata
+            || path_cursor != self.targets - self.paths
             || target_cursor != self.hashes - self.targets
             || child_cursor != self.count as usize - 1
         {
             return Err(Error::Encoding);
         }
         let mut previous_hash = None;
-        for hash in self.bytes[self.hashes..self.entries].as_chunks::<32>().0 {
+        for hash in self.bytes[self.hashes..self.metadata].as_chunks::<32>().0 {
             if previous_hash.is_some_and(|previous: &Digest| previous >= hash) {
                 return Err(Error::Encoding);
             }
@@ -391,21 +442,78 @@ impl<'a> Entry<'a> {
         self.kind
     }
 
+    /// Borrows recorded attributes and properties without decoding or allocation.
+    ///
+    /// Presentation schemas and defaults are applied by the worker, not here.
+    ///
+    /// # Errors
+    /// Returns an error if the entry's checked metadata cannot be read.
+    pub fn metadata(&self) -> Result<Metadata<'a>, Error> {
+        metadata::view(self.index.metadata_bytes(self.position)?)
+    }
+
+    /// Returns this file's validated first hard-link path, or this nonfile entry.
+    ///
+    /// # Errors
+    /// Returns an error if a canonical record cannot be read.
+    pub fn canonical_inode(&self) -> Result<Self, Error> {
+        if !matches!(self.kind, Kind::File { .. }) {
+            return Ok(*self);
+        }
+        let canonical = number::<4>(self.index.record(self.position)?, 64)? as u32;
+        self.index.entry(canonical).ok_or(Error::Tree)
+    }
+
+    /// Returns the exact file link count, directory subdirectory count plus two,
+    /// or one for a symlink, without allocation.
+    ///
+    /// # Errors
+    /// Returns an error if a checked record is unavailable or the count overflows.
+    pub fn link_count(&self) -> Result<u32, Error> {
+        match self.kind {
+            Kind::File { .. } => {
+                let canonical = self.canonical_inode()?;
+                Ok(number::<4>(self.index.record(canonical.position)?, 72)? as u32)
+            }
+            Kind::Directory { .. } => self.children()?.try_fold(2u32, |count, child| {
+                count
+                    .checked_add(u32::from(matches!(child.kind, Kind::Directory { .. })))
+                    .ok_or(Error::Limit)
+            }),
+            Kind::Symlink(_) => Ok(1),
+        }
+    }
+
     /// Returns the governing root, following validated directory ancestry.
     ///
     /// # Errors
     /// Returns an error if an ancestor record cannot be decoded.
     pub fn governing_root(&self) -> Result<Digest, Error> {
+        let boundary = self.governing_boundary()?;
+        if boundary == 0 {
+            return Ok(self.index.root_hash());
+        }
+        match self.index.decode(boundary)?.1 {
+            Kind::Directory {
+                governing_root: Some(root),
+            } => Ok(root),
+            _ => Err(Error::Tree),
+        }
+    }
+
+    // Equal graft hashes at different namespace paths are separate inode sets.
+    fn governing_boundary(&self) -> Result<u32, Error> {
         let mut position = self.position;
         loop {
-            if let Kind::Directory {
-                governing_root: Some(root),
-            } = self.index.decode(position)?.1
+            if position == 0
+                || matches!(
+                    self.index.decode(position)?.1,
+                    Kind::Directory {
+                        governing_root: Some(_)
+                    }
+                )
             {
-                return Ok(root);
-            }
-            if position == 0 {
-                return Ok(self.index.root_hash());
+                return Ok(position);
             }
             position = number::<4>(self.index.record(position)?, 40)? as u32;
         }

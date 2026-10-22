@@ -19,6 +19,11 @@ CASES = [
     "every_truncation_and_hostile_header_offset_is_rejected",
     "forged_parent_child_and_arena_relationships_are_rejected",
     "arbitrary_short_inputs_and_single_byte_mutations_never_panic",
+    "metadata::canonical_tree_preserves_modes_unknown_fields_and_graft_properties",
+    "metadata::hardlinks_share_checked_inodes_but_repeated_grafts_and_equal_content_do_not",
+    "metadata::malformed_metadata_maps_modes_and_cursors_are_refused",
+    "metadata::forged_link_runs_counts_and_canonical_entries_are_refused",
+    "metadata::metadata_key_order_duplicate_names_and_old_format_are_refused",
     "trees::canonical_nested_grafts_compile_without_any_file_content_input",
     "trees::repeated_grafts_expand_at_distinct_paths_with_one_governing_root",
     "trees::absent_misbound_nonordinary_and_wrong_geometry_grafts_are_refused",
@@ -109,7 +114,7 @@ def main():
         "source": str(source), "input_sha256": inputs, "artifact": artifact,
         "executable_sha256": digest, "executed_cases": cases,
         "retained_artifact": str(retained.relative_to(output)),
-        "scope": "Structural codec and bounded inode policy only; no sealed mapping, cache lease or FUSE worker authority",
+        "scope": "Structural codec, recorded metadata and bounded checked inode policy only; no sealed mapping, cache lease or FUSE worker authority",
     }, indent=2) + "\n")
 
 

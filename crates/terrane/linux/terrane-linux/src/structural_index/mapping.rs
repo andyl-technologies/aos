@@ -86,6 +86,8 @@ pub struct MappedIndex {
     hashes: usize,
     entries: usize,
     children: usize,
+    metadata: usize,
+    links: usize,
 }
 
 impl MappedIndex {
@@ -140,6 +142,8 @@ impl MappedIndex {
             hashes: index.hashes,
             entries: index.entries,
             children: index.children,
+            metadata: index.metadata,
+            links: index.links,
             mapping,
         };
         Ok(result)
@@ -156,6 +160,8 @@ impl MappedIndex {
             hashes: self.hashes,
             entries: self.entries,
             children: self.children,
+            metadata: self.metadata,
+            links: self.links,
         }
     }
 }
