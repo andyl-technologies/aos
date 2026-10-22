@@ -31,6 +31,12 @@
 //! activation tick; a running one settles through it at its last boundary
 //! below (TIME-30). The third node treats the activation as a bound, so its
 //! trajectory must match a run without the fault.
+//!
+//! A jittery, lossy graph checks keyed link randomness (DET-25, SCHED-50):
+//! every frame's loss and jitter are addressed by its link, direction and
+//! producer sequence, so worker count, wall delays and ceiling schedules
+//! leave the guest and the event log unchanged, and silencing one direction
+//! of a link leaves the other direction's draws unchanged.
 
 // crucible-lint: allow panic-shortcut -- deterministic fixtures use panic assertions.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -751,6 +757,15 @@ struct Scenario {
     links: Vec<(&'static str, &'static str, u64)>,
     time_limit: u64,
     fault: Option<LinkFault>,
+    /// Jitter and loss applied to every link; `None` keeps links ideal.
+    noise: Option<LinkNoise>,
+}
+
+/// Seeded per-frame link randomness, drawn from the keyed decision streams.
+#[derive(Clone, Copy, Debug)]
+struct LinkNoise {
+    jitter: u64,
+    loss_millionths: u32,
 }
 
 /// Two nodes that exchange frames over one link.
@@ -772,6 +787,7 @@ fn two_node_scenario(latency: u64, time_limit: u64) -> Scenario {
         links: vec![("vm-a", "vm-b", latency)],
         time_limit,
         fault: None,
+        noise: None,
     }
 }
 
@@ -780,12 +796,18 @@ fn scheduler(scenario: &Scenario, schedule: &CeilingSchedule) -> SingleScheduler
         .links
         .iter()
         .map(|(left, right, latency)| {
+            let noise = scenario.noise.unwrap_or(LinkNoise {
+                jitter: 0,
+                loss_millionths: 0,
+            });
             LinkDef::with_transport(
                 node_id(left),
                 node_id(right),
                 SimDuration { ticks: *latency },
-                SimDuration::default(),
-                LinkLossProbability::from_millionths(0).unwrap(),
+                SimDuration {
+                    ticks: noise.jitter,
+                },
+                LinkLossProbability::from_millionths(noise.loss_millionths).unwrap(),
                 None,
             )
             .unwrap()
@@ -1283,6 +1305,7 @@ fn partition_scenario(fault: Option<LinkFault>) -> Scenario {
         ],
         time_limit: FAULT_TIME_LIMIT,
         fault,
+        noise: None,
     }
 }
 
@@ -1616,6 +1639,7 @@ fn graph_scenario() -> Scenario {
         links: CHAIN_LINKS.into_iter().chain(PAIR_LINKS).collect(),
         time_limit: GRAPH_TIME_LIMIT,
         fault: None,
+        noise: None,
     }
 }
 
@@ -1672,12 +1696,14 @@ fn a_disconnected_component_never_bounds_or_changes_the_other() {
         links: CHAIN_LINKS.to_vec(),
         time_limit: GRAPH_TIME_LIMIT,
         fault: None,
+        noise: None,
     };
     let pair = Scenario {
         nodes: pair_nodes(),
         links: PAIR_LINKS.to_vec(),
         time_limit: GRAPH_TIME_LIMIT,
         fault: None,
+        noise: None,
     };
     let (alone_chain, _) =
         drive_graph(&chain, &CeilingSchedule::unconstrained(), Faults::default());
@@ -1732,6 +1758,177 @@ fn serialized_parallel_and_wall_delayed_runs_are_bit_identical() {
             );
         }
     }
+}
+
+/// The graph scenario with seeded jitter and loss on every link.
+fn noisy_graph_scenario() -> Scenario {
+    Scenario {
+        noise: Some(LinkNoise {
+            jitter: 9 * MICROSECOND + 13,
+            loss_millionths: 150_000,
+        }),
+        ..graph_scenario()
+    }
+}
+
+/// Returns `(sent, delivery offsets)` for frames `sender` addressed to `receiver`.
+///
+/// A delivery offset is the frame's delivery tick minus its emission tick and
+/// the link latency, so it isolates the drawn jitter, which may be negative.
+fn link_draw_outcomes(
+    trajectory: &Trajectory,
+    sender: &str,
+    receiver: &str,
+    latency: u64,
+) -> (usize, BTreeMap<u64, i128>) {
+    let emitted = trajectory.traces[sender]
+        .iter()
+        .filter_map(|event| match event.kind {
+            TraceKind::Emit { sequence } => Some((sequence, event.tick)),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    let offsets = trajectory.traces[receiver]
+        .iter()
+        .filter_map(|event| match event.kind {
+            TraceKind::Receive { sequence, due } => {
+                let sent_at = emitted[&sequence];
+                Some((
+                    sequence,
+                    i128::from(due) - i128::from(sent_at) - i128::from(latency),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    (emitted.len(), offsets)
+}
+
+#[test]
+fn keyed_link_draws_are_independent_of_worker_count_and_interleaving() {
+    let scenario = noisy_graph_scenario();
+    let (baseline, _) = drive_graph(
+        &scenario,
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+
+    // Both directions of the pair link draw loss and jitter, so the run
+    // exercises per-frame draws from one logical link stream in both
+    // directions at once.
+    for (sender, receiver) in [("vm-d", "vm-e"), ("vm-e", "vm-d")] {
+        let (sent, offsets) = link_draw_outcomes(&baseline, sender, receiver, PAIR_LATENCY);
+        assert!(
+            offsets.len() < sent,
+            "{sender}->{receiver}: loss must drop a frame ({} of {sent} delivered)",
+            offsets.len()
+        );
+        let distinct = offsets
+            .values()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert!(distinct > 1, "{sender}->{receiver}: jitter must vary");
+    }
+
+    // DET-25/SCHED-50: each frame's draws are keyed by its link, direction and
+    // producer sequence, so neither the ceiling schedule that interleaves the
+    // two directions nor worker count or host completion order changes the
+    // guest or the delivery-order decisions. Ceiling schedules publish
+    // different evaluation boundaries, so the canonical event log is compared
+    // within one schedule across execution variants.
+    let mut schedules = vec![("unconstrained", CeilingSchedule::unconstrained())];
+    schedules.extend(t1_schedules());
+    for (label, schedule) in schedules {
+        let (parallel, _) = drive_graph(&scenario, &schedule, Faults::default());
+        assert_same_trajectory(&baseline, &parallel, &format!("{label} parallel"));
+
+        for (variant, faults) in [
+            (
+                "serialized",
+                Faults {
+                    workers: Some(1),
+                    ..Faults::default()
+                },
+            ),
+            (
+                "two workers",
+                Faults {
+                    workers: Some(2),
+                    ..Faults::default()
+                },
+            ),
+            (
+                "delayed",
+                Faults {
+                    threaded_delays: true,
+                    ..Faults::default()
+                },
+            ),
+        ] {
+            let (trajectory, _) = drive_graph(&scenario, &schedule, faults);
+            let context = format!("{label} {variant}");
+            assert_same_trajectory(&parallel, &trajectory, &context);
+            assert!(
+                parallel.event_log == trajectory.event_log,
+                "{context}: event log diverges"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_link_direction_draws_independently_of_the_opposite_direction() {
+    let duplex = noisy_graph_scenario();
+    let mut simplex = noisy_graph_scenario();
+    for spec in &mut simplex.nodes {
+        if spec.name == "vm-e" {
+            spec.program.emit_every = u64::MAX;
+        }
+    }
+    let (with_reverse, _) = drive_graph(
+        &duplex,
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+    let (without_reverse, _) = drive_graph(
+        &simplex,
+        &CeilingSchedule::unconstrained(),
+        Faults::default(),
+    );
+
+    // A cursor shared by both directions would shift every d->e draw once e
+    // emits. Keyed draws give each d->e frame the same loss and jitter either
+    // way.
+    let (_, duplex_offsets) = link_draw_outcomes(&with_reverse, "vm-d", "vm-e", PAIR_LATENCY);
+    let (_, simplex_offsets) = link_draw_outcomes(&without_reverse, "vm-d", "vm-e", PAIR_LATENCY);
+    let shared = duplex_offsets
+        .keys()
+        .filter(|sequence| simplex_offsets.contains_key(sequence))
+        .count();
+    assert!(shared > 1, "both runs must deliver common d->e frames");
+    for (sequence, offset) in &duplex_offsets {
+        if let Some(simplex_offset) = simplex_offsets.get(sequence) {
+            assert_eq!(offset, simplex_offset, "d->e frame {sequence} jitter");
+        }
+    }
+    let delivered = |offsets: &BTreeMap<u64, i128>, below: u64| {
+        offsets
+            .keys()
+            .filter(|sequence| **sequence < below)
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    let common_horizon = duplex_offsets
+        .keys()
+        .last()
+        .copied()
+        .min(simplex_offsets.keys().last().copied())
+        .unwrap();
+    assert_eq!(
+        delivered(&duplex_offsets, common_horizon),
+        delivered(&simplex_offsets, common_horizon),
+        "d->e loss decisions"
+    );
 }
 
 #[test]
