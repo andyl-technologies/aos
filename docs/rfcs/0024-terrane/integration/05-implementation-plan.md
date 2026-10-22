@@ -8707,8 +8707,10 @@ two-VM aggregate all pass. Each VM's review matches all 8,074 immutable source
 files, its four actual Cargo executables, all fifteen enrollment/root controls,
 and its complete assigned lifecycle, namespace, publication and lower-failure
 controls. The aggregate retains exactly both reviewed VM outputs. Required
-application compilation at `230375f940` also passes with 185 test targets across
-59 packages and complete 8,073-file source review; this is compilation only.
+application compilation at `f82429a92d` also passes in 1,597.841 seconds with
+185 test targets across 59 packages and complete 8,074-file source review;
+this is compilation only. The earlier `230375f940` application compilation
+also passes with all 8,073 immutable source files reviewed.
 
 The broader `2e34a1d9fe` requests expose two harness failures before the full
 cache VM runs: the shared-directory importer omits a required proof argument,
@@ -15486,3 +15488,24 @@ to the ordinary-user selection. It now joins the ordinary-user list; all 129
 cases remain mandatory, including all five genuine creator cases. No runtime
 assertion, fixture, process privilege or timeout is changed. Fresh source-bound
 image and VM execution remain required.
+
+The `f82429a92d` application-target compilation finishes successfully in
+1,597.841 seconds. Complete review matches all 8,074 immutable source files,
+185 actual test compiler artifacts and 59 packages. No application test runtime
+is inferred from compilation. No later Rust changes are present at this point.
+
+The corrected pure sealed-storage policy case independently passes under the
+ordinary host UID 1000 using the retained Cargo ELF, with its actual source
+matched to the current branch: exactly one pass, no failures or ignored cases,
+and 128 filtered cases. This supports the ordinary-user classification and
+supplies no new privileged native or guest qualification. Current plan coverage
+and registry derivations pass: 97 tasks own all 1,082 mandatory requirement IDs;
+all 292 specification gates map to AOS checks, including all 69 T0/T1 floor gates.
+
+The older `d5b6d36103` production package finishes all 2,388 selected tests across
+52 binaries in 17,800.036 seconds, with 18 explicitly designated native fixtures
+skipped in that lane. Its output is valid in the Nix store; independent review
+matches every one of its 8,050 immutable source files and its actual build-log
+summary. The old aggregate proceeds to its remaining gates. Neither the old
+aggregate nor current-source qualification is thereby complete. The fresh
+`8dc8dd6311` eleven-component and three trunk-exit/matrix requests remain active.
