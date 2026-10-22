@@ -571,9 +571,7 @@ in {
         assert status != 0, output
         assert expected_fragment in output, output
 
-    # The exact rtnetlink postcondition commits DAD suppression and both
-    # permanent IPv6 neighbor bindings. Qualify omission and substitution
-    # independently, restoring a passing observation after each mutation.
+    # DAD suppression is checked while decoding the native address inventory.
     lifecycle.succeed(
         f"{IP} -n aos-observe-managed -6 address change "
         f"{managed_sandbox_address_2}/{managed_prefix_2} "
@@ -591,42 +589,6 @@ in {
         f"{IP} -n aos-observe-managed -6 address change "
         f"{managed_sandbox_address_2}/{managed_prefix_2} nodad "
         f"dev {managed_sandbox}"
-    )
-    assert lifecycle.succeed(
-        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
-        f"{GATE_OBJECT}"
-    ).strip() == "OBSERVER_OK managed"
-
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 neighbor del "
-        f"{managed_host_address_2} dev {managed_sandbox}"
-    )
-    assert_managed_observer_rejects(
-        b"Network kernel IPv6 neighbor inventory mismatched"
-    )
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 neighbor add "
-        f"{managed_host_address_2} lladdr {managed_host_mac} "
-        f"nud permanent dev {managed_sandbox}"
-    )
-    assert lifecycle.succeed(
-        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
-        f"{GATE_OBJECT}"
-    ).strip() == "OBSERVER_OK managed"
-
-    wrong_neighbor_mac = "02:aa:bb:cc:dd:ee"
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 neighbor replace "
-        f"{managed_host_address_2} lladdr {wrong_neighbor_mac} "
-        f"nud permanent dev {managed_sandbox}"
-    )
-    assert_managed_observer_rejects(
-        b"Network kernel IPv6 neighbor inventory mismatched"
-    )
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 neighbor replace "
-        f"{managed_host_address_2} lladdr {managed_host_mac} "
-        f"nud permanent dev {managed_sandbox}"
     )
     assert lifecycle.succeed(
         f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
@@ -716,6 +678,63 @@ in {
         f"{FIXTURE} observer-kernel-run managed {managed_root} {managed_pin} "
         f"{IP} {NFT} {FIXTURE} {OBSERVER} {GATE_OBJECT}"
     ).strip() == "KERNEL_OBSERVER_OK managed"
+
+    # Neighbor equality is a plan postcondition of the complete kernel
+    # validator. The inventory-only observer above proves stable peer custody.
+    managed_kernel_observation = (
+        f"{FIXTURE} observer-kernel-run managed {managed_root} {managed_pin} "
+        f"{IP} {NFT} {FIXTURE} {OBSERVER} {GATE_OBJECT}"
+    )
+
+    def assert_managed_neighbors_rejected():
+        status, stdout, stderr = lifecycle.execute(managed_kernel_observation)
+        output = stdout + stderr
+        assert status != 0, output
+        expected = b"Network kernel IPv6 neighbor inventory mismatched"
+        assert expected in output, output
+
+    def assert_managed_kernel_restored():
+        output = lifecycle.succeed(managed_kernel_observation).strip()
+        assert output == "KERNEL_OBSERVER_OK managed", output
+
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor del "
+        f"{managed_host_address_2} dev {managed_sandbox}"
+    )
+    assert_managed_neighbors_rejected()
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor add "
+        f"{managed_host_address_2} lladdr {managed_host_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert_managed_kernel_restored()
+
+    wrong_neighbor_mac = "02:aa:bb:cc:dd:ee"
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor replace "
+        f"{managed_host_address_2} lladdr {wrong_neighbor_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert_managed_neighbors_rejected()
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor replace "
+        f"{managed_host_address_2} lladdr {managed_host_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert_managed_kernel_restored()
+
+    extra_neighbor = "2001:db8:ffff::1"
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor add "
+        f"{extra_neighbor} lladdr {wrong_neighbor_mac} "
+        f"nud permanent dev {managed_sandbox}"
+    )
+    assert_managed_neighbors_rejected()
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 neighbor del "
+        f"{extra_neighbor} dev {managed_sandbox}"
+    )
+    assert_managed_kernel_restored()
 
     # Observer-scoped cleanup must not touch the fixed-root pins used by the
     # independent lease-gate proof fixture.
