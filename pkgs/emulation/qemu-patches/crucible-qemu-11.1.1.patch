@@ -1,8 +1,7 @@
-From 91aec7e4401204c0ef9aa9be8f4cb2581b57be89 Mon Sep 17 00:00:00 2001
+From 3711dfbb6f9b4df98793dca52199ae312a61a705 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose RR execution and terminal registration
- metadata
+Subject: [PATCH] plugins: compose permanent Core keeper with retained custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -1361,6 +1360,32 @@ SourceUse, Module guard, cleanup actor or selected execution permission. Keep
 CPU admission unsupported, preserve the genuine dirty-lifecycle refusal, and
 leave populated Module execution, launched paid readers and sequential
 borrower reuse/rearm unqualified.
+
+Compose the permanent physical Core keeper with the retained reader,
+wrapper, completed RR-parent posts, and metadata-only execution and terminal
+registrations. Preserve the complete cumulative public SDK, Runtime span
+exclusions, reader completion handoff, returning-only parent identity and
+one-process borrower-attempt restriction.
+
+The actual RR producer moves its two canonical ownership fields into paid
+permanent storage before its independent post. Record physical reference
+consumption before independent return observation, retain uncertain custody,
+and permit ordinary keeper reuse only after its actual positive closure.
+The private Source CPU admission authenticates the genuine Core frame and
+keeper coordinates before payload access and retains unsupported semantic
+admission. This physical cut supplies no Module issuer or execution owner.
+
+Measure the actual joined Source and every real fixed-floor getter. Preserve
+the prior full-cohort and normal-delivery samples under their executed input
+identities; the new affected cohort and ordinary keeper entries have separate
+bounded evidence. Keep the mandatory genuine dirty lifecycle refusal open.
+
+Adapt the standalone physical probes to the actual canonical keeper fields
+and exact receipt-query definition. Preserve original single-cut refusals;
+classify additional compound omissions by every removed guard and require
+the original intended detector. Retain the first compound selector failure
+and bind its correction to the exact production definitions. These are
+fixture corrections, with no production guard or resource-limit waiver.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4706,10 +4731,10 @@ index 0000000000000000000000000000000000000000..1cfe194053fef046bf876c0e29f6b427
 +}
 diff --git a/accel/tcg/crucible-quantum-core.inc.h b/accel/tcg/crucible-quantum-core.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f0321bfe8be5
+index 0000000000000000000000000000000000000000..bdec959d0bdc003212148beb50232ec976a619b0
 --- /dev/null
 +++ b/accel/tcg/crucible-quantum-core.inc.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,376 @@
 +/*
 + * Physical custody of the actual single-threaded RR batch.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -4741,14 +4766,48 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +    pid_t process;
 +};
 +
++/* Canonical ownership must survive an RR caller's stack after partial
++ * construction. Only the actual Core owner may move into these paid fields;
++ * no semantic operation or Module cleanup authority is supplied here. */
++typedef struct QemuCrucibleCoreQuantumKeeper {
++    struct QemuCrucibleCoreQuantumKeeper *canonical_owner;
++    QemuCrucibleCoreQuantumFrame *frame;
++    QemuCrucibleQuantumCpuExecution *execution;
++    uint64_t frame_serial;
++    uint64_t execution_serial;
++    QemuThread thread;
++    pid_t process;
++    int transfer_first;
++    int transfer_post;
++    bool attempted;
++    bool consumed;
++    bool post_attempted;
++    bool post_returned;
++    bool reference_consumed;
++    bool physically_returned;
++    bool uncertain;
++} QemuCrucibleCoreQuantumKeeper;
++
 +/* RR has one actual shared TCG thread, not one concurrent executor per CPU.
 + * An uncertain return occupies this prepaid slot for the rest of its lifetime.
 + * The inline CPU execution record is already paid by the CPU instance. */
 +static QemuCrucibleCoreQuantumFrame rr_quantum_frame;
++static QemuCrucibleCoreQuantumKeeper rr_quantum_keeper;
++
++static bool rr_quantum_keeper_reusable(void)
++{
++    QemuCrucibleCoreQuantumKeeper *keeper = &rr_quantum_keeper;
++
++    return !keeper->attempted ||
++        (keeper->consumed && keeper->post_attempted && keeper->post_returned &&
++         !keeper->transfer_first && !keeper->transfer_post &&
++         keeper->reference_consumed && keeper->physically_returned &&
++         !keeper->uncertain);
++}
 +
 +size_t qemu_crucible_quantum_core_frame_storage_bytes_v1(void)
 +{
-+    return sizeof(rr_quantum_frame);
++    return sizeof(rr_quantum_frame) + sizeof(rr_quantum_keeper);
 +}
 +
 +static int rr_quantum_frame_identity(
@@ -4763,10 +4822,25 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +        *execution_holder != frame->execution) {
 +        return -EPERM;
 +    }
++    if (frame->holder == &rr_quantum_keeper.frame ||
++        frame->execution_holder == &rr_quantum_keeper.execution) {
++        QemuCrucibleCoreQuantumKeeper *keeper = &rr_quantum_keeper;
++
++        if (frame->holder != &keeper->frame ||
++            frame->execution_holder != &keeper->execution ||
++            keeper->canonical_owner != keeper || !keeper->attempted ||
++            !keeper->consumed || keeper->physically_returned ||
++            keeper->frame != frame || keeper->execution != frame->execution ||
++            keeper->frame_serial != frame->serial || !keeper->execution_serial ||
++            keeper->process != getpid() ||
++            !qemu_thread_is_self(&keeper->thread)) {
++            return -ESTALE;
++        }
++    }
 +    return frame->serial && frame->serial == frame_serial ? 0 : -ESTALE;
 +}
 +
-+int qemu_crucible_core_quantum_frame_current_v1(
++static int rr_quantum_frame_current(
 +    QemuCrucibleCoreQuantumFrame *frame, CPUState *cpu,
 +    QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t frame_serial)
 +{
@@ -4779,7 +4853,29 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +        frame->execution != &cpu->crucible_quantum_execution) {
 +        return -ESTALE;
 +    }
++    if (frame->holder == &rr_quantum_keeper.frame &&
++        rr_quantum_keeper.execution_serial != frame->execution->serial) {
++        return -ESTALE;
++    }
 +    return qemu_crucible_quantum_cpu_rr_current_v1(cpu);
++}
++
++/* Public physical observation is of the permanent keeper. The original
++ * producer's pre-move coordinates remain private to transfer/refusal unwind. */
++int qemu_crucible_core_quantum_frame_current_v1(
++    QemuCrucibleCoreQuantumFrame *frame, CPUState *cpu,
++    QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t frame_serial)
++{
++    int status = rr_quantum_frame_identity(frame, execution_holder, frame_serial);
++
++    if (status) {
++        return status;
++    }
++    if (frame->holder != &rr_quantum_keeper.frame ||
++        execution_holder != &rr_quantum_keeper.execution) {
++        return -EPERM;
++    }
++    return rr_quantum_frame_current(frame, cpu, execution_holder, frame_serial);
 +}
 +
 +int qemu_crucible_core_quantum_frame_returning_v1(
@@ -4792,7 +4888,7 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +        return status ? status : -EPERM;
 +    }
 +    if (!frame->return_attempted) {
-+        status = qemu_crucible_core_quantum_frame_current_v1(
++        status = rr_quantum_frame_current(
 +            frame, frame->cpu, execution_holder, frame_serial);
 +        if (status) {
 +            return status;
@@ -4825,6 +4921,106 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +        (!frame->execution_started || frame->execution_ended) ? 0 : -EBUSY;
 +}
 +
++static bool rr_quantum_holder_spans_disjoint(
++    const void *left, size_t left_bytes, const void *right, size_t right_bytes)
++{
++    uintptr_t left_address = (uintptr_t)left;
++    uintptr_t right_address = (uintptr_t)right;
++
++    return left && right && left_bytes && right_bytes &&
++        left_address <= UINTPTR_MAX - left_bytes &&
++        right_address <= UINTPTR_MAX - right_bytes &&
++        (left_address + left_bytes <= right_address ||
++         right_address + right_bytes <= left_address);
++}
++
++static bool rr_quantum_keeper_destination_valid(
++    QemuCrucibleCoreQuantumKeeper *keeper,
++    QemuCrucibleQuantumCpuExecution **execution_holder,
++    QemuCrucibleCoreQuantumFrame **frame_holder)
++{
++    uintptr_t base = (uintptr_t)&rr_quantum_keeper;
++
++    /* Identity chooses the actual paid body before geometry is inspected.
++     * A matching capacity cannot nominate a replacement physical owner. */
++    return keeper == &rr_quantum_keeper &&
++        base <= UINTPTR_MAX - sizeof(rr_quantum_keeper) &&
++        (uintptr_t)&keeper->execution >= base &&
++        (uintptr_t)&keeper->execution - base <=
++            sizeof(rr_quantum_keeper) - sizeof(keeper->execution) &&
++        (uintptr_t)&keeper->frame >= base &&
++        (uintptr_t)&keeper->frame - base <=
++            sizeof(rr_quantum_keeper) - sizeof(keeper->frame) &&
++        rr_quantum_holder_spans_disjoint(execution_holder, sizeof(*execution_holder),
++                                        frame_holder, sizeof(*frame_holder)) &&
++        rr_quantum_holder_spans_disjoint(execution_holder, sizeof(*execution_holder),
++                                        keeper, sizeof(*keeper)) &&
++        rr_quantum_holder_spans_disjoint(frame_holder, sizeof(*frame_holder),
++                                        keeper, sizeof(*keeper));
++}
++
++static int rr_quantum_frame_transfer(CPUState *cpu,
++    QemuCrucibleQuantumCpuExecution **execution_holder,
++    QemuCrucibleCoreQuantumFrame **frame_holder)
++{
++    QemuCrucibleCoreQuantumFrame *frame = &rr_quantum_frame;
++    QemuCrucibleCoreQuantumKeeper *keeper = &rr_quantum_keeper;
++    QemuCrucibleQuantumCpuExecution *execution;
++    int first;
++    int post;
++
++    /* Both original fields belong to this active private Core producer.
++     * Authenticate them before CPU or proposed holder data is inspected. */
++    if (!bql_locked() || frame_holder != frame->holder ||
++        execution_holder != frame->execution_holder) {
++        return -EPERM;
++    }
++    first = rr_quantum_frame_current(
++        frame, cpu, execution_holder, frame->serial);
++    if (first) {
++        return first;
++    }
++    if (!frame_holder || *frame_holder != frame ||
++        !rr_quantum_keeper_destination_valid(keeper, execution_holder, frame_holder) ||
++        !rr_quantum_keeper_reusable()) {
++        return -EBUSY;
++    }
++    execution = frame->execution;
++    if (execution->holder != execution_holder ||
++        execution->execution_started || execution->permission_revoked ||
++        execution->child || !frame->pin_acquired || frame->return_attempted) {
++        return -ESTALE;
++    }
++
++    *keeper = (QemuCrucibleCoreQuantumKeeper) {
++        .canonical_owner = keeper,
++        .frame = frame,
++        .execution = execution,
++        .frame_serial = frame->serial,
++        .execution_serial = execution->serial,
++        .process = getpid(),
++        .attempted = true,
++    };
++    qemu_thread_get_self(&keeper->thread);
++    /* Publish the permanent keeper before removing any old ownership. No
++     * callback or gate transition occurs within this actual BQL/Core move. */
++    execution->holder = &keeper->execution;
++    frame->execution_holder = &keeper->execution;
++    frame->holder = &keeper->frame;
++    *execution_holder = NULL;
++    *frame_holder = NULL;
++    /* Consumption precedes the independent post. Failure keeps the new owner
++     * and physical pin; no old stack coordinate is retained for later checks. */
++    keeper->consumed = true;
++    keeper->post_attempted = true;
++    post = qemu_crucible_core_quantum_frame_current_v1(
++        keeper->frame, cpu, &keeper->execution, keeper->frame_serial);
++    keeper->post_returned = true;
++    keeper->transfer_post = post;
++    keeper->uncertain = post != 0;
++    return post;
++}
++
 +static int rr_quantum_frame_begin(CPUState *cpu,
 +    QemuCrucibleQuantumCpuExecution **execution_holder,
 +    QemuCrucibleCoreQuantumFrame **holder)
@@ -4842,7 +5038,8 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +        return -EPERM;
 +    }
 +    if ((qatomic_load_acquire(&frame->process) == getpid() &&
-+         !qemu_thread_is_self(&frame->thread)) || frame->held) {
++         !qemu_thread_is_self(&frame->thread)) || frame->held ||
++        !rr_quantum_keeper_reusable()) {
 +        return -EPERM;
 +    }
 +    serial = frame->serial;
@@ -4891,9 +5088,20 @@ index 0000000000000000000000000000000000000000..18e1d88617c2558c2d9ea992eae7f032
 +    frame->post_returned = true;
 +    frame->return_post = post;
 +    if (frame->return_first || post) {
++        if (frame->holder == &rr_quantum_keeper.frame) {
++            rr_quantum_keeper.uncertain = true;
++        }
 +        return frame->return_first ? frame->return_first : post;
 +    }
-+    /* Consume the canonical stack coordinates only after physical consumption
++    if (frame->holder == &rr_quantum_keeper.frame) {
++        if (!rr_quantum_keeper.reference_consumed) {
++            rr_quantum_keeper.uncertain = true;
++            frame->return_post = -EBUSY;
++            return -EBUSY;
++        }
++        rr_quantum_keeper.physically_returned = true;
++    }
++    /* Consume the canonical ownership fields only after physical consumption
 +     * and its separate post. No CPU payload is read or written here. */
 +    *execution_holder = NULL;
 +    *holder = NULL;
@@ -7061,10 +7269,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d8fa811b1 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..78be786b67036ae6316012f1123dbc1eca0520f1 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1990 @@
+@@ -27,45 +27,2019 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -7196,9 +7404,25 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
 +    qemu_thread_get_self(&execution->thread);
 +    *holder = execution;
 +
++    first = rr_quantum_frame_transfer(cpu, holder, frame_holder);
++    if (rr_quantum_keeper.consumed &&
++        rr_quantum_keeper.frame_serial == frame->serial) {
++        /* These are borrowed values only. The Core keeper owns both fields
++         * and outlives this RR call, including a refused partial constructor. */
++        *holder = rr_quantum_keeper.execution;
++        *frame_holder = rr_quantum_keeper.frame;
++    }
++    if (first) {
++        frame->entry_first = first;
++        frame->entry_post = qemu_crucible_core_quantum_frame_current_v1(
++            frame, cpu, frame->execution_holder, frame->serial);
++        return first;
++    }
++
 +    if (qatomic_load_acquire(&qemu_crucible_selected_process_id)) {
 +#if defined(CONFIG_PLUGIN) && defined(CONFIG_LINUX)
-+        first = qemu_crucible_source_quantum_cpu_admit_v1(cpu);
++        first = qemu_crucible_source_quantum_cpu_admit_v1(
++            cpu, frame, frame->execution_holder, frame->serial);
 +#else
 +        first = -ENOTSUP;
 +#endif
@@ -7208,7 +7432,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
 +    }
 +    frame->entry_first = first;
 +    frame->entry_post = qemu_crucible_core_quantum_frame_current_v1(
-+        frame, cpu, holder, frame->serial);
++        frame, cpu, frame->execution_holder, frame->serial);
 +    return first ? first : frame->entry_post;
 +}
 +
@@ -7270,17 +7494,25 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
 +{
 +    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
 +    QemuCrucibleCoreQuantumFrame *frame = &rr_quantum_frame;
++    QemuCrucibleQuantumCpuExecution **canonical_execution = frame->execution_holder;
++    QemuCrucibleCoreQuantumFrame **canonical_frame = frame->holder;
++    bool moved = canonical_frame == &rr_quantum_keeper.frame;
 +    int status;
 +
 +    g_assert(bql_locked());
-+    g_assert(frame_holder == frame->holder && *frame_holder == frame);
++    g_assert(frame_holder && *frame_holder == frame);
++    g_assert(holder && *holder == execution);
++    g_assert(moved ? rr_quantum_keeper.frame == frame &&
++             canonical_execution == &rr_quantum_keeper.execution &&
++             rr_quantum_keeper.execution == execution :
++             canonical_frame == frame_holder && canonical_execution == holder);
 +    g_assert(!frame->return_attempted);
 +    status = qemu_crucible_core_quantum_frame_returning_v1(
-+        frame, holder, frame->serial);
++        frame, canonical_execution, frame->serial);
 +    frame->return_first = status;
 +    g_assert(!status);
 +    g_assert(!qemu_crucible_quantum_cpu_rr_current_v1(cpu));
-+    g_assert(execution->holder == holder);
++    g_assert(execution->holder == canonical_execution);
 +    g_assert(!execution->execution_started || execution->execution_ended);
 +    /* A real Source child must physically return before its QOM custodian.
 +     * There is deliberately no issuer/return bypass for such a child here. */
@@ -7297,10 +7529,15 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
 +    execution->allocation_generation = 0;
 +    object_unref(OBJECT(cpu));
 +    frame->pin_consumed = true;
-+    status = rr_quantum_frame_return_post(frame_holder, holder);
++    if (moved) {
++        rr_quantum_keeper.reference_consumed = true;
++    }
++    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);
 +    /* A physical-only cursor cannot issue cleanup authority or recover an
 +     * uncertain return. Preserve its holders and fail closed at this boundary. */
 +    g_assert(!status);
++    *holder = NULL;
++    *frame_holder = NULL;
 +}
 +
 +static bool rr_crucible_sim_wake_boundary_pending(void)
@@ -9073,7 +9310,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2029,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2058,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -9106,7 +9343,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
      }
  }
  
-@@ -110,15 +2067,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2096,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -9240,7 +9477,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
      }
  }
  
-@@ -140,6 +2213,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2242,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -9259,7 +9496,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2269,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2298,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -9268,7 +9505,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2291,206 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2320,206 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -9493,7 +9730,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2506,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2535,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -9526,7 +9763,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2548,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2577,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -9665,7 +9902,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2672,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2701,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -9805,7 +10042,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
      }
  
      g_assert_not_reached();
-@@ -318,13 +2811,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2840,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -9842,7 +10079,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a6d884770ef2c77573a4eec44e95900d
          single_tcg_halt_cond = cpu->halt_cond;
          single_tcg_cpu_thread = cpu->thread;
  
-@@ -335,11 +2849,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
+@@ -335,11 +2878,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
                             cpu, QEMU_THREAD_JOINABLE);
      } else {
          /* we share the thread, dump spare data */
@@ -22843,10 +23080,10 @@ index 0000000000000000000000000000000000000000..eed948a7c4a2df38be5b14a46a2d70e7
 +retain the corresponding parents and never repeat a consumed reference return.
 diff --git a/docs/devel/crucible-quantum-core-custody.rst b/docs/devel/crucible-quantum-core-custody.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab99badc465ca61f6b078a85e213e2db45b4cd12
+index 0000000000000000000000000000000000000000..b13db478bb9c3692be58ac620a259d156de4d464
 --- /dev/null
 +++ b/docs/devel/crucible-quantum-core-custody.rst
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,164 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Physical RR frame custody
@@ -22937,6 +23174,80 @@ index 0000000000000000000000000000000000000000..ab99badc465ca61f6b078a85e213e2db
 +module issuance, Source operation execution, full CPU destruction and complete
 +launched lifecycle are not qualified here. The frozen v6 layout, timing
 +equations, disabled-event behavior and advertised activation are unchanged.
++
++Permanent Core keeper prerequisite
++---------------------------------
++
++The later keeper cut starts at signed
++``18f1d02fd8061c588d1ca71fc4ddcaa44e3c2a2a``. The numerical observations above
++belong to the earlier frame-only tree; they are not cumulative measurements
++of this cut or of the separately composed reader and wrapper histories.
++
++Before any Source admission, the actual private RR producer moves its two
++canonical holder fields into one inline keeper owned by the existing Core
++cursor. This happens under the same BQL, real RR thread and live frame/CPU
++interval. Both original fields and the complete destination are checked before
++mutation. The execution record and external frame point to the new fields;
++the old fields are cleared before the independent post. The caller subsequently
++holds borrowed pointer values only. No retained owner records their addresses.
++No new QOM reference, execution, operation or Original is issued by this move.
++
++Move consumption is saved before its independent post. A negative post retains
++that fact and prevents reuse, even if the later physical reference return is
++known. Reuse requires completed positive transfer observations and separately
++recorded reference consumption and physical return, with no uncertainty.
++The private pre-move check supports refusal unwind. Exported Core Current
++requires the permanent keeper, authenticates the real frame/process/thread
++before inspecting mutable keeper coordinates and checks the actual execution
++serial while its CPU pin is live.
++
++Source's private admission entry now takes the actual frame, canonical execution
++field and independently retained serial. It authenticates them through Core
++before touching any nominated CPU or allocation. That leaf calls neither Source
++nor Main Current. The remaining semantic admission is still ``ENOTSUP``; this
++physical interface cannot issue an RR actor, Original, Advance, cleanup owner,
++guard, class-six quiescence or Outcome.
++
++Return reads the same permanent fields, records the actual execution's last-use
++facts before its once-only QOM unref, and records reference consumption before
++the independent external post. Post and holder consumption do not read the CPU.
++A negative physical post retains the keeper and cannot retry the unref. The
++ordinary RR caller clears its borrowed values after successful physical return.
++The keeper's inline history is charged by the real Core storage getter in the
++fixed floor; compiler stack measurements are separate and provide no stack payer.
++
++``tests/unit/test-crucible-quantum-keeper.py`` independently rebuilds the literal
++actual RR producer and relinks the real initialized system for each case. Its
++ordinary positive must execute and return two complete batches through the same
++keeper. The other physical cases inspect pre-move refusal, consumed move with a
++negative post, actual reference consumption before return post and a retained
++negative return post. Independent omissions must fail at the named physical
++assertion. These are ordinary unselected execution and factual custody controls;
++no enrolled Module, semantic cleanup, execution parity, whole-machine teardown
++or selected operation is qualified by them.
++
++On this exact parent-only tree, the real initialized ordinary x86 system
++observes Core storage ``88 + 72 = 160`` bytes and the fixed Source floor
++``288502 -> 288574`` bytes. Source remains 244328 bytes, CPUState 16992,
++the complete initialized x86 CPU instance 33568, and Native frame/registry
++288/10856. The added 72 bytes are the whole keeper, including retained
++history and padding. Both actual architecture owning-object closures compile;
++no ARM execution is inferred from that compile.
++
++The corrected complete owning build compiles all 2131 inputs used by both real
++system links with explicit core limit zero, 6 GiB address-space and aggregate
++virtual-memory limits, 180 seconds per compile and 1800 seconds overall.
++It takes 663.070 seconds with two workers, after the other lane was released;
++this does not qualify a 600-second bound. Both real system links pass. The
++final ordinary two-batch physical test takes 0.03353 seconds within its
++30-second invocation bound. All twelve independently rebuilt cases pass,
++including eight exact named-assertion omissions. These are bounded physical
++observations, not execution parity or semantic guard qualification.
++
++First generator, fixture-link, instrumentation and resource-limit setup
++failures remain in the separate validation namespace. The inherited unlimited
++core limit on earlier reconstruction attempts is not described as core-zero
++qualification. The final complete owning compile explicitly sets that limit.
 diff --git a/docs/devel/crucible-quantum-deferred-holder-proposal.rst b/docs/devel/crucible-quantum-deferred-holder-proposal.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..f173dd62178cfaf8bdf6848abacf5a8db5a67656
@@ -92685,10 +92996,10 @@ index 0000000000000000000000000000000000000000..e44b2f07791f09347e1879f204cccbb8
 +#endif
 diff --git a/include/system/crucible-quantum-execution.h b/include/system/crucible-quantum-execution.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..73d5a904325ec50b1997885b9ccdcc19a2b139bc
+index 0000000000000000000000000000000000000000..81e87b855f8f798ebb11ffac50e1bc829b4d2a09
 --- /dev/null
 +++ b/include/system/crucible-quantum-execution.h
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,129 @@
 +/*
 + * Private RR CPU custody; observations do not issue Quantum authority.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -92809,7 +93120,12 @@ index 0000000000000000000000000000000000000000..73d5a904325ec50b1997885b9ccdcc19
 +void qemu_crucible_quantum_cpu_cleanup_v1(struct CPUState *cpu);
 +
 +#if defined(CONFIG_PLUGIN) && defined(CONFIG_LINUX)
-+int qemu_crucible_source_quantum_cpu_admit_v1(struct CPUState *cpu);
++/* The private caller supplies the real Core keeper coordinates. Source must
++ * authenticate them before any nominated CPU/allocation access; physical
++ * custody still grants no semantic admission or cleanup authority. */
++int qemu_crucible_source_quantum_cpu_admit_v1(struct CPUState *cpu,
++    QemuCrucibleCoreQuantumFrame *frame,
++    QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t frame_serial);
 +#endif
 +
 +#endif
@@ -206719,10 +207035,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..db8823c8422a4d1e364e5938699f7f3146ae3d36
+index 0000000000000000000000000000000000000000..995a40ff1f82202a9474065795a53631fc971e22
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8725 @@
+@@ -0,0 +1,8733 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -213226,11 +213542,19 @@ index 0000000000000000000000000000000000000000..db8823c8422a4d1e364e5938699f7f31
 +    return status;
 +}
 +
-+int qemu_crucible_source_quantum_cpu_admit_v1(CPUState *cpu)
++int qemu_crucible_source_quantum_cpu_admit_v1(CPUState *cpu,
++    QemuCrucibleCoreQuantumFrame *frame,
++    QemuCrucibleQuantumCpuExecution **execution_holder, uint64_t frame_serial)
 +{
 +#ifdef CONFIG_TCG
-+    QemuCrucibleQuantumCpuExecution *execution = &cpu->crucible_quantum_execution;
-+    int status = qemu_crucible_quantum_cpu_rr_current_v1(cpu);
++    QemuCrucibleQuantumCpuExecution *execution;
++    int status = qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, execution_holder, frame_serial);
++
++    if (status) {
++        return status;
++    }
++    execution = *execution_holder;
 +
 +    if (status || !bql_locked() || execution->child ||
 +        execution->execution_started || execution->permission_revoked) {
@@ -230938,7 +231262,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c77a6264006195f7bc861fd1f82005e896d3d79
+index 0000000000000000000000000000000000000000..57263bfecca3cd108b1f17208e661da415c69d84
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,111 @@
@@ -230972,7 +231296,7 @@ index 0000000000000000000000000000000000000000..2c77a6264006195f7bc861fd1f82005e
 +    'include/plugins/qemu-plugin.h':
 +        '2afc62027b4ef7494d0f666cf5a11df6c6494f1856a47d177adaef21986bab91',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
++        '93dc2191a1fb44724c3e709a8bb7d12a1df086e05ab366475d2d2552ab10e5bc',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +}
@@ -285026,7 +285350,7 @@ index 0000000000000000000000000000000000000000..25aafdfc06f195785e3c99f5a6847c71
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4bc8236b2c84d9074b19cba1bba5fc3c5c4b9507
+index 0000000000000000000000000000000000000000..a69326fca8e965b9f83032c0bc7341da4a19e27d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -285044,7 +285368,7 @@ index 0000000000000000000000000000000000000000..4bc8236b2c84d9074b19cba1bba5fc3c
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
++        '93dc2191a1fb44724c3e709a8bb7d12a1df086e05ab366475d2d2552ab10e5bc',
 +}
 +
 +FUNCTIONS = (
@@ -285132,7 +285456,7 @@ index 0000000000000000000000000000000000000000..4bc8236b2c84d9074b19cba1bba5fc3c
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..afafb9e32eb0a515fee79d85fac8aa7bf3fb83ff
+index 0000000000000000000000000000000000000000..e21dd08443dcf2373fd5c1aaededde2e6cfd35fe
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -285153,7 +285477,7 @@ index 0000000000000000000000000000000000000000..afafb9e32eb0a515fee79d85fac8aa7b
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'f705afce8014dfd10168c87a2b6626c9348602215459ce78344021ec7adf2649',
++        'c70dbb4f76a9c8fdd50bb34954fe17eb0ec28de61f2052126726a16581541be0',
 +    'plugins/crucible-startup-source.h':
 +        '6ab4cdbbbada3316f98cc648d4fce9103e7f5c437f0f300712ae17bcba36e8dc',
 +    'include/plugins/qemu-plugin.h':
@@ -285163,7 +285487,7 @@ index 0000000000000000000000000000000000000000..afafb9e32eb0a515fee79d85fac8aa7b
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
++        '93dc2191a1fb44724c3e709a8bb7d12a1df086e05ab366475d2d2552ab10e5bc',
 +}
 +
 +FUNCTIONS = (
@@ -285379,7 +285703,7 @@ index 0000000000000000000000000000000000000000..afafb9e32eb0a515fee79d85fac8aa7b
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b168b19a23acdbb5b2281aa3bdc80772193165c5
+index 0000000000000000000000000000000000000000..59707f6bff32c90eca94f0ac64898f662cc4ed50
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -285403,7 +285727,7 @@ index 0000000000000000000000000000000000000000..b168b19a23acdbb5b2281aa3bdc80772
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
++        '93dc2191a1fb44724c3e709a8bb7d12a1df086e05ab366475d2d2552ab10e5bc',
 +}
 +
 +FUNCTIONS = (
@@ -285497,10 +285821,10 @@ index 0000000000000000000000000000000000000000..b168b19a23acdbb5b2281aa3bdc80772
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..77aad58538e7a37fe5e3fff1a149399c89ae950a
+index 0000000000000000000000000000000000000000..15c1ef074950647c7b3e147590820273b002fe19
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
-@@ -0,0 +1,705 @@
+@@ -0,0 +1,710 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Bind literal preinit bodies and classify their causal transport controls."""
 +
@@ -285544,15 +285868,15 @@ index 0000000000000000000000000000000000000000..77aad58538e7a37fe5e3fff1a149399c
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
++        '93dc2191a1fb44724c3e709a8bb7d12a1df086e05ab366475d2d2552ab10e5bc',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '44191d2bfc100d57de5dfe62be2ab3d37034e1af05e360eedc6b3b7522504019',
++        'd6dc4715ad7844669e870c36569855ee704881233c68d6b4eb2aac99d84ef982',
 +    'meson.build':
 +        '2dd1cc86257dfcbb7216ac4228b11e00dc0204e26700f8112264320b4a0ee4f5',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '58019f6598264e0a7d4b782196f9f72b3a168c8ee99b7f502c2d2280fa6f3a1c',
 +    'tests/unit/meson.build':
-+        '4540335a5d453cf8e9da683ee40214b1d01fa42350aa78f313676fbc9cbd5724',
++        '379ba490d701fe184d02a47983e2acf9376e84980fb73c0ea87b4ca28aaf32b0',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -286180,10 +286504,15 @@ index 0000000000000000000000000000000000000000..77aad58538e7a37fe5e3fff1a149399c
 +        source = replace_once(source, '    session->member_returned = true;',
 +                              '    session->member_returned = false;')
 +    elif args.control == 'omit-publisher-return-reciprocal':
-+        source = replace_once(source,
++        start = source.index(
++            'static int qemu_crucible_preexec_publisher_lender_return_v1_locked(')
++        end = source.index('\n}', start) + len('\n}')
++        predicate = source[start:end]
++        replacement = replace_once(predicate,
 +            '        status = qemu_crucible_startup_source_publisher_receiver_identity_v1(\n'
 +            '            issuer, holder, NULL, 1, NULL);',
 +            '        status = 0;')
++        source = replace_once(source, predicate, replacement)
 +    elif args.control == 'allow-constructors':
 +        source = replace_once(source,
 +                              '    preexec_setup_exit();\n}\n\n/* Main-executable only:',
@@ -286208,10 +286537,10 @@ index 0000000000000000000000000000000000000000..77aad58538e7a37fe5e3fff1a149399c
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f932ad9b6
+index 0000000000000000000000000000000000000000..4d8bde590bb4aec237d7e4beddd198d07d13893a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1583 @@
+@@ -0,0 +1,1585 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -286221,8 +286550,10 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'tests/unit/test-crucible-quantum-keeper.py':
++        '85c61692c0e248aa790586ee2c8c860af30b20ab2c42ef0115f12829faa39fbf',
 +    'accel/tcg/crucible-quantum-core.inc.h':
-+        '9853ed3b220149c864f720fa836a36cc638f7dc5c7f8359a357c91b66ef2ab3f',
++        '28d514901cad7ab25e49f8f0d789657bb4304486937043edf739ab49e9e8a34d',
 +    'plugins/crucible-ram-reader.inc.h':
 +        'fc7f98c5d5f34ca028f9d508d1bad3ae71a7b4afd50e98dbbc4f4bfecd35ce2f',
 +    'tests/unit/test-crucible-ram-reader-custody.py':
@@ -286293,7 +286624,7 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +    'tests/unit/test-crucible-publisher-member-return.py':
 +        'b6aab83ac00e198a40280b1b042b401f6136af66165a864030c599abf8f2eeaa',
 +    'tests/unit/test-crucible-control-deferred.py':
-+        'bb4253097015790598b1878abccb2e21dd534a462d8f81b766fa5b9f48809883',
++        '98b6ef3507174b34ff9ba5732a74650cd92270193356b4b11b9e2bcf5cfb52fb',
 +    'tests/unit/test-crucible-provider-metadata.py':
 +        'ec96e53fc9f7c491c38f8fed3d30a8169e731991d367fba74d697f6b0b041406',
 +    'tests/unit/crucible-net-stop-support.py':
@@ -286397,7 +286728,7 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '4540335a5d453cf8e9da683ee40214b1d01fa42350aa78f313676fbc9cbd5724',
++        '379ba490d701fe184d02a47983e2acf9376e84980fb73c0ea87b4ca28aaf32b0',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -286431,7 +286762,7 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +    'util/qemu-timer.c':
 +        '7688924d0642e40da474d76b757e34d562f54a50dd33953cec68dda1f0eda8ff',
 +    'include/system/crucible-quantum-execution.h':
-+        '387a565b0d8f22ccc608dbefc314ea4d292c285f9d826ceb6f70ce052b9fe808',
++        '0ace4e1443aacb36704791f12a303eb5ea2b7bd3f6728937751d666e7786879d',
 +    'accel/tcg/crucible-outcome-boundary.inc.h':
 +        'e5b5481ef735b41c39d249de90417f08b39ccc78d6db3f1eca9bc128dbf4ad23',
 +    'tests/unit/test-crucible-outcome-boundary.py':
@@ -286443,7 +286774,7 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +    'tests/unit/test-crucible-quantum-execution.py':
 +        '75d1eab0f6e5f7779978098c056db9e389d9a34c597a5e01a6da156010f921cc',
 +    'accel/tcg/tcg-accel-ops-rr.c':
-+        '1be00f2d6d2590e2dcb9a51cd281ce8c7a76ab36127c58f6cd622a4e9ffc82ba',
++        'beefa18dc508e4f90017728e3dc87000bfc89b97b95613fed503cb819fd0639a',
 +    'accel/tcg/tcg-accel-ops.c':
 +        'd11da9eca153ae1147bfafb7fddd2283954c63e23eeca85fd5d8d53b83bd8f53',
 +    'accel/tcg/cpu-exec.c':
@@ -286605,7 +286936,7 @@ index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'f705afce8014dfd10168c87a2b6626c9348602215459ce78344021ec7adf2649',
++        'c70dbb4f76a9c8fdd50bb34954fe17eb0ec28de61f2052126726a16581541be0',
 +    'plugins/crucible-startup-source.h':
 +        '6ab4cdbbbada3316f98cc648d4fce9103e7f5c437f0f300712ae17bcba36e8dc',
 +    'plugins/crucible-device-workspace.c':
@@ -287894,7 +288225,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7c8118247e3bcaf34718b69cc7e70e81f71add3c 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..1a05572e96eeb8c9e246a7566e11821683edac5d 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -287969,7 +288300,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7c8118247e3bcaf34718b69cc7e70e81
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1436 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1438 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -288722,6 +289053,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7c8118247e3bcaf34718b69cc7e70e81
 +                        '../../plugins/crucible-quantum-rr-execution.inc.h',
 +                        '../../plugins/crucible-quantum-rr-terminal.inc.h',
 +                        'test-crucible-quantum-rr-terminal.py',
++                        'test-crucible-quantum-keeper.py',
 +                        'test-crucible-quantum-rr-execution.py',
 +                        '../../plugins/crucible-quantum-rr-parent.inc.h',
 +                        'test-crucible-quantum-rr-parent.py',
@@ -288996,6 +289328,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7c8118247e3bcaf34718b69cc7e70e81
 +                        '../../accel/tcg/crucible-outcome-boundary.inc.h',
 +                        '../../accel/tcg/crucible-quantum-core.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops-rr.c',
++                        '../../accel/tcg/crucible-quantum-core.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops.c',
 +                        '../../accel/tcg/cpu-exec.c',
 +    ),
@@ -306238,7 +306571,7 @@ index 0000000000000000000000000000000000000000..bc7fd3347b8aeb4f2764f5afba38f924
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..97ff9398dedee7860f732fdb9227b1d2a32bc8a0
+index 0000000000000000000000000000000000000000..3f08583ff66f49e3e43255d431ac8a5295b95264
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -306278,7 +306611,7 @@ index 0000000000000000000000000000000000000000..97ff9398dedee7860f732fdb9227b1d2
 +    "accel/tcg/icount-common.c":
 +        "580137f73146ba656ab7ca0b1f0c6ed18c88765d6e0115b871a31a1673eb51dd",
 +    "accel/tcg/tcg-accel-ops-rr.c":
-+        '1be00f2d6d2590e2dcb9a51cd281ce8c7a76ab36127c58f6cd622a4e9ffc82ba',
++        'beefa18dc508e4f90017728e3dc87000bfc89b97b95613fed503cb819fd0639a',
 +    "accel/tcg/tcg-accel-ops-rr.h":
 +        "93b2e3a3b4b395e98733317e8411420b7ef1331f84d59af6a0ab87ad9c884d98",
 +    "monitor/qmp-cmds.c":
@@ -346427,10 +346760,10 @@ index 0000000000000000000000000000000000000000..2769afacdb72f39ab232fe9284afa24a
 +    main()
 diff --git a/tests/unit/test-crucible-quantum-core-frame.py b/tests/unit/test-crucible-quantum-core-frame.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667810b97a1
+index 0000000000000000000000000000000000000000..b6f0cf6aadd11cc31d89b9d0aa35c0d79dae710a
 --- /dev/null
 +++ b/tests/unit/test-crucible-quantum-core-frame.py
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,465 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise actual ordinary RR/QOM custody in a matched complete system ELF.
 +
@@ -346438,7 +346771,7 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +case independently compiles the actual RR producer and relinks the real system
 +executable. Observation-only probes inspect genuinely born frames/references;
 +they supply no Source, Original, callback, CPU, registration or accepting payer.
-+The failed-post case withholds a real canonical stack coordinate after the
++The failed-post case withholds a real canonical keeper coordinate after the
 +actual unref. It observes retained physical facts and exits before the normal
 +fail-closed assertion. No recovery or complete CPU destruction is claimed.
 +"""
@@ -346524,9 +346857,22 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +    return text.replace(before, after, count)
 +
 +
++
++def changed_function(text, signature, before, after):
++    start = text.index(signature)
++    end = text.index('\n}\n', start) + len('\n}\n')
++    body = text[start:end]
++    return text[:start] + changed(body, before, after) + text[end:]
++
++
 +def instrument(rr, core, failed_post, reference_receipt=False):
 +    rr = changed(rr, '#include "crucible-quantum-core.inc.h"',
 +                 '#include "core.inc.h"\n' + PROBE)
++    # Observe the genuine begin epoch before transfer can refuse a wrapped
++    # birth. This adds no issuer or recovery path to the real RR producer.
++    rr = changed(rr, '    frame = *frame_holder;\n',
++                 '    frame = *frame_holder;\n'
++                 '    rr_probe_require(frame->serial != 0, "nonwrapping epoch");\n')
 +    rr = changed(rr, '    frame->pin_attempted = true;\n',
 +                 '    unsigned probe_ref_before = OBJECT(cpu)->ref;\n'
 +                 '    frame->pin_attempted = true;\n')
@@ -346534,30 +346880,30 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +                 '    rr_probe_require(OBJECT(cpu)->ref == probe_ref_before + 1, '
 +                 '"actual QOM ref birth");\n    frame->pin_acquired = true;\n')
 +    rr = changed(rr, '    return first ? first : frame->entry_post;\n',
-+                 '    rr_probe_enter(frame, cpu, holder);\n'
++                 '    rr_probe_enter(frame, cpu, frame->execution_holder);\n'
 +                 '    return first ? first : frame->entry_post;\n')
 +    rr = changed(rr, '    frame->return_attempted = true;\n',
 +                 '    object_ref(OBJECT(cpu)); /* Actual observer-owned pin. */\n'
 +                 '    unsigned probe_return_before = OBJECT(cpu)->ref;\n'
 +                 '    frame->return_attempted = true;\n')
-+    rr = changed(rr, '    status = rr_quantum_frame_return_post(frame_holder, holder);\n',
++    rr = changed(rr, '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);\n',
 +                 '    rr_probe_require(OBJECT(cpu)->ref == probe_return_before - 1, '
 +                 '"actual QOM ref return");\n'
 +                 '    object_unref(OBJECT(cpu)); /* Return only observer pin. */\n'
-+                 '    status = rr_quantum_frame_return_post(frame_holder, holder);\n')
++                 '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);\n')
 +    if failed_post:
-+        rr = changed(rr, '    status = rr_quantum_frame_return_post(frame_holder, holder);',
-+                     '    *holder = NULL; /* Withhold real coordinate after unref. */\n'
-+                     '    status = rr_quantum_frame_return_post(frame_holder, holder);')
++        rr = changed(rr, '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);',
++                     '    *canonical_execution = NULL; /* Withhold real coordinate after unref. */\n'
++                     '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);')
 +        checks = '''
 +    rr_probe_require(frame->execution_started && frame->execution_ended,
 +        "actual executor returned");
 +    rr_probe_require(frame->held && frame->entered && frame->pin_consumed &&
 +        frame->return_attempted && frame->post_attempted && frame->post_returned &&
-+        *frame_holder == frame && !*holder, "failed post retains cursor");
++        *canonical_frame == frame && !*canonical_execution, "failed post retains cursor");
 +    rr_probe_require(status == -EPERM, "failed post status");
 +    rr_probe_require(frame->return_post == -EPERM, "negative post journal");
-+    rr_probe_require(rr_quantum_frame_return_post(frame_holder, holder) == -EPERM,
++    rr_probe_require(rr_quantum_frame_return_post(canonical_frame, canonical_execution) == -EPERM,
 +        "retained post cause");
 +    rr_probe_require(frame->held && frame->pin_consumed, "no return retry");
 +    fprintf(stderr, "PASS actual RR consumed reference with retained failed post\\n");
@@ -346567,11 +346913,11 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +        checks = '''
 +    rr_probe_require(frame->execution_started && frame->execution_ended,
 +        "actual executor returned");
-+    rr_probe_require(!status && !*holder && !*frame_holder && !frame->held &&
++    rr_probe_require(!status && !*canonical_execution && !*canonical_frame && !frame->held &&
 +        !frame->entered && frame->return_attempted && frame->pin_consumed &&
 +        frame->post_attempted && frame->post_returned, "physical post before consume");
 +    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
-+        frame, cpu, holder, frame->serial) == -EPERM, "returned frame refusal");
++        frame, cpu, canonical_execution, frame->serial) == -EPERM, "returned frame refusal");
 +    fprintf(stderr, "PASS actual ordinary RR QOM reference and Core frame returned\\n");
 +    _exit(0);
 +'''
@@ -346586,7 +346932,7 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +                     '    rr_probe_require(frame->serial != 0, "nonwrapping epoch");')
 +        rr = changed(rr, '    object_unref(OBJECT(cpu));\n    frame->pin_consumed',
 +                     '    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(\n'
-+                     '        frame, holder, frame->serial) == -EBUSY, "attempt is not consumption");\n'
++                     '        frame, canonical_execution, frame->serial) == -EBUSY, "attempt is not consumption");\n'
 +                     '    object_unref(OBJECT(cpu));\n    frame->pin_consumed')
 +        rr = changed(rr, '    frame->pin_consumed = true;\n',
 +                     '    frame->pin_consumed = true;\n' + REFERENCE_RECEIPT_PROBE)
@@ -346613,16 +346959,16 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +        0, NULL, NULL, NULL, 1, sizeof(refused), &refused) == -EPERM &&
 +        !memcmp(&saved, &refused, sizeof(saved)), "unselected registration refuses without output");
 +    rr_probe_require(!qemu_crucible_core_quantum_frame_reference_returned_v1(
-+        frame, holder, frame->serial), "genuine physical reference receipt");
++        frame, canonical_execution, frame->serial), "genuine physical reference receipt");
 +    QemuCrucibleCoreQuantumFrame receipt_copy = *frame;
-+    QemuCrucibleQuantumCpuExecution *receipt_holder = *holder;
++    QemuCrucibleQuantumCpuExecution *receipt_holder = *canonical_execution;
 +    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(
-+        &receipt_copy, holder, frame->serial) == -EPERM, "copied receipt frame");
++        &receipt_copy, canonical_execution, frame->serial) == -EPERM, "copied receipt frame");
 +    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(
 +        frame, &receipt_holder, frame->serial) == -EPERM, "copied receipt holder");
 +    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(
-+        frame, holder, frame->serial - 1) == -ESTALE, "stale receipt serial");
-+    RRProbeThread receipt_thread = {frame, NULL, holder, frame->serial, 0};
++        frame, canonical_execution, frame->serial - 1) == -ESTALE, "stale receipt serial");
++    RRProbeThread receipt_thread = {frame, NULL, canonical_execution, frame->serial, 0};
 +    pthread_t receipt_thread_handle;
 +    rr_probe_require(!pthread_create(&receipt_thread_handle, NULL,
 +        rr_probe_receipt_foreign_thread, &receipt_thread), "receipt thread birth");
@@ -346630,7 +346976,7 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +    rr_probe_require(receipt_thread.status == -EPERM, "receipt foreign thread refusal");
 +    bql_unlock();
 +    int unlocked_receipt = qemu_crucible_core_quantum_frame_reference_returned_v1(
-+        frame, holder, frame->serial);
++        frame, canonical_execution, frame->serial);
 +    bql_lock();
 +    rr_probe_require(unlocked_receipt == -EPERM, "receipt outside BQL");
 +'''
@@ -346732,10 +347078,66 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +        'exhaustion': (original_rr, changed(original_core, 'static QemuCrucibleCoreQuantumFrame rr_quantum_frame;', 'static QemuCrucibleCoreQuantumFrame rr_quantum_frame = { .serial = UINT64_MAX };'), False, 1, 'Crucible RR CPU admission refused'),
 +        'wrap-exhaustion': (original_rr, changed(changed(original_core, 'static QemuCrucibleCoreQuantumFrame rr_quantum_frame;', 'static QemuCrucibleCoreQuantumFrame rr_quantum_frame = { .serial = UINT64_MAX };'), 'if (serial == UINT64_MAX)', 'if (false)'), False, 91, 'nonwrapping epoch'),
 +    }
++    # The permanent keeper adds independent guards to older omission cases.
++    # Keep each original single cut as a refusal observation, then separately
++    # remove the documented redundant cuts to reach its original detector.
++    surviving_refusals = {
++        'omit-canonical-frame': ('copied frame', '-ESTALE'),
++        'omit-canonical-holder': ('copied holder', '-EPERM'),
++        'omit-thread': ('foreign thread refusal', '-ESTALE'),
++        'omit-reentry': ('reentry refusal', '-EPERM'),
++    }
++    omitted_cuts = {
++        'omit-canonical-frame': ['global frame identity'],
++        'omit-canonical-holder': ['frame execution-holder identity'],
++        'omit-thread': ['frame thread identity'],
++        'omit-reentry': ['occupied frame'],
++    }
++    compounds = {
++        'compound-canonical-frame': (
++            'omit-canonical-frame',
++            [('static int rr_quantum_frame_identity(',
++              'frame->holder != &keeper->frame ||', 'false ||'),
++             ('static int rr_quantum_frame_identity(',
++              'keeper->frame != frame ||', 'false ||'),
++             ('int qemu_crucible_core_quantum_frame_current_v1(',
++              'frame->holder != &rr_quantum_keeper.frame ||', 'false ||')],
++            [], ['keeper holder identity', 'keeper frame identity',
++                 'public keeper holder identity']),
++        'compound-canonical-holder': (
++            'omit-canonical-holder',
++            [('int qemu_crucible_core_quantum_frame_current_v1(',
++              'execution_holder != &rr_quantum_keeper.execution)', 'false)')],
++            [], ['public keeper execution-holder identity']),
++        'compound-thread': (
++            'omit-thread',
++            [('static int rr_quantum_frame_identity(',
++              '!qemu_thread_is_self(&keeper->thread)', 'false')],
++            [('int qemu_crucible_quantum_cpu_rr_current_v1(',
++              'qemu_thread_is_self(&execution->thread) &&', 'true &&')],
++            ['keeper thread identity', 'CPU execution thread identity']),
++        'compound-reentry': (
++            'omit-reentry', [('static int rr_quantum_frame_begin(',
++                              '!rr_quantum_keeper_reusable()', 'false')],
++            [], ['occupied permanent keeper']),
++    }
++    for name, (original, core_cuts, rr_cuts, labels) in compounds.items():
++        rr, core, failed_post, expected, detector = cases[original]
++        for signature, before, after in core_cuts:
++            core = changed_function(core, signature, before, after)
++        for signature, before, after in rr_cuts:
++            rr = changed_function(rr, signature, before, after)
++        cases[name] = (rr, core, failed_post, expected, detector)
++        omitted_cuts[name] = omitted_cuts[original] + labels
++    for name in surviving_refusals:
++        rr, core, failed_post, _, _ = cases[name]
++        cases[name] = (rr, core, failed_post, 0, 'PASS actual ordinary RR')
++
 +    if args.reference_return_controls:
-+        query = original_core[original_core.index(
-+            'int qemu_crucible_core_quantum_frame_reference_returned_v1('):
-+            original_core.index('static int rr_quantum_frame_begin(')]
++        query_start = original_core.index(
++            'int qemu_crucible_core_quantum_frame_reference_returned_v1(')
++        query_end = original_core.index('\n}\n', query_start) + len('\n}\n')
++        query = original_core[query_start:query_end]
 +        cases = {
 +            'reference-positive': cases['positive'],
 +            'reference-negative-post': cases['failed-post'],
@@ -346761,6 +347163,13 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +        directory = output / name
 +        directory.mkdir()
 +        rr, core = instrument(rr, core, failed_post, args.reference_return_controls)
++        if name in surviving_refusals:
++            label, status = surviving_refusals[name]
++            # This records a remaining refusal, not successful admission after
++            # one omission. Ordinary and compound cases keep the original probe.
++            if status != '-EPERM':
++                rr = changed(rr, f'== -EPERM, "{label}"',
++                             f'== {status}, "{label}"')
 +        (directory / 'rr.c').write_text(rr)
 +        (directory / 'core.inc.h').write_text(core)
 +        obj, executable = directory / 'rr.o', directory / 'qemu-system-x86_64'
@@ -346807,6 +347216,12 @@ index 0000000000000000000000000000000000000000..ff01b51f33b7eac1e80e7e732d6d7667
 +                '-qmp', 'stdio']
 +        (directory / 'qemu-command.json').write_text(json.dumps(qemu, indent=2) + '\n')
 +        proof[name] = run_qemu(qemu, directory, expected, detector)
++        proof[name]['omitted_cuts'] = omitted_cuts.get(
++            name, [] if expected == 0 else [name])
++        proof[name]['classification'] = (
++            'original cut retains a valid refusal' if name in surviving_refusals
++            else 'compound omission' if name.startswith('compound-')
++            else 'original case')
 +        proof[name]['executable_sha256'] = hashlib.sha256(executable.read_bytes()).hexdigest()
 +        (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
 +        print('PASS', name, flush=True)
@@ -347366,6 +347781,497 @@ index 0000000000000000000000000000000000000000..988b340deafcd7a6855f6c8a96a0a5fb
 +
 +
 +if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-quantum-keeper.py b/tests/unit/test-crucible-quantum-keeper.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..351e8da7c2bb8609aae6326c2bb5a0d8cabbdc16
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-keeper.py
+@@ -0,0 +1,485 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise actual ordinary RR/QOM custody in a matched complete system ELF.
++
++The configured compiler and complete link command are explicit inputs. Each
++case independently compiles the actual RR producer and relinks the real system
++executable. Observation-only probes inspect genuinely born frames/references;
++they supply no Source, Original, callback, CPU, registration or accepting payer.
++The failed-post case withholds the actual Core-owned keeper coordinate after the
++actual unref. It observes retained physical facts and exits before the normal
++fail-closed assertion. No recovery or complete CPU destruction is claimed.
++"""
++
++import argparse
++import hashlib
++import json
++import os
++from pathlib import Path
++import selectors
++import resource
++import shlex
++import subprocess
++import time
++
++
++PROBE = r'''
++#include "plugins/crucible-startup-source.h"
++static void rr_probe_require(bool condition, const char *name)
++{
++    if (!condition) {
++        fprintf(stderr, "FAIL RR physical probe: %s\n", name);
++        _exit(91);
++    }
++}
++
++typedef struct RRProbeThread {
++    QemuCrucibleCoreQuantumFrame *frame;
++    CPUState *cpu;
++    QemuCrucibleQuantumCpuExecution **holder;
++    uint64_t serial;
++    int status;
++} RRProbeThread;
++
++static void *rr_probe_foreign_thread(void *opaque)
++{
++    RRProbeThread *probe = opaque;
++
++    probe->status = qemu_crucible_core_quantum_frame_current_v1(
++        probe->frame, probe->cpu, probe->holder, probe->serial);
++    return NULL;
++}
++
++static void rr_probe_enter(QemuCrucibleCoreQuantumFrame *frame, CPUState *cpu,
++    QemuCrucibleQuantumCpuExecution **holder)
++{
++    QemuCrucibleCoreQuantumFrame copy = *frame;
++    QemuCrucibleCoreQuantumFrame *copied_frame_holder = &copy;
++    QemuCrucibleCoreQuantumFrame *second_frame = NULL;
++    QemuCrucibleQuantumCpuExecution *copied_holder = *holder;
++    QemuCrucibleQuantumCpuExecution *second_execution = NULL;
++    RRProbeThread probe = {frame, cpu, holder, frame->serial, 0};
++    pthread_t thread;
++
++    static bool geometry_reported;
++
++    if (!geometry_reported) {
++        fprintf(stderr, "GEOMETRY Source=%zu floor=%" PRIu64
++                " Core=%zu Keeper=%zu CPUState=%zu CPUInstance=%zu"
++                " NativeFrame=%zu NativeRegistry=%zu\n",
++                sizeof(QemuCrucibleStartupSourceControl),
++                qemu_crucible_startup_source_fixed_control_extent(),
++                qemu_crucible_quantum_core_frame_storage_bytes_v1(),
++                sizeof(rr_quantum_keeper), sizeof(CPUState),
++                object_get_instance_size(OBJECT(cpu)),
++                sizeof(QemuCrucibleNativeInvocation),
++                sizeof(QemuCrucibleNativeInvocationRegistry));
++        rr_probe_require(qemu_crucible_quantum_core_frame_storage_bytes_v1() ==
++            sizeof(rr_quantum_frame) + sizeof(rr_quantum_keeper),
++            "real Core getter prices whole keeper");
++        rr_probe_require(qemu_crucible_startup_source_fixed_control_extent() ==
++            UINT64_C(292710) + sizeof(rr_quantum_keeper),
++            "real composed fixed floor includes keeper storage");
++        geometry_reported = true;
++    }
++    copy.holder = &copied_frame_holder;
++    rr_probe_require(!qatomic_load_acquire(&qemu_crucible_selected_process_id),
++        "ordinary unselected process");
++    rr_probe_require(qemu_crucible_source_quantum_cpu_admit_v1(
++        (CPUState *)(uintptr_t)1, &copy, holder, frame->serial) == -EPERM,
++        "Source authenticates Core before nominated CPU access");
++    rr_probe_require(frame->serial != 0, "nonwrapping epoch");
++    rr_probe_require(!qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, holder, frame->serial), "genuine current");
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        &copy, cpu, holder, frame->serial) == -EPERM, "copied frame");
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, &copied_holder, frame->serial) == -EPERM, "copied holder");
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        frame, NULL, holder, frame->serial) == -ESTALE, "foreign CPU");
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, holder, frame->serial - 1) == -ESTALE, "stale epoch");
++    rr_probe_require(rr_quantum_frame_return_post(frame->holder, holder) == -EBUSY &&
++        frame->held && !frame->post_attempted, "post before physical return");
++    rr_probe_require(rr_quantum_frame_begin(cpu, &second_execution,
++        &second_frame) == -EPERM && !second_execution && !second_frame,
++        "reentry refusal");
++    rr_probe_require(!pthread_create(&thread, NULL, rr_probe_foreign_thread,
++        &probe), "foreign thread birth");
++    rr_probe_require(!pthread_join(thread, NULL), "foreign thread return");
++    rr_probe_require(probe.status == -EPERM, "foreign thread refusal");
++}
++'''
++
++
++def changed(text, before, after, count=1):
++    if text.count(before) < count:
++        raise ValueError(f"missing actual producer text: {before!r}")
++    return text.replace(before, after, count)
++
++
++def instrument(rr, core, mode, reference_receipt=False):
++    rr = changed(rr, '#include "crucible-quantum-core.inc.h"',
++                 '#include "core.inc.h"\n' + PROBE)
++    rr = changed(rr, '    frame->pin_attempted = true;\n',
++                 '    unsigned probe_ref_before = OBJECT(cpu)->ref;\n'
++                 '    frame->pin_attempted = true;\n')
++    rr = changed(rr, '    frame->pin_acquired = true;\n',
++                 '    rr_probe_require(OBJECT(cpu)->ref == probe_ref_before + 1, '
++                 '"actual QOM ref birth");\n    frame->pin_acquired = true;\n')
++    rr = changed(rr, '    first = rr_quantum_frame_transfer(cpu, holder, frame_holder);',
++                 PREMOVE_PROBE + '    first = rr_quantum_frame_transfer(cpu, holder, frame_holder);')
++    if mode == 'pre-move-refusal':
++        rr = changed(rr, '    first = rr_quantum_frame_transfer(cpu, holder, frame_holder);',
++                     '    first = rr_quantum_frame_transfer(cpu, holder, &wrong_frame);')
++        moved_probe = PREMOVE_REFUSED_PROBE
++    else:
++        moved_probe = MOVED_PROBE
++    rr = changed(rr, '    if (rr_quantum_keeper.consumed &&',
++                 moved_probe + '    if (rr_quantum_keeper.consumed &&')
++    rr = changed(rr, '    return first ? first : frame->entry_post;\n',
++                 '    rr_probe_enter(frame, cpu, frame->execution_holder);\n'
++                 '    return first ? first : frame->entry_post;\n')
++    rr = changed(rr, '    frame->return_attempted = true;\n',
++                 '    object_ref(OBJECT(cpu)); /* Actual observer-owned pin. */\n'
++                 '    unsigned probe_return_before = OBJECT(cpu)->ref;\n'
++                 '    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(\n'
++                 '        frame, canonical_execution, frame->serial) == -EBUSY, "live reference not consumed");\n'
++                 '    frame->return_attempted = true;\n')
++    rr = changed(rr, '    object_unref(OBJECT(cpu));\n    frame->pin_consumed',
++                 '    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(\n'
++                 '        frame, canonical_execution, frame->serial) == -EBUSY, "attempt not consumption");\n'
++                 '    object_unref(OBJECT(cpu));\n    frame->pin_consumed')
++    boundary_probe = (PREMOVE_RETURN_BOUNDARY_PROBE if mode == 'pre-move-refusal'
++                      else RETURN_BOUNDARY_PROBE)
++    rr = changed(rr, '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);',
++                 boundary_probe + '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);')
++    if mode == 'pre-move-refusal':
++        checks = PREMOVE_RETURNED_PROBE
++    elif mode == 'failed-post':
++        rr = changed(rr, '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);',
++                     '    *canonical_execution = NULL; /* Withhold after actual unref. */\n'
++                     '    status = rr_quantum_frame_return_post(canonical_frame, canonical_execution);')
++        checks = FAILED_RETURN_PROBE
++    elif mode == 'moved-post':
++        core = changed(core, '        keeper->frame, cpu, &keeper->execution, keeper->frame_serial);',
++                       '        keeper->frame, NULL, &keeper->execution, keeper->frame_serial);')
++        checks = MOVED_POST_RETURN_PROBE
++    else:
++        checks = RETURNED_PROBE
++    rr = changed(rr, '    /* A physical-only cursor cannot issue cleanup authority',
++                 checks + '    /* A physical-only cursor cannot issue cleanup authority')
++    if mode == 'omit-unref':
++        rr = changed(rr, '    object_unref(OBJECT(cpu));\n    frame->pin_consumed',
++                     '    frame->pin_consumed')
++    return rr, core
++
++
++PREMOVE_PROBE = r'''
++    QemuCrucibleCoreQuantumFrame *wrong_frame = frame;
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, holder, frame->serial) == -EPERM,
++        "exported Current excludes pre-move stack ownership");
++    rr_probe_require(rr_quantum_frame_transfer(cpu, holder, &wrong_frame) == -EPERM &&
++        frame->holder == frame_holder && frame->execution_holder == holder &&
++        *holder == execution && *frame_holder == frame,
++        "pre-move refusal preserves original ownership");
++'''
++
++PREMOVE_REFUSED_PROBE = r'''
++    rr_probe_require(first == -EPERM && !rr_quantum_keeper.attempted &&
++        frame->holder == frame_holder && frame->execution_holder == holder &&
++        *holder == execution && *frame_holder == frame,
++        "actual pre-move refusal retains live original fields");
++'''
++
++PREMOVE_RETURN_BOUNDARY_PROBE = r'''
++    rr_probe_require(OBJECT(cpu)->ref == probe_return_before - 1,
++        "actual pre-move QOM ref return");
++    object_unref(OBJECT(cpu));
++    rr_probe_require(frame->pin_consumed && frame->return_attempted &&
++        !frame->post_attempted && !rr_quantum_keeper.attempted &&
++        !qemu_crucible_core_quantum_frame_reference_returned_v1(
++            frame, canonical_execution, frame->serial),
++        "actual pre-move reference consumption");
++'''
++
++PREMOVE_RETURNED_PROBE = r'''
++    rr_probe_require(!status && frame->entry_first == -EPERM &&
++        frame->entry_post == -EPERM && frame->return_attempted &&
++        frame->post_attempted && frame->post_returned && !frame->return_post &&
++        !frame->execution_started && !frame->held &&
++        !*canonical_frame && !*canonical_execution && !rr_quantum_keeper.attempted,
++        "actual pre-move refusal physically returned once");
++    fprintf(stderr, "PASS actual pre-move refusal physical return\n");
++    _exit(0);
++'''
++
++
++MOVED_PROBE = r'''
++    rr_probe_require(rr_quantum_keeper.attempted && rr_quantum_keeper.consumed &&
++        rr_quantum_keeper.post_attempted && rr_quantum_keeper.post_returned &&
++        rr_quantum_keeper.canonical_owner == &rr_quantum_keeper &&
++        frame->holder == &rr_quantum_keeper.frame &&
++        frame->execution_holder == &rr_quantum_keeper.execution &&
++        execution->holder == &rr_quantum_keeper.execution &&
++        !*holder && !*frame_holder, "canonical move consumption before post");
++    rr_probe_require(qemu_crucible_core_quantum_frame_current_v1(
++        frame, cpu, holder, frame->serial) == -EPERM,
++        "old stack field no longer canonical");
++'''
++
++RETURN_BOUNDARY_PROBE = r'''
++    rr_probe_require(OBJECT(cpu)->ref == probe_return_before - 1,
++        "actual QOM ref return");
++    object_unref(OBJECT(cpu)); /* Return only the genuine observer pin. */
++    rr_probe_require(rr_quantum_keeper.reference_consumed &&
++        !rr_quantum_keeper.physically_returned && frame->pin_consumed &&
++        frame->return_attempted && !frame->post_attempted,
++        "reference consumption precedes return post");
++    rr_probe_require(!qemu_crucible_core_quantum_frame_reference_returned_v1(
++        frame, canonical_execution, frame->serial), "actual reference receipt");
++'''
++
++RETURNED_PROBE = r'''
++    static uint64_t probe_previous_serial;
++    static unsigned probe_completed_batches;
++    rr_probe_require(frame->execution_started && frame->execution_ended,
++        "actual executor returned");
++    rr_probe_require(!status && !*canonical_execution && !*canonical_frame &&
++        !frame->held && !frame->entered && rr_quantum_keeper.physically_returned &&
++        !rr_quantum_keeper.uncertain && frame->return_attempted &&
++        frame->post_attempted && frame->post_returned &&
++        rr_quantum_keeper.frame_serial > probe_previous_serial,
++        "keeper complete physical return");
++    probe_previous_serial = rr_quantum_keeper.frame_serial;
++    rr_probe_require(qemu_crucible_core_quantum_frame_reference_returned_v1(
++        frame, canonical_execution, frame->serial) == -EPERM,
++        "closed receipt no longer current");
++    if (++probe_completed_batches == 2) {
++        fprintf(stderr, "PASS actual ordinary RR keeper reused across two complete batches\n");
++        _exit(0);
++    }
++'''
++
++FAILED_RETURN_PROBE = r'''
++    rr_probe_require(status == -EPERM && frame->held && frame->pin_consumed &&
++        frame->post_attempted && frame->post_returned && frame->return_post == -EPERM &&
++        rr_quantum_keeper.reference_consumed && rr_quantum_keeper.uncertain &&
++        !rr_quantum_keeper.physically_returned && *canonical_frame == frame &&
++        !*canonical_execution, "failed post retains consumed keeper");
++    rr_probe_require(rr_quantum_frame_return_post(canonical_frame,
++        canonical_execution) == -EPERM, "failed post no repeated unref");
++    fprintf(stderr, "PASS actual keeper reference consumed negative return post retained\n");
++    _exit(0);
++'''
++
++MOVED_POST_RETURN_PROBE = r'''
++    rr_probe_require(!status && !frame->held && frame->entry_first == -ESTALE &&
++        !frame->entry_post && rr_quantum_keeper.consumed && rr_quantum_keeper.post_attempted &&
++        rr_quantum_keeper.post_returned && rr_quantum_keeper.transfer_post == -ESTALE &&
++        rr_quantum_keeper.uncertain && rr_quantum_keeper.reference_consumed &&
++        rr_quantum_keeper.physically_returned && !frame->execution_started,
++        "moved negative post preserves separate physical return");
++    rr_probe_require(!rr_quantum_keeper_reusable(),
++        "uncertain move excludes keeper reuse without CPU access");
++    fprintf(stderr, "PASS actual moved keeper negative post physical return without retry\n");
++    _exit(0);
++'''
++
++
++def run_qemu(command, directory, expected, detector):
++    started = time.monotonic()
++    deadline = started + 30
++    with (directory / 'stderr.log').open('w') as errors:
++        process = subprocess.Popen(command, stdin=subprocess.PIPE,
++                                   stdout=subprocess.PIPE, stderr=errors)
++        selector = selectors.DefaultSelector()
++        selector.register(process.stdout, selectors.EVENT_READ)
++        pending = b''
++        transcript = bytearray()
++
++        def read_reply():
++            nonlocal pending
++            while True:
++                while b'\n' in pending:
++                    line, pending = pending.split(b'\n', 1)
++                    if line:
++                        return json.loads(line)
++                remaining = deadline - time.monotonic()
++                if remaining <= 0 or not selector.select(remaining):
++                    raise TimeoutError('actual ordinary RR process exceeded 30 seconds')
++                body = os.read(process.stdout.fileno(), 65536)
++                if not body:
++                    raise EOFError('real QEMU exited before QMP setup')
++                transcript.extend(body)
++                pending += body
++
++        try:
++            assert 'QMP' in read_reply()
++            request = b'{"execute":"qmp_capabilities"}\n'
++            process.stdin.write(request)
++            process.stdin.flush()
++            while 'return' not in read_reply():
++                pass
++            request += b'{"execute":"cont"}\n'
++            process.stdin.write(b'{"execute":"cont"}\n')
++            process.stdin.flush()
++            status = process.wait(timeout=max(0.01, deadline - time.monotonic()))
++            transcript.extend(process.stdout.read())
++            (directory / 'qmp-input.bin').write_bytes(request)
++            (directory / 'qmp-output.bin').write_bytes(transcript)
++        finally:
++            if process.poll() is None:
++                process.kill()
++                process.wait()
++            selector.close()
++    stderr = (directory / 'stderr.log').read_text()
++    result = dict(returncode=status, expected=expected, detector=detector,
++                  elapsed_seconds=time.monotonic() - started)
++    (directory / 'run.json').write_text(json.dumps(result, indent=2) + '\n')
++    if status != expected or detector not in stderr:
++        raise RuntimeError(f"actual RR case failed: {directory.name}: {result}: {stderr}")
++    return result
++
++
++def main():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--source-root', type=Path, required=True)
++    parser.add_argument('--configured-build', type=Path, required=True)
++    parser.add_argument('--compile-db', type=Path, required=True)
++    parser.add_argument('--link-commands', type=Path, required=True)
++    parser.add_argument('--source-object', type=Path, required=True)
++    parser.add_argument('--configured-source-prefix', action='append', default=[],
++                        help='source prefix in the retained configured link arguments')
++    parser.add_argument('--output-dir', type=Path, required=True)
++    parser.add_argument('--reference-return-controls', action='store_true',
++                        help='exercise the distinct consumed-reference query')
++    args = parser.parse_args()
++    root, build = args.source_root.resolve(), args.configured_build.resolve()
++    output = args.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=False)
++    entries = json.loads(args.compile_db.read_text())
++    rr_entry = next(row for row in entries if row['file'].endswith('/accel/tcg/tcg-accel-ops-rr.c'))
++    source_entry = next(row for row in entries if row['file'].endswith('/plugins/crucible-startup-source.c'))
++    link = next(row for row in json.loads(args.link_commands.read_text())
++                if row['output'] == 'qemu-system-x86_64')
++    original_rr = (root / 'accel/tcg/tcg-accel-ops-rr.c').read_text()
++    original_core = (root / 'accel/tcg/crucible-quantum-core.inc.h').read_text()
++    cases = {
++        'two-batches': (
++            original_rr, original_core, 'positive', 0,
++            'PASS actual ordinary RR keeper reused'),
++        'pre-move-refusal': (
++            original_rr, original_core, 'pre-move-refusal', 0,
++            'PASS actual pre-move refusal physical return'),
++        'moved-post': (
++            original_rr, original_core, 'moved-post', 0,
++            'PASS actual moved keeper negative post'),
++        'failed-return-post': (
++            original_rr, original_core, 'failed-post', 0,
++            'PASS actual keeper reference consumed'),
++        'omit-pre-move-frame-coordinate': (
++            original_rr,
++            changed(original_core, 'frame_holder != frame->holder ||', ''),
++            'positive', 91, 'pre-move refusal preserves original ownership'),
++        'omit-keeper-storage-price': (
++            original_rr,
++            changed(original_core,
++                'return sizeof(rr_quantum_frame) + sizeof(rr_quantum_keeper);',
++                'return sizeof(rr_quantum_frame);'),
++            'positive', 91, 'real Core getter prices whole keeper'),
++        'omit-exported-keeper-gate': (
++            original_rr,
++            changed(original_core,
++                'if (frame->holder != &rr_quantum_keeper.frame ||\n'
++                '        execution_holder != &rr_quantum_keeper.execution)',
++                'if (false)'),
++            'positive', 91, 'exported Current excludes pre-move stack ownership'),
++        'omit-old-holder-clear': (
++            original_rr,
++            changed(original_core,
++                '    *execution_holder = NULL;\n    *frame_holder = NULL;',
++                '    *frame_holder = NULL;'),
++            'positive', 91, 'canonical move consumption before post'),
++        'omit-move-consumption': (
++            original_rr,
++            changed(original_core,
++                '    keeper->consumed = true;', '    keeper->consumed = false;'),
++            'positive', 91, 'canonical move consumption before post'),
++        'omit-reference-fact': (
++            changed(original_rr,
++                '        rr_quantum_keeper.reference_consumed = true;',
++                '        rr_quantum_keeper.reference_consumed = false;'),
++            original_core, 'positive', 91,
++            'reference consumption precedes return post'),
++        'omit-unref': (
++            original_rr, original_core, 'omit-unref', 91,
++            'actual QOM ref return'),
++        'omit-return-post': (
++            original_rr,
++            changed(original_core,
++                'post = qemu_crucible_core_quantum_frame_returning_v1(\n'
++                '        frame, execution_holder, frame->serial);',
++                'post = 0;'),
++            'failed-post', 91, 'failed post retains consumed keeper'),
++    }
++    proof = {}
++    for name, (rr, core, failed_post, expected, detector) in cases.items():
++        directory = output / name
++        directory.mkdir()
++        rr, core = instrument(rr, core, failed_post, args.reference_return_controls)
++        (directory / 'rr.c').write_text(rr)
++        (directory / 'core.inc.h').write_text(core)
++        obj, executable = directory / 'rr.o', directory / 'qemu-system-x86_64'
++        raw = shlex.split(rr_entry['command'])
++        command = [raw[0], '-iquote', str(root / 'include'), '-iquote', str(root),
++                   '-iquote', str(root / 'accel/tcg')]
++        index = 1
++        while index < len(raw):
++            token = raw[index]
++            if token in ('-MQ', '-MF'):
++                index += 2
++                continue
++            if token == '-MD':
++                index += 1
++                continue
++            if token in ('-c', '-o'):
++                command += [token, str(directory / 'rr.c' if token == '-c' else obj)]
++                index += 2
++                continue
++            for prefix in args.configured_source_prefix:
++                token = token.replace(prefix, str(root))
++            command.append(token)
++            index += 1
++        link_command = []
++        for token in shlex.split(link['command']):
++            if token == link['output']:
++                token = str(executable)
++            elif token == rr_entry['output']:
++                token = str(obj)
++            elif token == source_entry['output']:
++                token = str(args.source_object.resolve())
++            else:
++                for prefix in args.configured_source_prefix:
++                    token = token.replace(prefix, str(build.parent))
++            link_command.append(token)
++        for phase, argv in (('compile', command), ('link', link_command)):
++            (directory / (phase + '.json')).write_text(json.dumps(argv, indent=2) + '\n')
++            with (directory / (phase + '.log')).open('w') as log:
++                subprocess.run(argv, cwd=build, stdout=log, stderr=subprocess.STDOUT,
++                               check=True, timeout=180)
++        qemu = [str(executable), '-machine', 'pc', '-accel', 'tcg,thread=single',
++                '-m', '32M', '-nodefaults', '-display', 'none', '-S',
++                '-bios', str(root / 'pc-bios/bios.bin'), '-L', str(root / 'pc-bios'),
++                '-qmp', 'stdio']
++        (directory / 'qemu-command.json').write_text(json.dumps(qemu, indent=2) + '\n')
++        proof[name] = run_qemu(qemu, directory, expected, detector)
++        proof[name]['executable_sha256'] = hashlib.sha256(executable.read_bytes()).hexdigest()
++        (output / 'proof.json').write_text(json.dumps(proof, indent=2) + '\n')
++        print('PASS', name, flush=True)
++
++
++if __name__ == '__main__':
 +    main()
 diff --git a/tests/unit/test-crucible-quantum-original.py b/tests/unit/test-crucible-quantum-original.py
 new file mode 100644
