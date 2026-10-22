@@ -130,6 +130,7 @@ fn main() -> Result<(), Failure> {
     println!("terminal_namespace_absent_and_world_credit_released=true");
     if expected_phase == FundedTemplatePhase::PrivateBirthsRetained {
         println!("actual_three_worker_results_and_private_births_retained=true");
+        println!("actual_initial_source_deployment_census_exact_and_one_short=true");
     }
     if expected_phase == FundedTemplatePhase::TemplatesRetained {
         println!("actual_small_policy_failure_and_spent_retry_retained=true");

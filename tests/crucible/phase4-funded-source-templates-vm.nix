@@ -99,6 +99,7 @@ in
         cat /var/lib/funded-source/$name.log
         grep -Fxq PASS /var/lib/funded-source/$name.log
         grep -Fxq actual_three_worker_results_and_private_births_retained=true /var/lib/funded-source/$name.log
+        grep -Fxq actual_initial_source_deployment_census_exact_and_one_short=true /var/lib/funded-source/$name.log
         grep -Fxq terminal_namespace_absent_and_world_credit_released=true /var/lib/funded-source/$name.log
       done
       first=$(sed -n 's/^consumer_pid=//p' /var/lib/funded-source/births-a.log)

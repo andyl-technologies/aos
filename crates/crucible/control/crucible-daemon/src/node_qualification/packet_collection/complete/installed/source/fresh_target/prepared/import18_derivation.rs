@@ -13,7 +13,7 @@ use crucible_host_resources::LinuxPureWorkerAttempt;
 impl PreparedCompleteRestoration {
     #[cfg(feature = "test-support")]
     pub(crate) fn funded_private_births_retained_data(&self) -> bool {
-        !self.import18_templates.failed
+        let retained = !self.import18_templates.failed
             && self.import18_templates.funded_complete
             && self.import18_templates.members.iter().all(|member| {
                 member.stage == Stage::PrivateBirth
@@ -23,7 +23,91 @@ impl PreparedCompleteRestoration {
                         .declaration_encoding
                         .as_ref()
                         .is_some_and(|bank| !bank.is_empty())
-            })
+            });
+        retained
+            && self
+                .authenticate_funded_initial_source_census_data()
+                .is_ok()
+    }
+
+    /// Checks actual Source components only after funding their complete visitor.
+    ///
+    /// This qualification observation creates no Source/native completion. Each
+    /// read uses the original deployment and exercises its exact component bound
+    /// after a refused one-byte-short walk, without changing any owning bank.
+    #[cfg(feature = "test-support")]
+    fn authenticate_funded_initial_source_census_data(&self) -> Result<(), RuntimeError> {
+        use crucible_engine::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
+        use crucible_host_resources::DeploymentResourceReadContext;
+        use std::mem::{size_of, size_of_val};
+
+        let controls = [
+            size_of::<&Self>() * 3,
+            size_of::<bool>() * 3,
+            size_of::<&Rc<crate::node_control::deployment::InstalledDeployment>>(),
+            size_of::<DeploymentResourceReadContext<'static>>(),
+            size_of::<Result<DeploymentResourceReadContext<'static>, RuntimeError>>(),
+            size_of::<&DeploymentResourceReadContext<'static>>() * 2,
+            size_of::<std::slice::Iter<'static, Member>>(),
+            size_of::<&Member>(),
+            size_of::<&Rc<PacketCompleteSemanticSource>>(),
+            size_of::<Result<&Rc<PacketCompleteSemanticSource>, RuntimeError>>(),
+            size_of::<SourceDeploymentStorageRead<'static>>() * 3,
+            size_of::<Result<SourceDeploymentStorageRead<'static>, RuntimeError>>() * 3,
+            size_of::<Result<(), RuntimeError>>() * 5,
+            size_of::<Result<usize, std::num::TryFromIntError>>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<Option<usize>>(),
+            size_of::<[usize; 3]>() * 2,
+            size_of::<usize>() * 5,
+        ];
+        let scratch = controls
+            .into_iter()
+            .try_fold(
+                PacketCompleteSemanticSource::initial_lifecycle_deployment_counter_scratch_data(),
+                |sum, field| sum.checked_add(field).ok_or(RuntimeError::ResourceLimit),
+            )?
+            .checked_add(size_of_val(&controls))
+            .and_then(|sum| sum.checked_add(size_of_val(&controls.into_iter())))
+            .ok_or(RuntimeError::ResourceLimit)?;
+        self.observe_funded_templates_data([0, 0, scratch])?;
+
+        let outcome = (|| {
+            let context = self
+                .import18_templates
+                .deployment
+                .as_ref()
+                .ok_or(RuntimeError::ForeignAuthority)?
+                .context()?;
+            let maximum = usize::try_from(self.selected.resources.memory_bytes.get())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+            for member in &self.import18_templates.members {
+                let source = member.output.completed_data()?;
+                let read =
+                    source.original_initial_lifecycle_deployment_storage_data(&context, maximum)?;
+                read.authenticate_original(&context)?;
+                let actual = read.known_requested_bytes_data();
+                let short = actual.checked_sub(1).ok_or(RuntimeError::ResourceLimit)?;
+                if !matches!(
+                    source.original_initial_lifecycle_deployment_storage_data(&context, short),
+                    Err(RuntimeError::ResourceLimit)
+                ) {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+                let exact =
+                    source.original_initial_lifecycle_deployment_storage_data(&context, actual)?;
+                exact.authenticate_original(&context)?;
+                if exact.known_requested_bytes_data() != actual {
+                    return Err(RuntimeError::OwnerUnavailable);
+                }
+            }
+            Ok(())
+        })();
+        // Every Source and deployment-read view ends before the whole holder is
+        // observed again, including when a read or bound control has refused.
+        let terminal = self.observe_funded_templates_data([0; 3]);
+        outcome?;
+        terminal
     }
 
     /// Advances the isolated operational step without claiming preparation success.

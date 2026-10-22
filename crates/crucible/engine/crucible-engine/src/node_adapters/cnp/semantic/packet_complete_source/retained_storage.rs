@@ -10,6 +10,9 @@ use super::*;
 use crate::node_adapters::cnp::semantic::packet_complete_source::storage_error::StorageError;
 use std::rc::Rc;
 
+#[path = "retained_storage/deployment.rs"]
+mod deployment;
+
 #[derive(Clone, Copy)]
 enum PrebirthStoragePurpose<'a> {
     Code,
