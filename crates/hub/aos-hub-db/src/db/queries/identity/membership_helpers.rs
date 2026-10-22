@@ -3,6 +3,44 @@
 use super::*;
 
 impl Database {
+    /// Checks the actor's current effective role at a descendant scope.
+    pub(in crate::db) async fn principal_has_membership_rank(
+        &self,
+        principal: aos_hub_model::domain::Principal,
+        scope: &str,
+        required_rank: i64,
+    ) -> Result<bool> {
+        let present: i64 = self
+            .backend
+            .query_opt(
+                "SELECT EXISTS(
+                   SELECT 1 FROM memberships membership
+                   JOIN authorization_scope_ancestors ancestry
+                     ON ancestry.ancestor_scope_key = membership.scope_key
+                  WHERE ancestry.descendant_scope_key = ?3
+                    AND membership.principal_kind = ?1
+                    AND membership.principal_id = ?2
+                    AND CASE membership.role
+                          WHEN 'owner' THEN 4 WHEN 'admin' THEN 3
+                          WHEN 'maintainer' THEN 2 WHEN 'developer' THEN 1
+                          ELSE 0 END >= ?4
+                    AND ((?1 = 'user' AND EXISTS (
+                           SELECT 1 FROM users principal_user
+                            WHERE principal_user.id = ?2
+                              AND principal_user.deleted_at IS NULL))
+                      OR (?1 = 'service_account' AND EXISTS (
+                           SELECT 1 FROM service_accounts principal_account
+                           JOIN orgs principal_org ON principal_org.id = principal_account.org_id
+                            WHERE principal_account.id = ?2
+                              AND principal_org.deleted_at IS NULL))))",
+                &vals![principal.kind.as_str(), principal.id, scope, required_rank],
+            )
+            .await?
+            .context("membership-rank query returned no row")?
+            .get(0)?;
+        Ok(present == 1)
+    }
+
     /// Writes one already-validated membership role at a live scope.
     pub(in crate::db) async fn upsert_live_membership_role(
         &self,
@@ -11,12 +49,13 @@ impl Database {
         scope: &str,
         role: &str,
     ) -> Result<()> {
+        let incarnation_id = uuid::Uuid::new_v4().simple().to_string();
         let affected = self
             .backend
             .execute(
                 "INSERT INTO memberships
-                 (principal_kind, principal_id, scope_key, role, created_at)
-                 SELECT ?1, ?2, a.scope_key, ?4, ?5 FROM authorization_scopes a
+                 (principal_kind, principal_id, scope_key, role, created_at, incarnation_id)
+                 SELECT ?1, ?2, a.scope_key, ?4, ?5, ?6 FROM authorization_scopes a
                  LEFT JOIN orgs o ON o.id = a.org_id
                  WHERE a.scope_key = ?3 AND a.retired_at IS NULL
                    AND (a.org_id IS NULL OR o.deleted_at IS NULL)
@@ -28,7 +67,14 @@ impl Database {
                            WHERE s.id = ?2 AND owner_org.deleted_at IS NULL)))
                  ON CONFLICT(principal_kind, principal_id, scope_key)
                  DO UPDATE SET role = excluded.role",
-                &vals![principal_kind, principal_id, scope, role, unix_now()],
+                &vals![
+                    principal_kind,
+                    principal_id,
+                    scope,
+                    role,
+                    unix_now(),
+                    incarnation_id
+                ],
             )
             .await?;
         if affected != 1 {
@@ -110,6 +156,7 @@ impl Database {
             .map(invitation_record_from_row)
             .transpose()?;
         if let Some(record) = &record {
+            let membership_incarnation = uuid::Uuid::new_v4().simple().to_string();
             let mut statements = vec![
                 Statement::new(
                     "UPDATE invitations SET accepted_at = ?5, secret_enc = NULL
@@ -124,8 +171,9 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO memberships
-                           (principal_kind, principal_id, scope_key, role, created_at)
-                         SELECT 'user', ?1, i.scope_key, i.role, ?3
+                           (principal_kind, principal_id, scope_key, role, created_at,
+                            incarnation_id)
+                         SELECT 'user', ?1, i.scope_key, i.role, ?3, ?4
                            FROM invitations i
                           WHERE i.id = ?2 AND i.accepted_at = ?3
                             AND NOT EXISTS (
@@ -133,7 +181,7 @@ impl Database {
                                WHERE m.principal_kind = 'user'
                                  AND m.principal_id = ?1
                                  AND m.scope_key = i.scope_key)",
-                    vals![user_id, record.id, now],
+                    vals![user_id, record.id, now, membership_incarnation],
                 )
                 .expecting(1),
                 Statement::new(

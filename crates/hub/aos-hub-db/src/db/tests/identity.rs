@@ -695,6 +695,231 @@ async fn set_membership_role_owner_safe_blocks_last_owner_demotion() {
 }
 
 #[tokio::test]
+async fn reviewed_membership_replacement_preserves_incarnation_and_revokes_exactly() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("reviewed-membership", "Reviewed membership")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let actor_id = db
+        .create_user("owner@reviewed.example", None)
+        .await
+        .unwrap();
+    let target_id = db
+        .create_user("member@reviewed.example", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let initial = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(initial.incarnation_id.is_some());
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        Some(&initial),
+        Some("admin"),
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+
+    let replaced = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replaced.id, initial.id);
+    assert_eq!(replaced.incarnation_id, initial.incarnation_id);
+    assert_eq!(replaced.role, "admin");
+
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        Some(&replaced),
+        None,
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .is_none());
+
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        None,
+        Some("viewer"),
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+    let recreated = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recreated.role, "viewer");
+    assert_ne!(recreated.incarnation_id, initial.incarnation_id);
+}
+
+#[tokio::test]
+async fn reviewed_membership_rejects_role_change_and_recreated_incarnation() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("membership-baseline", "Membership baseline")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let actor_id = db
+        .create_user("owner@baseline.example", None)
+        .await
+        .unwrap();
+    let target_id = db
+        .create_user("member@baseline.example", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let viewer = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_membership_role_owner_safe("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&viewer),
+            None,
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        "owner"
+    );
+
+    let owner = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    db.revoke_membership_owner_safe("user", target_id, &scope)
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let recreated = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(recreated.incarnation_id, owner.incarnation_id);
+
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&owner),
+            Some("admin"),
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        recreated
+    );
+}
+
+#[tokio::test]
+async fn reviewed_membership_rechecks_actor_authority_in_the_write() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("membership-actor", "Membership actor")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let owner_id = db.create_user("owner@actor.example", None).await.unwrap();
+    let actor_id = db.create_user("admin@actor.example", None).await.unwrap();
+    let target_id = db.create_user("member@actor.example", None).await.unwrap();
+    db.grant_membership("user", owner_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "admin")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+    let baseline = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+
+    db.set_membership_role_owner_safe("user", actor_id, &scope, "viewer")
+        .await
+        .unwrap();
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&baseline),
+            Some("developer"),
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        baseline
+    );
+}
+
+#[tokio::test]
 async fn delete_user_re_checks_sole_ownership_in_tx() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
