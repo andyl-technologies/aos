@@ -221,7 +221,12 @@ nothing, alters no clock or layout, and retains the same guard and reservation
 custody. All eight deferred controls, 286 Host unit cases and 38 integration
 cases pass; the unit suite retains its one existing ignored case. Strict
 all-target/all-feature Clippy and focused formatting pass. Mandatory application
-and ABI qualification are pending for this follow-up.
+compilation passes at `1bljm3ns6wzafxigp2hpl391fr34f9cc`; all 5,332 committed
+Rust/TOML inputs from `77e1fdcff6` match its immutable source (proof SHA-256
+`9a2b39101d24fc3497f2cb1e1d15d97da5fd6c42a0c884d539fbf748e681ef02`).
+ABI conformance passes at `jcnck0hrq1w71nm565ni0zf9psb3948h`. Strict
+license-boundary qualification still stops at controller Clippy (909 library
+and 963 test errors); the canonical boundary assertions did not run.
 
 This is genuine local operation-record custody, not a native deferred-entry
 contract, stack loan or Module/Core authority. Actual Source ownership,
