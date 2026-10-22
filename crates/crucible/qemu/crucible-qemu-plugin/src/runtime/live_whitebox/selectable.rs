@@ -25,7 +25,7 @@ use crate::{
     SelectableCallbackCoordinate, SelectableCatalog, SelectableCatalogError,
     SelectableDoorbellOutcome, SelectableDoorbellServiceError, SelectableRegistrationService,
     SelectableReplyDisposition, SelectableReplyService, WhiteboxGuestInputCapability,
-    WhiteboxGuestInputWriter, handle_whitebox_selectable_callback,
+    WhiteboxGuestInputWriter,
 };
 
 const _: () =
@@ -36,6 +36,22 @@ pub(super) fn is_message(payload: &[u8]) -> bool {
     payload
         .get(..2)
         .is_some_and(|version| version == 1_u16.to_le_bytes())
+}
+
+/// Decodes the retained trap snapshot before any selectable service effect.
+///
+/// # Errors
+/// Preserves snapshot, callback-coordinate and protocol validation refusals.
+pub(super) fn prepare_trap_snapshot(
+    doorbell: &PluginWhiteboxDoorbell,
+    event: WhiteboxDoorbellTrapEvent,
+    trap_tick_ps: u64,
+    payload: &[u8],
+) -> Result<crate::whitebox_doorbell::PreparedSelectableTrap, LiveWhiteboxError> {
+    let coordinate =
+        SelectableCallbackCoordinate::new(event.current_icount(), trap_tick_ps, event.vcpu_index());
+    crate::whitebox_doorbell::PreparedSelectableTrap::decode(doorbell, event, coordinate, payload)
+        .map_err(callback_error)
 }
 
 /// Preallocated live and post-VMState catalog incarnations.
@@ -300,29 +316,15 @@ impl LiveSelectableState {
     /// Dispatches one selectable message through the shared safe callback core.
     pub(super) fn handle(
         &mut self,
-        doorbell: &PluginWhiteboxDoorbell,
+        prepared: crate::whitebox_doorbell::PreparedSelectableTrap,
         apis: LiveWhiteboxApis,
-        reader: &mut LiveGuestMemoryReader,
         event: WhiteboxDoorbellTrapEvent,
-        trap_tick_ps: u64,
     ) -> Result<SelectableDoorbellOutcome, LiveWhiteboxError> {
         let capability = self.capability;
         let mut writer = app_random::LiveGuestMemoryWriter::new(apis, event.current_icount());
-        let coordinate = SelectableCallbackCoordinate::new(
-            event.current_icount(),
-            trap_tick_ps,
-            event.vcpu_index(),
-        );
-        handle_whitebox_selectable_callback(
-            doorbell,
-            &capability,
-            reader,
-            self,
-            &mut writer,
-            event,
-            coordinate,
-        )
-        .map_err(callback_error)
+        prepared
+            .serve(&capability, self, &mut writer)
+            .map_err(callback_error)
     }
 
     /// Freezes the exact setup catalog at the guest readiness marker.

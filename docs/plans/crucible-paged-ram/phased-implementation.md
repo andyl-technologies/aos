@@ -589,6 +589,32 @@ execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
 
+#### Selectable decoding before pending service
+
+The selectable path now prepares the complete declaration or request from the
+retained initial trap snapshot. The prepared value owns its decoded fields and
+retains the immutable doorbell configuration, event and coordinate. It borrows
+no encoded bytes. The dispatcher releases the native array before catalog or
+selection service, including a pending request that defers VMStop. The existing
+reader-based API uses the same preparation and releases its encoded buffer
+before service. This removes the final selectable reread and its encoded Vec;
+owned declaration/request fields and existing reply buffers remain.
+
+The existing pending-request control drops the encoded snapshot before service,
+checks that preparation performs no service/write effect, then verifies the
+same pending request and unchanged reservation. Existing refusal controls add
+independent mode, exact-length and coordinate precedence expectations. The
+initial compile found a reference to another module's private error adapter;
+preparation now uses the existing selectable live adapter. All 129 white-box
+controls, compilation of every plugin test target and engineering hygiene pass.
+Mandatory application compilation, the unchanged 327-case supervision gate and
+ABI conformance are being collected. No new test bindings or Native authority
+are claimed.
+
+Decoded request storage, reply encoding/padding, diagnostics, the initial native
+array, complete callback funding and genuine Module Quantum/cleanup issuance
+remain open. Snapshot preparation supplies none of those owners.
+
 #### Ordinary marker service from the retained trap snapshot
 
 The live ordinary marker path now decodes the retained initial guest snapshot.
@@ -605,8 +631,12 @@ value while guest memory contains a later mutation, with unchanged recorded
 coordinates and one reader call. The malformed-frame control checks the live
 snapshot entry against its independent typed-error and diagnostic oracle.
 All 129 white-box controls, compilation of every plugin test target and
-engineering hygiene pass. Mandatory application compilation, the unchanged
-327-case supervision gate and ABI conformance are being collected.
+engineering hygiene pass. Mandatory application compilation passes at
+`1fk9f14swimw8wyx4a6w4mqpzjkw7l9s`. The unchanged 327-case supervision gate
+and ABI conformance are being collected. All 5,312 committed Rust/TOML files at
+`b2ae976781cfe7043614e1790ee4aeedf6446602` match immutable application source
+`2mv8znji1i1h2n0kv91d2i74himbkg7v`; the comparison record has SHA-256
+`99394a17e530ccfd4c4dc1c0b89f757ccf9daa0c26f9359f92d1c045eecde540`.
 
 The returned marker still owns its raw payload and variable-length decoded
 fields. Selectable service still rereads its request. The initial native array,
@@ -633,8 +663,9 @@ those call sites now explicitly borrow the frame. All 129 white-box controls,
 all codec and golden-vector integration controls, compilation of every
 protocol/plugin test target and engineering hygiene pass against the corrected
 source. Mandatory application compilation passes at
-`k6dazcm1n34zb7fv1bqsdshkh2dbxna3`. ABI conformance and the unchanged
-327-case supervision gate are being collected against that final source.
+`k6dazcm1n34zb7fv1bqsdshkh2dbxna3`. ABI conformance passes at
+`z02p20m7asw8paqp7xh9n9w1sr1svzwm`. The unchanged 327-case supervision gate
+is being collected against that final source.
 All 5,312 committed Rust/TOML files at
 `3259e4797771b3a039a56459f28a3d13f6332015` match immutable application source
 `m4jih9wff12azk5vn4w9nrp9zj89ph6x`; the comparison record has SHA-256
@@ -667,7 +698,8 @@ target pass. Mandatory application compilation passes at
 `1d467f1233e550c66102e1848ce84e1bf1573499` match immutable application source
 `1a57qp7wg7l2gx99ralx182h8h06cdgi`; the comparison record has SHA-256
 `f2bb9b42c4b6736aa730a4733a44f323e25cab1cc0a536a03258732894d165ea`.
-The exact 327-case supervision gate is being collected. The 444 bindings comprise
+All 327 exact supervision cases pass at `glac900yjv19yncg14ismn272hsvd203`,
+with nine actual test groups. The 444 bindings comprise
 425 component cases and nineteen native cases; 148 of 243 requirements remain uncovered and none fully qualified.
 This borrowed view issues no Native authority or complete operation payer.
 

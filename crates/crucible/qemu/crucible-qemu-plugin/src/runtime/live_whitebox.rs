@@ -673,13 +673,20 @@ impl LiveWhiteboxState {
         } else if app_random::is_request(payload) {
             self.handle_app_random(payload, event, raw_icount, trap_tick_ps, vcpu_index)
         } else if selectable::is_message(payload) {
-            drop(buffer);
             let selectable = self
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            let outcome =
-                selectable.handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)?;
+            let prepared = selectable::prepare_trap_snapshot(
+                &self.doorbell,
+                event,
+                trap_tick_ps,
+                payload,
+            )?;
+            // Pending selection can defer VMStop. Release the native snapshot
+            // after complete decode and before entering that service.
+            drop(buffer);
+            let outcome = selectable.handle(prepared, self.apis, event)?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>

@@ -48,6 +48,7 @@ mod marker_error;
 pub use marker_error::WhiteboxMarkerSinkError;
 
 mod selectable;
+pub(crate) use selectable::PreparedSelectableTrap;
 pub use selectable::{
     CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
     SELECTABLE_CATALOG_HARD_MAX_REQUESTS, SelectableCallbackCoordinate, SelectableCatalog,

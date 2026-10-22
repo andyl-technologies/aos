@@ -17,6 +17,9 @@ use super::{
     read_doorbell_payload,
 };
 
+mod prepared;
+pub(crate) use prepared::PreparedSelectableTrap;
+
 mod catalog;
 pub use catalog::{
     CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
@@ -151,65 +154,9 @@ where
 {
     let payload = read_doorbell_payload(doorbell, reader, event)
         .map_err(SelectableDoorbellError::Doorbell)?;
-    if coordinate.raw_icount() != event.current_icount()
-        || coordinate.vcpu_index() != event.vcpu_index()
-    {
-        return Err(SelectableDoorbellError::CoordinateMismatch);
-    }
-    match decode_selectable_message_kind(&payload)? {
-        SelectableMessageKind::Register => {
-            let registration = SelectableRegister::decode(&payload)?;
-            service.register_selectable(&registration, coordinate)?;
-            Ok(SelectableDoorbellOutcome::Registered {
-                registration,
-                coordinate,
-            })
-        }
-        SelectableMessageKind::Request => {
-            let request = SelectionRequest::decode(&payload)?;
-            let disposition =
-                service.serve_selection(&request, coordinate, event.payload_range())?;
-            let SelectableReplyDisposition::Reply(reply) = disposition else {
-                return Ok(SelectableDoorbellOutcome::Pending {
-                    request,
-                    coordinate,
-                });
-            };
-            if reply.sequence() != request.sequence() {
-                return Err(SelectableDoorbellError::ReplySequenceMismatch {
-                    expected: request.sequence(),
-                    actual: reply.sequence(),
-                });
-            }
-            let reply_bytes = reply.encode()?;
-            if reply_bytes.len() > request.reply_capacity() {
-                return Err(SelectableDoorbellError::ReplyExceedsReservation {
-                    reply_len: reply_bytes.len(),
-                    capacity: request.reply_capacity(),
-                });
-            }
-            let mut full_buffer = vec![0; request.reply_capacity()];
-            full_buffer[..reply_bytes.len()].copy_from_slice(&reply_bytes);
-            let input =
-                WhiteboxGuestInput::new(event.current_icount(), event.payload_range(), full_buffer);
-            let injection = match doorbell
-                .inject_guest_input(capability, writer, event.current_icount(), &input)
-                .map_err(SelectableDoorbellError::Doorbell)?
-            {
-                WhiteboxGuestInputOutcome::Delivered(injection) => injection,
-                WhiteboxGuestInputOutcome::NotReady { delivery_icount } => {
-                    return Err(SelectableDoorbellError::ReplyNotDelivered { delivery_icount });
-                }
-            };
-            Ok(SelectableDoorbellOutcome::Replied {
-                request,
-                reply,
-                coordinate,
-                injection,
-            })
-        }
-        SelectableMessageKind::Reply => Err(SelectableDoorbellError::GuestSuppliedReply),
-    }
+    let prepared = PreparedSelectableTrap::decode(doorbell, event, coordinate, &payload)?;
+    drop(payload);
+    prepared.serve(capability, service, writer)
 }
 
 /// Result of one successfully serviced selectable doorbell.

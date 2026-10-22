@@ -229,19 +229,21 @@ fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
     let doorbell = doorbell();
     let request = request(9, 160)?;
     let request_bytes = request.encode()?;
-    let mut reader = Memory::new(request_bytes.clone());
+    let guest_memory = request_bytes.clone();
     let mut writer = Memory::new(Vec::new());
     let mut service = PendingService { request: None };
 
-    let outcome = handle_whitebox_selectable_callback(
+    let prepared = PreparedSelectableTrap::decode(
         &doorbell,
-        &capability(&doorbell)?,
-        &mut reader,
-        &mut service,
-        &mut writer,
         event(request_bytes.len()),
         SelectableCallbackCoordinate::new(77, 3_850, 2),
+        &request_bytes,
     )?;
+    drop(request_bytes);
+    assert!(service.request.is_none());
+    assert!(writer.writes.is_empty());
+
+    let outcome = prepared.serve(&capability(&doorbell)?, &mut service, &mut writer)?;
 
     assert_eq!(
         outcome,
@@ -252,9 +254,13 @@ fn pending_request_keeps_the_zero_filled_guest_reservation_untouched()
     );
     assert_eq!(
         service.request,
-        Some((request, SelectableCallbackCoordinate::new(77, (77) * 50, 2)))
+        Some((
+            request.clone(),
+            SelectableCallbackCoordinate::new(77, (77) * 50, 2)
+        ))
     );
     assert!(writer.writes.is_empty());
+    assert_eq!(guest_memory, request.encode()?);
     Ok(())
 }
 
@@ -263,6 +269,29 @@ fn callback_rejects_guest_reply_stale_service_reply_and_oversized_value()
 -> Result<(), Box<dyn std::error::Error>> {
     let doorbell = doorbell();
     let capability = capability(&doorbell)?;
+    let wrong_coordinate = SelectableCallbackCoordinate::new(78, 3_850, 2);
+    assert_eq!(
+        PreparedSelectableTrap::decode(&doorbell, event(2), wrong_coordinate, &[0]).map(|_| ()),
+        Err(SelectableDoorbellError::Doorbell(
+            WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: 2,
+                actual_len: 1,
+            },
+        )),
+    );
+    assert_eq!(
+        PreparedSelectableTrap::decode(&doorbell, event(1), wrong_coordinate, &[0]).map(|_| ()),
+        Err(SelectableDoorbellError::CoordinateMismatch),
+    );
+    let disabled =
+        PluginWhiteboxDoorbell::from_abi(PluginSwitch::Off, WHITEBOX_DOORBELL_X86_64_ABI, 0);
+    assert_eq!(
+        PreparedSelectableTrap::decode(&disabled, event(2), wrong_coordinate, &[0]).map(|_| ()),
+        Err(SelectableDoorbellError::Doorbell(
+            WhiteboxDoorbellError::TrapWhileDisabled,
+        )),
+    );
+
     let guest_reply = reply(1, 1)?.encode()?;
     let mut reader = Memory::new(guest_reply.clone());
     let mut writer = Memory::new(Vec::new());
