@@ -393,6 +393,13 @@ async fn configured_read_cache_preserves_original_authority_and_refuses_writes()
         .with_read_cache(MissingCache::new(Arc::clone(&calls)));
     let before = std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?;
 
+    let listed = repository
+        .list_refs("refs/**", fixture.authority.token(), "sdk")
+        .await?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].name(), MAIN);
+    assert_eq!(listed[0].record().commit, commit);
+
     let contents = repository
         .read_file(
             &View::parse(MAIN)?,

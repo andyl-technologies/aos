@@ -8,7 +8,8 @@
 
 use super::{
     ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, IdentityPrefix,
-    RefCapability, RefCasOutcome, RefLogAppendOutcome, RefStore, StoreErrorKind, StoreFailure,
+    RefCapability, RefCasOutcome, RefInventory, RefLogAppendOutcome, RefStore, StoreErrorKind,
+    StoreFailure,
 };
 use crate::bucket::BucketBinding;
 use terrane_format::{
@@ -166,6 +167,19 @@ where
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {
         self.authority.ref_watch(name, from_seq).await
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<L, R> RefInventory for ReadOnlyStore<L, R>
+where
+    L: BucketBinding,
+    R: RefInventory + BucketBinding,
+{
+    async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
+        // Content caches cannot establish a complete set of authoritative refs.
+        self.authority.ref_names().await
     }
 }
 

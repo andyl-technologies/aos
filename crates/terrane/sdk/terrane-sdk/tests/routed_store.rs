@@ -25,7 +25,8 @@ use terrane_format::{
 use terrane_sdk::store::{
     ByteRange, Capabilities, CapabilityReport, ChunkPosition, ChunkUpload, Clock, ContentStore,
     ContentUpload, CorruptSubject, Durability, IdentityPrefix, RangeCapability, RefCapability,
-    RefCasOutcome, RefLogAppendOutcome, RefStore, RefWatch, StoreErrorKind, StoreFailure,
+    RefCasOutcome, RefInventory, RefLogAppendOutcome, RefStore, RefWatch, StoreErrorKind,
+    StoreFailure,
     routed::{Routed, RoutingPolicy},
 };
 
@@ -72,6 +73,7 @@ enum Reply {
 
 #[derive(Debug, PartialEq)]
 enum RefCall {
+    Names,
     Get(String),
     Cas(String, Box<(Option<RefRecord>, RefRecord)>),
     Append(String, u64, Box<RefLogRecord>),
@@ -301,6 +303,15 @@ impl RefStore for Backend {
     }
 }
 
+#[async_trait::async_trait]
+impl RefInventory for Backend {
+    async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
+        self.calls.lock().unwrap().refs.push(RefCall::Names);
+        self.response(&body()).await?;
+        Ok(vec!["refs/heads/routing-candidate".into()])
+    }
+}
+
 fn policy() -> RoutingPolicy {
     RoutingPolicy {
         read_budget: Duration::from_millis(100),
@@ -510,6 +521,7 @@ async fn denial_is_terminal_and_upload_and_ref_operations_reach_only_authority()
     let mut watch = routed.ref_watch(name, 19).await.unwrap();
     assert_eq!(watch.next().await.unwrap(), Some(log.clone()));
     assert_eq!(watch.next().await.unwrap(), None);
+    assert_eq!(routed.ref_names().await.unwrap(), [name]);
     assert_eq!(
         authority.calls.lock().unwrap().refs,
         vec![
@@ -518,8 +530,66 @@ async fn denial_is_terminal_and_upload_and_ref_operations_reach_only_authority()
             RefCall::Append(name.into(), 23, Box::new(log)),
             RefCall::Read(name.into(), 17),
             RefCall::Watch(name.into(), 19),
+            RefCall::Names,
         ]
     );
+    assert!(cache.calls.lock().unwrap().refs.is_empty());
+}
+
+#[tokio::test]
+async fn complete_ref_inventory_uses_only_authority_and_preserves_failures() {
+    use terrane_sdk::store::read_only::ReadOnlyStore;
+
+    for reply in [Reply::Unavailable, Reply::Denied] {
+        let cache = Backend::new(Reply::Hit, RefCapability::None);
+        let mut authority = Backend::new(reply, RefCapability::Cas);
+        authority.retry_after = Some(Duration::from_secs(7));
+        let routed = route(
+            vec![cache.clone()],
+            authority.clone(),
+            1,
+            TestClock::default(),
+        );
+        let read_only = ReadOnlyStore::new(cache.clone(), authority.clone());
+
+        for error in [
+            routed.ref_names().await.unwrap_err(),
+            read_only.ref_names().await.unwrap_err(),
+        ] {
+            match reply {
+                Reply::Unavailable => assert_eq!(
+                    error.kind(),
+                    &StoreErrorKind::Unavailable {
+                        retry_after: Some(Duration::from_secs(7)),
+                    }
+                ),
+                Reply::Denied => assert!(matches!(error.kind(), StoreErrorKind::Denied { .. })),
+                _ => unreachable!(),
+            }
+        }
+
+        assert_eq!(
+            authority.calls.lock().unwrap().refs,
+            [RefCall::Names, RefCall::Names]
+        );
+        let cached_calls = cache.calls.lock().unwrap();
+        assert!(cached_calls.refs.is_empty());
+        assert!(cached_calls.gets.is_empty());
+        assert!(cached_calls.has.is_empty());
+    }
+
+    let cache = Backend::new(Reply::Hit, RefCapability::None);
+    let routed = Routed::cache_only(
+        vec![cache.clone()],
+        Locality::default(),
+        TestClock::default(),
+        policy(),
+    )
+    .unwrap();
+    assert!(matches!(
+        routed.ref_names().await.unwrap_err().kind(),
+        StoreErrorKind::Unsupported
+    ));
     assert!(cache.calls.lock().unwrap().refs.is_empty());
 }
 

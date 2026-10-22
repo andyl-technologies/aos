@@ -71,6 +71,20 @@ async fn canonical_patterns_preserve_order_whole_heads_and_reopened_inventory() 
             .await?,
         listed
     );
+
+    let repository = fixture
+        .repository
+        .with_read_driver(|original| original.clone());
+    assert_eq!(
+        repository
+            .list_refs("refs/**", fixture.authority.token(), "sdk")
+            .await?,
+        listed
+    );
+    assert!(matches!(
+        repository.list_refs("refs/tags/**", b"invalid", "sdk").await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. })
+    ));
     Ok(())
 }
 

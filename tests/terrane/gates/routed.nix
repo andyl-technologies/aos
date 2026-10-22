@@ -29,7 +29,7 @@
             import sys
 
             review = json.loads(pathlib.Path(sys.argv[1]).read_text())
-            if review["source"] != sys.argv[2] or len(review["executed_cases"]) != 12:
+            if review["source"] != sys.argv[2] or len(review["executed_cases"]) != 13:
                 raise SystemExit("routed gate source or execution inventory mismatch")
             PY
             mkdir -p "$out/nix-support"

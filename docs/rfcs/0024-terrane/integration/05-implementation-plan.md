@@ -12585,3 +12585,36 @@ than executable bytes. Required application-target compilation at `73797c43f9`
 passes in 1,552.64 seconds, independently matching 7,948 immutable source files
 and 184 compiler artifact records across 59 packages. This is compilation
 evidence only; its output does not retain application executable bytes.
+
+
+#### Complete ref inventories through content composition
+
+Routed stores and read-only repository content adapters now preserve the
+optional complete `RefInventory` interface from their actual retained reference
+authority. Enumeration never consults a content cache, follows a read circuit,
+retries a different child or converts an authority failure into an empty list.
+A route without an authority refuses enumeration. Cache types need no reference
+interface. Guarded listing still independently authorizes each current record,
+including after a repository is wrapped with a complete content driver.
+
+All thirteen routing contract cases and five native guarded-listing cases pass
+locally, including exact authority calls, preserved retry hints and denials,
+cache-only refusal and whole signed heads through a wrapped reopened repository.
+The actual configured missing-cache and complete-driver cases also pass,
+retaining native Original authority and refusing writes or driver bypass.
+All twenty cases remain within the existing thirty-second selector bound.
+The owning surface-interface gate now executes both configured compositions.
+Strict SDK/Linux/CLI all-target Clippy, native portable and actual WebAssembly
+checking, Rust/Nix formatting and evaluation pass. Frozen owning qualification
+and required application compilation remain pending. No task is accepted.
+
+Frozen index-presence integration at `2cd2940a91` passes all seven cases in
+146.36 seconds; independent review matches 7,958 immutable source files and
+5,251 bound inputs. Its output retains compiler and execution records rather
+than executable bytes. Required application-target compilation at `1d46c92b88`
+passes in 1,496.03 seconds, matching 7,953 immutable source files and 184 compiler
+artifact records across 59 packages, without retaining application executables.
+The older full feature matrix at `aa150620b5` finishes unsuccessfully: 1,228
+SDK cases pass and one post-Done foreign-view cold fork fails with `Expired`.
+That failed baseline is retained; focused newer results do not replace complete
+current aggregate qualification or change the original operation deadlines.

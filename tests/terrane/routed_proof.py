@@ -20,6 +20,7 @@ CASES = [
     "whole_request_deadline_never_attempts_a_later_child",
     "membership_queries_only_unresolved_identities_without_inventing_absence",
     "denial_is_terminal_and_upload_and_ref_operations_reach_only_authority",
+    "complete_ref_inventory_uses_only_authority_and_preserves_failures",
     "rejects_two_authorities_missing_authority_and_invalid_bounds",
     "exhausted_reads_preserve_shortest_reported_retry_without_claiming_absence",
     "authority_failure_and_pending_upload_never_acknowledge_or_write_a_cache",

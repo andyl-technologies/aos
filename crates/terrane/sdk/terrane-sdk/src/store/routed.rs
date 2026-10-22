@@ -9,8 +9,8 @@ mod deadline;
 
 use super::{
     ByteRange, Capabilities, CapabilityReport, Clock, ContentStore, ContentUpload, IdentityPrefix,
-    InvalidReason, RangeCapability, RefCapability, RefCasOutcome, RefLogAppendOutcome, RefStore,
-    StoreErrorKind, StoreFailure,
+    InvalidReason, RangeCapability, RefCapability, RefCasOutcome, RefInventory,
+    RefLogAppendOutcome, RefStore, StoreErrorKind, StoreFailure,
 };
 use crate::{bucket::BucketBinding, host::cache::CircuitBreaker};
 use std::{
@@ -434,6 +434,20 @@ where
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {
         self.authority()?.ref_watch(name, from_seq).await
+    }
+}
+
+#[cfg_attr(feature = "send", async_trait::async_trait)]
+#[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
+impl<C, A, K> RefInventory for Routed<C, A, K>
+where
+    C: ContentStore + BucketBinding,
+    A: ContentStore + RefInventory + BucketBinding,
+    K: Clock + BucketBinding,
+{
+    async fn ref_names(&self) -> Result<Vec<String>, StoreFailure> {
+        // Read circuits and content fallback never select a ref authority.
+        self.authority()?.ref_names().await
     }
 }
 
