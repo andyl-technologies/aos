@@ -31,27 +31,17 @@
     cargoNextest = true;
     cargoTestFlags = "${packageFlags} --lib";
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     runtimeDeps = [];
 
     # Pin the two guest executables before Nextest's default check phase.
-    postBuild = ''
-      mkdir detached-root-fixtures
-      for crate in aos_sandbox_source_provider_security aos_sandbox_source_provider; do
-        count=0
-        for candidate in target/debug/deps/"$crate"-*; do
-          if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-            install -m 0755 "$candidate" "detached-root-fixtures/$crate"
-            count=$((count + 1))
-          fi
-        done
-        if [ "$count" -ne 1 ]; then
-          echo "expected exactly one $crate unit-test executable, found $count" >&2
-          exit 1
-        fi
-      done
-    '';
+    postBuild = lib.concatMapStringsSep "\n" (crate:
+      import ../fleet/_cargo-libtest-artifact.nix {
+        inherit lib pkgs crate;
+        destination = "detached-root-fixtures/${builtins.replaceStrings ["-"] ["_"] crate}";
+      })
+    ["aos-sandbox-source-provider-security" "aos-sandbox-source-provider"];
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 detached-root-fixtures/* "$out/bin/"

@@ -16,19 +16,16 @@
     ];
     doCheck = false;
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
+    postBuild = import ../fleet/_cargo-libtest-artifact.nix {
+      inherit lib pkgs;
+      crate = "aos-sandbox-guest";
+      destination = "attach-profile-tests";
+    };
     postInstall = ''
-      mkdir -p "$out/bin"
-      count=0
-      for candidate in target/debug/deps/aos_sandbox_guest-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" "$out/bin/attach-profile-tests"
-          count=$((count + 1))
-        fi
-      done
-      test "$count" -eq 1
+      install -D -m 0755 attach-profile-tests "$out/bin/attach-profile-tests"
     '';
   };
 in
