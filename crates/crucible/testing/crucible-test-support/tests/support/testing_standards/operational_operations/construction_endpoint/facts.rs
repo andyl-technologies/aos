@@ -129,11 +129,10 @@ pub(super) const RUNTIME: Companion = Companion {
             r#"pub(super) fn retry_retained_debug_construction(
         &mut self,
     ) -> Result<(), ProductionVmConstructionCleanupError> {
-        let retained = self.retained_debug_construction.get_mut().map_err(|_| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("debug construction custody is poisoned"),
-            }
-        })?;
+        let retained = self
+            .retained_debug_construction
+            .get_mut()
+            .map_err(|_| ProductionVmConstructionCleanupError::Poisoned)?;
         if let Some(construction) = retained.as_mut() {
             construction.retry()?;
         }

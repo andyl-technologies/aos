@@ -291,7 +291,10 @@ fn additional_original_cause_and_poison_never_clear_the_existing_owner() {
         }))
         .is_err()
     );
-    assert!(lifecycle.retry_retained_debug_construction().is_err());
+    assert!(matches!(
+        lifecycle.retry_retained_debug_construction(),
+        Err(ProductionVmConstructionCleanupError::Poisoned)
+    ));
     first_probe.assert_open();
     additional_probe.assert_open();
     let retained = match lifecycle.retained_debug_construction.get_mut() {

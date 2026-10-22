@@ -59,7 +59,14 @@ pub(super) const OCCUPIED_SUCCESS: &str = r#"let occupied_body = destination.tak
     assert_eq!(occupied_probe.drops.load(Ordering::SeqCst), 1);"#;
 
 pub(super) const CASES: &[(&str, usize)] = &[
-    (REFUSAL_ASSERTION, 5),
+    (REFUSAL_ASSERTION, 4),
+    (
+        r#"assert!(matches!(
+        lifecycle.retry_retained_debug_construction(),
+        Err(ProductionVmConstructionCleanupError::Poisoned)
+    ));"#,
+        1,
+    ),
     (BODY_OBSERVATIONS, 1),
     (PAIR_OBSERVATIONS, 1),
     (RECEIPT_OBSERVATIONS, 1),
