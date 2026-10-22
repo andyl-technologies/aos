@@ -151,6 +151,18 @@ impl Attempt {
         self.authority.as_ref().ok_or_else(refused)
     }
 
+    #[cfg(test)]
+    pub(in super::super::super) fn retained_authority_fixture_data(
+        &self,
+    ) -> Option<&ConnectionAuthority> {
+        self.authority.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(in super::super::super) fn admission_failure_fixture_data(&self) -> Option<&ProviderError> {
+        self.admission_failure.as_ref()
+    }
+
     /// Revokes selected registration while retaining every initialized owner.
     ///
     /// # Errors

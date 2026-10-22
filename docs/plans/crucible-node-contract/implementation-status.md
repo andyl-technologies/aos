@@ -2126,10 +2126,39 @@ it executes no tests. All 254 owned Rust/Cargo inputs match that committed tree
 and the exact captured application source. No new VM or configured Engine/Daemon
 runtime run is claimed for this constructor component.
 
-The original root still does not invoke SDK admission. A pre-read physical phase,
-separately admitted complete original guards/census and its genuine enclosing
-Source/Birth producer must join this constructor before invocation. This change
+At this checkpoint the original root does not invoke SDK admission. A pre-read
+physical phase, separately admitted complete original guards/census and its genuine
+enclosing Source/Birth producer must join this constructor before invocation. This change
 produces no opaque Initial/Recipe, native policy, publication, ACK or model.
+
+## Original root SDK admission transition
+
+The original raw bootstrap now retains a fixed SDK admission occurrence before
+its first private read. It spends before quote/guards, stores the independent
+complete constructor row before allocation, and borrows the same original
+request/result, request/response envelopes, inherited stream, immutable launch,
+selection and nonrenewing cut for the concrete native verifier. Actual SDK lease
+or failure custody stays in the registrar before any terminal guard or census.
+A later refusal contains a successful lease while retaining its actual fields.
+Only Copy DATA inspection of that same completed lease can leave the guarded
+loan; this transition publishes no response, ACK, policy, model or opaque grant.
+
+The complete native constructor row includes sequential original guard/census
+windows and joins both independent initial formulas. Prepare/escrow limits remain
+unchanged. One inherited-socket control passes all seventeen cases in 30.52s:
+both program families, valid unsorted version advertisement, optional feature and
+larger receiving limits, absent response, refusal/expiry at each admission
+boundary, lease inspection refusal/expiry and cut substitution. It checks physical
+input identity, actual census growth, once behavior and retained contained leases.
+The inherited inert manifest's unsorted extension advertisement exposed a real
+SDK validation refusal. Successful controls now supply a valid ordered fixture;
+a separate negative control keeps the malformed input and its original typed
+reason. Production validators and accepted grammar are unchanged.
+
+Full qualification of this transition is pending. The admissions in these controls
+are model funding callbacks; they do not grant genuine Source/Birth credit. The
+genuine enclosing producer, opaque Initial/Recipe, Native18 policy, publication,
+ACK, model adoption and full RFC acceptance remain unfinished.
 
 ## Original launch custody and shared startup geometry
 

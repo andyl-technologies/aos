@@ -92,6 +92,13 @@ pub(in crate::reference_packet::service) use hello_envelope::{
     counter_scratch_data as hello_envelope_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_admission.rs"]
+mod hello_admission;
+pub(in crate::reference_packet::service) use hello_admission::{
+    construction_data as hello_admission_construction_data,
+    counter_scratch_data as hello_admission_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_response.rs"]
 mod hello_response;
 pub(in crate::reference_packet::service) use hello_response::{
@@ -203,6 +210,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     hello_result: hello_result::Attempt,
     hello_envelope: hello_envelope::Attempt,
     hello_response: hello_response::Attempt,
+    hello_admission: hello_admission::Attempt,
     hello_literal: Option<crate::native_hello::OriginalNativeHelloLiteral>,
     hello_literal_row: Option<[usize; 3]>,
     hello_literal_started: bool,
@@ -271,6 +279,7 @@ impl OriginalImport18RawBootstrap {
             hello_result: hello_result::Attempt::empty_data(),
             hello_envelope: hello_envelope::Attempt::empty_data(),
             hello_response: hello_response::Attempt::empty_data(),
+            hello_admission: hello_admission::Attempt::empty_data(),
             hello_literal: None,
             hello_literal_row: None,
             hello_literal_started: false,
@@ -486,6 +495,7 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<hello_result::Attempt>()
         + size_of::<hello_envelope::Attempt>()
         + size_of::<hello_response::Attempt>()
+        + size_of::<hello_admission::Attempt>()
         + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + channel_custody::counter_scratch_data()

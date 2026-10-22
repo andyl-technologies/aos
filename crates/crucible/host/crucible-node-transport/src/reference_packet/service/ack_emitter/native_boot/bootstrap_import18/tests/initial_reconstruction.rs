@@ -37,6 +37,8 @@ mod hello_registrar;
 #[path = "initial_reconstruction/hello_sdk_request.rs"]
 mod hello_sdk_request;
 
+#[path = "initial_reconstruction/hello_admission.rs"]
+mod hello_admission;
 #[path = "initial_reconstruction/hello_envelope.rs"]
 mod hello_envelope;
 #[path = "initial_reconstruction/hello_response.rs"]
@@ -132,6 +134,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_envelope_reactive"
             | "initial_hello_response_reactive"
             | "initial_hello_verifier_reactive"
+            | "initial_hello_admission_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -142,8 +145,12 @@ fn operands(case: &str) -> [Value; 3] {
         || case.starts_with("initial_hello_envelope_")
         || case.starts_with("initial_hello_response_")
         || case.starts_with("initial_hello_verifier_")
+        || case.starts_with("initial_hello_admission_")
     {
         hello_registrar::prepare_selected(case, &mut selected);
+    }
+    if case.starts_with("initial_hello_admission_") {
+        hello_admission::prepare_selected(case, &mut selected);
     }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
@@ -400,6 +407,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_admission_") {
+        hello_admission::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_verifier_") {
