@@ -136,6 +136,7 @@ impl HostDeferredCleanupControl {
     /// Refuses an unready or previously attempted reservation, invalid policy,
     /// an ended containing invocation, uncertain ownership, or the first post.
     /// A born-negative operation remains retained and observable by identity.
+    /// Later entry calls report the retained first refusal without reentry.
     pub fn enter(&mut self) -> Result<&HostOperationGuard, HostSupervisionError> {
         self.enter_with(|| {})
     }
@@ -144,6 +145,9 @@ impl HostDeferredCleanupControl {
         &mut self,
         after_birth: impl FnOnce(),
     ) -> Result<&HostOperationGuard, HostSupervisionError> {
+        if let Some(first) = self.first_refusal {
+            return Err(first);
+        }
         if !self.ready || self.entry_attempted || !self.reservation_held {
             return Err(HostSupervisionError::Unavailable);
         }

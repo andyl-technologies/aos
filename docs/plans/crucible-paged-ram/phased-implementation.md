@@ -212,6 +212,17 @@ registered separately in ABI conformance and are not added to that supervision
 count. Strict license-boundary qualification stops at controller Clippy (909
 library and 963 test errors); the canonical boundary assertions did not run.
 
+A follow-up preserves the same actual first refusal when entry is requested
+again after a negative reservation or born Cleanup post. Two strengthened
+existing controls first fail with generic `Unavailable` replacing the actual
+cancellation or Cleanup deadline cause; both pass after entry reports its
+retained refusal before checking repeat-entry eligibility. The change enters
+nothing, alters no clock or layout, and retains the same guard and reservation
+custody. All eight deferred controls, 286 Host unit cases and 38 integration
+cases pass; the unit suite retains its one existing ignored case. Strict
+all-target/all-feature Clippy and focused formatting pass. Mandatory application
+and ABI qualification are pending for this follow-up.
+
 This is genuine local operation-record custody, not a native deferred-entry
 contract, stack loan or Module/Core authority. Actual Source ownership,
 endpoint-bound publication and independently current native entry/return

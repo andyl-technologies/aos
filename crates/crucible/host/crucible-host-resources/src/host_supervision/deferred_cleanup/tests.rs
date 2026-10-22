@@ -117,7 +117,7 @@ fn a_negative_quantum_post_retains_the_unready_reservation_and_cannot_enter() {
     let mut cleanup = output.unwrap();
     assert_eq!(cleanup.first_refusal(), post.err());
     assert_eq!(supervisor.lock().unwrap().reserved_controls, 1);
-    assert!(cleanup.enter().is_err());
+    assert_eq!(cleanup.enter().unwrap_err(), post.unwrap_err());
     assert_eq!(cleanup.entered_operation_id(), None);
     drop(cleanup);
     assert_eq!(supervisor.lock().unwrap().reserved_controls, 0);
@@ -150,7 +150,7 @@ fn a_born_negative_cleanup_retains_its_guard_and_first_expiry_without_reentry() 
         .update_budgets(1, HostOperationBudgets::default())
         .unwrap();
     assert_eq!(cleanup.current().unwrap_err(), first);
-    assert!(cleanup.enter().is_err());
+    assert_eq!(cleanup.enter().unwrap_err(), first);
     assert_eq!(
         cleanup.entered.as_ref().unwrap().status().unwrap().state,
         HostOperationState::Expired
