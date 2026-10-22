@@ -246,4 +246,4 @@ fn validate_facts(bytes: &[u8]) -> Result<(), NativeProbeDecodeError> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

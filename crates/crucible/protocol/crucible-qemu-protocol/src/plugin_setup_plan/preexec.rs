@@ -58,6 +58,8 @@ pub(super) enum Edition {
     RuntimeArtifact,
     /// Requires plan fourteen and the separate containing-process transfer.
     NativeTransfer,
+    /// Requires plan fifteen with complete manifest and paid-probe descriptions.
+    NativeProfile,
 }
 
 /// Parses the exact requested carrier and its corresponding purpose edition.
@@ -76,11 +78,18 @@ pub(super) fn decode_edition(
         Edition::DeferredCleanup => (b"CRUCSU12", 12, true),
         Edition::RuntimeArtifact => (b"CRUCSU13", 13, true),
         Edition::NativeTransfer => (b"CRUCSU14", 14, true),
+        Edition::NativeProfile => (b"CRUCSU15", 15, true),
     };
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
-    let native = matches!(edition, Edition::NativeTransfer);
-    let runtime = matches!(edition, Edition::RuntimeArtifact | Edition::NativeTransfer);
-    let header = if native {
+    let profile = matches!(edition, Edition::NativeProfile);
+    let native = matches!(edition, Edition::NativeTransfer | Edition::NativeProfile);
+    let runtime = matches!(
+        edition,
+        Edition::RuntimeArtifact | Edition::NativeTransfer | Edition::NativeProfile
+    );
+    let header = if profile {
+        80
+    } else if native {
         64
     } else if runtime {
         56
@@ -91,7 +100,10 @@ pub(super) fn decode_edition(
     };
     let tail = if matches!(
         edition,
-        Edition::DeferredCleanup | Edition::RuntimeArtifact | Edition::NativeTransfer
+        Edition::DeferredCleanup
+            | Edition::RuntimeArtifact
+            | Edition::NativeTransfer
+            | Edition::NativeProfile
     ) {
         crate::deferred_cleanup::DEFERRED_CLEANUP_PURPOSE_BYTES
     } else if publisher {
@@ -131,6 +143,23 @@ pub(super) fn decode_edition(
     if native && (read_u32(bytes, 56)? as usize != native_len || read_u32(bytes, 60)? != 0) {
         return Err(invalid("native-transfer header"));
     }
+    let manifest_len = if profile {
+        read_u32(bytes, 64)? as usize
+    } else {
+        0
+    };
+    let probe_len = if profile {
+        crate::native_transfer::probe::NATIVE_PROBE_REPORT_BYTES
+    } else {
+        0
+    };
+    if profile
+        && (manifest_len > crate::native_transfer::manifest::NATIVE_PROFILE_MANIFEST_MAX_BYTES
+            || read_u32(bytes, 68)? as usize != probe_len
+            || bytes[72..80].iter().any(|byte| *byte != 0))
+    {
+        return Err(invalid("native-profile header"));
+    }
     let declared = read_u32(bytes, 16)? as usize;
     let app_len = read_u32(bytes, 20)? as usize;
     let selectable_len = read_u32(bytes, 24)? as usize;
@@ -159,6 +188,8 @@ pub(super) fn decode_edition(
         .checked_add(tail)
         .and_then(|end| end.checked_add(runtime_len))
         .and_then(|end| end.checked_add(native_len))
+        .and_then(|end| end.checked_add(manifest_len))
+        .and_then(|end| end.checked_add(probe_len))
         != Some(bytes.len())
     {
         return Err(invalid("lengths"));
@@ -173,7 +204,10 @@ pub(super) fn decode_edition(
 
     if publisher {
         let subscription = match edition {
-            Edition::DeferredCleanup | Edition::RuntimeArtifact | Edition::NativeTransfer => {
+            Edition::DeferredCleanup
+            | Edition::RuntimeArtifact
+            | Edition::NativeTransfer
+            | Edition::NativeProfile => {
                 let purpose = crate::deferred_cleanup::DeferredCleanupPurpose::decode(
                     &bytes[purpose_end..purpose_end + tail],
                 )
@@ -204,12 +238,28 @@ pub(super) fn decode_edition(
             .map_err(|_| invalid("runtime-artifact pair"))?;
             super::runtime_artifact::validate_binding(&pair, &subscription)?;
             if native {
-                let transfer =
-                    crate::native_transfer::NativeTransfer::decode(&bytes[runtime_end..])
-                        .map_err(|_| invalid("native transfer"))?;
+                let transfer = crate::native_transfer::NativeTransfer::decode(
+                    &bytes[runtime_end..runtime_end + native_len],
+                )
+                .map_err(|_| invalid("native transfer"))?;
                 transfer
                     .corroborate_runtime(&pair)
                     .map_err(|_| invalid("native-transfer binding"))?;
+                if profile {
+                    let manifest_start = runtime_end + native_len;
+                    let probe_start = manifest_start + manifest_len;
+                    let manifest = crate::native_transfer::manifest::NativeProfileManifest::decode(
+                        &bytes[manifest_start..probe_start],
+                    )
+                    .map_err(|_| invalid("native-profile manifest"))?;
+                    let probe = crate::native_transfer::probe::NativeProbeReport::decode(
+                        &bytes[probe_start..],
+                    )
+                    .map_err(|_| invalid("native-profile probe"))?;
+                    probe
+                        .corroborate_transfer(&transfer, &manifest, &pair)
+                        .map_err(|_| invalid("native-profile binding"))?;
+                }
             }
         }
     }

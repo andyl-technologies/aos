@@ -35,6 +35,9 @@ pub use quantum_stack::QuantumStackPlanParts;
 mod native_transfer;
 pub use native_transfer::NativeTransferPlanParts;
 
+mod native_profile;
+pub use native_profile::{NativeProfilePlanInputs, NativeProfilePlanParts};
+
 mod runtime_artifact;
 pub use runtime_artifact::RuntimeArtifactPlanParts;
 mod startup_operation;

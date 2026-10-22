@@ -612,6 +612,25 @@ matches all 5,356 committed Rust/TOML files to immutable source
 `l4dh43sfyz2vmqbbpjxcd6yk9y8n6vg5`, with zero mismatches. Its comparison record
 has SHA256 `479a7d43a32a3d466271d065a08aad941ae2bf570fa2260011a83dc411097428`.
 
+#### Complete native-profile plan component
+
+Plan fifteen now independently frames the containing transfer, complete manifest
+and paid-probe report under the existing 37,748,764-byte aggregate cap. Its exact
+80-byte header and tail order follow signed public contract
+`cbce456dee06e2008834d2f8e117b54493f4d176`, tree
+`3fd1ceb0093012a13a74c981ed393b72b7403001`; all four contract payloads and the
+signed-tree document were independently verified. Earlier plan decoders retain
+their exact editions. Complete manifest/probe bytes are borrowed from the input,
+including negative wait/errno and reap observations without a launch return.
+
+Seven framing/correlation cases and one extent case join the counted ABI groups
+and requirement bindings. The complete 277-test protocol suite and strict
+all-target Clippy pass. Mutually consistent foreign tails still refuse the
+original containing Source identity. Fresh hermetic ABI, coverage inventory and
+application-target checks are pending. This codec issues no paid landing,
+receiving alias, containing loan, producer qualification or reap authority;
+Setup twelve and full process admission remain unavailable.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
@@ -637,7 +656,7 @@ normal relocation and program entry, and `complete_profile` remains zero.
 
 #### Selected allocator fail-stop component
 
-The package subsequently imports signed provider
+Selected allocator qualification used signed provider
 `9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`, tree
 `22720df186fb6f8e071952753462feb33cedb86e`. Its explicit bounded invocation
 scope makes a real allocation failure terminate directly through the internal

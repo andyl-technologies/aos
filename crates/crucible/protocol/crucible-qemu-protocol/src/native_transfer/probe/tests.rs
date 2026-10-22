@@ -4,7 +4,7 @@
 use super::*;
 use crate::native_transfer::{manifest, put32, put64};
 
-fn material() -> (Vec<u8>, Vec<u8>, NativeTransfer, RuntimeArtifactPair) {
+pub(crate) fn material() -> (Vec<u8>, Vec<u8>, NativeTransfer, RuntimeArtifactPair) {
     let (profile, mut transfer, runtime) = manifest::tests::material();
     let mut bytes = vec![0; NATIVE_PROBE_REPORT_BYTES];
     bytes[..8].copy_from_slice(b"CRUCNPR1");

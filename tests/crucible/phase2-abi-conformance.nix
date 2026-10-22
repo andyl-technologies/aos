@@ -719,6 +719,28 @@ in
                 -p crucible-qemu-protocol \
                 --lib plugin_setup_plan::native_transfer::tests:: \
                 -- --test-threads=1
+              require_test_set 7 protocol-native-profile-plan \
+                plugin_setup_plan::preexec::tests::native_profile::profile_plan_borrows_exact_tails_and_preserves_prior_sections \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::native_profile::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::native_profile:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-native-profile-plan-cap \
+                plugin_setup_plan::native_profile::tests::profile_extent_consumes_existing_capacity_without_raising_the_cap \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::native_profile::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::native_profile::tests:: \
+                -- --test-threads=1
               require_test_set 4 protocol-runtime-pair \
                 runtime_artifact::tests::runtime_pair_matches_all_public_vectors_and_exact_accepted_round_trips \
                 -p crucible-qemu-protocol --lib runtime_artifact::tests::runtime_pair
