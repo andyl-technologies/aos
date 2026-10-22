@@ -53,27 +53,14 @@
     ];
     doCheck = false;
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
-    postBuild = ''
-      mkdir fixture-bin
-      cargo_target_dir="''${CARGO_TARGET_DIR:-target}"
-      if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
-        cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
-      fi
-      count=0
-      for candidate in "$cargo_target_dir"/debug/deps/aos_sandbox_storage-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" fixture-bin/aos-sandbox-storage-rpc-tests
-          count=$((count + 1))
-        fi
-      done
-      if [ "$count" -ne 1 ]; then
-        echo "expected one Storage unit-test executable under $cargo_target_dir/debug/deps, found $count" >&2
-        exit 1
-      fi
-    '';
+    postBuild = import ./_cargo-libtest-artifact.nix {
+      inherit lib pkgs;
+      crate = "aos-sandbox-storage";
+      destination = "fixture-bin/aos-sandbox-storage-rpc-tests";
+    };
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 \
