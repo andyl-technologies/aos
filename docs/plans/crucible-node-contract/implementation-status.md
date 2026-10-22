@@ -3207,6 +3207,30 @@ the complete Bootstrap transaction remain unfinished, together with the remainin
 full RFC obligations. No new full-library, configured runtime or VM qualification
 is claimed by this checkpoint.
 
+## Retained Source Bootstrap assignment and literal reservation
+
+Commit `84114ffd2f` connects the genuine typed Controller owner to a retained
+unsigned request and the actual original literal slot. The closed DATA builder
+derives its component demand independently, retains failed prefixes and counts
+actual backing capacities. The Controller saves the original cut and validates
+its creator, Hello and typed inputs before construction. Reservation saves its
+attempt and actual slot before later guards, uses the derived sealed-request
+bound and preserves sequence two without writing or renewing the deadline.
+
+All 194 affected client, 209 connection and 21 Bootstrap ACK controls pass in
+standard mode. Raw-JSON runs pass 21 ACK, fourteen frontier and eleven cut
+controls. Transport/Engine/Daemon all-feature/all-target checking and all six
+architecture gates pass. The required application gate compiles 180 test
+executables across 58 package IDs, including 71 integration targets. All 381
+owned Rust/Cargo inputs match committed `84114ffd2f` and its captured source.
+That gate runs no tests.
+
+Component rows do not fund the complete Source holder or supervisor callback.
+No proof is issued, no Source receipt is authenticated and no Bootstrap
+transaction completes here. Genuine Initial/Recipe production and the remaining
+full RFC obligations remain unfinished. This checkpoint adds no full-library,
+configured runtime or VM qualification.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
