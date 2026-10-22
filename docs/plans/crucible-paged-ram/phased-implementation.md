@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 395 committed bindings: 376 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 400 committed bindings: 381 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -259,9 +259,42 @@ Engineering hygiene passes. Final mandatory application compilation passes at
 `65hsi18j9kpwdxlf8g6wyfir2j6if6p6`; all 5,290 committed Rust/TOML inputs match
 immutable source `5b0zps75v5dq8lgs6y5mv309w99nfnma`. The comparison record has
 SHA-256 `96a1506b28e3dca8a5e22ba9b19828e3cabf255832841548b581a1a82a8c6585`.
-Final-snapshot exact supervision remains in progress. The checkpoint adds one
-component binding; complete diagnostic funding and genuine Native admission
-remain unqualified.
+All 279 final-snapshot exact supervision cases pass in nine groups at
+`2blmnkq8l4z2kpirk6kpsc99arfpdshl`. The checkpoint adds one component binding;
+complete diagnostic funding and genuine Native admission remain unqualified.
+
+#### Module Root read subloans
+
+`7e8526f394` retains a real nested backing-read loan beneath the already borrowed
+Root view. Its inline ledger belongs to the actual paid Runtime; prebirth
+accounting uses the complete Runtime layout rather than a new scalar estimate.
+The non-cloneable loan blocks Root view return, reborrow and physical retirement
+through synchronous result construction and unwind. Completion does not release
+the physical loan before the callback scope returns. Busy release or changed
+identity retains parent debt without waiting. Local checked serials identify
+custody only; every semantic query still observes the existing Source Original.
+
+Four component regressions cover scope/unwind, changed parent, contended return
+and serial exhaustion. Their opaque fixture addresses issue no Source Original
+or Native custody. All twelve Original controls and all twenty-seven fingerprint
+controls pass. The first broader source run passes sixteen cases and fails an
+assertion expecting the former generic unavailable diagnostic. `552b160ea5`
+checks the actual retained operation kind/static cause instead; all seventeen
+source tests and both Runtime prebirth controls then pass. Content-bound hygiene
+review is refreshed after inspecting that exact assertion change and passes.
+
+Application test-target compilation for `7e8526f394` passes at
+`z1slwb23r1n3r12pxghd9fm02qgryy2m`. All 5,291 committed Rust/TOML inputs match
+immutable source `f99b0v2z37yaivrq4jmm6grygfdsn567`; the comparison record has
+SHA-256 `4b724d844007c340ecdf0ec128d9b3cdbdf25dadb5ba417125aea070fe0bc29a`.
+Compilation and exact supervision for the corrected assertion snapshot remain
+in progress. These four bindings do not establish registered Source read-child
+callbacks, selected Native capture, physical Source return or complete funding.
+
+The next Source contract review exposes a receipt-ordering gap: the next page
+read can replace the Source cell before the Module observes its final consumed
+facts. The proposed registration completion handoff remains under review;
+returned-current alone must not be treated as final Source closure.
 
 #### Independent revocation and return refusals
 
