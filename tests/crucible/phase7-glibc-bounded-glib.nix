@@ -21,13 +21,17 @@ in
           # Its real forked failure controls distinguish fail-stop exit 127
           # from recursive GLib logging (126) and an unexpected return (125).
           cp ${qualification}/tst-malloc-bounded-glib.c "$out/consumer.c"
+          compile_status=0
           timeout -s KILL 180 ${pkgs.crucible-cc}/bin/gcc \
             -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
             -I${pkgs.glib.dev}/include/glib-2.0 \
             -I${pkgs.glib.dev}/lib/glib-2.0/include \
             "$out/consumer.c" -L${pkgs.glib}/lib \
             -Wl,-rpath,${pkgs.glib}/lib -lglib-2.0 -ldl \
-            -o "$out/consumer" > "$out/compile.log" 2>&1
+            -o "$out/consumer" > "$out/compile.log" 2>&1 || compile_status=$?
+          cat "$out/compile.log"
+          printf '%s\n' "$compile_status" > "$out/compile.status"
+          test "$compile_status" = 0
 
           ${pkgs.binutils}/bin/readelf --program-headers --wide \
             "$out/consumer" > "$out/program-headers"
@@ -45,8 +49,12 @@ in
             *) echo "GLib consumer selected a different libc" >&2; exit 1 ;;
           esac
 
-          timeout -s KILL 30 "$out/consumer" > "$out/run.log" 2>&1
+          run_status=0
+          timeout -s KILL 30 "$out/consumer" \
+            > "$out/run.log" 2>&1 || run_status=$?
           cat "$out/run.log"
+          printf '%s\n' "$run_status" > "$out/run.status"
+          test "$run_status" = 0
           printf 'PASS\n' > "$out/result"
         '';
       }

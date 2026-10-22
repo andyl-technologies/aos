@@ -433,6 +433,19 @@ vector and alias controls to PLAN-2. Its fresh inventory passes at
 requirements. All 148 uncovered requirements remain uncovered and none is
 marked fully qualified; these component cases enable no capability.
 
+Separate signed native source `4ad28c785d4dd60762c7df9ddda9abf21a365479`
+passes its independent C reader component on the identical shared vector file:
+272 cases, two exact round trips and 270 refusals. The finite twelve-step batch
+also reads and hashes actual sealed libc/loader files, parses their ELF records,
+retains real closed-descriptor EBADF, and rejects missing seals and wrong
+digests. Both literal omission controls fail at their intended assertions.
+Independent review matches all 452 sealed payloads and the complete reader
+source in proof
+`7362fc8189064ccc6373e7e91307eb123fc437c11b117a3de17fd7f09a95ad14`.
+This separately staged native source is not the currently imported atomic QEMU
+patch. Owning Source/preexec compilation, loaded-map/TLS association, physical
+union payment and actual Setup-ten landing remain required.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree
