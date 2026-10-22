@@ -9,9 +9,10 @@
   boundPhaseName,
   runPhaseName,
   runnerArguments ? "",
+  compiler ? null,
+  testTimeoutSeconds ? 60,
 }: let
   buildTimeoutSeconds = 600;
-  testTimeoutSeconds = 60;
   addressSpaceBytes = 6 * 1024 * 1024 * 1024;
 
   focusedBuilder = package: let
@@ -30,18 +31,37 @@
         // {
           inherit pname;
           outputs = ["out"];
-          buildDeps = package.buildDeps ++ [pkgs.coreutils];
+          buildDeps =
+            package.buildDeps
+            ++ [pkgs.coreutils]
+            ++ (
+              if compiler == null
+              then []
+              else [compiler]
+            );
           dontStrip = "1";
           dontNukeRefs = "1";
           phases =
             [
               {
                 name = boundPhaseName;
-                script = ''
-                  # Applies to the genuine unpack/configure/compiler children too.
-                  ulimit -v ${toString (addressSpaceBytes / 1024)}
-                  export PYTHONDONTWRITEBYTECODE=1
-                '';
+                script =
+                  ''
+                    # Applies to the genuine unpack/configure/compiler children too.
+                    ulimit -v ${toString (addressSpaceBytes / 1024)}
+                    export PYTHONDONTWRITEBYTECODE=1
+                  ''
+                  + (
+                    if compiler == null
+                    then ""
+                    else ''
+                      # Select the complete matching compiler/runtime before the
+                      # unpack ABI probe and QEMU's genuine configure checks.
+                      export PATH=${compiler}/bin:$PATH
+                      export CC=${compiler}/bin/cc
+                      export CXX=${compiler}/bin/c++
+                    ''
+                  );
               }
             ]
             ++ configurePhases

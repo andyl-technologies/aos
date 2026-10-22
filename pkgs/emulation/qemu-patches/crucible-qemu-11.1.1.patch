@@ -1,17 +1,20 @@
-From 996393eb0e950647b7caf9d57b55d9ace836db38 Mon Sep 17 00:00:00 2001
+From 7a6b57edb01b7a5b6d06b11171ecf3a82bebde55 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose canonical stack debt and prebirth storage
+Subject: [PATCH] crucible: compose stack custody and installed bounded thread
+ consumer
 
-Retain the complete cumulative public Crucible implementation together with
-canonical same-parent Main/RR stack debt, factual constructor return posts,
-and caller-backed prebirth thread wrapper and registry storage. Preserve
-refusal when genuine profile, parent, cleanup or terminal owners are absent.
+Retain the cumulative public Crucible implementation with canonical same-parent
+Main/RR stack debt, factual constructor return posts, and caller-backed native
+startup and registry storage. Add the matching installed bounded pthread ABI
+consumer for actual supplied-stack worker creation, canonical incarnation,
+notifier and registry departure, kernel join and external storage return.
 
-Bind composed fixture dependencies and every transitive literal extractor to
-the actual final source bytes. Use authenticated explicit build directories
-for native qualification. Keep ordinary pthread behavior and substantive
-lifecycle refusals intact.
+Qualify ordinary and installed-runtime component behavior separately from
+complete Source/RR admission. Preserve ordinary pthread behavior and refusal
+without genuine stack and application grants, finite TCG/callback allocation,
+real stop/drain and physical terminal owners. Bind literal fixture extraction
+to the final source and retain genuine publisher cleanup dependencies.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -25369,10 +25372,10 @@ index 0000000000000000000000000000000000000000..468976ef0fed6c7a079ca2f8010dee99
 +not provide an accepting Source or semantic guard.
 diff --git a/docs/devel/crucible-quantum-stack-bank.rst b/docs/devel/crucible-quantum-stack-bank.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..9583f96b43231522226340492a485643cf5e953e
+index 0000000000000000000000000000000000000000..76ab6935ceec82f05b14b0a9710abc71eb401317
 --- /dev/null
 +++ b/docs/devel/crucible-quantum-stack-bank.rst
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,477 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Canonical Main and RR stack debit custody
@@ -25763,6 +25766,93 @@ index 0000000000000000000000000000000000000000..9583f96b43231522226340492a485643
 +resource bounds are unchanged. These are physical layout/component facts;
 +selected creation, born return, application allocator, RR closure and runtime
 +profile remain unqualified.
++
++Matching bounded pthread consumer
++--------------------------------
++
++The optional native storage consumer includes the installed
++``pthread-bounded.h`` and links the four real bounded pthread symbols. Its
++configure check establishes storage ABI availability only. The matching
++complete libc, ELF interpreter, headers, TLS modules and unwinder remain
++runtime dependencies; a header, symbol version or successful link supplies
++neither a complete runtime profile nor Source admission.
++
++Each canonical wrapper retains a separate libc arena, supplied stack span,
++actual control and nonwrapping libc incarnation, configuration, output receipt
++and operation journals. The native retained-member lookup authenticates the
++wrapper before dereferencing a nominated pointer. Both supplied spans remain
++excluded from every native writable output and subsequent preparation. The
++actual libc independently authenticates its own registry and checks outputs
++against all of its retained arenas and stacks. The caller must own the spans
++exclusively; an unknown foreign arena cannot become caller-owned by decoding
++or copying a receipt.
++
++The creator records each external attempt before leaving the registry gate.
++Libc writes its actual control, incarnation and receipts directly into the
++retained wrapper. A release publication marks an operation returned only after
++the real call and its independent attribute/signal cleanup return. Reentry
++while that operation is incomplete refuses; a later nonwaiting cut can settle
++the completed publication. A returned errno never clears uncertain birth or
++returns an in-flight native start.
++
++The worker inserts its already-paid actual inventory record and list cell.
++It does not allocate or free startup arguments, names, registry records or list
++cells. The existing native inventory lock, in-flight census, membership freeze,
++thread-local current record and exit-notifier order remain in effect. Entry
++and notifier callbacks run outside gates. Departure unlinks the actual cell
++without freeing caller storage, and records its own factual completion.
++
++Only the matching provider's actual terminal backing return, plus actual
++native departure and notifier return for a born worker, permits the separate
++creator-owned wrapper to leave the retained list. Known uncreated return uses
++that same actual terminal producer. Kernel exit, registry departure, a copied
++snapshot or ``cpu-created=false`` alone cannot return custody. This wrapper
++return does not unmap the supplied stack, retire an application/context/cache
++child, drain RCU or refund any resource debit.
++
++No selected Source caller is connected. The genuine same-parent application
++child, guarded stack loan, finite TCG and callback allocation closure, actual
++RR stop/drain and external Main reap are still required. The five libc
++metadata kinds remain separate from ordinary application allocation; strict
++ordinary-heap refusal cannot be treated as successful RR execution. The old
++ordinary pthread path remains available with its original behavior.
++
++The matching consumer component also retains a real caller-owned exit notifier
++and creator-owned key registrations that force an actual second-level TSD
++allocation. Its destructor can remain in progress after QEMU has returned its
++notifiers and unlinked its native record. In that state the component requires
++kernel-exit and backing-return facts to remain false and storage return to
++refuse. Only the real destructor completion, bounded TSD release and terminal
++provider return permit subsequent unmapping. This is a finite component
++control, not a funded application callback or RR workload profile.
++
++The matching installed-runtime component passed twelve actual controls,
++including supplied-stack birth, actual terminal return, retained-span output
++exclusions and the held second-level TSD destructor. Four separate literal
++omissions each failed at its intended assertion: retained provider spans,
++the actual notifier callback, notifier-return publication and registry-return
++publication. The original 600/180/30-second suite/compile/run bounds, CORE 0
++and 6 GiB process and sampled process-tree limits remained unchanged, with
++one sequential compiler. These results concern this finite component only.
++
++With this provider capability enabled, the actual wrapper body measures 1152
++bytes with alignment 8; its flexible name begins at offset 1147. The actual
++provider snapshot is 448 bytes, installed configuration 136 bytes and receipt
++368 bytes. Startup arguments remain 40 bytes, the native record 392 bytes and
++the paid inventory cell 24 bytes. Complete member offsets and actual owning
++object identities accompany the component evidence. The libc registry's
++separate once-per-process backing is not included in a wrapper or its arena.
++Neither these measurements nor the component inputs increase original role
++bounds or supply a missing application or stack grant.
++
++The component uses the real installed public header and the matching libc and
++ELF interpreter. A direct source-built linker command retains the configured
++DSO search paths and places the matching runtime first; actual interpreter
++resolution verifies the selected libc. The capability check is not a whole
++regenerated Meson configuration. The first missing QOM link dependency and
++incomplete direct-link runtime search attempts are retained separately from
++the successful component. No runtime selection failure is counted as a
++worker-lifetime or expected-assertion control.
 diff --git a/docs/devel/crucible-quantum-stack-lender-proposal.rst b/docs/devel/crucible-quantum-stack-lender-proposal.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..409e58c30f9237ef57a4943d5ba2e50b15b0d6a9
@@ -91059,10 +91149,18 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..05189a7919e528df30462e95a188795a
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..44e5e6869630ca859013312cb782977b5f29bab8 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..4b54105a5a92a2a38952fa5dda92d82480f04682 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
-@@ -9,6 +9,7 @@ typedef struct QemuCond QemuCond;
+@@ -5,10 +5,15 @@
+ #include "qemu/atomic.h"
+ #include "qemu/futex.h"
+ 
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++#include <pthread-bounded.h>
++#endif
++
+ typedef struct QemuCond QemuCond;
  typedef struct QemuSemaphore QemuSemaphore;
  typedef struct QemuLockCnt QemuLockCnt;
  typedef struct QemuThread QemuThread;
@@ -91070,7 +91168,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..44e5e6869630ca859013312cb782977b
  
  /*
   * QemuEvent
-@@ -50,6 +51,38 @@ void TSA_NO_TSA qemu_mutex_lock_impl(QemuMutex *mutex, const char *file,
+@@ -50,6 +55,38 @@ void TSA_NO_TSA qemu_mutex_lock_impl(QemuMutex *mutex, const char *file,
  void TSA_NO_TSA qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file,
                                         const int line);
  
@@ -91109,7 +91207,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..44e5e6869630ca859013312cb782977b
  void qemu_rec_mutex_init(QemuRecMutex *mutex);
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex);
  void qemu_rec_mutex_lock_impl(QemuRecMutex *mutex, const char *file, int line);
-@@ -218,6 +251,483 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +255,544 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -91155,6 +91253,67 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..44e5e6869630ca859013312cb782977b
 +int qemu_thread_bounded_storage_return_unstarted_v1(
 +    QemuThreadBoundedStorage *storage, uint64_t incarnation,
 +    QemuThreadBoundedStorageSnapshot *out);
++
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++/* Physical consumer only. The caller retains distinct actual startup, libc
++ * arena and guarded stack children. These operations issue no Source actor,
++ * application allocator, runtime profile or permission to run an RR body. */
++typedef struct QemuThreadBoundedProviderSnapshot {
++    struct pthread_bounded_receipt receipt;
++    uint64_t provider_incarnation;
++    int first_status;
++    int init_status;
++    int create_status;
++    int query_status;
++    int retire_status;
++    int attr_init_status;
++    int attr_stack_status;
++    int attr_guard_status;
++    int attr_destroy_status;
++    int mask_block_status;
++    int mask_restore_status;
++    int registry_status;
++    bool init_attempted;
++    bool init_returned;
++    bool create_attempted;
++    bool create_returned;
++    bool query_attempted;
++    bool query_returned;
++    bool retire_attempted;
++    bool retire_returned;
++    bool worker_entered;
++    bool notifiers_returned;
++    bool registry_registered;
++    bool registry_returned;
++    bool attr_init_attempted;
++    bool attr_stack_attempted;
++    bool attr_guard_attempted;
++    bool attr_destroy_attempted;
++    bool mask_block_attempted;
++    bool mask_restore_attempted;
++} QemuThreadBoundedProviderSnapshot;
++
++int qemu_thread_bounded_provider_init_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    void *arena, size_t arena_bytes,
++    const struct pthread_bounded_config *config,
++    void *stack, size_t stack_bytes);
++int qemu_thread_bounded_provider_create_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation);
++int qemu_thread_bounded_provider_query_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation);
++int qemu_thread_bounded_provider_tryretire_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation);
++int qemu_thread_bounded_provider_observe_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedProviderSnapshot *out);
++/* This returns only QEMU's creator-owned startup storage, after actual libc
++ * backing return and native registry/notifier departure. It neither unmaps
++ * the supplied stack nor retires application/context/RCU or resource debt. */
++int qemu_thread_bounded_provider_storage_return_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedProviderSnapshot *out);
++#endif
 +
 +/* Joinable thread on an already retained stack mapping. The receipt starts
 + * zeroed and remains caller-owned through actual registry departure and join.
@@ -96343,10 +96502,32 @@ index e7479084726c661e75447fd1330ee7cdba888e88..db6fbd5c8a924de2dfe36f8033694076
  }
  
 diff --git a/meson.build b/meson.build
-index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..033e5e5f46e849e54b25f909ba995cbc628e5e37 100644
+index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..b4b8547e174c150d4534ee770bced7df8952a614 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -3434,6 +3434,33 @@ foreach target: target_dirs
+@@ -2814,6 +2814,21 @@ if host_os != 'darwin'
+     int main(void) { return posix_madvise(NULL, 0, POSIX_MADV_DONTNEED); }'''))
+ endif
+ 
++# This detects a linkable storage ABI, not a qualified runtime profile. The
++# selected Source/RR admission still requires its genuine owning producers.
++config_host_data.set('CONFIG_PTHREAD_BOUNDED_PROVIDER',
++  host_os == 'linux' and cpu == 'x86_64' and cc.links(osdep_prefix + '''
++    #include <pthread-bounded.h>
++    #if PTHREAD_BOUNDED_VERSION != 1 || PTHREAD_BOUNDED_STRICT != 1
++    #error unsupported bounded pthread storage ABI
++    #endif
++    int main(void) {
++      return pthread_bounded_init_np(NULL, 0, NULL, NULL, NULL) +
++        pthread_bounded_create_np(NULL, 0, NULL, NULL, NULL, NULL, NULL) +
++        pthread_bounded_query_np(NULL, 0, NULL) +
++        pthread_bounded_tryretire_np(NULL, 0, NULL, NULL);
++    }''', dependencies: threads))
++
+ config_host_data.set('CONFIG_PTHREAD_SETNAME_NP_W_TID', cc.links(osdep_prefix + '''
+   #include <pthread.h>
+ 
+@@ -3434,6 +3449,33 @@ foreach target: target_dirs
    target_configs_h += config_target_h[target]
    target_configs_h += config_devices_h.get(target, [])
  endforeach
@@ -96380,7 +96561,7 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..033e5e5f46e849e54b25f909ba995cbc
  genh += custom_target('config-poison.h',
                        input: [target_configs_h],
                        output: 'config-poison.h',
-@@ -4410,10 +4437,14 @@ foreach target : target_dirs
+@@ -4410,10 +4452,14 @@ foreach target : target_dirs
                   build_by_default: false)
  
    if target.endswith('-softmmu')
@@ -239159,7 +239340,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..25856316e2ae8d7df23b05286b159e66d85654b1
+index 0000000000000000000000000000000000000000..4526ca9887cea1ec7ac0d6e40f6c26b9761ff0ba
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,132 @@
@@ -239195,7 +239376,7 @@ index 0000000000000000000000000000000000000000..25856316e2ae8d7df23b05286b159e66
 +    'include/plugins/qemu-plugin.h':
 +        'bbe8a30e142658fc95bf9ec0f6b3e9cc895065753f77fdff1eb869c1ec4f12f6',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
++        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        'a1e251802b959f2917a36953a136124e48453a27384da90c3725a6f25f2ebc86',
 +}
@@ -294468,7 +294649,7 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..31f6f9015171ec7bed74faed262baf1afe854970
+index 0000000000000000000000000000000000000000..267e313f943977d178885522eee437689c7a9450
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
 @@ -0,0 +1,361 @@
@@ -294489,11 +294670,11 @@ index 0000000000000000000000000000000000000000..31f6f9015171ec7bed74faed262baf1a
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        'aeb8909c81ceba7bde123bbf38cf9d95d2af785d50984c3cd483c078370d30b3',
++        'b1a1d910dbe6a6dee75684c0c8bf9e534f7f3323bd7df24ce9ecedff1ee7323b',
 +    'util/oslib-posix.c':
 +        '3844eb962eac164dd29f0eb9ca7e48ec830d8aaf8281c2b2a0915d041eaaac38',
 +    'include/qemu/thread.h':
-+        '72ec6eab9c03c6f9416b8b12acad7381fa68dad3aee6aceb27922bc8736563ac',
++        'e06f95e53c3ce56b532e4481c2810c9cf9ef9c0e84f5fcddefa5309c58ebf0ab',
 +    'include/qemu/thread-posix.h':
 +        '72d5cf709bbe89ccbc621c0bb0de9d56df2eb3c11210e9abd58fcf6e65c3baaa',
 +    'include/system/memory_cached.h':
@@ -294835,7 +295016,7 @@ index 0000000000000000000000000000000000000000..31f6f9015171ec7bed74faed262baf1a
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..49d787e3fc2794ad8365e69d023bb52ae38c1280
+index 0000000000000000000000000000000000000000..d13f79348e0830d75afafe5b96ee62c0c33e65d4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -294853,7 +295034,7 @@ index 0000000000000000000000000000000000000000..49d787e3fc2794ad8365e69d023bb52a
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
++        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
 +}
 +
 +FUNCTIONS = (
@@ -294941,7 +295122,7 @@ index 0000000000000000000000000000000000000000..49d787e3fc2794ad8365e69d023bb52a
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a742be7eb3de077ff075dbf3d547f8604478727e
+index 0000000000000000000000000000000000000000..f547cddf0e636a5359a7cc827d5ce919e8e0e5eb
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -294972,7 +295153,7 @@ index 0000000000000000000000000000000000000000..a742be7eb3de077ff075dbf3d547f860
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
++        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
 +}
 +
 +FUNCTIONS = (
@@ -295188,7 +295369,7 @@ index 0000000000000000000000000000000000000000..a742be7eb3de077ff075dbf3d547f860
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e692e4ec2c860fa530d1e4a20e65006b5efff008
+index 0000000000000000000000000000000000000000..7fc80e9be124e889749fb36700cd9c890f438714
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -295212,7 +295393,7 @@ index 0000000000000000000000000000000000000000..e692e4ec2c860fa530d1e4a20e65006b
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
++        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
 +}
 +
 +FUNCTIONS = (
@@ -295306,7 +295487,7 @@ index 0000000000000000000000000000000000000000..e692e4ec2c860fa530d1e4a20e65006b
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9cc8cc6d11dabe91f6aa2c80bf486ce558886d05
+index 0000000000000000000000000000000000000000..7838f01fca5a3bff1cb806bb4822d6695935dbfc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,748 @@
@@ -295357,15 +295538,15 @@ index 0000000000000000000000000000000000000000..9cc8cc6d11dabe91f6aa2c80bf486ce5
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '34da972d90ee4a1e4197eae53ff830b79dfd055e05670e5dab08d4137021f856',
++        '1f6eccac5f9787247e80a164e3c751767b2b52d96ad4ced28cd11762275a617a',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'ad1e38b852e75e9f0b54e9fa8017b55aaba496b570df0af04cbfb8e45ee812e7',
++        '1f85aa863353070de81f77a343ed037be803e5efc907101b77b12109324114ea',
 +    'meson.build':
-+        '5c4f403edad97e4cdff755e0084f29056e6aaceed78637e04b3e5fdfdee9e844',
++        'e1e7e6c51c370991d8417cb47a08f97c89badd313ff09e2ae649b9210d109737',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '827e92ca85512b2cd891b93ebe3741e1a163b02364affde97a378e28e2b627eb',
 +    'tests/unit/meson.build':
-+        '6a32d2eefdf7e35e2b225eaf03be3ef0fac08d09de6c0e79087a3b9af136d653',
++        '277ec16564cfe7b0b3ca11f480cd0233867fac07531af4edf8caeb9d8b28cbd6',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        'a1e251802b959f2917a36953a136124e48453a27384da90c3725a6f25f2ebc86',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -296060,7 +296241,7 @@ index 0000000000000000000000000000000000000000..9cc8cc6d11dabe91f6aa2c80bf486ce5
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054adda0a84
+index 0000000000000000000000000000000000000000..dbaac82c4a08182b96a5f4eef036a12b6564085b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1646 @@
@@ -296186,7 +296367,7 @@ index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054
 +    'tests/unit/test-crucible-fault-rule-presence.py':
 +        'afa6a787ab74eaa4033dcad4288f55fa6d2265fa4ea5cf4b30d010cec202b905',
 +    'tests/unit/test-crucible-publisher-member-return.py':
-+        'f0706bf29a198822e4f2e82095e60f47530e2f23727c5073ac2e7adfb5b1c104',
++        'e5136dd069b0b69b6407f5ba3dc004744f09ad0d3c78de07a73dd9a51473f6be',
 +    'tests/unit/test-crucible-control-deferred.py':
 +        'f166ab4a0064514f39c2f41e1f09e41825b2e5e43aad657d3ca64405ada1c6e2',
 +    'tests/unit/test-crucible-provider-metadata.py':
@@ -296230,7 +296411,7 @@ index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054
 +    'include/qobject/qobject-lifetime.h':
 +        'f590ea63b6b7cb11069922f0fad9169652d1970d13c36e39076e0e0ebb1bb846',
 +    'meson.build':
-+        '5c4f403edad97e4cdff755e0084f29056e6aaceed78637e04b3e5fdfdee9e844',
++        'e1e7e6c51c370991d8417cb47a08f97c89badd313ff09e2ae649b9210d109737',
 +    'plugins/crucible-apic-getter.inc.h':
 +        '3f37a0e86d175b719f4cfc7bdc87fbf0db1061f5b7fc805e103a26114dda6ab6',
 +    'plugins/crucible-clock-custody.inc.h':
@@ -296292,7 +296473,7 @@ index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '6a32d2eefdf7e35e2b225eaf03be3ef0fac08d09de6c0e79087a3b9af136d653',
++        '277ec16564cfe7b0b3ca11f480cd0233867fac07531af4edf8caeb9d8b28cbd6',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -296582,9 +296763,9 @@ index 0000000000000000000000000000000000000000..d5002967f1ff4751d254e0743aace054
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        '72ec6eab9c03c6f9416b8b12acad7381fa68dad3aee6aceb27922bc8736563ac',
++        'e06f95e53c3ce56b532e4481c2810c9cf9ef9c0e84f5fcddefa5309c58ebf0ab',
 +    'util/qemu-thread-posix.c':
-+        'aeb8909c81ceba7bde123bbf38cf9d95d2af785d50984c3cd483c078370d30b3',
++        'b1a1d910dbe6a6dee75684c0c8bf9e534f7f3323bd7df24ce9ecedff1ee7323b',
 +    'include/qemu/crucible-process-purpose.h':
 +        'd11de5b49fc8c145fa5f94c8366f0930dbf4d7863db5f09c08dfe93216d67b03',
 +    'include/qemu/crucible-paged-ram.h':
@@ -297809,7 +297990,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..65e2729d5158238669edfd96b2a4fadebd495b62 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..12be6508bf200b02c80b34f915e9cc818ed2f8a2 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -297876,7 +298057,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..65e2729d5158238669edfd96b2a4fade
  
 +if host_os == 'linux'
 +  tests += {
-+    'test-crucible-bounded-thread': [],
++    'test-crucible-bounded-thread': [qom],
 +    'test-crucible-cpu-instance': [qom],
 +  }
 +endif
@@ -310441,10 +310622,10 @@ index 0000000000000000000000000000000000000000..9a8e608e99b032b061575c8c2c97d7d2
 +    main()
 diff --git a/tests/unit/test-crucible-bounded-thread.c b/tests/unit/test-crucible-bounded-thread.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fdcaf3a606
+index 0000000000000000000000000000000000000000..7b4297c5bbe601edaf0e99f6dae808e074d4728b
 --- /dev/null
 +++ b/tests/unit/test-crucible-bounded-thread.c
-@@ -0,0 +1,623 @@
+@@ -0,0 +1,900 @@
 +/*
 + * Real bounded birth and native registry enrollment component controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -310454,6 +310635,7 @@ index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fd
 + */
 +#include "qemu/osdep.h"
 +#include "qemu/thread.h"
++#include "qemu/notify.h"
 +#include <sys/mman.h>
 +#include <sys/wait.h>
 +
@@ -311006,6 +311188,12 @@ index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fd
 +            incarnation, address), ==, -EADDRINUSE);
 +        g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(storage,
 +            incarnation, address), ==, -EADDRINUSE);
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++        g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(storage,
++            incarnation, address), ==, -EADDRINUSE);
++        g_assert_cmpint(qemu_thread_bounded_provider_storage_return_v1(storage,
++            incarnation, address), ==, -EADDRINUSE);
++#endif
 +        g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(fresh, bytes, name,
 +            unstarted_storage_entry, &entered, address, &unchanged_incarnation),
 +                        ==, -EADDRINUSE);
@@ -311043,6 +311231,268 @@ index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fd
 +}
 +#endif
 +
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++typedef struct ProviderOwner {
++    QemuThreadBoundedStorage *storage;
++    uint64_t incarnation;
++    void *wrapper;
++    size_t wrapper_bytes;
++    void *arena;
++    size_t arena_bytes;
++    void *mapping;
++    size_t mapping_bytes;
++    void *stack;
++    bool entered;
++    bool release;
++    Notifier notifier;
++    pthread_key_t tsd_keys[33];
++    bool use_tsd;
++    bool notifier_seen;
++    bool tsd_entered;
++    bool tsd_release;
++    int tsd_status;
++} ProviderOwner;
++
++static void provider_notifier(Notifier *notifier, void *opaque)
++{
++    ProviderOwner *owner = container_of(notifier, ProviderOwner, notifier);
++
++    qatomic_store_release(&owner->notifier_seen, true);
++}
++
++static void provider_tsd_destructor(void *opaque)
++{
++    ProviderOwner *owner = opaque;
++
++    qatomic_store_release(&owner->tsd_entered, true);
++    while (!qatomic_load_acquire(&owner->tsd_release)) {
++        sched_yield();
++    }
++}
++
++static void *provider_entry(void *opaque)
++{
++    ProviderOwner *owner = opaque;
++
++    owner->notifier.notify = provider_notifier;
++    qemu_thread_atexit_add(&owner->notifier);
++    if (owner->use_tsd) {
++        owner->tsd_status = pthread_setspecific(
++            owner->tsd_keys[G_N_ELEMENTS(owner->tsd_keys) - 1], owner);
++    }
++    qatomic_store_release(&owner->entered, true);
++    while (!qatomic_load_acquire(&owner->release)) {
++        sched_yield();
++    }
++    return opaque;
++}
++
++static void provider_owner_prepare(ProviderOwner *owner)
++{
++    struct pthread_bounded_config config = {
++        .version = PTHREAD_BOUNDED_VERSION,
++        .size = sizeof(config),
++        .flags = PTHREAD_BOUNDED_STRICT,
++    };
++    size_t page = sysconf(_SC_PAGESIZE);
++
++    memset(owner, 0, sizeof(*owner));
++    owner->wrapper_bytes = qemu_thread_bounded_storage_bytes_v1(
++        sizeof("provider-test"));
++    owner->arena_bytes = 256 * 1024;
++    owner->mapping_bytes = BOUNDED_TEST_STACK_BYTES + 2 * page;
++    owner->wrapper = mmap(NULL, owner->wrapper_bytes, PROT_READ | PROT_WRITE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    owner->arena = mmap(NULL, owner->arena_bytes, PROT_READ | PROT_WRITE,
++                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    owner->mapping = mmap(NULL, owner->mapping_bytes, PROT_NONE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++    g_assert_true(owner->wrapper != MAP_FAILED);
++    g_assert_true(owner->arena != MAP_FAILED);
++    g_assert_true(owner->mapping != MAP_FAILED);
++    owner->stack = (char *)owner->mapping + page;
++    g_assert_cmpint(mprotect(owner->stack, BOUNDED_TEST_STACK_BYTES,
++                            PROT_READ | PROT_WRITE), ==, 0);
++    /* Finite physical component inputs. These are enforced libc metadata
++     * requests, never an RR workload/application allocation profile. */
++    for (size_t kind = 0; kind < PTHREAD_BOUNDED_KINDS; kind++) {
++        config.limit[kind] = (struct pthread_bounded_limit) {
++            .requests = 8, .request_bytes = 4096, .alignment = 64,
++        };
++    }
++    g_assert_cmpint(qemu_thread_bounded_storage_prepare_v1(
++        owner->wrapper, owner->wrapper_bytes, "provider-test", provider_entry,
++        owner, &owner->storage, &owner->incarnation), ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_provider_init_v1(
++        owner->storage, owner->incarnation, owner->arena, owner->arena_bytes,
++        &config, owner->stack, BOUNDED_TEST_STACK_BYTES), ==, 0);
++}
++
++static void provider_owner_retire(ProviderOwner *owner,
++                                  QemuThreadBoundedProviderSnapshot *facts)
++{
++    int64_t deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
++    int status;
++
++    do {
++        status = qemu_thread_bounded_provider_tryretire_v1(
++            owner->storage, owner->incarnation);
++        g_assert_true(status == 0 || status == -EBUSY);
++        if (status) {
++            sched_yield();
++        }
++    } while (status && g_get_monotonic_time() < deadline);
++    g_assert_cmpint(status, ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner->storage, owner->incarnation, facts), ==, 0);
++    g_assert_true(facts->retire_attempted);
++    g_assert_true(facts->retire_returned);
++    g_assert_true(facts->receipt.backing_returned);
++    g_assert_cmpint(qemu_thread_bounded_provider_storage_return_v1(
++        owner->storage, owner->incarnation, facts), ==, 0);
++}
++
++static void provider_owner_unmap(ProviderOwner *owner)
++{
++    g_assert_cmpint(munmap(owner->mapping, owner->mapping_bytes), ==, 0);
++    g_assert_cmpint(munmap(owner->arena, owner->arena_bytes), ==, 0);
++    g_assert_cmpint(munmap(owner->wrapper, owner->wrapper_bytes), ==, 0);
++}
++
++static void test_provider_uncreated_return(void)
++{
++    ProviderOwner owner, other;
++    QemuThreadBoundedProviderSnapshot facts;
++    QemuThreadBoundedStorageSnapshot storage;
++
++    provider_owner_prepare(&owner);
++    g_assert_cmpint(qemu_thread_bounded_storage_return_unstarted_v1(
++        owner.storage, owner.incarnation, &storage), ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        (void *)1, owner.incarnation, &facts), ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, owner.arena), ==, -EADDRINUSE);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, owner.stack), ==, -EADDRINUSE);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, owner.wrapper), ==, -EADDRINUSE);
++    provider_owner_prepare(&other);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, other.arena), ==, -EADDRINUSE);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, other.stack), ==, -EADDRINUSE);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, other.wrapper), ==, -EADDRINUSE);
++    provider_owner_retire(&other, &facts);
++    provider_owner_unmap(&other);
++    provider_owner_retire(&owner, &facts);
++    g_assert_false(facts.create_attempted);
++    g_assert_false(facts.receipt.born);
++    g_assert_false(facts.worker_entered);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, &facts), ==, -ESTALE);
++    provider_owner_unmap(&owner);
++}
++
++static void test_provider_actual_birth_retirement(void)
++{
++    ProviderOwner owner;
++    QemuThreadBoundedProviderSnapshot facts;
++    int64_t deadline;
++
++    provider_owner_prepare(&owner);
++    g_assert_cmpint(qemu_thread_bounded_provider_create_v1(
++        owner.storage, owner.incarnation), ==, 0);
++    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
++    while (!qatomic_load_acquire(&owner.entered) &&
++           g_get_monotonic_time() < deadline) {
++        sched_yield();
++    }
++    g_assert_true(qatomic_load_acquire(&owner.entered));
++    g_assert_cmpint(qemu_thread_bounded_provider_create_v1(
++        owner.storage, owner.incarnation), ==, -EALREADY);
++    g_assert_cmpint(qemu_thread_bounded_provider_tryretire_v1(
++        owner.storage, owner.incarnation), ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, &facts), ==, 0);
++    g_assert_true(facts.create_attempted);
++    g_assert_true(facts.create_returned);
++    g_assert_true(facts.worker_entered);
++    g_assert_true(facts.registry_registered);
++    g_assert_false(facts.registry_returned);
++    g_assert_false(facts.receipt.backing_returned);
++    g_assert_cmpint(qemu_thread_bounded_provider_storage_return_v1(
++        owner.storage, owner.incarnation, &facts), ==, -EBUSY);
++    qatomic_store_release(&owner.release, true);
++    provider_owner_retire(&owner, &facts);
++    g_assert_true(facts.receipt.born);
++    g_assert_true(facts.receipt.kernel_exited);
++    g_assert_true(facts.receipt.joined);
++    g_assert_true(facts.receipt.exit_cleanup_completed);
++    g_assert_true(facts.registry_returned);
++    g_assert_true(facts.notifiers_returned);
++    g_assert_true(qatomic_load_acquire(&owner.notifier_seen));
++    provider_owner_unmap(&owner);
++}
++
++static void test_provider_tsd_last_use(void)
++{
++    ProviderOwner owner;
++    QemuThreadBoundedProviderSnapshot facts;
++    int64_t deadline;
++
++    provider_owner_prepare(&owner);
++    owner.use_tsd = true;
++    /* Real creator-owned process key registrations force a second TSD block.
++     * The paid notifier node and destructor state stay in this external owner
++     * until actual kernel join and terminal storage return. */
++    for (size_t index = 0; index < G_N_ELEMENTS(owner.tsd_keys); index++) {
++        g_assert_cmpint(pthread_key_create(&owner.tsd_keys[index],
++                                          provider_tsd_destructor), ==, 0);
++    }
++    g_assert_cmpint(qemu_thread_bounded_provider_create_v1(
++        owner.storage, owner.incarnation), ==, 0);
++    deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
++    while (!qatomic_load_acquire(&owner.entered) &&
++           g_get_monotonic_time() < deadline) {
++        sched_yield();
++    }
++    g_assert_true(qatomic_load_acquire(&owner.entered));
++    g_assert_cmpint(owner.tsd_status, ==, 0);
++    qatomic_store_release(&owner.release, true);
++    while (!qatomic_load_acquire(&owner.tsd_entered) &&
++           g_get_monotonic_time() < deadline) {
++        sched_yield();
++    }
++    g_assert_true(qatomic_load_acquire(&owner.tsd_entered));
++    g_assert_true(qatomic_load_acquire(&owner.notifier_seen));
++    g_assert_cmpint(qemu_thread_bounded_provider_query_v1(
++        owner.storage, owner.incarnation), ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_provider_observe_v1(
++        owner.storage, owner.incarnation, &facts), ==, 0);
++    g_assert_true(facts.notifiers_returned);
++    g_assert_true(facts.registry_returned);
++    g_assert_false(facts.receipt.kernel_exited);
++    g_assert_false(facts.receipt.backing_returned);
++    g_assert_cmpint(qemu_thread_bounded_provider_tryretire_v1(
++        owner.storage, owner.incarnation), ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_bounded_provider_storage_return_v1(
++        owner.storage, owner.incarnation, &facts), ==, -EBUSY);
++
++    qatomic_store_release(&owner.tsd_release, true);
++    provider_owner_retire(&owner, &facts);
++    g_assert_cmpuint(facts.receipt.allocation[PTHREAD_BOUNDED_TSD].allocated,
++                     ==, 1);
++    g_assert_cmpuint(facts.receipt.allocation[PTHREAD_BOUNDED_TSD].released,
++                     ==, 1);
++    g_assert_true(facts.receipt.tls_returned);
++    for (size_t index = 0; index < G_N_ELEMENTS(owner.tsd_keys); index++) {
++        g_assert_cmpint(pthread_key_delete(owner.tsd_keys[index]), ==, 0);
++    }
++    provider_owner_unmap(&owner);
++}
++#endif
++
 +int main(int argc, char **argv)
 +{
 +    g_test_init(&argc, &argv, NULL);
@@ -311065,6 +311515,14 @@ index 0000000000000000000000000000000000000000..c8a15b6a01fa9a5296d1c2add15d43fd
 +#ifdef QEMU_BOUNDED_STORAGE_INTERNAL_CONTROLS
 +    g_test_add_func("/crucible/bounded/storage-fixed-controls",
 +                    test_storage_fixed_control_aliases);
++#endif
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    g_test_add_func("/crucible/bounded/provider-uncreated-return",
++                    test_provider_uncreated_return);
++    g_test_add_func("/crucible/bounded/provider-actual-birth-retirement",
++                    test_provider_actual_birth_retirement);
++    g_test_add_func("/crucible/bounded/provider-tsd-last-use",
++                    test_provider_tsd_last_use);
 +#endif
 +    return g_test_run();
 +}
@@ -356399,10 +356857,10 @@ index 0000000000000000000000000000000000000000..74a2182664644d826f76b314399b288e
 +    main()
 diff --git a/tests/unit/test-crucible-publisher-member-return.py b/tests/unit/test-crucible-publisher-member-return.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b8e86068a5d652d6d3c7de60ccb70a43efde8862
+index 0000000000000000000000000000000000000000..417f7b7d52ff42d4c9be9a615dc148cf7da480bf
 --- /dev/null
 +++ b/tests/unit/test-crucible-publisher-member-return.py
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,344 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise literal receiver-child cleanup facts without an accepting provider.
 +
@@ -356419,6 +356877,7 @@ index 0000000000000000000000000000000000000000..b8e86068a5d652d6d3c7de60ccb70a43
 +import signal
 +import subprocess
 +import resource
++import sys
 +import time
 +
 +
@@ -356583,6 +357042,8 @@ index 0000000000000000000000000000000000000000..b8e86068a5d652d6d3c7de60ccb70a43
 +    literal = '\n\n'.join(extract['function'](
 +        (args.source_root / path).read_text(), signature)
 +        for path, signature in (
++            ('plugins/crucible-stack-bank.inc.h',
++             'static bool stack_bank_borrowers_closed('),
 +            ('plugins/crucible-quantum-bank.inc.h',
 +             'static bool quantum_bank_resources_closed('),
 +            ('plugins/crucible-quantum-rr-parent.inc.h',
@@ -356725,6 +357186,9 @@ index 0000000000000000000000000000000000000000..b8e86068a5d652d6d3c7de60ccb70a43
 +        compiled = subprocess.run(command, cwd=args.build_dir, capture_output=True,
 +                                  text=True, timeout=180)
 +        (args.output_dir / f'{name}.compile.log').write_text(compiled.stdout + compiled.stderr)
++        if compiled.returncode:
++            sys.stdout.write(compiled.stdout)
++            sys.stderr.write(compiled.stderr)
 +        compiled.check_returncode()
 +        result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
 +        output = result.stdout + result.stderr
@@ -392702,7 +393166,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e509827064407950 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..5818995ce4175fc0fbcfc91877c951a14bdaf32a 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -393595,7 +394059,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,44 +1162,2286 @@ typedef struct {
+@@ -379,20 +1162,2250 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -393604,12 +394068,22 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
  } QemuThreadArgs;
  
 -static void *qemu_thread_start(void *args)
+-{
+-    QemuThreadArgs *qemu_thread_args = args;
+-    void *(*start_routine)(void *) = qemu_thread_args->start_routine;
+-    void *arg = qemu_thread_args->arg;
+-    void *r;
 +struct QemuThreadRamActorBinding {
 +    void *record;
 +    int64_t process_id;
 +    int64_t thread_id;
 +};
-+
+ 
+-    if (qemu_thread_args->name) {
+-        qemu_thread_set_name(qemu_thread_args->name);
+-    }
+-    QEMU_TSAN_ANNOTATE_THREAD_NAME(qemu_thread_args->name);
+-    g_free(qemu_thread_args->name);
 +typedef struct QemuHotForkThreadRecord {
 +    int64_t thread_id;
 +    char name[QEMU_HOT_FORK_THREAD_NAME_MAX + 1];
@@ -393644,6 +394118,20 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +    QemuThreadArgs arguments;
 +    QemuHotForkThreadRecord record;
 +    GList inventory_link;
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    QemuThreadBoundedProviderSnapshot provider;
++    struct pthread_bounded_config provider_config;
++    pthread_bounded_t *provider_control;
++    void *provider_arena;
++    size_t provider_arena_bytes;
++    void *provider_stack;
++    size_t provider_stack_bytes;
++    pthread_t provider_thread;
++    void *provider_result;
++    bool provider_busy;
++    bool provider_operation_returned;
++    bool provider_start_in_flight;
++#endif
 +    char name[];
 +};
 +
@@ -393679,16 +394167,10 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 + * the registry mutex; a native observer cannot create a new thread of its own
 + * while lending read-only closure. Detect that unsupported reentry explicitly. */
 +static void ram_membership_wait_locked(void)
- {
--    QemuThreadArgs *qemu_thread_args = args;
--    void *(*start_routine)(void *) = qemu_thread_args->start_routine;
--    void *arg = qemu_thread_args->arg;
--    void *r;
++{
 +    while (ram_membership_owner) {
 +        int status;
- 
--    if (qemu_thread_args->name) {
--        qemu_thread_set_name(qemu_thread_args->name);
++
 +        if (ram_membership_owner->owner_thread_id == qemu_get_thread_id()) {
 +            error_exit(EDEADLK, __func__);
 +        }
@@ -393697,40 +394179,16 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +        if (status) {
 +            error_exit(status, __func__);
 +        }
-     }
--    QEMU_TSAN_ANNOTATE_THREAD_NAME(qemu_thread_args->name);
--    g_free(qemu_thread_args->name);
--    g_free(qemu_thread_args);
--
--    /*
--     * GCC 11 with glibc 2.17 on PowerPC reports
--     *
--     * qemu-thread-posix.c:540:5: error: ‘__sigsetjmp’ accessing 656 bytes
--     *   in a region of size 528 [-Werror=stringop-overflow=]
--     * 540 |     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
--     *     |     ^~~~~~~~~~~~~~~~~~~~
--     *
--     * which is clearly nonsense.
--     */
--#pragma GCC diagnostic push
--#ifndef __clang__
--#pragma GCC diagnostic ignored "-Wstringop-overflow"
--#endif
--
--    pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
--    r = start_routine(arg);
--    pthread_cleanup_pop(1);
++    }
 +}
- 
--#pragma GCC diagnostic pop
++
 +/* Only an actual admitted interval lends its existing global drain debt. The
 + * fork-invalidated ID corroborates that this is still the admitting thread;
 + * inherited depth must never bypass a copied, possibly locked writer mutex. */
 +static bool ram_writer_record_inherited(QemuHotForkThreadRecord *record)
 +{
 +    int64_t thread_id;
- 
--    return r;
++
 +    if (!record) {
 +        return false;
 +    }
@@ -395860,31 +396318,22 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +                                        qemu_thread_args->bounded, arg);
 +    qemu_hot_fork_thread_start_end();
 +    g_free(qemu_thread_args->name);
-+    g_free(qemu_thread_args);
-+
-+    /*
-+     * GCC 11 with glibc 2.17 on PowerPC reports
-+     *
-+     * qemu-thread-posix.c:540:5: error: ‘__sigsetjmp’ accessing 656 bytes
-+     *   in a region of size 528 [-Werror=stringop-overflow=]
-+     * 540 |     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
-+     *     |     ^~~~~~~~~~~~~~~~~~~~
-+     *
-+     * which is clearly nonsense.
-+     */
-+#pragma GCC diagnostic push
-+#ifndef __clang__
-+#pragma GCC diagnostic ignored "-Wstringop-overflow"
-+#endif
-+
+     g_free(qemu_thread_args);
+ 
+     /*
+@@ -410,13 +3423,39 @@ static void *qemu_thread_start(void *args)
+ #pragma GCC diagnostic ignored "-Wstringop-overflow"
+ #endif
+ 
 +    pthread_cleanup_push(qemu_hot_fork_thread_unregister, hot_fork_record);
-+    pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
-+    r = start_routine(arg);
+     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
+     r = start_routine(arg);
+     pthread_cleanup_pop(1);
 +    pthread_cleanup_pop(1);
-+    pthread_cleanup_pop(1);
-+
-+#pragma GCC diagnostic pop
-+
+ 
+ #pragma GCC diagnostic pop
+ 
+-    return r;
 +    return r;
 +}
 +
@@ -395913,7 +396362,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
  }
  
  void qemu_thread_create(QemuThread *thread, const char *name,
-@@ -450,18 +3475,486 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3489,998 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
@@ -396041,12 +396490,14 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +
 +/* The actual registry lock protects retained storage and ordinary records.
 + * Refuse before any write if the finite inventory cannot be inspected fully. */
-+static bool bounded_storage_conflict_locked(const void *span, size_t bytes)
++static bool bounded_storage_conflict_except_locked(
++    const void *span, size_t bytes, const QemuThreadBoundedStorage *except)
 +{
 +    QemuHotForkThreadRecord *record;
 +    GList *node;
 +    size_t inspected = 0;
 +
++    (void)except;
 +    if (!span || !bytes || bytes > UINTPTR_MAX - (uintptr_t)span ||
 +        bounded_storage_fixed_conflict(span, bytes) ||
 +        (ram_membership_owner && bounded_storage_intersects(
@@ -396066,6 +396517,15 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +                storage->facts.backing_bytes)) {
 +            return true;
 +        }
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++        if (storage && storage != except && storage->provider_arena &&
++            (bounded_storage_intersects(span, bytes, storage->provider_arena,
++                                        storage->provider_arena_bytes) ||
++             bounded_storage_intersects(span, bytes, storage->provider_stack,
++                                        storage->provider_stack_bytes))) {
++            return true;
++        }
++#endif
 +        if (record->bounded && bounded_storage_intersects(
 +                span, bytes, record->bounded, sizeof(*record->bounded))) {
 +            return true;
@@ -396081,6 +396541,11 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +        }
 +    }
 +    return false;
++}
++
++static bool bounded_storage_conflict_locked(const void *span, size_t bytes)
++{
++    return bounded_storage_conflict_except_locked(span, bytes, NULL);
 +}
 +
 +static int bounded_storage_find_locked(QemuThreadBoundedStorage *candidate,
@@ -396221,6 +396686,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +        return -status;
 +    }
 +    status = bounded_storage_find_locked(storage, incarnation, &link);
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++    /* An external producer may still be publishing canonical output fields.
++     * Preserve its retained operation rather than race that publication. */
++    if (!status && storage->provider_busy) {
++        status = -EBUSY;
++    }
++#endif
 +    if (!status && bounded_storage_conflict_locked(out, sizeof(*out))) {
 +        status = -EADDRINUSE;
 +    }
@@ -396232,6 +396704,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +         * checked exact bounded owners, not just the active census count. */
 +        if (ram_membership_owner ||
 +            storage->facts.creation_attempted || storage->facts.birth_uncertain ||
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++            storage->provider.init_attempted ||
++#endif
 +            storage->record.tracked || storage->record.bounded ||
 +            storage->record.thread_id) {
 +            status = -EBUSY;
@@ -396262,6 +396737,492 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..d4c2008ba6f0de886a1d6317e5098270
 +{
 +    return bounded_storage_snapshot(storage, incarnation, out, true);
 +}
++
++#ifdef CONFIG_PTHREAD_BOUNDED_PROVIDER
++static void bounded_provider_unlock(void)
++{
++    int status = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++
++    if (status) {
++        error_exit(status, __func__);
++    }
++}
++
++static bool bounded_provider_spans_current_locked(
++    QemuThreadBoundedStorage *storage)
++{
++    return storage->provider_arena && storage->provider_stack &&
++        storage->provider_arena_bytes && storage->provider_stack_bytes &&
++        !bounded_storage_intersects(storage->provider_arena,
++                                    storage->provider_arena_bytes,
++                                    storage->provider_stack,
++                                    storage->provider_stack_bytes) &&
++        !bounded_storage_conflict_except_locked(storage->provider_arena,
++                                    storage->provider_arena_bytes, storage) &&
++        !bounded_storage_conflict_except_locked(storage->provider_stack,
++                                    storage->provider_stack_bytes, storage);
++}
++
++/* Only the exact native retained member authenticates a nominated owner.
++ * A completed external operation can be settled on the next nonwaiting cut;
++ * interruption before its release publication retains the whole operation. */
++static int bounded_provider_claim(QemuThreadBoundedStorage *storage,
++                                  uint64_t incarnation)
++{
++    QemuHotForkThreadRecord **link;
++    int status = pthread_mutex_trylock(&qemu_hot_fork_thread_lock);
++
++    if (status) {
++        return -status;
++    }
++    status = bounded_storage_find_locked(storage, incarnation, &link);
++    if (!status && ram_membership_owner) {
++        status = -EBUSY;
++    }
++    if (!status && storage->provider_busy) {
++        if (qatomic_load_acquire(&storage->provider_operation_returned)) {
++            storage->provider_busy = false;
++        } else {
++            status = -EBUSY;
++        }
++    }
++    if (status) {
++        bounded_provider_unlock();
++    }
++    return status;
++}
++
++static void bounded_provider_begin(QemuThreadBoundedStorage *storage)
++{
++    storage->provider_busy = true;
++    qatomic_set(&storage->provider_operation_returned, false);
++    bounded_provider_unlock();
++}
++
++static int bounded_provider_complete(QemuThreadBoundedStorage *storage,
++                                     int status)
++{
++    if (status && !storage->provider.first_status) {
++        storage->provider.first_status = status;
++    }
++    qatomic_store_release(&storage->provider_operation_returned, true);
++    return status;
++}
++
++int qemu_thread_bounded_provider_init_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    void *arena, size_t arena_bytes,
++    const struct pthread_bounded_config *config,
++    void *stack, size_t stack_bytes)
++{
++    struct pthread_bounded_config selected;
++    int status;
++
++    if (!config || !arena || !arena_bytes || !stack || !stack_bytes ||
++        arena_bytes > UINTPTR_MAX - (uintptr_t)arena ||
++        stack_bytes > UINTPTR_MAX - (uintptr_t)stack ||
++        bounded_storage_intersects(arena, arena_bytes, stack, stack_bytes)) {
++        return -EINVAL;
++    }
++    selected = *config;
++    if (selected.version != PTHREAD_BOUNDED_VERSION ||
++        selected.size != sizeof(selected) ||
++        selected.flags != PTHREAD_BOUNDED_STRICT || selected.reserved) {
++        return -ENOTSUP;
++    }
++    status = bounded_provider_claim(storage, incarnation);
++    if (status) {
++        return status;
++    }
++    if (storage->provider.init_attempted || storage->facts.creation_attempted) {
++        status = -EALREADY;
++    } else if (bounded_storage_conflict_locked(arena, arena_bytes) ||
++               bounded_storage_conflict_locked(stack, stack_bytes)) {
++        status = -EADDRINUSE;
++    }
++    if (status) {
++        bounded_provider_unlock();
++        return status;
++    }
++    storage->provider_config = selected;
++    storage->provider_arena = arena;
++    storage->provider_arena_bytes = arena_bytes;
++    storage->provider_stack = stack;
++    storage->provider_stack_bytes = stack_bytes;
++    storage->provider.init_attempted = true;
++    bounded_provider_begin(storage);
++
++    /* Outputs belong to the retained wrapper, outside both libc spans. Save
++     * the actual control/incarnation directly, before any subsequent effect. */
++    status = pthread_bounded_init_np(arena, arena_bytes,
++                                     &storage->provider_config,
++                                     &storage->provider_control,
++                                     &storage->provider.provider_incarnation);
++    storage->provider.init_status = -status;
++    storage->provider.init_returned = true;
++    return bounded_provider_complete(storage, -status);
++}
++
++static void bounded_provider_notifiers(void *opaque)
++{
++    QemuThreadBoundedStorage *storage = opaque;
++    int status;
++
++    qemu_thread_atexit_notify(NULL);
++    /* This is the actual callback return, not kernel exit or TLS completion. */
++    status = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        error_exit(status, __func__);
++    }
++    storage->provider.notifiers_returned = true;
++    status = pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        error_exit(status, __func__);
++    }
++}
++
++static void bounded_provider_depart(void *opaque)
++{
++    QemuThreadBoundedStorage *storage = opaque;
++    QemuHotForkThreadRecord *record = &storage->record;
++    GList *cell = &storage->inventory_link;
++    int status = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (status) {
++        /* This existing native cleanup convention is fatal, never a return. */
++        error_exit(status, __func__);
++    }
++    if (!record->tracked || !storage->provider.registry_registered ||
++        !pthread_equal(record->bounded_thread, pthread_self()) ||
++        qemu_hot_fork_current_thread != record || ram_membership_owner ||
++        !qemu_hot_fork_thread_count) {
++        storage->provider.registry_status = -ESTALE;
++    } else {
++        /* The actual paid cell is unlinked without GLib freeing that cell. */
++        if (cell->prev) {
++            cell->prev->next = cell->next;
++        } else {
++            assert(qemu_hot_fork_threads == cell);
++            qemu_hot_fork_threads = cell->next;
++        }
++        if (cell->next) {
++            cell->next->prev = cell->prev;
++        }
++        cell->prev = cell->next = NULL;
++        record->tracked = false;
++        record->bounded_departed = true;
++        qemu_hot_fork_thread_count--;
++        storage->provider.registry_returned = true;
++        if (qemu_hot_fork_thread_generation == UINT64_MAX) {
++            storage->provider.registry_status = -EOVERFLOW;
++        } else {
++            qemu_hot_fork_thread_generation++;
++        }
++    }
++    bounded_provider_unlock();
++    qemu_hot_fork_current_thread = NULL;
++}
++
++static void *bounded_provider_start(void *opaque)
++{
++    QemuThreadBoundedStorage *storage = opaque;
++    QemuHotForkThreadRecord *record = &storage->record;
++    GList *cell = &storage->inventory_link;
++    void *result;
++    int status = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++
++    if (status) {
++        error_exit(status, __func__);
++    }
++    storage->provider.worker_entered = true;
++    if (!storage->provider_start_in_flight || ram_membership_owner ||
++        storage->process_id != getpid() || record->tracked ||
++        qemu_hot_fork_thread_count == QEMU_HOT_FORK_THREAD_INVENTORY_MAX ||
++        qemu_hot_fork_thread_generation == UINT64_MAX) {
++        storage->provider.registry_status = -ESTALE;
++    } else {
++        record->thread_id = qemu_get_thread_id();
++        record->bounded_thread = pthread_self();
++        record->tracked = true;
++        cell->prev = NULL;
++        cell->next = qemu_hot_fork_threads;
++        if (cell->next) {
++            cell->next->prev = cell;
++        }
++        qemu_hot_fork_threads = cell;
++        qemu_hot_fork_thread_count++;
++        qemu_hot_fork_thread_generation++;
++        storage->provider.registry_registered = true;
++        qemu_hot_fork_current_thread = record;
++    }
++    if (storage->provider_start_in_flight) {
++        assert(qemu_hot_fork_thread_starts_in_flight);
++        qemu_hot_fork_thread_starts_in_flight--;
++        storage->provider_start_in_flight = false;
++    }
++    status = storage->provider.registry_status;
++    bounded_provider_unlock();
++    if (status) {
++        return NULL;
++    }
++
++    qemu_thread_set_name(storage->name);
++    QEMU_TSAN_ANNOTATE_THREAD_NAME(storage->name);
++    pthread_cleanup_push(bounded_provider_depart, storage);
++    pthread_cleanup_push(bounded_provider_notifiers, storage);
++    result = storage->arguments.start_routine(storage->arguments.arg);
++    pthread_cleanup_pop(1);
++    pthread_cleanup_pop(1);
++    return result;
++}
++
++int qemu_thread_bounded_provider_create_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation)
++{
++    pthread_attr_t attributes;
++    sigset_t blocked, previous;
++    bool attributes_live = false, mask_changed = false;
++    int status = bounded_provider_claim(storage, incarnation);
++
++    if (status) {
++        return status;
++    }
++    if (!storage->provider.init_returned || storage->provider.init_status ||
++        !storage->provider_control || !storage->provider.provider_incarnation) {
++        status = -ESTALE;
++    } else if (storage->facts.creation_attempted ||
++               storage->provider.retire_attempted) {
++        status = -EALREADY;
++    } else if (!bounded_provider_spans_current_locked(storage)) {
++        status = -EADDRINUSE;
++    }
++    if (status) {
++        bounded_provider_unlock();
++        return status;
++    }
++    storage->facts.creation_attempted = true;
++    bounded_provider_begin(storage);
++
++    storage->provider.attr_init_attempted = true;
++    status = -pthread_attr_init(&attributes);
++    storage->provider.attr_init_status = status;
++    if (status) {
++        goto complete;
++    }
++    attributes_live = true;
++    storage->provider.attr_stack_attempted = true;
++    status = -pthread_attr_setstack(&attributes, storage->provider_stack,
++                                    storage->provider_stack_bytes);
++    storage->provider.attr_stack_status = status;
++    if (status) {
++        goto complete;
++    }
++    storage->provider.attr_guard_attempted = true;
++    status = -pthread_attr_setguardsize(&attributes, 0);
++    storage->provider.attr_guard_status = status;
++    if (status) {
++        goto complete;
++    }
++    sigfillset(&blocked);
++    sigdelset(&blocked, SIGSEGV);
++    sigdelset(&blocked, SIGFPE);
++    sigdelset(&blocked, SIGILL);
++    storage->provider.mask_block_attempted = true;
++    status = -pthread_sigmask(SIG_SETMASK, &blocked, &previous);
++    storage->provider.mask_block_status = status;
++    if (status) {
++        goto complete;
++    }
++    mask_changed = true;
++    status = pthread_mutex_trylock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        status = -status;
++        goto complete;
++    }
++    {
++        QemuHotForkThreadRecord **link;
++
++        status = bounded_storage_find_locked(storage, incarnation, &link);
++    }
++    if (!status && !bounded_provider_spans_current_locked(storage)) {
++        status = -EADDRINUSE;
++    }
++    if (!status && (ram_membership_owner ||
++        qemu_hot_fork_thread_starts_in_flight == SIZE_MAX ||
++        qemu_hot_fork_thread_generation == UINT64_MAX)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        qemu_hot_fork_thread_starts_in_flight++;
++        qemu_hot_fork_thread_generation++;
++        storage->provider_start_in_flight = true;
++        storage->facts.birth_uncertain = true;
++        storage->provider.create_attempted = true;
++    }
++    bounded_provider_unlock();
++    if (status) {
++        goto complete;
++    }
++    status = -pthread_bounded_create_np(
++        storage->provider_control, storage->provider.provider_incarnation,
++        &storage->provider_thread, &attributes, bounded_provider_start, storage,
++        &storage->provider.receipt);
++    storage->provider.create_status = status;
++    storage->provider.create_returned = true;
++
++complete:
++    if (status && !storage->provider.first_status) {
++        storage->provider.first_status = status;
++    }
++    if (mask_changed) {
++        storage->provider.mask_restore_attempted = true;
++        storage->provider.mask_restore_status =
++            -pthread_sigmask(SIG_SETMASK, &previous, NULL);
++    }
++    if (attributes_live) {
++        storage->provider.attr_destroy_attempted = true;
++        storage->provider.attr_destroy_status = -pthread_attr_destroy(&attributes);
++    }
++    /* Independent cleanup failures never replace the initial causal result. */
++    if (!status) {
++        status = storage->provider.mask_restore_status ?:
++                 storage->provider.attr_destroy_status;
++    }
++    return bounded_provider_complete(storage, status);
++}
++
++static int bounded_provider_read(QemuThreadBoundedStorage *storage,
++                                 uint64_t incarnation, bool retire)
++{
++    int status = bounded_provider_claim(storage, incarnation);
++
++    if (status) {
++        return status;
++    }
++    if (!storage->provider.init_returned || !storage->provider_control ||
++        !storage->provider.provider_incarnation ||
++        storage->provider.receipt.backing_returned) {
++        bounded_provider_unlock();
++        return -ESTALE;
++    }
++    if (retire) {
++        storage->provider.retire_attempted = true;
++        storage->provider.retire_returned = false;
++    } else {
++        storage->provider.query_attempted = true;
++        storage->provider.query_returned = false;
++    }
++    bounded_provider_begin(storage);
++    if (retire) {
++        status = -pthread_bounded_tryretire_np(
++            storage->provider_control, storage->provider.provider_incarnation,
++            &storage->provider_result, &storage->provider.receipt);
++        storage->provider.retire_status = status;
++        storage->provider.retire_returned = true;
++    } else {
++        status = -pthread_bounded_query_np(
++            storage->provider_control, storage->provider.provider_incarnation,
++            &storage->provider.receipt);
++        storage->provider.query_status = status;
++        storage->provider.query_returned = true;
++    }
++    return bounded_provider_complete(storage, status);
++}
++
++int qemu_thread_bounded_provider_query_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation)
++{
++    return bounded_provider_read(storage, incarnation, false);
++}
++
++int qemu_thread_bounded_provider_tryretire_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation)
++{
++    return bounded_provider_read(storage, incarnation, true);
++}
++
++static int bounded_provider_observe(QemuThreadBoundedStorage *storage,
++                                    uint64_t incarnation,
++                                    QemuThreadBoundedProviderSnapshot *out,
++                                    bool release)
++{
++    QemuHotForkThreadRecord **link;
++    int status;
++
++    if (!out) {
++        return -EINVAL;
++    }
++    status = bounded_provider_claim(storage, incarnation);
++    if (status) {
++        return status;
++    }
++    if (bounded_storage_conflict_locked(out, sizeof(*out))) {
++        status = -EADDRINUSE;
++    } else if (release) {
++        struct pthread_bounded_receipt *receipt = &storage->provider.receipt;
++
++        if (!storage->provider.retire_returned ||
++            storage->provider.retire_status || !receipt->backing_returned ||
++            receipt->version != PTHREAD_BOUNDED_VERSION ||
++            receipt->size != sizeof(*receipt) ||
++            receipt->incarnation != storage->provider.provider_incarnation ||
++            receipt->backing != (uintptr_t)storage->provider_arena ||
++            receipt->backing_bytes != storage->provider_arena_bytes ||
++            storage->provider.mask_restore_status ||
++            storage->provider.attr_destroy_status ||
++            storage->provider.registry_status || storage->record.tracked ||
++            (receipt->born &&
++             (!receipt->kernel_exited || !receipt->joined ||
++              !receipt->exit_cleanup_completed ||
++              !receipt->list_returned || !receipt->tls_returned ||
++              !receipt->stack_returned || !receipt->registration_returned ||
++              receipt->stack != (uintptr_t)storage->provider_stack ||
++              receipt->stack_bytes != storage->provider_stack_bytes ||
++              !storage->provider.registry_returned ||
++              !storage->provider.notifiers_returned)) ||
++            (!receipt->born &&
++             (storage->provider.worker_entered ||
++              storage->provider.registry_registered))) {
++            status = -EBUSY;
++        } else {
++            status = bounded_storage_find_locked(storage, incarnation, &link);
++        }
++        if (!status) {
++            /* Never return a retained in-flight count on an errno alone. The
++             * matching provider's physical arena return is the terminal fact. */
++            if (storage->provider_start_in_flight) {
++                assert(qemu_hot_fork_thread_starts_in_flight);
++                qemu_hot_fork_thread_starts_in_flight--;
++                storage->provider_start_in_flight = false;
++            }
++            *link = storage->record.bounded_next;
++            storage->record.bounded_next = NULL;
++            storage->facts.return_attempted = true;
++            storage->facts.birth_uncertain = false;
++            storage->facts.custody_returned = true;
++        }
++    }
++    if (!status) {
++        *out = storage->provider;
++    }
++    bounded_provider_unlock();
++    return status;
++}
++
++int qemu_thread_bounded_provider_observe_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedProviderSnapshot *out)
++{
++    return bounded_provider_observe(storage, incarnation, out, false);
++}
++
++int qemu_thread_bounded_provider_storage_return_v1(
++    QemuThreadBoundedStorage *storage, uint64_t incarnation,
++    QemuThreadBoundedProviderSnapshot *out)
++{
++    return bounded_provider_observe(storage, incarnation, out, true);
++}
++#endif
 +
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,
 +                              void *(*entry)(void *), void *opaque,

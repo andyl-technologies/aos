@@ -259,12 +259,73 @@ component's compile-database lookup. The original and derived commands remain
 in evidence. Its original 180-second component and six-GiB process-tree bounds
 remain unchanged. Fresh packaged Source qualification passes all 187 tests.
 Canonical atomic reconstruction, the 433-file license ledger, engineering hygiene and ABI
-conformance pass. Packaged Native qualification and the strict license-boundary
-gate remain in progress. The earlier full-package six-failure result is retained;
+conformance pass. The packaged Native attempt passes the Source suite and
+eleven components, then fails compiling the publisher-member-return positive
+control because its extracted pending-constructor closure omitted the actual
+`stack_bank_borrowers_closed` dependency. The stack-bank component was not
+reached. The original compiler failure remains retained; a later source stage
+adds the genuine dependency and emits captured compiler diagnostics. Its direct
+positive and all 25 exact omission controls pass, without changing assertions.
+A new complete packaged Native result remains pending. The strict
+license-boundary attempt fails during host Clippy compilation with 908 errors;
+the boundary gate therefore remains unqualified. The earlier full-package six-failure result is retained;
 direct fixture repairs do not establish a new full-package pass. The substantive
 dirty-iterator launched lifecycle refusal remains. Genuine matched Module/Core/Source construction,
 post-Main terminal ownership, application and stack grants, worker last use,
 external reap, physical debit return and profile admission remain unqualified.
+
+#### Installed bounded-pthread QEMU consumer
+
+The signed atomic patch now selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,
+conventional source `48867e31f9a74fea78e6178a815bf64094389d51`, tree
+`72dd4ea029469cc144141cb69cab3a91ce2e26ae`. It adds the actual optional
+supplied-stack pthread consumer while preserving canonical stack debt and
+ordinary pthread behavior. The wrapper retains provider control, incarnation,
+stack and arena before initialization or birth. Terminal return independently
+checks notifier and registry departure, kernel join, TLS tails and external
+backing disposition. A linked storage ABI does not admit a runtime profile.
+
+Independent verification matches all 33 sealed payloads, 78,240 source entries
+and 72 literal links, 9,259 evidence files and six literal evidence links,
+signed stage identities, fixed atomic dates, canonical patch and the exact
+single-prerequisite delivery bundle. Its proof is
+`a468a2ea4840a4133a30c3217332face170e594c3f833b95097014adb00762de`.
+The six consumer implementation files match the separately reviewed signed
+consumer exactly. The extracted member-return fixture now includes its genuine
+stack-bank closure dependency; its positive and all 25 omission controls pass.
+
+The final composed component qualification passes ordinary and installed-provider
+Source, Native and preexec owning objects, genuine Meson unit registrations,
+executed layout observations and four separately rebuilt intended-assertion
+provider controls. It uses one sequential compiler, unchanged 600-second suite,
+180-second compile/link, 30-second run, CORE zero and six-GiB process and sampled
+process-tree limits. Actual wrapper storage grows from 504 to 1,152 bytes with
+the provider enabled; both measured layouts remain separate pricing inputs.
+These results do not establish the joined lifecycle storage floor or admission.
+
+The new `checks.crucible.phase7.qemuBoundedThreadUnit` uses the package's genuine
+unpack/configure phases and the matching AOS-built compiler/libc. It authenticates
+Meson's actual capability and test registration, builds the real target with one
+Ninja worker, then checks installed-header dependencies, ELF interpreter, runtime
+libc and execution of real worker birth, terminal return and TSD last use.
+Its first attempt refused before compilation because the checker expected an
+integer-valued capability marker while Meson emits a valueless true definition.
+That refusal is retained; the corrected check accepts the actual true forms and
+continues to reject undefined or zero-valued capability. Fresh hermetic execution
+passes all 11 registered tests with none skipped, including the real supplied-stack
+worker and held TSD destructor. Genuine Ninja compilation takes 185.405 seconds
+within 600; the registered unit takes 0.017 seconds within 30. The matching
+installed public header, libc and ELF loader are verified. Evidence retains
+583 actual objects, three archives and 585 depfiles as identities, with no
+executable exported. Core evaluation, canonical atomic reconstruction, the
+433-file ledger and engineering hygiene pass. The complete corrected Native
+suite and fresh ABI qualification remain in progress.
+
+Application allocation remains a separate physical owner: GLib DSO allocation,
+Main-created work freed on RR, TCG contexts, translation pools, global caches,
+callbacks and RCU lifetimes are not paid by pthread metadata or returned by
+worker join. Genuine same-parent application/stack issuance, complete RR stop
+and last use, physical debit return and the selected profile remain unqualified.
 
 #### Physical stack/member and genuine fixture-provider composition
 

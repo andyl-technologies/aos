@@ -3071,6 +3071,9 @@ in rec {
     qemuNativeCustodyUnit = import ./phase7-qemu-native-custody-unit.nix {
       inherit pkgs;
     };
+    qemuBoundedThreadUnit = import ./phase7-qemu-bounded-thread-unit.nix {
+      inherit pkgs;
+    };
     qemuStartupSourceUnit = import ./phase7-qemu-startup-source-unit.nix {
       inherit pkgs;
     };
