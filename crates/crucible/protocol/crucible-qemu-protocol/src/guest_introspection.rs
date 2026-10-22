@@ -283,23 +283,7 @@ impl GuestIntrospectionRecord {
     /// kind or [`GuestIntrospectionError::FeatureChannelMismatch`] when the
     /// reserved feature channel is used by a request.
     pub fn validate_host_request(&self) -> Result<(), GuestIntrospectionError> {
-        if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID {
-            return Err(GuestIntrospectionError::FeatureChannelMismatch);
-        }
-        match &self.message {
-            GuestIntrospectionMessage::Exec { .. }
-            | GuestIntrospectionMessage::Pty { .. }
-            | GuestIntrospectionMessage::Ssh { .. }
-            | GuestIntrospectionMessage::Input(_)
-            | GuestIntrospectionMessage::Resize { .. }
-            | GuestIntrospectionMessage::Close => Ok(()),
-            GuestIntrospectionMessage::Features(_)
-            | GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. } => {
-                Err(GuestIntrospectionError::WrongDirection)
-            }
-        }
+        validate_host_request_kind(self.channel_id, message_header(&self.message).0)
     }
 
     /// Validates that this record may travel from the guest agent to the host.
@@ -311,34 +295,27 @@ impl GuestIntrospectionRecord {
     /// feature advertisement uses another channel, or another response uses
     /// the reserved feature channel.
     pub fn validate_guest_response(&self) -> Result<(), GuestIntrospectionError> {
-        match &self.message {
-            GuestIntrospectionMessage::Features(_)
-                if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
-            {
-                Ok(())
-            }
-            GuestIntrospectionMessage::Features(_) => {
-                Err(GuestIntrospectionError::FeatureChannelMismatch)
-            }
-            GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. }
-                if self.channel_id != GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
-            {
-                Ok(())
-            }
-            GuestIntrospectionMessage::Output { .. }
-            | GuestIntrospectionMessage::Exit { .. }
-            | GuestIntrospectionMessage::Error { .. } => {
-                Err(GuestIntrospectionError::FeatureChannelMismatch)
-            }
-            GuestIntrospectionMessage::Exec { .. }
-            | GuestIntrospectionMessage::Pty { .. }
-            | GuestIntrospectionMessage::Ssh { .. }
-            | GuestIntrospectionMessage::Input(_)
-            | GuestIntrospectionMessage::Resize { .. }
-            | GuestIntrospectionMessage::Close => Err(GuestIntrospectionError::WrongDirection),
-        }
+        validate_guest_response_kind(self.channel_id, message_header(&self.message).0)
+    }
+
+    /// Validates a host request directly from borrowed encoded bytes.
+    ///
+    /// # Errors
+    /// Returns decoding errors for malformed records, or the same direction
+    /// and feature-channel errors as [`Self::validate_host_request`].
+    pub fn validate_encoded_host_request(bytes: &[u8]) -> Result<(), GuestIntrospectionError> {
+        let record = wire_decoder::decode(bytes)?;
+        validate_host_request_kind(record.channel_id, record.kind)
+    }
+
+    /// Validates a guest response directly from borrowed encoded bytes.
+    ///
+    /// # Errors
+    /// Returns decoding errors for malformed records, or the same direction
+    /// and feature-channel errors as [`Self::validate_guest_response`].
+    pub fn validate_encoded_guest_response(bytes: &[u8]) -> Result<(), GuestIntrospectionError> {
+        let record = wire_decoder::decode(bytes)?;
+        validate_guest_response_kind(record.channel_id, record.kind)
     }
 
     /// Encodes one complete little-endian protocol record.
@@ -439,6 +416,31 @@ const KIND_CLOSE: u8 = 7;
 const KIND_OUTPUT: u8 = 8;
 const KIND_EXIT: u8 = 9;
 const KIND_ERROR: u8 = 10;
+
+fn validate_host_request_kind(channel_id: u64, kind: u8) -> Result<(), GuestIntrospectionError> {
+    if channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID {
+        return Err(GuestIntrospectionError::FeatureChannelMismatch);
+    }
+    match kind {
+        KIND_EXEC | KIND_PTY | KIND_SSH | KIND_INPUT | KIND_RESIZE | KIND_CLOSE => Ok(()),
+        _ => Err(GuestIntrospectionError::WrongDirection),
+    }
+}
+
+fn validate_guest_response_kind(channel_id: u64, kind: u8) -> Result<(), GuestIntrospectionError> {
+    match kind {
+        KIND_FEATURES if channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID => Ok(()),
+        KIND_OUTPUT | KIND_EXIT | KIND_ERROR
+            if channel_id != GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
+        {
+            Ok(())
+        }
+        KIND_FEATURES | KIND_OUTPUT | KIND_EXIT | KIND_ERROR => {
+            Err(GuestIntrospectionError::FeatureChannelMismatch)
+        }
+        _ => Err(GuestIntrospectionError::WrongDirection),
+    }
+}
 
 fn message_header(message: &GuestIntrospectionMessage) -> (u8, u8) {
     match message {
@@ -767,6 +769,14 @@ mod tests {
                 .encode()
                 .unwrap_or_else(|error| panic!("record should encode: {error}"));
             assert_eq!(GuestIntrospectionRecord::validate_encoded(&bytes), Ok(()));
+            assert_eq!(
+                GuestIntrospectionRecord::validate_encoded_host_request(&bytes),
+                record.validate_host_request()
+            );
+            assert_eq!(
+                GuestIntrospectionRecord::validate_encoded_guest_response(&bytes),
+                record.validate_guest_response()
+            );
             let mut fixed = [0xa5; GUEST_INTROSPECTION_MAX_RECORD_BYTES + 1];
             let length = record.encode_into_slice(&mut fixed).unwrap();
             assert_eq!(&fixed[..length], bytes);

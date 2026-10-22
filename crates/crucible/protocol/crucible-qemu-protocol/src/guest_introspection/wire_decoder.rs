@@ -6,11 +6,17 @@
 
 use super::*;
 
+/// Retains validated message fields borrowed from one complete wire record.
 pub(super) struct BorrowedRecord<'a> {
-    channel_id: u64,
+    pub(super) channel_id: u64,
+    pub(super) kind: u8,
     message: BorrowedMessage<'a>,
 }
 
+/// Borrows a complete record after framing, UTF-8 and semantic validation.
+///
+/// # Errors
+/// Returns malformed framing, unsupported tags or invalid field errors.
 pub(super) fn decode(bytes: &[u8]) -> Result<BorrowedRecord<'_>, GuestIntrospectionError> {
     if bytes.len() < GUEST_INTROSPECTION_HEADER_LEN {
         return Err(GuestIntrospectionError::Truncated { len: bytes.len() });
@@ -48,6 +54,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<BorrowedRecord<'_>, GuestIntrospect
     message.validate()?;
     Ok(BorrowedRecord {
         channel_id,
+        kind,
         message,
     })
 }
@@ -88,6 +95,10 @@ enum BorrowedMessage<'a> {
 }
 
 impl BorrowedRecord<'_> {
+    /// Constructs owned payload fields after complete borrowed validation.
+    ///
+    /// # Errors
+    /// Returns framing or UTF-8 errors if the validated argv invariant is broken.
     pub(super) fn into_owned(self) -> Result<GuestIntrospectionRecord, GuestIntrospectionError> {
         let message = match self.message {
             BorrowedMessage::Features(features) => GuestIntrospectionMessage::Features(features),

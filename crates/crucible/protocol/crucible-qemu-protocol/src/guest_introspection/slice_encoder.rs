@@ -30,6 +30,7 @@ impl GuestIntrospectionRecord {
 
     // Both callers validate the immutable record and the complete destination
     // before entering. Every bounded field contributes to that exact length.
+    /// Appends canonical bytes after the parent validates record and capacity.
     pub(super) fn encode_reserved(&self, output: &mut Vec<u8>, length: usize) {
         self.encode_validated(output, length);
     }

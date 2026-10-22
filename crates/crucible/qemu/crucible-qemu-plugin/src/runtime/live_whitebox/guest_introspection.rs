@@ -1,9 +1,10 @@
 //! Guest-buffer rendezvous for the shared-memory introspection rings.
 
 use crucible_qemu_protocol::guest_introspection_doorbell::{
-    GUEST_INTROSPECTION_DOORBELL_MAGIC, GuestIntrospectionDoorbellFrame,
-    GuestIntrospectionDoorbellKind,
+    GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES, GUEST_INTROSPECTION_DOORBELL_MAGIC,
+    GuestIntrospectionDoorbellKind, GuestIntrospectionDoorbellView,
 };
+use crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_qemu_shmem::{DetachedPluginGuestIntrospectionRings, GuestIntrospectionEntry};
 use thiserror::Error;
 
@@ -83,7 +84,7 @@ impl LiveWhiteboxState {
         event: WhiteboxDoorbellTrapEvent,
         payload: &[u8],
     ) -> Result<(), LiveWhiteboxError> {
-        let exchange = GuestIntrospectionDoorbellFrame::decode(payload).map_err(callback_error)?;
+        let exchange = GuestIntrospectionDoorbellView::decode(payload).map_err(callback_error)?;
         let routed = route_exchange(
             &mut self.guest_introspection.rings,
             &mut self.guest_introspection.next_response_sequence,
@@ -91,7 +92,7 @@ impl LiveWhiteboxState {
             exchange,
         )
         .map_err(callback_error)?;
-        let reply = routed.reply.encode().map_err(callback_error)?;
+        let reply = routed.reply;
         let mut writer = LiveGuestMemoryWriter::new(self.apis, event.current_icount());
         self.doorbell
             .inject_guest_input_slice(
@@ -123,7 +124,7 @@ fn commit_delivered_request(
 }
 
 struct RoutedExchange {
-    reply: GuestIntrospectionDoorbellFrame,
+    reply: [u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES],
     delivered_request_sequence: Option<u64>,
 }
 
@@ -131,7 +132,7 @@ fn route_exchange(
     rings: &mut impl PluginGuestIntrospectionIo,
     next_response_sequence: &mut u64,
     next_request_sequence: u64,
-    exchange: GuestIntrospectionDoorbellFrame,
+    exchange: GuestIntrospectionDoorbellView<'_>,
 ) -> Result<RoutedExchange, PluginIoError> {
     match exchange.kind() {
         GuestIntrospectionDoorbellKind::Poll => {}
@@ -139,21 +140,18 @@ fn route_exchange(
             let record = exchange.record().ok_or_else(|| {
                 PluginIoError::fatal("response exchange omitted its validated record")
             })?;
-            record
-                .validate_guest_response()
+            GuestIntrospectionRecord::validate_encoded_guest_response(record)
                 .map_err(PluginIoError::fatal)?;
-            // Preserve record refusal precedence before inspecting the sequence.
-            record.encoded_len().map_err(PluginIoError::fatal)?;
             let following_sequence = next_response_sequence
                 .checked_add(1)
                 .ok_or_else(|| PluginIoError::fatal("response sequence overflow"))?;
-            let entry = GuestIntrospectionEntry::from_record(*next_response_sequence, record)
+            let entry = GuestIntrospectionEntry::new(*next_response_sequence, record)
                 .map_err(PluginIoError::fatal)?;
             match rings.enqueue_response(entry) {
                 Ok(()) => {}
                 Err(PluginIoError::Full) => {
                     return Ok(RoutedExchange {
-                        reply: GuestIntrospectionDoorbellFrame::retry(),
+                        reply: empty_reply(GuestIntrospectionDoorbellKind::Retry)?,
                         delivered_request_sequence: None,
                     });
                 }
@@ -178,24 +176,32 @@ fn route_exchange(
                     entry.sequence()
                 )));
             }
-            let record =
-                crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord::decode(
-                    entry.record().map_err(PluginIoError::fatal)?,
-                )
-                .map_err(PluginIoError::fatal)?;
-            record
-                .validate_host_request()
+            let record = entry.record().map_err(PluginIoError::fatal)?;
+            GuestIntrospectionRecord::validate_encoded_host_request(record)
                 .map_err(PluginIoError::fatal)?;
             Ok(RoutedExchange {
-                reply: GuestIntrospectionDoorbellFrame::request(record),
+                reply: GuestIntrospectionDoorbellView::new(
+                    GuestIntrospectionDoorbellKind::Request,
+                    Some(record),
+                )
+                .map_err(PluginIoError::fatal)?
+                .encode(),
                 delivered_request_sequence: Some(entry.sequence()),
             })
         }
         None => Ok(RoutedExchange {
-            reply: GuestIntrospectionDoorbellFrame::idle(),
+            reply: empty_reply(GuestIntrospectionDoorbellKind::Idle)?,
             delivered_request_sequence: None,
         }),
     }
+}
+
+fn empty_reply(
+    kind: GuestIntrospectionDoorbellKind,
+) -> Result<[u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES], PluginIoError> {
+    GuestIntrospectionDoorbellView::new(kind, None)
+        .map(|reply| reply.encode())
+        .map_err(PluginIoError::fatal)
 }
 
 fn callback_error(source: impl ToString) -> LiveWhiteboxError {
@@ -213,6 +219,26 @@ mod tests {
     };
 
     use super::*;
+    use crucible_qemu_protocol::guest_introspection_doorbell::GuestIntrospectionDoorbellFrame;
+
+    fn exchange(
+        rings: &mut impl PluginGuestIntrospectionIo,
+        response_sequence: &mut u64,
+        request_sequence: u64,
+        frame: GuestIntrospectionDoorbellFrame,
+    ) -> Result<RoutedExchange, PluginIoError> {
+        let bytes = frame.encode().unwrap();
+        route_exchange(
+            rings,
+            response_sequence,
+            request_sequence,
+            GuestIntrospectionDoorbellView::decode(&bytes).unwrap(),
+        )
+    }
+
+    fn decoded_reply(reply: &[u8]) -> GuestIntrospectionDoorbellFrame {
+        GuestIntrospectionDoorbellFrame::decode(reply).unwrap()
+    }
 
     #[derive(Default)]
     struct FakeRings {
@@ -286,7 +312,7 @@ mod tests {
         let mut rings = FakeRings::default();
         rings.requests.push_back(entry(1, &close_record(9)));
         let mut next_sequence = 1;
-        let reply = match route_exchange(
+        let reply = match exchange(
             &mut rings,
             &mut next_sequence,
             1,
@@ -295,8 +321,11 @@ mod tests {
             Ok(reply) => reply,
             Err(error) => panic!("poll failed: {error}"),
         };
-        assert_eq!(reply.reply.kind(), GuestIntrospectionDoorbellKind::Request);
-        assert_eq!(reply.reply.record(), Some(&close_record(9)));
+        assert_eq!(
+            decoded_reply(&reply.reply).kind(),
+            GuestIntrospectionDoorbellKind::Request
+        );
+        assert_eq!(decoded_reply(&reply.reply).record(), Some(&close_record(9)));
         assert_eq!(reply.delivered_request_sequence, Some(1));
         assert_eq!(rings.requests.len(), 1);
         assert_eq!(commit_delivered_request(&mut rings, 1), Ok(2));
@@ -309,7 +338,7 @@ mod tests {
         let mut rings = FakeRings::default();
         rings.requests.push_back(entry(1, &close_record(10)));
         let mut next_sequence = 4;
-        let reply = match route_exchange(
+        let reply = match exchange(
             &mut rings,
             &mut next_sequence,
             1,
@@ -318,7 +347,10 @@ mod tests {
             Ok(reply) => reply,
             Err(error) => panic!("response exchange failed: {error}"),
         };
-        assert_eq!(reply.reply.record(), Some(&close_record(10)));
+        assert_eq!(
+            decoded_reply(&reply.reply).record(),
+            Some(&close_record(10))
+        );
         assert_eq!(next_sequence, 5);
         assert_eq!(rings.responses.len(), 1);
         assert_eq!(rings.responses[0].sequence(), 4);
@@ -333,7 +365,7 @@ mod tests {
     fn guest_cannot_send_plugin_reply_kinds() {
         let mut rings = FakeRings::default();
         let mut next_sequence = 1;
-        let error = route_exchange(
+        let error = exchange(
             &mut rings,
             &mut next_sequence,
             1,
@@ -351,14 +383,17 @@ mod tests {
         };
         rings.requests.push_back(entry(1, &close_record(10)));
         let mut next_sequence = 4;
-        let reply = route_exchange(
+        let reply = exchange(
             &mut rings,
             &mut next_sequence,
             1,
             GuestIntrospectionDoorbellFrame::response(output_record(8)),
         )
         .unwrap_or_else(|error| panic!("backpressure failed: {error}"));
-        assert_eq!(reply.reply.kind(), GuestIntrospectionDoorbellKind::Retry);
+        assert_eq!(
+            decoded_reply(&reply.reply).kind(),
+            GuestIntrospectionDoorbellKind::Retry
+        );
         assert_eq!(next_sequence, 4);
         assert_eq!(rings.requests.len(), 1);
         assert!(rings.responses.is_empty());
@@ -370,7 +405,7 @@ mod tests {
         rings.requests.push_back(entry(2, &close_record(10)));
         let mut next_sequence = 1;
         assert!(
-            route_exchange(
+            exchange(
                 &mut rings,
                 &mut next_sequence,
                 1,
@@ -382,7 +417,7 @@ mod tests {
 
         let mut rings = FakeRings::default();
         assert!(
-            route_exchange(
+            exchange(
                 &mut rings,
                 &mut next_sequence,
                 1,
@@ -391,5 +426,52 @@ mod tests {
             .is_err()
         );
         assert!(rings.responses.is_empty());
+    }
+
+    #[test]
+    fn borrowed_exchange_routes_maximum_response_and_request_without_owned_decode() {
+        use crucible_qemu_protocol::guest_introspection::{
+            GUEST_INTROSPECTION_MAX_CHUNK_BYTES, GuestOutputStream,
+        };
+
+        let request = GuestIntrospectionRecord::new(
+            9,
+            GuestIntrospectionMessage::Input(vec![0x3c; GUEST_INTROSPECTION_MAX_CHUNK_BYTES]),
+        )
+        .unwrap();
+        let response = GuestIntrospectionRecord::new(
+            8,
+            GuestIntrospectionMessage::Output {
+                stream: GuestOutputStream::Stderr,
+                bytes: vec![0x5a; GUEST_INTROSPECTION_MAX_CHUNK_BYTES],
+            },
+        )
+        .unwrap();
+        let encoded_response = response.encode().unwrap();
+        let frame = GuestIntrospectionDoorbellFrame::response(response)
+            .encode()
+            .unwrap();
+        let mut rings = FakeRings::default();
+        rings
+            .requests
+            .push_back(GuestIntrospectionEntry::from_record(1, &request).unwrap());
+        let mut next_response = 4;
+
+        let routed = route_exchange(
+            &mut rings,
+            &mut next_response,
+            1,
+            GuestIntrospectionDoorbellView::decode(&frame).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(next_response, 5);
+        assert_eq!(rings.responses.len(), 1);
+        assert_eq!(rings.responses[0].record().unwrap(), encoded_response);
+        assert_eq!(decoded_reply(&routed.reply).record(), Some(&request));
+        assert_eq!(routed.delivered_request_sequence, Some(1));
+        assert_eq!(rings.requests.len(), 1);
+        assert_eq!(commit_delivered_request(&mut rings, 1), Ok(2));
+        assert!(rings.requests.is_empty());
     }
 }

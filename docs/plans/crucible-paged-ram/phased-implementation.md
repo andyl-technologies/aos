@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 433 committed bindings: 414 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 436 committed bindings: 417 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Retained RR parent and wrapper-retirement composition
 
@@ -95,8 +95,9 @@ files, with no deletions. The bounded custody runner selects the two actual
 standalone suites with their positional arguments, bringing its total to 34.
 Exact signed patch/bundle reconstruction passes at
 `166a2q7n1my039vm7nnz78qsarl0pr0g`; the complete 392-created-file license ledger
-passes at `2gk9ikpjjw3yl9zw9iyxxy6ay9xmf80i`. Packaged Source, Native custody
-and ABI checks are being collected.
+passes at `2gk9ikpjjw3yl9zw9iyxxy6ay9xmf80i`. All 187 packaged Source tests
+pass at `8053hs8p2dbnp73qip9zf6c5cs6cc0mx`. Native custody is being collected. Fresh ABI conformance passes at
+`7aj6hwvmkgy5m0pxg6444zn2yp4hhmpb`.
 
 The changed 713-object configured cohort passes in 297.913030706 seconds under
 its unchanged 600-second/6-GiB bound, on actual input `6318dee1de`; all 99 final
@@ -526,6 +527,33 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Borrowed live guest-introspection exchanges
+
+The live exchange handler now borrows the complete encoded response from the
+original fixed guest frame, validates direction through the canonical borrowed
+record decoder, and publishes its bytes directly into the fixed response entry.
+Queued requests retain their encoded bytes through direction validation and
+copy directly into the fixed reply. Successful exchange routing constructs no
+owned record, argument String or payload Vec. Explicit owned protocol APIs
+remain available to callers that request them. Error diagnostics, surrounding
+trap-buffer ownership, callback stacks and complete operation funding remain
+separate obligations.
+
+A public borrowed exchange view shares all framing checks with the owned API;
+its private validated fields preserve exact wire bytes and zero padding when
+copied to a fixed frame. Existing owned and borrowed direction methods share
+the same kind/channel policy. Existing response-before-request publication,
+backpressure, sequence checks and delivery-before-consumption ordering remain.
+Two protocol controls cover maximum payload/address/header equality and exact
+mutation/truncation refusals. One live-router control exchanges maximum request
+and response payloads and verifies deferred request consumption. Every existing
+record variant compares both direction APIs. All fourteen protocol controls,
+seven shared-memory controls and six live-router controls pass. Content-bound
+engineering hygiene passes. Affected target compilation, mandatory application
+compilation, ABI/license checking and the exact 319-case supervision run are
+being collected. This supplies no
+Native execution or cleanup authority and does not finish the RFC.
+
 #### Borrowed guest-introspection wire validation
 
 Shared entries now validate complete encoded records through borrowed message
@@ -540,11 +568,17 @@ use this path. The wire edition, layout and direction rules are unchanged.
 
 Three controls verify original payload/argv addresses, exact refusals for forged
 argv counts and malformed fields, and every truncation of a canonical argv
-frame. Every existing record variant also exercises borrowed validation. All twelve focused protocol controls, seven shared-memory controls and the
-initial 122 white-box controls pass. Content-bound engineering hygiene passes.
-Final plugin checks, all affected target compilation, mandatory application
-compilation, ABI/license checking and the exact 316-case supervision run are
-being collected. These components establish no operation payer, Native
+frame. Every existing record variant also exercises borrowed validation. All twelve focused protocol controls, seven shared-memory controls, all 122
+white-box controls and every affected test target's compilation pass.
+Content-bound engineering hygiene passes. All 5,306 committed Rust/TOML files at
+`891a6d5e44aef4fce66fde9e1f45b79b1eae9e00` match immutable application source
+`a14jgf3h0iw4wqqgq3fifk46r58ki6mb`; the comparison record has SHA-256
+`ed17ed3a7cccb1f95e87a45b63e6b76f62a62d04af3bf82252cb83abc4c60ab4`.
+Mandatory application compilation passes at `rs5a7rhy14srbhy1z71435h01r5nifiy`;
+ABI conformance passes at `7aj6hwvmkgy5m0pxg6444zn2yp4hhmpb`. Canonical license
+checking stops at 909 host-library and 963 host-test Clippy errors; boundary
+assertions do not run. The exact 316-case supervision run is being collected.
+These components establish no operation payer, Native
 issuer, allocation funding for requested owned decoding or full RFC completion.
 
 #### Direct fixed-storage guest-introspection encoding
@@ -570,8 +604,9 @@ hygiene passes. All 5,305 committed Rust/TOML files at
 `b2884edbefbdbc1372951748b7273cf17facb08e98a82feb1cea8e5798ad84c2`.
 Canonical license checking stops at the unchanged strict controller Clippy
 failures: 909 host-library and 963 host-test errors; boundary assertions do not
-run. Mandatory application compilation, ABI conformance and the exact 313-case
-supervision run are being collected.
+run. Mandatory application compilation passes at `5rnayzdd30h7mjvqygw79n6jq9py1wm6`;
+ABI conformance passes at `a59lvvq08snpgphamh8v3xxd0k6sivbl`. All 313 exact
+supervision cases pass at `qdnkjfy4md6l85ymm69gddqak7gbsvfv` across nine groups.
 
 #### Borrowed live guest-introspection replies
 
