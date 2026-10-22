@@ -19,6 +19,8 @@ aos_crate_specifications(
     family = "core",
     definition = "BUILD.bazel",
     packages = {
+        "anyhow": crate.spec(version = "=1.0.102"),
+        "base64": crate.spec(version = "=0.22.1"),
         "blake3": crate.spec(version = "=1.8.5", default_features = False, features = ["std", "pure"]),
         "libc": crate.spec(version = "=0.2.186"),
         "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),

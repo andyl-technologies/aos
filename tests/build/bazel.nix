@@ -18,6 +18,9 @@
         "crates/Cargo.toml"
         "crates/aos/boot/aos-boot-identity/Cargo.toml"
         "crates/aos/boot/aos-recovery/Cargo.toml"
+        "crates/shared/aos-core/Cargo.toml"
+        "crates/shared/aos-artifact-evidence/Cargo.toml"
+        "crates/shared/aos-oci-types/Cargo.toml"
         "crates/crucible/engine/crucible-determinism/Cargo.toml"
         "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml"
         "crates/crucible/protocol/crucible-qemu-shmem/Cargo.toml"
@@ -33,6 +36,7 @@ in
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
+    shared = import ./_bazel-shared.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
     precise = pkgs.mkAosBazelBuild {
@@ -195,7 +199,8 @@ in
       ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_package_metadata.py} \
         --root ${metadataOracle} --inventory ${pilot.build}/inventory.json \
         --inventory ${pilot.unit}/inventory.json --inventory ${protocol.tests}/inventory.json \
-        --inventory ${dependencies.core}/inventory.json --output "$out/parity.json"
+        --inventory ${dependencies.core}/inventory.json --inventory ${shared.tests}/inventory.json \
+        --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
       ${pkgs.python3}/bin/python3 - ${unit}/evidence/tests <<'PY'
@@ -235,7 +240,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all recovery];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

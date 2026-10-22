@@ -35,6 +35,9 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports = [{
             "label": "@@+aos_tools_repository+aos_core_crates__serde-1.0.228//:serde",
             "kind": "rust_library", "features": ["derive", "default"],
+        }, {
+            "label": self.label.removesuffix(":unit") + ":lib",
+            "kind": "rust_library", "features": [],
         }]
         self.results = [{"identity": {"label": self.label}}]
         verification = patch.object(verify_protocol, "verify", return_value={})
@@ -56,6 +59,24 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "integration target inventories differ"):
             self.compare()
 
+    def test_first_party_feature_drift_fails(self):
+        self.reports[1]["features"] = ["unexpected"]
+        with self.assertRaisesRegex(ValueError, "first-party Rust feature inventories differ"):
+            self.compare()
+
+    def test_other_package_locations_use_the_same_parity_rules(self):
+        self.events[0]["package_id"] = "path+file:///source/aos-core#0.1.0"
+        self.events[0]["manifest_path"] = "/source/aos-core/Cargo.toml"
+        label = "//crates/shared/aos-core:unit"
+        self.results[0]["identity"]["label"] = label
+        self.reports[1]["label"] = "//crates/shared/aos-core:lib"
+        # Write the same fixture inputs, then select the other package root.
+        self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
+        (self.root / "index.json").write_text(json.dumps({"results": self.results}))
+        result = verify_protocol.compare(self.root, self.inventory, self.messages, {"aos-core": "crates/shared/aos-core"})
+        self.assertEqual(result["first_party_features"], {"aos-core": [()]})
+
     def test_omitted_cargo_example_fails(self):
         self.events.append({
             **self.events[0],
@@ -75,6 +96,41 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports.append({**self.reports[0], "label": unknown})
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
+
+
+class DoctestParityTests(unittest.TestCase):
+    def test_cargo_and_bazel_source_roots_normalize_with_compile_only_status(self):
+        cargo = "test shared/example/src/lib.rs - (line 12) - compile ... ok\n"
+        bazel = "test /build/workspace/crates/shared/example/src/lib.rs - (line 12) - compile ... ok\n"
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
+        self.assertEqual(
+            verify_protocol.doctest_cases(cargo + summary, "crates/shared/example"),
+            verify_protocol.doctest_cases(bazel + summary, "crates/shared/example"),
+        )
+
+    def test_ignored_cases_remain_distinct_from_successes(self):
+        log = (
+            "test crates/shared/example/src/lib.rs - (line 7) ... ignored, requires an external fixture\n"
+            "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+        )
+        self.assertEqual(
+            verify_protocol.doctest_cases(log, "crates/shared/example"),
+            {"src/lib.rs - (line 7)": "ignored"},
+        )
+
+    def test_summary_cannot_hide_missing_cases_or_foreign_sources(self):
+        summary = "test result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        with self.assertRaisesRegex(ValueError, "summaries do not match"):
+            verify_protocol.doctest_cases(summary, "crates/shared/example")
+        with self.assertRaisesRegex(ValueError, "outside the package"):
+            verify_protocol.doctest_cases("test other/src/lib.rs - (line 7) ... ok\n" + summary, "crates/shared/example")
+
+    def test_zero_case_docs_require_a_successful_summary(self):
+        self.assertEqual(
+            verify_protocol.doctest_cases("test result: ok. 0 passed; 0 failed; 0 ignored;\n", "crates/shared/example"), {},
+        )
+        with self.assertRaisesRegex(ValueError, "summaries do not match"):
+            verify_protocol.doctest_cases("running 0 tests\n", "crates/shared/example")
 
 
 if __name__ == "__main__":

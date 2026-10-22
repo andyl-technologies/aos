@@ -396,3 +396,27 @@ it requires zero unknown expression/pattern types and no analyzer panics.
 
 Passing native Linux outputs and configuration fingerprints are retained in
 `tests/evidence/native-linux-developer-tools.json`.
+
+## Shared AOS libraries
+
+`checks.build.bazel.shared.all` qualifies `aos-core`, `aos-artifact-evidence`,
+and `aos-oci-types` together. Their BUILD packages own library, unit test,
+integration test, doctest, Clippy, formatting, documentation, and license
+closure targets. The native Linux comparison executes 69 unit/integration
+cases and checks one compile-only doctest against the offline Cargo oracle.
+The comparison retains exact first-party and dependency feature variants,
+doctest source locations, and ignored-case status.
+
+The shared dependency snapshot contains 36 source archives. Every version and
+checksum matches the workspace lock; the explicit source updater adds `anyhow`
+and `base64` without introducing downloaded tools. Package metadata parity now
+covers eight first-party packages and 44 configured Rust targets. The temporary
+Cargo oracle remains separate from all Bazel compilation inputs.
+
+Refresh `metadata/shared-inventory.json` from the inventories produced by
+`tools/bazel/tests/shared.nix`'s conservative test and developer targets when
+declarations change, then rerun the precise qualification. Passing store paths,
+case inventories, and configuration fingerprints are recorded in
+`tests/evidence/native-linux-shared.json`. This qualifies native Linux
+compilation and developer workflows; production builder changes still require
+the RFC's platform, runtime, and performance acceptance work.
