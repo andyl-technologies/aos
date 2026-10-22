@@ -107,6 +107,44 @@ fn content_identity_is_domain_and_schema_separated() {
 }
 
 #[test]
+fn content_identity_parser_checks_bounded_canonical_ascii_without_encoding() {
+    let digest = "0123456789abcdef".repeat(4);
+    for version in ["0", "1", "4294967295"] {
+        let id = format!("campaign-snapshot.{version}.{digest}");
+        let parsed = ContentId::parse(&id).expect("canonical bounded content ID");
+        assert_eq!(
+            parsed.schema_version(),
+            version.parse::<u32>().expect("fixture version")
+        );
+    }
+    for version in ["", "00", "01", "+1", "-1", "4294967296", "00000000000", "١"] {
+        assert!(matches!(
+            ContentId::parse(&format!("trace.{version}.{digest}")),
+            Err(StoreError::InvalidId)
+        ));
+    }
+    for digest in [
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+        "é".repeat(32),
+    ] {
+        assert!(matches!(
+            ContentId::parse(&format!("trace.1.{digest}")),
+            Err(StoreError::InvalidId)
+        ));
+    }
+    for id in [
+        format!("trace.1.{digest}.extra"),
+        format!("unknown.1.{digest}"),
+        "x".repeat(90),
+    ] {
+        assert!(matches!(ContentId::parse(&id), Err(StoreError::InvalidId)));
+    }
+}
+
+#[test]
 fn invalid_ref_names_fail_closed() {
     for invalid in ["", "/absolute", "../escape", "a//b", "a/../b", "snowman-☃"] {
         assert!(matches!(
@@ -447,6 +485,7 @@ fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
     let temp = TempDir::new().expect("temporary directory");
     let root = node_id("compressed");
     let config = |maximum_logical_object_bytes| StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -501,6 +540,7 @@ fn compressed_directory_is_a_bounded_versioned_graph_leaf() {
     let shared_root = temp.path().join("overlap");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: mirror.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
             nodes: BTreeMap::from([
@@ -538,6 +578,7 @@ fn encrypted_directory_graph_identity_excludes_secret_key_material() {
     let root = node_id("encrypted");
     let key_id = StoreEncryptionKeyId::new("campaign-key-10").expect("key ID");
     let config = |maximum_logical_object_bytes, key_id: StoreEncryptionKeyId| StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -565,6 +606,7 @@ fn encrypted_directory_graph_identity_excludes_secret_key_material() {
     assert!(!format!("{:?}", first.describe()).contains(key_id.as_str()));
     let golden = StoreGraph::build_with_keys(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
             nodes: BTreeMap::from([(
@@ -581,7 +623,7 @@ fn encrypted_directory_graph_identity_excludes_secret_key_material() {
     .expect("golden encrypted graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "383f1484965a1c7d4293081e20478ef0ded0eb99db25c7c7a55c6c47ce6ada0c"
+        "b78d75fd1ec65c6fbfd5a2477059f79360a02d54fcac3122f5351ee71901e78a"
     );
 
     let bytes = vec![0x71; 96 * 1024];
@@ -672,6 +714,7 @@ fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
     let root = node_id("compressed-encrypted");
     let key_id = StoreEncryptionKeyId::new("campaign-key-12").expect("key ID");
     let config = |maximum_logical_object_bytes| StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -706,6 +749,7 @@ fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
     assert_eq!(admin.physical()[0].node(), &root);
     let golden = StoreGraph::build_with_keys(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
             nodes: BTreeMap::from([(
@@ -722,7 +766,7 @@ fn compressed_encrypted_directory_is_a_versioned_graph_leaf() {
     .expect("golden compressed encrypted graph");
     assert_eq!(
         encode_hex(&golden.configuration_id().as_bytes()),
-        "ba348b3fed11cd970bd559e0b3e97bb69f94a23db61cb07bca296449026b91a8"
+        "1e6a032fff8ab3d5a5f2ebd051fd2e2feacb7d7c96a139574a7f284ddc54985f"
     );
 
     let bytes = vec![0x5a; 256 * 1024];
@@ -769,3 +813,5 @@ mod tier;
 mod graph_authorization;
 
 mod quotas;
+
+mod admission;

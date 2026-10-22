@@ -11,8 +11,8 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../../../../engine/crucible-engine/src/model/store_artifacts.rs"),
     ),
     (
-        "crates/crucible/engine/crucible-engine/src/trigger/evidence.rs",
-        include_str!("../../../../engine/crucible-engine/src/trigger/evidence.rs"),
+        "crates/crucible/engine/crucible-engine/src/trigger/formal_trace.rs",
+        include_str!("../../../../engine/crucible-engine/src/trigger/formal_trace.rs"),
     ),
     (
         "tests/crucible/_e2e-determinism-native-runner.sh",
@@ -116,10 +116,14 @@ fn versioned_tags(source: &str) -> BTreeSet<(&str, u32)> {
 // independent decoder or compatibility version.
 const VERSION_ANCHORS: &str = r#"
 crucible.api.rpc|crates/crucible/control/crucible-control-api/src/rpc_abi.rs|number|RPC_PROTOCOL_MAJOR
+crucible.host-operational.frame|crates/crucible/control/crucible-control-api/src/host_operational/codec.rs|number|SCHEMA
+crucible.host-operational.history|crates/crucible/control/crucible-daemon/src/host_operational_registry/history.rs|magic|MAGIC
 crucible.production-network-adapter-checkpoint|crates/crucible/control/crucible-daemon/src/vm_lifecycle/network_faults.rs|number|NETWORK_ADAPTER_CHECKPOINT_VERSION
 crucible.production-run-lock|crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs|number|PRODUCTION_RUN_LOCK_VERSION
 crucible.production-run-state|crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop/lifecycle/persistence.rs|number|PRODUCTION_RUN_STATE_VERSION
 crucible.shmem.region|crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs|number|ABI_VERSION
+crucible.qemu-plugin.source-supervision|crates/crucible/protocol/crucible-qemu-protocol/src/source_supervision.rs|number|SCHEMA
+crucible.qemu-plugin.parent-park-return|crates/crucible/protocol/crucible-qemu-protocol/src/parent_park_return.rs|number|SCHEMA
 crucible.shmem.fault-clock-evidence|crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_clock_evidence.rs|magic|FAULT_CLOCK_EVIDENCE_MAGIC_V2
 crucible.shmem.fault-clock-manifest|crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs|number|FAULT_CLOCK_MANIFEST_VERSION_V2
 crucible.executor.crucible-scenario-payload|crates/crucible/control/crucible-daemon/src/crucible_artifact.rs|number|CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5
@@ -136,7 +140,7 @@ crucible.execution.event-graph-state|crates/crucible/engine/crucible-engine/src/
 crucible.execution.signal-trace-manifest|crates/crucible/engine/crucible-engine/src/model/fault_signal/trace.rs|magic|MANIFEST_MAGIC
 crucible.execution.signal-trace-chunk|crates/crucible/engine/crucible-engine/src/model/fault_signal/trace.rs|magic|CHUNK_MAGIC
 crucible.execution.failure-triage-replay-evidence|crates/crucible/engine/crucible-engine/src/model/failure/replay_evidence.rs|number|FAILURE_TRIAGE_REPLAY_EVIDENCE_SCHEMA_VERSION
-crucible.execution.host-assertion-continuation|crates/crucible/engine/crucible-engine/src/trigger/assertions.rs|magic|HOST_ASSERTION_CHECKPOINT_MAGIC
+crucible.execution.host-assertion-continuation|crates/crucible/engine/crucible-engine/src/trigger/assertions/checkpoint.rs|magic|MAGIC
 crucible.execution.single-scheduler-continuation|crates/crucible/engine/crucible-engine/src/scheduler/checkpoint.rs|magic|crucible.single-scheduler-continuation.v6
 crucible.execution.device-scheduling-subnode|crates/crucible/engine/crucible-engine/src/device_subnode/checkpoint.rs|magic|crucible.device-scheduling-subnode.v1
 crucible.execution.scenario-selectable-component|crates/crucible/engine/crucible-engine/src/model/scenario_selectables.rs|number|SCENARIO_SELECTABLE_VERSION
@@ -151,7 +155,9 @@ crucible.device.block-snapshot|crates/crucible/engine/crucible-device/src/block/
 crucible.device.io-core-snapshot|crates/crucible/engine/crucible-device/src/subnode/snapshot.rs|magic|IO_CORE_SNAPSHOT_MAGIC
 crucible.device.link-snapshot|crates/crucible/engine/crucible-device/src/netlink/link/snapshot.rs|magic|LINK_SNAPSHOT_MAGIC
 crucible.device.ninep-snapshot|crates/crucible/engine/crucible-device/src/ninep/device/snapshot.rs|magic|NINEP_SNAPSHOT_MAGIC
-crucible.qemu.checkpoint-qmp|crates/crucible/qemu/crucible-qemu-host/src/qmp/ram_delta.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
+crucible.qemu.checkpoint-qmp|crates/crucible/qemu/crucible-qemu-host/src/qmp/checkpoint.rs|number|QMP_CHECKPOINT_SCHEMA_VERSION
+crucible.ram-control.frame|crates/crucible/protocol/crucible-qemu-protocol/src/ram_control.rs|number|RAM_CONTROL_VERSION
+crucible.qemu.paused-cpu|crates/crucible/qemu/crucible-qemu-host/src/qmp/paused_cpu.rs|number|QMP_PAUSED_CPU_SCHEMA_VERSION
 crucible.qemu.host-io-checkpoint|crates/crucible/qemu/crucible-qemu-host/src/checkpoint/host_io_codec.rs|magic|crucible.qemu-host-io-checkpoint.v6
 crucible.qemu.production-fault-runtime|crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec.rs|magic|crucible.production-fault-runtime.v7
 crucible.qemu.node-continuation|crates/crucible/qemu/crucible-qemu-host/src/checkpoint.rs|magic|crucible.qemu-node-continuation.v7
@@ -170,6 +176,7 @@ crucible.qemu.hot-fork.child-process|crates/crucible/qemu/crucible-qemu-host/src
 crucible.qemu.hot-fork.child-process-contract|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_process_contract.rs|number|QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-files|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_files.rs|number|QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-qmp|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_qmp.rs|number|QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION
+crucible.qemu.hot-fork.child-ram|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork_ram.rs|number|QMP_HOT_FORK_CHILD_RAM_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-console|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_console.rs|number|QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION
 crucible.qemu.hot-fork.child-diagnostics|crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/diagnostics.rs|number|QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION
 "#;
@@ -287,13 +294,16 @@ fn source_anchor_version(source: &str, kind: &str, marker: &str) -> u32 {
 
 #[test]
 fn source_version_changes_fail_registry_lint() {
-    let source = "pub const RPC_PROTOCOL_MAJOR: u16 = 9;";
     let registry = registry_versions(super::SCHEMA_REGISTRY);
+    let next_version = registry["crucible.api.rpc"]
+        .checked_add(1)
+        .expect("registry version admits a future drift fixture");
+    let source = format!("pub const RPC_PROTOCOL_MAJOR: u16 = {next_version};");
     assert!(
         source_registry_drift(
             &registry,
             "crucible.api.rpc",
-            source,
+            &source,
             "number",
             "RPC_PROTOCOL_MAJOR"
         )
@@ -377,7 +387,7 @@ fn owned_qemu_vmstate_sections(patch: &str) -> Result<BTreeMap<String, u32>, Str
         }
 
         let declaration_identifies_owned =
-            declaration.contains("crucible-engine") || declaration.contains("_wide");
+            declaration.contains("crucible") || declaration.contains("_wide");
         let Some(name) = name else {
             if declaration_identifies_owned {
                 return Err(format!(

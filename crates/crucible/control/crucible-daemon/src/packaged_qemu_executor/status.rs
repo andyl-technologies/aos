@@ -117,7 +117,12 @@ pub(super) struct PackagedStatusHotForkFactory<F> {
 }
 
 pub(super) struct PackagedStatusLifecycle<L> {
+    // Status invalidation precedes automatic destruction of an unreturned body.
+    status: LifecycleStatusOnDrop,
     inner: L,
+}
+
+struct LifecycleStatusOnDrop {
     lifecycles: PackagedWorldLifecycleTracker,
     execution: Option<ExecutionId>,
     shutdown_finished: bool,
@@ -334,6 +339,13 @@ where
 {
     type Error = W::Error;
 
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner.try_retire_original(original)
+    }
+
     fn execute(&mut self, queued: QueuedAttempt) -> AttemptWorkResult<Self::Error> {
         let execution = queued.execution();
         let lease = self.lifecycles.begin(execution);
@@ -360,6 +372,19 @@ where
 {
     type Lifecycle = PackagedStatusLifecycle<F::Lifecycle>;
     type Error = F::Error;
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner.try_retire_original(original)
+    }
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let PackagedStatusLifecycle { status, inner } = lifecycle;
+        drop(status);
+        self.inner.retire_lifecycle(inner)
+    }
 
     fn configure_attempt_continuation(
         &mut self,
@@ -390,10 +415,12 @@ where
             None => self.lifecycles.invalidate(),
         }
         Ok(PackagedStatusLifecycle {
+            status: LifecycleStatusOnDrop {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+            },
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
         })
     }
 }
@@ -404,6 +431,19 @@ where
 {
     type Lifecycle = PackagedStatusLifecycle<F::Lifecycle>;
     type Error = F::Error;
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner.try_retire_original(original)
+    }
+
+    fn retire_lifecycle(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Error> {
+        let PackagedStatusLifecycle { status, inner } = lifecycle;
+        drop(status);
+        self.inner.retire_lifecycle(inner)
+    }
 
     fn authenticate_resume_boundary(
         &mut self,
@@ -434,10 +474,12 @@ where
             None => self.lifecycles.invalidate(),
         }
         Ok(PackagedStatusLifecycle {
+            status: LifecycleStatusOnDrop {
+                lifecycles: self.lifecycles.clone(),
+                execution: context.runtime_basis().map(|basis| basis.execution()),
+                shutdown_finished: false,
+            },
             inner: lifecycle,
-            lifecycles: self.lifecycles.clone(),
-            execution: context.runtime_basis().map(|basis| basis.execution()),
-            shutdown_finished: false,
         })
     }
 }
@@ -463,6 +505,13 @@ where
             }
         }
         Ok(started)
+    }
+
+    fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), Self::Error> {
+        self.inner.try_retire_original(original)
     }
 
     fn recover(&mut self, lifecycle: Self::Lifecycle) -> Result<(), Self::Lifecycle> {
@@ -634,21 +683,21 @@ where
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        if self.shutdown_finished {
-            self.lifecycles.invalidate();
+        if self.status.shutdown_finished {
+            self.status.lifecycles.invalidate();
             return self.inner.shutdown();
         }
-        if let Some(execution) = self.execution {
-            self.lifecycles.tearing_down(execution);
+        if let Some(execution) = self.status.execution {
+            self.status.lifecycles.tearing_down(execution);
         } else {
-            self.lifecycles.invalidate();
+            self.status.lifecycles.invalidate();
         }
 
         let result = self.inner.shutdown();
-        self.shutdown_finished = true;
-        match (&result, self.execution) {
-            (Ok(_), Some(execution)) => self.lifecycles.post_processing(execution),
-            (Ok(_), None) | (Err(_), _) => self.lifecycles.invalidate(),
+        self.status.shutdown_finished = true;
+        match (&result, self.status.execution) {
+            (Ok(_), Some(execution)) => self.status.lifecycles.post_processing(execution),
+            (Ok(_), None) | (Err(_), _) => self.status.lifecycles.invalidate(),
         }
         result
     }
@@ -663,7 +712,7 @@ where
     }
 }
 
-impl<L> Drop for PackagedStatusLifecycle<L> {
+impl Drop for LifecycleStatusOnDrop {
     fn drop(&mut self) {
         if !self.shutdown_finished {
             self.lifecycles.invalidate();
@@ -1095,3 +1144,7 @@ fn packaged_status_generation(
     material.extend_from_slice(&materializer.generation.as_bytes());
     CampaignHash::derive("crucible.executor.packaged-campaign-status.v1", &material)
 }
+
+#[cfg(test)]
+#[path = "status/retirement_tests.rs"]
+mod retirement_tests;

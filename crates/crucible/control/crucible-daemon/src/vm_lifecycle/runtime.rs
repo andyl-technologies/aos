@@ -14,6 +14,9 @@ pub(super) mod progress;
 use debug_evidence::*;
 use observation::*;
 
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+pub(super) mod checkpoint_consumer;
+
 fn release_then_record_campaign_marker(
     release: impl FnOnce() -> Result<(), SchedulerError>,
     record: impl FnOnce() -> Result<(), SchedulerError>,
@@ -287,6 +290,45 @@ impl ProductionVmLifecycleLoop {
             .is_empty())
     }
 
+    /// Reads the actual native checkpoint consumer epoch for a fixture node.
+    ///
+    /// This is read-only evidence from the existing admitted node set; it is
+    /// neither a checkpoint constructor nor an authority/grant surface.
+    ///
+    /// # Errors
+    /// Refuses missing nodes, original supervision and QMP uncertainty.
+    #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+    pub fn checkpoint_consumer_epoch_for_test(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<CheckpointConsumerEpochEvidence, SchedulerError> {
+        let epoch = self
+            .inner
+            .backend_mut()
+            .query_exact_checkpoint_epoch(node)
+            .map_err(SchedulerError::from)?;
+
+        Ok(CheckpointConsumerEpochEvidence {
+            epoch_generation: epoch.epoch_generation(),
+            committed: epoch.committed().map(|identity| {
+                [
+                    identity.checkpoint(),
+                    identity.target(),
+                    identity.frontier(),
+                ]
+            }),
+            candidate: epoch.candidate().map(|identity| {
+                [
+                    identity.checkpoint(),
+                    identity.target(),
+                    identity.frontier(),
+                ]
+            }),
+            committed_capture_generation: epoch.committed_capture_generation(),
+            candidate_capture_generation: epoch.candidate_capture_generation(),
+        })
+    }
+
     /// Captures a portable exact checkpoint under an operational boundary.
     ///
     /// The callback is observed between bounded file-hash and persistence
@@ -329,6 +371,7 @@ impl ProductionVmLifecycleLoop {
             &self.config.run_state_root,
             &self.source,
             identity,
+            self.config.ram_catalog_provider(),
             &mut || match boundary() {
                 Ok(()) => Ok(()),
                 Err(error) => {
@@ -395,6 +438,11 @@ impl ProductionVmLifecycleLoop {
                 }
             };
         let emitted_events = runtime.emitted_events().to_vec();
+        let memory_service_occurrence = runtime.memory_service_occurrence().map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("capture native memory-service occurrence: {error}"),
+            }
+        })?;
         drop(runtime);
 
         let network = self.inner.network_output_interceptor();
@@ -568,6 +616,7 @@ impl ProductionVmLifecycleLoop {
             resolved_effect_trace,
             locked_effect_trace,
             emitted_events,
+            memory_service_occurrence,
             network_outages,
             network_queues,
             block_devices,
@@ -737,23 +786,47 @@ impl ProductionVmLifecycleLoop {
         &self,
         request: &DebugRuntimeRepositionRequest,
     ) -> Result<ProductionVmLifecycleLoop, SchedulerError> {
+        // Hold the single slot from the pre-effect exclusion check through
+        // publication. A second candidate cannot overwrite failed custody.
+        let mut retained = self.retained_debug_construction.try_lock().map_err(|_| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("debug construction custody is unavailable"),
+            }
+        })?;
+        if retained.is_some() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("a previous debug construction still owns cleanup"),
+            });
+        }
         let replay_config = self.config.clone();
         let replay_launcher = self.node_launcher.replay_candidate().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("admit whole-world debug replay launch authority: {error}"),
             }
         })?;
-        let mut replay = build_production_vm_lifecycle_loop_with_restore(
+        let mut replay = match build_production_vm_lifecycle_loop_with_restore(
             &self.scenario,
             &self.source,
             &replay_config,
             None,
             replay_launcher,
             None,
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("construct whole-world debug replay candidate: {error}"),
-        })?;
+        ) {
+            Ok(replay) => replay,
+            Err(failure) => {
+                *retained = Some(construction::RetainedDebugConstruction::new(failure));
+                // Publish the actual owner before constructing a diagnostic.
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "construct whole-world debug replay candidate: {}",
+                        retained
+                            .as_ref()
+                            .map_or("missing retained failure".to_owned(), ToString::to_string)
+                    ),
+                });
+            }
+        };
+        drop(retained);
         let target = &request.target;
         let controls = self.recorded_controls.clone();
         let mut control_index = 0_usize;
@@ -892,6 +965,39 @@ impl ProductionVmLifecycleLoop {
                         "shutdown quarantined debugger replay candidate after gateway termination: {error}"
                     ),
                 })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn retry_retained_debug_construction(
+        &mut self,
+    ) -> Result<(), ProductionVmConstructionCleanupError> {
+        let retained = self
+            .retained_debug_construction
+            .get_mut()
+            .map_err(|_| ProductionVmConstructionCleanupError::Poisoned)?;
+        if let Some(construction) = retained.as_mut() {
+            construction.retry()?;
+        }
+        Ok(())
+    }
+
+    /// Moves completed candidate history into the containing carrier's paid tail.
+    ///
+    /// # Errors
+    /// Retains the candidate when its slot is poisoned, cleanup is incomplete,
+    /// or the destination already holds independent history.
+    pub(super) fn transfer_retained_debug_construction(
+        &mut self,
+        destination: &mut Option<crate::ProductionVmConstructionPostBody>,
+    ) -> Result<(), ProductionVmConstructionCleanupError> {
+        let retained = self
+            .retained_debug_construction
+            .get_mut()
+            .map_err(|_| ProductionVmConstructionCleanupError::Poisoned)?;
+        if let Some(construction) = retained.as_mut() {
+            construction.transfer_history(destination)?;
+            *retained = None;
         }
         Ok(())
     }
@@ -1144,10 +1250,11 @@ impl ProductionVmLifecycleLoop {
             });
         }
         let mut pass = ConditionEvaluationPass::from_log_prefix_ref(prefix, no_named_trigger_leaf)
+            .map_err(SchedulerError::from)?
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
-        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state);
+        let firings = pass.evaluate_event_graph(&entrypoints, &mut self.trigger_state)?;
         if firings.is_empty() {
             return Ok(None);
         }
@@ -1213,7 +1320,7 @@ impl ProductionVmLifecycleLoop {
             let assertion_outcomes = self.assertion_evaluator.observe_prefix(
                 self.inner.loop_impl().condition_event_log_prefix(),
                 &mut self.assertion_oracle,
-            );
+            )?;
             let assertion_events = assertion_outcomes
                 .iter()
                 .filter_map(assertion_state_event_from_outcome)
@@ -1232,6 +1339,7 @@ impl ProductionVmLifecycleLoop {
                 scheduler.condition_event_log_prefix(),
                 no_named_trigger_leaf,
             )
+            .map_err(SchedulerError::from)?
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
@@ -1239,7 +1347,7 @@ impl ProductionVmLifecycleLoop {
                 &self.trigger_graph,
                 &mut self.trigger_state,
                 scheduler.frontier(),
-            );
+            )?;
             if firings.is_empty() && !assertions_changed {
                 return Ok(appends);
             }

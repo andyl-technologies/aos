@@ -176,6 +176,9 @@ fn late_queue_stop(
 
 #[test]
 fn dispatch_acknowledged_original_queue_survives_refresh_and_checkpoint() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, mut run, mut backend, pipeline, event) = late_queue_stop(false);
     let boundary = BackendRunDispatchBoundary {
         admission: run.admission.clone(),
@@ -227,6 +230,9 @@ fn dispatch_acknowledged_original_queue_survives_refresh_and_checkpoint() {
 
 #[test]
 fn dispatch_ledger_refusal_retains_acknowledged_prefix_and_uncertain_original_key() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, mut run, mut backend, _, first) = late_queue_stop(true);
     let second = scheduler.pending_events[1].clone();
     let original_owner = run.admission.clone();
@@ -275,6 +281,9 @@ fn dispatch_ledger_refusal_retains_acknowledged_prefix_and_uncertain_original_ke
 
 #[test]
 fn dispatch_shutdown_retains_owed_owner_on_failure_and_releases_it_on_success() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (mut scheduler, mut run, mut backend, _, first) = late_queue_stop(true);
     let second = scheduler.pending_events[1].clone();
     ok(scheduler.record_imported_io_publication(&second));

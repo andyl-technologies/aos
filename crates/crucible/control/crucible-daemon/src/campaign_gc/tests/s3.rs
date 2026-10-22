@@ -439,6 +439,7 @@ impl StoreS3ObjectScan for MemoryS3Scan<'_> {
 fn graph_config(endpoint: StoreS3EndpointId) -> StoreGraphConfig {
     let root = StoreNodeId::new("s3-primary").expect("S3 node");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
@@ -479,6 +480,7 @@ fn build_graph_with_config(
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .expect("administrable S3 graph")
 }
@@ -488,6 +490,7 @@ fn write_back_graph_config(endpoint: StoreS3EndpointId, root: &Path) -> StoreGra
     let staging = StoreNodeId::new("staging").expect("staging node");
     let destination = StoreNodeId::new("s3-primary").expect("S3 node");
     StoreGraphConfig {
+        gc_mark_root: None,
         root: write_back.clone(),
         admitted_kinds: BTreeSet::from([
             ObjectKind::CampaignFact,
@@ -538,6 +541,9 @@ fn write_back_graph_config(endpoint: StoreS3EndpointId, root: &Path) -> StoreGra
 
 #[test]
 fn s3_graph_admin_drives_global_gc_across_restart() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary S3 GC root");
     let ref_root = temp.path().join("refs");
     let ledger_root = temp.path().join("ledger");
@@ -546,7 +552,11 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
     let (graph, admin) = build_graph(service.clone());
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
 
     let live = ContentEnvelope::new(
         "crucible.test.gc-s3-live",
@@ -579,7 +589,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan S3 GC");
     assert_eq!(prepared.plan().physical().len(), 1);
@@ -590,8 +600,8 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         prepared.candidates().iter().next().expect("orphan").id(),
         orphan
     );
-    let (journal, _) =
-        DirectoryCampaignGcJournal::create(&journal_root, &prepared).expect("create S3 GC journal");
+    let (journal, _) = DirectoryCampaignGcJournal::create(&journal_root, &prepared, &gc_operation)
+        .expect("create S3 GC journal");
     drop(journal);
     drop(ledger);
     drop(repository);
@@ -602,10 +612,14 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
     let (graph, admin) = build_graph(service);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(&ledger_root).expect("reopen S3 ledger");
-    let mut journal =
-        DirectoryCampaignGcJournal::open(&journal_root).expect("reopen S3 GC journal");
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root, &gc_operation)
+        .expect("reopen S3 GC journal");
     let report = super::super::apply_single_host_campaign_gc(
         &mut journal,
         &repository,
@@ -613,7 +627,7 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply S3 GC after restart");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -637,12 +651,19 @@ fn s3_graph_admin_drives_global_gc_across_restart() {
 
 #[test]
 fn s3_publication_after_planning_invalidates_apply_without_deletion() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary stale S3 GC root");
     let service = Arc::new(MemoryS3Service::new());
     let (graph, admin) = build_graph(service);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let orphan_bytes = b"planned S3 orphan";
     let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
     graph
@@ -656,11 +677,11 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
         &mut ledger,
         None,
         None,
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan stale S3 GC");
     let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared)
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &prepared, &gc_operation)
             .expect("create stale S3 journal");
 
     let late_bytes = b"publication after S3 planning";
@@ -676,7 +697,7 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
             &mut ledger,
             None,
             None,
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(CampaignGcApplyError::PhysicalBasisChanged { backend })
             if backend == "s3-primary"
@@ -688,12 +709,19 @@ fn s3_publication_after_planning_invalidates_apply_without_deletion() {
 
 #[test]
 fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary S3 recovery root");
     let service = Arc::new(MemoryS3Service::new());
     let (graph, admin) = build_graph(service.clone());
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
         .expect("open S3 recovery ledger");
 
@@ -765,7 +793,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
                 &mut ledger,
                 None,
                 CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-                &admin,
+                crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
             )
             .is_err(),
             "GC planning accepted S3 fault {fault}"
@@ -798,7 +826,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
             &mut ledger,
             None,
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         )
         .is_err(),
         "GC planning accepted corrupted retained S3 bytes"
@@ -817,7 +845,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         &mut ledger,
         None,
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan healthy S3 recovery GC");
     assert!(prepared.roots().iter().any(|id| id == transfer_id));
@@ -827,9 +855,12 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         orphan_id
     );
 
-    let (mut interrupted, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("interrupted"), &prepared)
-            .expect("create interrupted S3 recovery journal");
+    let (mut interrupted, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("interrupted"),
+        &prepared,
+        &gc_operation,
+    )
+    .expect("create interrupted S3 recovery journal");
     service.set_fault(S3_UNAVAILABLE);
     assert!(
         super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
@@ -839,7 +870,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
             &mut ledger,
             None,
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         )
         .is_err(),
         "GC apply accepted S3 outage"
@@ -853,12 +884,15 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         &mut ledger,
         None,
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("replan after S3 recovery");
-    let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
-            .expect("create recovered S3 GC journal");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("recovered"),
+        &recovered,
+        &gc_operation,
+    )
+    .expect("create recovered S3 GC journal");
     let report = super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
         &mut journal,
         &repository,
@@ -866,7 +900,7 @@ fn s3_gc_retains_multiple_refs_and_transfer_during_backend_faults() {
         &mut ledger,
         None,
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply S3 recovery GC");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -990,13 +1024,20 @@ fn publish_paused_s3_campaign(repository: &CampaignRepository) -> [CampaignSnaps
 
 #[test]
 fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc() {
+    let mut gc_fixture = crate::campaign_gc::ComponentGcOperation::new();
+    let gc_operation = gc_fixture.context();
+
     let temp = tempfile::TempDir::new().expect("temporary paused S3 recovery root");
     let service = Arc::new(MemoryS3Service::new());
     let config = write_back_graph_config(service.endpoint.clone(), temp.path());
     let (graph, admin) = build_graph_with_config(service.clone(), config);
     let graph = Arc::new(graph);
     let refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let repository = CampaignRepository::new(
+        graph.clone(),
+        refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     let mut ledger = DirectoryAssignmentLedger::open(temp.path().join("ledger"))
         .expect("open paused S3 recovery ledger");
     let [paused, east, west] = publish_paused_s3_campaign(&repository);
@@ -1067,7 +1108,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
                 &mut ledger,
                 Some(graph.as_ref()),
                 CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-                &admin,
+                crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
             )
             .is_err(),
             "GC planning accepted fault {fault}"
@@ -1106,7 +1147,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
             &mut ledger,
             Some(graph.as_ref()),
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         )
         .is_err(),
         "GC planning accepted corrupt paused S3 head"
@@ -1123,7 +1164,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         &mut ledger,
         Some(graph.as_ref()),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("plan recovered paused campaign GC");
     assert!(prepared.roots().iter().any(|id| id == transfer_id));
@@ -1133,8 +1174,9 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
             .iter()
             .any(|candidate| candidate.id() == orphan_id)
     );
-    let (mut stale, _) = DirectoryCampaignGcJournal::create(temp.path().join("stale"), &prepared)
-        .expect("journal pre-publication GC");
+    let (mut stale, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("stale"), &prepared, &gc_operation)
+            .expect("journal pre-publication GC");
     let north = repository
         .derive_campaign("s3-east", east, "s3-north", None)
         .expect("publish third derived head after planning");
@@ -1146,7 +1188,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
             &mut ledger,
             Some(graph.as_ref()),
             CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-            &admin,
+            crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
         ),
         Err(CampaignGcApplyError::PhysicalBasisChanged { .. })
             | Err(CampaignGcApplyError::RefBasisChanged)
@@ -1163,12 +1205,15 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         &mut ledger,
         Some(graph.as_ref()),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("replan after third derived publication");
-    let (mut journal, _) =
-        DirectoryCampaignGcJournal::create(temp.path().join("recovered"), &recovered)
-            .expect("journal recovered paused campaign GC");
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("recovered"),
+        &recovered,
+        &gc_operation,
+    )
+    .expect("journal recovered paused campaign GC");
     let report = super::super::apply_single_host_campaign_gc_with_hot_checkpoints(
         &mut journal,
         &repository,
@@ -1176,7 +1221,7 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
         &mut ledger,
         Some(graph.as_ref()),
         CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
-        &admin,
+        crate::campaign_gc::CampaignGcMaintenance::new(&admin, &gc_operation),
     )
     .expect("apply recovered paused campaign GC");
     assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
@@ -1216,7 +1261,11 @@ fn paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc()
     let reopened_config = write_back_graph_config(service.endpoint.clone(), temp.path());
     let (reopened_graph, _) = build_graph_with_config(service, reopened_config);
     let reopened_refs = Arc::new(DirectoryRefBackend::new(temp.path().join("refs")));
-    let reopened = CampaignRepository::new(Arc::new(reopened_graph), reopened_refs);
+    let reopened = CampaignRepository::new(
+        Arc::new(reopened_graph),
+        reopened_refs,
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
     assert_eq!(
         reopened.state("s3-west").expect("reopen paused west"),
         CampaignState::Paused

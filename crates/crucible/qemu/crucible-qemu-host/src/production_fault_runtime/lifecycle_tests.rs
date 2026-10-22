@@ -6,6 +6,9 @@ use super::*;
 #[path = "lifecycle_tests/ownership.rs"]
 mod ownership;
 
+#[path = "lifecycle_tests/memory_continuation.rs"]
+mod memory_continuation;
+
 #[test]
 fn outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility() {
     let plan = FaultSignalPlan::empty();

@@ -70,6 +70,31 @@ where
         .into_iter();
     let mut combined = outcomes.next().expect("settled routing boundary");
     for outcome in outcomes {
+        combined
+            .merge_event_log_append(crucible_engine::SchedulerEventLogAppend {
+                entries: outcome.event_log_entries,
+                segment_bytes: outcome.event_log_segment_bytes,
+                segment_text: outcome.event_log_segment_text,
+                segment_hash: outcome.event_log_segment_hash,
+                offset: outcome.event_log_offset,
+                event_log_custody: outcome.event_log_custody,
+            })
+            .expect("routing outputs retain both original event-log loans");
+
+        let _output_scope = combined.event_log_custody.enter_decode_scope();
+        crucible_engine::owned_decode::reserve_vec(
+            &mut combined.resolved_events,
+            outcome.resolved_events.len(),
+        )
+        .expect("combined resolved events fit the original component authority");
+        crucible_engine::owned_decode::reserve_vec(&mut combined.decisions, outcome.decisions.len())
+            .expect("combined decisions fit the original component authority");
+        crucible_engine::owned_decode::reserve_vec(
+            &mut combined.discovered_choices,
+            outcome.discovered_choices.len(),
+        )
+        .expect("combined discoveries fit the original component authority");
+
         combined.configuration = outcome.configuration;
         combined.frontier = outcome.frontier;
         combined.advanced_node = outcome.advanced_node;
@@ -78,11 +103,6 @@ where
         combined
             .discovered_choices
             .extend(outcome.discovered_choices);
-        combined.event_log_entries.extend(outcome.event_log_entries);
-        combined.event_log_segment_bytes = outcome.event_log_segment_bytes;
-        combined.event_log_segment_text = outcome.event_log_segment_text;
-        combined.event_log_segment_hash = outcome.event_log_segment_hash;
-        combined.event_log_offset = outcome.event_log_offset;
         combined.scheduler_quiescence = outcome.scheduler_quiescence;
     }
     combined
@@ -396,6 +416,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, NodeRecordingBackend>
 
 #[test]
 fn backend_quantum_loop_preserves_the_scheduler_selected_node() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let selected = SchedulerNodeId {
         node: NodeId {
             name: String::from("vm-b"),
@@ -420,6 +443,9 @@ fn backend_quantum_loop_preserves_the_scheduler_selected_node() {
 
 #[test]
 fn backend_quantum_loop_uses_exact_virtual_frontier_after_node_counter_rebase() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let node = SchedulerNodeId {
         node: NodeId {
             name: String::from("vm-a"),
@@ -461,6 +487,9 @@ fn backend_quantum_loop_uses_exact_virtual_frontier_after_node_counter_rebase() 
 
 #[test]
 fn backend_quantum_loop_delivers_resolved_network_input_at_the_exact_boundary() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = SchedulerNodeId {
         node: NodeId {
             name: String::from("vm-a"),
@@ -517,6 +546,9 @@ fn backend_quantum_loop_delivers_resolved_network_input_at_the_exact_boundary() 
 
 #[test]
 fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = NodeId {
         name: String::from("vm-a"),
     };
@@ -623,6 +655,9 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
 
 #[test]
 fn backend_network_route_resolution_expands_and_locks_flood_routes() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let source = NodeId {
         name: String::from("vm-a"),
     };
@@ -714,6 +749,9 @@ fn backend_network_route_resolution_expands_and_locks_flood_routes() {
 
 #[test]
 fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (default_outcome, default_loop) = network_branch_fixture(None, 0);
     let frontier = default_loop
         .loop_impl()
@@ -771,6 +809,9 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
 
 #[test]
 fn live_world_network_preselection_pauses_before_default_and_replays_its_route() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (default_outcome, default_loop) = network_branch_fixture(None, 0);
     let (paused, mut adapter) = network_branch_fixture_with_pause(None, 0, true);
     let choice = adapter
@@ -889,6 +930,9 @@ fn live_world_network_preselection_pauses_before_default_and_replays_its_route()
 
 #[test]
 fn live_network_branch_stops_at_one_decision_before_large_quantum_suffix() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (_default, discovered) = network_branch_fixture(None, 0);
     let selected = discovered
         .loop_impl()
@@ -941,6 +985,9 @@ fn live_network_branch_stops_at_one_decision_before_large_quantum_suffix() {
 
 #[test]
 fn live_network_preselection_does_not_intercept_a_later_due_frame() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (configuration, mut adapter) = two_frame_network_adapter(None);
     adapter.set_live_network_choice_pause(true);
 
@@ -971,6 +1018,9 @@ fn live_network_preselection_does_not_intercept_a_later_due_frame() {
 
 #[test]
 fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (configuration, mut source) = two_frame_network_adapter(None);
     source.set_live_network_choice_pause(true);
     source
@@ -1039,6 +1089,9 @@ fn live_network_preselection_two_frame_handoff_replays_the_deferred_suffix() {
 
 #[test]
 fn live_network_preselection_reserves_the_first_split_route() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (configuration, scheduler, backend) = network_branch_fixture_components(None, 0);
     let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
         scheduler,
@@ -1080,6 +1133,9 @@ fn live_network_preselection_reserves_the_first_split_route() {
 
 #[test]
 fn live_network_preselection_reserves_the_first_broadcast_route() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (configuration, scheduler, backend) =
         network_branch_fixture_components_with_broadcast(None, 0, true);
     let physical = backend.network_outputs[0].clone();
@@ -1128,6 +1184,9 @@ fn live_network_preselection_reserves_the_first_broadcast_route() {
 
 #[test]
 fn choice_free_parallel_boot_poisons_early_and_last_route_choices() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for source in ["vm-a", "vm-c"] {
         let (mut configuration, scheduler, mut backend) =
             network_branch_fixture_components_with_broadcast(None, 0, true);
@@ -1203,6 +1262,9 @@ fn choice_free_parallel_boot_poisons_early_and_last_route_choices() {
 
 #[test]
 fn post_marker_pause_keeps_the_first_choice_identical_with_one_or_five_workers() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let first_choice = |workers| {
         let (mut configuration, scheduler, backend) =
             network_branch_fixture_components_with_broadcast(None, 0, true);
@@ -1298,6 +1360,9 @@ fn broadcast_evidence_run(
 
 #[test]
 fn broadcast_reservation_defers_queued_observations_and_rng_evidence() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let choice_quantum = broadcast_preselection_quantum();
     let source = NodeId {
         name: String::from("vm-a"),
@@ -1375,6 +1440,9 @@ fn broadcast_reservation_defers_queued_observations_and_rng_evidence() {
 
 #[test]
 fn broadcast_handoff_accepts_previously_queued_observation() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let choice_quantum = broadcast_preselection_quantum();
     let (configuration, scheduler, mut backend) =
         network_branch_fixture_components_with_broadcast(None, 0, true);
@@ -1417,6 +1485,9 @@ fn broadcast_handoff_accepts_previously_queued_observation() {
 
 #[test]
 fn due_queued_broadcast_reserves_before_default_release() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (configuration, scheduler, mut backend) =
         network_branch_fixture_components_with_broadcast(None, 0, true);
     let mut queued = backend.network_outputs.remove(0);
@@ -1432,13 +1503,18 @@ fn due_queued_broadcast_reserves_before_default_release() {
         });
     let reserved = settlement
         .reservation()
-        .unwrap_or_else(|| panic!("queued route is reserved"));
-    let (prefix_decisions, settled_configuration, _appends) = settlement.clone().into_parts();
+        .unwrap_or_else(|| panic!("queued route is reserved"))
+        .try_clone_admitted()
+        .expect("reserved routing output fits its retained original authority");
+    let (prefix_decisions, settled_configuration, _appends) = settlement.into_parts();
     let choice = adapter
         .live_network_preselection()
         .unwrap_or_else(|| panic!("queued choice"));
     assert_eq!(reserved.decisions, prefix_decisions);
-    assert_eq!(settled_configuration, Some(reserved.configuration.clone()));
+    assert_eq!(
+        settled_configuration.as_ref(),
+        Some(&reserved.configuration)
+    );
     assert_eq!(reserved.configuration, choice.parent);
     assert_eq!(reserved.configuration, configuration);
     assert_eq!(reserved.discovered_choices, vec![choice.discovery.clone()]);
@@ -1463,6 +1539,9 @@ fn due_queued_broadcast_reserves_before_default_release() {
 
 #[test]
 fn later_route_failure_poisons_the_serial_backend_continuation() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let choice_quantum = broadcast_preselection_quantum();
     let (configuration, scheduler, backend) =
         network_branch_fixture_components_with_broadcast(None, 0, true);
@@ -1505,6 +1584,9 @@ fn later_route_failure_poisons_the_serial_backend_continuation() {
 
 #[test]
 fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let (_default_outcome, default_loop) = network_branch_fixture(None, 4_096);
     let frontier = default_loop
         .loop_impl()

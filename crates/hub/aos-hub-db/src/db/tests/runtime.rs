@@ -165,6 +165,36 @@ fn mysql_migration_replay_helpers_cover_every_ddl_shape() {
 }
 
 #[test]
+fn mysql_migration_replay_rewrites_executable_words_and_preserves_examples() {
+    for (statement, expected) in [
+        (
+            "-- CREATE TABLE IF NOT EXISTS is replay-safe.\n\
+             /* CREATE TABLE is an example. */\n\
+             CREATE TABLE example (value TEXT DEFAULT 'CREATE TABLE literal')",
+            "-- CREATE TABLE IF NOT EXISTS is replay-safe.\n\
+             /* CREATE TABLE is an example. */\n\
+             CREATE TABLE IF NOT EXISTS example (value TEXT DEFAULT 'CREATE TABLE literal')",
+        ),
+        (
+            "-- CREATE VIEW is an example.\nCREATE VIEW example AS SELECT 'CREATE VIEW literal'",
+            "-- CREATE VIEW is an example.\nCREATE OR REPLACE VIEW example AS SELECT 'CREATE VIEW literal'",
+        ),
+        (
+            "ALTER TABLE example ADD COLUMN value TEXT DEFAULT 'ADD COLUMN IF NOT EXISTS'",
+            "ALTER TABLE example ADD COLUMN IF NOT EXISTS value TEXT DEFAULT 'ADD COLUMN IF NOT EXISTS'",
+        ),
+        (
+            "-- INSERT INTO is an example.\nINSERT INTO example VALUES ('ON CONFLICT')",
+            "-- INSERT INTO is an example.\nINSERT IGNORE INTO example VALUES ('ON CONFLICT')",
+        ),
+    ] {
+        let replay_safe = mysql_replay_safe_migration_sql(statement);
+        assert_eq!(replay_safe, expected);
+        assert_eq!(mysql_replay_safe_migration_sql(&replay_safe), replay_safe);
+    }
+}
+
+#[test]
 fn migration_statements_translate_for_postgres_and_mysql() {
     for sql in migration_statements() {
         for dialect in [Dialect::Postgres, Dialect::Mysql] {

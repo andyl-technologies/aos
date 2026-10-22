@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod bounded_observations;
 mod channel_behavior;
 mod completion;
 mod network_delivery;
@@ -96,13 +97,22 @@ fn qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report() {
 
 #[test]
 fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
-    let source = function_source("pub fn start_quantum(");
+    let source = function_source("pub(crate) fn start_quantum_with_publication(");
     assert_source_order(
         source,
         &[
+            "self.record(QemuQuantumOperation::ReadNodeReport);",
+            ".observe_scheduler_advance()",
+            "observation.snapshot()",
+            "self.record(QemuQuantumOperation::ComputeSchedulerCeiling);",
+            ".reserve()",
+            "publisher.retain(",
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_advance(",
+            ".commit(ceiling, stop_condition)",
+            "publisher.publish(binding, self.view.node_slot, &committed)?;",
+            ".wake()",
+            ".publish_inbox_and_advance(",
             "self.config.vm_slot,",
             "self.config.router_slot,",
             "self.view.inbound_ring,",
@@ -110,7 +120,7 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
             "&[],",
             "ceiling,",
         ],
-        "QEMU start_quantum must publish RUN through the ordered inbox/ceiling/wake helper",
+        "QEMU start must retain actual Source lenders before tuple commit and publish their command before wake; scripted handoff keeps its inbox preflight",
     );
 }
 

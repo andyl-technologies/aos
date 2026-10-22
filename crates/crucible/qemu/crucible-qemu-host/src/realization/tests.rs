@@ -73,3 +73,79 @@ fn native_baked_genesis_uses_exact_vm_clock_set_without_modeled_blob_refs() {
     let foreign = baked_snapshot(&world, &["vm-a", "foreign"]);
     assert!(QemuBakedGenesisRestoreAdmission::new(&foreign, &world).is_err());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dispatcher_retirement_preserves_both_actual_leaf_errors_and_first_source() {
+    use crate::linux_cgroup::LinuxQemuCgroupError;
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let preparation = supervisor.begin(HostOperationClass::Preparation).unwrap();
+    supervisor.cancel().unwrap();
+    let original = preparation.wait_slice().unwrap_err();
+    let dispatcher = LinuxQemuCgroupError::Io {
+        operation: "test retained dispatcher read",
+        path: std::path::PathBuf::from("retained-dispatcher"),
+        source: std::io::Error::from_raw_os_error(libc::EIO),
+    };
+
+    let error = super::QemuTargetDispatcherRetirementError::combine(
+        Err(dispatcher),
+        Err(crate::OriginalActorAccountError::Supervision(original)),
+    )
+    .unwrap_err();
+
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = error else {
+        panic!("both leaf errors must remain typed");
+    };
+    let dispatcher = source.dispatcher_error().unwrap();
+    assert!(
+        matches!(dispatcher, LinuxQemuCgroupError::Io { source, .. } if source.raw_os_error() == Some(libc::EIO))
+    );
+    assert!(
+        matches!(source.pool_error(), Some(crate::OriginalActorAccountError::Supervision(actual)) if *actual == original)
+    );
+    assert!(std::ptr::eq(
+        std::error::Error::source(&source)
+            .unwrap()
+            .downcast_ref::<LinuxQemuCgroupError>()
+            .unwrap(),
+        dispatcher
+    ));
+    assert!(source.is_retryable());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn dispatcher_retirement_keeps_single_failure_class_and_success_distinct() {
+    use crate::linux_cgroup::LinuxQemuCgroupError;
+    assert!(super::QemuTargetDispatcherRetirementError::combine(Ok(()), Ok(())).is_ok());
+    let pool_only = super::QemuTargetDispatcherRetirementError::combine(
+        Ok(()),
+        Err(crate::OriginalActorAccountError::Unavailable),
+    )
+    .unwrap_err();
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = pool_only else {
+        panic!("typed pool report");
+    };
+    assert!(source.dispatcher_error().is_none());
+    assert!(source.pool_error().is_some());
+    assert!(source.is_retryable());
+
+    let both = super::QemuTargetDispatcherRetirementError::combine(
+        Err(LinuxQemuCgroupError::InvalidLimit),
+        Err(crate::OriginalActorAccountError::Unavailable),
+    )
+    .unwrap_err();
+    let super::QemuVmRealizationError::TargetDispatcherRetirement { source } = both else {
+        panic!("typed independent report");
+    };
+    assert!(
+        !source.is_retryable(),
+        "pool refusal must not replace terminal dispatcher precedence"
+    );
+    assert!(source.dispatcher_error().is_some());
+    assert!(source.pool_error().is_some());
+}

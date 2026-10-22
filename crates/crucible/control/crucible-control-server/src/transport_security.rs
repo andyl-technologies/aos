@@ -13,35 +13,8 @@ use std::sync::Arc;
 use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio_rustls::TlsAcceptor;
-
-/// Identity proven by one authenticated daemon transport connection.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DebugTransportIdentity {
-    certificate_sha256: String,
-}
-
-impl DebugTransportIdentity {
-    /// Derives an identity from the authenticated leaf certificate bytes.
-    #[must_use]
-    pub fn from_leaf_certificate(certificate: &[u8]) -> Self {
-        let digest = Sha256::digest(certificate);
-        let mut certificate_sha256 = String::with_capacity(digest.len() * 2);
-        for byte in digest {
-            use std::fmt::Write as _;
-            let _ = write!(certificate_sha256, "{byte:02x}");
-        }
-        Self { certificate_sha256 }
-    }
-
-    /// Returns the lowercase SHA-256 fingerprint of the leaf certificate.
-    #[must_use]
-    pub fn certificate_sha256(&self) -> &str {
-        &self.certificate_sha256
-    }
-}
 
 /// Errors returned while loading mutual-TLS server material.
 #[derive(Debug, Error)]
@@ -171,29 +144,4 @@ fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, MutualTlsServ
             kind: "server private key",
             path: path.to_path_buf(),
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn certificate_identity_is_stable_and_unambiguous() {
-        let identity = DebugTransportIdentity::from_leaf_certificate(b"client-certificate");
-        assert_eq!(identity.certificate_sha256().len(), 64);
-        assert!(
-            identity
-                .certificate_sha256()
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        );
-        assert_eq!(
-            identity,
-            DebugTransportIdentity::from_leaf_certificate(b"client-certificate")
-        );
-        assert_ne!(
-            identity,
-            DebugTransportIdentity::from_leaf_certificate(b"other-certificate")
-        );
-    }
 }

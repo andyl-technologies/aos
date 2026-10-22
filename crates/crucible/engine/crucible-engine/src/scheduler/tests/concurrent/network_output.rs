@@ -53,6 +53,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, TestConcurrentBackend>
 
 #[test]
 fn one_run_admits_tx_before_its_node_local_emit_overtakes_the_frontier() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![
             test_scenario_node(
@@ -124,6 +127,9 @@ fn one_run_admits_tx_before_its_node_local_emit_overtakes_the_frontier() {
 
 #[test]
 fn omitted_lagging_peer_output_precedes_source_candidate() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         vec![
             test_scenario_node(
@@ -190,6 +196,9 @@ fn omitted_lagging_peer_output_precedes_source_candidate() {
 
 #[test]
 fn omitted_producer_gets_a_fresh_ceiling_after_its_watermark_catchup() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "network-output-omitted-producer-catchup",
         16,
@@ -278,6 +287,9 @@ fn omitted_producer_gets_a_fresh_ceiling_after_its_watermark_catchup() {
 
 #[test]
 fn concurrent_batch_admits_first_tx_before_later_run_emit() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         ["source", "z-peer"]
             .into_iter()
@@ -361,6 +373,9 @@ fn concurrent_batch_admits_first_tx_before_later_run_emit() {
 
 #[test]
 fn consecutive_source_outputs_precede_held_peer_emit() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = test_scheduler(
         ["source", "z-peer"]
             .into_iter()
@@ -432,6 +447,9 @@ fn consecutive_source_outputs_precede_held_peer_emit() {
 
 #[test]
 fn same_tick_outputs_follow_node_identity_across_registration_and_worker_order() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for (source, peer) in [("a-source", "z-peer"), ("z-source", "a-peer")] {
         let expected = if source < peer {
             [source, peer]
@@ -513,6 +531,9 @@ fn same_tick_outputs_follow_node_identity_across_registration_and_worker_order()
 
 #[test]
 fn early_source_reselection_preserves_same_tick_peer_before_next_source_output() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let scheduler = test_scheduler(
             ["a-source", "z-peer"]
@@ -642,6 +663,9 @@ fn same_tick_choice_scheduler(source: &str, peer: &str) -> SingleScheduler {
 
 #[test]
 fn same_tick_peer_evidence_survives_a_selectable_offer_until_default_settlement() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for (source, peer, first) in [
         ("a-source", "z-peer", "a-source"),
         ("z-source", "a-peer", "a-peer"),
@@ -756,6 +780,9 @@ fn same_tick_peer_evidence_survives_a_selectable_offer_until_default_settlement(
 
 #[test]
 fn same_tick_held_evidence_is_discarded_only_with_preselection_world_shutdown() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = same_tick_choice_scheduler("a-source", "z-peer");
     let backend = TestConcurrentBackend::new(false)
         .with_network_output_to("a-source", "zz-sink", 30)
@@ -791,6 +818,9 @@ fn same_tick_held_evidence_is_discarded_only_with_preselection_world_shutdown() 
 
 #[test]
 fn selected_same_tick_choice_releases_held_peer_once() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let scheduler = same_tick_choice_scheduler("a-source", "z-peer");
     let backend = TestConcurrentBackend::new(false)
         .with_network_output_to("a-source", "zz-sink", 30)

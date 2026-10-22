@@ -393,8 +393,12 @@
         needle = "const _: () = assert!(NODE_SLOT_PAD4_OFFSET == 216);";
       }
       {
+        label = "distinct ParentPark return journal Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PARK_RETURN_OFFSET == 512);";
+      }
+      {
         label = "node slot size Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_SIZE == 256);";
+        needle = "const _: () = assert!(NODE_SLOT_SIZE == 768);";
       }
       {
         label = "node slot alignment Rust static assertion";
@@ -516,11 +520,11 @@
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=30";
+        needle = "abi_version=33";
       }
       {
         label = "total serialized length";
-        needle = "total_len=19424";
+        needle = "total_len=19936";
       }
       {
         label = "region magic";
@@ -528,37 +532,37 @@
       }
       {
         label = "payload marker";
-        needle = "672=50494e47";
+        needle = "1184=50494e47";
       }
       {
         label = "coverage entry exact-icount marker";
-        needle = "5280=8503";
+        needle = "5792=8503";
       }
       {
         label = "coverage entry block marker";
-        needle = "5308=04";
+        needle = "5820=04";
       }
       {
         label = "white-box marker exact-icount marker";
-        needle = "5344=9103";
+        needle = "5856=9103";
       }
       {
         label = "white-box marker payload marker";
-        needle = "5360=4d41524b";
+        needle = "5872=4d41524b";
       }
       {
         label = "guest-introspection sequence marker";
-        needle = "10016=13";
+        needle = "10528=13";
       }
       {
         label = "guest-introspection complete CRGI record marker";
-        needle = "10032=4352474901";
+        needle = "10544=4352474901";
       }
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
-        needle = "abi_version = 30";
+        needle = "abi_version = 33";
       }
       {
         label = "selectable reply direction";
@@ -1114,11 +1118,11 @@ in
                 atomic_init(&header.node_count, CRUCIBLE_SHMEM_MAX_NODES);
                 atomic_init(&header.queue_capacity, 8u);
                 atomic_init(&header.ring_count, 12u);
-                atomic_init(&header.ring_hdr_off, 8448u);
-                atomic_init(&header.ring_data_off, 9984u);
+                atomic_init(&header.ring_hdr_off, 24832u);
+                atomic_init(&header.ring_data_off, 26368u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 42026112u);
-                atomic_init(&header.icount_shift, 4u);
+                atomic_init(&header.region_size, 42042496u);
+                atomic_init(&header.ticks_per_ns, 1000u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
                 atomic_init(
@@ -1138,9 +1142,9 @@ in
                 atomic_init(&slot.device_io_active, 1u);
                 atomic_init(&slot.publish_gen, 4u);
                 atomic_init(&slot.control_boundary_ack, 11u);
-                atomic_init(&slot.preemption_at_icount, 160u);
-                atomic_init(&slot.preemption_deadline_icount, 128u);
-                atomic_init(&slot.preemption_ceiling_icount, 256u);
+                atomic_init(&slot.preemption_at_tick, 160u);
+                atomic_init(&slot.preemption_deadline_tick, 128u);
+                atomic_init(&slot.preemption_ceiling_tick, 256u);
                 atomic_init(&slot.preemption_published_sequence, 9u);
                 atomic_init(&slot.preemption_consumed_sequence, 8u);
                 atomic_init(&slot.preemption_arg0, 0u);
@@ -1246,48 +1250,48 @@ in
                     || request_ring != 2u
                     || response_ring != 3u
                     || crucible_shmem_guest_introspection_layout_compute(
-                        9984u,
+                        26368u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42026112u,
+                        42042496u,
                         &guest_layout
                     ) != 0
                     || guest_layout.ring_count != 4u
                     || guest_layout.queue_capacity
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY
-                    || guest_layout.ring_hdr_off != 38394624u
-                    || guest_layout.ring_data_off != 38395136u
+                    || guest_layout.ring_hdr_off != 38411008u
+                    || guest_layout.ring_data_off != 38411520u
                     || guest_layout.entry_stride
                         != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
                     || guest_layout.selectable_reply_ring_count != 2u
                     || guest_layout.selectable_reply_queue_capacity
                         != CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY
-                    || guest_layout.selectable_reply_ring_hdr_off != 42016512u
-                    || guest_layout.selectable_reply_ring_data_off != 42016768u
+                    || guest_layout.selectable_reply_ring_hdr_off != 42032896u
+                    || guest_layout.selectable_reply_ring_data_off != 42033152u
                     || guest_layout.selectable_reply_entry_stride
                         != CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE
-                    || guest_layout.region_size != 42026112u
+                    || guest_layout.region_size != 42042496u
                     || crucible_shmem_guest_introspection_layout_compute(
-                        9984u,
+                        26368u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         0u,
-                        42026112u,
+                        42042496u,
                         &guest_layout
                     ) == 0
                     || crucible_shmem_guest_introspection_layout_compute(
-                        9984u,
+                        26368u,
                         12u,
                         8u,
                         CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
                         2u,
                         CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES,
-                        42026111u,
+                        42042495u,
                         &guest_layout
                     ) == 0) {
                     fprintf(stderr, "guest-introspection geometry validation failed\n");
@@ -1402,11 +1406,11 @@ in
                     || atomic_load_explicit(&header.node_count, memory_order_acquire) != CRUCIBLE_SHMEM_MAX_NODES
                     || atomic_load_explicit(&header.queue_capacity, memory_order_acquire) != 8u
                     || atomic_load_explicit(&header.ring_count, memory_order_acquire) != 12u
-                    || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 8448u
-                    || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 9984u
+                    || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 24832u
+                    || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 26368u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42026112u
-                    || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 42042496u
+                    || atomic_load_explicit(&header.ticks_per_ns, memory_order_acquire) != 1000u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u
                     || atomic_load_explicit(
@@ -1427,9 +1431,9 @@ in
                     || atomic_load_explicit(&slot.device_io_active, memory_order_acquire) != 1u
                     || atomic_load_explicit(&slot.publish_gen, memory_order_acquire) != 4u
                     || atomic_load_explicit(&slot.control_boundary_ack, memory_order_acquire) != 11u
-                    || atomic_load_explicit(&slot.preemption_at_icount, memory_order_acquire) != 160u
-                    || atomic_load_explicit(&slot.preemption_deadline_icount, memory_order_acquire) != 128u
-                    || atomic_load_explicit(&slot.preemption_ceiling_icount, memory_order_acquire) != 256u
+                    || atomic_load_explicit(&slot.preemption_at_tick, memory_order_acquire) != 160u
+                    || atomic_load_explicit(&slot.preemption_deadline_tick, memory_order_acquire) != 128u
+                    || atomic_load_explicit(&slot.preemption_ceiling_tick, memory_order_acquire) != 256u
                     || atomic_load_explicit(&slot.preemption_published_sequence, memory_order_acquire) != 9u
                     || atomic_load_explicit(&slot.preemption_consumed_sequence, memory_order_acquire) != 8u
                     || atomic_load_explicit(&slot.preemption_arg0, memory_order_acquire) != 0u

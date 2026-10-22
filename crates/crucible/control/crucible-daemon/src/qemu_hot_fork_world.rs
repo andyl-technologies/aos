@@ -28,7 +28,10 @@ use crate::{
 };
 
 mod lifecycle;
-pub(crate) use lifecycle::QemuHotForkProductionLifecycleContext;
+pub(crate) use lifecycle::{
+    HotForkInstallationRetirementError, HotForkLifecycleInstallError,
+    QemuHotForkProductionLifecycleContext, RetainedHotForkInstallation, materialize_hot_fork_start,
+};
 pub use lifecycle::{QemuProductionHotForkRetainedLineage, QemuProductionHotForkWorldLifecycle};
 
 /// Unforgeable process-local identity of one atomic world assembly attempt.
@@ -135,7 +138,7 @@ struct ExpectedWorldSource {
 
 /// Reason one child was refused before it could enter a world transaction.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum QemuHotForkWorldChildAdmissionFailure {
+pub enum QemuHotForkWorldChildAdmissionFailure {
     /// The continuation does not retain a source QEMU for this node.
     #[error("hot-fork child node is not a retained source member of the captured world")]
     UnexpectedNode,
@@ -202,52 +205,25 @@ impl<C> fmt::Display for QemuHotForkWorldChildAdmissionError<C> {
 
 impl<C> Error for QemuHotForkWorldChildAdmissionError<C> where C: 'static {}
 
-/// Incomplete world publication retaining every already-admitted child.
-#[must_use = "complete the world or transfer the retained assembly to quarantine"]
-pub(crate) struct QemuHotForkWorldIncomplete<C>
-where
-    C: QemuHotForkWorldChild,
-{
-    assembly: Box<QemuHotForkWorldAssembly<C>>,
-    missing: Vec<NodeId>,
+/// Publication refusal while every child remains in its original assembly.
+///
+/// The report carries no replacement owner or allocated roster. Callers can
+/// inspect the same assembly and continue admission or drive its cleanup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum QemuHotForkWorldPublicationFailure {
+    /// At least one expected child has not completed admission.
+    #[error("hot-fork world is missing {count} retained source children")]
+    MissingChildren {
+        /// Number of expected children still absent from the assembly.
+        count: usize,
+    },
+    /// The authenticated continuation is unavailable.
+    #[error("hot-fork world has no retained scheduler continuation")]
+    MissingContinuation,
+    /// The assembly already transferred its complete world.
+    #[error("hot-fork world was already published")]
+    AlreadyPublished,
 }
-
-impl<C> QemuHotForkWorldIncomplete<C>
-where
-    C: QemuHotForkWorldChild,
-{
-    /// Recovers the unchanged assembly for additional admission attempts.
-    pub(crate) fn into_assembly(self) -> QemuHotForkWorldAssembly<C> {
-        *self.assembly
-    }
-}
-
-impl<C> fmt::Debug for QemuHotForkWorldIncomplete<C>
-where
-    C: QemuHotForkWorldChild,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("QemuHotForkWorldIncomplete")
-            .field("missing", &self.missing)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<C> fmt::Display for QemuHotForkWorldIncomplete<C>
-where
-    C: QemuHotForkWorldChild,
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "hot-fork world is missing {} retained source children",
-            self.missing.len()
-        )
-    }
-}
-
-impl<C> Error for QemuHotForkWorldIncomplete<C> where C: QemuHotForkWorldChild + 'static {}
 
 /// Linear all-or-nothing assembly transaction for one child world.
 #[must_use = "publish a complete child world or retain it for fail-closed cleanup"]
@@ -375,28 +351,25 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`QemuHotForkWorldIncomplete`] with the unchanged assembly and
-    /// canonically ordered missing-node set when any retained source is absent.
+    /// Returns a publication refusal without moving children or allocating a
+    /// replacement owner. Missing children and a missing continuation leave the
+    /// assembly unchanged. A successful publication can occur only once.
     pub fn publish(
-        mut self,
-    ) -> Result<QemuHotForkCompleteWorldAssembly<C>, QemuHotForkWorldIncomplete<C>> {
+        &mut self,
+    ) -> Result<QemuHotForkCompleteWorldAssembly<C>, QemuHotForkWorldPublicationFailure> {
+        if self.published {
+            return Err(QemuHotForkWorldPublicationFailure::AlreadyPublished);
+        }
         let missing = self
             .expected
             .keys()
             .filter(|node| !self.children.contains_key(*node))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(QemuHotForkWorldIncomplete {
-                assembly: Box::new(self),
-                missing,
-            });
+            .count();
+        if missing != 0 {
+            return Err(QemuHotForkWorldPublicationFailure::MissingChildren { count: missing });
         }
         let Some(continuation) = self.continuation.take() else {
-            return Err(QemuHotForkWorldIncomplete {
-                assembly: Box::new(self),
-                missing: Vec::new(),
-            });
+            return Err(QemuHotForkWorldPublicationFailure::MissingContinuation);
         };
         let children = std::mem::take(&mut self.children);
         self.published = true;
@@ -437,6 +410,29 @@ impl<C> QemuHotForkCompleteWorldAssembly<C>
 where
     C: QemuHotForkWorldChild,
 {
+    /// Observes whether every actual child has moved to its adoption slot.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.children.is_empty()
+    }
+
+    /// Moves the continuation only after all children have actual adoptions.
+    ///
+    /// # Errors
+    /// Returns this same complete world if any child remains unadopted.
+    pub(crate) fn into_adopted_continuation(
+        self,
+    ) -> Result<ProductionVmHotForkWorldContinuation, Self> {
+        if !self.children.is_empty() {
+            return Err(self);
+        }
+        Ok(self.continuation)
+    }
+
+    /// Moves the existing children into the same retained rollback transaction.
+    pub(crate) fn into_rollback_children(self) -> BTreeMap<NodeId, C> {
+        self.children
+    }
+
     pub(crate) fn quarantine(self) {
         for (_node, mut child) in self.children {
             child.quarantine();
@@ -693,7 +689,7 @@ mod tests {
                         event_log_offset,
                         second_process,
                     )),
-                    token,
+                    token: token.clone(),
                     quarantined: Arc::clone(&quarantined),
                 },
             )
@@ -710,8 +706,77 @@ mod tests {
             .publish()
             .err()
             .unwrap_or_else(|| panic!("partial child world must not publish"));
-        assert_eq!(incomplete.missing, [second]);
-        drop(incomplete);
-        assert_eq!(quarantined.load(Ordering::Acquire), 3);
+        assert_eq!(
+            incomplete,
+            QemuHotForkWorldPublicationFailure::MissingChildren { count: 1 }
+        );
+        assert!(assembly.expected.contains_key(&second));
+        assert!(!assembly.children.contains_key(&second));
+        assert_eq!(assembly.children.len(), 1);
+        assert_eq!(quarantined.load(Ordering::Acquire), 2);
+
+        assembly
+            .admit_child(
+                second.clone(),
+                FakeChild {
+                    basis: Ok(basis(second, configuration, event_log_offset, process(42))),
+                    token,
+                    quarantined: Arc::clone(&quarantined),
+                },
+            )
+            .unwrap_or_else(|error| panic!("later exact child should be admitted: {error}"));
+        let original_children = assembly
+            .children
+            .values()
+            .map(std::ptr::from_ref)
+            .collect::<Vec<_>>();
+
+        for _ in 0..2 {
+            let failure = assembly
+                .publish()
+                .err()
+                .unwrap_or_else(|| panic!("missing continuation must refuse publication"));
+
+            assert_eq!(
+                failure,
+                QemuHotForkWorldPublicationFailure::MissingContinuation
+            );
+            assert_eq!(
+                assembly
+                    .children
+                    .values()
+                    .map(std::ptr::from_ref)
+                    .collect::<Vec<_>>(),
+                original_children
+            );
+            assert!(!assembly.published);
+            assert_eq!(quarantined.load(Ordering::Acquire), 2);
+        }
+
+        drop(assembly);
+        assert_eq!(quarantined.load(Ordering::Acquire), 4);
+    }
+
+    #[test]
+    fn successful_publication_moves_the_continuation_exactly_once() {
+        let (_, mut source) =
+            crate::vm_lifecycle::production_permanently_failed_loop_for_test().unwrap();
+        let continuation = source.capture_hot_fork_world_continuation().unwrap();
+        let configuration = continuation.configuration().id();
+        let mut assembly = QemuHotForkWorldAssembly::<FakeChild>::new(continuation);
+
+        let complete = assembly.publish().unwrap_or_else(|error| {
+            panic!("world with only permanently failed nodes should publish: {error}")
+        });
+
+        assert_eq!(complete.continuation.configuration().id(), configuration);
+        assert!(complete.children.is_empty());
+        assert!(assembly.continuation.is_none());
+        assert!(assembly.children.is_empty());
+        assert!(assembly.published);
+        assert_eq!(
+            assembly.publish().err(),
+            Some(QemuHotForkWorldPublicationFailure::AlreadyPublished)
+        );
     }
 }

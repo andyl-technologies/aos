@@ -48,7 +48,7 @@ pub(super) fn track_instruction_event(
     command_sequence: u64,
     payload: &[u8],
 ) -> Result<(), FaultCommandBridgeError> {
-    let evidence = FaultInstructionEvidenceV1::decode(payload)
+    let evidence = FaultInstructionEvidenceV2::decode(payload)
         .map_err(|_source| FaultCommandBridgeError::InstructionEvidence)?;
     let command = commands
         .get_mut(&command_sequence)

@@ -399,6 +399,7 @@ where
         )],
         loop_factory,
     )
+    .with_decode_budget(crate::output_budget())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,7 +422,8 @@ pub(super) struct ApiDeterminismProjection {
     pub(super) causal_event_count: u64,
     pub(super) observational_event_count: u64,
     pub(super) last_sequence: Option<u64>,
-    pub(super) reproduction: Vec<ReproductionCommandRecord>,
+    pub(super) reproduction:
+        std::sync::Arc<crucible_control_api::AdmittedShared<Vec<ReproductionCommandRecord>>>,
     pub(super) mutating_results: Vec<ApiMutatingCommandResult>,
 }
 
@@ -446,7 +448,7 @@ pub(super) struct ApiDeterminismNormalizedProjection {
     causal_event_count: u64,
     observational_event_count: u64,
     last_sequence: Option<u64>,
-    reproduction: Vec<ReproductionCommandRecord>,
+    reproduction: std::sync::Arc<crucible_control_api::AdmittedShared<Vec<ReproductionCommandRecord>>>,
     mutating_results: Vec<ApiMutatingCommandResult>,
 }
 
@@ -472,9 +474,23 @@ pub(super) struct ApiCausalSubsequenceProjection {
 pub(super) struct ApiCausalEventProjection {
     sequence: u64,
     virtual_time_ticks: u64,
-    kind: String,
+    kind: SharedEventKind,
     source: String,
 }
+
+/// Shares the admitted event allocation while comparing its normalized kind only.
+#[derive(Clone, Debug)]
+struct SharedEventKind(
+    std::sync::Arc<crucible_control_api::AdmittedShared<crucible_control_api::OpenSetEventEnvelope>>,
+);
+
+impl PartialEq for SharedEventKind {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.payload.kind == other.0.payload.kind
+    }
+}
+
+impl Eq for SharedEventKind {}
 
 pub(super) async fn drive_api_nondeterminism_projection<C>(
     client: &C,
@@ -613,10 +629,11 @@ where
 pub(super) async fn drive_streaming_causal_subsequence_projection(
     traffic: ApiDeterminismTraffic,
 ) -> ApiCausalSubsequenceProjection {
-    let (streaming, actor, session) =
+    let (streaming, actor, session, actor_budget) =
         streaming_session_fixture(ServerQuantumLoop { quanta: 0 }, 30_115);
     let event_log_hub = actor.event_log();
-    let actor_task = tokio::spawn(async move { actor.run().await });
+    let actor_task = crucible_control_server::spawn_admitted_session_actor(actor, actor_budget)
+        .unwrap_or_else(|error| panic!("finite fixture actor admission: {error}"));
 
     let mut observer_controls = Vec::new();
     let mut observer_watches = Vec::new();
@@ -697,7 +714,7 @@ pub(super) async fn capture_streaming_causal_projection(
             causal_events.push(ApiCausalEventProjection {
                 sequence: frame.event.sequence,
                 virtual_time_ticks: frame.event.at.virtual_time_ticks,
-                kind: frame.event.payload.kind,
+                kind: SharedEventKind(frame.event.clone()),
                 source: format!("{:?}", frame.event.source),
             });
         }

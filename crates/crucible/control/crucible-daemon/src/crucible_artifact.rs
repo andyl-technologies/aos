@@ -23,7 +23,6 @@ pub(crate) use configuration_codec::{
     campaign_configuration_id, campaign_scenario_id,
     decode_crucible_configuration_artifact_from_repository,
     decode_crucible_configuration_artifact_with_owned_candidate,
-    decode_crucible_configuration_artifact_with_signal_fault_replay_guarded,
 };
 pub use configuration_codec::{
     decode_crucible_configuration_artifact, decode_crucible_configuration_artifact_with_selections,
@@ -92,8 +91,6 @@ pub const MAX_CRUCIBLE_CAMPAIGN_IMPORT_FILE_BYTES: usize = 32 * 1024 * 1024;
 const CRUCIBLE_SCHEDULE_V4_MAGIC: &[u8] = b"crucible.schedule.v4\0";
 const MAX_CONFIGURATION_SELECTION_DECISIONS: usize = 4_096;
 const MAX_CONFIGURATION_BRANCH_PREFIX_BYTES: usize = 256 * 1024 * 1024;
-type RetainedConfigurationMemoryGuard<'a> =
-    dyn FnMut(&Configuration, usize) -> Result<usize, CrucibleArtifactError> + 'a;
 const CRUCIBLE_MINIMIZATION_POLICY_SCHEMA_V3: u32 = 3;
 const CRUCIBLE_MINIMIZATION_POLICY_MAGIC_V3: &[u8] = b"crucible.finding-minimization-policy.v3\0";
 const CRUCIBLE_MINIMIZATION_CANDIDATES: u32 = 4_096;

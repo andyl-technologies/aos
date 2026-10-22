@@ -595,6 +595,9 @@ fn spawn_unpinned_test_process_with_resources(
         cgroup_procs: contract.cgroup_procs.as_raw_fd(),
         cancellation_event: contract.cancellation_event.as_raw_fd(),
         maximum_file_bytes: contract.maximum_writable_bytes,
+        maximum_file_descriptors: contract.effective_file_descriptors(),
+        maximum_locked_bytes: contract.maximum_locked_bytes,
+        main_stack_bytes: contract.main_stack_limit(),
         credentials: contract.credentials,
     });
 
@@ -767,6 +770,129 @@ fn guarded_pre_exec_places_child_before_exec() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn guarded_pre_exec_enforces_explicit_descriptor_ceiling() -> Result<(), Box<dyn Error>> {
+    let expected = 24;
+    if env::var_os(PROBE_ENV).is_some() {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        let result = unsafe {
+            // SAFETY: getrlimit writes the complete initialized record on success.
+            libc::getrlimit(libc::RLIMIT_NOFILE, limit.as_mut_ptr())
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let limit = unsafe {
+            // SAFETY: The successful syscall initialized both limit fields.
+            limit.assume_init()
+        };
+        assert_eq!(limit.rlim_cur, expected);
+        assert_eq!(limit.rlim_max, expected);
+        let mut opened = Vec::new();
+        let refusal = loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(file) => opened.push(file),
+                Err(error) => break error,
+            }
+        };
+        assert!(!opened.is_empty());
+        drop(opened);
+        assert_eq!(refusal.raw_os_error(), Some(libc::EMFILE));
+        return Ok(());
+    }
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let mut contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    contract.maximum_file_descriptors = Some(32);
+    {
+        // This fixture supplies syscall storage, never a cgroup witness or a
+        // descriptor entitlement. The child must observe the refined value.
+        contract.attempt_binding = Arc::new(AttemptResourceBinding::new(
+            contract.maximum_resident_bytes,
+            Some(32),
+        ));
+        contract.attempt_binding.refine_descriptor_limit(
+            contract.maximum_resident_bytes,
+            32,
+            None,
+            expected,
+        )?;
+    }
+    let duplicate = contract.try_clone_for_attempt_generation()?;
+    assert_eq!(contract.maximum_file_descriptors, Some(32));
+    assert_eq!(duplicate.effective_file_descriptors(), Some(expected));
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let executable = env::current_exe()?.to_string_lossy().into_owned();
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::guarded_pre_exec_enforces_explicit_descriptor_ceiling"),
+    ];
+
+    let mut child = spawn_unpinned_test_process_with_resources(
+        &executable,
+        &args,
+        child_resources,
+        &[(PROBE_ENV, "1")],
+        "spawn guarded descriptor-limit probe",
+        Some(&duplicate),
+    )?;
+    assert!(child.wait()?.success());
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+    Ok(())
+}
+
+#[test]
+fn guarded_pre_exec_installs_exact_memory_lock_entitlement() -> Result<(), Box<dyn Error>> {
+    const LOCKED_BYTES: u64 = 4096;
+    if env::var_os(PROBE_ENV).is_some() {
+        let mut limit = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+        let result = unsafe {
+            // SAFETY: The syscall initializes the complete limit record on success.
+            libc::getrlimit(libc::RLIMIT_MEMLOCK, limit.as_mut_ptr())
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let limit = unsafe {
+            // SAFETY: The successful syscall initialized both fields.
+            limit.assume_init()
+        };
+        assert_eq!(limit.rlim_cur, LOCKED_BYTES);
+        assert_eq!(limit.rlim_max, LOCKED_BYTES);
+        return Ok(());
+    }
+
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let mut contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    contract.maximum_locked_bytes = LOCKED_BYTES;
+    let cloned = contract.try_clone_for_attempt_generation()?;
+    assert_eq!(cloned.maximum_locked_bytes(), LOCKED_BYTES);
+    let (_host, child_resources) = create_spawn_resources(4096)?;
+    let executable = env::current_exe()?.to_string_lossy().into_owned();
+    let args = vec![
+        String::from("--exact"),
+        String::from("spawn::tests::guarded_pre_exec_installs_exact_memory_lock_entitlement"),
+    ];
+    let mut child = spawn_unpinned_test_process_with_resources(
+        &executable,
+        &args,
+        child_resources,
+        &[(PROBE_ENV, "1")],
+        "spawn exact memory-lock probe",
+        Some(&cloned),
+    )?;
+    assert!(child.wait()?.success());
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+    Ok(())
+}
+
+#[test]
 fn guarded_image_helper_uses_the_attempt_contract_and_pinned_directory()
 -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
@@ -829,9 +955,9 @@ fn guarded_image_helper_observes_sticky_cancellation_before_exec() -> Result<(),
             Err(error) => error,
             Ok(()) => panic!("sticky cancellation must reject every helper before exec"),
         };
-        assert!(error.child.is_none());
+        assert!(error.retained_helper_process()?.is_none());
         assert!(matches!(
-            error.source,
+            error.first_cause(),
             QemuSpawnError::Io { source, .. }
                 if source.raw_os_error() == Some(libc::ECANCELED)
         ));
@@ -852,10 +978,10 @@ fn guarded_probe_times_out_and_reaps_a_live_child() -> Result<(), Box<dyn Error>
     let error = fixture.run(1024, Duration::from_millis(100))?;
 
     assert!(matches!(
-        error.source,
+        error.first_cause(),
         QemuSpawnError::GuardedQemuProbeTimeout
     ));
-    assert!(error.child.is_none());
+    assert!(error.retained_helper_process()?.is_none());
     Ok(())
 }
 
@@ -867,13 +993,19 @@ fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>>
     )?;
     let error = fixture.run(1024, Duration::from_secs(2))?;
 
-    assert!(matches!(
-        error.source,
-        QemuSpawnError::GuardedQemuProbeOutputLimit {
-            maximum_bytes: 1024
-        }
-    ));
-    assert!(error.child.is_none());
+    assert!(
+        matches!(
+            error.first_cause(),
+            QemuSpawnError::GuardedQemuProbeOutputLimit {
+                maximum_bytes: 1024
+            }
+        ),
+        "guarded flooding probe returned a different error: {error:?}"
+    );
+    assert!(
+        error.retained_helper_process()?.is_none(),
+        "flooding helper was not reaped: {error:?}"
+    );
     Ok(())
 }
 
@@ -906,10 +1038,10 @@ fn guarded_probe_deadline_survives_descendant_held_output_pipes() -> Result<(), 
     let descendant = AdoptedDescendant::new(descendant_pid);
 
     assert!(matches!(
-        error.source,
+        error.first_cause(),
         QemuSpawnError::GuardedQemuProbeTimeout
     ));
-    assert!(error.child.is_none());
+    assert!(error.retained_helper_process()?.is_none());
     descendant.terminate_and_reap()?;
     Ok(())
 }
@@ -1007,7 +1139,11 @@ fn process_contract_rejects_forged_regular_descriptors() -> Result<(), Box<dyn E
         temporary.into(),
         duplicate,
         crate::linux_cgroup::LinuxQemuCgroupLimits::new(1, 4096, 1)?,
-        4096,
+        super::QemuChildFileLimits {
+            writable_bytes: 4096,
+            descriptors: 1024,
+            locked_bytes: 0,
+        },
         credentials,
         None,
     ) {
@@ -1062,7 +1198,7 @@ fn exact_checkpoint_root_is_immutable_across_contract_generations() -> Result<()
 fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<dyn Error>> {
     let supervisor = current_supervisor_credentials()?;
     let distinct_user_id = distinct_nonzero_id(&supervisor.user_ids);
-    let mut supervisor_groups = supervisor.supplementary_group_ids.clone();
+    let mut supervisor_groups = supervisor.supplementary_group_ids.values.clone();
     supervisor_groups.extend(supervisor.group_ids);
     let distinct_group_id = distinct_nonzero_id(&supervisor_groups);
 
@@ -1080,7 +1216,7 @@ fn guarded_credentials_reject_root_and_supervisor_identity() -> Result<(), Box<d
 
 fn valid_distinct_credentials() -> Result<QemuChildCredentials, QemuSpawnError> {
     let supervisor = current_supervisor_credentials()?;
-    let mut supervisor_groups = supervisor.supplementary_group_ids;
+    let mut supervisor_groups = supervisor.supplementary_group_ids.values;
     supervisor_groups.extend(supervisor.group_ids);
     QemuChildCredentials::new(
         distinct_nonzero_id(&supervisor.user_ids),
@@ -1602,9 +1738,46 @@ fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), B
             &prepared,
             4096,
             &second_contract,
+            None,
+            None,
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
+    Ok(())
+}
+
+#[test]
+fn guarded_spawn_without_return_owner_refuses_before_path_revalidation()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
+    std::fs::remove_file(&vmstate_path)?;
+
+    let result = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+        &command,
+        &prepared,
+        4096,
+        &contract,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(QemuSpawnError::Io {
+            operation: "retain guarded helper",
+            source,
+        }) if source.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(!vmstate_path.exists());
     Ok(())
 }
 
@@ -1661,6 +1834,8 @@ fn guarded_spawn_rejects_changed_admission_before_revalidation() -> Result<(), B
             &prepared,
             4096,
             &changed_contract,
+            None,
+            None,
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
@@ -1928,7 +2103,7 @@ impl GuardedProbeFixture {
             Err(error) => Ok(error),
             Ok(output) => Err(format!(
                 "guarded probe unexpectedly succeeded with status {}",
-                output.status
+                output.output().status
             )
             .into()),
         }
@@ -2014,12 +2189,37 @@ fn open_prepared_run_directory_for_test(
     )?)
 }
 
+#[test]
+fn setup_resources_retain_the_validated_launch_generation() -> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command_builder_for_generation(37)?.build()?;
+    let (mut resources, _child_resources) = create_spawn_resources(4096)?;
+
+    resources.bind_plugin_launch(&command);
+    let setup = resources.into_setup_resources();
+
+    assert!(
+        command
+            .args()
+            .iter()
+            .any(|argument| argument.contains("process_generation=37"))
+    );
+    assert_eq!(setup.process_generation(), 37);
+    assert_eq!(setup.fault_node_hash(), command.plugin_fault_node_hash());
+    Ok(())
+}
+
 fn guarded_resource_test_command() -> Result<QemuLaunchCommand, Box<dyn Error>> {
     Ok(guarded_resource_test_command_builder()?.build()?)
 }
 
 fn guarded_resource_test_command_builder() -> Result<crate::QemuLaunchCommandBuilder, Box<dyn Error>>
 {
+    guarded_resource_test_command_builder_for_generation(1)
+}
+
+fn guarded_resource_test_command_builder_for_generation(
+    generation: u64,
+) -> Result<crate::QemuLaunchCommandBuilder, Box<dyn Error>> {
     let profile = crate::DeterministicLaunchProfile::conservative_default()?;
     let vm = crate::QemuVmLaunchConfig::new(
         "vm-a",
@@ -2036,7 +2236,8 @@ fn guarded_resource_test_command_builder() -> Result<crate::QemuLaunchCommandBui
         "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     )
-    .with_fault_target_node("vm-a");
+    .with_fault_target_node("vm-a")
+    .with_process_generation(generation);
     Ok(crate::QemuLaunchCommandBuilder::new_for_live_gate(
         profile,
         vm,
@@ -2155,3 +2356,6 @@ fn source_fds_from_env() -> Result<Vec<RawFd>, Box<dyn Error>> {
         .map(|part| part.parse::<RawFd>().map_err(Into::into))
         .collect()
 }
+
+#[path = "spawn/main_stack_tests.rs"]
+mod main_stack;

@@ -707,6 +707,8 @@ mod tests {
             check_assertion_violation_reproduction, observable_event_from_whitebox_marker_payload,
         };
 
+        let decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)?;
+
         let emitter = CapturingEmitter::default();
         let mut adapter = Adapter::new(
             config(PathBuf::from("/run/aos-instrumentation/controller.sock")),
@@ -743,12 +745,12 @@ mod tests {
         )
         .context("adapter assertion did not map into a host observation")?;
         let entries = vec![
-            crucible_engine::test_support::condition_observation_entry_for_test(0, &mapped),
+            crucible_engine::test_support::condition_observation_entry_for_test(0, &mapped)?,
             crucible_engine::test_support::condition_boundary_entry_for_test(
                 1,
                 VirtualTime { ticks: 7 },
                 crucible_engine::SchedulerEvaluationBoundaryKind::Quantum,
-            ),
+            )?,
         ];
         let recorded = RecordedAssertionLog::from_segments(vec![entries])?;
         let scenario = ScenarioDefForm::from_components(
@@ -769,6 +771,7 @@ mod tests {
             "aos.execution-boundary.ordered"
         );
         assert_eq!(report.replay.artifact, artifact.id());
+        decode_scope.check()?;
         Ok(())
     }
 

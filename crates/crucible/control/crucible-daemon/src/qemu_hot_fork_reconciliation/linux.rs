@@ -8,6 +8,9 @@ mod reconciliation;
 /// Production backend failure while retaining source and target authorities.
 #[derive(Debug, Error)]
 pub enum LinuxQemuHotForkReconciliationError {
+    /// The actual child is retained until its RAM bodies and controllers return.
+    #[error(transparent)]
+    NodeCleanup(#[from] crucible_qemu_host::QemuNodeError),
     /// Source-QEMU channel or resource-stage reconciliation failed.
     #[error(transparent)]
     Source(#[from] QemuNodeChannelError),
@@ -17,6 +20,9 @@ pub enum LinuxQemuHotForkReconciliationError {
     /// Target pidfd, watcher, or cgroup cleanup failed.
     #[error(transparent)]
     Target(#[from] QemuVmRealizationError),
+    /// Exact Target-member accounting refused without running aggregate cleanup.
+    #[error(transparent)]
+    TargetCleanup(#[from] crate::QemuWorldMemberCleanupStatus),
     /// An acknowledged source response contradicted the retained exact basis.
     #[error("source QEMU contradicted the retained hot-fork lifecycle basis")]
     BasisMismatch,
@@ -275,7 +281,11 @@ impl QemuNodeExternalProcessControl for LinuxQemuHotForkNodeProcessControl {
     }
 }
 
-/// Concrete source-QEMU, pidfd, cgroup, and private-channel owner.
+/// Concrete source-QEMU, pidfd, member reservation, and private-channel owner.
+///
+/// The target is always the actual World member wrapper. Per-node release can
+/// change only that member's shared accounting; final host cleanup belongs to
+/// the separate aggregate owner.
 pub struct LinuxQemuHotForkReconciliationBackend<G>
 where
     G: crate::QemuAttemptResourceGuard,
@@ -284,7 +294,7 @@ where
     template_configuration: ContentHash,
     template_event_log_offset: EventLogOffset,
     world_assembly: QemuHotForkWorldAssemblyToken,
-    target: G,
+    target: QemuHotForkWorldNodeTarget<G>,
     basis: QemuHotForkChildProcessBasis,
     pending_child_qmp: Option<crucible_qemu_host::QemuHotForkChildQmpHostEndpoint>,
     scheduler_node: Option<QemuHotForkSchedulerNodeContinuation>,
@@ -301,6 +311,7 @@ where
     /// guard's storage cleanup, so the pinned descriptors never outlive the
     /// attempt storage they authenticate.
     run_directory: Option<crucible_qemu_host::QemuPreparedRunDirectory>,
+    ram_custody: Option<crucible_qemu_host::QemuRamLaunchCustody>,
 }
 
 pub(super) struct LinuxQemuHotForkWorldLaunchSource {
@@ -340,7 +351,7 @@ where
     pub(super) fn from_world_launch(
         source: LinuxQemuHotForkWorldLaunchSource,
         world_assembly: QemuHotForkWorldAssemblyToken,
-        target: G,
+        target: QemuHotForkWorldNodeTarget<G>,
         launch: QemuHotForkChildLaunch<LinuxQemuHotForkChildProcessAuthority>,
         detached_resources: QemuHotForkDetachedChildResources,
         run_directory: crucible_qemu_host::QemuPreparedRunDirectory,
@@ -349,6 +360,7 @@ where
         let (_parent, process, child_qmp, diagnostics_consumer, host_continuation) =
             launch.into_parts();
         let basis = process.basis();
+        let ram_custody = host_continuation.ram_launch_custody();
         let process_owner = Arc::new(LinuxQemuHotForkProcessOwner {
             source: LinuxQemuHotForkSourceOwner {
                 source_world: source.source_world,
@@ -375,6 +387,7 @@ where
             source_release: LinuxSourceReleasePhase::CloseChildChannel,
             diagnostics: None,
             run_directory: Some(run_directory),
+            ram_custody,
         }
     }
 
@@ -427,6 +440,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        supervisor: Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
     ) -> Result<(), LinuxQemuHotForkReconciliationError> {
         if self.installed_node.is_some() {
             return Err(LinuxQemuHotForkReconciliationError::BasisMismatch);
@@ -442,7 +456,14 @@ where
             async_policy,
             crash_detector,
         ) {
-            Ok(installed_node) => {
+            Ok(mut installed_node) => {
+                if let Some(supervisor) = supervisor
+                    && let Err(source) = installed_node.attach_host_operation_supervisor(supervisor)
+                {
+                    self.installed_node = Some(installed_node);
+                    self.installed_node_id = Some(node);
+                    return Err(LinuxQemuHotForkReconciliationError::Source(source));
+                }
                 self.installed_node = Some(installed_node);
                 self.installed_node_id = Some(node);
                 Ok(())
@@ -468,8 +489,15 @@ pub(crate) struct LinuxQemuHotForkWorldReconciliationSet<G>
 where
     G: crate::QemuAttemptResourceGuard,
 {
+    state: Arc<Mutex<LinuxQemuHotForkWorldReconciliationState<G>>>,
+}
+
+struct LinuxQemuHotForkWorldReconciliationState<G>
+where
+    G: crate::QemuAttemptResourceGuard,
+{
     expected: BTreeSet<NodeId>,
-    reconciliations: Arc<Mutex<BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>>>,
+    reconciliations: BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>,
 }
 
 impl<G> Clone for LinuxQemuHotForkWorldReconciliationSet<G>
@@ -478,8 +506,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            expected: self.expected.clone(),
-            reconciliations: Arc::clone(&self.reconciliations),
+            state: Arc::clone(&self.state),
         }
     }
 }
@@ -488,10 +515,77 @@ impl<G> LinuxQemuHotForkWorldReconciliationSet<G>
 where
     G: crate::QemuAttemptResourceGuard,
 {
+    /// Measures adoption vectors and boxed leases for the selected live peak.
+    ///
+    /// # Errors
+    /// Refuses arithmetic overflow before the containing World allocates them.
+    pub(crate) fn adoption_control_bytes(count: usize) -> Result<u64, LifecycleApiError> {
+        let per_child = std::mem::size_of::<ProductionVmHotForkNodeAdoption>()
+            .checked_add(std::mem::size_of::<LinuxQemuHotForkWorldNodeLease<G>>())
+            .ok_or_else(|| hot_fork_adoption_error("Target adoption layout overflows"))?;
+        per_child
+            .checked_mul(count)
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or_else(|| hot_fork_adoption_error("Target adoption extent overflows"))
+    }
+
+    /// Measures one shared registry and its selected tree/name payloads.
+    ///
+    /// Handles alias the same allocation. Expected membership and published
+    /// reconciliations may overlap completely; one copied lookup name is also
+    /// included. Nested child/process payloads are priced by their producers.
+    pub(crate) fn control_bytes<'a>(
+        nodes: impl Clone + Iterator<Item = &'a NodeId>,
+    ) -> Result<u64, LifecycleApiError> {
+        use crucible_engine::owned_decode::DecodeBudget;
+
+        // Reuse the actual closed selection validator without allocating rows.
+        crate::QemuAttemptGenerationStorage::control_bytes(nodes.clone())?;
+        let mut count = 0_usize;
+        let mut names = 0_u64;
+        let mut lookup_name = 0_u64;
+        for node in nodes {
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| hot_fork_adoption_error("Target registry count overflows"))?;
+            let name = u64::try_from(node.name.len())
+                .map_err(|_| hot_fork_adoption_error("Target registry name overflows"))?;
+            names = names
+                .checked_add(name)
+                .ok_or_else(|| hot_fork_adoption_error("Target registry names overflow"))?;
+            lookup_name = lookup_name.max(name);
+        }
+        let (shared, _) = std::alloc::Layout::new::<(usize, usize)>()
+            .extend(std::alloc::Layout::new::<
+                Mutex<LinuxQemuHotForkWorldReconciliationState<G>>,
+            >())
+            .map_err(|_| hot_fork_adoption_error("Target registry shared layout overflows"))?;
+        let expected = DecodeBudget::btree_control_bytes::<NodeId, ()>(count)
+            .map_err(|_| hot_fork_adoption_error("Target expected registry layout overflows"))?;
+        let actual = DecodeBudget::btree_control_bytes::<
+            NodeId,
+            LinuxQemuHotForkWorldReconciliation<G>,
+        >(count)
+        .map_err(|_| hot_fork_adoption_error("Target reconciliation registry layout overflows"))?;
+        u64::try_from(shared.pad_to_align().size())
+            .ok()
+            .and_then(|bytes| bytes.checked_add(expected))
+            .and_then(|bytes| bytes.checked_add(actual))
+            .and_then(|bytes| {
+                names
+                    .checked_mul(2)
+                    .and_then(|names| bytes.checked_add(names))
+            })
+            .and_then(|bytes| bytes.checked_add(lookup_name))
+            .ok_or_else(|| hot_fork_adoption_error("Target registry extent overflows"))
+    }
+
     pub(crate) fn new(expected: BTreeSet<NodeId>) -> Self {
         Self {
-            expected,
-            reconciliations: Arc::new(Mutex::new(BTreeMap::new())),
+            state: Arc::new(Mutex::new(LinuxQemuHotForkWorldReconciliationState {
+                expected,
+                reconciliations: BTreeMap::new(),
+            })),
         }
     }
 
@@ -499,19 +593,19 @@ where
         &mut self,
         disposition: crate::AttemptExecutionDisposition,
     ) -> Result<crate::AttemptExecutionReconciliationStep, LifecycleApiError> {
-        let mut reconciliations = self.reconciliations.lock().map_err(|_| {
+        let mut state = self.state.lock().map_err(|_| {
             hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
         })?;
-        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
-        if actual != self.expected {
+        if !state.reconciliations.keys().eq(state.expected.iter()) {
             return Err(hot_fork_adoption_error(
                 "hot-fork world reconciliation registry differs from its adopted child roster",
             ));
         }
-        let Some(node) = reconciliations.keys().next().cloned() else {
+        let Some(node) = state.reconciliations.keys().next().cloned() else {
             return Ok(crate::AttemptExecutionReconciliationStep::Complete);
         };
-        let step = reconciliations
+        let step = state
+            .reconciliations
             .get_mut(&node)
             .ok_or_else(|| {
                 hot_fork_adoption_error("hot-fork world reconciliation disappeared during lookup")
@@ -523,24 +617,90 @@ where
                     node.name
                 ))
             })?;
-        if step == crate::AttemptExecutionReconciliationStep::Complete {
-            reconciliations.remove(&node);
-            self.expected.remove(&node);
-        }
-        if self.expected.is_empty() {
+        let retired = if step == crate::AttemptExecutionReconciliationStep::Complete {
+            state.expected.remove(&node);
+            state.reconciliations.remove(&node)
+        } else {
+            None
+        };
+        let complete = state.expected.is_empty();
+        drop(state);
+        // A completed child body can release aliases of other containing
+        // owners. Its destruction must not run under this registry lock.
+        drop(retired);
+        if complete {
             Ok(crate::AttemptExecutionReconciliationStep::Complete)
         } else {
             Ok(crate::AttemptExecutionReconciliationStep::Progressed)
         }
     }
 
+    /// Moves the existing complete map after actual lifecycle aliases are gone.
+    ///
+    /// Unique access only permits safe metadata transfer. It is not native
+    /// return evidence. The same Pending still drives each child's saved
+    /// Cleanup and every exact Target loan after this allocation-free move.
+    /// No mutex is held during physical cleanup or owning-child destruction.
+    pub(crate) fn take_post_body_children(
+        &mut self,
+    ) -> Result<BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>, LifecycleApiError> {
+        let state = Arc::get_mut(&mut self.state)
+            .and_then(|state| state.get_mut().ok())
+            .ok_or_else(|| {
+                hot_fork_adoption_error("postbody reconciliation aliases remain retained")
+            })?;
+        if !state.reconciliations.keys().eq(state.expected.iter()) {
+            return Err(hot_fork_adoption_error(
+                "postbody reconciliation retains an unmatched child",
+            ));
+        }
+        state.expected.clear();
+        Ok(std::mem::take(&mut state.reconciliations))
+    }
+
+    /// Moves a partially adopted construction after its API aliases are gone.
+    ///
+    /// The caller supplies its original, ordered unadopted roster. Together
+    /// with actual lease returns it must cover the exact expected set. This is
+    /// an ownership transfer only; saved native cleanup remains with the same
+    /// constructor and no physical return is inferred from missing leases.
+    ///
+    /// # Errors
+    /// Refuses aliases, poison, foreign returned children, or any discrepancy
+    /// between the original roster and the two retained child partitions.
+    pub(crate) fn take_construction_post_body_children<'a>(
+        &mut self,
+        unadopted: impl Iterator<Item = &'a NodeId>,
+    ) -> Result<BTreeMap<NodeId, LinuxQemuHotForkWorldReconciliation<G>>, LifecycleApiError> {
+        let state = Arc::get_mut(&mut self.state)
+            .and_then(|state| state.get_mut().ok())
+            .ok_or_else(|| {
+                hot_fork_adoption_error("construction reconciliation aliases remain retained")
+            })?;
+        if state
+            .reconciliations
+            .keys()
+            .any(|node| !state.expected.contains(node))
+            || !state
+                .expected
+                .iter()
+                .filter(|node| !state.reconciliations.contains_key(*node))
+                .eq(unadopted)
+        {
+            return Err(hot_fork_adoption_error(
+                "construction reconciliation child partition differs from its original roster",
+            ));
+        }
+        state.expected.clear();
+        Ok(std::mem::take(&mut state.reconciliations))
+    }
+
     pub(crate) fn validate_operational_handoff(&self) -> Result<(), LifecycleApiError> {
-        let reconciliations = self.reconciliations.lock().map_err(|_| {
+        let state = self.state.lock().map_err(|_| {
             hot_fork_adoption_error("hot-fork world reconciliation registry is poisoned")
         })?;
-        let actual = reconciliations.keys().cloned().collect::<BTreeSet<_>>();
-        if actual != self.expected
-            || reconciliations.values().any(|reconciliation| {
+        if !state.reconciliations.keys().eq(state.expected.iter())
+            || state.reconciliations.values().any(|reconciliation| {
                 reconciliation.phase() != QemuHotForkReconciliationPhase::AwaitingPublication
             })
         {
@@ -552,15 +712,15 @@ where
     }
 
     pub(crate) fn quarantine(&mut self) {
-        match self.reconciliations.lock() {
-            Ok(mut reconciliations) => {
-                for reconciliation in reconciliations.values_mut() {
+        match self.state.lock() {
+            Ok(mut state) => {
+                for reconciliation in state.reconciliations.values_mut() {
                     reconciliation.quarantine();
                 }
             }
             Err(poisoned) => {
-                let mut reconciliations = poisoned.into_inner();
-                for reconciliation in reconciliations.values_mut() {
+                let mut state = poisoned.into_inner();
+                for reconciliation in state.reconciliations.values_mut() {
                     reconciliation.quarantine();
                 }
             }
@@ -652,12 +812,14 @@ where
                 ))
             })? {
                 QemuHotForkReconciliationStep::AwaitingPublication => {
-                    let mut completed = self.completed.reconciliations.lock().map_err(|_| {
+                    let mut completed = self.completed.state.lock().map_err(|_| {
                         hot_fork_adoption_error(
                             "hot-fork world reconciliation registry is poisoned",
                         )
                     })?;
-                    if completed.contains_key(self.identity.node()) {
+                    if !completed.expected.contains(self.identity.node())
+                        || completed.reconciliations.contains_key(self.identity.node())
+                    {
                         return Err(hot_fork_adoption_error(
                             "hot-fork world already retained this child reconciliation",
                         ));
@@ -667,7 +829,9 @@ where
                             "adopted child reconciliation disappeared before transfer",
                         )
                     })?;
-                    completed.insert(self.identity.node().clone(), reconciliation);
+                    completed
+                        .reconciliations
+                        .insert(self.identity.node().clone(), reconciliation);
                     return Ok(());
                 }
                 QemuHotForkReconciliationStep::ChildRunning => {
@@ -691,67 +855,118 @@ where
     }
 }
 
-impl<G>
-    QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >
+impl<G> QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>
 where
     G: crate::QemuAttemptResourceGuard + Send + 'static,
 {
-    /// Consumes a completely assembled child into the production adoption API.
+    /// Transfers a completely assembled child from its retained owning slot.
     ///
     /// The returned value exposes no detachable node or reconciliation tuple.
     /// Its lease keeps source-parent, target, run-directory, and publication
     /// authority together until the production lifecycle reaps the node.
     pub(crate) fn into_world_node_adoption(
-        mut self,
+        slot: &mut Option<Self>,
         identity: ProductionVmNodeGeneration,
-        completed: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
-    ) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError> {
-        if let Err(error) = self.require_phase(
+        completed: LinuxQemuHotForkWorldReconciliationSet<G>,
+    ) -> Result<ProductionVmHotForkNodeAdoption, (ProductionVmNodeGeneration, LifecycleApiError)>
+    {
+        let Some(child) = slot.as_mut() else {
+            return Err(refused_world_adoption(
+                identity,
+                "assembled child slot is absent",
+            ));
+        };
+        if let Err(error) = child.require_phase(
             "adopt assembled hot-fork scheduler node",
             QemuHotForkReconciliationPhase::Live,
         ) {
-            return retain_failed_world_adoption(self, error.to_string());
+            return Err(refused_world_adoption(identity, error.to_string()));
         }
-        let Some(backend) = self.backend.as_mut() else {
-            return retain_failed_world_adoption(self, "hot-fork child backend is unavailable");
+        let Some(backend) = child.backend.as_mut() else {
+            return Err(refused_world_adoption(
+                identity,
+                "hot-fork child backend is unavailable",
+            ));
         };
         if backend.installed_node_id.as_ref() != Some(identity.node())
             || backend.target.identity() != &identity
         {
-            return retain_failed_world_adoption(
-                self,
+            return Err(refused_world_adoption(
+                identity,
                 "hot-fork child identity differs from its installed node or target reservation",
-            );
+            ));
         }
         let Some(run_directory) = backend.run_directory.as_ref() else {
-            return retain_failed_world_adoption(
-                self,
+            return Err(refused_world_adoption(
+                identity,
                 "hot-fork child lost its pinned run-directory authority",
-            );
+            ));
         };
         if let Err(error) = run_directory.validate_hot_fork_adoption() {
-            return retain_failed_world_adoption(
-                self,
+            return Err(refused_world_adoption(
+                identity,
                 format!("hot-fork child run-directory handoff failed: {error}"),
-            );
+            ));
         }
         let run_directory = run_directory.path().to_path_buf();
-        let Some(node) = backend.installed_node.take() else {
-            return retain_failed_world_adoption(
-                self,
-                "hot-fork child lost its installed scheduler node",
-            );
+        if run_directory.as_os_str().is_empty() {
+            return Err(refused_world_adoption(
+                identity,
+                "hot-fork child directory is empty",
+            ));
+        }
+        // Authentication can refuse while the slot still owns the installed node
+        // and its exact Target. The subsequent joint transfer is infallible.
+        let process = match backend.installed_node.as_ref() {
+            Some(node) => match node.process_identity() {
+                Ok(process) => process,
+                Err(error) => {
+                    return Err(refused_world_adoption(
+                        identity,
+                        format!("authenticate adopted hot-fork QEMU process: {error}"),
+                    ));
+                }
+            },
+            None => {
+                return Err(refused_world_adoption(
+                    identity,
+                    "hot-fork child lost its installed scheduler node",
+                ));
+            }
+        };
+        // All IO/authentication and path preparation succeeded while the same
+        // child remained in its row. Only these final pure moves follow.
+        let Some(mut child) = slot.take() else {
+            return Err(refused_world_adoption(
+                identity,
+                "assembled child slot changed",
+            ));
+        };
+        let node = child
+            .backend
+            .as_mut()
+            .and_then(|backend| backend.installed_node.take());
+        let Some(node) = node else {
+            *slot = Some(child);
+            return Err(refused_world_adoption(
+                identity,
+                "installed child node changed",
+            ));
         };
         let lease = LinuxQemuHotForkWorldNodeLease {
             identity: identity.clone(),
-            reconciliation: Some(self),
+            reconciliation: Some(child),
             completed,
             diagnostics_reported: false,
             live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(),
         };
-        ProductionVmHotForkNodeAdoption::new(identity, node, lease, run_directory)
+        Ok(ProductionVmHotForkNodeAdoption::new(
+            identity,
+            process,
+            node,
+            lease,
+            run_directory,
+        ))
     }
 }
 
@@ -782,18 +997,11 @@ pub(super) fn report_reconciled_child_diagnostics_once<B>(
     }
 }
 
-fn retain_failed_world_adoption<G>(
-    mut reconciliation: QemuHotForkAttemptReconciliation<
-        LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-    >,
+fn refused_world_adoption(
+    identity: ProductionVmNodeGeneration,
     message: impl Into<String>,
-) -> Result<ProductionVmHotForkNodeAdoption, LifecycleApiError>
-where
-    G: crate::QemuAttemptResourceGuard,
-{
-    reconciliation.quarantine();
-    std::mem::forget(reconciliation);
-    Err(hot_fork_adoption_error(message))
+) -> (ProductionVmNodeGeneration, LifecycleApiError) {
+    (identity, hot_fork_adoption_error(message))
 }
 
 fn hot_fork_adoption_error(message: impl Into<String>) -> LifecycleApiError {
@@ -818,6 +1026,7 @@ where
         shutdown_policy: QemuShutdownPolicy,
         async_policy: QemuAsyncDriverPolicy,
         crash_detector: QemuCrashDetector,
+        supervisor: Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
     ) -> Result<(), Box<QemuHotForkAttemptReconciliationError<LinuxQemuHotForkReconciliationError>>>
     {
         self.require_phase(
@@ -827,7 +1036,13 @@ where
         .map_err(Box::new)?;
         self.backend_mut()
             .map_err(Box::new)?
-            .install_scheduler_node(node, shutdown_policy, async_policy, crash_detector)
+            .install_scheduler_node(
+                node,
+                shutdown_policy,
+                async_policy,
+                crash_detector,
+                supervisor,
+            )
             .map_err(|source| {
                 Box::new(QemuHotForkAttemptReconciliationError::Operation {
                     operation: "install hot-fork scheduler node",
@@ -890,3 +1105,6 @@ where
         Ok((basis, &backend.world_assembly))
     }
 }
+
+#[cfg(test)]
+mod registry_tests;

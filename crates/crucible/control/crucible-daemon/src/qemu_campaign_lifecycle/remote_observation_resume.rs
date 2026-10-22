@@ -5,37 +5,35 @@
 //! resources, captures the exact observed boundary without continuing it, and
 //! restores that physical checkpoint into an ordinary lifecycle loop.
 
-use std::path::Path;
+use crucible_campaign::ExecutionRetentionIntent;
+use crucible_store::content_store::DirectoryBlobBackend;
 use std::sync::Arc;
 
 use crate::{ProductionVmLifecycleConfig, ProductionVmLifecycleLoop};
-use crucible_campaign::{AttemptResourceLimits, ExecutionRetentionIntent, ObservationStopProof};
-use crucible_control_api::{LifecycleApiError, ResumeSessionRequest};
-use crucible_control_server::ResumeObservationPreparationContext;
 use crucible_engine::Configuration;
+use crucible_control_api::{LifecycleApiError, ResumeSessionRequest};
+use crucible_control_server::{ResumeObservationPreparationContext};
+#[cfg(test)]
+use crucible_campaign::AttemptResourceLimits;
+use crucible_campaign::ObservationStopProof;
+use crucible_host_resources::host_supervision::HostOperationSupervisor;
+#[cfg(test)]
 use crucible_qemu_host::LinuxQemuAttemptHostConfig;
-use crucible_store::content_store::DirectoryBlobBackend;
 
 use super::campaign_run::{
-    GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
-    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign_with_host,
+    GuardedCampaignOwner, GuardedCampaignReplayClosure, GuardedDefaultCampaignObservationSource,
+    GuardedDefaultCampaignRunRequest, run_guarded_default_campaign,
 };
-use crate::qemu_resource_guard::RetainedLinuxQemuAttemptWorkspace;
 use crate::supervision::ProcessDeadline;
-use crate::{
-    AttemptExecutionContext, ComposedQemuAttemptResourceGuardFactory,
-    CrucibleMeasurementReplayEvidence, ExactCheckpointStore, ExecutionCancellation,
-    ExecutionCheckpointRequest,
-};
+use crate::{CrucibleMeasurementReplayEvidence, ExecutionCancellation};
 
 /// Replays, authenticates, captures, and restores one remote observation source.
 #[derive(Clone)]
 pub struct RemoteObservationResumeFactory {
     engine_build_id: String,
     qemu_build_id: String,
-    lifecycle: ProductionVmLifecycleConfig,
-    host: LinuxQemuAttemptHostConfig,
-    resources: AttemptResourceLimits,
+    lifecycle: Arc<ProductionVmLifecycleConfig>,
+    owner: Option<GuardedCampaignOwner>,
     verify_determinism_findings: bool,
 }
 
@@ -43,22 +41,46 @@ impl RemoteObservationResumeFactory {
     /// Canonical transport-envelope version consumed by this factory.
     pub const SOURCE_SCHEMA_VERSION: u32 = 1;
 
-    /// Creates a factory from fixed daemon deployment and resource authority.
-    #[must_use]
+    /// Creates a resume factory sharing an already admitted campaign owner.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an owner lacking its original assignment and lifecycle authority.
     pub fn new(
         engine_build_id: impl Into<String>,
         qemu_build_id: impl Into<String>,
+        owner: GuardedCampaignOwner,
+        verify_determinism_findings: bool,
+    ) -> Result<Self, LifecycleApiError> {
+        let (lifecycle, _, _) = owner
+            .inner
+            .config
+            .guarded_inputs()
+            .ok_or_else(|| observation_error("guarded owner lacks assignment authority"))?;
+        Ok(Self {
+            engine_build_id: engine_build_id.into(),
+            qemu_build_id: qemu_build_id.into(),
+            lifecycle,
+            owner: Some(owner),
+            verify_determinism_findings,
+        })
+    }
+
+    /// Creates policy-only component fixtures without native launch authority.
+    #[cfg(test)]
+    fn new_component(
+        engine_build_id: impl Into<String>,
+        qemu_build_id: impl Into<String>,
         lifecycle: ProductionVmLifecycleConfig,
-        host: LinuxQemuAttemptHostConfig,
-        resources: AttemptResourceLimits,
+        _host: LinuxQemuAttemptHostConfig,
+        _resources: AttemptResourceLimits,
         verify_determinism_findings: bool,
     ) -> Self {
         Self {
             engine_build_id: engine_build_id.into(),
             qemu_build_id: qemu_build_id.into(),
-            lifecycle,
-            host,
-            resources,
+            lifecycle: Arc::new(lifecycle),
+            owner: None,
             verify_determinism_findings,
         }
     }
@@ -77,52 +99,35 @@ impl RemoteObservationResumeFactory {
     /// Authenticates the pending source and returns a loop restored at its boundary.
     ///
     /// Source replay and capture use the deployment's fixed campaign resource
-    /// limits. Native bytes stream through a quota-bound request-local
-    /// directory, and the returned lifecycle retains that directory until its
-    /// final process generation has been torn down. Error paths clean up after
-    /// process reap when safe and otherwise retain the owner in quarantine.
+    /// limits and the original campaign actor. The captured raw root receives
+    /// independent replay promotion before a fresh charged Service consumes
+    /// its selected-root authority. The loop retains that Service through
+    /// final native cleanup; uncertain cleanup quarantines its reservation.
     ///
     /// # Errors
     ///
     /// Returns [`LifecycleApiError::ResumeObservationSource`] for a missing,
     /// malformed, mismatched, unreproduced, uncaptured, canceled, timed-out, or
-    /// unrestorable source, including a failed request-local cleanup.
+    /// unrestorable source, including failed replay or physical cleanup.
     pub fn resume_loop(
         &self,
         request: &ResumeSessionRequest,
         configuration: &Configuration,
         context: &ResumeObservationPreparationContext,
     ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
-        let workspace =
-            RetainedLinuxQemuAttemptWorkspace::allocate(self.host.clone(), self.resources)
-                .map_err(|error| {
-                    observation_error(format!("allocate request workspace: {error}"))
-                })?;
-        let outcome = self.resume_loop_in_workspace(
-            request,
-            configuration,
-            context,
-            workspace.path(),
-            &workspace,
-        );
-        match outcome {
-            Ok(loop_instance) => Ok(loop_instance.with_retained_resource_owner(workspace)),
-            Err(error) => match workspace.close() {
-                Ok(()) => Err(error),
-                Err(cleanup) => Err(observation_error(format!(
-                    "{error}; remove request workspace: {cleanup}"
-                ))),
-            },
+        if self.owner.is_none() {
+            return Err(observation_error(
+                "policy-only component fixture has no native resume authority",
+            ));
         }
+        self.prepare_resume_loop(request, configuration, context)
     }
 
-    fn resume_loop_in_workspace(
+    fn prepare_resume_loop(
         &self,
         request: &ResumeSessionRequest,
         configuration: &Configuration,
         context: &ResumeObservationPreparationContext,
-        workspace_path: &Path,
-        workspace: &RetainedLinuxQemuAttemptWorkspace,
     ) -> Result<ProductionVmLifecycleLoop, LifecycleApiError> {
         let execution_cancellation = ExecutionCancellation::default();
         let cancel_execution = execution_cancellation.clone();
@@ -131,6 +136,26 @@ impl RemoteObservationResumeFactory {
             .register(move || cancel_execution.cancel());
         let preparation_deadline = ProcessDeadline::at(context.deadline());
         ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
+        let owner = self
+            .owner
+            .as_ref()
+            .ok_or_else(|| observation_error("component fixture has no native owner"))?;
+        let decoding = crucible_engine::owned_decode::DecodeBudget::for_store(
+            owner.repository_metadata_resources().map_err(|error| {
+                observation_error(format!("admit observation input resources: {error}"))
+            })?,
+        )
+        .map_err(|error| observation_error(format!("admit observation decoding: {error}")))?;
+        let _decode_scope = decoding.enter();
+        let preparation_budgets =
+            owner.inner.config.host_operation_budgets().ok_or_else(|| {
+                observation_error("guarded owner lacks deployed preparation budgets")
+            })?;
+        let preparation_supervisor = HostOperationSupervisor::new(
+            preparation_budgets,
+            Some(preparation_deadline.remaining()),
+        )
+        .map_err(|error| observation_error(format!("admit original preparation cap: {error}")))?;
 
         let source = &request.observation_source;
         if source.schema_version() != Self::SOURCE_SCHEMA_VERSION {
@@ -160,82 +185,124 @@ impl RemoteObservationResumeFactory {
                 "portable observation preparation deadline elapsed",
             ));
         }
-        let source_lifecycle = self
-            .lifecycle
-            .clone()
-            .with_run_state_root(workspace_path.join("source-run-state"))
-            .with_completion_timeout(operation_timeout);
-        let resumed_run_state = workspace_path.join("resumed-run-state");
-        let checkpoint_backend = Arc::new(DirectoryBlobBackend::new(
-            "remote-observation-resume",
-            workspace_path.join("exact-checkpoints"),
-        ));
-        let checkpoints = Arc::new(
-            ExactCheckpointStore::new(checkpoint_backend, self.resources.maximum_disk_bytes())
+        let source_lifecycle = Arc::new(
+            self.lifecycle
+                .try_clone_admitted()
                 .map_err(|error| {
-                    observation_error(format!("open exact checkpoint store: {error}"))
-                })?,
+                    observation_error(format!("copy admitted source lifecycle: {error}"))
+                })?
+                .with_completion_timeout(operation_timeout),
         );
+        // Publication and later selected-root authentication use the original
+        // owner's actual CAS namespace and durable reader authority.
+        let checkpoints = Arc::clone(&owner.inner.checkpoints);
         let campaign_request = self.apply_determinism_finding_policy(
             GuardedDefaultCampaignRunRequest::new(
-                request.scenario.clone(),
+                request.scenario.try_clone_admitted().map_err(|error| {
+                    observation_error(format!("copy admitted observation scenario: {error}"))
+                })?,
                 request.seed,
                 self.engine_build_id.clone(),
                 self.qemu_build_id.clone(),
-                source_lifecycle,
-                self.host.clone(),
-                self.resources,
+                self.owner
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| observation_error("component fixture has no native owner"))?,
             )
+            .map_err(|error| observation_error(format!("bind guarded source owner: {error}")))?
+            .with_guarded_lifecycle(source_lifecycle.try_clone_admitted().map_err(|error| {
+                observation_error(format!("copy admitted campaign lifecycle: {error}"))
+            })?)
+            .map_err(|error| observation_error(format!("bind source lifecycle: {error}")))?
             .with_execution_cancellation(execution_cancellation.clone())
             .with_observation_resume_source_capture_only(
-                request.schedule.clone(),
+                request.schedule.try_clone_admitted().map_err(|error| {
+                    observation_error(format!("copy admitted observation schedule: {error}"))
+                })?,
                 closure,
-                request.checkpoint.clone(),
+                request.checkpoint.try_clone_admitted().map_err(|error| {
+                    observation_error(format!("copy admitted observation checkpoint: {error}"))
+                })?,
                 GuardedDefaultCampaignObservationSource::new(proof, evidence),
                 Arc::clone(&checkpoints),
             ),
         );
-        let campaign =
-            run_guarded_default_campaign_with_host(campaign_request, workspace.factory()).map_err(
-                |error| observation_error(format!("authenticate source campaign: {error}")),
-            )?;
-        let captured = campaign
+        let campaign = run_guarded_default_campaign(campaign_request)
+            .map_err(|error| observation_error(format!("authenticate source campaign: {error}")))?;
+        campaign
             .resume()
             .and_then(|proof| proof.source_savepoint())
             .ok_or_else(|| observation_error("source campaign did not retain an exact capture"))?;
         ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
 
+        let continuation = owner
+            .continuation(
+                &campaign,
+                execution_cancellation.clone(),
+                preparation_supervisor,
+                &source_lifecycle,
+            )
+            .map_err(|error| observation_error(format!("promote source checkpoint: {error}")))?;
+        if let Err(first) =
+            ensure_preparation_active(context, &execution_cancellation, preparation_deadline)
+        {
+            let _retained = continuation
+                .source
+                .failure("observation preparation canceled after continuation");
+            return Err(first);
+        }
+        // Promotion can consume most of the original allowance. Restore must
+        // use the remaining cap at launch, rather than a pre-promotion sample.
         let restore_timeout = self
             .lifecycle
             .completion_timeout()
             .min(preparation_deadline.remaining());
         if restore_timeout.is_zero() {
             execution_cancellation.cancel();
+            let _retained = continuation
+                .source
+                .failure("observation preparation elapsed before restore");
             return Err(observation_error(
                 "portable observation preparation deadline elapsed before restore",
             ));
         }
-        let resumed_lifecycle = self
-            .lifecycle
-            .clone()
-            .with_run_state_root(resumed_run_state)
+        let resumed_lifecycle = source_lifecycle
+            .try_clone_admitted()
+            .map_err(|error| {
+                let _retained = continuation
+                    .source
+                    .failure("copy restored observation lifecycle");
+                observation_error(format!("copy admitted restored lifecycle: {error}"))
+            })?
             .with_completion_timeout(restore_timeout);
-        let restore_context = AttemptExecutionContext::new(
-            self.resources,
-            ExecutionRetentionIntent::Discard,
-            execution_cancellation.clone(),
-            ExecutionCheckpointRequest::default(),
-            crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
-        )
-        .with_resume_checkpoint(Some(captured.checkpoint()));
-        let mut restore_factory = super::QemuAttemptProductionVmLifecycleFactory::new(
-            resumed_lifecycle,
-            ComposedQemuAttemptResourceGuardFactory::new(workspace.factory()),
-        );
-        let loop_instance = restore_factory
-            .begin_resume(
+        let service = continuation.source.service_handle();
+        let receiver = service.retain_receiver_in_main().map_err(|first| {
+            let retained =
+                service.failure_with_refusal("retain observation restore projection", first);
+            observation_error(format!("restore source checkpoint: {retained}"))
+        })?;
+        let restored = (|| {
+            let restore_context = continuation
+                .source
+                .with_ready("borrow observation restore context", |service| {
+                    service.context().clone()
+                })
+                .map_err(ObservationRestoreFailure::Prepared)?;
+            let prepared = continuation
+                .source
+                .factory
+                .prepared_source_handle()
+                .map_err(|first| {
+                    ObservationRestoreFailure::Prepared(
+                        service.failure_with_refusal("select observation restore Source", first),
+                    )
+                })?;
+            super::resume_prepared_source(
+                &prepared,
+                &resumed_lifecycle,
+                None,
                 &checkpoints,
-                captured.checkpoint(),
+                continuation.checkpoint,
                 super::QemuExactResumeBasis::new(
                     &configuration.def,
                     &request.scenario,
@@ -243,11 +310,54 @@ impl RemoteObservationResumeFactory {
                     None,
                 ),
                 &restore_context,
+                crate::vm_lifecycle::RetainedConstructionExposure::Released,
             )
-            .map_err(|error| observation_error(format!("restore source checkpoint: {error}")))?;
-        ensure_preparation_active(context, &execution_cancellation, preparation_deadline)?;
+            .map_err(|first| ObservationRestoreFailure::Lifecycle {
+                first,
+                retained: continuation.source.failure("restore observation Source"),
+            })
+        })();
+        receiver.return_after_alias_destruction().map_err(|first| {
+            let retained =
+                service.failure_with_refusal("return observation restore projection", first);
+            observation_error(format!("return restored projection: {retained}"))
+        })?;
+        let loop_instance = match restored {
+            Ok(loop_instance) => loop_instance,
+            Err(ObservationRestoreFailure::Lifecycle { first, retained }) => {
+                return Err(observation_error(format!(
+                    "restore source checkpoint: {first}; {retained}"
+                )));
+            }
+            Err(ObservationRestoreFailure::Prepared(retained)) => {
+                return Err(observation_error(format!(
+                    "restore source checkpoint: {retained}"
+                )));
+            }
+        };
+        // The Loop's own controls are inside the same paid World/body; its
+        // actual body/loan return gates ServiceClosing. No extra Service Arc.
+        if let Err(first) =
+            ensure_preparation_active(context, &execution_cancellation, preparation_deadline)
+        {
+            drop(loop_instance);
+            let _retained = continuation
+                .source
+                .failure("observation preparation canceled after restore");
+            return Err(first);
+        }
         Ok(loop_instance.with_retained_resource_owner(cancellation_registration))
     }
+}
+
+// This local adapter is consumed only after local aliases have returned. The
+// actual owning refusal and any failed receiver acknowledgment remain in Main.
+enum ObservationRestoreFailure {
+    Prepared(crate::PreparedSourceFailure),
+    Lifecycle {
+        first: super::QemuAttemptProductionVmLifecycleError,
+        retained: crate::PreparedSourceFailure,
+    },
 }
 
 fn ensure_preparation_active(
@@ -293,6 +403,22 @@ fn observation_error(message: impl Into<String>) -> LifecycleApiError {
     }
 }
 
+// Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
+#[cfg(test)]
+const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
+
+// Host-side pager workers and sockets have independent finite fixture entitlements.
+#[cfg(test)]
+const TEST_HOST_SERVICE_TASKS: u64 = 4;
+#[cfg(test)]
+const TEST_HOST_SERVICE_FILE_DESCRIPTORS: u64 = 32;
+
+// Operational services retain their own authored memory budgets outside QEMU.
+#[cfg(test)]
+const TEST_HOST_SERVICE_RESIDENT_BYTES: u64 = 8 * 1024 * 1024;
+#[cfg(test)]
+const TEST_WATCHER_SERVICE_RESIDENT_BYTES: u64 = 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +444,7 @@ mod tests {
     fn factory(
         verify_determinism_findings: bool,
     ) -> Result<RemoteObservationResumeFactory, Box<dyn std::error::Error>> {
-        Ok(RemoteObservationResumeFactory::new(
+        Ok(RemoteObservationResumeFactory::new_component(
             "remote-observation-policy-engine",
             "remote-observation-policy-qemu",
             ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root", "run-state"),
@@ -349,7 +475,7 @@ mod tests {
         let scenario =
             ScenarioDefForm::from_components(&world, &Plan::empty(), &Properties::empty(), seed)?;
 
-        Ok(GuardedDefaultCampaignRunRequest::new(
+        Ok(GuardedDefaultCampaignRunRequest::new_component(
             scenario,
             seed,
             "remote-observation-policy-engine",
@@ -370,6 +496,11 @@ mod tests {
             65_527,
             65_527,
             16,
+            TEST_HOST_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_TASKS,
+            TEST_HOST_SERVICE_FILE_DESCRIPTORS,
+            TEST_HOST_SERVICE_RESIDENT_BYTES,
+            TEST_WATCHER_SERVICE_RESIDENT_BYTES,
             1_024,
             Duration::from_secs(1),
         )?)

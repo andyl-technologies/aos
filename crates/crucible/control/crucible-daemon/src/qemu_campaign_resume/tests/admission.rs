@@ -27,9 +27,11 @@ fn resume_runner_rejects_missing_root_before_factory_invocation() {
 
     assert!(matches!(
         error,
-        AttemptWorkerFailure::Terminal(
-            QemuProductionExactResumeExecutionRunnerError::MissingCheckpoint
-        )
+        AttemptWorkerFailure::Terminal(QemuProductionExactResumeExecutionRunnerError {
+            first: Some(ResumeFailure::MissingCheckpoint),
+            shutdown: None,
+            retirement: None
+        })
     ));
     assert_eq!(calls.starts.load(Ordering::SeqCst), 0);
     assert_eq!(calls.shutdowns.load(Ordering::SeqCst), 0);

@@ -56,7 +56,7 @@ pub enum ClientControlStream {
     /// Same-process stream whose commands return through the lifecycle registry.
     InProcessLifecycle(InProcessLifecycleControlStream),
     /// HTTP/2 RPC stream.
-    Rpc(Box<RpcControlStream>),
+    Rpc(RpcControlStream),
 }
 
 impl ClientControlStream {
@@ -187,7 +187,7 @@ pub enum ClientWatchStream {
     /// Same-process stream over the session event-log hub.
     InProcess(Box<dyn LocalWatchStream>),
     /// HTTP/2 RPC stream.
-    Rpc(Box<RpcWatchStream>),
+    Rpc(RpcWatchStream),
 }
 
 impl ClientWatchStream {
@@ -232,6 +232,12 @@ impl ClientWatchStream {
 
 /// Attached HTTP/2 RPC `Control` stream.
 pub struct RpcControlStream {
+    body: Box<RpcControlStreamBody>,
+    // The box is destroyed before its original allocation loan is returned.
+    _storage: crucible_engine::owned_decode::DecodeScratch,
+}
+
+struct RpcControlStreamBody {
     attached: Attached,
     events: RpcStreamingEventReceiver,
     client: RpcControlClient,
@@ -242,18 +248,26 @@ impl RpcControlStream {
         attached: Attached,
         events: RpcStreamingEventReceiver,
         client: RpcControlClient,
-    ) -> Self {
-        Self {
-            attached,
-            events,
-            client,
-        }
+        budget: &crucible_engine::owned_decode::DecodeBudget,
+    ) -> Result<Self, ControlClientError> {
+        let (body, storage) = boxed_stream_body(
+            RpcControlStreamBody {
+                attached,
+                events,
+                client,
+            },
+            budget,
+        )?;
+        Ok(Self {
+            body,
+            _storage: storage,
+        })
     }
 
     /// Returns the attach metadata emitted at stream start.
     #[must_use]
     pub const fn attached(&self) -> &Attached {
-        &self.attached
+        &self.body.attached
     }
 
     /// Receives the next API event frame from replay or live tail.
@@ -263,7 +277,7 @@ impl RpcControlStream {
     /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
     /// the next event frame cannot be decoded.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        self.events.recv_event().await
+        self.body.events.recv_event().await
     }
 
     /// Receives the next live run-state update.
@@ -275,7 +289,7 @@ impl RpcControlStream {
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        self.events.recv_state_update().await
+        self.body.events.recv_state_update().await
     }
 
     /// Dispatches one command envelope over the RPC control stream.
@@ -289,27 +303,46 @@ impl RpcControlStream {
         command_id: u64,
         command: SessionCommand,
     ) -> Result<SendResponse, ControlClientError> {
-        self.client
-            .control_send(SendRequest::new(self.attached.session, command_id, command))
+        self.body
+            .client
+            .control_send(SendRequest::new(
+                self.body.attached.session,
+                command_id,
+                command,
+            ))
             .await
     }
 }
 
 /// Attached HTTP/2 RPC `Watch` stream.
 pub struct RpcWatchStream {
+    body: Box<RpcWatchStreamBody>,
+    // Allocation credit outlives the actual boxed receiver body.
+    _storage: crucible_engine::owned_decode::DecodeScratch,
+}
+
+struct RpcWatchStreamBody {
     attached: Attached,
     events: RpcStreamingEventReceiver,
 }
 
 impl RpcWatchStream {
-    pub(super) fn new(attached: Attached, events: RpcStreamingEventReceiver) -> Self {
-        Self { attached, events }
+    pub(super) fn new(
+        attached: Attached,
+        events: RpcStreamingEventReceiver,
+        budget: &crucible_engine::owned_decode::DecodeBudget,
+    ) -> Result<Self, ControlClientError> {
+        let (body, storage) = boxed_stream_body(RpcWatchStreamBody { attached, events }, budget)?;
+        Ok(Self {
+            body,
+            _storage: storage,
+        })
     }
 
     /// Returns the attach metadata emitted at stream start.
     #[must_use]
     pub const fn attached(&self) -> &Attached {
-        &self.attached
+        &self.body.attached
     }
 
     /// Receives the next API event frame from replay or live tail.
@@ -319,7 +352,7 @@ impl RpcWatchStream {
     /// Returns [`ControlClientError`] when the HTTP/2 response stream fails or
     /// the next event frame cannot be decoded.
     pub async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
-        self.events.recv_event().await
+        self.body.events.recv_event().await
     }
 
     /// Receives the next live run-state update.
@@ -331,8 +364,22 @@ impl RpcWatchStream {
     pub async fn recv_state_update(
         &mut self,
     ) -> Result<Option<StreamingStateUpdateFrame>, ControlClientError> {
-        self.events.recv_state_update().await
+        self.body.events.recv_state_update().await
     }
+}
+
+// The returned loan outlives the box, including its allocator deallocation.
+fn boxed_stream_body<T>(
+    body: T,
+    budget: &crucible_engine::owned_decode::DecodeBudget,
+) -> Result<(Box<T>, crucible_engine::owned_decode::DecodeScratch), ControlClientError> {
+    let storage = budget
+        .reserve_scratch_bytes(std::mem::size_of::<T>() as u64)
+        .map_err(|source| {
+            client_output_admission(crucible_control_api::admitted_output::admission(source))
+        })?;
+
+    Ok((Box::new(body), storage))
 }
 
 pub(super) struct RpcStreamingEventReceiver {
@@ -341,19 +388,27 @@ pub(super) struct RpcStreamingEventReceiver {
     pending_state_updates: VecDeque<StreamingStateUpdateFrame>,
     skipped_events: u64,
     last_state_sequence: Option<u64>,
+    _event_storage: crucible_engine::owned_decode::DecodeScratch,
+    _state_storage: crucible_engine::owned_decode::DecodeScratch,
 }
 
 impl RpcStreamingEventReceiver {
     pub(super) fn new(
         frames: mpsc::Receiver<Result<RpcStreamingFrame, ControlClientError>>,
-    ) -> Self {
-        Self {
+        budget: &crucible_engine::owned_decode::DecodeBudget,
+    ) -> Result<Self, ControlClientError> {
+        let (pending_events, event_storage) =
+            pending_storage(budget, RPC_STREAM_PENDING_FRAME_CAPACITY)?;
+        let (pending_state_updates, state_storage) = pending_storage(budget, 1)?;
+        Ok(Self {
             frames,
-            pending_events: VecDeque::new(),
-            pending_state_updates: VecDeque::new(),
+            pending_events,
+            pending_state_updates,
             skipped_events: 0,
             last_state_sequence: None,
-        }
+            _event_storage: event_storage,
+            _state_storage: state_storage,
+        })
     }
 
     async fn recv_event(&mut self) -> Result<Option<StreamingEventFrame>, ControlClientError> {
@@ -451,6 +506,34 @@ impl RpcStreamingEventReceiver {
     }
 }
 
+fn pending_storage<T>(
+    budget: &crucible_engine::owned_decode::DecodeBudget,
+    capacity: usize,
+) -> Result<(VecDeque<T>, crucible_engine::owned_decode::DecodeScratch), ControlClientError> {
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            client_output_admission(crucible_control_api::admitted_output::admission(
+                crucible_engine::owned_decode::DecodeAdmissionError::new(std::fmt::Error),
+            ))
+        })?;
+    let loan = budget
+        .reserve_scratch_bytes(bytes as u64)
+        .map_err(|source| {
+            client_output_admission(crucible_control_api::admitted_output::admission(source))
+        })?;
+    let mut queue = VecDeque::new();
+    queue.try_reserve_exact(capacity).map_err(|source| {
+        client_output_admission(crucible_control_api::admitted_output::admission(
+            crucible_engine::owned_decode::DecodeAdmissionError::new(source),
+        ))
+    })?;
+    Ok((queue, loan))
+}
+
 #[cfg(test)]
 #[path = "streaming_receiver_tests.rs"]
 mod streaming_receiver_tests;
+
+#[cfg(test)]
+mod storage_tests;

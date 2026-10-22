@@ -1,6 +1,7 @@
 //! Source checkout, child launch, and failure-recovery regressions.
 
 use super::*;
+use crate::qemu_hot_fork_world_factory::target_construction::TargetSetupFailure;
 
 fn assert_scripted_child_owned_or_reaped(expected: &QemuProcessIdentity) {
     let process = expected.process_id;
@@ -37,6 +38,7 @@ fn assert_scripted_child_owned_or_reaped(expected: &QemuProcessIdentity) {
 
 #[test]
 fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second =
@@ -44,10 +46,17 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
     let (nodes, source_world) =
         prepared_test_source_world(vec![first, second]).expect("prepared source world");
     assert_eq!(nodes.len(), 2);
-    assert!(source_world.continuation().nodes().iter().any(|boundary| {
-        boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
-            && boundary.process().is_none()
-    }));
+    assert!(
+        source_world
+            .continuation()
+            .unwrap()
+            .nodes()
+            .iter()
+            .any(|boundary| {
+                boundary.service_state() == ProductionVmHotForkNodeServiceState::PermanentlyFailed
+                    && boundary.process().is_none()
+            })
+    );
 
     let input = execution_input();
     let context = execution_context(&input, 0x79);
@@ -60,7 +69,10 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
         observations.clone(),
     );
 
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
+    let mut lifecycle = match factory
+        .try_start_component(&input, &context)
+        .expect("start world")
+    {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
     };
@@ -110,7 +122,7 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
 
     let second_context = execution_context(&input, 0x7a);
     let mut second_lifecycle = match factory
-        .try_start(&input, &second_context)
+        .try_start_component(&input, &second_context)
         .expect("reuse source world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -175,6 +187,7 @@ fn two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world() {
 
 #[test]
 fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let second =
@@ -197,6 +210,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
         .expect("prepared world with powered-off source");
     let boundary = source_world
         .continuation()
+        .unwrap()
         .nodes()
         .iter()
         .find(|boundary| boundary.node() == &powered_off)
@@ -220,7 +234,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
     );
 
     let mut lifecycle = match factory
-        .try_start(&input, &context)
+        .try_start_component(&input, &context)
         .expect("start child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -281,6 +295,7 @@ fn powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown() {
 
 #[test]
 fn two_factories_keep_independent_live_children_from_one_managed_source() {
+    let _metadata_scope = component_metadata_scope();
     let source_node =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source node");
     let (_nodes, mut source_world) =
@@ -288,8 +303,13 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     let input = execution_input();
     let source_key = QemuHotForkSourceWorldKey::new(
         input.lineage().id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
+        source_world
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        source_world.continuation().unwrap().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(input.lineage()),
     );
     let usage = source_world
@@ -322,7 +342,7 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     )
     .expect("managed source pool");
     let fallback = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         "d1".repeat(32)
     ))
     .expect("fallback checkpoint");
@@ -340,32 +360,30 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     let second_run_state = tempfile::tempdir().expect("second run state");
     let mut first_factory = QemuProductionHotForkWorldLifecycleFactory::new(
         shared.provider().expect("first source provider"),
-        ScriptedWorldGuardFactory {
-            observations: first_observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(first_observations.clone()),
         first_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
     let mut second_factory = QemuProductionHotForkWorldLifecycleFactory::new(
         shared.provider().expect("second source provider"),
-        ScriptedWorldGuardFactory {
-            observations: second_observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(second_observations.clone()),
         second_run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
 
     let mut first = match first_factory
-        .try_start(&input, &execution_context(&input, 0xd2))
+        .try_start_component(&input, &execution_context(&input, 0xd2))
         .expect("start first child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("first managed lease declined"),
     };
     let mut second = match second_factory
-        .try_start(&input, &execution_context(&input, 0xd3))
+        .try_start_component(&input, &execution_context(&input, 0xd3))
         .expect("start second child world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -432,18 +450,24 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
 
 #[test]
 fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
+    let _metadata_scope = component_metadata_scope();
     let source =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::RejectedOnce).expect("source");
     let source_process = source.process_id();
     let (_nodes, source_world) =
         prepared_test_source_world(vec![source]).expect("prepared source world");
-    let checkout_nodes = source_world.continuation().nodes().to_vec();
+    let checkout_nodes = source_world.continuation().unwrap().nodes().to_vec();
     let input = execution_input();
     let observations = ScriptedWorldObservations::new();
     let source_key = QemuHotForkSourceWorldKey::new(
         input.lineage().id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
+        source_world
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        source_world.continuation().unwrap().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(input.lineage()),
     );
     let finish_count_at_restore = Arc::new(AtomicUsize::new(usize::MAX));
@@ -455,17 +479,16 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
     let run_state = tempfile::tempdir().expect("run state");
     let mut factory = QemuProductionHotForkWorldLifecycleFactory::new(
         provider,
-        ScriptedWorldGuardFactory {
-            observations: observations.clone(),
-        },
+        ScriptedWorldGuardFactory::new(observations.clone()),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
-    );
+    )
+    .with_target_operations(super::super::target_operations::ComponentTargetOperations);
 
     let first_context = execution_context(&input, 0x79);
     assert!(matches!(
-        factory.try_start(&input, &first_context),
+        factory.try_start_component(&input, &first_context),
         Err(AttemptWorkerFailure::Retryable(
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
         ))
@@ -480,6 +503,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
             .as_ref()
             .expect("restored source world")
             .continuation()
+            .unwrap()
             .nodes(),
         checkout_nodes
     );
@@ -503,7 +527,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
 
     let second_context = execution_context(&input, 0x7a);
     let mut lifecycle = match factory
-        .try_start(&input, &second_context)
+        .try_start_component(&input, &second_context)
         .expect("retry exact source world")
     {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
@@ -520,6 +544,7 @@ fn proven_first_child_rejection_restores_the_exact_source_world_for_retry() {
 
 #[test]
 fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
+    let _metadata_scope = component_metadata_scope();
     let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
     let (_nodes, source_world) =
         prepared_test_source_world(vec![source]).expect("prepared source world");
@@ -537,10 +562,16 @@ fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
     );
 
     assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
+        factory.try_start_component(&input, &execution_context(&input, 0x79)),
         Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
+            QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+                first: TargetSetupFailure::Native(
+                    QemuVmRealizationError::Executor { operation: "construct scripted whole-world fixture", ref message }
+                ),
+                cleanup: None,
+                ref diagnostics,
+            }
+        )) if message == "scripted target run-directory rejection" && diagnostics.is_empty()
     ));
     assert!(factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
@@ -563,6 +594,7 @@ fn target_directory_rejection_restores_the_source_without_invoking_qemu() {
 
 #[test]
 fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailable() {
+    let _metadata_scope = component_metadata_scope();
     let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
     let source_process = source.process_id();
     let (_nodes, source_world) =
@@ -583,11 +615,32 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
         observations.clone(),
     );
 
+    let failure = factory
+        .try_start_component(&input, &execution_context(&input, 0x79))
+        .err()
+        .expect("preflight and actual cleanup both refuse");
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+            first:
+                TargetSetupFailure::Native(QemuVmRealizationError::Executor { operation, message }),
+            diagnostics,
+            cleanup: Some(cleanup),
+        },
+    ) = failure
+    else {
+        panic!("preflight must retain both original and cleanup causes");
+    };
+    assert_eq!(operation, "construct scripted whole-world fixture");
+    assert_eq!(message, "scripted target run-directory rejection");
+    assert!(diagnostics.contains("aggregate target release failed after preflight rejection"));
+    let crate::ProductionVmConstructionCleanupError::Guard(cleanup) = cleanup else {
+        panic!("aggregate cleanup must retain its actual guard leaf");
+    };
     assert!(matches!(
-        factory.try_start(&input, &execution_context(&input, 0x79)),
-        Err(AttemptWorkerFailure::Retryable(
-            QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
-        ))
+        cleanup.error(),
+        QemuVmRealizationError::Executor { operation, message }
+            if *operation == "construct scripted whole-world fixture"
+                && message == "scripted target cleanup failure"
     ));
     assert!(!factory.sources.available());
     assert_eq!(observations.finishes.load(Ordering::SeqCst), 1);
@@ -603,6 +656,7 @@ fn failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailabl
 
 #[test]
 fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let first_source_process = first.process_id();
@@ -623,7 +677,7 @@ fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch(
     );
 
     assert!(matches!(
-        factory.try_start(&input, &context),
+        factory.try_start_component(&input, &context),
         Err(AttemptWorkerFailure::Retryable(
             QemuProductionHotForkWorldLifecycleFactoryError::Assembly(_)
         ))
@@ -667,6 +721,7 @@ fn indeterminate_child_failure_quarantines_complete_world_during_sibling_launch(
 #[cfg(feature = "destructive-recovery-faults")]
 #[test]
 fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
+    let _metadata_scope = component_metadata_scope();
     if std::env::var_os(CHILD_RESOURCE_ALIAS_CHILD_ENVIRONMENT).is_none() {
         let child =
             std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -705,7 +760,7 @@ fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
     );
 
     reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
+    let failure = match factory.try_start_component(&input, &context) {
         Err(failure) => failure,
         Ok(_) => panic!("fault build must reject aliased child resources"),
     };
@@ -747,6 +802,7 @@ fn child_resource_alias_rejects_before_fork_and_restores_source_world() {
 #[cfg(feature = "destructive-recovery-faults")]
 #[test]
 fn world_fork_preflight_failure_restores_source_world() {
+    let _metadata_scope = component_metadata_scope();
     if std::env::var_os(WORLD_FORK_PREFLIGHT_FAILURE_CHILD_ENVIRONMENT).is_none() {
         let child =
             std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -789,16 +845,21 @@ fn world_fork_preflight_failure_restores_source_world() {
     );
 
     reset_hot_fork_adoption_count_for_test();
-    let failure = match factory.try_start(&input, &context) {
+    let failure = match factory.try_start_component(&input, &context) {
         Err(failure) => failure,
         Ok(_) => panic!("fault build must reject the second world VM"),
     };
-    let AttemptWorkerFailure::Retryable(QemuProductionHotForkWorldLifecycleFactoryError::Assembly(
-        message,
-    )) = failure
+    let AttemptWorkerFailure::Retryable(
+        QemuProductionHotForkWorldLifecycleFactoryError::ComponentSetup {
+            first: TargetSetupFailure::Native(first),
+            cleanup: None,
+            ..
+        },
+    ) = failure
     else {
         panic!("world-fork fault must be a retryable assembly failure: {failure:?}")
     };
+    let message = first.to_string();
     assert!(message.contains("fault-injected failure while reserving the next hot-fork world VM"));
     assert_eq!(hot_fork_adoption_count_for_test(), 0);
     // All node reservations precede every launch, so this fault is provably
@@ -827,4 +888,58 @@ fn world_fork_preflight_failure_restores_source_world() {
         .as_ref()
         .and_then(Weak::upgrade);
     assert!(guard.is_none());
+}
+
+#[test]
+fn same_provider_key_with_foreign_source_identity_refuses_without_taking_source() {
+    let _metadata_scope = component_metadata_scope();
+    let node =
+        scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("scripted source");
+    let (_, source) = prepared_test_source_world(vec![node]).expect("prepared source");
+    let input = execution_input();
+    let identity =
+        QemuHotForkSourceWorldCheckoutIdentity::capture(&source).expect("source identity");
+    let profile = ExecutorCompatibilityProfile::from_lineage(input.lineage());
+    let lineage = input.lineage().id().expect("lineage identity");
+    let foreign = ContentHash::from_bytes(b"foreign source identity");
+    assert_ne!(foreign, identity.scenario);
+    assert_ne!(foreign, identity.configuration);
+
+    let wrong_scenario =
+        QemuHotForkSourceWorldKey::new(lineage, foreign, identity.configuration, profile.clone());
+    let mut provider = QemuSingleHotForkSourceWorldProvider::new(wrong_scenario.clone(), source);
+    assert!(
+        provider
+            .checkout(&wrong_scenario)
+            .expect("checkout")
+            .is_none()
+    );
+    assert!(provider.available());
+    assert!(provider.checked_out.is_none());
+    assert!(identity.matches(provider.source.as_ref().expect("retained source")));
+
+    let wrong_configuration =
+        QemuHotForkSourceWorldKey::new(lineage, identity.scenario, foreign, profile.clone());
+    provider.key = wrong_configuration.clone();
+    assert!(
+        provider
+            .checkout(&wrong_configuration)
+            .expect("checkout")
+            .is_none()
+    );
+    assert!(provider.available());
+    assert!(provider.checked_out.is_none());
+    assert!(identity.matches(provider.source.as_ref().expect("retained source")));
+
+    let matching =
+        QemuHotForkSourceWorldKey::new(lineage, identity.scenario, identity.configuration, profile);
+    provider.key = matching.clone();
+    let lease = provider
+        .checkout(&matching)
+        .expect("checkout")
+        .expect("same source");
+    assert!(!provider.available());
+    provider.restore(lease);
+    assert!(provider.available());
+    assert!(identity.matches(provider.source.as_ref().expect("restored source")));
 }

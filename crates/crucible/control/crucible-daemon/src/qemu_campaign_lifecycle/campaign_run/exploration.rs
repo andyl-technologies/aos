@@ -30,13 +30,17 @@ type AuthorizedPuctPlanner =
 type AuthorizedBeamPlanner =
     AuthorizedPlannerService<crucible_campaign::CanonicalBeamPlanner, LocalPlannerMeter>;
 
-pub(super) type LocalCampaignPlannerServiceError =
+pub(crate) type LocalCampaignPlannerServiceError =
     AuthorizedPlannerServiceError<CampaignCodecError, LocalPlannerMeterError>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LocalCampaignPlannerKind {
+/// Selects one canonical planner family and its explicit search strategy.
+pub(crate) enum LocalCampaignPlannerKind {
+    /// Uses the exact exhaustive frontier order.
     Search(crucible_campaign::CanonicalSearchStrategy),
+    /// Uses the canonical policy-bound tree search.
     Puct,
+    /// Uses the canonical policy-bound beam search.
     Beam,
 }
 
@@ -231,7 +235,8 @@ pub enum GuardedCampaignExplorationCompletion {
     Finding,
 }
 
-pub(super) enum LocalCampaignPlannerService {
+/// Retains the authorized canonical engine attached to one policy family.
+pub(crate) enum LocalCampaignPlannerService {
     Search(AuthorizedSearchPlanner),
     Puct(AuthorizedPuctPlanner),
     Beam(AuthorizedBeamPlanner),
@@ -341,11 +346,55 @@ where
         .map_err(GuardedDefaultCampaignRunError::Codec)?;
     let planner_kind =
         LocalCampaignPlannerKind::from(exploration.map(GuardedCampaignExploration::strategy));
+    configured_campaign_planner(
+        repository,
+        planner_authority,
+        planner_kind,
+        DEFAULT_RUN_PLANNER_SCAN,
+        planning_budget,
+    )
+    .map_err(|cause| match cause {
+        ConfiguredCampaignPlannerError::Repository(cause) => {
+            GuardedDefaultCampaignRunError::Repository(cause)
+        }
+        ConfiguredCampaignPlannerError::Configuration(cause) => {
+            GuardedDefaultCampaignRunError::PlannerConfiguration(cause)
+        }
+    })
+}
+
+/// Preserves canonical basis publication or explicit driver configuration failure.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ConfiguredCampaignPlannerError {
+    /// The same repository refused canonical basis publication.
+    #[error("canonical planner basis publication refused: {0}")]
+    Repository(#[from] CampaignRepositoryError),
+    /// The supplied scan or canonical identities violate the driver contract.
+    #[error("canonical planner configuration refused: {0}")]
+    Configuration(#[from] crucible_campaign::CampaignPlannerDriverConfigError),
+}
+
+/// Attaches the selected canonical engine with explicitly supplied work bounds.
+///
+/// The existing local profile and required deployment route share this body.
+/// The caller retains repository authority and funds publication and driver
+/// storage before entering; these values do not issue a service allowance.
+///
+/// # Errors
+/// Refuses canonical basis publication or the actual driver's scan and identity
+/// contract. The selected policy family is fixed before planning begins.
+pub(crate) fn configured_campaign_planner(
+    repository: &std::sync::Arc<CampaignRepository>,
+    planner_authority: PlannerAuthorityKey,
+    planner_kind: LocalCampaignPlannerKind,
+    scan_limit: u32,
+    planning_budget: PlanningBudget,
+) -> Result<CampaignPlannerDriver<LocalCampaignPlannerService>, ConfiguredCampaignPlannerError> {
     let (engine, artifact, initial_state, service) = match planner_kind {
         LocalCampaignPlannerKind::Search(strategy) => {
             let basis = repository
                 .publish_canonical_search_planner_basis(strategy)
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+                .map_err(ConfiguredCampaignPlannerError::Repository)?;
             (
                 basis.engine().clone(),
                 basis.artifact().clone(),
@@ -360,7 +409,7 @@ where
         LocalCampaignPlannerKind::Puct => {
             let basis = repository
                 .publish_canonical_puct_planner_basis()
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+                .map_err(ConfiguredCampaignPlannerError::Repository)?;
             (
                 basis.engine().clone(),
                 basis.artifact().clone(),
@@ -375,7 +424,7 @@ where
         LocalCampaignPlannerKind::Beam => {
             let basis = repository
                 .publish_canonical_beam_planner_basis()
-                .map_err(GuardedDefaultCampaignRunError::Repository)?;
+                .map_err(ConfiguredCampaignPlannerError::Repository)?;
             (
                 basis.engine().clone(),
                 basis.artifact().clone(),
@@ -394,10 +443,10 @@ where
         engine,
         artifact,
         initial_state,
-        DEFAULT_RUN_PLANNER_SCAN,
+        scan_limit,
         planning_budget,
     )
-    .map_err(GuardedDefaultCampaignRunError::PlannerConfiguration)?;
+    .map_err(ConfiguredCampaignPlannerError::Configuration)?;
     Ok(match planner_kind {
         LocalCampaignPlannerKind::Search(_) => planner.require_exhaustive_policy(),
         LocalCampaignPlannerKind::Puct => planner.require_tree_search_policy(),

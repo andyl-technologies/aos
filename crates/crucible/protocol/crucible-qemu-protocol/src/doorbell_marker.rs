@@ -19,6 +19,9 @@
 
 use thiserror::Error;
 
+mod borrowed;
+pub use borrowed::decode_whitebox_marker_payload_view;
+
 use crate::{
     WhiteboxDoorbellFrame, WhiteboxDoorbellFrameEncodeError, encode_whitebox_doorbell_frame,
 };
@@ -529,10 +532,7 @@ impl WhiteboxMarkerPayload {
 pub fn decode_whitebox_marker_payload(
     frame: &WhiteboxDoorbellFrame,
 ) -> Result<WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError> {
-    let Some(kind) = WhiteboxDoorbellMarkerKind::from_wire_value(frame.kind()) else {
-        return Err(WhiteboxMarkerPayloadDecodeError::UnknownKind { kind: frame.kind() });
-    };
-    decode_marker_payload_body(kind, frame.payload())
+    decode_whitebox_marker_payload_view(frame.as_view())
 }
 
 fn decode_marker_payload_body(

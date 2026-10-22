@@ -137,11 +137,11 @@ fn packed_initialization_waits_for_in_flight_staging() {
     let id = ContentId::for_bytes(ObjectKind::RamExtent, 1, &bytes);
     let (opened_sender, opened_receiver) = mpsc::channel();
     let (release_sender, release_receiver) = mpsc::channel();
-    let source = BlobHandle::new(Arc::new(BlockingSource {
+    let source = BlobHandle::new(BlockingSource {
         bytes: Arc::clone(&bytes),
         opened: opened_sender,
         release: Mutex::new(Some(release_receiver)),
-    }));
+    });
     let writer = thread::spawn(move || writer_store.put_if_absent(id, &source));
 
     opened_receiver
@@ -241,6 +241,8 @@ fn pack_index_interruption_recovers_old_generation_and_retries() {
     let plan = store.plan_repack().expect("interrupted repack plan");
     assert_eq!(before.generation(), 2);
     assert_eq!(before.packs(), 2);
+    let index_path = root.join(".packed-admin/index-v1");
+    let before_index = fs::read(&index_path).expect("old committed index bytes");
     drop(store);
 
     let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
@@ -262,21 +264,32 @@ fn pack_index_interruption_recovers_old_generation_and_retries() {
         String::from_utf8_lossy(&child.stdout),
         String::from_utf8_lossy(&child.stderr),
     );
+    // The completed replacement pack has no temporary name at this fault
+    // edge. Root publication has not begun, so its exact old bytes survive.
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(
+        fs::read(&index_path).expect("interrupted index"),
+        before_index
+    );
 
     let restarted =
         PackedBlobBackend::open("packed", &root, 64 * 1024).expect("restart old generation");
     assert_eq!(pack_file_count(&root), 3);
-    assert_eq!(pack_staging_file_count(&root), 1);
+    assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(
+        fs::read(&index_path).expect("restarted index"),
+        before_index
+    );
     let cleanup = restarted
         .cleanup_incomplete_packs()
         .expect("clean interrupted replacement material");
     assert_eq!(cleanup.index_generation(), before.generation());
     assert_eq!(cleanup.removed_unreferenced_packs(), 1);
-    assert_eq!(cleanup.removed_staging_packs(), 1);
+    assert_eq!(cleanup.removed_staging_packs(), 0);
     assert_eq!(pack_file_count(&root), 2);
     assert_eq!(pack_staging_file_count(&root), 0);
+    assert_eq!(fs::read(&index_path).expect("cleaned index"), before_index);
     assert_eq!(
         restarted.accounting().expect("recovered accounting"),
         before
@@ -470,6 +483,7 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     let temp = TempDir::new().expect("temporary directory");
     let packed = node_id("packed");
     let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: packed.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
         nodes: BTreeMap::from([(
@@ -512,6 +526,7 @@ fn packed_store_graph_is_admitted_and_requires_an_isolated_persistent_root() {
     let shared = temp.path().join("overlap");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: mirror.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::RamExtent]),
             nodes: BTreeMap::from([

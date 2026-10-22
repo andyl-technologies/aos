@@ -1,6 +1,14 @@
 //! Bounded per-quantum and lifecycle wait drivers.
 
 use super::*;
+use crucible_host_resources::host_supervision::{HostOperationClass, HostSupervisionError};
+
+fn supervision_error(source: HostSupervisionError) -> QemuAsyncDriverError {
+    QemuAsyncDriverError::Runtime(QemuAsyncDriverRuntimeError::operational_supervision(
+        "host operation supervision",
+        source,
+    ))
+}
 
 /// Runs one scheduler quantum through a bounded host-I/O bridge.
 ///
@@ -55,24 +63,165 @@ where
     R: QemuHostIoRuntime + ?Sized,
     F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
 {
+    run_node_step_with_operation(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        after_start,
+        None,
+    )
+}
+
+/// Borrows the original operation through publication, resume and every wait.
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub(crate) fn run_qemu_node_step_under_original<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+    original: &crucible_host_resources::host_supervision::HostOperationGuard,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
+{
+    run_node_step_with_operation(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        after_start,
+        Some(original),
+    )
+}
+
+fn check_original(
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<(), QemuAsyncDriverError> {
+    if let Some(original) = original {
+        original.wait_slice().map_err(supervision_error)?;
+    }
+    Ok(())
+}
+
+/// Observes the same entered operation after every actual runtime return,
+/// including an adapter refusal. The initiating error owns its typed post
+/// observation inline; neither formatting nor a replacement operation is needed.
+fn observe_runtime_return<T>(
+    result: Result<T, QemuAsyncDriverRuntimeError>,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<T, QemuAsyncDriverError> {
+    let post = original.and_then(|operation| operation.wait_slice().err());
+
+    match (result, post) {
+        (Ok(value), None) => Ok(value),
+        (Ok(_), Some(source)) => Err(supervision_error(source)),
+        (Err(first), None) => Err(QemuAsyncDriverError::Runtime(first)),
+        (Err(first), Some(source)) => Err(QemuAsyncDriverError::Runtime(
+            first.with_operational_supervision_post(source),
+        )),
+    }
+}
+
+/// Keeps channel refusal and its independent same-Original post inline.
+/// Even a failed start can leave physical publication debt; this observation
+/// neither retries the channel nor completes or returns the pending operation.
+fn observe_channel_return<T>(
+    result: Result<T, QemuNodeChannelError>,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<T, QemuAsyncDriverError> {
+    let post = original.and_then(|operation| operation.wait_slice().err());
+
+    match (result, post) {
+        (Ok(value), None) => Ok(value),
+        (Ok(_), Some(source)) => Err(supervision_error(source)),
+        (Err(source), None) => Err(QemuAsyncDriverError::Channel(source)),
+        (Err(source), Some(original_after)) => Err(QemuAsyncDriverError::ChannelOriginalPost {
+            source,
+            original_after,
+        }),
+    }
+}
+
+/// Checks the same operation after health returns, including a Source refusal.
+/// A negative health observation retains its original owner and typed post;
+/// neither observation authorizes a pending quantum to complete.
+fn observe_health_return(
+    result: Result<(), QemuAsyncDriverHealthError>,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<(), QemuAsyncDriverError> {
+    let post = original.and_then(|operation| operation.wait_slice().err());
+
+    match (result, post) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(source)) => Err(supervision_error(source)),
+        (Err(source), None) => Err(QemuAsyncDriverError::OperationalHealth(source)),
+        (Err(source), Some(post)) => Err(QemuAsyncDriverError::OperationalHealth(
+            source.with_operational_supervision_post(post),
+        )),
+    }
+}
+
+fn run_node_step_with_operation<T, R, F>(
+    target: &mut T,
+    runtime: &mut R,
+    policy: QemuAsyncDriverPolicy,
+    crash_detector: &QemuCrashDetector,
+    horizon: ExecutionHorizon,
+    after_start: F,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
+where
+    T: QemuAsyncNodeStepTarget,
+    R: QemuHostIoRuntime + ?Sized,
+    F: FnOnce(&mut T, &mut T::PendingQuantum) -> Result<(), QemuNodeChannelError>,
+{
     policy.validate()?;
 
+    check_original(original)?;
+    let host_operation = if original.is_some() {
+        None
+    } else {
+        runtime
+            .host_operation_supervisor()
+            .map(|supervisor| supervisor.begin(HostOperationClass::Quantum))
+            .transpose()
+            .map_err(supervision_error)?
+    };
+
+    // Publication and every later cut borrow this same entered operation.
+    // A driver-issued Quantum needs the same cancellation checks as a loan.
+    let active_operation = original.or(host_operation.as_ref());
+
+    observe_health_return(target.operational_health(), active_operation)?;
+
     let mut async_operations = Vec::new();
-    runtime
-        .yield_to_control_plane()
-        .map_err(QemuAsyncDriverError::Runtime)?;
+    observe_runtime_return(runtime.yield_to_control_plane(), active_operation)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
-    let mut pending = target
-        .start_quantum(horizon)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
-    runtime
-        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
-        .map_err(QemuAsyncDriverError::Runtime)?;
+    check_original(active_operation)?;
+    let publication = observe_runtime_return(
+        runtime.quantum_publication(active_operation),
+        active_operation,
+    )?;
+    let mut pending = observe_channel_return(
+        target.start_quantum_with_publication(horizon, publication),
+        active_operation,
+    )?;
+    observe_channel_return(after_start(target, &mut pending), active_operation)?;
+    observe_runtime_return(
+        runtime.arm_advance_completion_fence(target.advance_completion_fence(&pending)),
+        active_operation,
+    )?;
     // Renewal is a liveness poll, not an attempt deadline. A short slice
     // observes child exit and an authored watchdog cancellation promptly.
-    let wait_timeout = if policy.unbounded_advance_completion {
+    let initial_wait_timeout = if policy.unbounded_advance_completion {
         policy
             .timeout_for(QemuAsyncWait::AdvanceCompletion)
             .min(Duration::from_secs(1))
@@ -81,29 +230,85 @@ where
     };
     let mut first_wait = true;
     let completion = loop {
+        let wait_timeout = match active_operation {
+            Some(operation) => match operation.wait_slice() {
+                Ok(slice) => slice,
+                Err(source) => {
+                    if original.is_none() {
+                        target
+                            .shutdown_after_crash()
+                            .map_err(QemuAsyncDriverError::Target)?;
+                    }
+                    return Err(supervision_error(source));
+                }
+            },
+            None => initial_wait_timeout,
+        };
         let is_initial_wait = first_wait;
         if is_initial_wait {
             first_wait = false;
         }
-        let wait_outcome = if is_initial_wait {
+        let wait_result = if let Some(original) = original {
+            if is_initial_wait {
+                runtime.await_child_under_original(QemuAsyncWait::AdvanceCompletion, original)
+            } else {
+                runtime.repoll_child_under_original(QemuAsyncWait::AdvanceCompletion, original)
+            }
+        } else if is_initial_wait {
             runtime.await_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
         } else {
             runtime.repoll_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
-        }
-        .map_err(QemuAsyncDriverError::Runtime)?;
-        async_operations.push(QemuAsyncDriverOperation::AwaitChild {
+        };
+        // Observe the same Original even after refusal. A borrowed Original's
+        // adapter cause precedes later health observations. For ordinary
+        // Quantum waits, retain the existing Source-health priority over a
+        // transport failure caused by that Source closing its socket.
+        let wait_result = observe_runtime_return(wait_result, active_operation);
+        let wait_result = match wait_result {
+            Err(QemuAsyncDriverError::Runtime(source))
+                if source.operational_supervision_post().is_some() =>
+            {
+                return Err(QemuAsyncDriverError::Runtime(source));
+            }
+            result if original.is_some() => Ok(result?),
+            result => result,
+        };
+        // Source failure closes only operational continuation. The actual
+        // process and pending buffers remain owned for explicit containment;
+        // this path never turns a blocked memory access into a guest crash.
+        observe_health_return(target.operational_health(), active_operation)?;
+        let wait_outcome = wait_result?;
+        check_original(active_operation)?;
+        let observed_wait = QemuAsyncDriverOperation::AwaitChild {
             wait: QemuAsyncWait::AdvanceCompletion,
             timeout: wait_timeout,
             outcome: wait_outcome,
-        });
+        };
+        // Poll traffic is operational evidence, not an unbounded history buffer.
+        if async_operations.len() < 64 {
+            async_operations.push(observed_wait);
+        } else if let Some(last) = async_operations.last_mut() {
+            *last = observed_wait;
+        }
         if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            if !policy.unbounded_advance_completion {
+            if original.is_none()
+                && host_operation.is_none()
+                && !policy.unbounded_advance_completion
+            {
                 break None;
             }
             if let Some(exit_status) = target
                 .child_exit_status()
                 .map_err(QemuAsyncDriverError::Target)?
             {
+                if original.is_some() {
+                    return Err(QemuAsyncDriverError::Target(
+                        QemuAsyncDriverTargetError::new(
+                            "original reset quantum child exit",
+                            format!("owned child exited: {exit_status}"),
+                        ),
+                    ));
+                }
                 async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
                 let status = crash_detector.unexpected_child_exit(exit_status);
                 let shutdown = target
@@ -121,23 +326,37 @@ where
                     async_operations,
                 });
             }
-            runtime
-                .renew_advance_completion_poll(wait_timeout)
-                .map_err(QemuAsyncDriverError::Runtime)?;
+            if original.is_none() {
+                observe_runtime_return(
+                    runtime.renew_advance_completion_poll(wait_timeout),
+                    active_operation,
+                )?;
+            }
             continue;
         }
-        match target.finish_quantum(&mut pending) {
+        check_original(active_operation)?;
+        match observe_channel_return(target.finish_quantum(&mut pending), active_operation) {
             Ok(completion) => {
+                observe_health_return(target.operational_health(), active_operation)?;
+                check_original(active_operation)?;
                 break Some(completion);
             }
-            Err(error) if error.is_retryable() => continue,
-            Err(error) => return Err(QemuAsyncDriverError::Channel(error)),
+            Err(QemuAsyncDriverError::Channel(error)) => {
+                observe_health_return(target.operational_health(), active_operation)?;
+                if error.is_retryable() {
+                    continue;
+                }
+                return Err(QemuAsyncDriverError::Channel(error));
+            }
+            Err(error) => return Err(error),
         }
     };
     let Some(completion) = completion else {
         async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
-        let status = crash_detector
-            .bounded_await_timeout(QemuAsyncWait::AdvanceCompletion.operation(), wait_timeout);
+        let status = crash_detector.bounded_await_timeout(
+            QemuAsyncWait::AdvanceCompletion.operation(),
+            initial_wait_timeout,
+        );
         let shutdown = target
             .shutdown_after_crash()
             .map_err(QemuAsyncDriverError::Target)?;
@@ -153,13 +372,16 @@ where
             async_operations,
         });
     };
+    check_original(active_operation)?;
     assert_async_driver_quantum_hot_path_is_shmem_only(&completion.operations)?;
 
-    runtime
-        .yield_to_control_plane()
-        .map_err(QemuAsyncDriverError::Runtime)?;
+    observe_runtime_return(runtime.yield_to_control_plane(), active_operation)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
+    check_original(active_operation)?;
+    if let Some(operation) = host_operation {
+        operation.complete().map_err(supervision_error)?;
+    }
     Ok(QemuAsyncNodeStepReport {
         ceiling: Some(completion.ceiling),
         outcome: QemuAsyncNodeStepOutcome::Completed {
@@ -198,9 +420,39 @@ where
         return Err(QemuAsyncDriverError::LifecycleAdvanceWait);
     }
     let timeout = policy.timeout_for(wait);
-    let outcome = runtime
-        .await_child(wait, timeout)
-        .map_err(QemuAsyncDriverError::Runtime)?;
+    let class = match wait {
+        QemuAsyncWait::Handshake => HostOperationClass::Setup,
+        QemuAsyncWait::QmpCommand => HostOperationClass::Preparation,
+        QemuAsyncWait::ProcessEvent => HostOperationClass::Cleanup,
+        QemuAsyncWait::AdvanceCompletion => HostOperationClass::Quantum,
+    };
+    let operation = runtime
+        .host_operation_supervisor()
+        .map(|supervisor| supervisor.begin(class))
+        .transpose()
+        .map_err(supervision_error)?;
+    let mut first = true;
+    let outcome = loop {
+        let slice = match &operation {
+            Some(operation) => operation.wait_slice().map_err(supervision_error)?,
+            None => timeout,
+        };
+        let result = if first {
+            first = false;
+            runtime.await_child(wait, slice)
+        } else {
+            runtime.repoll_child(wait, slice)
+        };
+        let outcome = observe_runtime_return(result, operation.as_ref())?;
+        if outcome == QemuAsyncWaitOutcome::Completed || operation.is_none() {
+            break outcome;
+        }
+    };
+    if outcome == QemuAsyncWaitOutcome::Completed
+        && let Some(operation) = operation
+    {
+        operation.complete().map_err(supervision_error)?;
+    }
     let mut async_operations = vec![QemuAsyncDriverOperation::AwaitChild {
         wait,
         timeout,
@@ -223,4 +475,122 @@ where
         outcome: QemuAsyncLifecycleAwaitOutcome::Completed,
         async_operations,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    #[test]
+    fn actual_original_health_post_retains_owner_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        let source = QemuAsyncDriverHealthError::ram_source(
+            crate::ram_source::QemuRamSourceError::Ownership,
+        );
+        let observer = source.clone();
+        supervisor.cancel()?;
+        let expected = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (result, counts) =
+            TestAllocationObserver::count(|| observe_health_return(Err(source), Some(&original)));
+
+        let QemuAsyncDriverError::OperationalHealth(error) = result.unwrap_err() else {
+            panic!("both actual observations must survive");
+        };
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(std::ptr::eq(
+            error.source_failure(),
+            observer.source_failure()
+        ));
+        assert_eq!(error.operational_supervision_post(), Some(expected));
+        let displayed = error.to_string();
+        assert!(displayed.starts_with(&observer.to_string()));
+        assert!(displayed.ends_with(&format!("independent Original post: {expected}")));
+        assert_eq!(error.clone(), error);
+        assert_ne!(error, observer);
+        assert_eq!(
+            error
+                .with_operational_supervision_post(HostSupervisionError::Unavailable)
+                .operational_supervision_post(),
+            Some(expected),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_original_channel_post_retains_first_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        supervisor.cancel()?;
+        let expected = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            observe_channel_return::<()>(
+                Err(QemuNodeChannelError::new(
+                    "start quantum",
+                    "initiating refusal",
+                )),
+                Some(&original),
+            )
+        });
+
+        let QemuAsyncDriverError::ChannelOriginalPost {
+            source,
+            original_after,
+        } = result.expect_err("channel and Original refuse")
+        else {
+            panic!("both independent observations must survive");
+        };
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(source.operation, "start quantum");
+        assert_eq!(source.message(), "initiating refusal");
+        assert_eq!(original_after, expected);
+        assert!(original.wait_slice().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn actual_original_runtime_post_retains_first_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        supervisor.cancel()?;
+        let expected = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            observe_runtime_return::<()>(
+                Err(QemuAsyncDriverRuntimeError::new(
+                    "adapter",
+                    "initiating refusal",
+                )),
+                Some(&original),
+            )
+        });
+
+        let QemuAsyncDriverError::Runtime(error) = result.expect_err("adapter refuses") else {
+            panic!("initiating adapter must remain the first typed error");
+        };
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert_eq!(error.operation, "adapter");
+        assert_eq!(error.message(), "initiating refusal");
+        assert_eq!(error.operational_supervision_post(), Some(expected));
+        assert!(original.wait_slice().is_err());
+        Ok(())
+    }
 }

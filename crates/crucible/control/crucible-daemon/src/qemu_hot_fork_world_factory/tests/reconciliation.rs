@@ -10,11 +10,17 @@ pub(super) fn factory(
 ) -> QemuProductionHotForkWorldLifecycleFactory<
     QemuSingleHotForkSourceWorldProvider,
     ScriptedWorldGuardFactory,
+    super::target_operations::ComponentTargetOperations,
 > {
     let key = QemuHotForkSourceWorldKey::new(
         lineage.id().expect("lineage id"),
-        source_world.continuation().configuration().def.id(),
-        source_world.continuation().configuration().id(),
+        source_world
+            .continuation()
+            .unwrap()
+            .configuration()
+            .def
+            .id(),
+        source_world.continuation().unwrap().configuration().id(),
         ExecutorCompatibilityProfile::from_lineage(lineage),
     );
     let mut shutdown_policy = QemuShutdownPolicy::fast_test();
@@ -24,11 +30,12 @@ pub(super) fn factory(
 
     QemuProductionHotForkWorldLifecycleFactory::new(
         QemuSingleHotForkSourceWorldProvider::new(key, source_world),
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state_root,
         shutdown_policy,
         QemuAsyncDriverPolicy::fast_test(),
     )
+    .with_target_operations(super::target_operations::ComponentTargetOperations)
 }
 
 pub(super) fn repository_execution_fixture() -> (
@@ -45,6 +52,7 @@ pub(super) fn repository_execution_fixture() -> (
             64 * 1024 * 1024,
         )),
         Arc::new(MemoryRefBackend::new()),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     ));
     let scenario = guest_selectable_scenario();
     let scenario_artifact =

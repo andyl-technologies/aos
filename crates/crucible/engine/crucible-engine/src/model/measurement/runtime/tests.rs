@@ -58,6 +58,9 @@ fn terminal(at: u64) -> MeasurementTerminalState {
 
 #[test]
 fn exact_mean_histogram_and_delta_are_recomputed() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mean = aggregate_metric_samples(
         &metric(
             "mean",
@@ -129,6 +132,9 @@ fn exact_mean_histogram_and_delta_are_recomputed() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let measurement = MeasurementDefinition {
         id: MeasurementId::parse("recovery")?,
@@ -160,25 +166,29 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
             Icount { retired: 10 },
             node("router-b"),
             MarkerId::from_name("begin"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_marker_observation(
             1,
             Icount { retired: 20 },
             node("router-a"),
             MarkerId::from_name("begin"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_marker_observation(
             2,
             Icount { retired: 30 },
             node("router-a"),
             MarkerId::from_name("end"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_marker_observation(
             3,
             Icount { retired: 40 },
             node("router-b"),
             MarkerId::from_name("end"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let samples = vec![
         MeasurementRuntimeSample::new(
@@ -244,6 +254,9 @@ fn cohort_boundaries_retain_exact_events_and_bound_samples() -> Result<(), Box<d
 
 #[test]
 fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let expected_instance = MeasurementInstanceKey::parse("epoch-7")?;
     let measurement = MeasurementDefinition {
@@ -278,7 +291,8 @@ fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn
             String::from("begin"),
             String::from("other-epoch"),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_semantic_marker_observation(
             1,
             Icount { retired: 20 },
@@ -286,7 +300,8 @@ fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn
             String::from("begin"),
             String::from("epoch-7"),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_semantic_marker_observation(
             2,
             Icount { retired: 30 },
@@ -294,7 +309,8 @@ fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn
             String::from("end"),
             String::from("other-epoch"),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_semantic_marker_observation(
             3,
             Icount { retired: 40 },
@@ -302,7 +318,8 @@ fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn
             String::from("end"),
             String::from("epoch-7"),
             Vec::new(),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(40))?;
@@ -317,6 +334,9 @@ fn semantic_marker_boundaries_require_the_exact_instance() -> Result<(), Box<dyn
 
 #[test]
 fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let definitions = MeasurementDefinitions::new(
         &world,
@@ -337,12 +357,15 @@ fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
             )?],
         }],
     )?;
-    let entries = vec![SchedulerEventLogEntry::guest_marker_observation(
-        0,
-        Icount { retired: 10 },
-        node("router-a"),
-        MarkerId::from_name("tick"),
-    )];
+    let entries = vec![
+        SchedulerEventLogEntry::guest_marker_observation(
+            0,
+            Icount { retired: 10 },
+            node("router-a"),
+            MarkerId::from_name("tick"),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(10))?;
     assert!(matches!(
@@ -360,6 +383,9 @@ fn end_boundary_wins_a_same_event_timeout() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let definitions = MeasurementDefinitions::new(
         &world,
@@ -380,12 +406,15 @@ fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn
             )?],
         }],
     )?;
-    let entries = vec![SchedulerEventLogEntry::guest_marker_observation(
-        0,
-        Icount { retired: 1_250 },
-        node("router-a"),
-        MarkerId::from_name("tick"),
-    )];
+    let entries = vec![
+        SchedulerEventLogEntry::guest_marker_observation(
+            0,
+            Icount { retired: 1_250 },
+            node("router-a"),
+            MarkerId::from_name("tick"),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
+    ];
 
     let evaluation = evaluate_measurements(&definitions, &entries, Vec::new(), &terminal(1_250))?;
     assert!(matches!(
@@ -397,6 +426,9 @@ fn genesis_relative_timeout_opens_before_the_first_event() -> Result<(), Box<dyn
 
 #[test]
 fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let definitions = MeasurementDefinitions::new(
         &world,
@@ -423,19 +455,22 @@ fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn E
             Icount { retired: 10 },
             node("router-a"),
             MarkerId::from_name("before-ready"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_marker_observation(
             1,
             Icount { retired: 20 },
             node("router-a"),
             MarkerId::from_name("after-ready"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         SchedulerEventLogEntry::guest_marker_observation(
             2,
             Icount { retired: 25 },
             node("router-a"),
             MarkerId::from_name("end"),
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     let samples = vec![
         MeasurementRuntimeSample::new(
@@ -468,6 +503,9 @@ fn synthetic_ready_coordinate_excludes_earlier_samples() -> Result<(), Box<dyn E
 
 #[test]
 fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let world = world()?;
     let definitions = MeasurementDefinitions::new(
         &world,
@@ -493,7 +531,8 @@ fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
         Icount { retired: 10 },
         node("router-a"),
         MarkerId::from_name("tick"),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     let sample = MeasurementRuntimeSample::new(
         4,
         MeasurementId::parse("bounded")?,
@@ -515,7 +554,8 @@ fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
         Icount { retired: 11 },
         node("router-a"),
         MarkerId::from_name("gap"),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(matches!(
         evaluate_measurements(&definitions, &[entry, gap], Vec::new(), &terminal(11)),
         Err(MeasurementEvaluationError::NonDenseEventLog { .. })
@@ -526,7 +566,8 @@ fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
         Icount { retired: 10 },
         node("router-a"),
         MarkerId::from_name("late"),
-    );
+    )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"));
     assert!(matches!(
         evaluate_measurements(&definitions, &[late_entry], Vec::new(), &terminal(9)),
         Err(MeasurementEvaluationError::TerminalBeforeEvent { .. })
@@ -536,6 +577,9 @@ fn duplicate_and_non_dense_inputs_fail_closed() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fixture = crate::happy_path_scenario()?;
     let server = node("server");
     let link = LinkId::for_endpoints(&node("client"), &server);
@@ -707,6 +751,9 @@ fn model_sources_project_exact_replay_samples() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fixture = crate::happy_path_scenario()?;
     let server = node("server");
     let definitions = MeasurementDefinitions::new(
@@ -766,6 +813,9 @@ fn malformed_model_source_events_fail_closed() -> Result<(), Box<dyn Error>> {
 #[test]
 fn model_source_projection_rejects_visit_amplification_before_sampling()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fixture = crate::happy_path_scenario()?;
     let server = node("server");
     let definitions = (0..4)

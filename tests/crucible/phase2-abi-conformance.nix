@@ -21,7 +21,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucibleCampaign._runtimeIdentity;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
@@ -244,7 +244,7 @@
     ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi module tree" (apiRpcAbi + apiRpcGolden) [
       {
         label = "explicit major version";
-        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 8;";
+        needle = "pub const RPC_PROTOCOL_MAJOR: u16 = 9;";
       }
       {
         label = "explicit minor version";
@@ -256,7 +256,7 @@
       }
       {
         label = "build identifier";
-        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v8\";";
+        needle = "pub const RPC_PROTOCOL_BUILD: &str = \"crucible-rpc-abi-v9\";";
       }
       {
         label = "golden vector protocol version";
@@ -515,6 +515,189 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
+              require_test_set 16 protocol-deferred-cleanup \
+                deferred_cleanup::tests::physical_consumption_survives_unknown_return_capture_and_failed_post \
+                -p crucible-qemu-protocol --lib deferred_cleanup::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib deferred_cleanup::tests:: \
+                -- --test-threads=1
+              require_test_set 6 protocol-quantum-cleanup \
+                publisher_subscription::quantum::tests::paired_publication_matches_independent_role_bytes_and_refuses_legacy_decoding \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum::tests:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-negotiation \
+                publisher_subscription::quantum::negotiation::tests::negotiation_literals_preserve_physical_inventory_and_select_distinct_editions \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::negotiation::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum::negotiation::tests:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-plan \
+                plugin_setup_plan::preexec::tests::quantum::quantum_plan_matches_literal_header_and_round_trips_through_public_api \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::quantum_plan
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::quantum::quantum_plan \
+                -- --test-threads=1
+              require_test_set 2 protocol-quantum-transport \
+                publisher_subscription::tests::setup::transport::quantum_setup_sends_exact_eight_and_nine_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::quantum_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::quantum_setup \
+                -- --test-threads=1
+              require_test_set 6 protocol-quantum-stacks \
+                publisher_subscription::quantum::stacks::tests::stack_purpose_matches_independent_literal_header_and_both_role_records \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::stacks::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum::stacks::tests:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-stack-plan \
+                plugin_setup_plan::preexec::tests::quantum::stacks::stack_plan_matches_literal_header_body_order_and_mutual_edition_refusal \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::stacks::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::quantum::stacks:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-quantum-stack-cap \
+                plugin_setup_plan::quantum_stack::tests::stack_extent_keeps_the_same_aggregate_cap_and_refuses_widened_overflow \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::quantum_stack::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::quantum_stack::tests:: \
+                -- --test-threads=1
+              require_test_set 2 protocol-quantum-stack-transport \
+                publisher_subscription::tests::setup::transport::stack_setup_sends_exact_eight_and_nine_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::stack_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::stack_setup \
+                -- --test-threads=1
+              require_test_set 8 host-quantum-role \
+                host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::collector::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::collector::tests:: \
+                -- --test-threads=1
+              require_test_set 1 host-quantum-role-refusal \
+                host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::action_loan::tests::unsupported_publisher_refuses_quantum_role_projection \
+                -- --test-threads=1
+              require_test_set 4 host-deferred-cleanup-issuer \
+                host_supervision::deferred_cleanup::issuer::tests::equal_cap_identity_and_shared_outer_do_not_authorize_another_budget_owner \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::issuer::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::issuer::tests:: \
+                -- --test-threads=1
+              require_test_set 8 host-deferred-cleanup \
+                host_supervision::deferred_cleanup::tests::reservation_allocates_nothing_and_enters_after_actual_work_record_retirement \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-host-resources --features private-measurement-domain \
+                --lib host_supervision::deferred_cleanup::tests:: \
+                -- --test-threads=1
+              require_test_set 4 host-main-stack \
+                spawn::tests::main_stack::guarded_pre_exec_installs_exact_main_stack_limit_without_changing_parent \
+                -p crucible-qemu-host --features private-measurement-domain --lib main_stack
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-host \
+                --features private-measurement-domain \
+                --lib main_stack \
+                -- --test-threads=1
+              require_test_set 2 host-stack-refinement \
+                spawn::process_envelope::tests::descriptor_refinement_rejects_intervening_stack_selection \
+                -p crucible-qemu-host --features private-measurement-domain --lib intervening_stack_selection
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-host \
+                --features private-measurement-domain \
+                --lib intervening_stack_selection \
+                -- --test-threads=1
+              require_test_set 4 host-fork-stack \
+                spawn::process_envelope::tests::fork_target_inherits_the_actual_shared_stack_selection \
+                -p crucible-qemu-host --features private-measurement-domain --lib spawn::process_envelope::tests::fork_
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-host \
+                --features private-measurement-domain \
+                --lib spawn::process_envelope::tests::fork_ \
+                -- --test-threads=1
               require_test_set 3 protocol-doorbell \
                 doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
                 -p crucible-qemu-protocol doorbell_abi
@@ -548,7 +731,7 @@ in
                 -p crucible-qemu-plugin \
                 --lib io_wire_fuzz \
                 -- --test-threads=1
-              require_test_set 54 plugin-doorbell \
+              require_test_set 64 plugin-doorbell \
                 whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
                 -p crucible-qemu-plugin --lib whitebox_doorbell
               cargo test \
@@ -558,6 +741,17 @@ in
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-plugin \
                 --lib whitebox_doorbell \
+                -- --test-threads=1
+              require_test_set 2 plugin-setup-rejection \
+                startup_source::native_setup::tests::malformed_native_view_cannot_leave_source_current \
+                -p crucible-qemu-plugin --lib cannot_leave_source_current
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-plugin \
+                --lib cannot_leave_source_current \
                 -- --test-threads=1
               require_test_set 2 plugin-owner \
                 gate_abi_conformance_covers_plugin_io_wire_fuzzing \

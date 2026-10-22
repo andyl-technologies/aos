@@ -1,3 +1,8 @@
+# Tests signal failed setup and assertions with panics; production keeps both
+# lints denied by the workspace policy.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+
 disallowed-methods = [
   { path = "std::time::Instant::now", reason = "host monotonic time must not enter Crucible state paths" },
   { path = "std::time::Instant::elapsed", reason = "elapsed host time must not enter Crucible state paths" },

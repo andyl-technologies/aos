@@ -94,8 +94,6 @@ pub(super) enum PreparedExactCheckpointMaterialization {
         binding: QemuExactDeviceStateBinding,
         device_state_bytes: u64,
         root_overlay_bytes: u64,
-        ram_layer_bytes: Vec<u64>,
-        next_ram_layer: usize,
     },
     Complete {
         binding: QemuExactDeviceStateBinding,
@@ -138,48 +136,33 @@ struct AtomicExactRootOverlayWriter<'a> {
     written_bytes: u64,
 }
 
-/// Opaque sealed RAM input admitted by one guarded exact-checkpoint transaction.
+/// Bound immutable RAM metadata and retained lazy backing for one exact restore.
 #[derive(Debug)]
-pub(crate) struct QemuGuardedExactRamInput {
-    file: File,
-    binding: QemuExactDeviceStateBinding,
-    attempt_binding: Arc<AttemptResourceBinding>,
-    layer_index: usize,
-    expected_bytes: u64,
-}
-
-#[derive(Debug)]
-struct QemuGuardedRamInputs {
-    inputs: Vec<QemuGuardedExactRamInput>,
+pub(crate) struct SealedAtomicExactRestoreInputs {
+    root: File,
+    source: crate::QemuPagedRamRestoreSource,
     binding: QemuExactDeviceStateBinding,
     attempt_binding: Arc<AttemptResourceBinding>,
     request: crate::QmpCheckpointRestoreRequest,
-    topology: ContentHash,
-}
-
-/// Linear ordered RAM authority for one rooted production checkpoint.
-#[derive(Debug)]
-pub(crate) struct SealedAtomicExactRestoreInputs {
-    inner: QemuGuardedRamInputs,
     target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
 }
 
-/// Owned byte streams for one repository-rooted exact restore.
+/// Non-RAM byte streams and retained backing for one repository-rooted restore.
 ///
 /// The streams carry no launch authority. QEMU consumes them only together
-/// with an authenticated execution binding and verifies every byte before it
-/// can spawn or issue a restore command.
+/// with an authenticated execution binding. Non-RAM streams are authenticated
+/// before spawn; lazy RAM pages are authenticated before mapping population.
 pub(crate) struct QemuProductionExactRestoreSource {
     root_overlay: Box<dyn Read + Send>,
     device_state: Box<dyn Read + Send>,
-    ram_layers: Vec<Box<dyn Read + Send>>,
+    ram: crate::QemuPagedRamRestoreSource,
 }
 
 impl std::fmt::Debug for QemuProductionExactRestoreSource {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("QemuProductionExactRestoreSource")
-            .field("ram_layers", &self.ram_layers.len())
+            .field("ram", &self.ram)
             .finish_non_exhaustive()
     }
 }
@@ -188,22 +171,23 @@ impl QemuProductionExactRestoreSource {
     pub(crate) fn new(
         root_overlay: Box<dyn Read + Send>,
         device_state: Box<dyn Read + Send>,
-        ram_layers: Vec<Box<dyn Read + Send>>,
+        ram: crate::QemuPagedRamRestoreSource,
     ) -> Self {
         Self {
             root_overlay,
             device_state,
-            ram_layers,
+            ram,
         }
     }
 }
 
-impl QemuGuardedRamInputs {
-    pub(crate) fn descriptors(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
-        self.inputs.iter().map(QemuGuardedExactRamInput::as_fd)
+impl SealedAtomicExactRestoreInputs {
+    pub(crate) fn root_descriptor(&self) -> BorrowedFd<'_> {
+        use std::os::fd::AsFd as _;
+        self.root.as_fd()
     }
 
-    pub(crate) fn binding(&self) -> QemuExactDeviceStateBinding {
+    pub(crate) const fn binding(&self) -> QemuExactDeviceStateBinding {
         self.binding
     }
 
@@ -211,36 +195,14 @@ impl QemuGuardedRamInputs {
         &self.request
     }
 
-    pub(crate) const fn topology(&self) -> ContentHash {
-        self.topology
+    pub(crate) fn source(&self) -> &crate::QemuPagedRamRestoreSource {
+        &self.source
     }
-}
 
-macro_rules! guarded_ram_input_accessors {
-    ($type:ty) => {
-        impl $type {
-            pub(crate) fn descriptors(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
-                self.inner.descriptors()
-            }
+    pub(crate) fn topology(&self) -> ContentHash {
+        self.request.topology()
+    }
 
-            pub(crate) fn binding(&self) -> QemuExactDeviceStateBinding {
-                self.inner.binding()
-            }
-
-            pub(crate) const fn request(&self) -> &crate::QmpCheckpointRestoreRequest {
-                self.inner.request()
-            }
-
-            pub(crate) const fn topology(&self) -> ContentHash {
-                self.inner.topology()
-            }
-        }
-    };
-}
-
-guarded_ram_input_accessors!(SealedAtomicExactRestoreInputs);
-
-impl SealedAtomicExactRestoreInputs {
     pub(crate) const fn target(
         &self,
     ) -> &crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
@@ -252,42 +214,6 @@ impl SealedAtomicExactRestoreInputs {
     ) -> crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode {
         self.target
     }
-}
-
-impl QemuGuardedExactRamInput {
-    pub(crate) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        use std::os::fd::AsFd as _;
-        self.file.as_fd()
-    }
-
-    fn matches(
-        &self,
-        attempt_binding: &Arc<AttemptResourceBinding>,
-        binding: QemuExactDeviceStateBinding,
-        layer_index: usize,
-        expected_bytes: u64,
-    ) -> bool {
-        Arc::ptr_eq(&self.attempt_binding, attempt_binding)
-            && self.binding == binding
-            && self.layer_index == layer_index
-            && self.expected_bytes == expected_bytes
-    }
-}
-
-/// Linear writer for one descriptor-backed exact RAM restore input.
-///
-/// The input is created as an anonymous sealable memfd and never reopened by
-/// path. Successful completion returns the same sealed file at offset zero so
-/// QMP can import it directly.
-#[derive(Debug)]
-#[must_use = "exact RAM input materialization must be finished before restore"]
-struct AtomicExactRamLayerWriter<'a> {
-    prepared: &'a mut QemuPreparedRunDirectory,
-    destination: QemuExactCheckpointInputMaterialization,
-    verifier: StreamSha256Verifier,
-    layer_index: usize,
-    expected_bytes: u64,
-    written_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -369,35 +295,31 @@ impl QemuPreparedRunDirectory {
         let root_bytes = match (self.launch_resources.has_root_overlay(), root_image) {
             (true, Some(root_image)) => {
                 let bytes = std::fs::metadata(root_image)
-                    .map_err(|source| super::QemuGuardedImagePreparationError {
-                        source: QemuSpawnError::Io {
+                    .map_err(|source| {
+                        super::QemuGuardedImagePreparationError::local(QemuSpawnError::Io {
                             operation: "inspect fresh root image",
                             source,
-                        },
-                        child: None,
+                        })
                     })?
                     .len();
                 if bytes == 0 {
-                    return Err(super::QemuGuardedImagePreparationError {
-                        source: QemuSpawnError::FreshRootImageEmpty {
+                    return Err(super::QemuGuardedImagePreparationError::local(
+                        QemuSpawnError::FreshRootImageEmpty {
                             path: root_image.to_owned(),
                         },
-                        child: None,
-                    });
+                    ));
                 }
                 Some(bytes)
             }
             (true, None) => {
-                return Err(super::QemuGuardedImagePreparationError {
-                    source: QemuSpawnError::FreshRootImageMissing,
-                    child: None,
-                });
+                return Err(super::QemuGuardedImagePreparationError::local(
+                    QemuSpawnError::FreshRootImageMissing,
+                ));
             }
             (false, Some(_)) => {
-                return Err(super::QemuGuardedImagePreparationError {
-                    source: QemuSpawnError::FreshRootImageUnexpected,
-                    child: None,
-                });
+                return Err(super::QemuGuardedImagePreparationError::local(
+                    QemuSpawnError::FreshRootImageUnexpected,
+                ));
             }
             (false, None) => None,
         };
@@ -405,10 +327,9 @@ impl QemuPreparedRunDirectory {
 
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
-            return Err(super::QemuGuardedImagePreparationError {
-                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
-                child: None,
-            });
+            return Err(super::QemuGuardedImagePreparationError::local(
+                QemuSpawnError::FreshImageToolPath { path: image_tool },
+            ));
         }
 
         if let Some(root_bytes) = root_bytes {
@@ -430,10 +351,7 @@ impl QemuPreparedRunDirectory {
         }
 
         self.seal_fresh_artifacts()
-            .map_err(|source| super::QemuGuardedImagePreparationError {
-                source,
-                child: None,
-            })
+            .map_err(|source| super::QemuGuardedImagePreparationError::local(source))
     }
 
     /// Initializes the pinned VMState destination before fresh or exact launch.
@@ -452,10 +370,9 @@ impl QemuPreparedRunDirectory {
     ) -> Result<(), super::QemuGuardedImagePreparationError> {
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
-            return Err(super::QemuGuardedImagePreparationError {
-                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
-                child: None,
-            });
+            return Err(super::QemuGuardedImagePreparationError::local(
+                QemuSpawnError::FreshImageToolPath { path: image_tool },
+            ));
         }
         let device_state_bytes = self.launch_resources.minimum_writable_bytes();
         let device_state_args = [
@@ -494,10 +411,7 @@ impl QemuPreparedRunDirectory {
                 })?;
                 Ok(())
             });
-        vmstate.map_err(|source| super::QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        })
+        vmstate.map_err(|source| super::QemuGuardedImagePreparationError::local(source))
     }
 
     /// Begins one sealed exact device-state input for descriptor restore.
@@ -882,33 +796,15 @@ impl QemuPreparedRunDirectory {
         &self,
         expected: QemuExactDeviceStateBinding,
         inputs: &SealedAtomicExactRestoreInputs,
-        expected_bytes: impl IntoIterator<Item = u64>,
     ) -> Result<(), QemuSpawnError> {
-        self.validate_guarded_ram_inputs(expected, &inputs.inner, expected_bytes)
-    }
-
-    fn validate_guarded_ram_inputs(
-        &self,
-        expected: QemuExactDeviceStateBinding,
-        inputs: &QemuGuardedRamInputs,
-        expected_bytes: impl IntoIterator<Item = u64>,
-    ) -> Result<(), QemuSpawnError> {
-        let expected_bytes = expected_bytes.into_iter().collect::<Vec<_>>();
         if inputs.binding != expected
             || !Arc::ptr_eq(&inputs.attempt_binding, &self.attempt_binding)
-            || inputs.inputs.len() != expected_bytes.len()
-            || inputs.inputs.iter().enumerate().any(|(index, input)| {
-                !input.matches(
-                    &self.attempt_binding,
-                    expected,
-                    index,
-                    expected_bytes[index],
-                )
-            })
+            || inputs.source.root_record() != inputs.request.root_record()
+            || inputs.source.binding() != inputs.request.binding()
         {
             return Err(super::invalid_input(
-                "validate exact RAM materialization",
-                "RAM inputs do not belong to this exact root, attempt, order, or geometry",
+                "validate exact RAM source",
+                "RAM source does not belong to this exact root or attempt",
             ));
         }
         Ok(())

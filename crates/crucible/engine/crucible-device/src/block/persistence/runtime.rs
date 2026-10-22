@@ -2,6 +2,8 @@
 
 use super::helpers::*;
 use super::*;
+use crate::DeviceSnapshotAllocation;
+use crate::snapshot_allocation::{admit_validation, insert_validation_entries};
 
 impl Default for BlockPersistenceGraph {
     fn default() -> Self {
@@ -139,6 +141,13 @@ impl BlockPersistenceGraph {
     /// Returns [`DeviceError::InvalidBlockFaultDirective`] when checkpointed
     /// graph state is malformed or exceeds a compiled hard bound.
     pub fn validate(&self) -> Result<(), DeviceError> {
+        self.validate_with_admission(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn validate_with_admission(
+        &self,
+        admit: &mut dyn FnMut(DeviceSnapshotAllocation) -> Result<(), &'static str>,
+    ) -> Result<(), DeviceError> {
         if self.nodes.len() > HARD_BLOCK_PERSISTENCE_NODES
             || self.edge_count > HARD_BLOCK_PERSISTENCE_EDGES
             || self.edge_limit == 0
@@ -173,11 +182,17 @@ impl BlockPersistenceGraph {
                 "restored persistence graph violates bounds or ownership",
             ));
         }
-        let transformed_slots = self
-            .nodes
-            .values()
-            .map(|node| node.transformed_writeback_sequence)
-            .collect::<BTreeSet<_>>();
+        admit_validation(
+            admit,
+            DeviceSnapshotAllocation::ValidationSequences {
+                entries: self.nodes.len(),
+            },
+        )?;
+        let transformed_slots = insert_validation_entries(
+            self.nodes
+                .values()
+                .map(|node| node.transformed_writeback_sequence),
+        );
         if transformed_slots.len() != self.nodes.len() {
             return Err(invalid(
                 "restored persistence graph repeats a transformed ordering slot",

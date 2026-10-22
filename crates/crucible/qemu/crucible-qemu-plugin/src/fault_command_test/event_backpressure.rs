@@ -7,6 +7,62 @@ use crucible_qemu_shmem::{
 };
 use sha2::Sha256;
 
+fn with_isolated_event_bridge(
+    target_node_hash: [u8; 32],
+    event_ring: &RingHeader,
+    event_slots: &mut [FaultEventSlotV1],
+    event_arena_header: &FaultPayloadArenaHeader,
+    event_arena: &mut [u8],
+    event_arena_offset: u64,
+    check: impl FnOnce(&mut FaultCommandBridge),
+) {
+    let command_ring = RingHeader::new();
+    let command_arena_header = FaultPayloadArenaHeader::new();
+    let mut command_slots = [FaultCommandSlotV1::new()];
+    let mut command_arena = [0; 512];
+    let result_ring = RingHeader::new();
+    let result_arena_header = FaultPayloadArenaHeader::new();
+    let mut result_slots = [FaultResultSlotV2::new()];
+    let mut result_arena = [0; 512];
+    let mut bridge = crate::fault_command::test_support::initialized_bridge(
+        target_node_hash,
+        &command_ring,
+        &mut command_slots,
+        &command_arena_header,
+        &mut command_arena,
+        4_096,
+        &result_ring,
+        &mut result_slots,
+        &result_arena_header,
+        &mut result_arena,
+        8_192,
+        event_ring,
+        event_slots,
+        event_arena_header,
+        event_arena,
+        event_arena_offset,
+    );
+
+    check(&mut bridge);
+}
+
+fn assert_event_refusal_retains_receipt(bridge: &mut FaultCommandBridge) {
+    assert!(matches!(
+        bridge.pump(40, 12),
+        Err(FaultCommandBridgeError::EventEnvelope)
+    ));
+    assert!(bridge.custody.event.is_some());
+    TEST_EVENT_PENDING.with(|pending| assert!(pending.borrow().is_none()));
+    assert!(matches!(
+        bridge.pump(40, 12),
+        Err(FaultCommandBridgeError::EffectUnresolved {
+            stage: "event publication",
+            ..
+        })
+    ));
+    assert!(bridge.custody.event.is_some());
+}
+
 #[test]
 fn bridge_accepts_every_canonical_qemu_result_status() {
     for value in 1_u16..=14 {
@@ -175,10 +231,17 @@ pub(super) fn assert_event_ring_backpressure(
             *pending.borrow_mut() = Some((forged_event, envelope));
         });
 
-        assert!(matches!(
-            bridge.pump(40, 12),
-            Err(FaultCommandBridgeError::EventEnvelope)
-        ));
+        // A destructive refusal retains its receipt permanently. Each forgery
+        // therefore uses an independent bridge rather than clearing custody.
+        with_isolated_event_bridge(
+            bridge.target_node_hash,
+            event_ring,
+            event_slots,
+            event_arena_header,
+            event_arena,
+            event_arena_offset,
+            assert_event_refusal_retains_receipt,
+        );
         assert!(
             dequeue_fault_event(
                 event_ring,
@@ -236,10 +299,15 @@ pub(super) fn assert_event_ring_backpressure(
         });
 
         if forged_raw.is_some() {
-            assert!(matches!(
-                bridge.pump(40, 12),
-                Err(FaultCommandBridgeError::EventEnvelope)
-            ));
+            with_isolated_event_bridge(
+                bridge.target_node_hash,
+                event_ring,
+                event_slots,
+                event_arena_header,
+                event_arena,
+                event_arena_offset,
+                assert_event_refusal_retains_receipt,
+            );
         } else {
             assert_pump(
                 bridge,

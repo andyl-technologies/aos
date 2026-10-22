@@ -2,9 +2,12 @@
 
 use super::*;
 
-pub(super) fn source_material(specification: &SignalSourceSpecification) -> String {
-    match specification {
-        SignalSourceSpecification::Step { points, before } => format!(
+pub(super) fn source_material(
+    specification: &SignalSourceSpecification,
+) -> impl std::fmt::Display + '_ {
+    display(move |formatter| match specification {
+        SignalSourceSpecification::Step { points, before } => write!(
+            formatter,
             "points={};before={}",
             point_list_material(points),
             boundary_material(before)
@@ -14,11 +17,12 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             duration,
             inactive,
             active,
-        } => format!(
+        } => write!(
+            formatter,
             "start={};duration={duration};inactive={};active={}",
             coordinate_material(start),
-            inactive.material(),
-            active.material()
+            value_material(inactive),
+            value_material(active)
         ),
         SignalSourceSpecification::PeriodicPulse {
             epoch,
@@ -27,11 +31,12 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             phase,
             inactive,
             active,
-        } => format!(
+        } => write!(
+            formatter,
             "epoch={};period={period};width={width};phase={phase};inactive={};active={}",
             coordinate_material(epoch),
-            inactive.material(),
-            active.material()
+            value_material(inactive),
+            value_material(active)
         ),
         SignalSourceSpecification::Ramp {
             start,
@@ -39,12 +44,13 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             start_value,
             end_value,
             rounding,
-        } => format!(
+        } => write!(
+            formatter,
             "start={};end={};start_value={};end_value={};rounding={}",
             coordinate_material(start),
             coordinate_material(end),
-            start_value.material(),
-            end_value.material(),
+            value_material(start_value),
+            value_material(end_value),
             rounding_name(*rounding)
         ),
         SignalSourceSpecification::Triangle {
@@ -62,15 +68,16 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             minimum,
             maximum,
             rounding,
-        } => format!(
+        } => write!(
+            formatter,
             "epoch={};period={period};phase={phase};minimum={};maximum={};rounding={}",
             coordinate_material(epoch),
-            minimum.material(),
-            maximum.material(),
+            value_material(minimum),
+            value_material(maximum),
             rounding_name(*rounding)
         ),
         SignalSourceSpecification::EventSequence { events } => {
-            format!("events={}", point_list_material(events))
+            write!(formatter, "events={}", point_list_material(events))
         }
         SignalSourceSpecification::Trace {
             artifact,
@@ -83,10 +90,11 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             after,
             missing,
             time_mapping,
-        } => format!(
+        } => write!(
+            formatter,
             "artifact={};raw_provenance={};channel={};quality_channel={};quality_accept={};interpolation={};before={};after={};missing={};time_mapping={}",
-            artifact.to_hex(),
-            raw_provenance.to_hex(),
+            hex_material(&artifact.bytes),
+            hex_material(&raw_provenance.bytes),
             channel.as_str(),
             optional_id_material(quality_channel),
             optional_i64_material(*quality_accept),
@@ -101,7 +109,8 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             target,
             field,
             boundary_delay,
-        } => format!(
+        } => write!(
+            formatter,
             "adapter={};target={};field={};boundary_delay={boundary_delay}",
             adapter.as_str(),
             target.as_str(),
@@ -112,9 +121,10 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             coordinate_frame,
             interpolation,
             outside,
-        } => format!(
+        } => write!(
+            formatter,
             "artifact={};coordinate_frame={};interpolation={};outside={}",
-            artifact.to_hex(),
+            hex_material(&artifact.bytes),
             coordinate_frame.as_str(),
             interpolation_name(*interpolation),
             boundary_material(outside)
@@ -127,9 +137,10 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             dimensions,
             interpolation,
             outside,
-        } => format!(
+        } => write!(
+            formatter,
             "artifact={};coordinate_frame={};origin_mm={};cell_size_mm={};dimensions={};interpolation={};outside={}",
-            artifact.to_hex(),
+            hex_material(&artifact.bytes),
             coordinate_frame.as_str(),
             i64_array_material(origin_mm),
             u64_array_material(cell_size_mm),
@@ -143,9 +154,10 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             tile_size_mm,
             interpolation,
             outside,
-        } => format!(
+        } => write!(
+            formatter,
             "manifest={};coordinate_frame={};tile_size_mm={};interpolation={};outside={}",
-            manifest.to_hex(),
+            hex_material(&manifest.bytes),
             coordinate_frame.as_str(),
             u64_array_material(tile_size_mm),
             interpolation_name(*interpolation),
@@ -156,9 +168,10 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             coordinate_frame,
             boundary,
             overlap,
-        } => format!(
+        } => write!(
+            formatter,
             "artifact={};coordinate_frame={};boundary={};overlap={}",
-            artifact.to_hex(),
+            hex_material(&artifact.bytes),
             coordinate_frame.as_str(),
             boundary.as_str(),
             overlap.as_str()
@@ -169,9 +182,10 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             interpolation,
             before,
             after,
-        } => format!(
+        } => write!(
+            formatter,
             "artifact={};path={};interpolation={};before={};after={}",
-            artifact.to_hex(),
+            hex_material(&artifact.bytes),
             path.as_str(),
             interpolation_name(*interpolation),
             boundary_material(before),
@@ -184,7 +198,8 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             correlation_mm,
             distribution,
             distribution_parameters,
-        } => format!(
+        } => write!(
+            formatter,
             "field_seed_domain={};coordinate_frame={};quantization_mm={};correlation_mm={};distribution={};distribution_parameters={}",
             field_seed_domain.as_str(),
             coordinate_frame.as_str(),
@@ -201,21 +216,23 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             model,
             lookup,
             environment_signals,
-        } => format!(
+        } => write!(
+            formatter,
             "transmitter={};coordinate_frame={};position_signal={};orientation_signal={};model={};lookup={};environment_signals={}",
             transmitter.as_str(),
             coordinate_frame.as_str(),
             position_signal.as_str(),
             optional_id_material(orientation_signal),
             model.as_str(),
-            lookup.to_hex(),
+            hex_material(&lookup.bytes),
             id_list_material(environment_signals)
         ),
         SignalSourceSpecification::Bernoulli {
             probability_millionths,
             key_domain,
             opportunity_filter,
-        } => format!(
+        } => write!(
+            formatter,
             "probability_millionths={probability_millionths};key_domain={};opportunity_filter={}",
             key_domain_name(*key_domain),
             optional_id_material(opportunity_filter)
@@ -225,7 +242,8 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             maximum,
             key_domain,
             opportunity_filter,
-        } => format!(
+        } => write!(
+            formatter,
             "minimum={minimum};maximum={maximum};key_domain={};opportunity_filter={}",
             key_domain_name(*key_domain),
             optional_id_material(opportunity_filter)
@@ -236,11 +254,12 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             sampler_table,
             key_domain,
             maximum_nanos,
-        } => format!(
+        } => write!(
+            formatter,
             "rate={}/{};sampler_version={sampler_version};sampler_table={};key_domain={};maximum_nanos={}",
             rate.numerator(),
             rate.denominator(),
-            sampler_table.to_hex(),
+            hex_material(&sampler_table.bytes),
             key_domain_name(*key_domain),
             optional_u64_material(*maximum_nanos)
         ),
@@ -251,13 +270,14 @@ pub(super) fn source_material(specification: &SignalSourceSpecification) -> Stri
             sampler_table,
             key_domain,
             maximum_nanos,
-        } => format!(
+        } => write!(
+            formatter,
             "shape={}/{};scale_nanos={scale_nanos};sampler_version={sampler_version};sampler_table={};key_domain={};maximum_nanos={}",
             shape.numerator(),
             shape.denominator(),
-            sampler_table.to_hex(),
+            hex_material(&sampler_table.bytes),
             key_domain_name(*key_domain),
             optional_u64_material(*maximum_nanos)
         ),
-    }
+    })
 }

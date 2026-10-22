@@ -214,49 +214,51 @@ impl SelectableRegister {
     /// a future internal construction path or the message exceeds its bound.
     pub fn encode(&self) -> Result<Vec<u8>, SelectableProtocolError> {
         self.validate()?;
-        let tags_len = self.semantic_tags.iter().try_fold(0usize, |total, tag| {
-            total
-                .checked_add(2)
-                .and_then(|value| value.checked_add(tag.len()))
-                .ok_or(SelectableProtocolError::LengthOverflow)
-        })?;
-        let total_len = SELECTABLE_REGISTER_HEADER_BYTES
-            .checked_add(self.selectable_id.len())
-            .and_then(|value| value.checked_add(self.domain.len()))
-            .and_then(|value| value.checked_add(self.default_value.len()))
-            .and_then(|value| value.checked_add(tags_len))
-            .ok_or(SelectableProtocolError::LengthOverflow)?;
-        require_total_bound(total_len)?;
+        let mut bytes = vec![0; self.encoded_len()?];
+        self.encode_into(&mut bytes)?;
+        Ok(bytes)
+    }
 
-        let mut bytes = vec![0; SELECTABLE_REGISTER_HEADER_BYTES];
+    /// Encodes the canonical registration into caller-owned storage.
+    ///
+    /// Returns the written prefix length and preserves the remaining suffix.
+    /// Validation and capacity checks precede every write. This method allocates
+    /// no storage and leaves the destination unchanged on refusal.
+    ///
+    /// # Errors
+    /// Returns [`SelectableProtocolError`] for invalid fields, exceeded bounds
+    /// or insufficient destination capacity.
+    pub fn encode_into(&self, destination: &mut [u8]) -> Result<usize, SelectableProtocolError> {
+        self.validate()?;
+        let total_len = self.encoded_len()?;
+        let bytes = encoding_prefix(destination, total_len)?;
         write_header(
-            &mut bytes,
+            bytes,
             SelectableMessageKind::Register,
             SELECTABLE_REGISTER_HEADER_BYTES,
             total_len,
             0,
         )?;
-        write_u64(&mut bytes, 12, self.sequence);
-        append_range(&mut bytes, 20, self.selectable_id.as_bytes())?;
-        append_range(&mut bytes, 28, &self.domain)?;
-        append_range(&mut bytes, 36, &self.default_value)?;
+        write_u64(bytes, 12, self.sequence);
 
-        let tags_start = bytes.len();
+        let mut cursor = SELECTABLE_REGISTER_HEADER_BYTES;
+        encode_range(bytes, 20, &mut cursor, self.selectable_id.as_bytes())?;
+        encode_range(bytes, 28, &mut cursor, &self.domain)?;
+        encode_range(bytes, 36, &mut cursor, &self.default_value)?;
+
+        let tags_start = cursor;
         for tag in &self.semantic_tags {
-            let len = u16::try_from(tag.len()).map_err(|_error| {
-                SelectableProtocolError::IdentifierTooLong {
-                    field: "semantic_tag",
-                    len: tag.len(),
-                    max_len: SELECTABLE_IDENTIFIER_MAX_BYTES,
-                }
-            })?;
-            bytes.extend_from_slice(&len.to_le_bytes());
-            bytes.extend_from_slice(tag.as_bytes());
+            // Validation bounds every tag and the complete message before the
+            // destination is touched; these lengths fit the frozen wire fields.
+            write_u16(bytes, cursor, tag.len() as u16);
+            cursor += 2;
+            bytes[cursor..cursor + tag.len()].copy_from_slice(tag.as_bytes());
+            cursor += tag.len();
         }
-        write_range(&mut bytes, 44, tags_start, tags_len)?;
-        write_u16(&mut bytes, 52, self.semantic_tags.len() as u16);
-        debug_assert_eq!(bytes.len(), total_len);
-        Ok(bytes)
+        write_range(bytes, 44, tags_start, cursor - tags_start)?;
+        write_u16(bytes, 52, self.semantic_tags.len() as u16);
+        debug_assert_eq!(cursor, total_len);
+        Ok(total_len)
     }
 
     /// Returns the protocol sequence retained across checkpoint/replay.
@@ -294,11 +296,12 @@ impl SelectableRegister {
         require_nonempty("domain", &self.domain)?;
         require_nonempty("default_value", &self.default_value)?;
         validate_tags(&self.semantic_tags)?;
-        let _ = self.encode_len()?;
+        let _ = self.encoded_len()?;
         Ok(())
     }
 
-    fn encode_len(&self) -> Result<usize, SelectableProtocolError> {
+    /// Counts the immutable validated registration without serializing it.
+    pub(crate) fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
         let tags_len = self.semantic_tags.iter().try_fold(0usize, |total, tag| {
             total
                 .checked_add(2 + tag.len())
@@ -374,22 +377,23 @@ impl SelectionRequest {
         }
 
         let narrowed_present = flags & REQUEST_FLAG_NARROWED_DOMAIN != 0;
-        let ranges = if narrowed_present {
+        let range_count = if narrowed_present {
             if narrowed.is_empty() {
                 return Err(SelectableProtocolError::EmptyField {
                     field: "narrowed_domain",
                 });
             }
-            vec![selectable, instance, narrowed]
+            3
         } else {
             if !narrowed.is_zero() {
                 return Err(SelectableProtocolError::UnexpectedRange {
                     field: "narrowed_domain",
                 });
             }
-            vec![selectable, instance]
+            2
         };
-        require_dense_ranges(header.header_len, request_end, &ranges)?;
+        let ranges = [selectable, instance, narrowed];
+        require_dense_ranges(header.header_len, request_end, &ranges[..range_count])?;
         if request_end > header.total_len {
             return Err(SelectableProtocolError::RequestEndOutOfRange {
                 request_end,
@@ -420,10 +424,26 @@ impl SelectionRequest {
     /// Returns [`SelectableProtocolError`] when the request is invalid or a
     /// length cannot fit its fixed-width field.
     pub fn encode(&self) -> Result<Vec<u8>, SelectableProtocolError> {
+        self.validate()?;
+        let mut bytes = vec![0; self.reply_capacity];
+        self.encode_into(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Encodes the request and zero-filled reservation into caller-owned storage.
+    ///
+    /// Returns the complete reservation length and preserves the remaining
+    /// suffix. Validation and capacity checks precede every write. This method
+    /// allocates no storage and leaves the destination unchanged on refusal.
+    ///
+    /// # Errors
+    /// Returns [`SelectableProtocolError`] for invalid fields, exceeded bounds
+    /// or insufficient destination capacity.
+    pub fn encode_into(&self, destination: &mut [u8]) -> Result<usize, SelectableProtocolError> {
         let request_end = self.validate()?;
-        let mut bytes = vec![0; SELECTION_REQUEST_HEADER_BYTES];
+        let bytes = encoding_prefix(destination, self.reply_capacity)?;
         write_header(
-            &mut bytes,
+            bytes,
             SelectableMessageKind::Request,
             SELECTION_REQUEST_HEADER_BYTES,
             self.reply_capacity,
@@ -433,15 +453,17 @@ impl SelectionRequest {
                 0
             },
         )?;
-        write_u64(&mut bytes, 12, self.sequence);
-        append_range(&mut bytes, 20, self.selectable_id.as_bytes())?;
-        append_range(&mut bytes, 28, self.instance_key.as_bytes())?;
+        write_u64(bytes, 12, self.sequence);
+
+        let mut cursor = SELECTION_REQUEST_HEADER_BYTES;
+        encode_range(bytes, 20, &mut cursor, self.selectable_id.as_bytes())?;
+        encode_range(bytes, 28, &mut cursor, self.instance_key.as_bytes())?;
         if let Some(domain) = &self.narrowed_domain {
-            append_range(&mut bytes, 36, domain)?;
+            encode_range(bytes, 36, &mut cursor, domain)?;
         }
-        write_u32_value(&mut bytes, 44, request_end)?;
-        bytes.resize(self.reply_capacity, 0);
-        Ok(bytes)
+        debug_assert_eq!(cursor, request_end);
+        write_u32_value(bytes, 44, request_end)?;
+        Ok(self.reply_capacity)
     }
 
     /// Returns the exact request/reply sequence.
@@ -480,6 +502,16 @@ impl SelectionRequest {
         if let Some(domain) = &self.narrowed_domain {
             require_nonempty("narrowed_domain", domain)?;
         }
+        self.request_end()
+    }
+
+    /// Counts the complete immutable reply reservation without serializing it.
+    pub(crate) fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
+        self.validate()?;
+        Ok(self.reply_capacity)
+    }
+
+    fn request_end(&self) -> Result<usize, SelectableProtocolError> {
         let request_end = SELECTION_REQUEST_HEADER_BYTES
             .checked_add(self.selectable_id.len())
             .and_then(|value| value.checked_add(self.instance_key.len()))
@@ -656,26 +688,63 @@ impl SelectionReply {
     /// Returns [`SelectableProtocolError`] if the status/value combination is
     /// invalid or the message exceeds its aggregate byte bound.
     pub fn encode(&self) -> Result<Vec<u8>, SelectableProtocolError> {
+        let mut bytes = vec![0; self.encoded_len()?];
+        self.encode_into(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Returns the validated canonical reply length without allocating.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableProtocolError`] for an invalid status/value shape
+    /// or a reply exceeding the aggregate protocol bound.
+    pub fn encoded_len(&self) -> Result<usize, SelectableProtocolError> {
         self.validate()?;
-        let total_len = SELECTION_REPLY_HEADER_BYTES
+        SELECTION_REPLY_HEADER_BYTES
             .checked_add(self.selected_value.as_ref().map_or(0, Vec::len))
-            .ok_or(SelectableProtocolError::LengthOverflow)?;
-        let mut bytes = vec![0; SELECTION_REPLY_HEADER_BYTES];
+            .ok_or(SelectableProtocolError::LengthOverflow)
+    }
+
+    /// Encodes the canonical reply into the start of caller-owned storage.
+    ///
+    /// Returns the number of written bytes and preserves the remaining suffix.
+    /// Validation and capacity checks precede every write, so refusal leaves
+    /// the entire destination unchanged. This method allocates no storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SelectableProtocolError`] for an invalid reply or when the
+    /// destination cannot contain its canonical bytes.
+    pub fn encode_into(&self, destination: &mut [u8]) -> Result<usize, SelectableProtocolError> {
+        let total_len = self.encoded_len()?;
+        if destination.len() < total_len {
+            return Err(SelectableProtocolError::ReplyCapacityTooSmall {
+                capacity: destination.len(),
+                minimum: total_len,
+            });
+        }
+
+        let bytes = &mut destination[..total_len];
+        bytes.fill(0);
+        // Validated lengths fit the fixed header and u32 wire ranges before
+        // mutation. The shared writers cannot encounter a conversion refusal.
         write_header(
-            &mut bytes,
+            bytes,
             SelectableMessageKind::Reply,
             SELECTION_REPLY_HEADER_BYTES,
             total_len,
             0,
         )?;
-        write_u64(&mut bytes, 12, self.sequence);
-        write_u16(&mut bytes, 20, self.status.wire_value());
+        write_u64(bytes, 12, self.sequence);
+        write_u16(bytes, 20, self.status.wire_value());
         bytes[24..56].copy_from_slice(&self.opportunity_id);
         bytes[56..88].copy_from_slice(&self.domain_id);
         if let Some(selected) = &self.selected_value {
-            append_range(&mut bytes, 88, selected)?;
+            write_range(bytes, 88, SELECTION_REPLY_HEADER_BYTES, selected.len())?;
+            bytes[SELECTION_REPLY_HEADER_BYTES..].copy_from_slice(selected);
         }
-        Ok(bytes)
+        Ok(total_len)
     }
 
     /// Returns the exact request/reply sequence.
@@ -982,14 +1051,34 @@ fn write_header(
     write_u32_value(bytes, 8, total_len)
 }
 
-fn append_range(
-    bytes: &mut Vec<u8>,
+/// Checks capacity before clearing only the canonical output prefix.
+fn encoding_prefix(
+    destination: &mut [u8],
+    total_len: usize,
+) -> Result<&mut [u8], SelectableProtocolError> {
+    if destination.len() < total_len {
+        return Err(SelectableProtocolError::ReplyCapacityTooSmall {
+            capacity: destination.len(),
+            minimum: total_len,
+        });
+    }
+    let bytes = &mut destination[..total_len];
+    bytes.fill(0);
+    Ok(bytes)
+}
+
+/// Copies a validated field into its exact canonical dense range.
+fn encode_range(
+    bytes: &mut [u8],
     header_offset: usize,
+    cursor: &mut usize,
     value: &[u8],
 ) -> Result<(), SelectableProtocolError> {
-    let start = bytes.len();
-    bytes.extend_from_slice(value);
-    write_range(bytes, header_offset, start, value.len())
+    let end = *cursor + value.len();
+    bytes[*cursor..end].copy_from_slice(value);
+    write_range(bytes, header_offset, *cursor, value.len())?;
+    *cursor = end;
+    Ok(())
 }
 
 fn write_range(
@@ -1253,7 +1342,7 @@ pub enum SelectableProtocolError {
     /// The reserved reply buffer contains nonzero bytes before delivery.
     #[error("selection request reply reservation is not zero-filled")]
     NonzeroReplyReservation,
-    /// The mutable reply buffer cannot contain the request and minimal reply.
+    /// The reply buffer cannot contain its required request or reply bytes.
     #[error("selection reply capacity {capacity} is smaller than required {minimum}")]
     ReplyCapacityTooSmall {
         /// Supplied buffer bytes.

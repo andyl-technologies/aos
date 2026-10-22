@@ -10,6 +10,8 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  backendCargo = builtins.readFile ../../crates/crucible/control/crucible-daemon/Cargo.toml;
+  backendContractTest = builtins.readFile ../../crates/crucible/control/crucible-daemon/tests/production_effect_matrix.rs;
   apiCargo = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
@@ -43,6 +45,12 @@
       {
         label = "phase5 API reference client status note";
         needle = "`T-API-13` is green through";
+      }
+    ]
+    ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" backendCargo [
+      {
+        label = "concrete backend contract dependency";
+        needle = ''crucible-qemu-host = { path = "../../qemu/crucible-qemu-host" }'';
       }
     ]
     ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
@@ -193,6 +201,16 @@
         needle = "rpc-error";
       }
     ]
+    ++ failuresFor "crates/crucible/control/crucible-daemon/tests/production_effect_matrix.rs" backendContractTest [
+      {
+        label = "registered concrete backend trait assertion";
+        needle = "fn assert_qemu_node_implements_simulation_backend_contract()";
+      }
+      {
+        label = "actual backend implements the engine contract";
+        needle = "assert_backend::<crucible_qemu_host::QemuNode>()";
+      }
+    ]
     ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
       {
         label = "contract snapshot covers HelloRequest";
@@ -339,6 +357,25 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-daemon \
+            --test production_effect_matrix \
+            -- --list \
+            > "$TMPDIR/backend-contract-tests.list"
+          grep -Fxq \
+            'assert_qemu_node_implements_simulation_backend_contract: test' \
+            "$TMPDIR/backend-contract-tests.list"
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+            -p crucible-daemon \
+            --test production_effect_matrix \
+            assert_qemu_node_implements_simulation_backend_contract \
+            -- --exact --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
             -p crucible-control-client \
             --test gate_control_client \
             -- --list \
@@ -415,7 +452,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API reference client conformance gate for ${taskList}";
+      description = "Crucible API reference client conformance gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

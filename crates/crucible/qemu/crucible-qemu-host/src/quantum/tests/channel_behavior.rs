@@ -3,6 +3,51 @@
 use super::*;
 
 #[test]
+fn qemu_quantum_start_refuses_an_actual_held_writer_before_inbox_or_wake() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+    let before = slot.snapshot();
+    let reservation = slot.reserve_scheduler_advance().unwrap();
+
+    let result = hot_path.start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling);
+
+    assert!(matches!(
+        result,
+        Err(QemuQuantumError::NodeSlot {
+            source: NodeSlotError::AdvancePublicationOccupied {
+                expected: 1,
+                observed: 1,
+            },
+            ..
+        })
+    ));
+    assert_eq!(inbound_ring.read_index(), 0);
+    assert_eq!(inbound_ring.write_index(), 0);
+    assert_eq!(outbound_ring.read_index(), 0);
+    assert_eq!(outbound_ring.write_index(), 0);
+    assert_eq!(
+        hot_path.operation_log(),
+        &[QemuQuantumOperation::ReadNodeReport]
+    );
+
+    drop(reservation);
+    let after = slot.snapshot();
+    assert_eq!(after.advance_publication_sequence, 2);
+    assert_eq!(after.max_advance_icount, before.max_advance_icount);
+    assert_eq!(after.wake_signal, before.wake_signal);
+}
+
+#[test]
 fn qemu_network_checkpoint_restores_backpressured_inbound_for_retry() {
     let slot = NodeSlot::default();
     let inbound_ring = RingHeader::new();
@@ -359,5 +404,59 @@ fn qemu_quantum_implements_existing_shmem_hot_path_trait() {
             .operation_log()
             .iter()
             .all(|operation| operation.plane() == QemuQuantumOperationPlane::SharedMemory)
+    );
+}
+
+#[test]
+fn qemu_quantum_operation_log_spill_preserves_history_and_report_boundary() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    assert!(hot_path.operation_log().is_empty());
+    for count in 1..=12 {
+        assert_eq!(
+            QemuShmemHotPathChannel::current_icount(&mut hot_path).unwrap(),
+            icount(0)
+        );
+        assert_eq!(
+            hot_path.operation_log(),
+            vec![QemuQuantumOperation::ReadNodeReport; count]
+        );
+    }
+
+    let pending = hot_path
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap();
+    slot.publish_reached_icount(10).unwrap();
+    let report = hot_path.finish_quantum(pending).unwrap();
+
+    assert_eq!(report.final_state.current_icount, icount(10));
+    assert_eq!(
+        &hot_path.operation_log()[..12],
+        vec![QemuQuantumOperation::ReadNodeReport; 12].as_slice()
+    );
+    assert_eq!(report.operations, hot_path.operation_log()[12..]);
+    assert_eq!(
+        report.operations,
+        [
+            QemuQuantumOperation::ReadNodeReport,
+            QemuQuantumOperation::ObserveInboundConsumption,
+            QemuQuantumOperation::ComputeSchedulerCeiling,
+            QemuQuantumOperation::StoreSchedulerCeiling,
+            QemuQuantumOperation::FutexWake,
+            QemuQuantumOperation::ObservePluginReport,
+            QemuQuantumOperation::ReadCompletionReport,
+            QemuQuantumOperation::ObserveInboundConsumption,
+        ]
     );
 }

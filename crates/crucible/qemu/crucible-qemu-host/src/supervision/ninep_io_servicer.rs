@@ -83,6 +83,7 @@ impl QemuLive9pIoServicer {
         region_len: u64,
         execution_binding: ContentHash,
     ) -> Result<Self, QemuLive9pIoServicerError> {
+        self.validate_private_hot_fork_reader(shmem_fd)?;
         let checkpoint = self.checkpoint(execution_binding)?;
         let mut continuation = Self::from_bound_parts(
             shmem_fd,
@@ -94,6 +95,22 @@ impl QemuLive9pIoServicer {
         )?;
         continuation.restore_checkpoint(execution_binding, &checkpoint)?;
         Ok(continuation)
+    }
+
+    pub(super) fn validate_private_hot_fork_reader(
+        &self,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<(), QemuLive9pIoServicerError> {
+        let metadata = rustix::fs::fstat(descriptor).map_err(|source| {
+            QemuLive9pIoServicerError::DescriptorIdentity {
+                source: std::io::Error::from(source),
+            }
+        })?;
+        let source = self.region.backing_identity();
+        if metadata.st_dev == source.device() && metadata.st_ino == source.inode() {
+            return Err(QemuLive9pIoServicerError::SourceMappingAlias);
+        }
+        Ok(())
     }
 
     /// Returns pending operation count and the largest retained request.
@@ -1264,6 +1281,15 @@ fn checkpoint_boundary_is_quiescent(
 /// Error returned by the live 9p-I/O servicer.
 #[derive(Debug, Error)]
 pub enum QemuLive9pIoServicerError {
+    /// The branch's mutable reader ring aliases the retained source mapping.
+    #[error("9p hot-fork reader aliases the retained source mapping")]
+    SourceMappingAlias,
+    /// The kernel identity of the proposed reader descriptor could not be proved.
+    #[error("inspect 9p hot-fork reader identity failed: {source}")]
+    DescriptorIdentity {
+        /// Preserves the actual kernel inspection cause.
+        source: std::io::Error,
+    },
     /// The shared-memory region could not be mapped read-write.
     #[error("map 9p-I/O shared-memory region failed: {source}")]
     MapRegion {

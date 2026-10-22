@@ -1,6 +1,9 @@
 //! Retained QEMU-owned block-graph writer and all-block drain barrier.
 
+mod borrow_inventory;
 mod source_proof;
+
+pub use borrow_inventory::QmpHotForkRamBorrowInventory;
 
 pub use source_proof::{
     QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QmpHotForkBlockSourceProof,
@@ -16,7 +19,7 @@ use crate::qmp::{QmpCommandKind, QmpError};
 /// QMP command name used for QEMU's reversible graph and block-drain barrier.
 pub const QMP_HOT_FORK_BLOCK_BARRIER_COMMAND: &str = "crucible-hot-fork-block-barrier";
 /// Version of the QEMU-owned graph-writer and block-drain barrier contract.
-pub const QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION: u32 = 4;
+pub const QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION: u32 = 5;
 /// Maximum UTF-8 byte length of a QEMU block-graph node name.
 pub const QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES: usize = 31;
 
@@ -177,6 +180,7 @@ pub struct QmpHotForkBlockBarrierState {
     writable_backends: u64,
     writable_rooted_backends: u64,
     quiesced_rooted_backends: u64,
+    ram_borrowers: QmpHotForkRamBorrowInventory,
     in_flight: u64,
     quiescent: bool,
 }
@@ -210,9 +214,18 @@ impl QmpHotForkBlockBarrierState {
             writable_backends: 0,
             writable_rooted_backends: 0,
             quiesced_rooted_backends: 0,
+            ram_borrowers: QmpHotForkRamBorrowInventory::empty_component(),
             in_flight: 0,
             quiescent: true,
         }
+    }
+
+    /// Returns the bounded RAM borrower observation for this process.
+    ///
+    /// Zero counts do not replace the native physical closure certificate.
+    #[must_use]
+    pub const fn ram_borrowers(&self) -> QmpHotForkRamBorrowInventory {
+        self.ram_borrowers
     }
 
     /// Returns the process-local hold/release generation.
@@ -441,6 +454,13 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         "writable-backends",
         "writable-rooted-backends",
         "quiesced-rooted-backends",
+        "ram-borrow-generation",
+        "ram-direct-maps",
+        "ram-bounce-maps",
+        "ram-caches",
+        "ram-direct-caches",
+        "ram-paging-requested",
+        "ram-borrowers-consistent",
         "in-flight",
         "quiescent",
     ];
@@ -631,6 +651,7 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         .get("quiesced-rooted-backends")
         .and_then(Value::as_u64)
         .ok_or_else(&malformed)?;
+    let ram_borrowers = QmpHotForkRamBorrowInventory::parse(object).ok_or_else(&malformed)?;
     let in_flight = object
         .get("in-flight")
         .and_then(Value::as_u64)
@@ -739,6 +760,7 @@ pub(crate) fn parse_hot_fork_block_barrier_state_for(
         writable_backends,
         writable_rooted_backends,
         quiesced_rooted_backends,
+        ram_borrowers,
         in_flight,
         quiescent,
     })

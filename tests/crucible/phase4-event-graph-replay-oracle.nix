@@ -126,7 +126,15 @@
       }
       {
         label = "event-log content hash validation";
-        needle = "entry.has_valid_content_hash()";
+        needle = ".has_valid_content_hash()";
+      }
+      {
+        label = "typed event-log identity admission refusal is a fixture failure";
+        needle = "finite component event-log operation: {error}";
+      }
+      {
+        label = "event-log replay rejects corrupt identities";
+        needle = "trigger replay oracle must reject corrupt event-log entries";
       }
       {
         label = "pass action";

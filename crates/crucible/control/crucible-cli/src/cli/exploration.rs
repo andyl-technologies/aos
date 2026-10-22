@@ -29,6 +29,8 @@ pub(super) fn run_local_double_fuzz_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     plan: &FuzzDriverPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let decoding = crate::cli_input_resources::original_budget()?;
+    let _scope = decoding.enter();
     let family = load_fuzz_family(plan)?;
     run_local_double_fuzz_workflow_with_family(
         thin_plan,

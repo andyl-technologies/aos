@@ -140,7 +140,7 @@ impl TriggerActionState {
     ) -> Result<ComposedRunVerdict, SchedulerError> {
         let mut state = Self::default();
         for entry in entries {
-            if !entry.has_valid_content_hash() {
+            if !entry.has_valid_content_hash()? {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "event-log entry {} has invalid content hash during trigger verdict replay",
@@ -339,7 +339,7 @@ pub struct TriggerDiagnosticRecord {
 }
 
 /// Result of appending one scheduler quantum to the event log.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SchedulerEventLogAppend {
     /// Entries appended for this quantum.
     pub entries: Vec<SchedulerEventLogEntry>,
@@ -351,6 +351,8 @@ pub struct SchedulerEventLogAppend {
     pub segment_hash: Option<ContentHash>,
     /// Offset reached after appending this quantum's segment.
     pub offset: EventLogOffset,
+    /// Original loans retained until its entries, bytes and text close.
+    pub event_log_custody: EventLogOutputCustody,
 }
 
 /// The single max-advance ceiling published for one RUN phase.

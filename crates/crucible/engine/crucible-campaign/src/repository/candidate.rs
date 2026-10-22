@@ -3,6 +3,19 @@
 use super::*;
 
 impl ChoiceDiscovery {
+    /// Copies the dynamic opportunity while sharing authenticated static records.
+    ///
+    /// # Errors
+    /// Refuses malformed canonical data or exhausted original metadata admission.
+    pub fn clone_admitted(&self) -> Result<Self, CampaignCodecError> {
+        Ok(Self {
+            declaration: Arc::clone(&self.declaration),
+            domain: Arc::clone(&self.domain),
+            opportunity: crate::codec::admitted_clone(&self.opportunity)?,
+        })
+    }
+
+
     /// Builds one self-contained choice discovery record set.
     ///
     /// # Errors

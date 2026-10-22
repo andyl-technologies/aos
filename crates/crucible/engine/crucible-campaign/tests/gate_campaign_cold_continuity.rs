@@ -60,6 +60,7 @@ fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume()
     let source = CampaignRepository::new(
         source_blobs.clone(),
         Arc::new(DirectoryRefBackend::new(source_root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     let (lineage, policy) = campaign_fixture(&source)?;
 
@@ -188,11 +189,14 @@ fn campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume()
             destination_root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(destination_root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     );
     source.transfer_campaign_archive_objects(
         &destination,
         &plan,
         DurabilityRequirement::new(1, false)?,
+        source.ram_admission().original(),
+        destination.ram_admission().original(),
     )?;
     destination.publish_campaign_archive("campaign-cold-continuity", None, &plan)?;
     assert_eq!(
@@ -812,7 +816,7 @@ fn exact_checkpoint_closure(
     blobs.put_if_absent(leaf_id, &BlobHandle::from_bytes(leaf.canonical_bytes()))?;
     let manifest = ContentEnvelope::new(
         "crucible.gate.campaign-cold-continuity.exact-checkpoint",
-        5,
+        6,
         BTreeSet::from([ContentChild::new("execution-state", leaf_id)?]),
         b"selected exact continuation materialization".to_vec(),
     )?;
@@ -878,6 +882,7 @@ fn directory_repository(root: &Path) -> CampaignRepository {
             root.join("objects"),
         )),
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
     )
 }
 

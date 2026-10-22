@@ -388,7 +388,11 @@ fn static_all_full_width_integer_prefix_authenticates_across_restart() {
     assert_eq!(issued.summary.maximum_proposals(), 4);
     assert_eq!(domain.cardinality(), u128::from(u64::MAX) + 1);
 
-    let cold = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let cold = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         cold.head("all-full-width")
             .expect("authenticate cold request head")
@@ -423,7 +427,11 @@ fn static_all_full_width_integer_prefix_authenticates_across_restart() {
             .new_snapshot;
     }
 
-    let restarted = CampaignRepository::new(cold.blobs.clone(), cold.refs.clone());
+    let restarted = CampaignRepository::new(
+        cold.blobs.clone(),
+        cold.refs.clone(),
+        cold.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("all-full-width")
@@ -902,7 +910,11 @@ fn weighted_categorical_generator_is_exact_keyed_and_restart_stable() {
         Some(&ContinuationState::Open)
     );
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("generated-weighted")
@@ -1221,7 +1233,11 @@ fn ordered_mixture_generator_schedules_deduplicates_and_restarts_exactly() {
         .project_finite_expansion(first_issued.new_snapshot, request.branch_point(), None, 10)
         .expect("project open mixture");
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert_eq!(
         restarted
             .head("generated-mixture")
@@ -1657,9 +1673,13 @@ fn landmark_progressive_integer_prioritizes_an_authenticated_producer_landmark()
     let refined = repository
         .issue_proposal("generated-landmark-progressive", current, &landmark)
         .expect("issue landmark-progressive refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates landmark-progressive refinement");
+    CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    )
+    .validate_complete_head(refined.new_snapshot.content_id())
+    .expect("restart validates landmark-progressive refinement");
 }
 
 #[test]
@@ -1844,9 +1864,13 @@ fn measurement_progressive_integer_prioritizes_verified_objective_discontinuity(
     let refined = repository
         .issue_proposal(campaign, current, &discontinuity)
         .expect("issue measurement-progressive refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates measurement-progressive refinement");
+    CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    )
+    .validate_complete_head(refined.new_snapshot.content_id())
+    .expect("restart validates measurement-progressive refinement");
 }
 
 #[test]
@@ -2039,9 +2063,13 @@ fn coverage_progressive_integer_prioritizes_verified_novelty_discontinuity() {
     let refined = repository
         .issue_proposal(campaign, current, &discontinuity)
         .expect("issue coverage-progressive refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates coverage-progressive refinement");
+    CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    )
+    .validate_complete_head(refined.new_snapshot.content_id())
+    .expect("restart validates coverage-progressive refinement");
 }
 
 #[test]
@@ -2223,7 +2251,11 @@ fn rarity_progressive_integer_prioritizes_inverse_frequency_discontinuity() {
     let refined = repository
         .issue_proposal(campaign, current, &discontinuity)
         .expect("issue rarity-progressive refinement");
-    CampaignRepository::new(repository.blobs.clone(), repository.refs.clone())
-        .validate_complete_head(refined.new_snapshot.content_id())
-        .expect("restart validates rarity-progressive refinement");
+    CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    )
+    .validate_complete_head(refined.new_snapshot.content_id())
+    .expect("restart validates rarity-progressive refinement");
 }

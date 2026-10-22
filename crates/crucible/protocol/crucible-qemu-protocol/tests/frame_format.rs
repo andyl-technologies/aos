@@ -21,7 +21,7 @@ fn frame_format_uses_big_endian_length_tag_and_payload() {
 }
 
 #[test]
-fn closed_tag_registry_matches_rfc_14_table() {
+fn closed_tag_registry_matches_wire_contract() {
     assert_eq!(
         ALL_CONTROL_TAGS,
         [
@@ -32,7 +32,7 @@ fn closed_tag_registry_matches_rfc_14_table() {
             ControlTag::HelloAck,
         ]
     );
-    assert_eq!(TAG_SETUP, 0x01);
+    assert_eq!(TAG_SETUP, 0x15);
     assert_eq!(TAG_SETUP_ACK, 0x02);
     assert_eq!(TAG_QUIT, 0x12);
     assert_eq!(TAG_HELLO, 0xF0);
@@ -53,7 +53,7 @@ fn closed_tag_registry_rejects_unregistered_wire_values() {
 #[test]
 fn tag_directions_and_payload_lengths_match_control_lifecycle() {
     let expected = [
-        (ControlTag::Setup, ControlDirection::HostToPlugin, 8),
+        (ControlTag::Setup, ControlDirection::HostToPlugin, 56),
         (ControlTag::SetupAck, ControlDirection::PluginToHost, 1),
         (ControlTag::Quit, ControlDirection::HostToPlugin, 0),
         (ControlTag::Hello, ControlDirection::PluginToHost, 8),
@@ -65,4 +65,41 @@ fn tag_directions_and_payload_lengths_match_control_lifecycle() {
         assert_eq!(tag.payload_len(), payload_len);
         assert!(FRAME_TAG_SIZE + tag.payload_len() <= MAX_FRAME_SIZE as usize);
     }
+}
+
+#[test]
+fn superseded_setup_tag_is_not_registered() {
+    assert_eq!(ControlTag::from_wire_value(0x01), None);
+}
+
+#[test]
+fn setup_workspace_uses_current_fixed_payload_and_refuses_the_old_flag() {
+    let message = crucible_qemu_protocol::HostMsg::Setup {
+        region_len: 4096,
+        process_generation: 7,
+        device_digest_workspace: Some(crucible_qemu_protocol::DeviceDigestWorkspaceBinding {
+            account_generation: 11,
+            workspace_generation: 12,
+            device: 0,
+            inode: 13,
+        }),
+    };
+    let mut frame = crucible_qemu_protocol::control_encode_host_msg(&message);
+    assert_eq!(frame.len(), 61);
+    assert_eq!(&frame[..5], &[0, 0, 0, 57, 0x15]);
+    assert_eq!(&frame[13..17], &1_u32.to_be_bytes());
+    assert_eq!(&frame[17..21], &2_u32.to_be_bytes());
+    assert_eq!(
+        crucible_qemu_protocol::control_decode_host_msg(&frame),
+        Ok(message)
+    );
+
+    frame[17..21].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(matches!(
+        crucible_qemu_protocol::control_decode_host_msg(&frame),
+        Err(crucible_qemu_protocol::FrameDecodeError::InvalidSetupWorkspace { .. })
+    ));
+    frame[17..21].copy_from_slice(&2_u32.to_be_bytes());
+    frame[4] = 0x01;
+    assert!(crucible_qemu_protocol::control_decode_host_msg(&frame).is_err());
 }

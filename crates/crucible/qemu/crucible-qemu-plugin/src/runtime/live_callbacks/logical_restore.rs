@@ -52,16 +52,10 @@ impl LiveVcpuTimeCallbackState {
             if let Some(network) = self.network.as_ref() {
                 network.tx.restore_next_seq(network.restore_tx_sequence);
             }
-            super::super::live_whitebox::restore_app_random_continuation().map_err(|source| {
-                LiveVcpuTimeCallbackError::WhiteboxCallback {
-                    message: source.to_string(),
-                }
-            })?;
-            super::super::live_whitebox::restore_selectable_continuation().map_err(|source| {
-                LiveVcpuTimeCallbackError::WhiteboxCallback {
-                    message: source.to_string(),
-                }
-            })?;
+            super::super::live_whitebox::restore_app_random_continuation()
+                .map_err(|source| LiveVcpuTimeCallbackError::WhiteboxCallback { source })?;
+            super::super::live_whitebox::restore_selectable_continuation()
+                .map_err(|source| LiveVcpuTimeCallbackError::WhiteboxCallback { source })?;
             crate::coverage::reset_live_coverage_for_restore(request.generation)
                 .map_err(|source| LiveVcpuTimeCallbackError::CoverageRestore { source })?;
             self.logical_restore_continuation_generation

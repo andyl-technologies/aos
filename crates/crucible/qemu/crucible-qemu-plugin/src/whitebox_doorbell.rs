@@ -38,11 +38,19 @@ pub use crucible_qemu_protocol::{
     whitebox_doorbell_abi_for_architecture,
 };
 use crucible_qemu_shmem::MAX_FRAME_DATA;
+use crucible_qemu_protocol::{WhiteboxDoorbellFrameView, decode_whitebox_marker_payload_view};
 use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
+mod guest_input;
+mod guest_input_error;
+pub use guest_input_error::WhiteboxGuestInputWriteError;
+mod marker_error;
+pub use marker_error::WhiteboxMarkerSinkError;
+
 mod selectable;
+pub(crate) use selectable::PreparedSelectableTrap;
 pub use selectable::{
     CatalogedSelectableService, SELECTABLE_CATALOG_HARD_MAX_DECLARATIONS,
     SELECTABLE_CATALOG_HARD_MAX_REQUESTS, SelectableCallbackCoordinate, SelectableCatalog,
@@ -187,13 +195,28 @@ impl PluginWhiteboxDoorbell {
         R: GuestMemoryReader + ?Sized,
         S: WhiteboxMarkerSink + ?Sized,
     {
-        if !self.mode.is_on() {
-            return Err(WhiteboxDoorbellError::TrapWhileDisabled);
-        }
-        self.validate_payload_range(event.payload_range())?;
-
         let payload = read_doorbell_payload(self, reader, event)?;
-        let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, self.max_payload_len()) {
+        self.service_trap_snapshot(sink, event, &payload)
+    }
+
+    /// Records a marker from the retained snapshot of its trapping instruction.
+    ///
+    /// # Errors
+    ///
+    /// Refuses disabled mode, invalid ranges, mismatched snapshot lengths,
+    /// malformed or non-observational frames, and marker sink failures.
+    pub(crate) fn service_trap_snapshot<S>(
+        &self,
+        sink: &mut S,
+        event: WhiteboxDoorbellTrapEvent,
+        payload: &[u8],
+    ) -> Result<WhiteboxMarker, WhiteboxDoorbellError>
+    where
+        S: WhiteboxMarkerSink + ?Sized,
+    {
+        self.validate_snapshot(event, payload)?;
+
+        let frame = match WhiteboxDoorbellFrameView::decode_bounded(payload, self.max_payload_len()) {
             Ok(frame) => frame,
             Err(source) => {
                 record_decode_diagnostic(
@@ -206,7 +229,7 @@ impl PluginWhiteboxDoorbell {
                 });
             }
         };
-        let decoded_payload = match decode_whitebox_marker_payload(&frame) {
+        let decoded_payload = match decode_whitebox_marker_payload_view(frame) {
             Ok(decoded_payload) => decoded_payload,
             Err(source) => {
                 record_decode_diagnostic(
@@ -278,68 +301,6 @@ impl PluginWhiteboxDoorbell {
         Ok(WhiteboxGuestInputCapability { _private: () })
     }
 
-    /// Delivers one host-to-guest white-box input at its exact delivery icount.
-    ///
-    /// This method is the safe core for marker acknowledgments, control writes,
-    /// and later app-random replies. It does not write early: if the current
-    /// icount is before the input's delivery icount, it returns `NotReady`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WhiteboxDoorbellError`] when white-box mode is disabled, the
-    /// input is late, its target range and payload length disagree, or the
-    /// guest-input writer fails loudly.
-    pub fn inject_guest_input<W>(
-        &self,
-        _capability: &WhiteboxGuestInputCapability,
-        writer: &mut W,
-        current_icount: u64,
-        input: &WhiteboxGuestInput,
-    ) -> Result<WhiteboxGuestInputOutcome, WhiteboxDoorbellError>
-    where
-        W: WhiteboxGuestInputWriter + ?Sized,
-    {
-        if !self.mode.is_on() {
-            return Err(WhiteboxDoorbellError::InputWhileDisabled);
-        }
-        if input.payload_range().len() != input.payload().len() {
-            return Err(WhiteboxDoorbellError::InputPayloadLengthMismatch {
-                range_len: input.payload_range().len(),
-                payload_len: input.payload().len(),
-            });
-        }
-        self.validate_payload_range(input.payload_range())?;
-        if current_icount < input.delivery_icount() {
-            return Ok(WhiteboxGuestInputOutcome::NotReady {
-                delivery_icount: input.delivery_icount(),
-            });
-        }
-        if current_icount > input.delivery_icount() {
-            return Err(WhiteboxDoorbellError::InputDeliveryAlreadyPassed {
-                delivery_icount: input.delivery_icount(),
-                current_icount,
-            });
-        }
-
-        writer
-            .write_whitebox_input(
-                input.delivery_icount(),
-                input.payload_range(),
-                input.payload(),
-            )
-            .map_err(|source| WhiteboxDoorbellError::GuestInputWrite {
-                delivery_icount: input.delivery_icount(),
-                source,
-            })?;
-        Ok(WhiteboxGuestInputOutcome::Delivered(
-            WhiteboxGuestInputInjection {
-                delivery_icount: input.delivery_icount(),
-                payload_range: input.payload_range(),
-                payload_len: input.payload().len(),
-            },
-        ))
-    }
-
     fn validate_max_payload_len(&self) -> Result<(), WhiteboxDoorbellError> {
         if self.max_payload_len == 0 || self.max_payload_len > MAX_FRAME_DATA {
             Err(WhiteboxDoorbellError::InvalidMaxPayloadLen {
@@ -374,6 +335,24 @@ impl PluginWhiteboxDoorbell {
                 })
             }
         }
+    }
+
+    fn validate_snapshot(
+        &self,
+        event: WhiteboxDoorbellTrapEvent,
+        payload: &[u8],
+    ) -> Result<(), WhiteboxDoorbellError> {
+        if !self.mode.is_on() {
+            return Err(WhiteboxDoorbellError::TrapWhileDisabled);
+        }
+        self.validate_payload_range(event.payload_range())?;
+        if payload.len() != event.payload_range().len() {
+            return Err(WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: event.payload_range().len(),
+                actual_len: payload.len(),
+            });
+        }
+        Ok(())
     }
 
     fn validate_payload_range(&self, range: GuestMemoryRange) -> Result<(), WhiteboxDoorbellError> {
@@ -457,6 +436,7 @@ where
 /// Returns [`AppRandomDoorbellError`] when the white-box capability path fails,
 /// the decision source cannot record the draw, or the reply cannot be delivered
 /// at the trap icount.
+#[cfg(test)]
 pub(crate) fn handle_whitebox_app_random_callback<R, D, W>(
     doorbell: &PluginWhiteboxDoorbell,
     capability: &WhiteboxGuestInputCapability,
@@ -473,7 +453,35 @@ where
 {
     let payload =
         read_doorbell_payload(doorbell, reader, event).map_err(AppRandomDoorbellError::Doorbell)?;
-    let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, doorbell.max_payload_len()) {
+    handle_whitebox_app_random_payload(
+        doorbell, capability, decision_source, writer, node_name, event, &payload,
+    )
+}
+
+/// Serves one app-random request from an already retained guest snapshot.
+///
+/// # Errors
+///
+/// Refuses disabled mode, invalid ranges or snapshot lengths before drawing or
+/// writing. Decision and delivery failures retain their ordinary typed causes.
+pub(crate) fn handle_whitebox_app_random_payload<D, W>(
+    doorbell: &PluginWhiteboxDoorbell,
+    capability: &WhiteboxGuestInputCapability,
+    decision_source: &mut D,
+    writer: &mut W,
+    node_name: &str,
+    event: WhiteboxDoorbellTrapEvent,
+    payload: &[u8],
+) -> Result<AppRandomDoorbellOutcome, AppRandomDoorbellError>
+where
+    D: BackendRngEvidenceSource + ?Sized,
+    W: WhiteboxGuestInputWriter + ?Sized,
+{
+    doorbell
+        .validate_snapshot(event, payload)
+        .map_err(AppRandomDoorbellError::Doorbell)?;
+
+    let frame = match WhiteboxDoorbellFrameView::decode_bounded(payload, doorbell.max_payload_len()) {
         Ok(frame) => frame,
         Err(error) => {
             return Ok(AppRandomDoorbellOutcome::Dropped {
@@ -496,13 +504,17 @@ where
         })?;
     validate_decision_record(&request, &decision)?;
 
-    let reply = WhiteboxGuestInput::new(
-        request.trap_icount(),
-        request.reply_range(),
-        app_random_reply_payload(decision.value(), request.width_bytes()),
-    );
+    let reply = decision.value().to_le_bytes();
+    let reply_payload = &reply[..usize::from(request.width_bytes())];
     let outcome = doorbell
-        .inject_guest_input(capability, writer, request.trap_icount(), &reply)
+        .inject_guest_input_slice(
+            capability,
+            writer,
+            request.trap_icount(),
+            request.trap_icount(),
+            request.reply_range(),
+            reply_payload,
+        )
         .map_err(AppRandomDoorbellError::Doorbell)?;
     match outcome {
         WhiteboxGuestInputOutcome::Delivered(injection) => {
@@ -585,7 +597,7 @@ impl AppRandomDoorbellRequest {
     fn from_frame(
         node_name: &str,
         event: WhiteboxDoorbellTrapEvent,
-        frame: WhiteboxDoorbellFrame,
+        frame: WhiteboxDoorbellFrameView<'_>,
     ) -> Result<Self, AppRandomDecodeDiagnostic> {
         if frame.kind() != WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST {
             return Err(AppRandomDecodeDiagnostic::new(
@@ -597,7 +609,7 @@ impl AppRandomDoorbellRequest {
         }
 
         let payload_len = frame.payload().len();
-        let payload = match decode_whitebox_marker_payload(&frame) {
+        let payload = match decode_whitebox_marker_payload_view(frame) {
             Ok(WhiteboxMarkerPayload::RandomRequest(payload)) => payload,
             Ok(payload) => {
                 return Err(AppRandomDecodeDiagnostic::new(
@@ -1134,11 +1146,6 @@ fn value_fits_width(value: u64, width_bits: u8) -> bool {
     } else {
         value <= ((1_u64 << width_bits) - 1)
     }
-}
-
-fn app_random_reply_payload(value: u64, width_bytes: u8) -> Vec<u8> {
-    let bytes = value.to_le_bytes();
-    bytes[..usize::from(width_bytes)].to_vec()
 }
 
 /// QEMU capabilities needed by the optional white-box channel.
@@ -1735,6 +1742,12 @@ impl WhiteboxMarker {
     pub fn decoded_payload(&self) -> &WhiteboxMarkerPayload {
         &self.decoded_payload
     }
+
+    /// Consumes the marker and returns its decoded payload without cloning it.
+    #[must_use]
+    pub fn into_decoded_payload(self) -> WhiteboxMarkerPayload {
+        self.decoded_payload
+    }
 }
 
 /// A defensive decode diagnostic for a dropped white-box doorbell payload.
@@ -1863,7 +1876,7 @@ pub trait GuestMemoryReader {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("guest-memory read failed: {message}")]
 pub struct GuestMemoryReadError {
-    message: String,
+    message: std::borrow::Cow<'static, str>,
 }
 
 impl GuestMemoryReadError {
@@ -1871,7 +1884,15 @@ impl GuestMemoryReadError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: std::borrow::Cow::Owned(message.into()),
+        }
+    }
+
+    /// Retains a static backend diagnostic without allocating a string.
+    #[must_use]
+    pub const fn from_static(message: &'static str) -> Self {
+        Self {
+            message: std::borrow::Cow::Borrowed(message),
         }
     }
 
@@ -1905,29 +1926,6 @@ pub trait WhiteboxMarkerSink {
         &mut self,
         diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
     ) -> Result<(), WhiteboxMarkerSinkError>;
-}
-
-/// A loud marker-sink failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("white-box marker sink failed: {message}")]
-pub struct WhiteboxMarkerSinkError {
-    message: String,
-}
-
-impl WhiteboxMarkerSinkError {
-    /// Builds a marker-sink error.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// One explicit host-to-guest white-box input.
@@ -1988,29 +1986,6 @@ pub trait WhiteboxGuestInputWriter {
         range: GuestMemoryRange,
         payload: &[u8],
     ) -> Result<(), WhiteboxGuestInputWriteError>;
-}
-
-/// A loud white-box guest-input write failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("white-box guest input write failed: {message}")]
-pub struct WhiteboxGuestInputWriteError {
-    message: String,
-}
-
-impl WhiteboxGuestInputWriteError {
-    /// Builds a guest-input write error.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-
-    /// Returns the backend diagnostic.
-    #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 /// Result of attempting one white-box guest input delivery.

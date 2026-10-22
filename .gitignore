@@ -13,8 +13,8 @@ cli/target/
 crates/target/
 
 # Nix build results
-result
-result-*
+/result
+/result-*
 
 # Direnv
 .direnv/

@@ -47,6 +47,9 @@ members = [
     "aos/boot/aos-storage-layout",
     "crucible/storage/crucible-store",
     "shared/aos-linux-project-quota",
+    "crucible/host/crucible-host-resources",
+    "crucible/protocol/crucible-ram",
+    "crucible/storage/crucible-sqlite-heap",
     "crucible/storage/crucible-store-s3",
     "crucible/engine/crucible-campaign",
     "crucible/engine/crucible-determinism",
@@ -84,6 +87,11 @@ members = [
 license = "Apache-2.0"
 
 [workspace.dependencies]
+regex-syntax = "=0.8.11"
+regex-automata = "=0.4.14"
+crucible-ram = { path = "crucible/protocol/crucible-ram" }
+crucible-host-resources = { path = "crucible/host/crucible-host-resources" }
+crucible-sqlite-heap = { path = "crucible/storage/crucible-sqlite-heap" }
 # Shared dependencies
 anyhow = "1"
 thiserror = "2"

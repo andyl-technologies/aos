@@ -60,7 +60,11 @@
       }
       {
         label = "unknown named predicates remain additive";
-        needle = ".unwrap_or_else(|| predicate.clone())";
+        needle = "_ => return Ok(()),";
+      }
+      {
+        label = "known named predicates replace their admitted image";
+        needle = "if let Some(resolved) = resolve_named_predicate_dsl_for_context(name, world) {\n                *predicate = resolved;\n            }";
       }
       {
         label = "DAG store trait";

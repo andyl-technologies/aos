@@ -511,6 +511,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         .assert_value("S3 capability");
     let root = StoreNodeId::new("archive").assert_value("node");
     let config = StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: std::collections::BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([(
@@ -535,6 +536,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .assert_value("S3 graph");
     assert_eq!(graph.describe()[0].kind, StoreNodeKind::S3);
@@ -543,7 +545,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
     assert_eq!(admin.s3_multipart_cleanup()[0].node().as_str(), "archive");
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "92c25a713c145ececbeadfbba56dc54fc667410dbe14d7ad075d86dba745c777"
+        "d95fb09818b8d32f23cdb0b12e156d9fdb050bf2a079bda182c5d0eb99606cdf"
     );
 
     clients
@@ -560,6 +562,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
             &StoreGraphObjectProfilers::new(),
             &StoreGraphPhysicalQuotaBinders::new(),
             &clients,
+            None,
         ),
         Err(StoreError::InvalidComposition { .. })
     ));
@@ -572,6 +575,7 @@ fn graph_binds_exact_endpoint_capability_and_canonical_configuration() {
         &StoreGraphObjectProfilers::new(),
         &StoreGraphPhysicalQuotaBinders::new(),
         &clients,
+        None,
     )
     .assert_value("administrable S3 graph");
     assert_eq!(admin.physical().len(), 1);

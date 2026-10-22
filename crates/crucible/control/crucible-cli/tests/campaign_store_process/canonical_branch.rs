@@ -20,6 +20,13 @@ pub(super) fn run_imported_canonical_branch(
     snapshot: &str,
     finding: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let input = fixture
+        ._native_input
+        .as_ref()
+        .ok_or("canonical branch inspection requires the original source policy")?;
+    let archive_original = input.decoding.child()?;
+    let executed_original = input.decoding.child()?;
+
     grant_export_reads(&fixture.peer_policy)?;
     let source_bundle = fixture._temporary.path().join("branch-source-bundle");
     let exported = run_json(
@@ -57,6 +64,7 @@ pub(super) fn run_imported_canonical_branch(
             bundle.join("archive/objects"),
         )),
         Arc::new(DirectoryRefBackend::new(bundle.join("archive/refs"))),
+        crucible_campaign::CampaignRamAdmission::Available(archive_original),
     );
     let retained = repository.inspect_archived_exact_finding(archive, finding_id)?;
     let reproduction = repository.load_reproduction_artifact(retained.reproduction())?;
@@ -125,6 +133,7 @@ pub(super) fn run_imported_canonical_branch(
             output.join("state/objects"),
         )),
         Arc::new(DirectoryRefBackend::new(output.join("state/refs"))),
+        crucible_campaign::CampaignRamAdmission::Available(executed_original),
     );
     assert_eq!(
         executed.head(SOURCE_NAME)?.snapshot_id().to_string(),

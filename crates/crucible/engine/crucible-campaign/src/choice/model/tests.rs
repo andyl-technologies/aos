@@ -45,6 +45,29 @@ fn replay_mismatch_reports_the_first_failed_base_predicate() {
     .expect("selection");
 
     assert_eq!(
+        expected_domain
+            .canonical_encoded_len()
+            .expect("domain length"),
+        expected_domain.canonical_bytes().len()
+    );
+    assert_eq!(
+        declaration
+            .canonical_encoded_len()
+            .expect("declaration length"),
+        declaration.canonical_bytes().len()
+    );
+    assert_eq!(
+        opportunity
+            .canonical_encoded_len()
+            .expect("opportunity length"),
+        opportunity.canonical_bytes().len()
+    );
+    assert_eq!(
+        selection.canonical_encoded_len().expect("selection length"),
+        selection.canonical_bytes().len()
+    );
+
+    assert_eq!(
         selection
             .replay_mismatch(&opportunity, &expected_domain)
             .expect("matching replay classification"),

@@ -132,6 +132,21 @@ fn control_plane_boundary_allows_api_and_session_dependencies() -> Result<(), Bo
     Ok(())
 }
 
+#[test]
+fn control_plane_boundary_rejects_direct_store_and_resource_issuers() -> Result<(), Box<dyn Error>>
+{
+    for package in ["crucible-store", "crucible-host-resources"] {
+        let manifest: Value = format!(
+            "[package]\nname = \"crucible-cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[dependencies]\nlower = {{ package = \"{package}\", path = \"../{package}\" }}\n"
+        ).parse()?;
+        let manifests = BTreeMap::from([(String::from("crucible-cli"), manifest)]);
+        let findings = control_plane_boundary_findings(&manifests, &toml::map::Map::new());
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].contains(package));
+    }
+    Ok(())
+}
+
 const CLI_ALLOWED_CRUCIBLE_DEPENDENCIES: [&str; 6] = [
     "crucible-control-api",
     "crucible-control-client",

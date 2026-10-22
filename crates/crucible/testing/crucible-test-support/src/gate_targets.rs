@@ -1,6 +1,6 @@
 //! Mapping from canonical gate names to isolable Cargo component tests.
 //!
-//! RFC-0010 file 27 requires each per-layer determinism gate to have an
+//! Each per-layer determinism gate has an
 //! addressable test target in the crate that owns it. A mapped target proves
 //! its crate-level contribution; it does not by itself discharge an aggregate
 //! gate that also requires packaged processes, VM execution, or host variation.
@@ -18,7 +18,7 @@ pub struct GateTargetSpec {
     pub required_features: &'static [&'static str],
 }
 
-/// Cargo test targets for the RFC-0010 crate-structure gate map.
+/// Cargo test targets for the per-layer crate-structure gate map.
 pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:harness-lint",
@@ -364,4 +364,47 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
 #[must_use]
 pub fn gate_targets() -> &'static [GateTargetSpec] {
     GATE_TARGETS
+}
+
+/// Isolable component targets that contribute to aggregate RAM gates.
+///
+/// An entry proves only its crate-owned component. It cannot make the aggregate
+/// gate implemented or enable a runtime capability requiring deployed VM tests.
+pub const RAM_GATE_TARGETS: &[GateTargetSpec] = &[
+    GateTargetSpec {
+        gate: "gate:ram-format",
+        package: "crucible-ram",
+        test_target: "conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:ram-merkle-oracle",
+        package: "crucible-ram",
+        test_target: "conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:ram-dirty-epochs",
+        package: "crucible-ram",
+        test_target: "conformance",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:ram-cutover",
+        package: "crucible-protocol",
+        test_target: "ram_cutover",
+        required_features: &[],
+    },
+    GateTargetSpec {
+        gate: "gate:ram-cutover",
+        package: "crucible-shmem",
+        test_target: "ram_cutover",
+        required_features: &[],
+    },
+];
+
+/// Returns the currently registered Cargo RAM component targets.
+#[must_use]
+pub fn ram_gate_targets() -> &'static [GateTargetSpec] {
+    RAM_GATE_TARGETS
 }

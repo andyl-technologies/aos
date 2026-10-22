@@ -239,8 +239,28 @@ impl QemuNode {
             .stage_hot_fork_child_process_contract(contract, prepared.generation())
             .map_err(|source| crate::QemuHotForkLaunchError::Rejected { source })?;
 
+        if let Err(source) =
+            self.install_hot_fork_ram_stage(prepared.generation(), process_contract.generation())
+        {
+            if self.lifecycle_state == QemuNodeLifecycleState::Quarantined {
+                return Err(crate::QemuHotForkLaunchError::Indeterminate { source });
+            }
+            if let Err(rollback) = self
+                .release_hot_fork_ram_stage()
+                .and_then(|()| self.release_hot_fork_child_process_contract().map(|_| ()))
+            {
+                self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                return Err(crate::QemuHotForkLaunchError::Indeterminate { source: rollback });
+            }
+            return Err(crate::QemuHotForkLaunchError::Rejected { source });
+        }
+
         match self.fork_prepared_hot_fork_template(process_owner) {
             Err(source @ crate::QemuHotForkLaunchError::Rejected { .. }) => {
+                if let Err(rollback) = self.release_hot_fork_ram_stage() {
+                    self.lifecycle_state = QemuNodeLifecycleState::Quarantined;
+                    return Err(crate::QemuHotForkLaunchError::Indeterminate { source: rollback });
+                }
                 let source = match self.release_hot_fork_child_process_contract() {
                     Ok(released)
                         if !released.staged()

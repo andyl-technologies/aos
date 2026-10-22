@@ -11,8 +11,8 @@ use thiserror::Error;
 
 use crate::{
     HARD_FAULT_PAYLOAD_BYTES, HARD_MEMORY_MUTATION_BYTES, MemoryMutationEvidenceError,
-    MemoryMutationEvidenceV1, MemoryMutationPayloadError, MemoryMutationPayloadV1,
-    memory_mutation_precondition_sha256,
+    MemoryMutationEvidenceV2, MemoryMutationPayloadError, MemoryMutationPayloadV1,
+    MemoryMutationPreconditionBinding, memory_mutation_precondition_sha256,
 };
 
 /// Eight-byte magic for a version-1 atomic memory batch payload.
@@ -48,8 +48,8 @@ pub const MEMORY_MUTATION_BATCH_MAX_ACTIONS: u32 = 64;
 /// Maximum sum of addressed bytes across one batch.
 pub const MEMORY_MUTATION_BATCH_MAX_CHANGED_BYTES: u64 = HARD_MEMORY_MUTATION_BYTES as u64;
 /// SHA-256 domain prefix for an ordered prepared batch authorization.
-pub const MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V1: &[u8] =
-    b"crucible.memory-mutation-batch-precondition.v1\0";
+pub const MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V2: &[u8] =
+    b"crucible.memory-mutation-batch-precondition.v2\0";
 /// SHA-256 domain prefix for ordered batch before-state aggregation.
 pub const MEMORY_MUTATION_BATCH_BEFORE_SHA256_DOMAIN_V1: &[u8] =
     b"crucible.memory-mutation-batch-before.v1\0";
@@ -242,7 +242,7 @@ pub struct MemoryMutationBatchEvidenceActionV1 {
     /// Runtime action identity from the corresponding request record.
     pub action_hash: [u8; 32],
     /// Canonical evidence for this action's ordered before/after state.
-    pub evidence: MemoryMutationEvidenceV1,
+    pub evidence: MemoryMutationEvidenceV2,
 }
 
 /// Canonical evidence for a completely prepared or applied atomic batch.
@@ -308,7 +308,7 @@ impl MemoryMutationBatchEvidenceV1 {
     pub fn expected_precondition_sha256(&self) -> Result<[u8; 32], MemoryMutationBatchError> {
         validate_evidence_set(&self.actions)?;
         let mut hasher = Sha256::new();
-        hasher.update(MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V1);
+        hasher.update(MEMORY_MUTATION_BATCH_PRECONDITION_SHA256_DOMAIN_V2);
         hasher.update(
             u32::try_from(self.actions.len())
                 .map_err(|_source| MemoryMutationBatchError::Count)?
@@ -316,12 +316,17 @@ impl MemoryMutationBatchEvidenceV1 {
         );
         for action in &self.actions {
             let translation = action.evidence.translation_sha256()?;
-            let precondition = memory_mutation_precondition_sha256(
-                action.evidence.before_sha256,
-                action.evidence.after_sha256,
-                translation,
-                action.evidence.mapping_generation_sha256,
-            );
+            let precondition =
+                memory_mutation_precondition_sha256(MemoryMutationPreconditionBinding {
+                    before_sha256: action.evidence.before_sha256,
+                    after_sha256: action.evidence.after_sha256,
+                    translation_sha256: translation,
+                    mapping_generation_sha256: action.evidence.mapping_generation_sha256,
+                    before_ram_blake3: action.evidence.before_ram_blake3,
+                    after_ram_blake3: action.evidence.after_ram_blake3,
+                    before_ram_bytes: action.evidence.before_ram_bytes,
+                    after_ram_bytes: action.evidence.after_ram_bytes,
+                });
             hasher.update(action.action_hash);
             hasher.update(precondition);
         }
@@ -421,7 +426,7 @@ impl MemoryMutationBatchEvidenceV1 {
                 .checked_add(evidence_len)
                 .filter(|end| *end <= bytes.len())
                 .ok_or(MemoryMutationBatchError::Length)?;
-            let evidence = MemoryMutationEvidenceV1::decode(&bytes[header_end..evidence_end])?;
+            let evidence = MemoryMutationEvidenceV2::decode(&bytes[header_end..evidence_end])?;
             actions.push(MemoryMutationBatchEvidenceActionV1 {
                 action_hash,
                 evidence,
@@ -468,6 +473,9 @@ pub enum MemoryMutationBatchError {
     /// A nested evidence payload is invalid.
     #[error(transparent)]
     Evidence(#[from] MemoryMutationEvidenceError),
+    /// Valid actions do not form one coherent ordered RAM transaction boundary.
+    #[error("memory mutation batch RAM evidence is discontinuous")]
+    Continuity,
 }
 
 fn validate_action_set(
@@ -506,6 +514,18 @@ fn validate_evidence_set(
     }
     let mut total = 0_u64;
     for (index, action) in actions.iter().enumerate() {
+        action.evidence.validate()?;
+        let first = &actions[0].evidence;
+        if action.evidence.target_node_hash != first.target_node_hash
+            || action.evidence.observed_icount != first.observed_icount
+            || action.evidence.before_ram_bytes != first.before_ram_bytes
+            || action.evidence.after_ram_bytes != first.before_ram_bytes
+            || (index > 0
+                && actions[index - 1].evidence.after_ram_blake3
+                    != action.evidence.before_ram_blake3)
+        {
+            return Err(MemoryMutationBatchError::Continuity);
+        }
         if action.action_hash == [0; 32]
             || actions[..index]
                 .iter()

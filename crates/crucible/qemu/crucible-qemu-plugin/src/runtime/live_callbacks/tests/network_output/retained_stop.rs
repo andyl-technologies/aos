@@ -1,7 +1,6 @@
 //! Original output-stop retention, release, and terminal refusal regressions.
 
 use super::*;
-use crate::runtime::worker_quiescence::WORKER_REQUIRED;
 
 #[test]
 fn buffered_tx_preserves_an_unchanged_native_instruction_sample()
@@ -428,10 +427,10 @@ fn ring_backpressure_cannot_retire_or_extend_original_output_stop()
 }
 
 #[test]
-fn child_and_logical_restore_require_original_output_consumption()
--> Result<(), Box<dyn std::error::Error>> {
+fn logical_restore_requires_original_output_consumption() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut fixture = OutputFixture::new()?;
-    let mut state = fixture.state()?;
+    let state = fixture.state()?;
     state.on_network_tx(20, b"frame")?;
     let expected = Err(LiveVcpuTimeCallbackError::NetworkOutputStopUnconsumed {
         write_index: 1,
@@ -439,18 +438,11 @@ fn child_and_logical_restore_require_original_output_consumption()
     });
     let generation = fixture.slot.arm_logical_time_restore(1_000)?;
 
-    // These are the actual Rust reset entry points. The SDK/mapping admission
-    // is modeled; this does not certify a physical child adoption or VMState.
-    assert_eq!(
-        state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED)),
-        expected
-    );
     assert_eq!(state.restore_logical_time_if_requested(20, false), expected);
     assert_ne!(fixture.slot.snapshot().logical_time_restore_ack, generation);
     let consumed = fixture.outbound.dequeue(&fixture.outbound_entries)?;
     assert!(consumed.is_some());
 
-    state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED))?;
     state.restore_logical_time_if_requested(20, true)?;
 
     assert_eq!(fixture.slot.snapshot().logical_time_restore_ack, generation);

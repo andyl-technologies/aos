@@ -1,6 +1,7 @@
 //! Ordered source observation, private-resource release, and target cleanup.
 
 use super::*;
+use crate::QemuAttemptResourceGuard;
 
 impl<G> QemuHotForkReconciliationBackend for LinuxQemuHotForkReconciliationBackend<G>
 where
@@ -51,6 +52,16 @@ where
 
     fn observe_child(&mut self) -> Result<QemuHotForkChildObservation, Self::Error> {
         let state = self.process_owner.observe_child()?;
+        if let Some(custody) = &self.ram_custody {
+            custody
+                .observe_process_disposition(&self.node_process_control())
+                .map_err(|source| {
+                    LinuxQemuHotForkReconciliationError::Source(QemuNodeChannelError::new(
+                        "observe retained RAM process disposition",
+                        source.to_string(),
+                    ))
+                })?;
+        }
         qmp_child_observation(state)
     }
 
@@ -58,6 +69,18 @@ where
         loop {
             match self.source_release {
                 LinuxSourceReleasePhase::CloseChildChannel => {
+                    // Each containing slot stays intact until its own source
+                    // joins and controller returns are known. Process return
+                    // alone cannot release these independent physical leaves.
+                    if let Some(node) = &mut self.installed_node {
+                        node.force_quarantine_and_reap()?;
+                    }
+                    if let Some(continuation) = &mut self.scheduler_node {
+                        continuation.settle_ram_after_process_return()?;
+                    }
+                    if let Some(continuation) = &mut self.host_continuation {
+                        continuation.settle_ram_after_process_return()?;
+                    }
                     self.pending_child_qmp = None;
                     self.scheduler_node = None;
                     self.installed_node = None;
@@ -117,7 +140,7 @@ where
         // The child's pinned run-directory descriptors go first so the target
         // guard's storage cleanup never races an authority this owner holds.
         self.run_directory = None;
-        self.target.finish().map_err(Into::into)
+        self.target.finish_member().map_err(Into::into)
     }
 
     fn release_source_status(

@@ -258,7 +258,7 @@ in
                 sleep 3600
               done
               ;;
-            *" crucible.workload=hot-fork-single "*)
+            *" crucible.native_acceptance_workload=hot-fork-single "*)
               block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
               test "$block_prefix" = CRUCIBLE-BLOCK-OK
               mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
@@ -288,7 +288,7 @@ in
                 sleep 3600
               done
               ;;
-            *" crucible.workload=hot-fork-scaling "*)
+            *" crucible.native_acceptance_workload=hot-fork-scaling "*)
               crucible-guest selectable register-u64 \
                 1 hot-fork.retry-quanta 1 9 2 3 quanta
               crucible-guest setup-complete

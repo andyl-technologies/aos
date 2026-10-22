@@ -34,6 +34,12 @@ where
         }
     }
 
+    /// Lends the actual factory to native ownership assertions after reconciliation.
+    #[cfg(test)]
+    pub(crate) fn factory_mut_for_test(&mut self) -> &mut F {
+        &mut self.factory
+    }
+
     /// Transfers a pending retained world to the factory's quarantine owner.
     pub(crate) fn quarantine_pending_execution(&mut self) {
         if let Some(lifecycle) = self.pending.take() {
@@ -75,7 +81,7 @@ pub enum QemuHotForkWorldExecutionRunnerError<F, D> {
         cleanup: SchedulerError,
     },
     /// Durable publication reconciliation failed.
-    Reconciliation(crucible_control_api::LifecycleApiError),
+    Reconciliation(crate::ProductionVmConstructionCleanupError),
     /// A reconciliation callback arrived without pending authority.
     NoPendingReconciliation,
     /// Complete source-world recovery contradicted lifecycle ownership.
@@ -343,6 +349,23 @@ where
         Ok(QemuHotForkWorldExecutionAttempt::Executed(
             CrucibleExecutionOutcome::new(product, CrucibleMaterializationTier::HotFork),
         ))
+    }
+
+    /// Retires the actual factory even when no execution tier became active.
+    ///
+    /// # Errors
+    /// Leaves its retained installation or unreconciled world owned on refusal.
+    pub fn try_retire_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuHotForkWorldExecutionRunnerError<F::Error, D::Error>> {
+        self.factory
+            .try_retire_original(original)
+            .map_err(QemuHotForkWorldExecutionRunnerError::Factory)?;
+        if self.pending.is_some() {
+            return Err(QemuHotForkWorldExecutionRunnerError::PriorReconciliationPending);
+        }
+        Ok(())
     }
 
     /// Reconciles one bounded publication phase and recovers its source world.

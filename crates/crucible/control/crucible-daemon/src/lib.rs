@@ -1,6 +1,6 @@
 //! `crucible-daemon` owns the long-lived host process.
 //!
-//! Spec index: RFC-0010 files 20, 21; RFC-0020 file 04a.
+//! Implementation contract: Campaign execution services, worker ownership, and host resource supervision.
 //!
 //! This crate hosts sessions and composes production VM lifecycles over the
 //! control server and QEMU host libraries. Run-affecting choices enter through
@@ -35,6 +35,8 @@
 //! store graph without introducing a storage dependency into the kernel layer;
 //! [`campaign_store_composition`] exposes the bounded concrete store
 //! capabilities accepted by local operator tooling;
+//! [`campaign_process`] authenticates the immutable prebirth policy and retains
+//! its original process account and one nominal heap for service composition;
 //! [`control_responsiveness`] forwards
 //! daemon-routed acknowledgement evidence to the API's quantum-counted
 //! control-responsive contract; [`executor_loopback`] provides the strict
@@ -90,6 +92,24 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+/// Constructs a finite portable checkpoint-decoding account for component tests.
+///
+/// The account retains at most 128 descriptor credits and 256 MiB of resident
+/// credit through real shared RAII loans. It supplies no filesystem quota,
+/// native placement, or managed guest qualification evidence.
+///
+/// # Errors
+/// Returns a quota error if the independently authored fixture account cannot
+/// be constructed.
+#[cfg(feature = "test-support")]
+pub fn component_ram_root_resources() -> Result<
+    std::sync::Arc<dyn crucible_store::content_store::StorePhysicalQuotaGuard>,
+    crucible_store::content_store::StoreError,
+> {
+    exact_checkpoint_store::test_support::fixture_ram_root_resources()
+        .map_err(|_| crucible_store::content_store::StoreError::Quota)
+}
+
 mod anchored_fs;
 pub mod assignment_ledger;
 pub mod automatic_finding_runner;
@@ -105,6 +125,7 @@ pub mod campaign_gc;
 pub mod campaign_loopback;
 pub mod campaign_objective_driver;
 pub mod campaign_policy;
+pub mod campaign_process;
 pub mod campaign_retention;
 pub mod campaign_runtime;
 pub mod campaign_runtime_control;
@@ -112,6 +133,7 @@ pub mod campaign_server;
 pub mod campaign_store_composition;
 pub mod campaign_store_quota;
 pub mod campaign_transfer;
+mod completed_reproduction;
 pub mod control_responsiveness;
 pub mod crucible_artifact;
 pub mod crucible_execution;
@@ -129,6 +151,19 @@ pub mod executor_server;
 pub mod executor_service;
 pub mod executor_supervisor;
 pub mod executor_worker;
+pub mod host_operational_registry;
+pub mod imported_checkpoint;
+mod lifecycle_cleanup;
+pub use lifecycle_cleanup::{
+    PreparedSourceFailure, PreparedSourceRefusal, PreparedSourceRetirement, PreparedSourceSelector,
+    LifecycleFailureRef, LifecycleHistoryRef, LifecyclePanicRef, ProductionVmConstructionPostBody,
+    ServiceInputReturn, ServiceMainPreclaimError, ServiceMainReceiver, SourceBodyReturn,
+    SourceMainProducer, WorldLifecycleCleanupReservation,
+};
+pub use packaged_qemu_executor::{RetainedServiceAdmissionError, RetainedServiceStartCause};
+pub use qemu_hot_fork_world_factory::{TargetMainAdmissionError, TargetSetupFailure};
+mod provider_error_custody;
+pub use host_operational_registry::HostOperationalRegistry;
 pub mod finding_production_replay;
 pub mod finding_replay_capture_store;
 mod guest_selectable;
@@ -142,9 +177,11 @@ mod hot_checkpoint_pool;
 pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 mod managed_qemu_hot_fork_source_world_pool;
+mod native_observation_error;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 pub mod packaged_qemu_identity;
+mod paging_qualification;
 #[cfg(target_os = "linux")]
 mod paused_checkpoint_promotion;
 pub mod pending_finding;
@@ -157,6 +194,8 @@ mod production_plugin_probe;
 mod production_qemu_config;
 pub mod qemu_baked_genesis;
 pub mod qemu_campaign_driver;
+pub(crate) use native_observation_error::NativeObservationError;
+
 pub mod qemu_campaign_lifecycle;
 pub mod qemu_campaign_resume;
 #[cfg(target_os = "linux")]
@@ -171,10 +210,18 @@ mod qemu_hot_fork_world;
 mod qemu_hot_fork_world_factory;
 #[cfg(target_os = "linux")]
 mod qemu_hot_fork_world_resource;
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_world_resource::QemuWorldMemberCleanupStatus;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
 pub mod repository_admission;
 mod supervision;
+
+#[cfg(feature = "private-measurement-domain")]
+pub mod private_original_capture;
+
+#[cfg(feature = "private-measurement-domain")]
+pub mod private_measurement_runtime;
 
 pub use assignment_ledger::{
     AssignmentLedger, AssignmentLedgerError, AssignmentPublish, AssignmentRecord,
@@ -183,7 +230,8 @@ pub use assignment_ledger::{
     AssignmentRetentionVisitorError, AttemptExecutionKey, AttemptExecutionOrigin,
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
-    MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+    MemoryAssignmentLedger, SourceTransferIntent, SourceTransferPhase, SourceTransferState,
+    visit_directory_attempt_states_bounded,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,
@@ -233,7 +281,8 @@ pub use campaign_gc::{
     CampaignGcBlobInventoryBasis, CampaignGcCandidate, CampaignGcCandidateManifest,
     CampaignGcCandidateReason, CampaignGcCandidateSetId, CampaignGcCandidateSetSummary,
     CampaignGcJournalCreateDisposition, CampaignGcJournalError, CampaignGcJournalPhase,
-    CampaignGcJournalTransition, CampaignGcManifestError, CampaignGcPlan, CampaignGcPlanError,
+    CampaignGcJournalTransition, CampaignGcMaintenance, CampaignGcManifestError,
+    CampaignGcOperationContext, CampaignGcPlan, CampaignGcPlanBytes, CampaignGcPlanError,
     CampaignGcPlanId, CampaignGcPlanningError, CampaignGcPreparedPlan, CampaignGcRootManifest,
     CampaignGcRootSetId, DirectoryCampaignGcJournal, MAX_CAMPAIGN_GC_BACKEND_ID_BYTES,
     MAX_CAMPAIGN_GC_MANIFEST_ENTRIES, MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES,
@@ -285,12 +334,14 @@ pub use campaign_server::{
 };
 pub use campaign_store_quota::LinuxProjectQuotaBinder;
 pub use campaign_transfer::{
-    CampaignArchiveDurabilityReceipt, CampaignArchiveTransferEndpoint,
-    CampaignArchiveTransferError, CampaignTransferJournalError, CampaignTransferOperationId,
-    CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
+    CampaignArchiveDurabilityReceipt, CampaignArchiveExecutionPossession,
+    CampaignArchiveTransferEndpoint, CampaignArchiveTransferError, CampaignTransferJournalError,
+    CampaignTransferOperationId, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
     CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
     CampaignTransferRetentionSummary, DirectoryCampaignTransferJournal,
     ExactPinCampaignArchiveCheckpointResolver, transfer_campaign_archive_durably,
+    transfer_campaign_archive_durably_with_boundary,
+    transfer_campaign_archive_for_execution_with_boundary,
 };
 pub use control_responsiveness::{
     DAEMON_CONTROL_RESPONSIVE_QUANTUM_BOUND, DaemonControlResponsiveRoute,
@@ -320,12 +371,12 @@ pub use crucible_execution::{
 pub use crucible_measurement::{
     CRUCIBLE_MEASUREMENT_EVALUATION_PAYLOAD_SCHEMA_V2,
     CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_SCHEMA_V2, CrucibleMeasurementError,
-    CrucibleMeasurementPublication, CrucibleMeasurementReplayEvidence,
-    CrucibleMeasurementStopEvidence, CrucibleObservationBoundaryEvidence,
-    MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES, derive_crucible_measurement_samples,
-    evaluate_crucible_measurement_publication, evaluate_crucible_objectives,
-    evaluate_crucible_observation_measurement_publication, project_crucible_objective_values,
-    verify_crucible_measurement_publication,
+    CrucibleMeasurementEvidenceBytes, CrucibleMeasurementPublication,
+    CrucibleMeasurementReplayEvidence, CrucibleMeasurementStopEvidence,
+    CrucibleObservationBoundaryEvidence, MAX_CRUCIBLE_MEASUREMENT_REPLAY_EVIDENCE_BYTES,
+    derive_crucible_measurement_samples, evaluate_crucible_measurement_publication,
+    evaluate_crucible_objectives, evaluate_crucible_observation_measurement_publication,
+    project_crucible_objective_values, verify_crucible_measurement_publication,
 };
 pub use crucible_qemu_host::LinuxQemuAttemptHostConfig;
 pub use crucible_qemu_runner::{
@@ -335,7 +386,7 @@ pub use crucible_qemu_runner::{
 pub(crate) use crucible_qemu_session::QemuAttemptResourceGuardFactory;
 pub use crucible_qemu_session::{
     QemuAttemptOperationalBoundary, QemuAttemptProcessResourceGuard, QemuAttemptResourceGuard,
-    QemuExecutionQuantumCounter,
+    QemuAttemptResourceGuardCleanupFailure, QemuExecutionQuantumCounter,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use exact_checkpoint_restore::{
@@ -392,9 +443,10 @@ pub use executor_supervisor::{
     CheckpointPromotionRestartWork, CheckpointPromotionStageOutcome, CheckpointPublicationOutcome,
     CheckpointRequestOutcome, CompletionOutcome, CompletionValidationFailure,
     ExecutionCancellation, ExecutionCheckpointRequest, ExecutorAvailability, ExecutorCapacity,
-    ExecutorCapacityError, LocalExecutorError, LocalExecutorSupervisor,
-    PausedCheckpointPromotionRecovery, QueuedAttempt, TerminalFailureOutcome,
-    stage_prepared_attempt_result,
+    ExecutorCapacityError, HostOperationalCapacity, HostOperationalCapacityError,
+    LocalExecutorError, LocalExecutorSupervisor, PausedCheckpointPromotionRecovery, QueuedAttempt,
+    SourceTransferFailure, SourceTransferPersistenceOutcome, SourceTransferPreparation,
+    SourceTransferReleaseAuthorization, TerminalFailureOutcome, stage_prepared_attempt_result,
 };
 pub(crate) use executor_worker::stage_prepared_attempt_result_journal;
 pub use executor_worker::{
@@ -490,12 +542,17 @@ pub(crate) use managed_qemu_hot_fork_source_world_pool::{
     SharedQemuHotForkSourceWorldProviderError,
 };
 pub use packaged_qemu_executor::{
-    AttachedPackagedQemuExecutor, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
+    AttachedPackagedQemuExecutor, GuardedCampaignOwnerRetirementCause,
+    GuardedCampaignOwnerRetirementError, GuardedSourceTransferOffer,
+    GuardedSourceTransferOperation, GuardedTransferError, MAX_PACKAGED_SCENARIO_CATALOG_BYTES,
     PackagedExactPinMaterializerError, PackagedQemuExecutor, PackagedQemuExecutorCompletion,
     PackagedQemuExecutorConfig, PackagedQemuExecutorConfigError, PackagedQemuExecutorError,
     PackagedQemuExecutorJoinError, PackagedQemuExecutorJoinFailures,
-    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig, PackagedQemuHotForkConfigError,
-    PackagedQemuHotForkSourceShutdownError,
+    PackagedQemuExecutorRetirementError, PackagedQemuExecutorRetirementFailure,
+    PackagedQemuExecutorStartError, PackagedQemuHotForkConfig,
+    PackagedQemuHotForkConfigError, PackagedQemuHotForkSourceShutdownError,
+    PackagedRamCatalogConfig, PackagedRamCatalogConfigError, PreparationExpiredCause,
+    ReceivingExecutionPreparation, ReceivingExecutionPreparationError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use paused_checkpoint_promotion::{
@@ -515,7 +572,7 @@ pub(crate) use paused_checkpoint_promotion::{
 #[cfg(all(target_os = "linux", test))]
 pub(crate) use paused_checkpoint_promotion::{
     RepositoryPromotionFixture, prepare_repository_promotion_fixture,
-    promote_test_checkpoint_for_resume, resolve_production_paused_checkpoint_promotion_recovery,
+    resolve_production_paused_checkpoint_promotion_recovery,
 };
 pub use pending_finding::{
     AcknowledgedFindingCandidate, FindingCandidateHandoffError, FindingCandidateHandoffResult,
@@ -547,6 +604,7 @@ pub use production_plugin_probe::{
 pub use production_qemu_config::{
     with_production_qemu_coverage, with_production_qemu_raw_root_image,
 };
+pub use provider_error_custody::ProviderServiceAdmissionError;
 pub use qemu_baked_genesis::{
     ProductionBakedGenesisCaptureError, ProductionBakedGenesisCheckpoint,
     ProductionBakedGenesisCheckpointError, ProductionBakedGenesisReplayCatalogError,
@@ -563,11 +621,11 @@ pub use qemu_campaign_driver::{
     QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
 pub use qemu_campaign_lifecycle::{
-    InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
-    QemuFreshAttemptDriver, QemuFreshAttemptLifecycle, QemuFreshDriveOutcome,
-    QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
+    ImportedSourcePreparationFailure, InteractiveQemuSessionError, QemuAttemptContinuation,
+    QemuAttemptProductionVmLifecycleError, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
+    QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
-    build_guarded_interactive_qemu_session,
+    SourceCleanupHistory, SourceMainPreparationRefusal,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
@@ -586,18 +644,27 @@ pub(crate) use qemu_campaign_resume::{
 pub(crate) use qemu_hot_first_router::QemuHotFirstExecutionRouter;
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_reconciliation::{
-    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkReconciliationError,
-    LinuxQemuHotForkSourceWorldAttemptLaunchError, LinuxQemuHotForkWorldAttemptLaunchFailure,
-    QemuHotForkAttemptReconciliation, QemuHotForkAttemptReconciliationError,
-    QemuHotForkReconciliationStep, QemuHotForkWorldChildSourceBasis,
+    LinuxQemuHotForkReconciliationBackend, LinuxQemuHotForkSourceWorldAttemptLaunchError,
+    QemuHotForkAttemptReconciliation, QemuHotForkReconciliationStep,
+    QemuHotForkWorldChildSourceBasis,
 };
+#[cfg(target_os = "linux")]
+pub use qemu_hot_fork_reconciliation::{
+    LinuxQemuHotForkReconciliationError, LinuxQemuHotForkWorldAttemptLaunchFailure,
+    QemuHotForkAttemptReconciliationError, QemuHotForkReconciliationPhase,
+};
+pub use qemu_hot_fork_world::{
+    QemuHotForkWorldChildAdmissionFailure, QemuHotForkWorldPublicationFailure,
+};
+pub use qemu_hot_fork_world_resource::QemuHotForkWorldReleaseReadinessError;
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_source_capture::ProductionQemuHotForkSourceFactory;
 #[cfg(target_os = "linux")]
 pub use qemu_hot_fork_source_capture::{
     AuthenticatedCanonicalQemuHotForkSource, AuthenticatedExactQemuHotForkSource,
     AuthenticatedQemuHotForkSourceBasis, AuthenticatedQemuHotForkSourceBasisError,
-    ProductionQemuHotForkExactSourceCaptureError, ProductionQemuHotForkSourceCaptureError,
+    ExactSourceCaptureRequestError, ProductionQemuHotForkExactSourceCaptureError,
+    ProductionQemuHotForkSourceCaptureError,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use qemu_hot_fork_world::QemuHotForkWorldAssembly;
@@ -619,15 +686,18 @@ pub(crate) use qemu_hot_fork_world_resource::{
     QemuHotForkWorldNodeTarget, QemuHotForkWorldResourceOwner,
 };
 pub(crate) use qemu_lifecycle_launcher::QemuAttemptProductionVmNodeLauncher;
+pub use qemu_lifecycle_launcher::{TargetConstructionStorage, TargetPreparationFailure};
 pub use qemu_resource_guard::{
     ComposedQemuAttemptResourceGuard, ComposedQemuAttemptResourceGuardFactory,
     LinuxQemuAttemptHostResourceFactory, LinuxQemuAttemptHostResourceOwner,
     MAX_QEMU_ATTEMPT_GENERATION_NODES, QemuAttemptCancellationSignal, QemuAttemptGenerationLease,
-    QemuAttemptGenerationResourceOwner, QemuAttemptHostResourceFactory,
-    QemuAttemptHostResourceOwner, SharedQemuAttemptHostResourceFactory,
+    QemuAttemptGenerationResourceOwner, QemuAttemptGenerationStorage,
+    QemuAttemptHostResourceFactory, QemuAttemptHostResourceOwner,
+    SharedQemuAttemptHostResourceFactory,
 };
 pub use repository_admission::RepositoryAttemptAdmission;
 
+/// Owns concrete local-VM construction, runtime, and retained cleanup.
 #[cfg(target_os = "linux")]
 pub mod vm_lifecycle;
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
@@ -640,21 +710,27 @@ pub use vm_lifecycle::{
 #[cfg(target_os = "linux")]
 pub use vm_lifecycle::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
-    DecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
+    DecodedProductionExactCheckpoint, OriginalCheckpointDecodeError,
+    OriginalDecodedProductionExactCheckpoint, PreparedProductionReplayOraclePromotion,
     ProductionBakedSnapshotCatalog, ProductionBakedSnapshotSet, ProductionBlockFaultEvidence,
     ProductionExactCheckpointClosure, ProductionExactCheckpointObject,
-    ProductionExactCheckpointRetirement, ProductionExactCheckpointRetirementError,
-    ProductionExactCheckpointRetirementReport, ProductionFaultEvidenceSnapshot,
-    ProductionNetworkOutageEvidence, ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence,
-    ProductionVmExactNodeRestoreAdmission, ProductionVmExactNodeRestoreAdmissions,
-    ProductionVmLifecycleConfig, ProductionVmLifecycleLoop, ProductionVmLifecycleResumeState,
-    ProductionVmNodeGeneration, ProductionVmNodeLaunch, ProductionVmNodeLaunchRequest,
-    ProductionVmNodeLauncher, ProductionVmNodeLease, ProductionVmNodeReplayLaunchProfile,
-    ProductionVmPortableReplayAssetPaths, ProductionVmPortableReplayGuestAssetPaths,
-    ProductionVmReplayExactNodeRestoreAdmission, build_production_vm_exact_resume_lifecycle,
-    build_production_vm_lifecycle_loop_with_launcher, collect_signal_artifact_objects,
-    collect_signal_artifact_objects_bounded, collect_signal_artifact_objects_with_budget,
-    decode_authenticated_production_exact_checkpoint, open_exact_checkpoint_closure,
+    ProductionExactCheckpointReadSources, ProductionExactCheckpointRetirement,
+    ProductionExactCheckpointRetirementError, ProductionExactCheckpointRetirementReport,
+    ProductionFaultEvidenceSnapshot, ProductionNetworkOutageEvidence,
+    ProductionNetworkQueueEvidence, ProductionNodeFaultEvidence, ProductionPagedRamSource,
+    ProductionStoppedLifecycleError, ProductionVmCleanupEarlierFailure,
+    ProductionVmConstructionCleanupError, ProductionVmConstructionCustody,
+    ProductionVmConstructionFailure, ProductionVmExactNodeRestoreAdmission,
+    ProductionVmExactNodeRestoreAdmissions, ProductionVmLifecycleConfig, ProductionVmLifecycleLoop,
+    ProductionVmLifecycleResumeState, ProductionVmNodeGeneration, ProductionVmNodeLaunch,
+    ProductionVmNodeLaunchRequest, ProductionVmNodeLauncher, ProductionVmNodeLease,
+    ProductionVmNodeReplayLaunchProfile, ProductionVmPortableReplayAssetPaths,
+    ProductionVmPortableReplayGuestAssetPaths, ProductionVmReplayExactNodeRestoreAdmission,
+    ProductionVmStoppedLifecycle, build_production_vm_exact_resume_lifecycle,
+    build_production_vm_exact_stopped_lifecycle, build_production_vm_lifecycle_loop_with_launcher,
+    collect_signal_artifact_objects, collect_signal_artifact_objects_bounded,
+    collect_signal_artifact_objects_with_budget, decode_authenticated_production_exact_checkpoint,
+    decode_authenticated_production_exact_checkpoint_under_original, open_exact_checkpoint_closure,
     production_vm_search_frontier, retire_production_exact_checkpoint_catalog,
 };
 #[cfg(target_os = "linux")]
@@ -664,6 +740,28 @@ pub use vm_lifecycle::{
     ProductionVmHotForkWorldContinuation,
     authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use vm_lifecycle::{
+    ProductionVmParentParkDrain, ProductionVmParentParkDrainCause,
+    ProductionVmParentParkDrainFailure, ProductionVmParentParkDrainRefusal,
+    ProductionVmParentParkDrainRequest, ProductionVmParentParkStageAdmissionCause,
+    ProductionVmParentParkStageEarlyCause, ProductionVmParentParkStageEnteredCause,
+    ProductionVmParentParkStageFailure, ProductionVmParentParkStageOwnerCause,
+    ProductionVmParentParkStageReborrowCause,
+};
+
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use packaged_qemu_executor::{
+    NativePluginFlightInputError, NativePluginFlightInputs, NativePluginFlightKind,
+};
+
+#[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
+pub use packaged_qemu_executor::{
+    NativeBlockRecoveryObservation, NativeFlightDiagnosticMode, NativeFlightOutputChannel,
+    NativeFlightTimerObservation, NativeFourVcpuDiagnostic, NativePartitionVariant,
+    NativePluginFlightDiagnostic, NativePluginFlightOutput, NativeRuntimeTraceSummary,
+    NativeRuntimeTraceVariant,
 };
 
 /// Interactive replay construction, evidence, and terminal actor cleanup.

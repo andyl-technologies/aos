@@ -2,6 +2,15 @@
 
 use super::*;
 
+#[cfg(feature = "private-measurement-domain")]
+mod original;
+
+#[cfg(feature = "private-measurement-domain")]
+pub use original::OriginalDirectoryRefOwner;
+
+/// Mutable and namespace-inventory capabilities sharing one original quota.
+pub type DirectoryRefAuthorities = (Arc<dyn MutableRefBackend>, Arc<dyn RefStoreAdmin>);
+
 /// Durable authoritative ref backend using flock and atomic replacement.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DirectoryRefBackend {
@@ -9,6 +18,44 @@ pub struct DirectoryRefBackend {
 }
 
 impl DirectoryRefBackend {
+    /// Creates a quota-bound ref facade with admitted operation and fence loans.
+    ///
+    /// # Errors
+    /// Refuses unavailable authority or insufficient original resources.
+    pub fn new_with_physical_quota(
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<Arc<dyn MutableRefBackend>, StoreError> {
+        Self::new_with_physical_quota_and_admin(root, guard).map(|(backend, _)| backend)
+    }
+
+    /// Opens ordinary and inventory views sharing the same quota authority.
+    ///
+    /// Inventory fences and directory recursion retain and charge that same
+    /// authority until the final fence closes.
+    ///
+    /// # Errors
+    /// Refuses unavailable authority or insufficient original resources.
+    pub fn new_with_physical_quota_and_admin(
+        root: impl Into<PathBuf>,
+        guard: Arc<dyn StorePhysicalQuotaGuard>,
+    ) -> Result<DirectoryRefAuthorities, StoreError> {
+        let root = root.into();
+        guard.verify()?;
+        let resources = guard.reserve_resources(
+            0,
+            std::mem::size_of::<QuotaDirectoryRefs>() as u64
+                + 2 * std::mem::size_of::<usize>() as u64
+                + root.capacity() as u64,
+        )?;
+        let backend = Arc::new(QuotaDirectoryRefs {
+            child: Self::new(root),
+            guard,
+            _resources: resources,
+        });
+        Ok((backend.clone(), backend))
+    }
+
     /// Creates a ref backend rooted at `root`.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -136,14 +183,52 @@ impl MutableRefBackend for DirectoryRefBackend {
         RefBackendCapabilities { durable: true }
     }
 
-    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
         let lock = self.acquire_ref_publication_lock(FlockOperation::LockShared)?;
         Ok(Box::new(DirectoryRefPublicationGuard { _lock: lock }))
     }
 
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
+        let mut inventory_state = self.load_or_create_ref_inventory_state()?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockExclusive)?)
+        };
+        match self.read_unlocked(name)? {
+            None => Ok(RefRemoveOutcome::AlreadyAbsent),
+            Some(current) if current != expected => {
+                Ok(RefRemoveOutcome::Conflict { expected, current })
+            }
+            Some(_) => {
+                self.advance_ref_inventory_state(&mut inventory_state)?;
+                let path = self.ref_path(name);
+                fs::remove_file(&path).map_err(|source| StoreError::Io {
+                    operation: "retire-ref",
+                    path: path.clone(),
+                    source,
+                })?;
+                let directory = path.parent().ok_or(StoreError::InvalidComposition {
+                    reason: "ref retirement has no directory",
+                })?;
+                sync_directory(directory)?;
+                Ok(RefRemoveOutcome::Removed)
+            }
+        }
+    }
+
     fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockShared)?;
-        let _lock = self.acquire_lock(name, FlockOperation::LockShared)?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockShared)?)
+        };
         self.read_unlocked(name)
     }
 
@@ -165,7 +250,11 @@ impl MutableRefBackend for DirectoryRefBackend {
     ) -> Result<RefCasOutcome, StoreError> {
         let _inventory_lock = self.acquire_ref_inventory_lock(FlockOperation::LockExclusive)?;
         let mut inventory_state = self.load_or_create_ref_inventory_state()?;
-        let _lock = self.acquire_lock(name, FlockOperation::LockExclusive)?;
+        let _lock = if is_reader_claim(name) {
+            None
+        } else {
+            Some(self.acquire_lock(name, FlockOperation::LockExclusive)?)
+        };
         let current = self.read_unlocked(name)?;
         if current != expected {
             return Ok(RefCasOutcome::Conflict { expected, current });
@@ -176,11 +265,147 @@ impl MutableRefBackend for DirectoryRefBackend {
     }
 }
 
+// Reader claims already serialize through the namespace inventory lock. Their
+// unique names never need persistent per-name lock files after retirement.
+fn is_reader_claim(name: &RefName) -> bool {
+    name.as_str().starts_with("ram-readers/")
+}
+
 struct DirectoryRefPublicationGuard {
     _lock: File,
 }
 
 impl RefPublicationGuard for DirectoryRefPublicationGuard {}
+
+/// Keeps ref namespace authority and resources behind the existing directory format.
+struct QuotaDirectoryRefs {
+    child: DirectoryRefBackend,
+    guard: Arc<dyn StorePhysicalQuotaGuard>,
+    _resources: crate::owned_decode::ResourceLoan,
+}
+
+impl QuotaDirectoryRefs {
+    fn operation_resources(&self) -> Result<crate::owned_decode::ResourceLoan, StoreError> {
+        self.guard.verify()?;
+        // Inventory/name locks, record/staging files and directory fsync can
+        // overlap. Paths and bounded 256-byte records have geometric headroom.
+        let bytes = (self.child.root.as_os_str().len() as u64)
+            .checked_add(1024)
+            .and_then(|bytes| bytes.checked_mul(32))
+            .and_then(|bytes| bytes.checked_add(4096))
+            .ok_or(StoreError::Quota)?;
+        self.guard.reserve_resources(6, bytes)
+    }
+}
+
+impl MutableRefBackend for QuotaDirectoryRefs {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        self.child.capabilities()
+    }
+
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard>, StoreError> {
+        let _construction = self.operation_resources()?;
+        let resources = self
+            .guard
+            .reserve_resources(1, std::mem::size_of::<QuotaRefPublicationGuard>() as u64)?;
+        Ok(Box::new(QuotaRefPublicationGuard {
+            _child: self.child.acquire_publication_guard()?,
+            _guard: self.guard.clone(),
+            _resources: resources,
+        }))
+    }
+
+    fn compare_remove(
+        &self,
+        name: &RefName,
+        expected: ContentId,
+    ) -> Result<RefRemoveOutcome, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.compare_remove(name, expected)
+    }
+
+    fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.read_ref(name)
+    }
+
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        validate_ref_scan_basis(namespace, after, limit)?;
+        let _resources = self.operation_resources()?;
+        // Only the smallest limit+1 names are retained by the ordered scan;
+        // this covers both B-tree nodes and the resulting bounded vector.
+        let _candidates = self.guard.reserve_resources(
+            0,
+            (limit as u64 + 1)
+                .checked_mul(4096)
+                .ok_or(StoreError::Quota)?,
+        )?;
+        let _lock = self
+            .child
+            .acquire_ref_inventory_lock(FlockOperation::LockShared)?;
+        ref_admin::scan_ref_namespace_with_quota(
+            &self.child,
+            namespace,
+            after,
+            limit,
+            Some(self.guard.as_ref()),
+        )
+    }
+
+    fn compare_exchange(
+        &self,
+        name: &RefName,
+        expected: Option<ContentId>,
+        next: ContentId,
+    ) -> Result<RefCasOutcome, StoreError> {
+        let _resources = self.operation_resources()?;
+        self.child.compare_exchange(name, expected, next)
+    }
+}
+
+impl RefStoreAdmin for QuotaDirectoryRefs {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let resources = self.operation_resources()?;
+        Ok(Box::new(QuotaRefInventoryFence {
+            child: self
+                .child
+                .acquire_ref_inventory_fence_with_quota(Some(self.guard.as_ref()))?,
+            guard: self.guard.as_ref(),
+            _resources: resources,
+        }))
+    }
+}
+
+struct QuotaRefInventoryFence<'a> {
+    child: Box<dyn RefInventoryFence + 'a>,
+    guard: &'a dyn StorePhysicalQuotaGuard,
+    _resources: crate::owned_decode::ResourceLoan,
+}
+
+impl RefInventoryFence for QuotaRefInventoryFence<'_> {
+    fn visit_refs(
+        &mut self,
+        visitor: &mut dyn FnMut(RefInventoryRecord) -> Result<(), StoreError>,
+    ) -> Result<RefInventorySummary, StoreError> {
+        self.guard.verify()?;
+        let summary = self.child.visit_refs(visitor)?;
+        self.guard.verify()?;
+        Ok(summary)
+    }
+}
+
+struct QuotaRefPublicationGuard {
+    _child: Box<dyn RefPublicationGuard>,
+    _guard: Arc<dyn StorePhysicalQuotaGuard>,
+    _resources: crate::owned_decode::ResourceLoan,
+}
+
+impl RefPublicationGuard for QuotaRefPublicationGuard {}
 
 pub(in crate::content_store) fn directory_receipt(
     name: &str,

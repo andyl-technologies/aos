@@ -209,9 +209,12 @@ pub(in crate::fault_command) fn translate_instruction_evidence(
     const HEADER: usize = 608;
     let invalid = |_| FaultCommandBridgeError::InstructionEvidence;
     if raw.len() < HEADER
-        || raw[..8] != *b"CRUCINS1"
-        || raw_u16(raw, 8).map_err(invalid)? != 3
-        || raw[600..608].iter().any(|byte| *byte != 0)
+        || raw[..8] != *b"CRUCINS2"
+        || raw_u16(raw, 8).map_err(invalid)? != 4
+        || raw[600..604].iter().any(|byte| *byte != 0)
+        || raw_u16(raw, 604).map_err(invalid)? != 1
+        || raw[606] != 0
+        || raw[607] != 1
         || event.binding_hash != expectation.binding_hash
         || event.generation != expectation.generation
         || event.action_hash != expectation.action_hash
@@ -392,7 +395,7 @@ pub(in crate::fault_command) fn translate_instruction_evidence(
         _ => return Err(FaultCommandBridgeError::InstructionEvidence),
     };
     let observed_icount = raw_to_logical_tick(event.observed_icount, logical_icount_offset)?;
-    let evidence = FaultInstructionEvidenceV1 {
+    let evidence = FaultInstructionEvidenceV2 {
         architecture,
         mutation_kind,
         outcome,
@@ -429,8 +432,8 @@ pub(in crate::fault_command) fn translate_instruction_evidence(
                     .ok_or(FaultCommandBridgeError::InstructionEvidence)
             })
             .collect::<Result<_, _>>()?,
-        before_ram_sha256: before_ram,
-        after_ram_sha256: after_ram,
+        before_ram_blake3: before_ram,
+        after_ram_blake3: after_ram,
         before_device_sha256: before_device,
         after_device_sha256: after_device,
         before_ram_bytes: raw_u64(raw, 480).map_err(invalid)?,

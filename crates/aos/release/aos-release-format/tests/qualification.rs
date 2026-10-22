@@ -387,10 +387,23 @@ fn contract_identity_is_its_rust_canonical_encoding() {
         )
         .unwrap()
     );
-    let text = String::from_utf8(encoded).unwrap();
-    for key in ["\"production_only\"", "\"thresholds\"", "\"configuration\""] {
-        assert!(!text.contains(key), "contract encoding carries {key}");
+    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    for key in ["production_only", "thresholds", "configuration"] {
+        assert!(value.get(key).is_none(), "contract root carries {key}");
     }
+
+    let production_only = value["requirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|requirement| {
+            requirement.get("production_only").map(|flag| {
+                assert_eq!(flag, &serde_json::Value::Bool(true));
+                requirement["id"].as_str().unwrap()
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(production_only, ["ability-native-adapter-matrix"]);
 }
 
 #[test]

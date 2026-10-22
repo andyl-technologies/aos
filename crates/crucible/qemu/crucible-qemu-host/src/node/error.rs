@@ -1,9 +1,12 @@
 //! Scheduler-facing QEMU node channel roles and errors.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
-use crucible_engine::BackendError;
+use crucible_engine::owned_decode::DecodeAdmissionError;
+use crucible_engine::{BackendError, BackendOperationalCause, BackendOperationalFailureKind};
+use crucible_host_resources::host_supervision::{HostOperationState, HostSupervisionError};
 use thiserror::Error;
 
 use crate::{
@@ -43,40 +46,128 @@ impl fmt::Display for QemuNodeChannelPlane {
     }
 }
 
+/// Retains a fingerprint protocol or component-capture failure without formatting.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum QemuFingerprintSampleError {
+    /// The actual shared-memory sample violates its protocol contract.
+    #[error("{source}")]
+    Protocol {
+        /// Original shared-memory validation failure.
+        #[source]
+        source: crucible_qemu_shmem::FingerprintSampleError,
+    },
+    /// The latest published sample has not reached the current boundary.
+    #[error(
+        "black-box fingerprint sample at icount {sample_icount} is behind current boundary {current_icount}"
+    )]
+    BehindBoundary {
+        /// Actual sample coordinate, retained without another capture request.
+        sample_icount: u64,
+        /// Actual node boundary requiring a matching sample.
+        current_icount: u64,
+    },
+    /// The latest published sample is beyond the current node boundary.
+    #[error(
+        "black-box fingerprint sample at icount {sample_icount} is ahead of current boundary {current_icount}"
+    )]
+    AheadOfBoundary {
+        /// Actual sample coordinate that cannot identify this boundary.
+        sample_icount: u64,
+        /// Actual node boundary requiring a matching sample.
+        current_icount: u64,
+    },
+    /// The plugin reported failed component captures in its actual sample.
+    #[error("black-box fingerprint sample has component failure mask {mask:#x}")]
+    ComponentFailures {
+        /// Complete failure bitset, retained without interpreting unknown bits.
+        mask: u32,
+    },
+}
+
 /// Reports a channel-local operation error before node-plane context is attached.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Deterministic failure detail.
-    pub message: String,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
     pub retryable: bool,
+    detail: ChannelFailureDetail,
+}
+
+/// Retains the coordinates of a quantum whose next report is not visible yet.
+///
+/// This is an observation of the same pending request. It grants no permission
+/// to publish another command, renew the operation or wake the plugin again.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error(
+    "QEMU quantum plugin report is not yet visible at icount {current_icount} before ceiling {ceiling}"
+)]
+pub struct QemuPendingQuantumReport {
+    /// Current icount in the actual still-stale node report.
+    pub current_icount: u64,
+    /// Ceiling retained by the existing pending quantum.
+    pub ceiling: u64,
+}
+
+/// Retains typed causes inline; shared decode refusals keep their original allocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ChannelFailureDetail {
+    Message(Cow<'static, str>),
+    Supervision(HostSupervisionError),
+    DecodeAdmission(DecodeAdmissionError),
+    FingerprintSample(QemuFingerprintSampleError),
+    MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
+    QuantumNodeSlot {
+        operation: &'static str,
+        source: crucible_qemu_shmem::NodeSlotError,
+    },
+    QuantumReportPending(QemuPendingQuantumReport),
 }
 
 impl QemuNodeChannelError {
-    /// Creates a channel operation error.
+    /// Borrows authored text, returning an empty string for a typed cause.
+    ///
+    /// The cause and authored text share one storage alternative. Retaining a
+    /// typed failure never allocates a replacement diagnostic.
     #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn message(&self) -> &str {
+        match &self.detail {
+            ChannelFailureDetail::Message(message) => message,
+            _ => "",
+        }
+    }
+
+    pub(crate) fn into_message(self) -> Cow<'static, str> {
+        match self.detail {
+            ChannelFailureDetail::Message(message) => message,
+            _ => Cow::Borrowed(""),
+        }
+    }
+
+    /// Creates a channel operation error without copying its diagnostic.
+    ///
+    /// Static text is borrowed. An owned message retains its allocation and
+    /// still requires separate admission before the caller constructs it.
+    #[must_use]
+    pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: None,
             retryable: false,
+            detail: ChannelFailureDetail::Message(message.into()),
         }
     }
 
     /// Creates a transient channel error for a request that remains in flight.
     #[must_use]
-    pub fn retryable(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn retryable(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: None,
             retryable: true,
+            detail: ChannelFailureDetail::Message(message.into()),
         }
     }
 
@@ -84,14 +175,163 @@ impl QemuNodeChannelError {
     #[must_use]
     pub fn bounded_await_timeout(
         operation: &'static str,
-        message: impl Into<String>,
+        message: impl Into<Cow<'static, str>>,
         timeout: Duration,
     ) -> Self {
         Self {
             operation,
-            message: message.into(),
             timeout: Some(timeout),
             retryable: false,
+            detail: ChannelFailureDetail::Message(message.into()),
+        }
+    }
+
+    /// Retains a typed operational refusal without formatting a diagnostic.
+    ///
+    /// This carries the original cause and issues no operation or return authority.
+    #[must_use]
+    pub fn operational_supervision(operation: &'static str, source: HostSupervisionError) -> Self {
+        Self {
+            operation,
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::Supervision(source),
+        }
+    }
+
+    /// Returns the original typed supervision refusal, when present.
+    #[must_use]
+    pub const fn operational_supervision_source(&self) -> Option<HostSupervisionError> {
+        match self.detail {
+            ChannelFailureDetail::Supervision(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains the actual finite decode-account refusal without formatting it.
+    ///
+    /// The existing shared cause keeps its original allocation. This grants no
+    /// replacement capacity or operation authority.
+    #[must_use]
+    pub fn artifact_decode_admission(
+        operation: &'static str,
+        source: DecodeAdmissionError,
+    ) -> Self {
+        Self {
+            operation,
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::DecodeAdmission(source),
+        }
+    }
+
+    /// Returns the original shared decode-account refusal, when present.
+    #[must_use]
+    pub const fn artifact_decode_admission_source(&self) -> Option<&DecodeAdmissionError> {
+        match &self.detail {
+            ChannelFailureDetail::DecodeAdmission(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains an actual fingerprint failure without allocating its diagnostic.
+    ///
+    /// Only a sample behind the current boundary remains retryable. This
+    /// classification issues no fresh capture request or publication authority.
+    #[must_use]
+    pub fn fingerprint_sample(operation: &'static str, source: QemuFingerprintSampleError) -> Self {
+        Self {
+            operation,
+            timeout: None,
+            retryable: matches!(source, QemuFingerprintSampleError::BehindBoundary { .. }),
+            detail: ChannelFailureDetail::FingerprintSample(source),
+        }
+    }
+
+    /// Returns the original fingerprint failure, when present.
+    #[must_use]
+    pub const fn fingerprint_sample_source(&self) -> Option<QemuFingerprintSampleError> {
+        match self.detail {
+            ChannelFailureDetail::FingerprintSample(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains the mapped quantum adapter's actual region-access refusal.
+    ///
+    /// The existing adapter diagnostic remains unchanged. The cause retains
+    /// its original coordinates without allocating a replacement message.
+    #[must_use]
+    pub fn mapped_region_access(
+        operation: &'static str,
+        source: crucible_qemu_shmem::MappedSetupRegionAccessError,
+    ) -> Self {
+        Self {
+            operation,
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::MappedRegionAccess(source),
+        }
+    }
+
+    /// Returns the original mapped-region access failure, when present.
+    #[must_use]
+    pub const fn mapped_region_access_source(
+        &self,
+    ) -> Option<&crucible_qemu_shmem::MappedSetupRegionAccessError> {
+        match &self.detail {
+            ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains a quantum slot refusal without allocating replacement text.
+    ///
+    /// Only an occupied or changed publication permits polling the same
+    /// pending request again. This never republishes its ceiling or wake.
+    pub(crate) fn quantum_node_slot(
+        operation: &'static str,
+        source: crucible_qemu_shmem::NodeSlotError,
+    ) -> Self {
+        Self {
+            operation: "qemu_quantum_shmem_hot_path",
+            timeout: None,
+            retryable: matches!(
+                source,
+                crucible_qemu_shmem::NodeSlotError::NodeReportChanged { .. }
+                    | crucible_qemu_shmem::NodeSlotError::AdvancePublicationOccupied { .. }
+            ),
+            detail: ChannelFailureDetail::QuantumNodeSlot { operation, source },
+        }
+    }
+
+    /// Returns the actual quantum slot refusal without formatting its coordinates.
+    #[must_use]
+    pub const fn quantum_node_slot_source(&self) -> Option<&crucible_qemu_shmem::NodeSlotError> {
+        match &self.detail {
+            ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
+        Self {
+            operation: "qemu_quantum_shmem_hot_path",
+            timeout: None,
+            retryable: true,
+            detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
+                current_icount,
+                ceiling,
+            }),
+        }
+    }
+
+    /// Returns the unchanged pending report coordinates without formatting.
+    #[must_use]
+    pub const fn pending_quantum_report(&self) -> Option<&QemuPendingQuantumReport> {
+        match &self.detail {
+            ChannelFailureDetail::QuantumReportPending(source) => Some(source),
+            _ => None,
         }
     }
 
@@ -108,9 +348,85 @@ impl QemuNodeChannelError {
     }
 }
 
+impl fmt::Display for QemuNodeChannelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.detail {
+            ChannelFailureDetail::Supervision(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::DecodeAdmission(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::FingerprintSample(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::MappedRegionAccess(_) => {
+                write!(
+                    formatter,
+                    "{} failed: mapped QEMU quantum shared-memory access failed",
+                    self.operation
+                )
+            }
+            ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
+                write!(
+                    formatter,
+                    "{} failed: QEMU quantum node-slot operation {operation} failed: {source}",
+                    self.operation
+                )
+            }
+            ChannelFailureDetail::QuantumReportPending(source) => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            ChannelFailureDetail::Message(message) => {
+                write!(formatter, "{} failed: {message}", self.operation)
+            }
+        }
+    }
+}
+
+impl std::error::Error for QemuNodeChannelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.detail {
+            ChannelFailureDetail::Supervision(source) => Some(source),
+            ChannelFailureDetail::DecodeAdmission(source) => Some(source),
+            ChannelFailureDetail::FingerprintSample(source) => Some(source),
+            ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
+            ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
+            ChannelFailureDetail::QuantumReportPending(source) => Some(source),
+            ChannelFailureDetail::Message(_) => None,
+        }
+    }
+}
+
 /// Reports a failure returned by the scheduler-facing QEMU node wrapper.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuNodeError {
+    /// Capture failed before the separately observed process cleanup.
+    #[error("{source}; checkpoint cleanup refusal: {cleanup:?}")]
+    CheckpointCleanup {
+        /// Initiating failure, retained as the actual typed carrier.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Secondary cleanup failure; absence means that cleanup succeeded.
+        cleanup: Option<Box<QemuNodeError>>,
+    },
+    /// Capture work failed before its independently checked original postcut.
+    #[cfg(target_os = "linux")]
+    #[error("{source}; checkpoint original postcut: {original_after}")]
+    CheckpointPostcut {
+        /// Initiating node failure, preserved without diagnostic replacement.
+        #[source]
+        source: Box<QemuNodeError>,
+        /// Same retained original's separate post-operation refusal.
+        original_after: HostSupervisionError,
+    },
+    /// The actual checkpoint original or its matched native receiver refused.
+    #[cfg(target_os = "linux")]
+    #[error("checkpoint original refused: {source}")]
+    CheckpointOriginal {
+        /// Typed first cause and independent original postcut.
+        source: super::exact_snapshot::capture_original::CheckpointOriginalError,
+    },
     /// A role-specific child channel failed an operation.
     #[error("{plane} channel operation {operation} failed: {message}")]
     Channel {
@@ -118,8 +434,171 @@ pub enum QemuNodeError {
         plane: QemuNodeChannelPlane,
         /// Channel-local operation name.
         operation: &'static str,
-        /// Deterministic failure detail.
-        message: String,
+        /// Failure detail retaining the channel's borrowed or owned storage.
+        message: Cow<'static, str>,
+    },
+    /// A channel retained its actual operational supervision refusal.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelSupervision {
+        /// Channel role in which the original operation refused.
+        plane: QemuNodeChannelPlane,
+        /// Operation attempted before the original refusal.
+        operation: &'static str,
+        /// Actual typed original cause, without diagnostic replacement.
+        #[source]
+        source: HostSupervisionError,
+    },
+    /// A channel retained its actual artifact decode-account refusal.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelDecodeAdmission {
+        /// Channel role whose active decode account refused admission.
+        plane: QemuNodeChannelPlane,
+        /// Operation attempted under the same finite decode account.
+        operation: &'static str,
+        /// Actual shared refusal without a replacement diagnostic allocation.
+        #[source]
+        source: DecodeAdmissionError,
+    },
+    /// A channel retained its actual fingerprint validation failure.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelFingerprintSample {
+        /// Channel role that returned the invalid sample.
+        plane: QemuNodeChannelPlane,
+        /// Operation whose sample validation failed.
+        operation: &'static str,
+        /// Original protocol failure or complete component-failure bitset.
+        #[source]
+        source: QemuFingerprintSampleError,
+    },
+    /// A mapped quantum channel retained its actual region-access failure.
+    #[error(
+        "{plane} channel operation {operation} failed: mapped QEMU quantum shared-memory access failed"
+    )]
+    ChannelMappedRegionAccess {
+        /// Channel role whose mapped view refused access.
+        plane: QemuNodeChannelPlane,
+        /// Operation that attempted the mapped access.
+        operation: &'static str,
+        /// Original geometry, topology or segment failure.
+        #[source]
+        source: crucible_qemu_shmem::MappedSetupRegionAccessError,
+    },
+    /// A quantum channel retained its actual bounded node-slot refusal.
+    #[error(
+        "{plane} channel operation qemu_quantum_shmem_hot_path failed: QEMU quantum node-slot operation {operation} failed: {source}"
+    )]
+    ChannelQuantumNodeSlot {
+        /// Channel role whose slot observation or transition refused.
+        plane: QemuNodeChannelPlane,
+        /// Actual operation performed on that node slot.
+        operation: &'static str,
+        /// Original slot failure, including its observed generation coordinates.
+        #[source]
+        source: crucible_qemu_shmem::NodeSlotError,
+    },
+    /// A quantum channel observed the same request before its next report.
+    #[error("{plane} channel operation qemu_quantum_shmem_hot_path failed: {source}")]
+    ChannelQuantumReportPending {
+        /// Channel role observing the existing pending quantum.
+        plane: QemuNodeChannelPlane,
+        /// Actual report and retained ceiling coordinates.
+        #[source]
+        source: QemuPendingQuantumReport,
+    },
+    /// RAM source cleanup failed while its service remains retained.
+    #[error("{operation} failed: {source}")]
+    RamSourceCleanup {
+        /// Cleanup boundary that observed the original source failure.
+        operation: &'static str,
+        /// Same typed worker cause or direct cleanup refusal.
+        #[source]
+        source: crate::QemuAsyncDriverHealthError,
+    },
+    /// The nominal Target binding could not lend its actual cleanup origin.
+    #[error("retain Target RAM cleanup: {source}")]
+    RamCleanupLender {
+        /// Actual canonical binding/roster refusal without diagnostic erasure.
+        #[source]
+        source: BackendOperationalCause,
+    },
+    /// A saved lender refusal precedes this same stage's independent cleanup.
+    #[error("{first}; later staged RAM cleanup: {later}")]
+    RamStageCleanup {
+        /// First actual nominal-lender failure, retained without another issuer.
+        first: BackendOperationalCause,
+        /// Later actual physical cleanup or saved-original history.
+        #[source]
+        later: Box<QemuNodeError>,
+    },
+    /// Staged source publication retained its actual first and independent posts.
+    #[error(
+        "staged RAM source preparation refused: first={first:?}; observations={observations:?}; completed={completed}"
+    )]
+    RamStagePreparation {
+        /// Actual source creation failure retained before diagnostic formatting.
+        #[source]
+        first: Option<BackendOperationalCause>,
+        /// Saved Preparation entry, independent post, and completion result.
+        observations: [Option<HostSupervisionError>; 3],
+        /// Actual completion effect, which does not erase a negative post.
+        completed: bool,
+    },
+    /// The actual monitor close returned a refusal or ambiguous result.
+    #[error("staged RAM monitor close: {source}")]
+    RamStageClose {
+        /// Complete first channel failure before any later factual return.
+        #[source]
+        source: QemuNodeChannelError,
+    },
+    /// Actual RAM returns remain incomplete in this same node.
+    #[error("node RAM cleanup remains physically pending")]
+    RamCleanupPending,
+    /// Complete raw RAM leaf histories retained after their independent posts.
+    #[error("node RAM cleanup refused: sources={sources:?}; controllers={controllers:?}")]
+    RamCleanup {
+        /// Actual staged target cleanup under its distinct saved lender.
+        #[source]
+        stage: Option<Box<QemuNodeError>>,
+        /// Latest independently observed stage failure; the first stays above.
+        stage_latest: Option<Box<QemuNodeError>>,
+        /// Source histories for staged, direct and installed-fork bodies.
+        sources: [Option<crate::ram_source::QemuRamSourceStopHistory>; 3],
+        /// Direct and fork controller-return histories.
+        controllers: [Option<crate::ram_control::RamControlRetirementHistory>; 2],
+    },
+    /// An initiating process failure and independent RAM return both refused.
+    #[error("{first}; independent RAM return: {ram}")]
+    ShutdownAndRam {
+        /// Actual initiating process or Original failure.
+        first: Box<QemuNodeError>,
+        /// Independent actual RAM cleanup history.
+        ram: Box<QemuNodeError>,
+    },
+    /// A timed-out channel failed before its independent physical shutdown.
+    #[error("{first}; crash status={status:?}; shutdown refusal: {shutdown}")]
+    ShutdownAfterChannelFailure {
+        /// Actual initiating channel error, preserved before cleanup.
+        first: QemuNodeChannelError,
+        /// Original crash classification before cleanup was attempted.
+        status: QemuNodeRunStatus,
+        /// Independently retained physical cleanup failure.
+        shutdown: Box<QemuNodeError>,
+    },
+    /// Child cleanup retains its actual live-check and completion observations.
+    #[error(
+        "child cleanup Original refused: begin={begin:?}; phases={observations:?}; completion={completion:?}; report={report:?}"
+    )]
+    ShutdownOriginal {
+        /// One-time cleanup entry refusal, if entry did not succeed.
+        begin: Option<HostSupervisionError>,
+        /// First precheck and independent post for each ordered shutdown rung.
+        observations: [(Option<HostSupervisionError>, Option<HostSupervisionError>); 5],
+        /// Whether the actual completion effect occurred before its post.
+        completion_effect: bool,
+        /// Same operation's independent completion/post result.
+        completion: Option<HostSupervisionError>,
+        /// Actual rung outputs retained before their statuses were interpreted.
+        report: QemuShutdownReport,
     },
     /// The owned-child shutdown ladder failed.
     #[error("owned QEMU child shutdown failed: {source}")]
@@ -251,13 +730,103 @@ pub enum QemuNodeError {
 }
 
 impl QemuNodeError {
-    /// Attaches a node channel role to a channel-local error.
+    fn shutdown_original_failure(&self) -> Option<HostSupervisionError> {
+        match self {
+            Self::ChannelSupervision { source, .. } => Some(*source),
+            Self::ShutdownOriginal {
+                begin,
+                observations,
+                completion,
+                ..
+            } => begin
+                .or_else(|| observations.iter().find_map(|(pre, post)| pre.or(*post)))
+                .or(*completion),
+            Self::ShutdownAndRam { first, .. } => first.shutdown_original_failure(),
+            Self::RamStagePreparation { observations, .. } => {
+                observations.iter().copied().flatten().next()
+            }
+            Self::RamCleanup {
+                stage,
+                sources,
+                controllers,
+                ..
+            } => {
+                if let Some(stage) = stage {
+                    return stage.shutdown_original_failure();
+                }
+                sources
+                    .iter()
+                    .flatten()
+                    .find_map(|history| {
+                        history
+                            .observations
+                            .iter()
+                            .find_map(|(pre, post)| pre.or(*post))
+                    })
+                    .or_else(|| {
+                        controllers
+                            .iter()
+                            .flatten()
+                            .find_map(|history| history.before.or(history.after))
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    /// Attaches a node channel role while preserving its typed cause or text.
     #[must_use]
     pub fn from_channel(plane: QemuNodeChannelPlane, source: QemuNodeChannelError) -> Self {
-        Self::Channel {
-            plane,
-            operation: source.operation,
-            message: source.message,
+        match source.detail {
+            ChannelFailureDetail::Supervision(supervision) => Self::ChannelSupervision {
+                plane,
+                operation: source.operation,
+                source: supervision,
+            },
+            ChannelFailureDetail::DecodeAdmission(admission) => Self::ChannelDecodeAdmission {
+                plane,
+                operation: source.operation,
+                source: admission,
+            },
+            ChannelFailureDetail::FingerprintSample(fingerprint) => {
+                Self::ChannelFingerprintSample {
+                    plane,
+                    operation: source.operation,
+                    source: fingerprint,
+                }
+            }
+            ChannelFailureDetail::MappedRegionAccess(access) => Self::ChannelMappedRegionAccess {
+                plane,
+                operation: source.operation,
+                source: access,
+            },
+            ChannelFailureDetail::QuantumNodeSlot { operation, source } => {
+                Self::ChannelQuantumNodeSlot {
+                    plane,
+                    operation,
+                    source,
+                }
+            }
+            ChannelFailureDetail::QuantumReportPending(source) => {
+                Self::ChannelQuantumReportPending { plane, source }
+            }
+            ChannelFailureDetail::Message(message) => Self::Channel {
+                plane,
+                operation: source.operation,
+                message,
+            },
+        }
+    }
+
+    /// Retains a source cleanup cause without replacing its worker allocation.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn from_ram_source_cleanup(
+        operation: &'static str,
+        source: crate::ram_source::QemuRamSourceError,
+    ) -> Self {
+        Self::RamSourceCleanup {
+            operation,
+            source: crate::QemuAsyncDriverHealthError::ram_source(source),
         }
     }
 
@@ -271,6 +840,7 @@ impl QemuNodeError {
     #[must_use]
     pub fn from_async_driver(source: QemuAsyncDriverError) -> Self {
         if let QemuAsyncDriverError::Runtime(runtime) = &source
+            && runtime.operational_supervision_post().is_none()
             && let Some((field, current, requested, configured, hard)) =
                 runtime.resource_limit_coordinates()
         {
@@ -318,6 +888,206 @@ impl QemuNodeError {
 
 impl From<QemuNodeError> for BackendError {
     fn from(error: QemuNodeError) -> Self {
+        let error = match error {
+            error @ QemuNodeError::ShutdownOriginal { .. } => {
+                let QemuNodeError::ShutdownOriginal {
+                    begin,
+                    observations,
+                    completion,
+                    ..
+                } = &error
+                else {
+                    return Self::Rejected {
+                        message: error.to_string(),
+                    };
+                };
+                let source = begin
+                    .or_else(|| {
+                        observations
+                            .iter()
+                            .find_map(|(before, after)| before.or(*after))
+                    })
+                    .or(*completion);
+                if let Some(source) = source {
+                    return Self::RetainedOperationalFailure {
+                        kind: operational_failure_kind(source),
+                        source: BackendOperationalCause::new(error),
+                    };
+                }
+                error
+            }
+            QemuNodeError::RamCleanup {
+                stage,
+                stage_latest,
+                mut sources,
+                controllers,
+            } => {
+                // A sole worker cause already owns its original allocation and
+                // lease. Reuse it instead of allocating another report owner.
+                let sole_worker = stage.is_none()
+                    && stage_latest.is_none()
+                    && controllers.iter().all(Option::is_none)
+                    && sources.iter().flatten().count() == 1
+                    && sources.iter().flatten().all(|history| {
+                        history.worker.is_some()
+                            && history.cancellation.is_none()
+                            && history.panic.is_none()
+                            && history.native.is_none()
+                            && !history.uncertain
+                            && history
+                                .observations
+                                .iter()
+                                .all(|(pre, post)| pre.is_none() && post.is_none())
+                    });
+                if sole_worker {
+                    for history in sources.iter_mut().flatten() {
+                        if let Some(worker) = history.worker.take() {
+                            let source = crate::QemuAsyncDriverHealthError::ram_source(
+                                crate::ram_source::QemuRamSourceError::WorkerFailed(worker),
+                            );
+                            return Self::RetainedOperationalFailure {
+                                kind: source.operational_kind(),
+                                source: source.into_backend_cause(),
+                            };
+                        }
+                    }
+                }
+                let kind = stage
+                    .as_ref()
+                    .map(|first| {
+                        first.shutdown_original_failure().map_or(
+                            BackendOperationalFailureKind::Unavailable,
+                            operational_failure_kind,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        sources
+                            .iter()
+                            .flatten()
+                            .find_map(|history| {
+                                history
+                                    .observations
+                                    .iter()
+                                    .find_map(|(pre, post)| pre.or(*post))
+                            })
+                            .or_else(|| {
+                                controllers
+                                    .iter()
+                                    .flatten()
+                                    .find_map(|history| history.before.or(history.after))
+                            })
+                            .map_or(
+                                BackendOperationalFailureKind::Unavailable,
+                                operational_failure_kind,
+                            )
+                    });
+                return Self::RetainedOperationalFailure {
+                    kind,
+                    source: BackendOperationalCause::new(QemuNodeError::RamCleanup {
+                        stage,
+                        stage_latest,
+                        sources,
+                        controllers,
+                    }),
+                };
+            }
+            error @ QemuNodeError::ShutdownAndRam { .. } => {
+                let kind = match &error {
+                    QemuNodeError::ShutdownAndRam { first, .. } => {
+                        first.shutdown_original_failure().map_or(
+                            BackendOperationalFailureKind::Unavailable,
+                            operational_failure_kind,
+                        )
+                    }
+                    _ => BackendOperationalFailureKind::Unavailable,
+                };
+                return Self::RetainedOperationalFailure {
+                    kind,
+                    source: BackendOperationalCause::new(error),
+                };
+            }
+            error @ (QemuNodeError::ChannelSupervision { .. }
+            | QemuNodeError::ChannelDecodeAdmission { .. }
+            | QemuNodeError::ChannelQuantumNodeSlot { .. }
+            | QemuNodeError::ChannelQuantumReportPending { .. }
+            | QemuNodeError::Shutdown { .. }
+            | QemuNodeError::ShutdownAfterChannelFailure { .. }
+            | QemuNodeError::RamCleanupLender { .. }
+            | QemuNodeError::RamStageCleanup { .. }
+            | QemuNodeError::RamStageClose { .. }
+            | QemuNodeError::RamStagePreparation { .. }
+            | QemuNodeError::RamCleanupPending) => {
+                return Self::RetainedOperationalFailure {
+                    kind: error.shutdown_original_failure().map_or(
+                        BackendOperationalFailureKind::Unavailable,
+                        operational_failure_kind,
+                    ),
+                    source: BackendOperationalCause::new(error),
+                };
+            }
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::OperationalHealth(source),
+            }
+            | QemuNodeError::RamSourceCleanup { source, .. } => {
+                return Self::RetainedOperationalFailure {
+                    kind: source.operational_kind(),
+                    source: source.into_backend_cause(),
+                };
+            }
+            QemuNodeError::AsyncDriver {
+                source:
+                    QemuAsyncDriverError::ChannelOriginalPost {
+                        source,
+                        original_after,
+                    },
+            } => {
+                let kind = source
+                    .operational_supervision_source()
+                    .unwrap_or(original_after);
+                return Self::RetainedOperationalFailure {
+                    kind: operational_failure_kind(kind),
+                    source: BackendOperationalCause::new(
+                        QemuAsyncDriverError::ChannelOriginalPost {
+                            source,
+                            original_after,
+                        },
+                    ),
+                };
+            }
+            QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::Runtime(runtime),
+            } => {
+                let kind = runtime
+                    .operational_supervision_source()
+                    .map(operational_failure_kind)
+                    .or_else(|| {
+                        runtime.operational_supervision_post().map(|post| {
+                            // Preserve the initiating typed capacity category,
+                            // while retaining the independent post in the same
+                            // error instead of projecting away its history.
+                            if runtime.resource_limit_coordinates().is_some()
+                                || runtime.fault_result_storage_coordinates().is_some()
+                                || runtime.fault_event_storage_coordinates().is_some()
+                            {
+                                BackendOperationalFailureKind::CapacityExhausted
+                            } else {
+                                operational_failure_kind(post)
+                            }
+                        })
+                    });
+                if let Some(kind) = kind {
+                    return Self::RetainedOperationalFailure {
+                        kind,
+                        source: BackendOperationalCause::new(runtime),
+                    };
+                }
+                QemuNodeError::AsyncDriver {
+                    source: QemuAsyncDriverError::Runtime(runtime),
+                }
+            }
+            error => error,
+        };
+
         match error {
             QemuNodeError::ResourceLimit {
                 field,
@@ -336,6 +1106,32 @@ impl From<QemuNodeError> for BackendError {
                 message: error.to_string(),
             },
         }
+    }
+}
+
+fn operational_failure_kind(source: HostSupervisionError) -> BackendOperationalFailureKind {
+    match source {
+        HostSupervisionError::DeadlineExpired { .. } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        } => BackendOperationalFailureKind::Canceled,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Expired,
+        } => BackendOperationalFailureKind::Expired,
+        HostSupervisionError::Terminal { .. } | HostSupervisionError::BorrowedOperation => {
+            BackendOperationalFailureKind::Terminal
+        }
+        HostSupervisionError::InvalidBudget
+        | HostSupervisionError::UnboundedInfrastructure { .. } => {
+            BackendOperationalFailureKind::InvalidPolicy
+        }
+        HostSupervisionError::RevisionConflict { .. } => {
+            BackendOperationalFailureKind::RevisionConflict
+        }
+        HostSupervisionError::CapacityExhausted => BackendOperationalFailureKind::CapacityExhausted,
+        HostSupervisionError::IdentityExhausted => BackendOperationalFailureKind::IdentityExhausted,
+        HostSupervisionError::ProgressRegressed => BackendOperationalFailureKind::ProgressRegressed,
+        HostSupervisionError::Unavailable => BackendOperationalFailureKind::Unavailable,
     }
 }
 

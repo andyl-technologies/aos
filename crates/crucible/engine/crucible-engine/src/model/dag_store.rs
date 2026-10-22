@@ -23,7 +23,7 @@ pub struct ContentHash {
 }
 
 impl ContentHash {
-    /// Computes the RFC-0010 DAG-store key for raw object bytes.
+    /// Computes the content-addressed DAG-store key for raw object bytes.
     ///
     /// This is the portable `DagStore` key function: equal bytes produce equal
     /// BLAKE3-backed keys across every backend.
@@ -35,7 +35,7 @@ impl ContentHash {
         }
     }
 
-    /// Computes the RFC-0010 DAG-store key from a raw object byte stream.
+    /// Computes the content-addressed DAG-store key from a raw object byte stream.
     /// # Errors
     /// Returns an I/O error when the reader cannot supply the complete object.
     pub fn from_reader(mut reader: impl std::io::Read) -> Result<Self, std::io::Error> {
@@ -54,6 +54,26 @@ impl ContentHash {
     #[must_use]
     pub fn from_canonical_material(domain: &str, material: &str) -> Self {
         canonical::content_hash_from_canonical_material(domain, material)
+    }
+
+    /// Computes a canonical-material hash from a borrowed display representation.
+    ///
+    /// Counts UTF-8 bytes before hashing the same representation, preserving the
+    /// length prefix and word boundaries of [`Self::from_canonical_material`]
+    /// without constructing an owned material buffer. The formatter must emit
+    /// the same bytes on both passes. An active decode budget admits the bounded
+    /// hashing scratch before either pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the active decode budget cannot fund
+    /// scratch, or a serialization error if formatting fails, overflows the
+    /// length counter, or changes length between passes.
+    pub fn from_canonical_display(
+        domain: &str,
+        material: &impl std::fmt::Display,
+    ) -> Result<Self, EngineError> {
+        canonical::hash_material(domain, material)
     }
 
     /// Computes a stable content hash from already encoded canonical bytes.

@@ -304,6 +304,16 @@ where
     }
     let status = run_status_from_observation(run_plan, &observation)?;
 
+    // Records share their immutable payload owners; only the new inline array
+    // requires credit on this workflow's original metadata account.
+    let mut reproduction_commands = Vec::new();
+    crucible_session::engine::owned_decode::reserve_vec(
+        &mut reproduction_commands,
+        reproduction.commands.len(),
+    )
+    .map_err(CliError::MetadataAdmission)?;
+    reproduction_commands.extend(reproduction.commands.iter().cloned());
+
     Ok(RunWorkflowReport {
         status,
         execution_owner: RunExecutionOwner::Session,
@@ -324,8 +334,10 @@ where
         execution_fingerprints,
         resolved_effect_trace,
         acknowledged_commands,
-        reproduction_commands: reproduction.commands,
+        reproduction_commands,
         watch_statuses: observation.watch_statuses,
+        input_custody: crucible_session::engine::owned_decode::current_custody(),
+        output_custody: Vec::new(),
     })
 }
 
@@ -1229,6 +1241,7 @@ pub(super) fn backend_command_outcome(
         reproduction_artifact: None,
         side_reproduction_artifacts: Vec::new(),
         host_scheduler_preemption: Vec::new(),
+        _output_custody: crucible_session::engine::owned_decode::current_custody(),
     }
 }
 

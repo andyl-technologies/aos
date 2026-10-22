@@ -329,7 +329,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API nondeterminism gate for ${taskList}";
+      description = "Crucible API nondeterminism gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

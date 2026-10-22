@@ -17,7 +17,13 @@ fn gate_single_vm_fingerprint_uses_an_unmodified_guest() -> Result<(), Box<dyn E
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
 
     assert!(gate.contains("import ./phase7-production-rust-plugin-flight.nix"));
-    assert!(flight.contains("${pkgs.linux}/boot/vmlinuz-*"));
+    let kernel_setup =
+        fs::read_to_string(root.join("tests/crucible/_ram-native-kernel-setup.nix"))?;
+    assert!(flight.contains("pagingKernelSetupScript = import ./_ram-native-kernel-setup.nix"));
+    assert!(flight.contains("${pagingKernelSetupScript}"));
+    assert!(kernel_setup.contains("for kernel in ${pkgs.linux}/boot/vmlinuz-*"));
+    assert!(kernel_setup.contains("export CRUCIBLE_PAGING_KERNEL=\"$kernel\""));
+    assert!(!kernel_setup.contains("pkgs.crucible-guest"));
     assert!(!flight.contains("pkgs.crucible-guest"));
     assert!(spec.contains("- [x] **T-HARN-7**"));
     assert!(spec.contains("ordinary pass boots one unmodified"));

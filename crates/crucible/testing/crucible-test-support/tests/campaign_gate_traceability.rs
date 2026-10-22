@@ -1,4 +1,4 @@
-//! Executable requirement-to-gate traceability for RFC-0020.
+//! Executable requirement-to-gate traceability for distributed campaigns.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for exact failure localization.
@@ -83,6 +83,29 @@ fn campaign_gate_catalog_is_complete_and_unambiguous() {
     assert_eq!(cataloged, referenced, "RFC-0020 gate catalog drift");
 }
 
+fn schema_gate_is_registered(name: &str) -> bool {
+    find_campaign_gate(name).is_some() || crucible_test_support::find_gate(name).is_some()
+}
+
+#[test]
+fn schema_gate_registration_preserves_pending_ram_qualification() {
+    assert!(schema_gate_is_registered("gate:campaign-model"));
+    assert!(!schema_gate_is_registered(
+        "gate:ram-runtime-policy-unknown"
+    ));
+
+    for name in ["gate:ram-runtime-policy", "gate:ram-policy-history"] {
+        assert!(schema_gate_is_registered(name));
+        let specification = crucible_test_support::ram_gates::find_ram_gate(name)
+            .expect("actual RAM gate catalog owner");
+        assert_eq!(
+            specification.gate.status,
+            crucible_test_support::GateStatus::CatalogOnly,
+            "schema registration cannot promote aggregate qualification"
+        );
+    }
+}
+
 #[test]
 fn schema_registry_assigns_versions_owners_and_compatibility_gates() {
     let mut names = BTreeSet::new();
@@ -114,7 +137,7 @@ fn schema_registry_assigns_versions_owners_and_compatibility_gates() {
 
         for gate in gates.split(',') {
             assert!(
-                find_campaign_gate(gate).is_some(),
+                schema_gate_is_registered(gate),
                 "{name} names unknown compatibility gate {gate}"
             );
         }

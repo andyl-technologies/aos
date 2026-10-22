@@ -1,0 +1,41 @@
+diff --git a/src/de/mod.rs b/src/de/mod.rs
+--- a/src/de/mod.rs
++++ b/src/de/mod.rs
+@@ -850,6 +850,37 @@
+     T::deserialize(&mut reader)
+ }
+ 
++/// Deserializes as CBOR using a supplied seed and caller-specific scratch.
++///
++/// The seed may borrow a format owner's allocation admission or other decoder
++/// context. That context remains owned by the caller; this function neither
++/// clones it nor retains it after deserialization. The returned value is the
++/// seed's actual output. Parsing and the recursion ceiling are identical to
++/// [`from_reader_with_buffer`].
++///
++/// # Errors
++/// Returns a reader, parser, recursion-limit, or seed error. This function does
++/// not provide allocation admission or certify a custom visitor's ownership.
++#[inline]
++pub fn from_reader_with_buffer_seed<'de, S, R>(
++    seed: S,
++    reader: R,
++    scratch_buffer: &mut [u8],
++) -> Result<S::Value, Error<R::Error>>
++where
++    S: de::DeserializeSeed<'de>,
++    R: Read,
++    R::Error: core::fmt::Debug,
++{
++    let mut reader = Deserializer {
++        decoder: reader.into(),
++        scratch: scratch_buffer,
++        recurse: 256,
++    };
++
++    seed.deserialize(&mut reader)
++}
++
+ /// Deserializes as CBOR from a type with [`impl ciborium_io::Read`](ciborium_io::Read), with
+ /// a specified maximum recursion limit.  Inputs that are nested beyond the specified limit
+ /// will result in [`Error::RecursionLimitExceeded`] .

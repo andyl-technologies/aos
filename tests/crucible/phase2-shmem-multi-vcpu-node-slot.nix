@@ -63,7 +63,7 @@
     failuresFor "crates/crucible/protocol/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "ABI version unchanged for multi-vCPU nodes";
-        needle = "pub const ABI_VERSION: u32 = 30;";
+        needle = "pub const ABI_VERSION: u32 = 33;";
       }
       {
         label = "region config uses VM node count";
@@ -164,8 +164,8 @@
         needle = "pub fn aggregate_multi_vcpu_deadline";
       }
       {
-        label = "minimum armed deadline accumulator";
-        needle = "min_deadline_ns";
+        label = "minimum armed picosecond deadline accumulator";
+        needle = "min_deadline_ps";
       }
       {
         label = "per-vCPU deadline reports stay plugin-side";
@@ -206,12 +206,16 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "multi-vCPU aggregate node clock";
-        needle = "retired-instruction count across all `N` vCPUs";
+        label = "multi-vCPU aggregate architectural progress";
+        needle = "The aggregate raw retired count MUST include all vCPUs";
       }
       {
-        label = "per-vCPU counts plugin-internal";
-        needle = "Per-vCPU retired counts are";
+        label = "per-vCPU counts remain fingerprint evidence";
+        needle = "per-vCPU counts retained only as separate fingerprint evidence";
+      }
+      {
+        label = "single aggregate logical scheduling clock";
+        needle = "scheduling axis MUST use one aggregate logical tick clock and one epoch";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [

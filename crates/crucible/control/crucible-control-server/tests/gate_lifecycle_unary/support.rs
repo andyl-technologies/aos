@@ -9,6 +9,7 @@ pub(super) fn lifecycle_control_plane()
         vec![catalog_entry()],
         |_scenario, _seed| NoopLoop,
     )
+    .with_decode_budget(crate::output_budget())
     .with_mailbox_capacity(LIFECYCLE_SESSION_MAILBOX_CAPACITY)
 }
 
@@ -80,6 +81,7 @@ impl QuantumLoop for RunningLoop {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::default(),
             scheduler_quiescence: None,
+            event_log_custody: Default::default(),
         })
     }
 }

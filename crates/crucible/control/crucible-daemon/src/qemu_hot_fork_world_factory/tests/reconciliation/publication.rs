@@ -6,6 +6,7 @@ use crucible_qemu_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_T
 
 #[test]
 fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
+    let _metadata_scope = component_metadata_scope();
     let scenario = guest_selectable_scenario();
     let (selectable_plan, pending_request) = pending_guest_selectable_plan();
     let first = scripted_hot_fork_source_with_state_for_test(
@@ -27,15 +28,14 @@ fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
     let input = execution_input_for_scenario_with_stop(scenario, StopCondition::NextChoice);
     let context = execution_context(&input, 0x72);
     let run_state = tempfile::tempdir().expect("run state");
-    let mut runner = QemuHotForkWorldExecutionRunner::new(
-        factory(
-            source_world,
-            input.lineage(),
-            run_state.path().to_path_buf(),
-            ScriptedWorldObservations::new(),
-        ),
-        QemuFreshModeledDriver::new(),
+    let factory = factory(
+        source_world,
+        input.lineage(),
+        run_state.path().to_path_buf(),
+        ScriptedWorldObservations::new(),
     );
+    factory.bind_component_context(&context);
+    let mut runner = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
 
     assert!(matches!(
         runner.try_execute(&input, &context),
@@ -49,6 +49,7 @@ fn short_source_horizon_refuses_budget_before_guest_choice_handoff() {
 
 #[test]
 fn second_adoption_failure_retains_first_adoption_and_complete_world() {
+    let _metadata_scope = component_metadata_scope();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
     let first_source_process = first.process_id();
@@ -73,7 +74,7 @@ fn second_adoption_failure_retains_first_adoption_and_complete_world() {
 
     reset_hot_fork_adoption_count_for_test();
     assert!(matches!(
-        factory.try_start(&input, &context),
+        factory.try_start_component(&input, &context),
         Err(AttemptWorkerFailure::Terminal(
             QemuProductionHotForkWorldLifecycleFactoryError::Lifecycle(_)
         ))
@@ -103,6 +104,7 @@ fn second_adoption_failure_retains_first_adoption_and_complete_world() {
 
 #[test]
 fn poisoned_source_owner_cannot_be_recovered_on_retry() {
+    let _metadata_scope = component_metadata_scope();
     let source = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("source");
     let (_nodes, source_world) =
         prepared_test_source_world(vec![source]).expect("prepared source world");
@@ -116,7 +118,10 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
         run_state.path().to_path_buf(),
         observations,
     );
-    let mut lifecycle = match factory.try_start(&input, &context).expect("start world") {
+    let mut lifecycle = match factory
+        .try_start_component(&input, &context)
+        .expect("start world")
+    {
         QemuHotForkWorldLifecycleStart::Started(lifecycle) => lifecycle,
         QemuHotForkWorldLifecycleStart::Declined => panic!("exact source world declined"),
     };
@@ -140,8 +145,38 @@ fn poisoned_source_owner_cannot_be_recovered_on_retry() {
     factory.quarantine(lifecycle);
 }
 
+// Moved fixture intermediates must leave the stack before repository execution
+// starts. A separate frame preserves the ordinary libtest stack and every owner.
+#[inline(never)]
+fn publication_worker(
+    source_world: ProductionVmHotForkSourceWorld,
+    store: &CampaignExecutorStore,
+    lineage: &CampaignLineage,
+    run_state_root: PathBuf,
+    observations: ScriptedWorldObservations,
+    fallback_calls: Arc<AtomicUsize>,
+) -> RepositoryAttemptWorker<
+    CrucibleExecutionModel<impl CrucibleExecutionRunner<Error: std::fmt::Debug>>,
+> {
+    let factory = factory(source_world, lineage, run_state_root, observations);
+    let component = factory.component_binding();
+    let hot_fork = QemuHotForkWorldExecutionRunner::new(factory, QemuFreshModeledDriver::new());
+    let router = QemuHotFirstExecutionRouter::new(
+        hot_fork,
+        NeverFallbackRunner {
+            calls: fallback_calls,
+        },
+    );
+    let model = CrucibleExecutionModel::new(
+        store.clone(),
+        operational::ComponentRunner::new(router, component),
+    );
+    RepositoryAttemptWorker::new(store.clone(), model)
+}
+
 #[test]
 fn published_observation_reconciliation_makes_the_exact_source_world_reusable() {
+    let _metadata_scope = component_metadata_scope();
     let (repository, store, lineage, attempt, _result, scenario) = repository_execution_fixture();
     let (selectable_plan, pending_request) = pending_guest_selectable_plan();
     let source_time_limit_ticks = pending_request
@@ -180,23 +215,14 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let run_state = tempfile::tempdir().expect("run state");
     let observations = ScriptedWorldObservations::new();
     let fallback_calls = Arc::new(AtomicUsize::new(0));
-    let hot_fork = QemuHotForkWorldExecutionRunner::new(
-        factory(
-            source_world,
-            &lineage,
-            run_state.path().to_path_buf(),
-            observations.clone(),
-        ),
-        QemuFreshModeledDriver::new(),
+    let mut worker = publication_worker(
+        source_world,
+        &store,
+        &lineage,
+        run_state.path().to_path_buf(),
+        observations.clone(),
+        Arc::clone(&fallback_calls),
     );
-    let router = QemuHotFirstExecutionRouter::new(
-        hot_fork,
-        NeverFallbackRunner {
-            calls: Arc::clone(&fallback_calls),
-        },
-    );
-    let model = CrucibleExecutionModel::new(store.clone(), router);
-    let mut worker = RepositoryAttemptWorker::new(store.clone(), model);
 
     let profile = ExecutorCompatibilityProfile::new(
         "crucible-test",
@@ -225,7 +251,8 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
         admission,
         epoch,
         ExecutorCapacity::new(1, 8, 8 << 30, 8 << 30, 64).expect("executor capacity"),
-    );
+    )
+    .with_component_operation_budgets();
     let submitted =
         ExecutorService::submit_attempt(&mut supervisor, &request).expect("submit exact discovery");
     assert!(matches!(
@@ -238,8 +265,13 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
     let checkpoints = ExactCheckpointStore::new(
         Arc::new(TestDurableCheckpointBackend::new()),
         8 * 1024 * 1024,
+        store.ram_retention_authority(),
     )
-    .expect("checkpoint store");
+    .expect("checkpoint store")
+    .with_ram_root_resources(
+        crate::exact_checkpoint_store::test_support::fixture_ram_root_resources()
+            .expect("finite component RAM-root credit"),
+    );
     let prepared = prepare_attempt_result(&store, &checkpoints, work).expect("prepare result");
     let PreparedAttemptWorkResult::Observation(prepared) = prepared else {
         panic!("driver returned an unexpected checkpoint")
@@ -340,6 +372,7 @@ fn published_observation_reconciliation_makes_the_exact_source_world_reusable() 
 
 #[test]
 fn target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation() {
+    let _metadata_scope = component_metadata_scope();
     let input = execution_input();
     let first =
         scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked).expect("first source");
@@ -395,6 +428,7 @@ fn target_world_resource_preflight_rejects_before_source_checkout_or_guard_insta
 
 #[test]
 fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resume_and_capture() {
+    let _metadata_scope = component_metadata_scope();
     let (_repository, _store, _lineage, _attempt, result, _scenario) =
         repository_execution_fixture();
     let input = execution_input();
@@ -407,7 +441,7 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
         RecordingUnavailableSourceWorldProvider {
             checkouts: Arc::clone(&checkouts),
         },
-        ScriptedWorldGuardFactory { observations },
+        ScriptedWorldGuardFactory::new(observations),
         run_state.path(),
         QemuShutdownPolicy::fast_test(),
         QemuAsyncDriverPolicy::fast_test(),
@@ -449,7 +483,7 @@ fn hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resu
 
     let checkpoint = ExactCheckpointId::try_from(ContentId::for_bytes(
         ObjectKind::ExactManifest,
-        5,
+        6,
         b"hot-first-resume",
     ))
     .expect("checkpoint id");

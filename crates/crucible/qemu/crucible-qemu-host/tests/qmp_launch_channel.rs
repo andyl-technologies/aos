@@ -38,12 +38,13 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
         qmp.socket_path("/var/run/crucible-node-7"),
         std::path::PathBuf::from("/var/run/crucible-node-7/crucible-qmp.sock")
     );
-    assert!(
-        command
-            .args()
-            .windows(2)
-            .any(|window| { window == ["-qmp", "unix:crucible-qmp.sock,server=on,wait=off"] })
-    );
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-qmp",
+                "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=on",
+            ]
+    }));
     assert_eq!(
         command
             .args()
@@ -62,7 +63,7 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
     let qmp_index = option_index(command.args(), "-qmp");
     assert!(material.contains(&format!("argv[{qmp_index}]=-qmp")));
     assert!(material.contains(&format!(
-        "argv[{}]=unix:crucible-qmp.sock,server=on,wait=off",
+        "argv[{}]=unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=on",
         qmp_index + 1
     )));
     assert!(!material.contains("/tmp/"));
@@ -136,7 +137,7 @@ fn qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels() {
     assert_eq!(command.gdbstub_channel(), Some(&gdbstub));
     assert_eq!(
         command.args()[qmp_index + 1],
-        "unix:crucible-qmp.sock,server=on,wait=off"
+        "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=on"
     );
     assert_eq!(
         command.args()[gdb_index + 1],
@@ -305,4 +306,23 @@ fn default_qemu_binary() -> &'static str {
 
 fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
     QemuLaunchArtifact::new(ContentHash::from_canonical_material(domain, path), path)
+}
+
+#[test]
+fn imported_qmp_descriptors_require_preserved_open_file_flags() {
+    for endpoint in [
+        "unix:crucible-qmp.sock,server=on,wait=off",
+        "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=off",
+        "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=",
+        "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=yes",
+    ] {
+        assert_qmp_rejected(
+            endpoint,
+            "QMP channel without imported descriptor flag preservation",
+        );
+    }
+    assert_qmp_duplicate_rejected(
+        "unix:crucible-qmp.sock,server=on,wait=off,fd-preserve-blocking=on,fd-preserve-blocking=off",
+        "fd-preserve-blocking",
+    );
 }

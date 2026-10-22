@@ -17,6 +17,8 @@ use thiserror::Error;
 
 use crate::content_store::{ContentId, ObjectKind};
 
+mod canonical;
+
 const MAGIC: &[u8; 8] = b"CRUCOBJE";
 const ENVELOPE_VERSION: u32 = 1;
 const MAX_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
@@ -28,6 +30,9 @@ const MAX_CHILDREN: usize = 65_536;
 /// Stable error while constructing or decoding a generic content envelope.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ContentEnvelopeError {
+    /// Original artifact resource authority refused an allocation.
+    #[error(transparent)]
+    DecodeAdmission(#[from] crate::owned_decode::DecodeAdmissionError),
     /// The input ended before its declared value was complete.
     #[error("content envelope is truncated")]
     Truncated,
@@ -159,28 +164,73 @@ impl ContentEnvelope {
         &self.body
     }
 
+    pub(crate) fn body_mut(&mut self) -> &mut [u8] {
+        &mut self.body
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn flip_body_byte_for_test(&mut self, index: usize) -> bool {
+        let Some(byte) = self.body.get_mut(index) else {
+            return false;
+        };
+        *byte ^= 1;
+        true
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn remove_last_body_byte_for_test(&mut self) -> bool {
+        self.body.pop().is_some()
+    }
+
     /// Returns canonical envelope bytes.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(self.encoded_len().unwrap_or(0));
-        bytes.extend_from_slice(MAGIC);
-        put_u32(&mut bytes, ENVELOPE_VERSION);
-        put_short_bytes(&mut bytes, self.schema_name.as_bytes());
-        put_u32(&mut bytes, self.schema_version);
-        put_u32(&mut bytes, self.children.len() as u32);
-        for child in &self.children {
-            put_short_bytes(&mut bytes, child.role.as_bytes());
-            put_short_bytes(&mut bytes, child.id.encode().as_bytes());
+        let length = self.encoded_len().unwrap_or(0);
+        if crate::owned_decode::charge_array::<u8>(length).is_err() {
+            return Vec::new();
         }
-        put_u64(&mut bytes, self.body.len() as u64);
-        bytes.extend_from_slice(&self.body);
+        let mut bytes = Vec::with_capacity(length);
+        self.emit_canonical(&mut |chunk| bytes.extend_from_slice(chunk));
         bytes
+    }
+
+    /// Writes canonical bytes into an owner paid by the supplied original.
+    ///
+    /// # Errors
+    /// Returns framing-length, original admission, allocation or boundary
+    /// failures before exposing a completed canonical image.
+    pub fn canonical_bytes_with_boundary(
+        &self,
+        original: &crate::owned_decode::DecodeBudget,
+        boundary: &mut dyn FnMut() -> Result<(), crate::content_store::StoreError>,
+    ) -> Result<crate::content_store::OwnedBlobBytes, crate::content_store::StoreError> {
+        let length = self
+            .encoded_len()
+            .map_err(|_| crate::content_store::StoreError::Quota)?;
+        crate::content_store::OwnedBlobBytes::write_with_boundary(
+            original,
+            length,
+            boundary,
+            |bytes| {
+                let mut position = 0;
+                self.emit_canonical(&mut |chunk| {
+                    bytes[position..position + chunk.len()].copy_from_slice(chunk);
+                    position += chunk.len();
+                });
+                Ok(position)
+            },
+        )
     }
 
     /// Computes the logical content identity for this exact envelope.
     #[must_use]
     pub fn content_id(&self, kind: ObjectKind) -> ContentId {
-        ContentId::for_bytes(kind, self.schema_version, &self.canonical_bytes())
+        ContentId::for_canonical_chunks(
+            kind,
+            self.schema_version,
+            self.encoded_len().unwrap_or(0) as u64,
+            |emit| self.emit_canonical(emit),
+        )
     }
 
     /// Decodes one strict bounded canonical envelope.
@@ -190,6 +240,18 @@ impl ContentEnvelope {
     /// Returns an error for malformed framing, invalid identifiers/child IDs,
     /// excessive sizes, duplicate or unsorted children, or alternate encoding.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContentEnvelopeError> {
+        Self::from_canonical_bytes_with_child_limit(bytes, MAX_CHILDREN)
+    }
+
+    /// Decodes an envelope with a tighter caller-owned child allocation limit.
+    ///
+    /// # Errors
+    /// Returns the same format errors as [`Self::from_canonical_bytes`], or a
+    /// child-count error before child allocation when the caller limit is exceeded.
+    pub fn from_canonical_bytes_with_child_limit(
+        bytes: &[u8],
+        maximum_children: usize,
+    ) -> Result<Self, ContentEnvelopeError> {
         if bytes.len() > MAX_ENVELOPE_BYTES {
             return Err(ContentEnvelopeError::LimitExceeded {
                 limit: "encoded-byte-count",
@@ -202,7 +264,7 @@ impl ContentEnvelope {
         let schema_name = decoder.string(MAX_SCHEMA_NAME_BYTES, "schema-name-bytes")?;
         let schema_version = decoder.u32()?;
         let child_count = decoder.u32()? as usize;
-        if child_count > MAX_CHILDREN {
+        if child_count > maximum_children.min(MAX_CHILDREN) {
             return Err(ContentEnvelopeError::LimitExceeded {
                 limit: "child-count",
             });
@@ -210,13 +272,19 @@ impl ContentEnvelope {
         let mut children = BTreeSet::new();
         let mut previous: Option<ContentChild> = None;
         for _ in 0..child_count {
+            crate::owned_decode::charge_bytes(
+                (16 * std::mem::size_of::<ContentChild>() + 512) as u64,
+            )?;
             let role = decoder.string(MAX_CHILD_ROLE_BYTES, "child-role-bytes")?;
-            let encoded_id = decoder.string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?;
-            let id = ContentId::parse(&encoded_id)
-                .map_err(|_| ContentEnvelopeError::InvalidContentId)?;
+            let encoded_id = decoder.borrowed_string(MAX_CONTENT_ID_BYTES, "content-id-bytes")?;
+            let id =
+                ContentId::parse(encoded_id).map_err(|_| ContentEnvelopeError::InvalidContentId)?;
             let child = ContentChild::new(role, id)?;
             if previous.as_ref().is_some_and(|prior| prior >= &child)
-                || !children.insert(child.clone())
+                || !children.insert({
+                    crate::owned_decode::charge_array::<u8>(child.role.len())?;
+                    child.clone()
+                })
             {
                 return Err(ContentEnvelopeError::NonCanonicalChildren);
             }
@@ -227,6 +295,7 @@ impl ContentEnvelope {
                 limit: "body-byte-count",
             })?;
         let body_bytes = decoder.take(body_len)?;
+        crate::owned_decode::charge_array::<u8>(body_len)?;
         let mut body = Vec::new();
         body.try_reserve_exact(body_len)
             .map_err(|_| ContentEnvelopeError::LimitExceeded {
@@ -236,10 +305,43 @@ impl ContentEnvelope {
         decoder.finish()?;
 
         let envelope = Self::new(schema_name, schema_version, children, body)?;
-        if envelope.canonical_bytes() != bytes {
+        if !envelope.matches_canonical_bytes(bytes) {
             return Err(ContentEnvelopeError::NonCanonical);
         }
         Ok(envelope)
+    }
+
+    /// Bounds requested decoder allocation payloads before reading an envelope.
+    ///
+    /// The bound includes input, body and canonical re-encoding, child roles,
+    /// transient parsing strings and conservative B-tree nodes. Each element is
+    /// charged as a complete node with eleven key slots and twelve edges, the
+    /// audited AOS Rust standard library layout. Allocator and process overhead
+    /// require independently authored resident headroom.
+    ///
+    /// # Errors
+    /// Returns an error when the bounds exceed the format limits or overflow.
+    pub fn decoding_memory_bound(
+        maximum_bytes: usize,
+        maximum_children: usize,
+    ) -> Result<u64, ContentEnvelopeError> {
+        if maximum_bytes > MAX_ENVELOPE_BYTES || maximum_children > MAX_CHILDREN {
+            return Err(limit("decode-memory"));
+        }
+        let node = 11_usize
+            .checked_mul(std::mem::size_of::<ContentChild>())
+            .and_then(|bytes| bytes.checked_add(16 * std::mem::size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(MAX_CHILD_ROLE_BYTES))
+            .ok_or_else(|| limit("decode-memory"))?;
+        let bytes = maximum_bytes
+            .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(maximum_children.checked_mul(node)?))
+            .and_then(|bytes| bytes.checked_add(MAX_SCHEMA_NAME_BYTES + MAX_CONTENT_ID_BYTES))
+            .and_then(|bytes| bytes.checked_add(2 * MAX_CHILD_ROLE_BYTES))
+            .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<ContentChild>()))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>()))
+            .ok_or_else(|| limit("decode-memory"))?;
+        u64::try_from(bytes).map_err(|_| limit("decode-memory"))
     }
 
     fn encoded_len(&self) -> Result<usize, ContentEnvelopeError> {
@@ -252,7 +354,7 @@ impl ContentEnvelope {
         for child in &self.children {
             length = length
                 .checked_add(2 + child.role.len())
-                .and_then(|value| value.checked_add(2 + child.id.encode().len()))
+                .and_then(|value| value.checked_add(2 + child.id.encoded_len()))
                 .ok_or(limit("encoded-byte-count"))?;
         }
         length
@@ -304,6 +406,16 @@ impl<'a> Decoder<'a> {
         maximum: usize,
         limit_name: &'static str,
     ) -> Result<String, ContentEnvelopeError> {
+        self.borrowed_string(maximum, limit_name).map(str::to_owned)
+    }
+
+    // Scalar child identities cannot retain the text. Borrow its exact input
+    // span while preserving the original pre-parse string admission.
+    fn borrowed_string(
+        &mut self,
+        maximum: usize,
+        limit_name: &'static str,
+    ) -> Result<&'a str, ContentEnvelopeError> {
         let length = u16::from_be_bytes(
             self.take(2)?
                 .try_into()
@@ -314,7 +426,8 @@ impl<'a> Decoder<'a> {
         }
         let value = std::str::from_utf8(self.take(length)?)
             .map_err(|_| ContentEnvelopeError::InvalidIdentifier)?;
-        Ok(value.to_owned())
+        crate::owned_decode::charge_array::<u8>(length)?;
+        Ok(value)
     }
 
     fn finish(self) -> Result<(), ContentEnvelopeError> {
@@ -339,14 +452,17 @@ fn validate_identifier(value: &str, maximum: usize) -> Result<(), ContentEnvelop
     }
 }
 
+#[cfg(test)]
 fn put_u32(bytes: &mut Vec<u8>, value: u32) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
+#[cfg(test)]
 fn put_u64(bytes: &mut Vec<u8>, value: u64) {
     bytes.extend_from_slice(&value.to_be_bytes());
 }
 
+#[cfg(test)]
 fn put_short_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
     bytes.extend_from_slice(&(value.len() as u16).to_be_bytes());
     bytes.extend_from_slice(value);
@@ -391,6 +507,34 @@ mod tests {
                 .schema_version(),
             3
         );
+    }
+
+    #[test]
+    fn tighter_child_limit_preserves_generic_envelope_support() {
+        let envelope = ContentEnvelope::new(
+            "crucible.test-record",
+            1,
+            BTreeSet::from([
+                ContentChild::new("left", content("left")).expect("left"),
+                ContentChild::new("right", content("right")).expect("right"),
+            ]),
+            Vec::new(),
+        )
+        .expect("envelope");
+        let bytes = envelope.canonical_bytes();
+
+        assert!(ContentEnvelope::from_canonical_bytes_with_child_limit(&bytes, 1).is_err());
+        assert_eq!(
+            ContentEnvelope::from_canonical_bytes_with_child_limit(&bytes, 2)
+                .expect("within typed limit"),
+            envelope
+        );
+        assert_eq!(
+            ContentEnvelope::from_canonical_bytes(&bytes).expect("generic envelope unchanged"),
+            envelope
+        );
+        assert!(ContentEnvelope::decoding_memory_bound(usize::MAX, usize::MAX).is_err());
+        assert!(ContentEnvelope::decoding_memory_bound(4096, 2).expect("bound") > 3 * 4096);
     }
 
     #[test]

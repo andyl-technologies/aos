@@ -13,9 +13,11 @@ This guide maps those surfaces and their support boundaries.
 | `crucible-control-api` | Versioned lifecycle/control values, RPC encoding, shared streaming contracts | Sharing typed requests and responses across control transports. |
 | `crucible-control-client` | Control-client interface and RPC implementation | Writing a control-plane client. |
 | `crucible-control-server` | In-process clients, actor dispatch, streaming, HTTP/2 serving | Embedding sessions or implementing a control-plane service. |
-| `crucible-daemon` | Production VM lifecycle and daemon composition | Integrating production execution and restore. |
+| `crucible-daemon` | Production VM construction, runtime, checkpoints, and retained backend cleanup | Composing production execution, restore, and retained-source ownership. |
 | `crucible-qemu-host` | Apache host-side patched-QEMU lifecycle adapter | Normally reached through the daemon; examples/gates may use it directly. |
 | `crucible-store` | Shared content-addressed DAG-store implementations | Sharing immutable execution artifacts and checkpoint material. |
+| `crucible-ram` | Logical RAM codecs, BLAKE3 Merkle identity, and write epochs | Sharing portable RAM identities and authenticated page state. |
+| `crucible-host-resources` | Host resource permits, operational supervision, and RAM placement policy | Composing admitted host RAM and paging resources. |
 | `crucible-qemu-protocol` / `crucible-qemu-shmem` | Versioned process-boundary protocols | Infrastructure integration, not ordinary scenario authoring. |
 
 Do not link QEMU implementation details into Apache-side model code. The Unix
@@ -59,10 +61,14 @@ needed. `ScenarioDefForm` is the canonical exchange form used by the CLI.
 
 ## Artifact injection and production lifecycle
 
-`ProductionVmLifecycleConfig` configures the matched QEMU/plugin processes and
-accepts world and signal artifact stores. Direct integrations use it for inputs
+`crucible_daemon::ProductionVmLifecycleConfig` configures the matched
+QEMU/plugin processes and accepts world and signal artifact stores. Direct integrations use it for inputs
 that ordinary `run`/`verify` do not obtain from `--store`, including normalized
 recordings and spatial/sampler objects.
+
+The production constructors and artifact helpers below are exported by
+`crucible_daemon`; `crucible_api` retains the backend-independent session and
+control contracts.
 
 `build_production_vm_lifecycle_loop_with_launcher` constructs a fresh live
 session through a caller-supplied production node launcher.

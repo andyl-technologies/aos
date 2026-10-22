@@ -15,7 +15,9 @@ impl RegionAllocation {
     ///
     /// Returns [`SchedulerWakePublicationError`] when the consumer slot does not
     /// exist, an inbox ring is missing or full, or the node slot rejects the
-    /// scheduler ceiling or futex wake.
+    /// scheduler ceiling, generation reservation or futex wake. An occupied
+    /// or exhausted generation refuses before any inbox write. A later failure
+    /// can retain published inputs without committing a new ceiling or wake.
     pub fn publish_scheduler_inputs_and_advance(
         &mut self,
         dst_slot: u32,
@@ -28,6 +30,7 @@ impl RegionAllocation {
         let enqueue_plans = self.scheduler_wake_enqueue_plans(dst_slot, pending_inputs)?;
         self.preflight_scheduler_wake_capacity(&enqueue_plans)?;
 
+        let publication = self.slots[dst_index].reserve_scheduler_advance()?;
         for plan in enqueue_plans {
             let frame = &pending_inputs[plan.input_index].frame;
             self.ring_headers[plan.ring_index]
@@ -35,8 +38,7 @@ impl RegionAllocation {
                 .map_err(RegionAllocationAccessError::from)?;
         }
 
-        let wake = self.slots[dst_index]
-            .publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;
+        let wake = publication.publish(ceiling, stop_condition)?;
         Ok(SchedulerWakePublication {
             dst_slot,
             pending_input_count: pending_inputs.len(),

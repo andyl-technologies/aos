@@ -400,6 +400,9 @@ fn input_scheduler(count: u64) -> SingleScheduler {
 
 #[test]
 fn actual_actor_resolves_reached_input_before_settlement_without_double_staging() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let scheduler = input_scheduler(1);
         let request = QuantumRequest {
@@ -424,6 +427,9 @@ fn actual_actor_resolves_reached_input_before_settlement_without_double_staging(
 
 #[test]
 fn failed_or_partial_input_staging_retains_owner_without_step_or_floor() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for refused in [1, 2] {
         let scheduler = input_scheduler(2);
         let configuration = scheduler.configuration().clone();
@@ -472,6 +478,9 @@ fn failed_or_partial_input_staging_retains_owner_without_step_or_floor() {
 
 #[test]
 fn equal_payload_events_keep_distinct_keys_after_uncertain_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let mut scheduler = input_scheduler(2);
         for event in &mut scheduler.pending_events {
@@ -533,6 +542,9 @@ fn equal_payload_events_keep_distinct_keys_after_uncertain_publication() {
 
 #[test]
 fn modeled_io_queue_resolution_cannot_substitute_for_backend_consumption() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let consumer = scheduler_node("a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("disk", SchedulingNodeKind::Disk);
     let due = io_completion_event(20, &consumer, &producer, 1, &[9]);
@@ -569,6 +581,9 @@ fn modeled_io_queue_resolution_cannot_substitute_for_backend_consumption() {
 
 #[test]
 fn unclassified_backend_refuses_admitted_run_without_advancing() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let admission = prepare(&test_scheduler(vec![runnable("a")], Vec::new())).runs[0]
         .admission
         .clone();
@@ -641,6 +656,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, InputBoundaryBackend> for 
 
 #[test]
 fn later_input_wave_observes_peer_output_between_actual_clipped_dispatches() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         assert_peer_delivery_order(workers, false, None);
     }
@@ -648,6 +666,9 @@ fn later_input_wave_observes_peer_output_between_actual_clipped_dispatches() {
 
 #[test]
 fn retained_original_run_observes_canonical_peer_commit_before_next_input_wave() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         assert_peer_delivery_order(workers, true, None);
     }
@@ -655,6 +676,9 @@ fn retained_original_run_observes_canonical_peer_commit_before_next_input_wave()
 
 #[test]
 fn failed_later_wave_retains_original_owner_and_prior_canonical_input_history() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         assert_peer_delivery_order(workers, true, Some(2));
     }
@@ -912,6 +936,9 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
 
 #[test]
 fn later_input_is_staged_only_after_earlier_peer_semantic_publication() {
+    let _decode_scope = crate::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for workers in [1, 2] {
         let input = scheduler_node("z-input", SchedulingNodeKind::Vm);
         let producer = scheduler_node("network", SchedulingNodeKind::Network);

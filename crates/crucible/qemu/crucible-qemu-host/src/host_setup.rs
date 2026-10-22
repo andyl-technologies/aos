@@ -1,21 +1,20 @@
 //! Host-side QEMU plugin setup handoff.
 //!
-//! This module consumes the Linux spawn descriptors, initializes the shared
-//! memory memfd with the typed Crucible region image, runs the blocking
-//! `Hello`/`Setup`/`SetupAck` protocol over a real Unix socket, and retains the
+//! This module retains the already initialized spawn descriptors and observes
+//! their authenticated pre-exec handover before running the blocking
+//! `Hello`/`SetupAck` protocol over a real Unix socket, and retains the
 //! descriptors needed by later scheduler/runtime code. It intentionally stops
 //! before deterministic guest execution.
 
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 use crucible_qemu_protocol::{
     CONTROL_PROTOCOL_VERSION, ControlLifecycleIoError, ControlLifecycleState,
     ControlLifecycleStream, HostHandshakeConfig, NegotiatedHandshake, SchedulableNodeSetup,
-    SetupDescriptorFds,
     app_random_branch_plan::AppRandomBranchPlan,
-    plugin_setup_plan::{PluginSetupPlan, PluginSetupPlanError},
+    plugin_setup_plan::PluginSetupPlan,
     selectable_catalog_plan::{
         SelectableCatalogPlan, SelectableCatalogPlanError, SelectablePlanContinuation,
         SelectablePlanLimits,
@@ -28,11 +27,10 @@ use crucible_qemu_shmem::{
     FaultCommandKind, FaultHardwareErrorCapabilityManifestV1, FaultInterruptCapabilityManifestV1,
     FaultRegisterCapabilityManifestV1, FaultResultStatus, FaultSystemCapabilityManifestV1,
     FaultTargetManifestKind, FaultTargetManifestQueryV1, FaultTransportError,
-    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
-    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
-    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
-    enqueue_fault_command, fault_capability_manifest_digest, mmap_setup_region,
-    validate_setup_region_header,
+    MappedSetupRegionAccessError, RegionConfig, RegionLayoutError, RegionSetupValidationError,
+    SetupRegionMapError, ValidatedSetupRegion, decode_fault_capability_manifest,
+    dequeue_fault_result, enqueue_fault_command, fault_capability_manifest_digest,
+    mmap_setup_region,
 };
 use thiserror::Error;
 
@@ -53,6 +51,7 @@ use admission::{
 #[derive(Debug)]
 pub struct QemuHostPluginSetup {
     control: ControlLifecycleStream<UnixStream>,
+    _service_lease: Option<crucible_host_resources::host_services::HostServiceLease>,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     negotiated: NegotiatedHandshake,
@@ -69,6 +68,7 @@ pub struct QemuHostPluginSetup {
     system_manifest: FaultSystemCapabilityManifestV1,
     ready_markers: std::collections::BTreeSet<crucible_engine::model::FaultObjectId>,
     selectable_catalog_plan: SelectableCatalogPlan,
+    _launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl QemuHostPluginSetup {
@@ -299,6 +299,19 @@ impl QemuHostPluginSetup {
 }
 
 impl QemuPluginIpcControlChannel for QemuHostPluginSetup {
+    fn send_quit_supervised(
+        &mut self,
+        guard: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.control
+            .host_send_quit_with_writer(|stream, frame| {
+                crate::plugin_control::write_supervised_control_frame(stream, frame, guard)
+            })
+            .map_err(|source| {
+                QemuNodeChannelError::new("send supervised plugin Quit", source.to_string())
+            })
+    }
+
     fn send_quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.control.host_send_quit().map_err(|source| {
             QemuNodeChannelError::new("send plugin control Quit", source.to_string())
@@ -346,14 +359,18 @@ pub fn complete_qemu_host_plugin_setup(
 
 /// Completes setup with one current-version composite plugin plan.
 ///
-/// Control protocol v3 sends the complete composite setup plan in the third
-/// descriptor.
+/// Control protocol v5 sends the complete composite setup plan in the third
+/// descriptor and the same process generation as the validated launch arguments.
+/// Descriptor transfer and region initialization are completed by the retained
+/// genuine pre-exec owner. This continuation requires its completed-write receipt
+/// and sends no new descriptor aliases. The plugin still authenticates its same
+/// carrier before mapping the current plan and workspace roles.
 ///
 /// # Errors
 ///
 /// Returns [`QemuHostPluginSetupError`] for the failures documented by
-/// [`complete_qemu_host_plugin_setup`], or when the selected canonical plan
-/// body cannot be encoded, populated, or sealed before descriptor handoff.
+/// [`complete_qemu_host_plugin_setup`], or when the current pre-exec handover
+/// receipt is absent. Absence refuses before mapping or protocol I/O.
 pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     resources: QemuSpawnSetupResources,
     config: RegionConfig,
@@ -361,9 +378,20 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
     required_capabilities: &QemuFaultCapabilityRequirement,
     plugin_setup_plan: &PluginSetupPlan,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
-    let allocation = RegionAllocation::new(config)
+    #[cfg(target_os = "linux")]
+    let mut resources = resources;
+    #[cfg(target_os = "linux")]
+    let preexec_receipt = resources.take_preexec_receipt();
+    #[cfg(not(target_os = "linux"))]
+    let preexec_receipt: Option<crucible_qemu_protocol::PreexecSetupHandover> = None;
+    let preexec_receipt =
+        preexec_receipt.ok_or(QemuHostPluginSetupError::NativeSetupHandoverRequired)?;
+    #[cfg(target_os = "linux")]
+    let _workspace_body = resources.take_device_digest_workspace();
+    // The authentic pre-exec owner already initialized the region and queued
+    // its sole carrier. This continuation commits only the completed-write fact.
+    let layout = crucible_qemu_shmem::RegionLayout::for_config(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
-    let layout = allocation.layout();
     if resources.region_len() != layout.region_size {
         return Err(QemuHostPluginSetupError::RegionLengthMismatch {
             spawn_region_len: resources.region_len(),
@@ -371,22 +399,28 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         });
     }
 
-    let bytes = allocation
-        .setup_region_bytes()
-        .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
-    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    // Declare custody before bare descriptors so every error drops it last.
+    let launch_cleanup = resources.launch_cleanup();
+    let service_lease = resources.host_service_lease().cloned();
+    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash, _) =
+        resources.into_parts();
     if required_capabilities
         .target_manifest()
         .is_some_and(|required| required.node_hash() != fault_node_hash)
     {
         return Err(QemuHostPluginSetupError::AdmissionTargetIdentityMismatch);
     }
-    write_shmem_setup_region(shmem_fd.as_raw_fd(), &bytes)?;
-    let region = validate_setup_region_header(allocation.header().snapshot(), layout.region_size)
-        .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
-
     let mut admission_region = mmap_setup_region(shmem_fd.as_fd(), region_len)
         .map_err(|source| QemuHostPluginSetupError::AdmissionMap { source })?;
+    let region = admission_region
+        .validate_header()
+        .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
+    let actual_layout = admission_region
+        .layout()
+        .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
+    if actual_layout != layout {
+        return Err(QemuHostPluginSetupError::RegionGeometryMismatch);
+    }
     enqueue_capability_query(&mut admission_region, slot_index, fault_node_hash)?;
     if required_capabilities.target_manifest().is_some() {
         enqueue_target_manifest_query(
@@ -453,19 +487,8 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             node_count: layout.node_count,
         })
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
-    let setup_plan_bytes = plugin_setup_plan
-        .encode()
-        .map_err(|source| QemuHostPluginSetupError::PluginSetupPlan { source })?;
-    let plugin_setup_plan_fd = sealed_plugin_setup_plan_fd(&setup_plan_bytes)?;
     control
-        .host_send_setup_with_descriptors(
-            region_len,
-            SetupDescriptorFds {
-                shmem_fd: shmem_fd.as_raw_fd(),
-                wake_fd: wake_fd.as_raw_fd(),
-                plugin_setup_plan_fd: plugin_setup_plan_fd.as_raw_fd(),
-            },
-        )
+        .host_commit_preexec_setup(preexec_receipt)
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
     let setup_ack = control
         .host_accept_setup_ack()
@@ -549,6 +572,7 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
 
     Ok(QemuHostPluginSetup {
         control,
+        _service_lease: service_lease,
         shmem_fd,
         wake_fd,
         negotiated,
@@ -565,123 +589,16 @@ pub fn complete_qemu_host_plugin_setup_with_plugin_setup_plan(
         system_manifest,
         ready_markers: required_capabilities.ready_markers().clone(),
         selectable_catalog_plan: plugin_setup_plan.selectable_catalog_plan().clone(),
+        _launch_cleanup: launch_cleanup,
     })
-}
-
-fn sealed_plugin_setup_plan_fd(bytes: &[u8]) -> Result<OwnedFd, QemuHostPluginSetupError> {
-    let name = c"crucible-plugin-setup-plan";
-    let raw_fd = unsafe {
-        // SAFETY: `name` is a live NUL-terminated C string and memfd_create
-        // returns a new descriptor or -1 without retaining the pointer.
-        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
-    };
-    if raw_fd < 0 {
-        return Err(setup_io_error(
-            "create plugin setup-plan memfd",
-            io::Error::last_os_error(),
-        ));
-    }
-    let fd = unsafe {
-        // SAFETY: successful memfd_create returned one uniquely owned descriptor.
-        OwnedFd::from_raw_fd(raw_fd)
-    };
-    let length = libc::off_t::try_from(bytes.len()).map_err(|_error| {
-        setup_io_error(
-            "size plugin setup-plan memfd",
-            io::Error::new(io::ErrorKind::InvalidInput, "setup plan is too large"),
-        )
-    })?;
-    let status = unsafe {
-        // SAFETY: `fd` is a live memfd and `length` is range-checked.
-        libc::ftruncate(fd.as_raw_fd(), length)
-    };
-    if status != 0 {
-        return Err(setup_io_error(
-            "size plugin setup-plan memfd",
-            io::Error::last_os_error(),
-        ));
-    }
-    write_shmem_setup_region(fd.as_raw_fd(), bytes).map_err(|error| match error {
-        QemuHostPluginSetupError::Io { source, .. } => {
-            setup_io_error("write plugin setup-plan memfd", source)
-        }
-        other => other,
-    })?;
-    let seals = libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
-    let status = unsafe {
-        // SAFETY: `fd` is a live sealable memfd and `seals` is the reviewed
-        // immutable-descriptor policy.
-        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, seals)
-    };
-    if status != 0 {
-        return Err(setup_io_error(
-            "seal plugin setup-plan memfd",
-            io::Error::last_os_error(),
-        ));
-    }
-    Ok(fd)
-}
-
-fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
-    let mut written = 0;
-    while written < bytes.len() {
-        let offset = libc::off_t::try_from(written).map_err(|_error| {
-            setup_io_error(
-                "compute shmem setup write offset",
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "setup region write offset cannot fit off_t",
-                ),
-            )
-        })?;
-        let result = unsafe {
-            // SAFETY: `fd` is a live memfd retained by setup resources, the
-            // source slice is valid for the requested byte count, and `pwrite`
-            // does not mutate Rust-managed memory.
-            libc::pwrite(
-                fd,
-                bytes[written..].as_ptr().cast::<libc::c_void>(),
-                bytes.len() - written,
-                offset,
-            )
-        };
-        if result < 0 {
-            let source = io::Error::last_os_error();
-            if source.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(setup_io_error("write setup region to shmem memfd", source));
-        }
-        let count = usize::try_from(result).map_err(|_error| {
-            setup_io_error(
-                "convert shmem setup write count",
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "setup region pwrite returned an invalid byte count",
-                ),
-            )
-        })?;
-        if count == 0 {
-            return Err(setup_io_error(
-                "write setup region to shmem memfd",
-                io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "setup region pwrite wrote zero bytes",
-                ),
-            ));
-        }
-        written += count;
-    }
-    Ok(())
-}
-
-fn setup_io_error(operation: &'static str, source: io::Error) -> QemuHostPluginSetupError {
-    QemuHostPluginSetupError::Io { operation, source }
 }
 
 /// An error produced while running host-side plugin setup.
 #[derive(Debug, Error)]
 pub enum QemuHostPluginSetupError {
+    /// The current authenticated setup carrier was not queued before execution.
+    #[error("current native pre-exec setup handover is required")]
+    NativeSetupHandoverRequired,
     /// The requested shared-memory layout could not be allocated.
     #[error("setup shared-memory layout failed")]
     RegionLayout {
@@ -698,31 +615,14 @@ pub enum QemuHostPluginSetupError {
         /// Byte length computed from the setup region configuration.
         layout_region_len: u64,
     },
-    /// The setup region image could not be serialized.
-    #[error("setup shared-memory serialization failed")]
-    RegionSerialization {
-        /// Underlying serialization error.
-        source: RegionSerializationError,
-    },
+    /// The actual initialized region does not match the requested configuration.
+    #[error("initialized shared-memory geometry differs from the setup configuration")]
+    RegionGeometryMismatch,
     /// The default setup path could not build its empty selectable plan.
     #[error("empty selectable catalog plan construction failed: {source}")]
     SelectableCatalogPlan {
         /// Canonical selectable-plan failure.
         source: SelectableCatalogPlanError,
-    },
-    /// The negotiated composite plugin setup plan could not be encoded.
-    #[error("composite plugin setup plan encoding failed: {source}")]
-    PluginSetupPlan {
-        /// Canonical composite-plan failure.
-        source: PluginSetupPlanError,
-    },
-    /// A host-side descriptor or memfd write operation failed.
-    #[error("{operation} failed: {source}")]
-    Io {
-        /// Operation being attempted.
-        operation: &'static str,
-        /// Underlying OS error.
-        source: io::Error,
     },
     /// The locally initialized setup region failed ABI validation.
     #[error("setup shared-memory validation failed")]
@@ -843,7 +743,7 @@ pub(crate) mod tests {
 
     use std::error::Error;
     use std::fs::File;
-    use std::io::Read;
+    use std::io::{self, Read};
     use std::os::fd::AsFd;
     use std::os::unix::fs::FileExt;
     use std::thread;
@@ -855,13 +755,13 @@ pub(crate) mod tests {
     };
     use crucible_qemu_shmem::{ABI_VERSION, RegionLayout, mmap_setup_region};
 
-    use crate::spawn::create_test_spawn_resource_pair;
+    use crate::spawn::{create_test_spawn_resource_pair, prepare_test_preexec_setup};
 
     const EVENTFD_WAKE_PROBE: u64 = 7;
 
     #[test]
     fn qemu_host_rejects_an_unsupported_plugin_abi() {
-        assert_eq!(ABI_VERSION, 30);
+        assert_eq!(ABI_VERSION, 33);
         let unsupported_abi = u32::MAX;
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
@@ -889,15 +789,24 @@ pub(crate) mod tests {
     {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
 
-        let mut setup = complete_qemu_host_plugin_setup(
+        let mut setup = match complete_qemu_host_plugin_setup(
             resources.into_setup_resources(),
             config,
             0,
             &QemuFaultCapabilityRequirement::abi_boundary_v1(),
-        )?;
+        ) {
+            Ok(setup) => setup,
+            Err(error) => {
+                let peer = plugin_peer
+                    .join()
+                    .map_err(|_| "plugin setup peer panicked")?;
+                return Err(format!("host setup failed: {error}; plugin peer: {peer:?}").into());
+            }
+        };
 
         assert_eq!(
             setup.control_state(),
@@ -940,12 +849,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn missing_prequeue_receipt_refuses_without_a_late_descriptor_send()
+    -> Result<(), Box<dyn Error>> {
+        let config = RegionConfig::new(1, 4);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, mut peer) = create_test_spawn_resource_pair(layout.region_size)?;
+        let error = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )
+        .err()
+        .ok_or("missing prequeue receipt unexpectedly completed setup")?;
+
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::NativeSetupHandoverRequired
+        ));
+        peer.set_nonblocking(true)?;
+        let mut bytes = [0_u8; 61];
+        match peer.read(&mut bytes) {
+            Ok(0) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            result => return Err(format!("unissued setup wrote control data: {result:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
     fn qemu_host_plugin_setup_rejects_spawn_region_length_mismatch_before_protocol()
     -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, _plugin_socket) =
+        let (mut resources, _plugin_socket) =
             create_test_spawn_resource_pair(layout.region_size + 4096)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
 
         let error = complete_qemu_host_plugin_setup(
             resources.into_setup_resources(),
@@ -973,7 +912,8 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, _plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let required = QemuFaultCapabilityRequirement::live_gate_v1(
             crate::LivePluginGuestArchitecture::X86_64,
             "qemu64",
@@ -998,7 +938,8 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let required = QemuFaultCapabilityRequirement::abi_boundary_v1();
         let mut observed = required.rows().to_vec();
         let _omitted_boundary = observed
@@ -1030,7 +971,8 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, false));
 
         let error = complete_qemu_host_plugin_setup(
@@ -1060,12 +1002,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn qemu_host_plugin_setup_rejects_peer_close_during_descriptor_handoff()
-    -> Result<(), Box<dyn Error>> {
+    fn qemu_host_plugin_setup_rejects_peer_close_before_setup_ack() -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let plugin_peer = thread::spawn(move || -> Result<(), String> {
+            let _setup = crucible_qemu_protocol::recv_setup_with_descriptors(plugin_socket.as_raw_fd())
+                .map_err(|error| error.to_string())?;
             let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
                 .map_err(|error| error.to_string())?;
             plugin
@@ -1084,7 +1028,7 @@ pub(crate) mod tests {
             &QemuFaultCapabilityRequirement::abi_boundary_v1(),
         )
         .err()
-        .ok_or("setup should reject a peer close during descriptor handoff")?;
+        .ok_or("setup should reject a peer close before setup acknowledgement")?;
 
         assert!(matches!(error, QemuHostPluginSetupError::Control { .. }));
         plugin_peer
@@ -1099,7 +1043,8 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn Error>> {
         let config = RegionConfig::new(1, 4);
         let layout = RegionLayout::for_config(config)?;
-        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let (mut resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        prepare_test_preexec_setup(&mut resources, config)?;
         let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, true));
 
         let error = complete_qemu_host_plugin_setup(
@@ -1141,6 +1086,19 @@ pub(crate) mod tests {
         plugin_socket: UnixStream,
         rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
+        plugin_peer_complete_setup_after_ack(plugin_socket, rows, |_| Ok(()))
+    }
+
+    /// Executes a mock peer action after actual prequeue receive and SetupAck.
+    ///
+    /// This component fixture issues no native Source or backend qualification.
+    pub(crate) fn plugin_peer_complete_setup_after_ack(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
+        after_ack: impl FnOnce(&crucible_qemu_shmem::MappedSetupRegion) -> Result<(), String>,
+    ) -> Result<ValidatedSetupRegion, String> {
+        let setup = crucible_qemu_protocol::recv_setup_with_descriptors(plugin_socket.as_raw_fd())
+            .map_err(|error| error.to_string())?;
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
         let negotiated = plugin
@@ -1156,8 +1114,8 @@ pub(crate) mod tests {
             ));
         }
 
-        let setup = plugin
-            .plugin_recv_setup_with_descriptors()
+        plugin
+            .plugin_commit_preexec_setup()
             .map_err(|error| error.to_string())?;
         let mut mapped = mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
             .map_err(|error| error.to_string())?;
@@ -1171,7 +1129,8 @@ pub(crate) mod tests {
         File::from(setup.descriptors.plugin_setup_plan_fd)
             .read_to_end(&mut setup_plan_bytes)
             .map_err(|error| error.to_string())?;
-        PluginSetupPlan::decode(&setup_plan_bytes).map_err(|error| error.to_string())?;
+        PluginSetupPlan::decode_preexec_parts(&setup_plan_bytes)
+            .map_err(|error| error.to_string())?;
 
         publish_capability_result(&mut mapped, rows).map_err(|error| error.to_string())?;
         publish_system_manifest_result(&mut mapped).map_err(|error| error.to_string())?;
@@ -1182,6 +1141,7 @@ pub(crate) mod tests {
         plugin
             .enter_run_via_shared_memory()
             .map_err(|error| error.to_string())?;
+        after_ack(&mapped)?;
         plugin
             .plugin_read_run_control_frame()
             .map_err(|error| error.to_string())?;
@@ -1193,6 +1153,8 @@ pub(crate) mod tests {
         plugin_socket: UnixStream,
         corrupt_region: bool,
     ) -> Result<Option<String>, String> {
+        let setup = crucible_qemu_protocol::recv_setup_with_descriptors(plugin_socket.as_raw_fd())
+            .map_err(|error| error.to_string())?;
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
         plugin
@@ -1201,8 +1163,8 @@ pub(crate) mod tests {
                 abi_version: ABI_VERSION,
             })
             .map_err(|error| error.to_string())?;
-        let setup = plugin
-            .plugin_recv_setup_with_descriptors()
+        plugin
+            .plugin_commit_preexec_setup()
             .map_err(|error| error.to_string())?;
         let shmem = File::from(setup.descriptors.shmem_fd);
         let region_error = if corrupt_region {

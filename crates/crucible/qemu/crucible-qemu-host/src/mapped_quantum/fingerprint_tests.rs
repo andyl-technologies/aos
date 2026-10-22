@@ -85,3 +85,226 @@ fn black_box_fingerprint_rejects_incomplete_samples() {
     empty.vcpu_count = 0;
     assert!(black_box_execution_fingerprint(&node, &empty).is_err());
 }
+
+struct RejectFingerprintNetworkSends;
+
+impl crucible_engine::SchedulerSendAuthorizer for RejectFingerprintNetworkSends {
+    fn authorize_cross_node_send(
+        &self,
+        _producer: &crucible_engine::SchedulerNodeId,
+        _consumer: &crucible_engine::SchedulerNodeId,
+    ) -> Result<crucible_engine::SchedulerSendAuthorization, crucible_engine::SchedulerError> {
+        panic!("fingerprint observation must not authorize a network send");
+    }
+}
+
+fn mapped_fingerprint_channel()
+-> Result<(QemuMappedQuantumShmemHotPath, MappedSetupRegion), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    use crucible_qemu_shmem::{RegionAllocation, RegionConfig, mmap_setup_region};
+
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
+    let layout = allocation.layout();
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    let producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let config = QemuQuantumShmemConfig::new(
+        crucible_engine::NodeId {
+            name: String::from("fingerprint-node"),
+        },
+        0,
+    );
+    let channel =
+        QemuMappedQuantumShmemHotPath::new(config, region, RejectFingerprintNetworkSends)?;
+    Ok((channel, producer))
+}
+
+#[test]
+fn mapped_snapshot_borrows_existing_configuration_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    let expected = producer.node_slot(0)?.snapshot();
+
+    let (snapshot, counts) = TestAllocationObserver::count(|| {
+        channel.with_hot_path("observe fingerprint boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
+        })
+    });
+
+    assert_eq!(snapshot?, expected);
+    assert_eq!(counts.allocations, 0, "{counts:?}");
+    assert_eq!(counts.reallocations, 0, "{counts:?}");
+    assert!(!counts.overflow);
+    Ok(())
+}
+
+#[test]
+fn mapped_fingerprint_boundary_refusal_retains_coordinates_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    let current = 4096 * crucible_qemu_shmem::TICKS_PER_INSTRUCTION;
+    producer.node_slot(0)?.publish_pause_quiesced(current, 0)?;
+
+    for (sample_icount, relation, retryable) in [
+        (current - 1, "behind", true),
+        (current + 1, "ahead of", false),
+    ] {
+        let sample = FingerprintSample {
+            sample_icount,
+            ..sample()
+        };
+        producer.fingerprint_sample(0)?.publish(&sample)?;
+        let expected = format!(
+            "execution_fingerprint failed: black-box fingerprint sample at icount {sample_icount} is {relation} current boundary {current}"
+        );
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            QemuShmemHotPathChannel::execution_fingerprint(&mut channel)
+        });
+
+        let error = result.expect_err("a different boundary cannot supply this fingerprint");
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert_eq!(error.to_string(), expected);
+        let expected_source = if retryable {
+            crate::QemuFingerprintSampleError::BehindBoundary {
+                sample_icount,
+                current_icount: current,
+            }
+        } else {
+            crate::QemuFingerprintSampleError::AheadOfBoundary {
+                sample_icount,
+                current_icount: current,
+            }
+        };
+        assert_eq!(error.fingerprint_sample_source(), Some(expected_source));
+        assert_eq!(error.is_retryable(), retryable);
+        assert!(error.bounded_timeout().is_none());
+        assert_eq!(producer.fingerprint_sample(0)?.snapshot(), Some(sample));
+        assert_eq!(
+            producer.fingerprint_sample(0)?.pending_capture_request_v1(),
+            None
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn mapped_region_refusal_preserves_actual_cause_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::error::Error as _;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use crucible_qemu_shmem::MappedSetupRegionAccessError;
+
+    for (vm_slot, router_slot) in [(u32::MAX, 31), (0, 0)] {
+        let (mut channel, producer) = mapped_fingerprint_channel()?;
+        let before = producer.node_slot(0)?.snapshot();
+        channel.config.vm_slot = vm_slot;
+        channel.config.router_slot = router_slot;
+        let expected = MappedSetupRegionAccessError::UnknownDirectedRing {
+            src_slot: router_slot,
+            dst_slot: vm_slot,
+        };
+        let called = std::cell::Cell::new(false);
+
+        let ((result, node), counts) = TestAllocationObserver::count(|| {
+            let result = channel.with_hot_path("mapped observation", |_hot_path| {
+                called.set(true);
+                Ok(())
+            });
+            let node = result.as_ref().err().cloned().map(|source| {
+                crate::QemuNodeError::from_channel(
+                    crate::QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                )
+            });
+            (result, node)
+        });
+
+        let error = result.expect_err("invalid mapped coordinates must refuse");
+        let node = node.expect("the actual channel refusal must reach the Node");
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert!(!called.get());
+        assert_eq!(
+            error.to_string(),
+            "mapped observation failed: mapped QEMU quantum shared-memory access failed"
+        );
+        assert_eq!(
+            node.to_string(),
+            "shmem hot path channel operation mapped observation failed: mapped QEMU quantum shared-memory access failed"
+        );
+        assert_eq!(error.mapped_region_access_source(), Some(&expected));
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<MappedSetupRegionAccessError>()),
+            Some(&expected)
+        );
+        assert_eq!(
+            node.source()
+                .and_then(|source| source.downcast_ref::<MappedSetupRegionAccessError>()),
+            Some(&expected)
+        );
+        assert!(
+            matches!(&node, crate::QemuNodeError::ChannelMappedRegionAccess { source, .. } if source == &expected)
+        );
+        assert!(!error.is_retryable());
+        assert!(error.bounded_timeout().is_none());
+        assert_eq!(producer.node_slot(0)?.snapshot(), before);
+
+        // The existing final scheduler diagnostic remains outside this carrier
+        // measurement; no new operational classification or authority is issued.
+        assert!(matches!(
+            crucible_engine::BackendError::from(node),
+            crucible_engine::BackendError::Rejected { .. }
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn mapped_read_observations_preserve_reports_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    producer.node_slot(0)?.publish_pause_quiesced(4096, 0)?;
+    let expected = producer.node_slot(0)?.snapshot();
+
+    for _ in 0..2 {
+        let ((current, calibration, witness, idle), counts) = TestAllocationObserver::count(|| {
+            (
+                QemuShmemHotPathChannel::current_icount(&mut channel),
+                QemuShmemHotPathChannel::logical_time_calibration(&mut channel),
+                QemuShmemHotPathChannel::virtual_timer_fire_witness(&mut channel),
+                QemuShmemHotPathChannel::idle_state(&mut channel),
+            )
+        });
+
+        assert_eq!(
+            current?,
+            crucible_engine::Icount {
+                retired: expected.current_icount
+            }
+        );
+        let calibration = calibration?;
+        assert_eq!(calibration.logical_icount, expected.current_icount);
+        assert_eq!(calibration.raw_icount, expected.logical_time_raw_icount);
+        assert_eq!(witness?, expected.virtual_timer_witness);
+        assert_eq!(idle?, crate::quantum::idle_state_from_snapshot(expected));
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert_eq!(producer.node_slot(0)?.snapshot(), expected);
+    }
+    Ok(())
+}

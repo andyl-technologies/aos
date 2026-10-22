@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Filesystem-backed [`DagStore`] using the RFC-0010 two-level layout.
+/// Filesystem-backed [`DagStore`] using the two-level content-key layout.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LocalDagStore {
     root: PathBuf,

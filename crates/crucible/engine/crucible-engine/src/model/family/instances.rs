@@ -434,12 +434,15 @@ impl ReproductionArtifact {
     /// The returned value records the causal-subsequence digest and fork-point
     /// index, not the full event log. Replaying the artifact can therefore
     /// recompute the log and compare against this compact record.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn event_log_debug_artifact(
         &self,
         fork_point: EventLogOffset,
         entries: &[crate::scheduler::SchedulerEventLogEntry],
-    ) -> ReproductionEventLogArtifact {
+    ) -> Result<ReproductionEventLogArtifact, EngineError> {
         self.event_log_debug_artifact_with_segments(fork_point, entries, Vec::new())
     }
 
@@ -449,19 +452,22 @@ impl ReproductionArtifact {
     /// keys. They let a shared store fetch retained log bytes, but replay
     /// correctness still comes from recomputing the log from the embedded
     /// scenario and schedule.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns the original metadata admission or canonical rendering refusal.
     pub fn event_log_debug_artifact_with_segments<I>(
         &self,
         fork_point: EventLogOffset,
         entries: &[crate::scheduler::SchedulerEventLogEntry],
         shared_store_segments: I,
-    ) -> ReproductionEventLogArtifact
+    ) -> Result<ReproductionEventLogArtifact, EngineError>
     where
         I: IntoIterator<Item = ContentHash>,
     {
-        let projection = crate::scheduler::event_log_causal_projection(entries);
+        let projection = crate::scheduler::event_log_causal_projection(entries)?;
         let coverage_fingerprint = coverage_fingerprint_from_event_log(entries);
-        ReproductionEventLogArtifact::from_causal_projection(
+        Ok(ReproductionEventLogArtifact::from_causal_projection(
             self.id,
             fork_point,
             projection.content_hash(),
@@ -469,7 +475,7 @@ impl ReproductionArtifact {
             projection.len(),
             coverage_fingerprint,
             shared_store_segments,
-        )
+        ))
     }
 
     /// Replays the artifact and checks a reconstructed event log against metadata.
@@ -491,7 +497,7 @@ impl ReproductionArtifact {
     {
         let reduction = self.replay()?;
         let reproduced_entries = replay_log(self, &reduction)?;
-        let reproduced = crate::scheduler::event_log_causal_projection(&reproduced_entries);
+        let reproduced = crate::scheduler::event_log_causal_projection(&reproduced_entries)?;
         let reproduced_coverage_fingerprint =
             coverage_fingerprint_from_event_log(&reproduced_entries);
         Ok(ReproductionEventLogReplay {

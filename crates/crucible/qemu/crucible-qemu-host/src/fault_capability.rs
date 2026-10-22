@@ -1334,6 +1334,39 @@ mod tests {
                 )
                 .is_ok()
         );
+        assert_eq!(
+            requirement.rows_for_manifests(
+                Some(&manifest),
+                None,
+                Some(&hardware_error_manifest),
+                None,
+                None,
+            ),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let mut node_without_clocks = node.clone();
+        node_without_clocks.clock_sources.clear();
+        let without_clocks =
+            QemuFaultCapabilityRequirement::current_v1_for_node(&node_without_clocks)
+                .unwrap_or_else(|error| panic!("absent clock declarations should bind: {error}"));
+        assert!(
+            without_clocks
+                .target_manifest()
+                .and_then(QemuTargetManifestRequirement::exact_clock_manifest)
+                .is_none()
+        );
+        assert!(
+            without_clocks
+                .rows_for_manifests(
+                    Some(&manifest),
+                    None,
+                    Some(&hardware_error_manifest),
+                    None,
+                    None,
+                )
+                .is_ok()
+        );
         assert!(requirement.ready_markers().contains(
             &FaultObjectId::parse("guest-ready").unwrap_or_else(|error| {
                 panic!("test ready marker should be canonical: {error}")

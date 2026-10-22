@@ -15,6 +15,9 @@ use crucible_engine::{
 
 #[test]
 fn observed_state_materializes_only_checked_event_log_prefix() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let console = ObservableEvent::console_output(time(5), node("db-0"), b"ready\n".to_vec());
     let scheduled_key = scheduled_event_key(6, "db-0", "client", 3);
     let delivery_key = delivery_event_key(6, "db-0", "client", 3);
@@ -110,7 +113,8 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
     let expected_observable_events = state.observable_events().to_vec();
     let expected_ordering_facts = state.ordering_facts().to_vec();
 
-    let borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
+    let borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves)
+        .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"));
     let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoLeaves);
     assert_eq!(borrowed.point(), pass.point());
     assert_eq!(borrowed.observed_state(), pass.observed_state());
@@ -126,6 +130,9 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
 
 #[test]
 fn borrowed_projection_preserves_event_timer_and_once_histories() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crucible_engine::{
         Action, Condition, Event, EventGraph, EventGraphState, EventId, SimDuration, TimerId,
         TriggerActionApplication,
@@ -148,7 +155,9 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     )
     .expect("initial boundary should validate");
     let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
-    let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
+    let initial_firings = initial_pass
+        .evaluate_event_graph(&initial, &mut EventGraphState::new())
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     let firing = initial_firings.as_slice()[0].clone();
     let prefix =
         crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
@@ -185,14 +194,30 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
         ),
         (once.clone(), true),
     ];
-    let mut owned = ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoLeaves);
-    let mut borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
+    let mut owned = ConditionEvaluationPass::from_log_prefix(
+        prefix
+            .try_clone_admitted()
+            .unwrap_or_else(|error| panic!("admitted fixture prefix copy: {error}")),
+        NoLeaves,
+    );
+    let mut borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves)
+        .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"));
 
     assert_eq!(borrowed.point(), owned.point());
     assert_eq!(borrowed.observed_state(), owned.observed_state());
     for (condition, expected) in conditions {
-        assert_eq!(owned.evaluate_assertion_condition(&condition), expected);
-        assert_eq!(borrowed.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(
+            owned
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
+        assert_eq!(
+            borrowed
+                .evaluate_assertion_condition(&condition)
+                .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}")),
+            expected
+        );
     }
     assert_eq!(borrowed.once_latches(), &[Condition::at(time(13))]);
     assert_eq!(borrowed.once_latches(), owned.once_latches());
@@ -205,8 +230,12 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     .expect("completion graph should validate");
     let mut owned_state = EventGraphState::new();
     let mut borrowed_state = EventGraphState::new();
-    let borrowed_firings = borrowed.evaluate_event_graph(&graph, &mut borrowed_state);
-    let owned_firings = owned.evaluate_event_graph(&graph, &mut owned_state);
+    let borrowed_firings = borrowed
+        .evaluate_event_graph(&graph, &mut borrowed_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
+    let owned_firings = owned
+        .evaluate_event_graph(&graph, &mut owned_state)
+        .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"));
     assert_eq!(borrowed_firings.len(), 1);
     assert_eq!(borrowed_firings.as_slice()[0].action(), &Action::Pass);
     assert_eq!(borrowed_firings, owned_firings);
@@ -222,12 +251,20 @@ fn borrowed_projection_preserves_event_timer_and_once_histories() {
     )
     .expect("later boundary should validate");
     let mut restored = ConditionEvaluationPass::from_log_prefix_ref(&later, NoLeaves)
+        .unwrap_or_else(|error| panic!("admitted fixture prefix projection: {error}"))
         .with_once_latches(borrowed.once_latches().to_vec());
-    assert!(restored.evaluate_assertion_condition(&once));
+    assert!(
+        restored
+            .evaluate_assertion_condition(&once)
+            .unwrap_or_else(|error| panic!("fixture condition evaluation: {error}"))
+    );
 }
 
 #[test]
 fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     use crucible_engine::model::{FaultCoordinate, FaultObservation, FaultObservationKind};
 
     let observation = FaultObservation {
@@ -260,6 +297,9 @@ fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
 
 #[test]
 fn observed_state_rejects_future_invalid_or_non_dense_prefixes() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let future = ObservableEvent::console_output(time(9), node("db-0"), b"future\n".to_vec());
     let invalid_hash = crucible_engine::test_support::condition_entry_with_content_hash_for_test(
         boundary_entry(0, time(8)),
@@ -296,6 +336,9 @@ fn observed_state_rejects_future_invalid_or_non_dense_prefixes() {
 
 #[test]
 fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let trigger_source = include_str!("../src/trigger/conditions.rs");
     let observed_state_block = trigger_source
         .split("pub struct ObservedState")
@@ -341,6 +384,7 @@ fn observation_entry(
     event: &ObservableEvent,
 ) -> crucible_engine::SchedulerEventLogEntry {
     crucible_engine::test_support::condition_observation_entry_for_test(sequence, event)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn boundary_entry(sequence: u64, at: VirtualTime) -> crucible_engine::SchedulerEventLogEntry {
@@ -349,6 +393,7 @@ fn boundary_entry(sequence: u64, at: VirtualTime) -> crucible_engine::SchedulerE
         at,
         SchedulerEvaluationBoundaryKind::Quantum,
     )
+    .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn payload_entry(
@@ -357,6 +402,7 @@ fn payload_entry(
     payload: SchedulerEventLogPayload,
 ) -> crucible_engine::SchedulerEventLogEntry {
     crucible_engine::test_support::condition_payload_entry_for_test(sequence, at, payload)
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}"))
 }
 
 fn scheduled_event_key(

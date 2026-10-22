@@ -50,12 +50,15 @@
     direct ++ target;
 
   allowedEntrypoints = ["crucible-control-api" "crucible-control-client" "crucible-control-server" "crucible-session" "crucible-daemon"];
-  # RFC-0020 04a: the daemon owns the sole-writer actor and the local
+  # The daemon owns the sole-writer actor and the local
   # executor, so it hosts the engine directly like the session actor.
   engineHosts = ["crucible-session" "crucible-control-server" "crucible-daemon"];
   # Crates below the engine: data models, stores, protocols, and QEMU
   # process control. Depending on one of them reaches no engine.
   substrateCrates = [
+    "crucible-host-resources"
+    "crucible-ram"
+    "crucible-sqlite-heap"
     "crucible-test-support"
     "crucible-campaign"
     "crucible-store"

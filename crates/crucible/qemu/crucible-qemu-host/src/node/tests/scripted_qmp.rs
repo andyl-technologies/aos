@@ -3,6 +3,58 @@
 use super::*;
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    #[cfg(target_os = "linux")]
+    fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "bind checkpoint original",
+                    "missing scripted original transport",
+                )
+            })?
+            .bind(original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn begin_checkpoint_receiving(
+        &mut self,
+        receipt: crate::ram_control::CheckpointArmReceipt,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.checkpoint
+            .as_ref()
+            .ok_or_else(|| {
+                QemuNodeChannelError::new(
+                    "begin checkpoint receiving",
+                    "missing scripted original transport",
+                )
+            })?
+            .begin(receipt)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn resume_after_checkpoint_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        let owner = self.checkpoint.clone().ok_or_else(|| {
+            QemuNodeChannelError::new(
+                "original reset resume",
+                "missing scripted original transport",
+            )
+        })?;
+        owner.check(original).map_err(|error| {
+            QemuNodeChannelError::new("original reset resume", error.to_string())
+        })?;
+        self.resume_after_checkpoint()?;
+        owner
+            .check(original)
+            .map_err(|error| QemuNodeChannelError::new("original reset resume", error.to_string()))
+    }
+
     fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
         Ok(false)
     }
@@ -55,6 +107,10 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpStop);
+        #[cfg(target_os = "linux")]
+        if let Some(owner) = &self.checkpoint {
+            return owner.stop();
+        }
         if self.fail_stop {
             return Err(QemuNodeChannelError::new(
                 "stop_for_checkpoint",
@@ -66,6 +122,10 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpContinue);
+        #[cfg(target_os = "linux")]
+        if let Some(owner) = &self.checkpoint {
+            return owner.resume();
+        }
         Ok(())
     }
 
@@ -101,6 +161,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn commit_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
             .lock()
@@ -116,6 +177,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn abort_exact_checkpoint(
         &mut self,
         identity: crate::QmpCheckpointIdentity,
+        _capture_generation: u64,
         expected_committed: Option<crate::QmpCheckpointIdentity>,
     ) -> Result<crate::QmpCheckpointEpochState, QemuNodeChannelError> {
         self.log
@@ -679,7 +741,7 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 ),
             );
         }
-        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4)
+        let identity = crate::QmpHotForkChildProcessContractIdentity::new(1, 2, 9, 3, 4, 0)
             .map_err(QemuNodeChannelError::from)?;
         Ok(
             crate::QmpHotForkChildProcessContractState::one_template_staged(
@@ -900,6 +962,16 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     fn quit(&mut self) -> Result<(), QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::QmpQuit);
         Ok(())
+    }
+
+    fn quit_under_original(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<(), QemuNodeChannelError> {
+        original
+            .wait_slice()
+            .map_err(|source| QemuNodeChannelError::new("QMP quit", source.to_string()))?;
+        self.quit()
     }
 
     fn retire_process_scoped_endpoints_after_reap(&mut self) {

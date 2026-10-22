@@ -22,7 +22,11 @@ const BOUNDARY_LICENSE: &str = "MIT OR Apache-2.0";
 const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const DEBUG_GATEWAY_PACKAGE: &str = "crucible-qemu-debug-gateway";
-const BOUNDARY_PACKAGES: &[&str] = &["crucible-qemu-protocol", "crucible-qemu-shmem"];
+const BOUNDARY_PACKAGES: &[&str] = &[
+    "crucible-qemu-protocol",
+    "crucible-qemu-shmem",
+    "crucible-ram",
+];
 
 #[path = "gate_license_boundary/contributor_authorization.rs"]
 mod contributor_authorization;
@@ -411,7 +415,8 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
     )));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_ABI_VERSION_OFFSET 8u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_REGION_HEADER_SIZE 256u"));
-    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 256u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_SIZE 768u"));
+    assert!(header.contains("#define CRUCIBLE_SHMEM_NODE_SLOT_PARK_RETURN_OFFSET 512u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_RING_HEADER_SIZE 128u"));
     assert!(header.contains("#define CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE 4640u"));
 
@@ -425,7 +430,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 19_424);
+    assert_eq!(fixture.total_len, 19_936);
     Ok(())
 }
 
@@ -509,7 +514,7 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
 fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
-        "crucible-qemu-protocol" | "crucible-qemu-shmem" => BOUNDARY_LICENSE,
+        "crucible-qemu-protocol" | "crucible-qemu-shmem" | "crucible-ram" => BOUNDARY_LICENSE,
         _ => APACHE_LICENSE,
     }
 }

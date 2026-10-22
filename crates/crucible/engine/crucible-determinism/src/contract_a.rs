@@ -1,6 +1,6 @@
 //! Contract A's isolated single-VM driver.
 //!
-//! Spec index: RFC-0010 files 04, 09.
+//! Implementation contract: isolated deterministic single-VM execution over recorded inputs.
 //!
 //! This module owns the pure L0 driver for Contract A: a single node receives an
 //! already-recorded, icount-stamped input list and produces deterministic

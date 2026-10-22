@@ -20,7 +20,8 @@ use super::{
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
 const X86_WHITEBOX_MONITOR_QUERY: &[u8] = b"info mtree -f\nquit\n";
-const MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES: usize = 1024 * 1024;
+const MAXIMUM_X86_WHITEBOX_PROBE_OUTPUT_BYTES: usize =
+    crate::spawn::helper_receiver::MAXIMUM_PROBE_OUTPUT_BYTES;
 const X86_WHITEBOX_PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A setup-time proof for the architecture's frozen white-box instruction.
@@ -169,7 +170,7 @@ pub(crate) fn probe_x86_whitebox_setup_guarded(
         process_contract,
     )
     .map_err(|source| QemuWhiteboxSetupError::GuardedProbe { source })?;
-    validate_x86_whitebox_probe_output(output)
+    validate_x86_whitebox_probe_output(output.output())
 }
 
 fn x86_whitebox_probe_args(
@@ -349,7 +350,7 @@ fn is_root_overlay_path(path: &str) -> bool {
 }
 
 fn validate_x86_whitebox_probe_output(
-    output: std::process::Output,
+    output: &std::process::Output,
 ) -> Result<QemuWhiteboxSetupValidation, QemuWhiteboxSetupError> {
     if !output.status.success() {
         return Err(QemuWhiteboxSetupError::ProbeExit {
@@ -357,9 +358,9 @@ fn validate_x86_whitebox_probe_output(
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         });
     }
-    let stdout = String::from_utf8(output.stdout)
+    let stdout = std::str::from_utf8(&output.stdout)
         .map_err(|source| QemuWhiteboxSetupError::MonitorOutputUtf8 { source })?;
-    validate_x86_whitebox_hmp_mtree(&stdout)
+    validate_x86_whitebox_hmp_mtree(stdout)
 }
 
 /// Validates one captured QEMU flattened I/O-map report.
@@ -422,7 +423,7 @@ pub enum QemuWhiteboxSetupError {
     MonitorOutputUtf8 {
         /// UTF-8 conversion error.
         #[source]
-        source: std::string::FromUtf8Error,
+        source: std::str::Utf8Error,
     },
     /// The line covering the reserved port was malformed.
     #[error("QEMU I/O-map line covering the white-box port is malformed: `{line}`")]
@@ -446,18 +447,6 @@ pub enum QemuWhiteboxSetupError {
     },
 }
 
-impl QemuWhiteboxSetupError {
-    /// Extracts a contained probe whose bounded cleanup could not reap it.
-    #[must_use]
-    pub(crate) fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::GuardedProbe { source } => source.take_unreaped_child(),
-            _ => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +455,28 @@ mod tests {
         QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
         QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
     };
+
+    #[test]
+    fn malformed_probe_utf8_borrows_the_existing_capture_without_detaching_bytes() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: vec![0xff, b'a'],
+            stderr: Vec::new(),
+        };
+        let original_bytes = output.stdout.as_ptr();
+
+        let error = validate_x86_whitebox_probe_output(&output).unwrap_err();
+
+        assert!(matches!(
+            error,
+            QemuWhiteboxSetupError::MonitorOutputUtf8 { source }
+                if source.valid_up_to() == 0 && source.error_len() == Some(1)
+        ));
+        assert_eq!(output.stdout.as_ptr(), original_bytes);
+        assert_eq!(output.stdout, [0xff, b'a']);
+    }
 
     #[test]
     fn setup_probe_removes_both_exact_control_witness_selections() {

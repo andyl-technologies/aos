@@ -55,6 +55,9 @@ extern "C" fn poll_register_result(
 
 #[path = "fault_command_test/event_backpressure.rs"]
 mod event_backpressure;
+
+#[path = "fault_command_test/negative_custody.rs"]
+mod negative_custody;
 use event_backpressure::{assert_event_ring_backpressure, assert_pump};
 
 #[test]
@@ -268,6 +271,7 @@ fn bridge_preserves_raw_result_counts_and_logical_event_ticks() {
         prepared_commands: BTreeSet::new(),
         prepare_only_commands: BTreeSet::new(),
         pending_command: None,
+        custody: bridge::custody::EffectCustody::default(),
         initialized: true,
     };
     let command = |kind, sequence, node_hash| FaultCommandHeaderV1 {
@@ -676,8 +680,10 @@ fn instruction_evidence_fixture() -> (
     const HEADER: usize = 608;
     let instruction = [0x90_u8];
     let mut raw = vec![0_u8; HEADER + instruction.len()];
-    raw[..8].copy_from_slice(b"CRUCINS1");
-    raw[8..10].copy_from_slice(&3_u16.to_le_bytes());
+    raw[..8].copy_from_slice(b"CRUCINS2");
+    raw[8..10].copy_from_slice(&4_u16.to_le_bytes());
+    raw[604..606].copy_from_slice(&1_u16.to_le_bytes());
+    raw[607] = 1;
     raw[10..12].copy_from_slice(&(FaultCapabilityScope::X86_64 as u16).to_le_bytes());
     raw[12..16].copy_from_slice(&(FaultInstructionMutationKindV1::Skip as u32).to_le_bytes());
     raw[24..28].copy_from_slice(&0x0100_0001_u32.to_le_bytes());
@@ -836,7 +842,7 @@ fn instruction_replay_events_require_exact_sequence_and_terminalize_once() {
         &expectation,
     )
     .unwrap_or_else(|error| panic!("translate replay-sequence fixture: {error}"));
-    let mut evidence = FaultInstructionEvidenceV1::decode(&canonical)
+    let mut evidence = FaultInstructionEvidenceV2::decode(&canonical)
         .unwrap_or_else(|error| panic!("decode replay-sequence fixture: {error}"));
     evidence.mutation_kind = FaultInstructionMutationKindV1::Replay;
     evidence.replay_total = 2;
@@ -967,7 +973,7 @@ fn instruction_bridge_requires_actual_device_io_for_device_replay() {
         &expectation,
     )
     .unwrap_or_else(|error| panic!("device replay with an authenticated transaction: {error}"));
-    let decoded = FaultInstructionEvidenceV1::decode(&canonical)
+    let decoded = FaultInstructionEvidenceV2::decode(&canonical)
         .unwrap_or_else(|error| panic!("canonical device-replay evidence: {error}"));
     assert_eq!(
         FaultInstructionPortIoEvidenceV1::decode(&decoded.detail)

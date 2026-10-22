@@ -91,6 +91,7 @@ fn reopened_repository(
     CampaignRepository::with_component_authorities(
         blobs,
         fixture.refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         fixture.planner_authority.clone(),
         fixture.debugger_authority.clone(),
     )

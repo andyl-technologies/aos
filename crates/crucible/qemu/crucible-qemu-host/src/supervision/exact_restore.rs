@@ -1,9 +1,10 @@
 //! Atomic repository-rooted exact-checkpoint launch.
 //!
 //! This module owns the only operation that turns authenticated checkpoint
-//! streams into a live QEMU process. It retains the process contract, prepared
-//! directory, execution relation, and every input stream until all bytes have
-//! been authenticated and sealed. No writable materialization stage escapes.
+//! inputs into a live QEMU process. It retains the process contract, prepared
+//! directory, execution relation, and immutable RAM backing. Non-RAM streams
+//! are authenticated and sealed before launch; RAM pages remain in the source
+//! and are authenticated on demand. No writable staging handle escapes.
 
 use std::fs::File;
 use std::io::Read;
@@ -18,9 +19,88 @@ use crate::{
     QemuLiveNodeStepGateError, QemuNode, QemuPreparedRunDirectory, QemuVmSnapshot,
 };
 
+mod artifacts;
+pub(crate) use artifacts::QemuExactRestoreArtifacts;
+use artifacts::IssuedExactRestoreArtifacts;
+
 use super::node_step_gate::{
     AtomicExactRestoreAdmission, launch_atomic_exact_restore, resume_restored_exact_node,
 };
+
+/// Retains immutable RAM backing and a fresh private page-source namespace.
+///
+/// The backing owns its storage lease for the lifetime of each source service.
+/// Each process admission creates an independent transport and request cursor.
+pub struct QemuPagedRamRestoreSource {
+    backing: std::sync::Arc<dyn crate::ram_source::QemuRamBacking>,
+    binding: crucible_qemu_protocol::ram_page::RamPageBinding,
+}
+
+impl std::fmt::Debug for QemuPagedRamRestoreSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("QemuPagedRamRestoreSource")
+            .field("binding", &self.binding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl QemuPagedRamRestoreSource {
+    /// Creates a source with fresh operational identifiers and retained backing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if entropy is unavailable or the source has an incomplete scope.
+    pub fn new(
+        backing: std::sync::Arc<dyn crate::ram_source::QemuRamBacking>,
+    ) -> Result<Self, std::io::Error> {
+        if !matches!(
+            backing.root_record().scope(),
+            crucible_ram::Scope::Exact | crucible_ram::Scope::Lifecycle
+        ) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "RAM backing scope is incomplete",
+            ));
+        }
+        let mut entropy = File::open("/dev/urandom")?;
+        let mut session = [0; 16];
+        let mut owner_incarnation = [0; 16];
+        entropy.read_exact(&mut session)?;
+        entropy.read_exact(&mut owner_incarnation)?;
+        if session == [0; 16] || owner_incarnation == [0; 16] || session == owner_incarnation {
+            return Err(std::io::Error::other(
+                "RAM source namespace entropy was invalid",
+            ));
+        }
+        let binding = crucible_qemu_protocol::ram_page::RamPageBinding {
+            session,
+            owner_incarnation,
+            source_generation: 1,
+            root_digest: *backing.root_record().digest().as_bytes(),
+        };
+        Ok(Self { backing, binding })
+    }
+
+    /// Returns the complete immutable root retained by the source.
+    pub fn root_record(&self) -> &crucible_ram::RootRecord {
+        self.backing.root_record()
+    }
+
+    /// Returns the canonical retained storage identity.
+    pub fn root_object_id(&self) -> &str {
+        self.backing.root_object_id()
+    }
+
+    /// Returns the independently owned source namespace.
+    pub const fn binding(&self) -> crucible_qemu_protocol::ram_page::RamPageBinding {
+        self.binding
+    }
+
+    pub(crate) fn backing(&self) -> std::sync::Arc<dyn crate::ram_source::QemuRamBacking> {
+        std::sync::Arc::clone(&self.backing)
+    }
+}
 
 /// Complete one-shot input for a repository-rooted exact QEMU restore.
 #[derive(Debug)]
@@ -55,6 +135,18 @@ pub struct QemuProductionExactRestoreProfile {
 }
 
 impl QemuProductionExactRestoreRequest {
+    pub(crate) fn with_replay_ram_registration(
+        mut self,
+        registration: crate::ram_control::RamControlRegistration,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Self {
+        self.config = self
+            .config
+            .with_ram_control_registration(registration)
+            .with_host_operation_supervisor(supervisor);
+        self
+    }
+
     pub(crate) fn authenticate_replay_basis(
         &self,
         config: &QemuLiveNodeStepGateConfig,
@@ -89,6 +181,7 @@ impl QemuProductionExactRestoreRequest {
         process_contract: &QemuChildProcessContract,
         target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
         streams: crucible_engine::exact_checkpoint::ExactCheckpointRestoreStreams,
+        ram_source: QemuPagedRamRestoreSource,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
         let QemuProductionExactRestoreProfile {
             config,
@@ -120,7 +213,21 @@ impl QemuProductionExactRestoreRequest {
         let process_contract = process_contract
             .try_clone_for_attempt_generation()
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let (root_overlay, device_state, ram_layers) = streams.into_readers();
+        let paged = target.paged_ram().map_err(|source| {
+            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: format!("decode exact RAM source binding: {source}"),
+            }
+        })?;
+        if paged.root_record() != ram_source.root_record()
+            || paged.object_id().encode() != ram_source.root_object_id()
+        {
+            return Err(QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from(
+                    "retained RAM source differs from the authenticated checkpoint",
+                ),
+            });
+        }
+        let (root_overlay, device_state) = streams.into_readers();
 
         Ok(Self {
             config,
@@ -132,57 +239,94 @@ impl QemuProductionExactRestoreRequest {
             router,
             crash_detector,
             target,
-            source: QemuProductionExactRestoreSource::new(root_overlay, device_state, ram_layers),
+            source: QemuProductionExactRestoreSource::new(root_overlay, device_state, ram_source),
         })
     }
 
-    /// Authenticates all bytes, seals descriptors, and launches one exact node.
+    /// Authenticates non-RAM bytes and retained roots, then launches one exact node.
     ///
     /// No QEMU process is spawned until the overlay, device state, and every
-    /// ordered RAM layer match the repository-rooted execution relation.
+    /// retained RAM root match the repository-rooted execution relation.
     ///
     /// # Errors
     ///
     /// Returns [`QemuLiveNodeStepGateError`] when byte authentication,
     /// descriptor sealing, launch admission, process setup, or restore fails.
-    pub fn launch(mut self) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
-        self.run_directory
-            .prepare_vmstate_container_guarded(
-                self.config.qemu_executable(),
-                &self.process_contract,
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source })?;
-        let cancellation = self
-            .process_contract
-            .try_clone_cancellation_event()
-            .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let ram_inputs = self
-            .run_directory
-            .materialize_production_exact_checkpoint(
-                &self.process_contract,
-                self.target,
-                self.source,
-                std::os::fd::AsFd::as_fd(&cancellation),
-            )
-            .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-        let identity =
-            QemuLiveNodeIdentity::new(&self.node.name, &self.router, &self.crash_detector);
-        let admission = AtomicExactRestoreAdmission::admit(
-            &mut self.run_directory,
-            &self.process_contract,
-            identity,
-            &self.snapshot,
-            self.snapshot_object,
-            ram_inputs,
-            std::os::fd::AsFd::as_fd(&cancellation),
-        )?;
-        let (node, target) = launch_atomic_exact_restore(&self.config, admission, false)?;
-
-        Ok(QemuProductionExactRestoreLaunch {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn launch_in_issuer(
+        self,
+        issuer: &crate::InstalledNodeLaunchIssuer,
+    ) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
+        let Self {
+            config,
+            run_directory,
+            process_contract,
+            snapshot,
+            snapshot_object,
             node,
-            run_directory: self.run_directory,
+            router,
+            crash_detector,
             target,
-        })
+            source,
+        } = self;
+        issuer.with_issued_node_launch(
+            &config,
+            &process_contract,
+            |binding, workspace, issued_contract| {
+                let envelope = issued_contract.configured_process_envelope().ok_or(
+                    QemuLiveNodeStepGateError::OriginalNativeAccount {
+                        source: crate::OriginalActorAccountError::Unavailable,
+                    },
+                )?;
+                if !envelope.matches_contract(&process_contract) {
+                    return Err(QemuLiveNodeStepGateError::OriginalNativeAccount {
+                        source: crate::OriginalActorAccountError::Unavailable,
+                    });
+                }
+                let mut artifacts =
+                    IssuedExactRestoreArtifacts::new(&binding, run_directory, target)?;
+                let prepared = artifacts.preparation()?;
+                prepared
+                    .run_directory
+                    .prepare_vmstate_container_guarded(config.qemu_executable(), &process_contract)
+                    .map_err(
+                        |source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source },
+                    )?;
+                let cancellation = process_contract
+                    .try_clone_cancellation_event()
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                let ram_inputs = prepared
+                    .run_directory
+                    .materialize_production_exact_checkpoint(
+                        &process_contract,
+                        &mut prepared.target,
+                        source,
+                        cancellation.as_fd(),
+                    )
+                    .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                prepared.ram_inputs = Some(ram_inputs);
+                let ram_inputs = prepared.ram_inputs.as_ref().ok_or_else(|| {
+                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                        reason: String::from("exact preparation lost its retained sealed inputs"),
+                    }
+                })?;
+                let identity = QemuLiveNodeIdentity::new(&node.name, &router, &crash_detector);
+                let admission = AtomicExactRestoreAdmission::admit(
+                    &mut prepared.run_directory,
+                    &process_contract,
+                    identity,
+                    &snapshot,
+                    snapshot_object,
+                    ram_inputs,
+                    cancellation.as_fd(),
+                )?;
+                let node =
+                    launch_atomic_exact_restore(&config, admission, false, binding, workspace)?;
+                prepared.complete_preparation()?;
+                Ok(QemuProductionExactRestoreLaunch { node, artifacts })
+            },
+            |launch, refusal, after| refusal.retain_exact_launch(launch, after),
+        )
     }
 }
 
@@ -276,11 +420,15 @@ fn authenticate_immutable_backing(
 }
 
 /// Launched exact node with its retained directory and consumed root relation.
+///
+/// Abandonment returns the actual process and files to their existing receiver.
+/// Its reserved artifact cell prevents a process return from racing file return.
 #[must_use = "retain the launched node and its run-directory authority"]
 pub struct QemuProductionExactRestoreLaunch {
-    node: QemuNode,
-    run_directory: QemuPreparedRunDirectory,
-    target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
+    // Field order returns the process before its artifacts; the occupied
+    // artifact cell prevents an interim process return from certifying closure.
+    node: crate::node::IssuedLaunchOwner,
+    artifacts: IssuedExactRestoreArtifacts,
 }
 
 impl QemuProductionExactRestoreLaunch {
@@ -291,12 +439,15 @@ impl QemuProductionExactRestoreLaunch {
     /// only after admitting that checkpoint as the live continuation.
     pub(crate) fn into_paused_parts(
         self,
-    ) -> (
-        QemuNode,
-        QemuPreparedRunDirectory,
-        crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
-    ) {
-        (self.node, self.run_directory, self.target)
+    ) -> Result<
+        (
+            QemuNode,
+            QemuPreparedRunDirectory,
+            crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
+        ),
+        QemuLiveNodeStepGateError,
+    > {
+        self.artifacts.into_parts(self.node)
     }
 
     /// Resumes a fully restored node under its retained exact relation.
@@ -313,8 +464,14 @@ impl QemuProductionExactRestoreLaunch {
     }
 
     /// Consumes a lifecycle launch while dropping its replay-only root proof.
-    pub fn into_node_and_run_directory(self) -> (QemuNode, QemuPreparedRunDirectory) {
-        (self.node, self.run_directory)
+    ///
+    /// # Errors
+    /// Retains an unexpected unassembled body in its original receiver.
+    pub fn into_node_and_run_directory(
+        self,
+    ) -> Result<(QemuNode, QemuPreparedRunDirectory), QemuLiveNodeStepGateError> {
+        self.into_paused_parts()
+            .map(|(node, run_directory, _target)| (node, run_directory))
     }
 
     pub(crate) fn into_running_parts(
@@ -327,8 +484,10 @@ impl QemuProductionExactRestoreLaunch {
         ),
         QemuLiveNodeStepGateError,
     > {
-        let node = resume_restored_exact_node(self.node)?;
-        Ok((node, self.run_directory, self.target))
+        match resume_restored_exact_node(self.node) {
+            Ok(owner) => self.artifacts.into_parts(owner),
+            Err(error) => Err(self.artifacts.retain_failure(error)),
+        }
     }
 }
 

@@ -7,12 +7,12 @@ pub(super) fn session_actor_source_does_not_lock_engine_across_run() {
     let source = concat!(include_str!("../session/actor.rs"), "\n#[cfg(test)]");
     let actor_struct = source_section(
         source,
-        "pub struct SessionActor<L> {",
-        "\n}\n\nimpl<L> SessionActor<L>",
+        "pub struct SessionActor<L: QuantumLoop> {",
+        "\n}\n\nimpl<L: QuantumLoop> SessionActor<L>",
     );
     let actor_impl = source_section(
         source,
-        "impl<L> SessionActor<L> {",
+        "impl<L: QuantumLoop> SessionActor<L> {",
         "\nimpl<L> SessionActor<L>\nwhere",
     );
     let actor_quantum_impl = source_section(
@@ -258,8 +258,8 @@ pub(super) fn assert_rejection_names_state_and_command(
 ) {
     match error {
         SessionError::InvalidTransition { state, command } => {
-            assert_eq!(*state, expected_state);
-            assert_eq!(*command, expected_command);
+            assert_eq!(state, LifecycleStateKind::from(&expected_state));
+            assert_eq!(command, SessionCommandKind::from(&expected_command));
         }
         other => panic!("unexpected rejection type: {other}"),
     }

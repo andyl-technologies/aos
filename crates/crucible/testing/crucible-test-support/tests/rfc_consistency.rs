@@ -1,4 +1,4 @@
-//! Checks RFC-0010 requirement coverage, task drift, gate references, and names.
+//! Checks specification requirement coverage, task drift, gate references, and names.
 
 #[path = "support/workspace.rs"]
 mod workspace;

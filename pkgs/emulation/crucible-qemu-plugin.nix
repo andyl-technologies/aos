@@ -1,4 +1,4 @@
-##! crucible-qemu-plugin — RFC-0010 QEMU plugin cdylib
+##! Crucible QEMU observation and control plugin cdylib
 {
   lib,
   mkCargoPackage,
@@ -9,19 +9,28 @@
   pkg-config,
   qemu-crucible,
   sqlite,
+  python3,
+  stdenv,
+  buildPackages,
+  nativeConformance ? false,
 }: let
   version = "0.1.0";
+  conformanceFlags = lib.optionalString nativeConformance " --features native-conformance";
+  buildPython =
+    if stdenv.isCross
+    then buildPackages.python3
+    else python3;
   src = import ../tools/crucible/_source.nix {inherit lib;};
   cargoDeps = aosWorkspaceVendor;
   cargoWorkspaceMembers = import ../tools/crucible/_workspace.nix {inherit lib;};
   cargoArtifactContract = {
-    family = "crucible-gpl-qemu-plugin-release-and-test";
+    family = "crucible-gpl-qemu-plugin-release-and-test" + lib.optionalString nativeConformance "-native-observer";
     nativeInputs = map toString [glib glib.dev glib.tools pkg-config qemu-crucible sqlite];
     licenseScope = "GPL-2.0-only";
   };
   cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   cargoArtifacts = mkCargoArtifacts {
-    pname = "crucible-qemu-plugin-artifacts";
+    pname = "crucible-qemu-plugin-artifacts" + lib.optionalString nativeConformance "-native-observer";
     inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
@@ -30,8 +39,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin${conformanceFlags}"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-plugin${conformanceFlags}"
     ];
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
     runtimeDeps = [glib qemu-crucible sqlite];
@@ -55,7 +64,7 @@ in
       target = [];
       role = "build-input";
     };
-    pname = "crucible-qemu-plugin";
+    pname = "crucible-qemu-plugin" + lib.optionalString nativeConformance "-native-observer";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -112,13 +121,13 @@ in
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-qemu-plugin";
-    cargoTestFlags = "-p crucible-qemu-plugin";
+    cargoFlags = "-p crucible-qemu-plugin${conformanceFlags}";
+    cargoTestFlags = "-p crucible-qemu-plugin${conformanceFlags}";
     installBins = false;
     installLibs = false;
     doCheck = true;
 
-    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
+    buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite buildPython];
     runtimeDeps = [glib qemu-crucible sqlite];
 
     preBuild = ''
@@ -162,6 +171,7 @@ in
 
       cat > "$TMPDIR/crucible-qemu-plugin-header-probe.c" <<'EOF'
       #include <stdint.h>
+      #include <stddef.h>
       #include <aos/crucible/crucible_shmem_abi.h>
       #include <qemu-plugin.h>
 
@@ -176,6 +186,39 @@ in
       #if CRUCIBLE_SHMEM_ABI_VERSION != CRUCIBLE_EXPECTED_SHMEM_ABI_VERSION
       #error "qemu-crucible generated shmem header ABI does not match the Rust plugin"
       #endif
+
+      /* These scalars match the process-private Rust repr(C) receipt. */
+      _Static_assert(QEMU_PLUGIN_CRUCIBLE_RAM_END_STAGE_COUNT == 7,
+                     "native physical-end stage count changed");
+      _Static_assert(sizeof(struct qemu_plugin_crucible_ram_release_step_v1) == 56,
+                     "native physical-end step extent changed");
+      _Static_assert(sizeof(struct qemu_plugin_crucible_ram_physical_end_v2) == 472,
+                     "native physical-end receipt extent changed");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              post_status) == 20,
+                     "native physical-end post status moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              post_entered) == 36,
+                     "native physical-end post entry moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_release_step_v1,
+                              uncertain) == 52,
+                     "native physical-end uncertainty moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              token) == 8,
+                     "native physical-end identity moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              return_complete) == 76,
+                     "native physical-end return fact moved");
+      _Static_assert(offsetof(struct qemu_plugin_crucible_ram_physical_end_v2,
+                              stage) == 80,
+                     "native physical-end stage array moved");
+
+      int (*crucible_probe_physical_end)(uint64_t,
+          struct qemu_plugin_crucible_ram_physical_end_v2 *) =
+          qemu_plugin_crucible_ram_physical_end_v2;
+      int (*crucible_probe_physical_end_observe)(uint64_t,
+          struct qemu_plugin_crucible_ram_physical_end_v2 *) =
+          qemu_plugin_crucible_ram_physical_end_observe_v1;
 
       int (*crucible_probe_read_vcpu_regs)(unsigned int, uint8_t *, size_t,
                                            size_t *, uint64_t *) =
@@ -270,6 +313,14 @@ in
       SPDX-License-Identifier: GPL-2.0-only
       crucible-qemu-protocol and crucible-qemu-shmem are used under their MIT option.
       LICENSE_SCOPE
+    '';
+
+    # Publish only after stripping, RPATH shrinking and reference scrubbing:
+    # the digest binds the installed artifact, not its compiler intermediate.
+    postFinalize = ''
+      ${buildPython}/bin/python3 ${./crucible-qemu-plugin/installer-layouts.py} --finalize \
+        "$out/lib/libcrucible_qemu_plugin.so" \
+        "$out/nix-support/crucible-installer-control-layouts"
     '';
 
     meta = {

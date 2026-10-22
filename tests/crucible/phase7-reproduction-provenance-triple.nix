@@ -43,7 +43,11 @@
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
   releaseManifestGate = builtins.readFile ./phase7-crucible-release-manifest.nix;
-  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
+  ]);
   apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;

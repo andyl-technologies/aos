@@ -1,6 +1,6 @@
 //! Crucible session dispatch and authenticated HTTP/2 server integration.
 //!
-//! Spec index: RFC-0010 files 21.
+//! Implementation contract: Control server dispatch, lifecycle actors, and admitted asynchronous ownership.
 //!
 //! Module map: lifecycle owns actor registries and in-process client adapters;
 //! streaming owns actor streams; server and transport_security own HTTP/2 and
@@ -37,6 +37,7 @@ pub use lifecycle::{
     ResumeObservationCancellation, ResumeObservationCancellationRegistration,
     ResumeObservationLoopFactory, ResumeObservationPreparationContext,
     ResumeReplayClosureValidationError, ResumeReplayClosureValidator, SessionLifetimeRetention,
+    admit_future, spawn_admitted_session_actor,
 };
 pub use server::{
     LifecycleServerMode, serve_lifecycle_http2,
@@ -47,8 +48,6 @@ pub use server::{
     serve_shared_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 pub use streaming::{ControlStream, InProcessStreamingSession, WatchStream};
-pub use transport_security::{
-    DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
-};
+pub use transport_security::{MutualTlsServerConfigError, mutual_tls_acceptor_from_pem};
 
 pub use server::spawn_shared_lifecycle_http2_mtls_with_mode_until_shutdown;

@@ -23,7 +23,7 @@ use super::*;
 const TEST_SEED: &str = "000000000000000000000000000000000000000000000000000000000000004d";
 const TEST_HOLDER: &str = "00000000-0000-0000-0000-000000000009";
 
-type TestState = Http2LifecycleState<
+pub(super) type TestState = Http2LifecycleState<
     QuiescentLifecycleLoop,
     crate::lifecycle::LifecycleLoopFactory<QuiescentLifecycleLoop>,
 >;
@@ -37,8 +37,9 @@ fn open_shutdown_receiver() -> watch::Receiver<bool> {
     receiver
 }
 
-fn test_state(mode: LifecycleServerMode) -> TestState {
+pub(super) fn test_state(mode: LifecycleServerMode) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(LifecycleControlPlane::new(
             "server-test",
             Vec::new(),
@@ -54,6 +55,7 @@ fn test_state(mode: LifecycleServerMode) -> TestState {
 
 fn test_state_with_max_sessions(mode: LifecycleServerMode, max_sessions: usize) -> TestState {
     Http2LifecycleState {
+        host_operational_control: None,
         control_plane: Arc::new(Mutex::new(
             LifecycleControlPlane::new(
                 "server-test",
@@ -368,6 +370,24 @@ fn debug_guest_wire_parsers_preserve_node_and_bounded_record() {
         parse_debug_guest_fork_request(fork.as_bytes()).expect("guest fork request must parse");
     assert_eq!(generation, 3);
     assert_eq!(node.name, "node-a");
+}
+
+#[tokio::test]
+async fn retained_cleanup_has_the_same_internal_response_policy_as_factory_refusal() {
+    for error in [
+        LifecycleApiError::CleanupRetained,
+        LifecycleApiError::LoopFactory {
+            message: String::from("component cleanup refusal"),
+        },
+    ] {
+        let response = lifecycle_error_response(error);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = response_text(response)
+            .await
+            .expect("typed internal response must decode");
+        assert!(body.contains("status=internal"));
+        assert!(body.contains("reason=internal"));
+    }
 }
 
 #[tokio::test]

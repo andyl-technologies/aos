@@ -4,13 +4,32 @@
   pkg-config,
   glib,
   qemu-crucible,
+  callPackage,
 }: let
   pluginSource = builtins.readFile ./crucible-qemu-trace-plugin.c;
+  ramObserver = callPackage ./crucible-qemu-plugin.nix {
+    nativeConformance = true;
+    inherit qemu-crucible;
+  };
+  correspondingSource = callPackage ./qemu-crucible-source.nix {
+    inherit qemu-crucible;
+  };
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -99,6 +118,10 @@ in
         script = ''
           mkdir -p "$out/lib/qemu/plugins"
           cp crucible-qemu-trace-plugin.so "$out/lib/qemu/plugins/"
+          ln -s ${ramObserver}/lib/libcrucible_qemu_plugin.so \
+            "$out/lib/qemu/plugins/crucible-ram-observer.so"
+          mkdir -p "$out/share/aos"
+          ln -s ${correspondingSource} "$out/share/aos/qemu-crucible-source"
           mkdir -p "$out/share/licenses/crucible-qemu-trace-plugin"
           cp ${../../LICENSES/GPL-2.0-only.txt} \
             "$out/share/licenses/crucible-qemu-trace-plugin/GPL-2.0.txt"

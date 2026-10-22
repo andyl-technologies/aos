@@ -203,9 +203,9 @@ impl MappedSetupRegion {
             std::process::abort();
         }
 
-        self.backing_identity = actual;
+        self.view.backing_identity = actual;
         // SAFETY: `getpid` has no pointer preconditions and cannot fail.
-        self.mapping_process_id = unsafe { libc::getpid() };
+        self.view.mapping_process_id = unsafe { libc::getpid() };
         Ok(())
     }
 
@@ -281,7 +281,9 @@ impl MappedSetupRegion {
     ) -> Result<(), HotForkMappingDispositionError> {
         Err(HotForkMappingDispositionError::Unsupported)
     }
+}
 
+impl MappedSetupView {
     /// Captures every queue-backed segment while both ring endpoints are held.
     ///
     /// `maximum_bytes` bounds the complete canonical image, including its

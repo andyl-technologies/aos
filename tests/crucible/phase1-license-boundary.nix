@@ -59,7 +59,7 @@
     cp "$TMPDIR/campaign-system-closure" "$out/campaign-system-closure"
     cat >> "$out/result" <<RESULT
     campaign_mode=${campaignMode}
-    campaign_configuration_identity=${campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity}
+    campaign_configuration_identity=${campaignSystem.config.aos.crucibleCampaign._runtimeIdentity}
     campaign_toplevel=${campaignToplevel}
     campaign_runtime_identity=${builtins.hashString "sha256" campaignRuntime}
     executor_derivation=$out
@@ -234,6 +234,7 @@ in
                 libcap-ng = null;
                 libusb1 = null;
                 libgcrypt = null;
+                blake3-c = null;
                 gnutls = null;
                 fuse3 = null;
                 gcc-libs = "/aos-gcc-libs";

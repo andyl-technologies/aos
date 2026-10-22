@@ -300,6 +300,7 @@ mod tests {
     #[test]
     fn periodic_exhaustion_preserves_declared_boot_evidence_within_256_reports()
     -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(16 * 1024 * 1024)?;
         let scenario = crucible_engine::crash_restart_scenario()?.scenario;
         let node = scenario
             .world()
@@ -320,13 +321,13 @@ mod tests {
                     name: "unlisted-progress-node".into(),
                 },
                 marker.clone(),
-            ),
+            )?,
             crucible_engine::SchedulerEventLogEntry::guest_marker_observation(
                 1,
                 crucible_engine::Icount { retired: 42 },
                 node.clone(),
                 marker,
-            ),
+            )?,
         ];
         let outcome = QuantumOutcome {
             configuration: crucible_engine::Configuration::genesis(scenario.scenario_def()),
@@ -341,6 +342,7 @@ mod tests {
             event_log_segment_hash: None,
             event_log_offset: crucible_engine::EventLogOffset::new(Default::default(), 0, 2),
             scheduler_quiescence: None,
+            event_log_custody: crucible_engine::EventLogOutputCustody::retain_current()?,
         };
 
         let mut disabled = RuntimeProgress::default();
@@ -359,7 +361,7 @@ mod tests {
         assert_eq!(periodic_notices, 240);
         assert_eq!(enabled.remaining, 16);
 
-        let mut ignored = outcome.clone();
+        let mut ignored = outcome.try_clone_admitted()?;
         ignored.event_log_entries.truncate(1);
         ignored.event_log_entries.push(
             crucible_engine::test_support::condition_observation_entry_for_test(
@@ -369,7 +371,7 @@ mod tests {
                     node.clone(),
                     b"lifecycle.setup_complete".to_vec(),
                 ),
-            ),
+            )?,
         );
         assert!(!enabled.observe(&ignored, scenario.world().vm_nodes()));
         assert_eq!(enabled.remaining, 16);

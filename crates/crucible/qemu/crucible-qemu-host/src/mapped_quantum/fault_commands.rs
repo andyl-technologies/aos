@@ -24,6 +24,14 @@ impl QemuMappedQuantumShmemHotPath {
         header: FaultCommandHeaderV1,
         payload: &[u8],
     ) -> Result<(), QemuMappedQuantumShmemHotPathError> {
+        if self
+            .region
+            .node_slot(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .action_frontier_is_retained()
+        {
+            return Err(QemuMappedQuantumShmemHotPathError::ActionFrontierRetained);
+        }
         let transport = self
             .region
             .fault_command_transport_mut(self.config.vm_slot)

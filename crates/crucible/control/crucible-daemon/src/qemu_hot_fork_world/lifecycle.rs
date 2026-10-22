@@ -17,14 +17,14 @@ use crate::{
     ProductionVmNodeReplayLaunchProfile,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
-use crucible_control_api::LifecycleApiError;
 use crucible_engine::{
     Configuration, ContentHash, FingerprintSample, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, QuantumTerminalVerdict, SchedulerError, SchedulerEventLogEntry,
     SchedulerOperationalFailureClass, SelectionDecision, VirtualTime,
 };
-use crucible_qemu_host::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
+use crucible_control_api::LifecycleApiError;
 use crucible_qemu_protocol::SelectionReply;
+use crucible_qemu_host::{QemuNodeSelectablePendingRequest, QemuParkedCampaignMarker};
 
 use super::QemuHotForkCompleteWorldAssembly;
 use crate::qemu_hot_fork_reconciliation::LinuxQemuHotForkWorldReconciliationSet;
@@ -36,13 +36,16 @@ use crate::{
     QemuAttemptGenerationResourceOwner, QemuAttemptProcessResourceGuard,
     QemuAttemptProductionVmNodeLauncher, QemuFreshAttemptLifecycleOwner,
     QemuFreshStartMaterialization, QemuHotForkAttemptReconciliation, QemuHotForkSourceWorldLease,
-    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldNodeTarget,
-    QemuHotForkWorldResourceOwner,
+    QemuHotForkWorldAuxiliaryResourceBroker, QemuHotForkWorldResourceOwner,
 };
 
-type ProductionWorldChild<G> = QemuHotForkAttemptReconciliation<
-    LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
->;
+mod installation;
+pub(crate) use installation::{
+    HotForkInstallationRetirementError, HotForkLifecycleInstallError, RetainedHotForkInstallation,
+};
+
+type ProductionWorldChild<G> =
+    QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>;
 
 /// Immutable inputs used to install one complete hot-fork world.
 pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
@@ -52,6 +55,8 @@ pub(crate) struct QemuHotForkProductionLifecycleContext<'a> {
     run_state_root: PathBuf,
     terminal_checkpoints: Option<Arc<ExactCheckpointStore>>,
     cancellation: Option<ExecutionCancellation>,
+    #[cfg(test)]
+    component_construction: Option<Box<crate::ProductionVmConstructionCustody>>,
 }
 
 impl<'a> QemuHotForkProductionLifecycleContext<'a> {
@@ -69,7 +74,19 @@ impl<'a> QemuHotForkProductionLifecycleContext<'a> {
             run_state_root,
             terminal_checkpoints: None,
             cancellation: None,
+            #[cfg(test)]
+            component_construction: None,
         }
+    }
+
+    /// Moves fixture-funded storage into the shared constructor.
+    #[cfg(test)]
+    pub(crate) fn with_component_construction(
+        mut self,
+        custody: Option<Box<crate::ProductionVmConstructionCustody>>,
+    ) -> Self {
+        self.component_construction = custody;
+        self
     }
 
     pub(crate) fn with_terminal_checkpoints(
@@ -88,7 +105,7 @@ where
     G: QemuAttemptProcessResourceGuard,
 {
     _source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    _reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    _reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     _resources: QemuHotForkWorldResourceOwner<G>,
 }
 
@@ -102,7 +119,7 @@ where
     lifecycle: ProductionVmLifecycleLoop,
     source_lease: Option<QemuHotForkSourceWorldLease>,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     resources: QemuHotForkWorldResourceOwner<G>,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
@@ -123,7 +140,7 @@ where
 {
     source_lease: QemuHotForkSourceWorldLease,
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
-    reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     resources: QemuHotForkWorldResourceOwner<G>,
     auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
     auxiliary_binding: Option<QemuHotForkWorldAuxiliaryResourceBinding<G>>,
@@ -223,38 +240,7 @@ where
     /// Returns a scheduler error when the adopted lifecycle cannot expose its
     /// exact boundary, retained only a suffix, or its event bytes overflow.
     pub fn start_materialization(&self) -> Result<QemuFreshStartMaterialization, SchedulerError> {
-        let (
-            configuration,
-            event_log,
-            base_events,
-            completed_quanta,
-            frontier,
-            quiescence,
-            terminal_verdict,
-        ) = self.lifecycle.resume_state()?.into_parts();
-        if base_events != 0 {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "hot-fork start retained only an event-log suffix instead of the complete prefix",
-                ),
-            });
-        }
-        let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
-            total
-                .checked_add(entry.canonical_material_len())
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from("hot-fork start event-log byte count overflowed"),
-                })
-        })?;
-        Ok(QemuFreshStartMaterialization::from_resume_parts(
-            configuration,
-            event_log,
-            event_log_bytes,
-            completed_quanta,
-            frontier,
-            quiescence,
-            terminal_verdict,
-        ))
+        materialize_hot_fork_start(&self.lifecycle)
     }
 
     /// Advances one bounded post-publication reconciliation operation.
@@ -269,11 +255,13 @@ where
     pub fn reconcile_execution_disposition(
         &mut self,
         disposition: AttemptExecutionDisposition,
-    ) -> Result<AttemptExecutionReconciliationStep, LifecycleApiError> {
+    ) -> Result<AttemptExecutionReconciliationStep, crate::ProductionVmConstructionCleanupError>
+    {
         if !self.shutdown_complete {
-            return Err(lifecycle_error(
+            return Err((lifecycle_error(
                 "hot-fork world publication reconciliation preceded lifecycle shutdown",
-            ));
+            ))
+            .into());
         }
         if self.aggregate_released {
             return Ok(AttemptExecutionReconciliationStep::Complete);
@@ -284,11 +272,7 @@ where
         if step == AttemptExecutionReconciliationStep::Progressed {
             return Ok(step);
         }
-        self.resources.finish().map_err(|error| {
-            lifecycle_error(format!(
-                "release hot-fork world aggregate resources after publication: {error}"
-            ))
-        })?;
+        self.resources.finish()?;
         self.auxiliary_binding = None;
         self.aggregate_released = true;
         Ok(AttemptExecutionReconciliationStep::Complete)
@@ -324,6 +308,14 @@ where
             self.source_recovery_failed = true;
             return Err(Box::new(self));
         }
+        if !self
+            .source_world
+            .lock()
+            .is_ok_and(|mut source| source.restore_retained_service_supervisor().is_ok())
+        {
+            self.source_recovery_failed = true;
+            return Err(Box::new(self));
+        }
         self.source_lease.take().ok_or_else(|| Box::new(self))
     }
 
@@ -346,6 +338,44 @@ where
     }
 }
 
+/// Reconstructs exact start evidence without moving the actual retained Loop.
+pub(crate) fn materialize_hot_fork_start(
+    lifecycle: &ProductionVmLifecycleLoop,
+) -> Result<QemuFreshStartMaterialization, SchedulerError> {
+    let (
+        configuration,
+        event_log,
+        base_events,
+        completed_quanta,
+        frontier,
+        quiescence,
+        terminal_verdict,
+    ) = lifecycle.resume_state()?.into_parts();
+    if base_events != 0 {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "hot-fork start retained only an event-log suffix instead of the complete prefix",
+            ),
+        });
+    }
+    let event_log_bytes = event_log.iter().try_fold(0usize, |total, entry| {
+        total
+            .checked_add(entry.canonical_material_len()?)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("hot-fork start event-log byte count overflowed"),
+            })
+    })?;
+    Ok(QemuFreshStartMaterialization::from_resume_parts(
+        configuration,
+        event_log,
+        event_log_bytes,
+        completed_quanta,
+        frontier,
+        quiescence,
+        terminal_verdict,
+    ))
+}
+
 impl<G> QemuProductionHotForkRetainedLineage<G>
 where
     G: QemuAttemptProcessResourceGuard,
@@ -359,13 +389,17 @@ where
     pub fn retire_source_world(
         mut self,
         source: ProductionVmHotForkSourceWorld,
-    ) -> Result<(), LifecycleApiError> {
+    ) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         let mut lifecycle = source
             .recover()
             .map_err(|failure| lifecycle_error(failure.to_string()))?;
-        QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle).map_err(|error| {
-            lifecycle_error(format!("shutdown promoted hot-fork source: {error}"))
-        })?;
+        if let Err(error) = QemuFreshAttemptLifecycleOwner::shutdown(&mut lifecycle) {
+            let first = crate::ProductionVmConstructionCleanupError::Scheduler(error);
+            return Err(match lifecycle.take_cleanup_failure() {
+                Some(cleanup) => first.with_later_failure(cleanup),
+                None => first,
+            });
+        }
         if let Some(broker) = &self.auxiliary_resources {
             self.auxiliary_binding = Some(broker.bind(&self.resources).map_err(|error| {
                 lifecycle_error(format!(
@@ -388,25 +422,24 @@ where
         if !reconciliation_complete {
             self.quarantine();
             let _retained = Box::leak(Box::new((self, lifecycle)));
-            return Err(lifecycle_error(
+            return Err((lifecycle_error(
                 "promoted hot-fork child did not reconcile within the bounded retirement",
-            ));
+            ))
+            .into());
         }
-        self.resources.finish().map_err(|error| {
-            lifecycle_error(format!("release promoted hot-fork resources: {error}"))
-        })?;
+        self.resources.finish()?;
         self.auxiliary_binding = None;
         lifecycle.release_reaped_hot_fork_process_loans()?;
         drop(lifecycle);
 
         drop(self.source_world);
-        let parent = self.source_lease.into_exclusive_source().map_err(|lease| {
-            let _retained = Box::leak(lease);
+        let mut parent = self.source_lease.into_exclusive_source().map_err(|lease| {
+            drop(lease);
             lifecycle_error("recover exclusive parent template after descendant retirement")
         })?;
         match self.ancestor {
             Some(ancestor) => ancestor.retire_source_world(parent),
-            None => parent.retire(),
+            None => parent.retire().map_err(Into::into),
         }
     }
 
@@ -618,13 +651,52 @@ where
 
 impl<G>
     QemuHotForkCompleteWorldAssembly<
-        QemuHotForkAttemptReconciliation<
-            LinuxQemuHotForkReconciliationBackend<QemuHotForkWorldNodeTarget<G>>,
-        >,
+        QemuHotForkAttemptReconciliation<LinuxQemuHotForkReconciliationBackend<G>>,
     >
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
+    /// Moves the next authenticated child into its original constructor's slot.
+    ///
+    /// Generation validation precedes the owning move. The caller retains this
+    /// slot through fallible process authentication and scheduler adoption.
+    ///
+    /// # Errors
+    /// Refuses occupied slots or a child whose continuation cannot supply its
+    /// exact next generation; every child remains in the same complete world.
+    pub(crate) fn begin_node_adoption(
+        &mut self,
+        child: &mut Option<ProductionWorldChild<G>>,
+        identity: &mut Option<ProductionVmNodeGeneration>,
+    ) -> Result<bool, LifecycleApiError> {
+        if child.is_some() || identity.is_some() {
+            return Err(lifecycle_error("Target adoption slot is already occupied"));
+        }
+        let Some(node) = self.children.keys().next() else {
+            return Ok(false);
+        };
+        let generation = self
+            .continuation
+            .nodes()
+            .iter()
+            .find(|boundary| boundary.node() == node)
+            .filter(|boundary| {
+                boundary.service_state() != ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            })
+            .and_then(|boundary| boundary.generation().checked_add(1))
+            .ok_or_else(|| {
+                lifecycle_error("assembled Target child has no exact next source generation")
+            })?;
+        let selected = ProductionVmNodeGeneration::new(node.clone(), generation)?;
+        let Some((_, selected_child)) = self.children.pop_first() else {
+            return Err(lifecycle_error("assembled Target child disappeared"));
+        };
+
+        *child = Some(selected_child);
+        *identity = Some(selected);
+        Ok(true)
+    }
+
     /// Installs this complete assembly as one production lifecycle transaction.
     // crucible-lint: allow rust-allow -- installation binds every semantic basis and owned runtime resource in one transaction.
     #[allow(clippy::too_many_arguments)]
@@ -635,7 +707,7 @@ where
         source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
         mut resources: QemuHotForkWorldResourceOwner<G>,
         auxiliary_resources: Option<QemuHotForkWorldAuxiliaryResourceBroker<G>>,
-    ) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError> {
+    ) -> Result<QemuProductionHotForkWorldLifecycle<G>, HotForkLifecycleInstallError<G>> {
         let QemuHotForkProductionLifecycleContext {
             scenario,
             source,
@@ -643,6 +715,8 @@ where
             run_state_root,
             terminal_checkpoints,
             cancellation,
+            #[cfg(test)]
+            component_construction,
         } = context;
         let boundaries = self
             .continuation
@@ -696,7 +770,14 @@ where
         }
         let expected = self.children.keys().cloned().collect::<BTreeSet<NodeId>>();
         let completed = LinuxQemuHotForkWorldReconciliationSet::new(expected);
-        let maximum_nodes = source.world().vm_nodes().len();
+        let generation_storage = match crate::QemuAttemptGenerationStorage::prepare(
+            source.world().vm_nodes().iter().map(|node| &node.id),
+        ) {
+            Ok(storage) => storage,
+            Err(error) => {
+                return retain_complete_install_failure(source_world, resources, self, error);
+            }
+        };
         let lifecycle_guard = match resources.lifecycle_guard() {
             Ok(guard) => guard,
             Err(error) => {
@@ -711,13 +792,12 @@ where
             }
         };
         let generation_owner =
-            match QemuAttemptGenerationResourceOwner::new(lifecycle_guard, maximum_nodes) {
-                Ok(owner) => owner,
-                Err(error) => {
-                    return retain_complete_install_failure(source_world, resources, self, error);
-                }
-            };
+            QemuAttemptGenerationResourceOwner::new(lifecycle_guard, generation_storage);
         let mut launcher = QemuAttemptProductionVmNodeLauncher::new(generation_owner);
+        #[cfg(test)]
+        if let Some(custody) = component_construction {
+            launcher = launcher.with_construction_custody(custody);
+        }
         if let (Some(checkpoints), Some(cancellation)) = (terminal_checkpoints, cancellation) {
             launcher =
                 launcher.with_terminal_checkpoint_import(checkpoints, source.clone(), cancellation);
@@ -735,7 +815,7 @@ where
                     let error =
                         lifecycle_error("assembled hot-fork child disappeared during adoption");
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             let generation = match boundaries
@@ -750,7 +830,7 @@ where
                     ));
                     child.quarantine_and_retain();
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             let identity = match ProductionVmNodeGeneration::new(node, generation) {
@@ -758,14 +838,26 @@ where
                 Err(error) => {
                     child.quarantine_and_retain();
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
-            let adoption = match child.into_world_node_adoption(identity, completed.clone()) {
+            // Every fallible authentication borrows the same owning slot.
+            // Refusal puts that exact child back into the retained assembly;
+            // no failure helper consumes or forgets its only owner.
+            let mut child_slot = Some(child);
+            let adoption = match ProductionWorldChild::into_world_node_adoption(
+                &mut child_slot,
+                identity,
+                completed.clone(),
+            ) {
                 Ok(adoption) => adoption,
-                Err(error) => {
+                Err((identity, error)) => {
+                    if let Some(child) = child_slot.take() {
+                        let (node, _) = identity.into_parts();
+                        children.insert(node, child);
+                    }
                     retain_remaining_install_failure(source_world, resources, completed, children);
-                    return Err(error);
+                    return Err(error.into());
                 }
             };
             adoptions.push(adoption);
@@ -776,12 +868,20 @@ where
             continuation,
             adoptions,
             run_state_root,
-            launcher,
+            Box::new(launcher),
         ) {
             Ok(lifecycle) => lifecycle,
-            Err(error) => {
-                retain_remaining_install_failure(source_world, resources, completed, children);
-                return Err(error);
+            Err(failure) => {
+                return Err(HotForkLifecycleInstallError::Retained(
+                    RetainedHotForkInstallation::new(
+                        failure,
+                        source_lease,
+                        source_world,
+                        completed,
+                        resources,
+                        auxiliary_resources,
+                    ),
+                ));
             }
         };
         Ok(QemuProductionHotForkWorldLifecycle {
@@ -819,7 +919,7 @@ fn retain_complete_install_failure<G>(
     mut resources: QemuHotForkWorldResourceOwner<G>,
     complete: QemuHotForkCompleteWorldAssembly<ProductionWorldChild<G>>,
     error: LifecycleApiError,
-) -> Result<QemuProductionHotForkWorldLifecycle<G>, LifecycleApiError>
+) -> Result<QemuProductionHotForkWorldLifecycle<G>, HotForkLifecycleInstallError<G>>
 where
     G: QemuAttemptProcessResourceGuard + Send + 'static,
 {
@@ -832,13 +932,13 @@ where
         _resources: resources,
     };
     let _retained_for_process_lifetime = Box::leak(Box::new(quarantine));
-    Err(error)
+    Err(error.into())
 }
 
 fn retain_remaining_install_failure<G>(
     source_world: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
     mut resources: QemuHotForkWorldResourceOwner<G>,
-    mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<QemuHotForkWorldNodeTarget<G>>,
+    mut reconciliations: LinuxQemuHotForkWorldReconciliationSet<G>,
     children: BTreeMap<NodeId, ProductionWorldChild<G>>,
 ) where
     G: QemuAttemptProcessResourceGuard + Send + 'static,

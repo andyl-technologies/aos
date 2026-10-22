@@ -4,23 +4,36 @@ use super::*;
 
 #[test]
 fn prepared_precondition_binds_every_boundary_digest() {
-    let baseline = memory_mutation_precondition_sha256([1; 32], [2; 32], [3; 32], [4; 32]);
-    assert_ne!(
+    let hash = |digests: [[u8; 32]; 6], before_bytes, after_bytes| {
+        memory_mutation_precondition_sha256(MemoryMutationPreconditionBinding {
+            before_sha256: digests[0],
+            after_sha256: digests[1],
+            translation_sha256: digests[2],
+            mapping_generation_sha256: digests[3],
+            before_ram_blake3: digests[4],
+            after_ram_blake3: digests[5],
+            before_ram_bytes: before_bytes,
+            after_ram_bytes: after_bytes,
+        })
+    };
+    let digests = [[1; 32], [2; 32], [3; 32], [4; 32], [5; 32], [6; 32]];
+    let baseline = hash(digests, 4096, 4096);
+    // Pins the v2 domain, six-digest order, and little-endian byte counts.
+    assert_eq!(
         baseline,
-        memory_mutation_precondition_sha256([9; 32], [2; 32], [3; 32], [4; 32])
+        [
+            36, 213, 225, 181, 179, 232, 32, 204, 162, 41, 52, 140, 22, 2, 221, 65, 87, 107, 161,
+            90, 54, 196, 229, 246, 43, 70, 253, 19, 23, 188, 249, 217,
+        ]
     );
-    assert_ne!(
-        baseline,
-        memory_mutation_precondition_sha256([1; 32], [9; 32], [3; 32], [4; 32])
-    );
-    assert_ne!(
-        baseline,
-        memory_mutation_precondition_sha256([1; 32], [2; 32], [9; 32], [4; 32])
-    );
-    assert_ne!(
-        baseline,
-        memory_mutation_precondition_sha256([1; 32], [2; 32], [3; 32], [9; 32])
-    );
+
+    for index in 0..digests.len() {
+        let mut changed = digests;
+        changed[index] = [9; 32];
+        assert_ne!(baseline, hash(changed, 4096, 4096));
+    }
+    assert_ne!(baseline, hash(digests, 8192, 4096),);
+    assert_ne!(baseline, hash(digests, 4096, 8192),);
 }
 
 #[test]
@@ -60,7 +73,7 @@ fn translation_digest_and_evidence_round_trip() {
         memory_mapping_sha256(&mappings).unwrap_or_else(|error| panic!("mapping digest: {error}"));
     let dirty_pages_sha256 = memory_dirty_ranges_sha256(&dirty_ranges)
         .unwrap_or_else(|error| panic!("dirty digest: {error}"));
-    let mut evidence = MemoryMutationEvidenceV1 {
+    let mut evidence = MemoryMutationEvidenceV2 {
         address_space: MemoryMutationAddressSpace::GuestVirtual,
         transform: MemoryMutationTransformKind::BitFlip,
         vcpu_index: 0,
@@ -88,6 +101,10 @@ fn translation_digest_and_evidence_round_trip() {
         invalidated_end: Some(0x8003),
         target_node_hash: [5; 32],
         node_fingerprint: [0; 32],
+        before_ram_blake3: [6; 32],
+        after_ram_blake3: [7; 32],
+        before_ram_bytes: 0x1_0000,
+        after_ram_bytes: 0x1_0000,
         before_bytes: before,
         after_bytes: after,
     };
@@ -98,9 +115,20 @@ fn translation_digest_and_evidence_round_trip() {
         .encode()
         .unwrap_or_else(|error| panic!("encode evidence: {error}"));
     assert_eq!(
-        MemoryMutationEvidenceV1::decode(&bytes),
+        MemoryMutationEvidenceV2::decode(&bytes),
         Ok(evidence.clone())
     );
+
+    for offset in [304, 336, 368, 376, 384, 388] {
+        let mut substituted = bytes.clone();
+        substituted[offset] ^= 1;
+        assert!(MemoryMutationEvidenceV2::decode(&substituted).is_err());
+    }
+
+    let mut predecessor = bytes.clone();
+    predecessor[..8].copy_from_slice(b"CRUCMER1");
+    predecessor[8..10].copy_from_slice(&1_u16.to_le_bytes());
+    assert!(MemoryMutationEvidenceV2::decode(&predecessor).is_err());
 
     let mut wrong_interval = evidence.clone();
     wrong_interval.invalidated_start = Some(0x8000);
@@ -149,7 +177,7 @@ fn translation_digest_and_evidence_round_trip() {
         flags,
     );
     assert_eq!(
-        MemoryMutationEvidenceV1::decode(&hidden_interval),
+        MemoryMutationEvidenceV2::decode(&hidden_interval),
         Err(MemoryMutationEvidenceError::Invalidation)
     );
 }

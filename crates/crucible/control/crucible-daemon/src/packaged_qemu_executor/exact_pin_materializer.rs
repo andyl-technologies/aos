@@ -36,6 +36,8 @@ use crate::{
     ExactPinRetentionAdmin, ExactPinRetentionError, MAX_LOCAL_EXECUTOR_WORKERS,
 };
 
+pub(super) mod original_retirement;
+
 /// Maximum distinct durable roots retained by one packaged materializer.
 pub(crate) const MAX_PACKAGED_EXACT_PIN_CHECKPOINTS: usize = 65_536;
 /// Maximum current exact pins reconciled in one bounded projection pass.

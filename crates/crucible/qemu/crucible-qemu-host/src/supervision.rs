@@ -10,7 +10,7 @@ mod block_io_servicer;
 pub(crate) mod bounded_scheduler_preemption;
 mod deadline;
 mod device_host_work;
-mod exact_restore;
+pub(crate) mod exact_restore;
 pub(crate) mod host_io_runtime;
 mod ninep_io_servicer;
 mod node_step_gate;
@@ -51,7 +51,7 @@ pub use device_host_work::{
     QemuDeviceHostWorkDelay, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
 };
 pub use exact_restore::{
-    QemuProductionExactRestoreLaunch, QemuProductionExactRestoreProfile,
+    QemuPagedRamRestoreSource, QemuProductionExactRestoreLaunch, QemuProductionExactRestoreProfile,
     QemuProductionExactRestoreRequest,
 };
 pub use host_io_runtime::{
@@ -63,6 +63,12 @@ pub use ninep_io_servicer::{
     QemuLive9pIoServiceStep, QemuLive9pIoServicer, QemuLive9pIoServicerError,
     QemuLive9pIoTransactionCheckpoint, QemuLive9pResponseEvidence,
 };
+#[cfg(feature = "private-measurement-domain")]
+pub use node_step_gate::PausedLiveNodeLaunch;
+#[cfg(target_os = "linux")]
+pub(crate) use node_step_gate::launch_qemu_original_fresh_node;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) use node_step_gate::prepare_qemu_original_fresh_node;
 pub use node_step_gate::{
     QemuLiveHotForkChildReport, QemuLiveHotForkChildStressReport, QemuLiveNodeIdentity,
     QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuProductionFreshLaunchAdmission,

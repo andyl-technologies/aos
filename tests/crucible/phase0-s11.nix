@@ -886,6 +886,7 @@ in
                 -device "loader,file=$LINUX_IMAGE/initrd.img,addr=0x8000000,force-raw=on" \
                 -chardev file,id=serial0,path="$serial_path" \
                 -serial chardev:serial0 \
+                -plugin "${tracePluginPackage}/lib/qemu/plugins/crucible-ram-observer.so,ram_metadata_budget=${builtins.toString (268435456 + memoryMib * 1048576)}" \
                 -plugin "$plugin_arg"
 
               if [ "$REALTIME_DEADLINE_PROBE" -eq 1 ]; then
@@ -923,6 +924,7 @@ in
               fi
               bounded_preemption_launch_qemu \
                 "$launch_timeout" "$TMPDIR/qemu-target-$label.pid" - "$QEMU" "$@" \
+                2>"$TMPDIR/ram-observer-$label.log" \
                 || fail "QEMU guest $label launch failed"
 
               if [ -n "$STOP_AT" ]; then
@@ -987,6 +989,10 @@ in
                 bounded_preemption_wait_qemu \
                   || fail "QEMU guest $label exited unsuccessfully"
               fi
+              grep -Fq CRUCIBLE-RAM-ORACLE-PASS "$TMPDIR/ram-observer-$label.log" \
+                || fail "QEMU guest $label did not qualify the canonical RAM root"
+              ! grep -Fq CRUCIBLE-RAM-ORACLE-FAIL "$TMPDIR/ram-observer-$label.log" \
+                || fail "QEMU guest $label RAM root disagreed with the native oracle"
               cp "$trace_path" "$TMPDIR/trace-$label.jsonl"
               cp "$serial_path" "$TMPDIR/serial-$label.log"
             }
@@ -1222,7 +1228,7 @@ in
                   | ($samples | length) >= 4
                   and ([$samples[].process_argv_digest] | unique | length) == 1
                   and all($samples[]; (
-                    .schema == "crucible.qemu.trace-fingerprint.v7"
+                    .schema == "crucible.qemu.trace-fingerprint.v8"
                     and .tracked_vcpus == $vcpus
                     and .launch_definition_digest == $launch_definition_digest
                     and .qemu_build_digest == $qemu_build_digest

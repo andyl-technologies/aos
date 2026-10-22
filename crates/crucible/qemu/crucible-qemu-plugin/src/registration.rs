@@ -12,7 +12,9 @@ use std::os::fd::AsRawFd;
 use thiserror::Error;
 
 #[cfg(unix)]
-use crucible_qemu_protocol::{ControlLifecycleStream, ReceivedSetup};
+use crucible_qemu_protocol::ControlLifecycleStream;
+#[cfg(all(test, unix))]
+use crucible_qemu_protocol::ReceivedSetup;
 use crucible_qemu_shmem::NodeSlot;
 
 use crate::{
@@ -27,12 +29,15 @@ use crate::{
 #[cfg(unix)]
 use crate::{
     PluginSetupCompletion, PluginSetupError, PluginSetupFailureStage,
-    prepare_setup_completion as plugin_prepare_setup_completion,
-    receive_setup_with_descriptors as plugin_receive_setup_with_descriptors,
     send_ready_setup_ack as plugin_send_ready_setup_ack,
 };
 #[cfg(unix)]
 use crate::{plugin_handshake_config, validate_plugin_handshake};
+#[cfg(all(test, unix))]
+use crate::{
+    prepare_setup_completion as plugin_prepare_setup_completion,
+    receive_setup_with_descriptors as plugin_receive_setup_with_descriptors,
+};
 
 mod live;
 
@@ -91,7 +96,7 @@ impl PluginCallbackCapabilities {
 ///
 /// The recorder accepts only the canonical [`PluginRegistrationStep`] order. A
 /// failed current step records a diagnostic and permanently blocks every later
-/// step, matching the fail-loud registration contract from RFC-0010.
+/// step, preserving fail-closed registration and typed failure reporting.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PluginRegistrationSequence {
     completed_steps: Vec<PluginRegistrationStep>,
@@ -193,6 +198,49 @@ impl PluginRegistrationSequence {
         Ok(handshake)
     }
 
+    /// Joins the genuine Source-owned exchange to protocol and registration progress.
+    ///
+    /// # Errors
+    /// Retains consumed byte phases before signed refusal and refuses incomplete
+    /// replies or launch disagreement. Neither validator creates a nominal slot.
+    #[cfg(all(unix, not(test)))]
+    pub(crate) fn perform_source_control_handshake<S>(
+        &mut self,
+        control: &mut ControlLifecycleStream<S>,
+        args: &PluginArgs,
+        original: &crate::startup_source::InstallerStartupSource,
+    ) -> Result<PluginControlHandshake, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::ControlHandshake)?;
+        let outcome = original.exchange_setup();
+        // Record actual complete effects even if the later admission refused.
+        // A partial phase stays in Source and can never be retried here.
+        let commit = (|| {
+            if outcome.write_completed {
+                control.plugin_commit_written_hello()?;
+            }
+            if let Some(reply) = outcome.reply {
+                control.plugin_commit_read_hello_ack(reply, plugin_handshake_config())?;
+            }
+            Ok::<(), crucible_qemu_protocol::ControlLifecycleIoError>(())
+        })();
+        outcome.result.map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ControlHandshake, source.to_string())
+        })?;
+        commit.map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ControlHandshake, source.to_string())
+        })?;
+        let reply = outcome.reply.ok_or_else(|| {
+            self.fail_step(
+                PluginRegistrationStep::ControlHandshake,
+                "authentic reply incomplete".to_owned(),
+            )
+        })?;
+        let handshake = validate_plugin_handshake(args, reply)
+            .map_err(|source| self.fail_control_handshake(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::ControlHandshake)?;
+        Ok(handshake)
+    }
+
     /// Receives and records the host `Setup` frame and its three descriptors.
     ///
     /// The sequence must already have acquired QEMU time control. The method
@@ -205,6 +253,7 @@ impl PluginRegistrationSequence {
     /// order, the socket closes, the frame is malformed, or the frame carries
     /// anything other than exactly three `SCM_RIGHTS` descriptors.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn receive_setup_with_descriptors<S>(
         &mut self,
         stream: &mut S,
@@ -226,6 +275,7 @@ impl PluginRegistrationSequence {
     /// Returns [`PluginRegistrationSequenceError`] when setup receive is out of
     /// order or the lifecycle-aware descriptor handoff fails.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn receive_setup_with_descriptors_lifecycle<S>(
         &mut self,
         control: &mut ControlLifecycleStream<S>,
@@ -251,6 +301,27 @@ impl PluginRegistrationSequence {
         Ok(setup)
     }
 
+    /// Records the selected setup consumed by the same native Source owner.
+    #[cfg(unix)]
+    pub(crate) fn accept_native_setup<S>(
+        &mut self,
+        control: &mut ControlLifecycleStream<S>,
+        original: &crate::startup_source::InstallerStartupSource,
+    ) -> Result<crate::setup::SetupPreparationInput, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::ReceiveSetup)?;
+        let input = original
+            .native_setup()
+            .and_then(crate::setup::SetupPreparationInput::from_native_setup)
+            .map_err(|source| {
+                self.fail_step(PluginRegistrationStep::ReceiveSetup, source.to_string())
+            })?;
+        control.plugin_commit_preexec_setup().map_err(|source| {
+            self.fail_step(PluginRegistrationStep::ReceiveSetup, source.to_string())
+        })?;
+        self.record_step_unchecked(PluginRegistrationStep::ReceiveSetup)?;
+        Ok(input)
+    }
+
     /// Maps shared memory, validates setup ABI state, and arms the wake fd.
     ///
     /// On success this records both [`PluginRegistrationStep::MapSharedMemory`]
@@ -264,6 +335,7 @@ impl PluginRegistrationSequence {
     /// with the negotiated handshake assignment, the wake fd cannot be armed, or
     /// the nonzero failure `SetupAck` cannot be sent.
     #[cfg(unix)]
+    #[cfg(test)]
     pub fn prepare_setup_completion<W>(
         &mut self,
         writer: &mut W,
@@ -276,6 +348,32 @@ impl PluginRegistrationSequence {
         self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
         let completion = plugin_prepare_setup_completion(writer, setup, handshake)
             .map_err(|source| self.fail_setup_preparation(source))?;
+        self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
+        self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
+        Ok(completion)
+    }
+
+    /// Prepares the received resources while the installer retains the original plan.
+    #[cfg(unix)]
+    pub(crate) fn prepare_setup_completion_under_original<W: Write>(
+        &mut self,
+        writer: &mut W,
+        input: crate::setup::SetupPreparationInput,
+        original: &crate::startup_source::InstallerStartupSource,
+        handshake: PluginControlHandshake,
+    ) -> Result<PluginSetupCompletion, PluginRegistrationSequenceError> {
+        self.ensure_next_step(PluginRegistrationStep::MapSharedMemory)?;
+        let plan = original.plan_fd().map_err(|source| {
+            self.fail_setup_preparation(PluginSetupError::StartupSource { source })
+        })?;
+        let completion = crate::setup::prepare_setup_completion_borrowing_plan(
+            writer,
+            input,
+            plan,
+            Some(original),
+            handshake,
+        )
+        .map_err(|source| self.fail_setup_preparation(source))?;
         self.record_step_unchecked(PluginRegistrationStep::MapSharedMemory)?;
         self.record_step_unchecked(PluginRegistrationStep::ArmWakeFd)?;
         Ok(completion)
@@ -703,8 +801,11 @@ impl PluginRegistrationSequence {
 #[cfg(unix)]
 const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
     match source {
-        PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
-        PluginSetupError::InspectSharedMemory { .. }
+        PluginSetupError::ReceiveSetup { .. } | PluginSetupError::DeviceDigestWorkspacePresence => {
+            PluginRegistrationStep::ReceiveSetup
+        }
+        PluginSetupError::StartupSource { .. }
+        | PluginSetupError::InspectSharedMemory { .. }
         | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
         | PluginSetupError::ValidatePluginSetupPlan { .. }

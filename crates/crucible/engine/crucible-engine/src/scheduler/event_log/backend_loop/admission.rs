@@ -229,7 +229,7 @@ where
                 pending_observations: std::mem::take(pending_observations),
                 rng_evidence,
                 observations,
-                outcome: outcome.clone(),
+                outcome: outcome.try_clone_admitted()?.into_shared_admitted()?,
                 handed_off: false,
                 selected: None,
                 selected_decision_count: 0,

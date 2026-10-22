@@ -20,11 +20,19 @@ async fn handshake_is_accepted(
         let (stream, _) = listener.accept().await.expect("accept TLS test peer");
         acceptor.accept(stream).await.is_ok()
     });
-    let client = RpcControlClient::new_mtls(
-        RpcEndpoint::http2(format!("https://{address}")),
-        RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
-    )
-    .expect("construct TLS test client");
+    let authority = crucible_daemon::component_ram_root_resources()
+        .expect("finite TLS component metadata authority");
+    let decoding = crucible_session::engine::owned_decode::DecodeBudget::for_store(authority)
+        .expect("finite TLS component metadata budget");
+    let client = {
+        let _scope = decoding.enter();
+        RpcControlClient::new_mtls(
+            RpcEndpoint::http2(format!("https://{address}")),
+            RpcMutualTlsConfig::from_pem(ca_pem, client_identity_pem),
+        )
+        .expect("construct TLS test client")
+        .with_decode_budget(decoding.clone())
+    };
 
     let _ = tokio::time::timeout(Duration::from_secs(5), client.list_sessions()).await;
     tokio::time::timeout(Duration::from_secs(5), server)

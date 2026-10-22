@@ -2,7 +2,8 @@
 """Measure identical finite ROM work across distinct TCG clock contracts.
 
 The same ROM bytes and iteration count execute in every row. Spawn-to-END and
-START-to-END socket receipt intervals are reported separately. UART polling,
+START-to-END socket receipt intervals are reported for ordinary controls.
+Managed Sim reports the authenticated stop and makes no socket receipt ROI claim. UART polling,
 checksum formatting and transport latency are included in the latter interval;
 only the seven-instruction arithmetic loop has a static retired-work count.
 Sim's secondary authenticated stop is exact. Stock stops after END and its
@@ -15,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import re
-import struct
 import subprocess
 
 
@@ -27,6 +27,13 @@ def load_module(path, name):
 
 
 def require_witness(sample, manifest):
+    if sample['mode'] == 'sim':
+        oracle = load_module(Path(__file__).with_name('tcg-managed-performance-oracle.py'),
+                             'managed_performance_oracle')
+        oracle.require_witness(sample, 'rom', 64)
+        if sample['manifest'] != manifest:
+            raise AssertionError('managed finite manifest differs from independent arithmetic input')
+        return
     if sample['manifest'] != manifest or sample['record_hex'] != manifest['record_hex']:
         raise AssertionError('finite work manifest/checksum/counter/tag mismatch')
     if sample['captured_ram_bytes'] != 64 * 1024 * 1024 or sample['status']['status'] != 'paused':
@@ -38,49 +45,17 @@ def require_witness(sample, manifest):
     registers = sample['registers']
     register_fields = re.findall(r'\b(EAX|ECX|ESP|EIP|EFL|HLT)=([0-9a-fA-F]+)', registers)
     values = {name: int(value, 16) for name, value in register_fields}
-    if sample['mode'] == 'sim':
-        saved = struct.pack('<II', 0, manifest['checksum']).hex()
-        if sample['sim_saved_registers_hex'] != saved:
-            raise AssertionError('saved arithmetic EAX/ECX mismatch')
-        expected_operands = {
-            'EAX': manifest['request_address'],
-            'ECX': 128,
-            'ESP': 0x5FF8,
-        }
-        if any(values[name] != expected for name, expected in expected_operands.items()):
-            raise AssertionError('native doorbell operands/stack mismatch')
-        enough_retired_work = sample['raw_icount'] >= manifest['loop_retired_instructions']
-        exact_instruction_clock = sample['logical_tick'] == sample['raw_icount'] * 50
-        if not enough_retired_work or not exact_instruction_clock:
-            raise AssertionError('finite Sim retired/time witness mismatch')
-        if sample['idle_wake_tick'] != sample['logical_tick']:
-            raise AssertionError('native selectable stop coordinates mismatch')
-        request = sample['request']
-        expected_request = {
-            'sequence': 2,
-            'selectable_id': 'flight.ready',
-            'instance_key': 'boot',
-        }
-        if any(request[name] != expected for name, expected in expected_request.items()):
-            raise AssertionError('unexpected authenticated finite-work request')
-        if sample['raw_icount'] != request['raw_icount'] + 1 or sample['logical_tick'] != request['logical_tick'] + 50:
-            raise AssertionError('finite native request+1 handoff mismatch')
-        # The public decoder in the host driver authenticates seq2 and proves
-        # request+1; this oracle also requires its typed marker inventory.
-        if not sample['markers'] or sample['raw_icount'] <= manifest['loop_retired_instructions']:
-            raise AssertionError('missing native authenticated marker evidence')
-    else:
-        expected_tail = {
-            'EAX': manifest['checksum'],
-            'ECX': 0,
-            'ESP': 0x6000,
-            'EIP': manifest['halted_address'] + 2,
-            'HLT': 1,
-        }
-        if any(values[name] != expected for name, expected in expected_tail.items()):
-            raise AssertionError('restored permanent halt register witness mismatch')
-        if values['EFL'] & 0x200:
-            raise AssertionError('permanent halt unexpectedly permits interrupts')
+    expected_tail = {
+        'EAX': manifest['checksum'],
+        'ECX': 0,
+        'ESP': 0x6000,
+        'EIP': manifest['halted_address'] + 2,
+        'HLT': 1,
+    }
+    if any(values[name] != expected for name, expected in expected_tail.items()):
+        raise AssertionError('restored permanent halt register witness mismatch')
+    if values['EFL'] & 0x200:
+        raise AssertionError('permanent halt unexpectedly permits interrupts')
 
 
 def main():
@@ -175,7 +150,10 @@ def main():
             }
             result['attempts'].append(attempt)
             save()
-            completed = subprocess.run(command, text=True, capture_output=True, check=False)
+            trial_environment = dict(os.environ)
+            trial_environment["CRUCIBLE_TCG_TRIAL_INDEX"] = str(round_index * len(labels) + position)
+            completed = subprocess.run(command, text=True, capture_output=True, check=False,
+                                       env=trial_environment)
             (directory / 'stdout.log').write_text(completed.stdout)
             (directory / 'stderr.log').write_text(completed.stderr)
             attempt['exit_status'] = completed.returncode
@@ -204,11 +182,9 @@ def main():
                     raise AssertionError('successful sample artifact identity mismatch')
                 require_witness(sample, manifest)
                 if row['mode'] == 'sim':
-                    witness_keys = (
-                        'raw_icount', 'logical_tick', 'idle_wake_tick', 'registers',
-                        'ram_sha256', 'record_hex', 'markers', 'request',
-                        'sim_saved_registers_hex',
-                    )
+                    oracle = load_module(here / 'tcg-managed-performance-oracle.py',
+                                         'managed_performance_oracle')
+                    witness_keys = oracle.WITNESS_KEYS
                     witness = {key: sample[key] for key in witness_keys}
                     if expected_sim is None:
                         expected_sim = witness
@@ -226,7 +202,8 @@ def main():
                 'label': label,
                 'round': round_index,
                 'seconds': sample['seconds'],
-                'roi_seconds': sample['roi_seconds'],
+                'roi_seconds': sample.get('roi_seconds'),
+                'measurement_scope': sample.get('measurement_scope', 'serial socket receipt'),
             }
             print(json.dumps(progress), flush=True)
     result['campaign_complete'] = True

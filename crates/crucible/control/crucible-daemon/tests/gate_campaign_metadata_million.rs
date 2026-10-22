@@ -217,6 +217,7 @@ struct CorpusMeasurement {
 fn sqlite_blob_graph(root: &Path) -> Result<(Arc<StoreGraph>, StoreGraphAdmin), Box<dyn Error>> {
     let leaf = StoreNodeId::new("campaign-million-blobs")?;
     let (graph, maintenance) = StoreGraph::build_with_admin(StoreGraphConfig {
+        gc_mark_root: None,
         root: leaf.clone(),
         admitted_kinds: BTreeSet::from(CAMPAIGN_OBJECT_KINDS),
         nodes: BTreeMap::from([(
@@ -259,6 +260,7 @@ fn run_corpus(
     let repository = Arc::new(CampaignRepository::with_component_authorities(
         repository_blobs,
         refs.clone(),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         planner_authority.clone(),
         debugger_authority.clone(),
     )?);
@@ -508,6 +510,7 @@ fn run_corpus(
     let cold = CampaignRepository::with_component_authorities(
         cold_blobs,
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
         debugger_authority,
     )?;

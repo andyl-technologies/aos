@@ -18,6 +18,24 @@ pub enum LiveVcpuTimeCallbackError {
         /// Typed bridge failure.
         source: crate::FaultCommandBridgeError,
     },
+    /// The actual Source-owned callback-child allocation or disposition refused.
+    #[error("callback-child physical custody failed: {source}")]
+    CallbackChildStorage {
+        /// Original typed Native admission or physical-lifetime failure.
+        source: crate::StartupSourceError,
+    },
+    /// Source refused the actual completed-child registration owner.
+    #[error("callback registration owner failed: {source}")]
+    CallbackRegistrationOwner {
+        /// Authentic owner construction, nominal custody or physical-return error.
+        source: crate::StartupSourceError,
+    },
+    /// Complete physical group custody, receipt or return refused.
+    #[error("callback registration group failed: {source}")]
+    CallbackRegistrationGroup {
+        /// Actual Source SDK or physical group failure.
+        source: crate::StartupSourceError,
+    },
     /// Required live fault-command callback state was not installed.
     #[error("live QEMU fault command callback state is unavailable")]
     FaultCommandStateUnavailable,
@@ -50,10 +68,10 @@ pub enum LiveVcpuTimeCallbackError {
         source: crate::CoverageError,
     },
     /// The live white-box adapter failed preflight, registration, or dispatch.
-    #[error("live white-box callback failed: {message}")]
+    #[error("live white-box callback failed: {source}")]
     WhiteboxCallback {
-        /// Stable boundary diagnostic.
-        message: String,
+        /// Original typed refusal, retained without eager diagnostic formatting.
+        source: crate::LiveWhiteboxError,
     },
     /// Exact virtual-deadline introspection was unavailable during preflight.
     #[error("required exact-deadline capability failed: {source}")]
@@ -108,6 +126,20 @@ pub enum LiveVcpuTimeCallbackError {
         "fingerprint sampling requested but QEMU is missing the aggregate fingerprint observer"
     )]
     FingerprintCapabilityUnavailable,
+    /// Installing the process-wide logical RAM observer failed.
+    #[error("logical RAM observer setup failed: {message}")]
+    RamObserverSetup {
+        /// Native capability or registration failure.
+        #[source]
+        message: crate::ram_error::RamError,
+    },
+    /// The actual control child could not enroll or verify its physical custody.
+    #[error("control component registration failed: {source}")]
+    ControlComponent {
+        /// Original Native or containing Runtime failure.
+        #[source]
+        source: crate::ram_error::RamError,
+    },
     /// Capturing a boundary fingerprint sample failed.
     #[error("{boundary} fingerprint sampling failed: {message}")]
     FingerprintSample {
@@ -126,20 +158,34 @@ pub enum LiveVcpuTimeCallbackError {
         /// Pending generation independently visible in the fingerprint slot.
         observed: Option<u32>,
     },
-    /// The dedicated fingerprint digest worker could not be created.
-    #[error("fingerprint digest worker could not start: {message}")]
-    FingerprintWorkerSpawn {
-        /// Host thread-spawn diagnostic.
-        message: String,
+    /// The compulsory device workspace could not be authenticated.
+    #[error("device digest workspace setup failed: {source}")]
+    DeviceDigestWorkspace {
+        /// Fixed typed admission, descriptor or mapping failure.
+        source: crate::DeviceDigestWorkspaceError,
+    },
+    /// The retained semantic sample branch refused actual module dispatch.
+    #[error("fingerprint semantic action refused ({status})")]
+    FingerprintSemanticAction {
+        /// Signed local custody or independent module post refusal.
+        status: i32,
     },
     /// The fingerprint digest worker is no longer accepting captures.
     #[error("fingerprint digest worker is unavailable")]
     FingerprintWorkerUnavailable,
     /// The fingerprint digest worker failed while publishing a prior sample.
-    #[error("fingerprint digest worker failed: {message}")]
+    #[error("fingerprint digest worker failed: {source}")]
     FingerprintWorkerFailed {
-        /// Stable publication failure diagnostic.
-        message: String,
+        /// Same retained worker control with its initiating typed failure.
+        source: super::FingerprintWorkerFailure,
+    },
+    /// An owned module failure also encountered an independent Source scope failure.
+    #[error("fingerprint worker failed: {source}; Source control scope refused ({native_status})")]
+    FingerprintWorkerControlScope {
+        /// Actual owning worker failure, preserving its original typed cause.
+        source: super::fingerprint_worker::FingerprintWorkerFailure,
+        /// Independent signed Source failure after the module action returned.
+        native_status: i32,
     },
     /// A mapped callback ring unexpectedly had no backing entries.
     #[error("mapped callback ring {ring_index} has no backing entries")]
@@ -276,7 +322,7 @@ pub enum LiveVcpuTimeCallbackError {
         /// Authoritative QEMU observation.
         observed_icount: u64,
     },
-    /// Another live callback state pointer is already globally visible.
+    /// The local once-only callback registration guard was already claimed.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
     /// The callback observed a shutdown action without a matching acquire proof.

@@ -2556,3 +2556,22 @@ requirement ID, name at least one implementing task and test for each, reject
 stale IDs in either direction, and remain part of the completion gate. New wire
 and durable formats must have an explicit version, owner, and compatibility
 gate in [`schema-registry.tsv`](schema-registry.tsv).
+
+The host operational frame and durable policy history also cross the
+[RAM runtime-policy boundary](../0021-crucible-paged-ram/05-runtime-policy-and-supervision.md).
+Their compatibility gates belong to the RAM qualification catalog in
+[`crucible-harness::ram_gates`](../../../crates/crucible-harness/src/ram_gates.rs):
+
+| Gate | Schema and implementation owners | Required aggregate evidence |
+| --- | --- | --- |
+| `gate:ram-runtime-policy` | `crucible.host-operational.frame`; `crucible-api::host_operational::codec` and the `crucible-qemu` runtime-policy owner | Live QEMU, real host memory, and unmodified guest execution |
+| `gate:ram-policy-history` | `crucible.host-operational.history`; `crucible-daemon::host_operational_registry::history`, with `crucible-qemu` as the aggregate gate owner | Installed product processes and authenticated continuation artifacts |
+
+The [RAM case bindings](../../../tests/crucible/ram-case-bindings.nix) map
+independent codec, controller, transport, and durable-history controls to these
+gates. Those component checks do not establish either aggregate gate: naming a
+gate in the schema registry or passing its controlled components does not prove
+live policy convergence, physical residency, or restart continuity. The
+[RAM implementation plan](../0021-crucible-paged-ram/11-implementation-plan.md)
+retains the remaining qualification obligations; this traceability adds no
+completion claim.

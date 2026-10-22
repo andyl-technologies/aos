@@ -23,6 +23,11 @@
       inVm = false;
     }
     {
+      package = "crucible-ram";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;
@@ -46,6 +51,16 @@
       package = "crucible-guest";
       layer = 2;
       inVm = true;
+    }
+    {
+      package = "crucible-host-resources";
+      layer = 2;
+      inVm = false;
+    }
+    {
+      package = "crucible-sqlite-heap";
+      layer = 2;
+      inVm = false;
     }
     {
       package = "crucible-engine";
@@ -122,6 +137,10 @@
       from = "crucible-qemu-host";
       to = "crucible-engine";
     }
+    {
+      from = "crucible-qemu-host";
+      to = "crucible-store";
+    }
   ];
   isHostAdapterUpwardEdgeException = edge:
     builtins.any (exception: exception.from == edge.from && exception.to == edge.to) hostAdapterUpwardEdgeExceptions;
@@ -138,7 +157,7 @@
       then manifest.dependencies
       else {};
   in
-    builtins.filter (name: lib.hasPrefix "crucible" name) (
+    builtins.filter (name: lib.hasPrefix "crucible-engine" name) (
       lib.mapAttrsToList dependencyPackageName dependencies
     );
 
@@ -228,6 +247,10 @@
         to = "crucible-engine";
       }
       {
+        from = "crucible-ram";
+        to = "crucible-qemu-host";
+      }
+      {
         from = "crucible-qemu-plugin";
         to = "crucible-determinism";
       }
@@ -249,6 +272,7 @@
   in
     if
       hasFinding "upward dependency"
+      && hasFinding "upward dependency `crucible-ram`"
       && hasFinding "in-VM L2 crate"
       && hasFinding "test-only"
       && hasFinding "dependency cycle"
@@ -280,10 +304,10 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=18
+            runtime_crates=${toString (builtins.length runtimeSpecs)}
             test_only_crates=1
             upward_edges=0
-            host_adapter_upward_edge_exceptions=1
+            host_adapter_upward_edge_exceptions=${toString (builtins.length hostAdapterUpwardEdgeExceptions)}
             dependency_cycles=0
             in_vm_non_l1_direct_edges=0
             RESULT

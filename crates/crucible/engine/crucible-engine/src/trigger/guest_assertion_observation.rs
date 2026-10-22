@@ -1,9 +1,9 @@
 //! Online evaluation of structured guest assertion observations.
 
 use super::{
-    GuestAssertionKind, GuestAssertionMarker, GuestMarkerAssertionState, HostAssertionOutcome,
-    HostAssertionOutcomeKind, ObservableEvent, VirtualTime, guest_assertion_marker_event_evidence,
-    guest_marker_payload_reason,
+    EngineError, GuestAssertionKind, GuestAssertionMarker, GuestMarkerAssertionState,
+    HostAssertionOutcome, HostAssertionOutcomeKind, ObservableEvent, VirtualTime,
+    guest_assertion_marker_event_evidence, guest_marker_payload_reason,
 };
 
 pub(super) fn observe_guest_marker_assertion_state(
@@ -11,9 +11,9 @@ pub(super) fn observe_guest_marker_assertion_state(
     at: VirtualTime,
     event: &ObservableEvent,
     marker: &GuestAssertionMarker,
-) -> Option<HostAssertionOutcome> {
+) -> Result<Option<HostAssertionOutcome>, EngineError> {
     if state.terminal.is_some() {
-        return None;
+        return Ok(None);
     }
 
     if state
@@ -28,22 +28,24 @@ pub(super) fn observe_guest_marker_assertion_state(
                 marker,
                 "guest marker assertion message differs from its scenario declaration",
             ),
-            Some(guest_assertion_marker_event_evidence(event, marker)),
+            Some(guest_assertion_marker_event_evidence(event, marker)?),
         );
     }
 
     if marker.kind != state.kind {
+        let declared_kind = state.kind;
+        let observed_kind = marker.kind;
         return state.terminal_with_evidence(
             HostAssertionOutcomeKind::Violated,
             at,
             guest_marker_payload_reason(
                 marker,
-                &format!(
+                format_args!(
                     "guest marker assertion kind mismatch: declared {:?}, observed {:?}",
-                    state.kind, marker.kind
+                    declared_kind, observed_kind
                 ),
             ),
-            Some(guest_assertion_marker_event_evidence(event, marker)),
+            Some(guest_assertion_marker_event_evidence(event, marker)?),
         );
     }
 
@@ -52,7 +54,7 @@ pub(super) fn observe_guest_marker_assertion_state(
             HostAssertionOutcomeKind::Violated,
             at,
             guest_marker_payload_reason(marker, "guest always marker condition was false"),
-            Some(guest_assertion_marker_event_evidence(event, marker)),
+            Some(guest_assertion_marker_event_evidence(event, marker)?),
         ),
         GuestAssertionKind::Sometimes if marker.condition => state.terminal(
             HostAssertionOutcomeKind::Satisfied,
@@ -68,11 +70,11 @@ pub(super) fn observe_guest_marker_assertion_state(
             HostAssertionOutcomeKind::Violated,
             at,
             guest_marker_payload_reason(marker, "guest unreachable marker was reached"),
-            Some(guest_assertion_marker_event_evidence(event, marker)),
+            Some(guest_assertion_marker_event_evidence(event, marker)?),
         ),
         GuestAssertionKind::Always
         | GuestAssertionKind::Sometimes
         | GuestAssertionKind::Reachable
-        | GuestAssertionKind::Unreachable => None,
+        | GuestAssertionKind::Unreachable => Ok(None),
     }
 }

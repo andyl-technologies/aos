@@ -730,9 +730,10 @@ where
                     event_log_segment_hash: None,
                     event_log_offset: EventLogOffset::default(),
                     scheduler_quiescence: None,
+                    event_log_custody: EventLogOutputCustody::default(),
                 };
                 for append in &appends {
-                    append_to_outcome(&mut outcome, append.clone());
+                    append_to_outcome(&mut outcome, append.try_clone_admitted()?)?;
                 }
                 self.preselection = Some(BackendPendingPreselection {
                     choice,
@@ -742,7 +743,7 @@ where
                     pending_observations: std::mem::take(&mut self.pending_observations),
                     rng_evidence: Vec::new(),
                     observations: Vec::new(),
-                    outcome: outcome.clone(),
+                    outcome: outcome.try_clone_admitted()?.into_shared_admitted()?,
                     handed_off: false,
                     selected: None,
                     selected_decision_count: 0,

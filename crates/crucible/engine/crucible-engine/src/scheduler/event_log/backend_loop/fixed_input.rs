@@ -58,7 +58,7 @@ where
                 "fixed input cannot cross another retained actor owner",
             ));
         }
-        if self.selected_dispatch_contract()? == crate::BackendDispatchContract::ControlV3
+        if self.selected_dispatch_contract()? == crate::BackendDispatchContract::CeilingControl
             || self.backend.io_inventory_authority()
                 == crate::BackendIoInventoryAuthority::SchedulerOwnedModel
         {

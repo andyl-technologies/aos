@@ -180,24 +180,102 @@ impl DetachedPluginAcceleratorRings {
     }
 }
 
-/// An owned setup-time `mmap` of the shared-memory region descriptor.
+/// An independently owned setup-time shared-memory mapping.
+///
+/// This owner performs the sole `munmap`. Its non-owning wire view contains no
+/// allocator, descriptor or external runtime ownership callbacks.
+/// Mutable ring access stays tied to this owner and never exposes replaceable
+/// mapping metadata. The following safe replacement attempt is rejected.
+///
+/// ```compile_fail
+/// use crucible_qemu_shmem::{MappedSetupRegion, MappedSetupView};
+///
+/// fn replace_owned_view(owner: &mut MappedSetupRegion, external: &mut MappedSetupView) {
+///     std::mem::swap(&mut **owner, external);
+/// }
+/// ```
 pub struct MappedSetupRegion {
-    /// Process-local address of the uniquely owned mapping.
-    ///
-    /// The address is stored as an integer so ownership may move between
-    /// scheduler threads. Typed pointers are reconstructed only inside the
-    /// layout-checked accessors below, and the mapping remains uniquely owned
-    /// until `Drop`.
+    pub(super) view: MappedSetupView,
+}
+
+impl core::ops::Deref for MappedSetupRegion {
+    type Target = MappedSetupView;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+/// A non-owning process-local view of the public setup-region wire protocol.
+///
+/// This value never maps, unmaps or changes mapping inheritance. An independent
+/// containing owner must retain the whole VMA while the view or any detached
+/// protocol role is used. It contains only local geometry and backing facts;
+/// no runtime-specific opaque owner, function table or return witness is stored.
+pub struct MappedSetupView {
     pub(super) address: usize,
     pub(super) len: usize,
     pub(super) region_len: u64,
     pub(super) backing_identity: SetupRegionBackingIdentity,
-    /// Process that owns the currently installed virtual-memory mapping.
-    ///
-    /// `MADV_DONTFORK` deliberately leaves this owner without a mapping in a
-    /// fork child. The child must install its authenticated replacement before
-    /// any typed accessor reconstructs a pointer.
     pub(super) mapping_process_id: libc::pid_t,
+}
+
+impl MappedSetupView {
+    /// Borrows an externally retained writable shared mapping without owning it.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the entire readable/writable VMA until this view
+    /// and all references or detached roles obtained from it cease to be used.
+    /// The range must contain initialized current-protocol objects, retain its
+    /// backing size, and obey each accessor's atomic and SPSC aliasing contract.
+    /// A fork child must obtain its own genuine mapping before typed access.
+    /// This constructor provides wire access, not external resource authority.
+    ///
+    /// # Errors
+    ///
+    /// Refuses null, misaligned or overflowing addresses, short or locally
+    /// unrepresentable spans, or a backing object shorter than the view.
+    pub unsafe fn from_retained_mapping(
+        address: *mut u8,
+        region_len: u64,
+        backing_identity: SetupRegionBackingIdentity,
+    ) -> Result<Self, SetupRegionMapError> {
+        let len = usize::try_from(region_len)
+            .map_err(|_| SetupRegionMapError::RegionLenTooLarge { region_len })?;
+        if region_len < REGION_HEADER_SIZE as u64 {
+            return Err(SetupRegionMapError::RegionTooSmall {
+                region_len,
+                minimum_len: REGION_HEADER_SIZE as u64,
+            });
+        }
+        if address.is_null() {
+            return Err(SetupRegionMapError::NullMapping);
+        }
+        if !(address as usize).is_multiple_of(REGION_HEADER_ALIGN) {
+            return Err(SetupRegionMapError::UnalignedMapping {
+                alignment: REGION_HEADER_ALIGN,
+            });
+        }
+        if (address as usize).checked_add(len).is_none() {
+            return Err(SetupRegionMapError::MappingSpanOverflow);
+        }
+        if backing_identity.length() < region_len {
+            return Err(SetupRegionMapError::BackingTooShort {
+                backing_len: backing_identity.length(),
+                region_len,
+            });
+        }
+        Ok(Self {
+            address: address as usize,
+            len,
+            region_len,
+            backing_identity,
+            // SAFETY: getpid has no pointer preconditions and cannot fail.
+            mapping_process_id: unsafe { libc::getpid() },
+        })
+    }
 }
 
 /// Stable filesystem identity of one mapped setup-region backing object.

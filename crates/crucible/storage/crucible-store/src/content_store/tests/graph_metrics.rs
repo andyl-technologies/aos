@@ -11,6 +11,7 @@ fn read_through_and_metrics_nodes_report_exact_operations_and_streams() {
     let cache = node_id("cache");
     let source = node_id("source");
     let graph = StoreGraph::build(StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
         nodes: BTreeMap::from([
@@ -43,12 +44,14 @@ fn read_through_and_metrics_nodes_report_exact_operations_and_streams() {
                 cache,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
             (
                 source,
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -143,10 +146,10 @@ fn metrics_distinguish_complete_abandoned_and_failed_deferred_reads() {
     assert_eq!(snapshot.read_stream_bytes, bytes.len() as u64 + 4);
 
     let broken = Arc::new(FixedReadBackend {
-        source: BlobHandle::new(Arc::new(MismatchedLengthSource {
+        source: BlobHandle::new(MismatchedLengthSource {
             declared: 4,
             bytes: b"abc",
-        })),
+        }),
     });
     let (broken_metrics, broken_state) = MetricsStore::new("broken-metrics", broken);
     assert!(matches!(
@@ -208,6 +211,7 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
     let root = node_id("root");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([(
@@ -227,6 +231,7 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
     let leaf = node_id("leaf");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: router.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact, ObjectKind::RamExtent]),
             nodes: BTreeMap::from([
@@ -239,7 +244,8 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
                 (
                     leaf,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
             ]),
@@ -254,19 +260,22 @@ fn closed_store_graph_rejects_cycles_missing_routes_and_unreachable_nodes() {
     let unused = node_id("unused");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
                 (
                     root,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
                 (
                     unused,
                     StoreNodeSpec::Memory {
-                        max_logical_bytes: 1_024
+                        max_logical_bytes: 1_024,
+                        max_objects: 16,
                     }
                 ),
             ]),
@@ -283,6 +292,7 @@ fn closed_store_graph_rejects_unbounded_or_ambient_administrative_paths() {
     let root = node_id("directory");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([(
@@ -301,6 +311,7 @@ fn closed_store_graph_rejects_unbounded_or_ambient_administrative_paths() {
     let root = node_id("oversized-directory");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: root.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([(

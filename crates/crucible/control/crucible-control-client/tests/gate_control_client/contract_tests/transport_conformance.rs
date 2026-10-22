@@ -11,6 +11,7 @@ async fn reference_client_conformance_drives_full_lifecycle_across_transports_wi
     ));
     let rpc_server = spawn_http2_lifecycle_server().await;
     let rpc_client = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_budget()))
         .unwrap_or_else(|error| panic!("reference RPC client should build: {error}"));
 
     let sim_double = run_reference_client_conformance(&sim_double_client, "SimDouble").await;
@@ -27,12 +28,15 @@ async fn api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_
     let noisy_in_process = InProcessLifecycleClient::new(lifecycle_control_plane());
     let quiet_rpc_server = spawn_http2_lifecycle_server().await;
     let quiet_rpc = RpcControlClient::new(RpcEndpoint::http2(quiet_rpc_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_budget()))
         .unwrap_or_else(|error| panic!("quiet nondeterminism RPC client should build: {error}"));
     let rpc_server = spawn_http2_lifecycle_server().await;
     let noisy_rpc = RpcControlClient::new(RpcEndpoint::http2(rpc_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_budget()))
         .unwrap_or_else(|error| panic!("nondeterminism RPC client should build: {error}"));
     let arrival_rpc_server = spawn_http2_lifecycle_server().await;
     let arrival_rpc = RpcControlClient::new(RpcEndpoint::http2(arrival_rpc_server.endpoint()))
+        .map(|client| client.with_decode_budget(crate::output_budget()))
         .unwrap_or_else(|error| {
             panic!("arrival-order nondeterminism RPC client should build: {error}")
         });
@@ -90,6 +94,7 @@ async fn api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_
 fn control_client_rejects_rpc_version_mismatch_on_both_transports() {
     let (in_process, _actor) = in_process_client_fixture();
     let rpc = RpcControlClient::new(RpcEndpoint::http2("http://127.0.0.1:65535"))
+        .map(|client| client.with_decode_budget(crate::output_budget()))
         .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
     let incompatible = HelloRequest::new(
         "api-control-client-test",

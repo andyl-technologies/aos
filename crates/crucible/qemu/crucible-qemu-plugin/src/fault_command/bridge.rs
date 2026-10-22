@@ -2,12 +2,39 @@
 
 use super::*;
 
+pub(super) mod custody;
+use custody::{DispatchKey, DispatchReceipt, PollReceipt, SubmissionReceipt};
+
 mod events;
 mod initialization;
 mod results;
 use initialization::initialization_stage;
 
 impl FaultCommandBridge {
+    /// Refuses typed destruction while any local native-effect debt is retained.
+    ///
+    /// Empty bookkeeping supplies no external terminal proof. Source still
+    /// independently excludes actual callback/Root/material users before drop.
+    pub(crate) fn local_custody_is_empty(&self) -> bool {
+        self.custody.check().is_ok()
+            && self.custody.result.is_none()
+            && self.custody.event.is_none()
+            && self.pending_command.is_none()
+            && self.capability_queries.is_empty()
+            && self.register_commands.is_empty()
+            && self.active_register_bindings.is_empty()
+            && self.instruction_commands.is_empty()
+            && self.active_instruction_bindings.is_empty()
+            && self.exception_commands.is_empty()
+            && self.memory_ecc_commands.is_empty()
+            && self.clock_commands.is_empty()
+            && self.active_clock_bindings.is_empty()
+            && self.accelerator_commands.is_empty()
+            && self.active_accelerator_bindings.is_empty()
+            && self.prepared_commands.is_empty()
+            && self.prepare_only_commands.is_empty()
+    }
+
     /// Retains correlation until QEMU publishes a terminal command result.
     pub(super) fn retain_prepared_correlation(&mut self, result: &QemuFaultResult) -> bool {
         if result.status != FaultResultStatus::Prepared as u16 {
@@ -44,7 +71,7 @@ impl FaultCommandBridge {
     pub(crate) fn new(
         apis: QemuFaultCommandApis,
         target_node_hash: [u8; 32],
-        region: &mut MappedSetupRegion,
+        region: &mut MappedSetupView,
         vm_slot: u32,
     ) -> Result<Self, FaultCommandBridgeError> {
         if target_node_hash == [0; 32] {
@@ -101,6 +128,7 @@ impl FaultCommandBridge {
             prepared_commands: BTreeSet::new(),
             prepare_only_commands: BTreeSet::new(),
             pending_command: None,
+            custody: custody::EffectCustody::default(),
             initialized: false,
         })
     }
@@ -354,6 +382,7 @@ impl FaultCommandBridge {
         fault_command_frontier: Option<u64>,
         offset_reader: &dyn Fn() -> Result<u64, FaultCommandBridgeError>,
     ) -> Result<bool, FaultCommandBridgeError> {
+        self.custody.check()?;
         if !self.initialized {
             return Err(FaultCommandBridgeError::NotInitialized);
         }
@@ -419,30 +448,46 @@ impl FaultCommandBridge {
                 }
                 DequeuedFaultCommand::Valid { .. } | DequeuedFaultCommand::Rejected { .. } => 0,
             };
-            if !self.results.can_enqueue(required_result_payload)? {
-                self.pending_command = Some(command);
-                return Ok(false);
-            }
-            match command {
-                DequeuedFaultCommand::Valid { header, payload } => {
-                    self.submit(*header, &payload, logical_icount_offset, logical_icount)?;
+            // The transport has already consumed this owned payload. Retain it
+            // on every later error, including preeffect capacity/validation cuts.
+            let submitted = (|| {
+                if !self.results.can_enqueue(required_result_payload)? {
+                    return Ok(false);
                 }
-                DequeuedFaultCommand::Rejected {
-                    raw_command_kind,
-                    command_sequence,
-                    error,
-                } => {
-                    if command_sequence == 0 {
-                        return Err(FaultCommandBridgeError::UncorrelatableMalformedCommand);
+                match &command {
+                    DequeuedFaultCommand::Valid { header, payload } => {
+                        self.submit(header, payload, logical_icount_offset, logical_icount)?;
                     }
-                    self.publish_local_rejection(
+                    DequeuedFaultCommand::Rejected {
                         raw_command_kind,
                         command_sequence,
-                        FaultBoundaryPhase::NodeBoundary,
-                        rejection_status(error),
-                        logical_icount,
-                        logical_icount_offset,
-                    )?;
+                        error,
+                    } => {
+                        if *command_sequence == 0 {
+                            return Err(FaultCommandBridgeError::UncorrelatableMalformedCommand);
+                        }
+                        self.publish_local_rejection(
+                            *raw_command_kind,
+                            *command_sequence,
+                            FaultBoundaryPhase::NodeBoundary,
+                            rejection_status(error.clone()),
+                            logical_icount,
+                            logical_icount_offset,
+                        )?;
+                    }
+                }
+                Ok(true)
+            })();
+            match submitted {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.pending_command = Some(command);
+                    return Ok(false);
+                }
+                Err(error) => {
+                    self.pending_command = Some(command);
+                    self.custody.block("command submission");
+                    return Err(error);
                 }
             }
             logical_icount_offset = offset_reader()?;
@@ -481,28 +526,63 @@ impl FaultCommandBridge {
     }
 
     /// Returns whether the command consumer remains exactly at the bound frontier.
-    pub(crate) fn command_frontier_is_settled(&self, frontier: u64) -> bool {
-        self.pending_command.is_none()
+    ///
+    /// # Errors
+    /// Propagates unresolved native-effect custody instead of reporting pending.
+    pub(crate) fn command_frontier_is_settled(
+        &self,
+        frontier: u64,
+    ) -> Result<bool, FaultCommandBridgeError> {
+        self.custody.check()?;
+        Ok(self.pending_command.is_none()
             && self.commands.read_index() == frontier
-            && self.commands.write_index() == frontier
+            && self.commands.write_index() == frontier)
     }
 
     /// Commits every QEMU fault due at this exact node boundary.
+    ///
+    /// Request/frontier/count form a local replay key, never an operation grant.
+    ///
+    /// # Errors
+    /// Retains native refusal and rejects replay of an unresolved attempt.
     pub(crate) fn dispatch_node_boundary(
-        &self,
+        &mut self,
         raw_icount: u64,
+        control_request: u64,
+        frontier: u64,
     ) -> Result<(), FaultCommandBridgeError> {
-        let status = (self.apis.dispatch_node_boundary)(raw_icount);
-        if status == 0 {
-            Ok(())
-        } else {
-            Err(FaultCommandBridgeError::NodeBoundaryDispatch { status })
+        self.custody.check()?;
+        let key = DispatchKey {
+            control_request,
+            frontier,
+            raw_icount,
+        };
+        if self
+            .custody
+            .dispatch
+            .as_ref()
+            .is_some_and(|receipt| receipt.key == key && receipt.attempt.returned_status == Some(0))
+        {
+            // A known returned dispatch is not repeated after publication
+            // backpressure or a later physical-use return refusal.
+            return Ok(());
         }
+        let attempt = self.custody.begin()?;
+        self.custody.dispatch = Some(DispatchReceipt { key, attempt });
+        let status = (self.apis.dispatch_node_boundary)(raw_icount);
+        if let Some(receipt) = self.custody.dispatch.as_mut() {
+            receipt.attempt.returned_status = Some(status);
+        }
+        if status != 0 {
+            self.custody.block("node-boundary dispatch");
+            return Err(FaultCommandBridgeError::NodeBoundaryDispatch { status });
+        }
+        Ok(())
     }
 
     fn submit(
         &mut self,
-        header: FaultCommandHeaderV1,
+        header: &FaultCommandHeaderV1,
         payload: &[u8],
         logical_icount_offset: u64,
         logical_icount: u64,
@@ -731,16 +811,19 @@ impl FaultCommandBridge {
         if header.command_flags & FAULT_COMMAND_FLAG_PREPARE_ONLY != 0 {
             self.prepare_only_commands.insert(header.command_sequence);
         }
-        let status = (self.apis.submit)(&command, payload_pointer, payload.len());
+        let attempt = self.custody.begin()?;
+        self.custody.submit = Some(SubmissionReceipt { attempt, command });
+        let receipt = self
+            .custody
+            .submit
+            .as_mut()
+            .ok_or_else(|| custody::missing_receipt("native submit"))?;
+        let status = (self.apis.submit)(&receipt.command, payload_pointer, payload.len());
+        receipt.attempt.returned_status = Some(status);
         if status != 0 {
-            self.capability_queries.remove(&header.command_sequence);
-            self.register_commands.remove(&header.command_sequence);
-            self.instruction_commands.remove(&header.command_sequence);
-            self.exception_commands.remove(&header.command_sequence);
-            self.memory_ecc_commands.remove(&header.command_sequence);
-            self.clock_commands.remove(&header.command_sequence);
-            self.accelerator_commands.remove(&header.command_sequence);
-            self.prepare_only_commands.remove(&header.command_sequence);
+            // Keep the already-published correlations and the same owned
+            // pending payload. A signed failure does not undo native effects.
+            self.custody.block("native submit");
             return Err(FaultCommandBridgeError::QemuSubmit { status });
         }
         Ok(())

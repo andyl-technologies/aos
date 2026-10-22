@@ -64,6 +64,7 @@ impl ProductionFaultRuntime {
                 },
             )?,
             pending_qemu_observations: self.pending_qemu_observations.clone(),
+            memory_service_evidence: self.memory_service_evidence,
             pending_qemu_events: self.pending_qemu_events.try_clone_with(
                 |node| {
                     try_clone_ledger_node_id(node, || {
@@ -175,6 +176,7 @@ impl ProductionFaultRuntime {
             qemu_action_commits: QemuActionMap::new(),
             qemu_active_rule_ids: QemuActionSet::new(),
             pending_qemu_observations: Vec::new(),
+            memory_service_evidence: Default::default(),
             pending_qemu_events: PendingQemuEventMap::new(),
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: Vec::new(),
@@ -343,6 +345,7 @@ impl ProductionFaultRuntime {
             qemu_action_commits,
             qemu_active_rule_ids,
             pending_qemu_observations,
+            memory_service_evidence: Default::default(),
             pending_qemu_events,
             pending_node_lifecycle: Vec::new(),
             pending_node_boot: Vec::new(),

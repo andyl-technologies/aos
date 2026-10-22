@@ -524,16 +524,3 @@ pub(super) fn selector_from_toml(
         }
     }
 }
-
-pub(in crate::model::fault_signal) fn validate_selector_for_world(
-    selector: &TargetSelector,
-    world: &World,
-) -> Result<(), FaultSignalAuthoringError> {
-    let encoded = selector_to_toml(selector)?;
-    let resolved = selector_from_toml(encoded, world)?;
-    if &resolved == selector {
-        Ok(())
-    } else {
-        Err(FaultSignalAuthoringError::InvalidSelector)
-    }
-}

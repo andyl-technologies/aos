@@ -169,6 +169,7 @@ fn validate_live_qemu_probe_evidence(
         reason: BackendSelectionReason::ExplicitQemu,
         daemon: None,
         daemon_security: None,
+        metadata_deployment: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
@@ -330,6 +331,7 @@ pub(crate) fn run_local_qemu_verify_workflow(
         witnesses.push(witness);
     }
     let report = VerifyWorkflowReport {
+        _input_custody: crucible_session::engine::owned_decode::current_custody(),
         divergence: compare_verify_witnesses(&witnesses),
         witnesses,
     };
@@ -353,7 +355,7 @@ fn verify_qemu_lifecycle_config(
     profile: VerifyHostProfile,
 ) -> Result<
     (
-        production_api::ProductionVmLifecycleConfig,
+        crucible_daemon::ProductionVmLifecycleConfig,
         Option<crucible_daemon::BoundedSchedulerPreemptionEvidence>,
     ),
     CliError,
@@ -379,7 +381,7 @@ fn verify_qemu_lifecycle_config(
 fn run_local_qemu_campaign_with_hostile_deadlines(
     backend: &ResolvedLocalBackend,
     run_plan: &RunInvocationPlan,
-    lifecycle: production_api::ProductionVmLifecycleConfig,
+    lifecycle: crucible_daemon::ProductionVmLifecycleConfig,
     profile: VerifyHostProfile,
 ) -> Result<RunWorkflowReport, CliError> {
     let completion_timeout = lifecycle.completion_timeout();
@@ -593,7 +595,7 @@ pub(crate) fn required_scheduler_preemption_snapshot(
 
 pub(crate) fn production_qemu_lifecycle_config(
     backend: &ResolvedLocalBackend,
-) -> Result<production_api::ProductionVmLifecycleConfig, CliError> {
+) -> Result<crucible_daemon::ProductionVmLifecycleConfig, CliError> {
     let (qemu, plugin) = match backend {
         ResolvedLocalBackend::Qemu { qemu, plugin, .. } => (qemu, plugin),
         #[cfg(any(test, feature = "test-double"))]
@@ -622,7 +624,7 @@ pub(crate) fn production_qemu_lifecycle_config(
         })?;
     let native_guest_architecture = live_qemu_native_guest_architecture()?;
     let mut config = crucible_daemon::with_production_qemu_raw_root_image(
-        production_api::ProductionVmLifecycleConfig::new_for_guest_architecture(
+        crucible_daemon::ProductionVmLifecycleConfig::new_for_guest_architecture(
             qemu,
             plugin,
             native_guest_architecture,

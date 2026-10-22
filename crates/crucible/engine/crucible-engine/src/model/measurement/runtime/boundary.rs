@@ -5,25 +5,28 @@ use super::*;
 // Boundary replay is kept below the arithmetic layer so aggregation remains
 // independently reusable by observation validators.
 
-#[derive(Clone)]
-struct BoundaryProgress {
-    selector: BoundarySelector,
+struct BoundaryProgress<'a> {
+    selector: &'a BoundarySelector,
     satisfied: Option<MeasurementBoundaryEvidence>,
-    children: Vec<BoundaryProgress>,
+    children: Vec<BoundaryProgress<'a>>,
     event_count: u64,
     cohort_hits: BTreeMap<NodeId, (u64, ContentHash)>,
     last_network_activity: VirtualTime,
 }
 
-impl BoundaryProgress {
-    fn new(selector: &BoundarySelector, scenario_ready_at: Option<VirtualTime>) -> Self {
-        let children = match selector {
-            BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } => selectors
-                .iter()
-                .map(|selector| Self::new(selector, scenario_ready_at))
-                .collect(),
-            _ => Vec::new(),
-        };
+impl<'a> BoundaryProgress<'a> {
+    fn new(
+        selector: &'a BoundarySelector,
+        scenario_ready_at: Option<VirtualTime>,
+    ) -> Result<Self, MeasurementEvaluationError> {
+        let mut children = Vec::new();
+        if let BoundarySelector::All { selectors } | BoundarySelector::Any { selectors } = selector
+        {
+            ownership::reserve(&mut children, selectors.len())?;
+            for selector in selectors {
+                children.push(Self::new(selector, scenario_ready_at)?);
+            }
+        }
         let satisfied = match selector {
             BoundarySelector::ScenarioGenesis => Some(MeasurementBoundaryEvidence {
                 sequence: None,
@@ -41,36 +44,36 @@ impl BoundaryProgress {
             }
             _ => None,
         };
-        Self {
-            selector: selector.clone(),
+        Ok(Self {
+            selector,
             satisfied,
             children,
             event_count: 0,
             cohort_hits: BTreeMap::new(),
             last_network_activity: VirtualTime { ticks: 0 },
-        }
+        })
     }
 
     fn observe(
         &mut self,
         entry: &SchedulerEventLogEntry,
         cohort: &CohortPolicy,
-    ) -> Option<MeasurementBoundaryEvidence> {
-        if let Some(satisfied) = &self.satisfied {
-            return Some(satisfied.clone());
+    ) -> Result<bool, MeasurementEvaluationError> {
+        if self.satisfied.is_some() {
+            return Ok(true);
         }
-        let selector = self.selector.clone();
-        let satisfaction = match &selector {
+        let satisfaction = match self.selector {
             BoundarySelector::ScenarioGenesis => None,
-            BoundarySelector::ScenarioReady => {
-                (entry.event_payload().kind() == "scenario_ready").then(|| evidence_for(entry))
-            }
-            BoundarySelector::PlanEvent { event } => {
-                entry_matches_plan_event(entry, event).then(|| evidence_for(entry))
-            }
+            BoundarySelector::ScenarioReady => (entry.event_payload().kind() == "scenario_ready")
+                .then(|| evidence_for(entry))
+                .transpose()?,
+            BoundarySelector::PlanEvent { event } => entry_matches_plan_event(entry, event)
+                .then(|| evidence_for(entry))
+                .transpose()?,
             BoundarySelector::FaultOpportunity { binding } => {
                 entry_matches_fault(entry, binding, &[FaultObservationKind::FaultOpportunity])
                     .then(|| evidence_for(entry))
+                    .transpose()?
             }
             BoundarySelector::FaultTransition { binding } => entry_matches_fault(
                 entry,
@@ -84,20 +87,24 @@ impl BoundaryProgress {
                     FaultObservationKind::AssociationTransition,
                 ],
             )
-            .then(|| evidence_for(entry)),
+            .then(|| evidence_for(entry))
+            .transpose()?,
             BoundarySelector::FaultApplied { binding } => {
                 entry_matches_fault(entry, binding, &[FaultObservationKind::EffectApplied])
                     .then(|| evidence_for(entry))
+                    .transpose()?
             }
             BoundarySelector::GuestMarker { marker, instance } => {
-                self.observe_guest_marker(entry, cohort, marker, instance.as_ref())
+                self.observe_guest_marker(entry, cohort, marker, instance.as_ref())?
             }
             BoundarySelector::PropertyVerdict { property } => {
-                entry_matches_property(entry, property).then(|| evidence_for(entry))
+                entry_matches_property(entry, property)
+                    .then(|| evidence_for(entry))
+                    .transpose()?
             }
-            BoundarySelector::VirtualTime { at } => {
-                (entry.at() >= *at).then(|| evidence_for(entry))
-            }
+            BoundarySelector::VirtualTime { at } => (entry.at() >= *at)
+                .then(|| evidence_for(entry))
+                .transpose()?,
             BoundarySelector::NodeIcount { node, instructions } => {
                 (entry.time().stamp.node.as_ref() == Some(node)
                     && entry
@@ -106,12 +113,15 @@ impl BoundaryProgress {
                         .retired
                         .is_some_and(|count| count.retired >= *instructions))
                 .then(|| evidence_for(entry))
+                .transpose()?
             }
             BoundarySelector::EventCount { event, count } => {
                 if entry_matches_plan_event(entry, event) {
                     self.event_count = self.event_count.saturating_add(1);
                 }
-                (self.event_count >= *count).then(|| evidence_for(entry))
+                (self.event_count >= *count)
+                    .then(|| evidence_for(entry))
+                    .transpose()?
             }
             BoundarySelector::SchedulerQuiescence => None,
             BoundarySelector::NetworkIdle { link, window } => {
@@ -124,39 +134,46 @@ impl BoundaryProgress {
                     .checked_sub(self.last_network_activity.ticks)
                     .is_some_and(|idle| idle >= window.ticks)
                     .then(|| evidence_for(entry))
+                    .transpose()?
             }
             BoundarySelector::All { .. } => {
                 let mut all = true;
-                let mut evidence = Vec::new();
                 for child in &mut self.children {
-                    if let Some(child_evidence) = child.observe(entry, cohort) {
-                        evidence.push(child_evidence);
-                    } else {
-                        all = false;
+                    all &= child.observe(entry, cohort)?;
+                }
+                if all {
+                    Some(merged_evidence_at(
+                        Some(entry.sequence()),
+                        entry.at(),
+                        &self.children,
+                    )?)
+                } else {
+                    None
+                }
+            }
+            BoundarySelector::Any { .. } => {
+                let mut selected = None;
+                for child in &mut self.children {
+                    if child.observe(entry, cohort)? {
+                        selected = child.satisfied.take();
+                        break;
                     }
                 }
-                all.then(|| merged_evidence(entry, evidence))
+                selected
             }
-            BoundarySelector::Any { .. } => self
-                .children
-                .iter_mut()
-                .find_map(|child| child.observe(entry, cohort)),
         };
-        if satisfaction.is_some() {
-            self.satisfied = satisfaction.clone();
-        }
-        satisfaction
+        self.satisfied = satisfaction;
+        Ok(self.satisfied.is_some())
     }
 
     fn observe_terminal(
         &mut self,
         terminal: &MeasurementTerminalState,
-    ) -> Option<MeasurementBoundaryEvidence> {
-        if let Some(satisfied) = &self.satisfied {
-            return Some(satisfied.clone());
+    ) -> Result<bool, MeasurementEvaluationError> {
+        if self.satisfied.is_some() {
+            return Ok(true);
         }
-        let selector = self.selector.clone();
-        let satisfaction = match &selector {
+        let satisfaction = match self.selector {
             BoundarySelector::VirtualTime { at } if terminal.at >= *at => {
                 Some(terminal_evidence(terminal.at))
             }
@@ -181,22 +198,30 @@ impl BoundaryProgress {
                 Some(terminal_evidence(terminal.at))
             }
             BoundarySelector::All { .. } => {
-                let mut evidence = Vec::new();
+                let mut all = true;
                 for child in &mut self.children {
-                    evidence.push(child.observe_terminal(terminal)?);
+                    all &= child.observe_terminal(terminal)?;
                 }
-                Some(merged_terminal_evidence(terminal.at, evidence))
+                if all {
+                    Some(merged_evidence_at(None, terminal.at, &self.children)?)
+                } else {
+                    None
+                }
             }
-            BoundarySelector::Any { .. } => self
-                .children
-                .iter_mut()
-                .find_map(|child| child.observe_terminal(terminal)),
+            BoundarySelector::Any { .. } => {
+                let mut selected = None;
+                for child in &mut self.children {
+                    if child.observe_terminal(terminal)? {
+                        selected = child.satisfied.take();
+                        break;
+                    }
+                }
+                selected
+            }
             _ => None,
         };
-        if satisfaction.is_some() {
-            self.satisfied = satisfaction.clone();
-        }
-        satisfaction
+        self.satisfied = satisfaction;
+        Ok(self.satisfied.is_some())
     }
 
     fn observe_guest_marker(
@@ -205,45 +230,55 @@ impl BoundaryProgress {
         cohort: &CohortPolicy,
         marker: &MarkerId,
         instance: Option<&MeasurementInstanceKey>,
-    ) -> Option<MeasurementBoundaryEvidence> {
-        let node = guest_marker_node(entry, marker, instance)?;
+    ) -> Result<Option<MeasurementBoundaryEvidence>, MeasurementEvaluationError> {
+        let Some(node) = guest_marker_node(entry, marker, instance) else {
+            return Ok(None);
+        };
         let members = cohort_nodes(cohort);
-        if members.binary_search(&node).is_err() {
-            return None;
+        if members.binary_search(node).is_err() {
+            return Ok(None);
         }
-        self.cohort_hits
-            .entry(node.clone())
-            .or_insert((entry.sequence(), entry.content_hash()));
+        if !self.cohort_hits.contains_key(node) {
+            ownership::tree_entry::<NodeId, (u64, ContentHash)>()?;
+            let node = ownership::copy_node(node)?;
+            self.cohort_hits
+                .insert(node, (entry.sequence(), entry.content_hash()));
+        }
         let required = match cohort {
             CohortPolicy::All(nodes) => nodes.len(),
             CohortPolicy::Any(_) => 1,
-            CohortPolicy::Quorum { required, .. } => usize::try_from(*required).ok()?,
+            CohortPolicy::Quorum { required, .. } => usize::try_from(*required)
+                .map_err(|_| MeasurementEvaluationError::ArithmeticOverflow)?,
         };
         if self.cohort_hits.len() < required {
-            return None;
+            return Ok(None);
         }
-        let mut selected = self
-            .cohort_hits
-            .iter()
-            .map(|(node, (sequence, hash))| (sequence, node, hash))
-            .collect::<Vec<_>>();
-        selected.sort_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
+        let mut selected = Vec::new();
+        ownership::reserve(&mut selected, self.cohort_hits.len())?;
+        selected.extend(
+            self.cohort_hits
+                .iter()
+                .map(|(node, (sequence, hash))| (sequence, node, hash)),
+        );
+        selected.sort_unstable_by(|left, right| (left.0, left.1).cmp(&(right.0, right.1)));
         selected.truncate(required);
-        Some(MeasurementBoundaryEvidence {
+        let mut events = Vec::new();
+        let mut cohort = Vec::new();
+        ownership::reserve(&mut events, required)?;
+        ownership::reserve(&mut cohort, required)?;
+        for (sequence, node, hash) in selected {
+            events.push(MeasurementBoundaryEvent {
+                sequence: *sequence,
+                content_hash: *hash,
+            });
+            cohort.push(ownership::copy_node(node)?);
+        }
+        Ok(Some(MeasurementBoundaryEvidence {
             sequence: Some(entry.sequence()),
             at: entry.at(),
-            events: selected
-                .iter()
-                .map(|(sequence, _, hash)| MeasurementBoundaryEvent {
-                    sequence: **sequence,
-                    content_hash: **hash,
-                })
-                .collect(),
-            cohort: selected
-                .iter()
-                .map(|(_, node, _)| (*node).clone())
-                .collect(),
-        })
+            events,
+            cohort,
+        }))
     }
 
     fn activate(&mut self, at: VirtualTime) {
@@ -261,10 +296,10 @@ pub(super) fn evaluate_window(
     entries: &[SchedulerEventLogEntry],
     terminal: &MeasurementTerminalState,
 ) -> Result<MeasurementWindowOutcome, MeasurementEvaluationError> {
-    let mut begin = BoundaryProgress::new(&definition.begin, terminal.scenario_ready_at);
-    let mut end = BoundaryProgress::new(&definition.end, terminal.scenario_ready_at);
+    let mut begin = BoundaryProgress::new(&definition.begin, terminal.scenario_ready_at)?;
+    let mut end = BoundaryProgress::new(&definition.end, terminal.scenario_ready_at)?;
     let mut timeout = TimeoutProgress::new(definition.timeout.as_ref());
-    let mut begin_evidence = begin.satisfied.clone();
+    let mut begin_evidence = begin.satisfied.take();
     if let Some(opened) = &begin_evidence {
         end.activate(opened.at);
         timeout.open(opened, entries.first());
@@ -272,7 +307,8 @@ pub(super) fn evaluate_window(
 
     for entry in entries {
         if begin_evidence.is_none() {
-            begin_evidence = begin.observe(entry, &definition.cohort);
+            begin.observe(entry, &definition.cohort)?;
+            begin_evidence = begin.satisfied.take();
             if let Some(evidence) = &begin_evidence {
                 end.activate(evidence.at);
                 timeout.open(evidence, Some(entry));
@@ -284,25 +320,35 @@ pub(super) fn evaluate_window(
         if !entry_not_before_boundary(entry, opened) {
             continue;
         }
-        if let Some(completed) = end
-            .observe(entry, &definition.cohort)
-            .filter(|completed| event_boundary_not_before(opened, completed))
+        end.observe(entry, &definition.cohort)?;
+        if end
+            .satisfied
+            .as_ref()
+            .is_some_and(|completed| event_boundary_not_before(opened, completed))
         {
             return Ok(MeasurementWindowOutcome::Completed {
-                begin: opened.clone(),
-                end: completed,
+                begin: begin_evidence
+                    .take()
+                    .ok_or(MeasurementEvaluationError::ReplayMismatch)?,
+                end: end
+                    .satisfied
+                    .take()
+                    .ok_or(MeasurementEvaluationError::ReplayMismatch)?,
             });
         }
-        if let Some(expired) = timeout.observe(entry) {
+        if let Some(expired) = timeout.observe(entry)? {
             return Ok(MeasurementWindowOutcome::TimedOut {
-                begin: opened.clone(),
+                begin: begin_evidence
+                    .take()
+                    .ok_or(MeasurementEvaluationError::ReplayMismatch)?,
                 timeout: expired,
             });
         }
     }
 
     if begin_evidence.is_none() {
-        begin_evidence = begin.observe_terminal(terminal);
+        begin.observe_terminal(terminal)?;
+        begin_evidence = begin.satisfied.take();
         if let Some(opened) = &begin_evidence {
             end.activate(opened.at);
             timeout.open(opened, None);
@@ -311,8 +357,10 @@ pub(super) fn evaluate_window(
     let Some(opened) = begin_evidence else {
         return Ok(MeasurementWindowOutcome::NotStarted);
     };
+    end.observe_terminal(terminal)?;
     if let Some(completed) = end
-        .observe_terminal(terminal)
+        .satisfied
+        .take()
         .filter(|completed| completed.at >= opened.at)
     {
         return Ok(MeasurementWindowOutcome::Completed {
@@ -355,17 +403,17 @@ fn event_boundary_not_before(
     }
 }
 
-struct TimeoutProgress {
-    timeout: Option<ModeledMeasurementTimeout>,
+struct TimeoutProgress<'a> {
+    timeout: Option<&'a ModeledMeasurementTimeout>,
     opened_at: Option<VirtualTime>,
     node_baseline: Option<u64>,
     event_count: u64,
 }
 
-impl TimeoutProgress {
-    fn new(timeout: Option<&ModeledMeasurementTimeout>) -> Self {
+impl<'a> TimeoutProgress<'a> {
+    fn new(timeout: Option<&'a ModeledMeasurementTimeout>) -> Self {
         Self {
-            timeout: timeout.cloned(),
+            timeout,
             opened_at: None,
             node_baseline: None,
             event_count: 0,
@@ -378,7 +426,7 @@ impl TimeoutProgress {
         entry: Option<&SchedulerEventLogEntry>,
     ) {
         self.opened_at = Some(evidence.at);
-        if let Some(ModeledMeasurementTimeout::NodeIcount { node, .. }) = &self.timeout
+        if let Some(ModeledMeasurementTimeout::NodeIcount { node, .. }) = self.timeout
             && entry.is_some_and(|entry| entry.time().stamp.node.as_ref() == Some(node))
         {
             self.node_baseline =
@@ -386,15 +434,18 @@ impl TimeoutProgress {
         }
     }
 
-    fn observe(&mut self, entry: &SchedulerEventLogEntry) -> Option<MeasurementBoundaryEvidence> {
-        match &self.timeout {
+    fn observe(
+        &mut self,
+        entry: &SchedulerEventLogEntry,
+    ) -> Result<Option<MeasurementBoundaryEvidence>, MeasurementEvaluationError> {
+        let selected = (|| match self.timeout {
             None => None,
             Some(ModeledMeasurementTimeout::VirtualTime { nanos }) => self
                 .opened_at?
                 .ticks
                 .checked_add(nanos.checked_mul(SIM_TICKS_PER_NS)?)
                 .is_some_and(|deadline| entry.at().ticks >= deadline)
-                .then(|| evidence_for(entry)),
+                .then_some(entry),
             Some(ModeledMeasurementTimeout::NodeIcount { node, instructions }) => {
                 if entry.time().stamp.node.as_ref() != Some(node) {
                     return None;
@@ -404,22 +455,23 @@ impl TimeoutProgress {
                 current
                     .checked_sub(baseline)
                     .is_some_and(|elapsed| elapsed >= *instructions)
-                    .then(|| evidence_for(entry))
+                    .then_some(entry)
             }
             Some(ModeledMeasurementTimeout::EventCount { event, count }) => {
                 if entry_matches_plan_event(entry, event) {
                     self.event_count = self.event_count.saturating_add(1);
                 }
-                (self.event_count >= *count).then(|| evidence_for(entry))
+                (self.event_count >= *count).then_some(entry)
             }
-        }
+        })();
+        selected.map(evidence_for).transpose()
     }
 
     fn observe_terminal(
         &self,
         terminal: &MeasurementTerminalState,
     ) -> Option<MeasurementBoundaryEvidence> {
-        match &self.timeout {
+        match self.timeout {
             Some(ModeledMeasurementTimeout::VirtualTime { nanos }) => self
                 .opened_at?
                 .ticks
@@ -440,16 +492,21 @@ impl TimeoutProgress {
     }
 }
 
-fn evidence_for(entry: &SchedulerEventLogEntry) -> MeasurementBoundaryEvidence {
-    MeasurementBoundaryEvidence {
+fn evidence_for(
+    entry: &SchedulerEventLogEntry,
+) -> Result<MeasurementBoundaryEvidence, MeasurementEvaluationError> {
+    let mut events = Vec::new();
+    ownership::reserve(&mut events, 1)?;
+    events.push(MeasurementBoundaryEvent {
+        sequence: entry.sequence(),
+        content_hash: entry.content_hash(),
+    });
+    Ok(MeasurementBoundaryEvidence {
         sequence: Some(entry.sequence()),
         at: entry.at(),
-        events: vec![MeasurementBoundaryEvent {
-            sequence: entry.sequence(),
-            content_hash: entry.content_hash(),
-        }],
+        events,
         cohort: Vec::new(),
-    }
+    })
 }
 
 fn terminal_evidence(at: VirtualTime) -> MeasurementBoundaryEvidence {
@@ -461,45 +518,39 @@ fn terminal_evidence(at: VirtualTime) -> MeasurementBoundaryEvidence {
     }
 }
 
-fn merged_evidence(
-    entry: &SchedulerEventLogEntry,
-    evidence: Vec<MeasurementBoundaryEvidence>,
-) -> MeasurementBoundaryEvidence {
-    merged_evidence_at(Some(entry.sequence()), entry.at(), evidence)
-}
-
-fn merged_terminal_evidence(
-    at: VirtualTime,
-    evidence: Vec<MeasurementBoundaryEvidence>,
-) -> MeasurementBoundaryEvidence {
-    merged_evidence_at(None, at, evidence)
-}
-
 fn merged_evidence_at(
     sequence: Option<u64>,
     at: VirtualTime,
-    evidence: Vec<MeasurementBoundaryEvidence>,
-) -> MeasurementBoundaryEvidence {
+    children: &[BoundaryProgress<'_>],
+) -> Result<MeasurementBoundaryEvidence, MeasurementEvaluationError> {
     let mut events = Vec::new();
     let mut cohort = Vec::new();
-    for child in evidence {
-        events.extend(child.events);
-        cohort.extend(child.cohort);
+    for child in children {
+        let proof = child
+            .satisfied
+            .as_ref()
+            .ok_or(MeasurementEvaluationError::ReplayMismatch)?;
+        ownership::reserve(&mut events, proof.events.len())?;
+        events.extend_from_slice(&proof.events);
+        ownership::reserve(&mut cohort, proof.cohort.len())?;
+        for node in &proof.cohort {
+            cohort.push(ownership::copy_node(node)?);
+        }
     }
-    events.sort_by(|left, right| {
+    events.sort_unstable_by(|left, right| {
         (left.sequence, left.content_hash).cmp(&(right.sequence, right.content_hash))
     });
     events.dedup_by(|left, right| left.content_hash == right.content_hash);
-    MeasurementBoundaryEvidence {
+    Ok(MeasurementBoundaryEvidence {
         sequence,
         at,
         events,
         cohort: canonical_nodes(cohort),
-    }
+    })
 }
 
 fn canonical_nodes(mut values: Vec<NodeId>) -> Vec<NodeId> {
-    values.sort();
+    values.sort_unstable();
     values.dedup();
     values
 }
@@ -540,17 +591,17 @@ fn entry_matches_property(entry: &SchedulerEventLogEntry, property: &AssertionId
     )
 }
 
-fn guest_marker_node(
-    entry: &SchedulerEventLogEntry,
+fn guest_marker_node<'a>(
+    entry: &'a SchedulerEventLogEntry,
     marker: &MarkerId,
     instance: Option<&MeasurementInstanceKey>,
-) -> Option<NodeId> {
+) -> Option<&'a NodeId> {
     match entry.payload() {
         SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMarker {
             node,
             marker: observed,
             ..
-        }) if instance.is_none() && observed == marker => Some(node.clone()),
+        }) if instance.is_none() && observed == marker => Some(node),
         SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
             node,
             marker: observed,
@@ -559,7 +610,7 @@ fn guest_marker_node(
         }) if observed == &marker.name
             && instance.is_some_and(|expected| expected.as_str() == observed_instance) =>
         {
-            Some(node.clone())
+            Some(node)
         }
         _ => None,
     }

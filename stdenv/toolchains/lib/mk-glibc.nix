@@ -27,6 +27,12 @@
     inherit (spec) url sha256;
   };
 
+  patches = spec.patches or [];
+  prepareSource = concat "\n" (
+    map (patch: "patch -p1 < ${patch}") patches
+    ++ [(spec.postUnpack or "")]
+  );
+
   sourceScriptFilter = spec.sourceScriptFilter or null;
   sourceScriptFilterSetup = optionalString (sourceScriptFilter != null) ''
     source_runtime_inputs="$TMPDIR/libc-runtime-scripts"
@@ -148,7 +154,7 @@ in
         ${sourceScriptFilterSetup}AOS_RUNTIME_SHELL="$CONFIG_SHELL" \
           "$CONFIG_SHELL" ${../../runtime-scripts.sh} ${sourceScriptRoot}${sourceScriptFilterCleanup}
 
-        ${spec.postUnpack or ""}
+        ${prepareSource}
 
         mkdir -p "$TMPDIR/build"
         cd "$TMPDIR/build"
@@ -180,7 +186,8 @@ in
   // {
     inherit version;
     pname = "glibc";
-    passthru.evidenceSources = [src];
+    # A patched runtime's corresponding source includes its exact patch inputs.
+    passthru.evidenceSources = [src] ++ patches;
     meta =
       spec.meta
       or {

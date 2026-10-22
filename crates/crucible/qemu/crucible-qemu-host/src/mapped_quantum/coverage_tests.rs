@@ -138,6 +138,6 @@ fn host_rejects_acknowledgement_before_the_plugin_empties_coverage()
         Ok(()) => panic!("an acknowledged nonempty producer generation must fail closed"),
         Err(error) => error,
     };
-    assert!(error.message.contains("coverage cursors"));
+    assert!(error.message().contains("coverage cursors"));
     Ok(())
 }

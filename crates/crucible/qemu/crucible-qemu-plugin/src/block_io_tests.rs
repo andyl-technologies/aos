@@ -979,3 +979,139 @@ fn assert_frame(frame: &FrameEntry, delivery_icount: u64, src_node: u32, seq: u3
     assert_eq!(frame.seq, seq);
     assert!(usize::from(frame.len) <= MAX_FRAME_DATA);
 }
+
+#[test]
+fn staged_response_custody_closes_borrows_before_guest_callback_and_retry() {
+    struct InspectPending<'a> {
+        owner: &'a PluginBlockIo,
+        calls: usize,
+    }
+
+    impl BlockGuestCompletion for InspectPending<'_> {
+        fn complete_block_response(
+            &mut self,
+            response: &BlockResponse,
+        ) -> Result<(), BlockGuestCompletionError> {
+            let pending = self
+                .owner
+                .pending_delivery
+                .try_borrow_mut()
+                .unwrap_or_else(|error| {
+                    panic!("guest callback must run without a pending borrow: {error}")
+                });
+            let staged = pending
+                .as_ref()
+                .unwrap_or_else(|| panic!("original response must already have pending custody"));
+            assert!(!staged.delivered);
+            assert_eq!(&staged.response, response);
+            assert_eq!(
+                BlockResponse::decode(
+                    staged
+                        .frame
+                        .payload()
+                        .unwrap_or_else(|error| panic!("staged frame payload: {error}"))
+                )
+                .unwrap_or_else(|error| panic!("staged response decode: {error}")),
+                *response
+            );
+            drop(pending);
+
+            self.calls += 1;
+            if self.calls == 1 {
+                return Err(BlockGuestCompletionError::new("first guest refusal"));
+            }
+            Ok(())
+        }
+    }
+
+    let slot = NodeSlot::new(KIND_VM);
+    let mut freeze = PluginDeviceIoFreeze::new();
+    let owner = PluginBlockIo::new(2, 8, 9);
+
+    let outbound_header = RingHeader::new();
+    let mut outbound_entries = empty_entries(4);
+    let mut outbound = outbound_ring(8, 2, &outbound_header, &mut outbound_entries);
+    let token = submit_read(&owner, &mut freeze, &slot, &mut outbound, 77).into_token();
+    let inbound_header = RingHeader::new();
+    let mut inbound_entries = empty_entries(4);
+    enqueue(
+        &inbound_header,
+        &mut inbound_entries,
+        response_frame(90, 0, b"original"),
+    );
+    let inbound = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+    let mut completion = InspectPending {
+        owner: &owner,
+        calls: 0,
+    };
+
+    let token = match owner.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
+    {
+        Ok(BlockPoll::Retry {
+            token,
+            source: BlockIoError::GuestCompletion { source, .. },
+        }) => {
+            assert_eq!(
+                source,
+                BlockGuestCompletionError::new("first guest refusal")
+            );
+            token
+        }
+        other => panic!("guest refusal must retain original request: {other:?}"),
+    };
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(freeze.pending_requests(), 1);
+    assert!(owner.pending_delivery.borrow().is_some());
+
+    assert!(matches!(
+        owner.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token),
+        Ok(BlockPoll::Completed { .. })
+    ));
+    assert_eq!(completion.calls, 2);
+    assert_eq!(inbound_header.read_index(), 1);
+    assert_eq!(freeze.pending_requests(), 0);
+    assert!(owner.pending_delivery.borrow().is_none());
+}
+
+#[test]
+fn staged_response_compares_full_dequeued_payload_after_guest_delivery() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut freeze = PluginDeviceIoFreeze::new();
+    let block = PluginBlockIo::new(2, 8, 9);
+    let outbound_header = RingHeader::new();
+    let mut outbound_entries = empty_entries(4);
+    let mut outbound = outbound_ring(8, 2, &outbound_header, &mut outbound_entries);
+    let token = submit_read(&block, &mut freeze, &slot, &mut outbound, 77).into_token();
+    let inbound_header = RingHeader::new();
+    let mut inbound_entries = empty_entries(4);
+    let original = response_frame(90, 0, b"abcd");
+    let replacement = response_frame(90, 0, b"wxyz");
+    assert_eq!(original.delivery_key(), replacement.delivery_key());
+    enqueue(&inbound_header, &mut inbound_entries, original);
+    enqueue(&inbound_header, &mut inbound_entries, replacement);
+    let inbound = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+    let mut completion = StealBlockConsumerOnDelivery {
+        ring: &inbound_header,
+        entries: &inbound_entries,
+        delivered: 0,
+    };
+
+    let result = block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token);
+    assert!(matches!(
+        result,
+        Ok(BlockPoll::Quarantined {
+            source: BlockIoError::DequeuedUnexpectedFrame { .. },
+            ..
+        })
+    ));
+    assert_eq!(completion.delivered, 1);
+    assert_eq!(inbound_header.read_index(), 2);
+    assert_eq!(freeze.pending_requests(), 1);
+    assert!(
+        block
+            .pending_delivery
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.quarantine.is_some())
+    );
+}

@@ -49,7 +49,11 @@ fn create_and_control_form_linear_authenticated_history() {
     );
     assert_ne!(paused.new_snapshot, resumed.new_snapshot);
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     let (_, restarted_lifecycle) = restarted
         .head_with_lifecycle("network-recovery")
         .expect("restart lifecycle intent");

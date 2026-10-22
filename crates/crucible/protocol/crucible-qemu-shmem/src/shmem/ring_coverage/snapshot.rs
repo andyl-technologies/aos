@@ -315,6 +315,25 @@ impl SpscRingSnapshot {
     /// [`SpscRingError::SnapshotDecodeTrailingBytes`] when extra bytes remain
     /// after the declared frames.
     pub fn from_canonical_bytes(bytes: &[u8], max_frames: usize) -> Result<Self, SpscRingError> {
+        Self::from_canonical_bytes_with_admission(bytes, max_frames, |_| Ok(()))
+    }
+
+    /// Decodes a snapshot after admitting each exact owning allocation.
+    ///
+    /// The borrowed callback receives the target-sized frame table and each
+    /// valid payload extent before allocation. It creates no account and changes
+    /// no wire format. The caller retains the resulting storage's original
+    /// custody through every physical free, including partial failure cleanup.
+    ///
+    /// # Errors
+    /// Returns the same format and allocation failures as
+    /// [`Self::from_canonical_bytes`], or the callback's unchanged refusal before
+    /// the corresponding allocation. No later callback runs after a refusal.
+    pub fn from_canonical_bytes_with_admission(
+        bytes: &[u8],
+        max_frames: usize,
+        mut admit_allocation: impl FnMut(u64) -> Result<(), SpscRingError>,
+    ) -> Result<Self, SpscRingError> {
         let mut cursor = SnapshotByteCursor::new(bytes);
         let frame_count = cursor.read_u64()?;
         let frame_count = usize::try_from(frame_count)
@@ -338,6 +357,15 @@ impl SpscRingSnapshot {
                 available: available_body_bytes,
             });
         }
+        let frame_table_bytes = frame_count
+            .checked_mul(core::mem::size_of::<SnapshotFrameEntry>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(SpscRingError::SnapshotFrameCountOverflow {
+                count: frame_count as u64,
+            })?;
+        if frame_table_bytes != 0 {
+            admit_allocation(frame_table_bytes)?;
+        }
         let mut frames = Vec::new();
         frames
             .try_reserve_exact(frame_count)
@@ -358,6 +386,9 @@ impl SpscRingSnapshot {
                 });
             }
             let payload = cursor.read_bytes(len)?;
+            if len != 0 {
+                admit_allocation(len as u64)?;
+            }
             let mut data = Vec::new();
             data.try_reserve_exact(len)
                 .map_err(|_| SpscRingError::SnapshotPayloadAllocationFailed { len })?;

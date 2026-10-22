@@ -6,14 +6,13 @@ use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crucible_qemu_protocol::{
-    CONTROL_PROTOCOL_VERSION, HostHandshakeConfig, PluginMsg, SetupDescriptorFds,
-    control_decode_plugin_msg, host_accept_handshake, read_control_frame,
-    send_setup_with_descriptors,
+    CONTROL_PROTOCOL_VERSION, HostHandshakeConfig, PluginMsg, control_decode_plugin_msg,
+    host_accept_handshake, read_control_frame,
 };
 use crucible_qemu_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, RegionAllocation, RegionConfig, authorize_advance_ceiling,
@@ -35,11 +34,8 @@ static HOT_FORK_CHILD_USERDATA: AtomicUsize = AtomicUsize::new(0);
 static TIME_CONTROL_TOKEN: u8 = 1;
 
 pub(super) struct LiveInstallFixture {
-    plugin: UnixStream,
+    owners: Arc<crate::startup_source::test_support::ModelSetupOwners>,
     host: UnixStream,
-    region_file: File,
-    wake_file: File,
-    _wake_peer: Option<File>,
     region_len: u64,
     node_count: u32,
     path: PathBuf,
@@ -77,11 +73,16 @@ impl LiveInstallFixture {
             .unwrap_or_else(|error| panic!("test region should flush: {error}"));
         let (wake_file, wake_peer) = wake_counter();
         Self {
-            plugin,
+            owners: Arc::new(crate::startup_source::test_support::ModelSetupOwners {
+                control: plugin,
+                shmem: region_file,
+                wake: wake_file,
+                source_publication: File::open("/dev/null").unwrap().into(),
+                source_cancellation: File::open("/dev/zero").unwrap().into(),
+                plan: crate::setup::test_plugin_setup_plan_fd(),
+                _wake_peer: wake_peer,
+            }),
             host,
-            region_file,
-            wake_file,
-            _wake_peer: wake_peer,
             region_len: bytes.len() as u64,
             node_count,
             path,
@@ -89,14 +90,14 @@ impl LiveInstallFixture {
     }
 
     pub(super) fn args(&self) -> PluginArgs {
-        PluginArgs::parse(&format!("simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576", self.plugin.as_raw_fd()))
+        PluginArgs::parse(&format!("simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576", self.owners.control.as_raw_fd()))
             .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"))
     }
 
     pub(super) fn coverage_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
             "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,coverage=on",
-            self.plugin.as_raw_fd()
+            self.owners.control.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test coverage plugin args should parse: {error}"))
     }
@@ -104,7 +105,7 @@ impl LiveInstallFixture {
     pub(super) fn fingerprint_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
             "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on",
-            self.plugin.as_raw_fd()
+            self.owners.control.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test fingerprint plugin args should parse: {error}"))
     }
@@ -112,14 +113,15 @@ impl LiveInstallFixture {
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
             "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
-            self.plugin.as_raw_fd()
+            self.owners.control.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))
     }
 
     pub(super) fn resource_manifest_basis(&self) -> (u64, u64, u64, u32, i32, i32) {
         let metadata = self
-            .region_file
+            .owners
+            .shmem
             .metadata()
             .unwrap_or_else(|error| panic!("test region metadata should read: {error}"));
         (
@@ -127,9 +129,25 @@ impl LiveInstallFixture {
             metadata.ino(),
             self.region_len,
             self.node_count,
-            self.plugin.as_raw_fd(),
-            self.wake_file.as_raw_fd(),
+            self.owners.control.as_raw_fd(),
+            self.owners.wake.as_raw_fd(),
         )
+    }
+
+    pub(super) fn model_setup(&self) -> crate::startup_source::test_support::ModelSetup {
+        let mut frame = [0; 61];
+        frame[..4].copy_from_slice(&57_u32.to_be_bytes());
+        frame[4] = 0x15;
+        frame[5..13].copy_from_slice(&self.region_len.to_be_bytes());
+        frame[21..29].copy_from_slice(&1_u64.to_be_bytes());
+        crate::startup_source::test_support::ModelSetup::new(self.owners.clone(), frame)
+    }
+
+    pub(super) fn startup_model(
+        &self,
+    ) -> crate::startup_source::test_support::InstallerStartupSourceModel {
+        crate::startup_source::test_support::InstallerStartupSourceModel::ready()
+            .with_setup(self.model_setup())
     }
 
     pub(super) fn spawn_host(&self, expected_status: u8) -> thread::JoinHandle<()> {
@@ -137,16 +155,6 @@ impl LiveInstallFixture {
             .host
             .try_clone()
             .unwrap_or_else(|error| panic!("host stream should clone: {error}"));
-        let region = self
-            .region_file
-            .try_clone()
-            .unwrap_or_else(|error| panic!("region file should clone: {error}"));
-        let wake = self
-            .wake_file
-            .try_clone()
-            .unwrap_or_else(|error| panic!("wake file should clone: {error}"));
-        let branch_plan = crate::setup::test_plugin_setup_plan_fd();
-        let region_len = self.region_len;
         let node_count = self.node_count;
         thread::spawn(move || {
             host_accept_handshake(
@@ -159,16 +167,6 @@ impl LiveInstallFixture {
                 },
             )
             .unwrap_or_else(|error| panic!("host handshake should complete: {error}"));
-            send_setup_with_descriptors(
-                host.as_raw_fd(),
-                region_len,
-                SetupDescriptorFds {
-                    shmem_fd: region.as_raw_fd(),
-                    wake_fd: wake.as_raw_fd(),
-                    plugin_setup_plan_fd: branch_plan.as_raw_fd(),
-                },
-            )
-            .unwrap_or_else(|error| panic!("host setup should send: {error}"));
             let frame = read_control_frame(&mut host)
                 .unwrap_or_else(|error| panic!("setup ack should read: {error}"));
             let PluginMsg::SetupAck { status } = control_decode_plugin_msg(&frame)
@@ -320,7 +318,7 @@ fn temp_path() -> PathBuf {
 #[cfg(target_os = "linux")]
 fn wake_counter() -> (File, Option<File>) {
     // SAFETY: `eventfd` has no pointer arguments and returns a new descriptor.
-    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
     if fd < 0 {
         panic!(
             "test wake eventfd should open: {}",

@@ -27,10 +27,7 @@ use crucible_campaign::{
 };
 use tempfile::TempDir;
 
-use crate::{
-    ExecutorCapacity, LocalExecutorCapabilityService, LocalExecutorSupervisor,
-    MemoryAssignmentLedger,
-};
+use crate::{ExecutorCapacity, LocalExecutorSupervisor, MemoryAssignmentLedger};
 
 use super::*;
 
@@ -398,7 +395,7 @@ fn direct_and_loopback_resume_requests_are_identical() {
     let (description, report) = capability_fixture();
     let assignment = request(0x1c);
     let checkpoint = ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         encode_hex(&[0x64; 32]),
     ))
     .expect("checkpoint");
@@ -576,10 +573,14 @@ fn response_loss_replays_exact_bytes_without_duplicate_admission() {
         MemoryAssignmentLedger::default(),
         validator,
         epoch,
-        ExecutorCapacity::new(4, 4, 4096, 8192, 64).expect("executor capacity"),
+        ExecutorCapacity::new(4, 16, 8 * 1024 * 1024, 32768, 64).expect("executor capacity"),
     );
-    let mut local = LocalExecutorCapabilityService::new(supervisor, description.clone())
-        .expect("capability service");
+    let mut local = crate::executor_capability::test_support::capability_service(
+        supervisor,
+        description.clone(),
+        1024 * 1024,
+    )
+    .expect("capability service");
     let server = thread::spawn(move || {
         let (mut first, _) = listener.accept().expect("accept initial connection");
         serve_loopback_executor_component_once(
@@ -668,9 +669,16 @@ fn reconnect_refuses_a_changed_daemon_epoch_before_resend() {
         changed.capabilities().digest(),
         11,
         2,
-        2,
-        2048,
-        4096,
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: 2097152,
+            backing_peak_bytes: 4096,
+            metadata_bytes: 128,
+            staging_bytes: 128,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 65,
+            file_descriptors: 128,
+        },
         BTreeSet::new(),
     )
     .expect("changed capacity");
@@ -745,7 +753,12 @@ fn reconnect_refuses_changed_capabilities_before_resend() {
         ]),
         initial_capabilities.materialization().clone(),
         initial_capabilities.maximum_slots(),
-        initial_capabilities.resource_ceiling(),
+        crucible_campaign::ExecutorResourceBounds::new(
+            initial_capabilities.aggregate_resources(),
+            initial_capabilities.assignment_resources(),
+            initial_capabilities.assignment_limits(),
+        )
+        .expect("unchanged physical bounds"),
         initial_capabilities.store_namespaces().clone(),
     )
     .expect("changed capabilities");
@@ -757,9 +770,16 @@ fn reconnect_refuses_changed_capabilities_before_resend() {
         changed_digest,
         11,
         2,
-        2,
-        2048,
-        4096,
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: 2097152,
+            backing_peak_bytes: 4096,
+            metadata_bytes: 128,
+            staging_bytes: 128,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 65,
+            file_descriptors: 128,
+        },
         BTreeSet::new(),
     )
     .expect("changed capacity");
@@ -1280,7 +1300,30 @@ fn capability_fixture() -> (ExecutorDescription, ExecutorCapacityReport) {
             ExecutorMaterializationCapability::ExactRestore,
         ]),
         4,
-        AttemptResourceLimits::new(4, 4096, 8192, 64).expect("resource ceiling"),
+        crucible_campaign::ExecutorResourceBounds::new(
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 8388608,
+                backing_peak_bytes: 32768,
+                metadata_bytes: 512,
+                staging_bytes: 512,
+                paging_io_slots: 4,
+                cpu_slots: 16,
+                task_slots: 260,
+                file_descriptors: 512,
+            },
+            crucible_campaign::ExecutorHostResources {
+                resident_peak_bytes: 2097152,
+                backing_peak_bytes: 8192,
+                metadata_bytes: 128,
+                staging_bytes: 128,
+                paging_io_slots: 1,
+                cpu_slots: 4,
+                task_slots: 65,
+                file_descriptors: 128,
+            },
+            AttemptResourceLimits::new(4, 4096, 8192, 64).expect("resource ceiling"),
+        )
+        .expect("authored complete fixture resource bounds"),
         BTreeSet::from([crucible_campaign::CampaignHash::derive(
             "crucible.test.executor-loopback-namespace.v1",
             b"local",
@@ -1293,9 +1336,16 @@ fn capability_fixture() -> (ExecutorDescription, ExecutorCapacityReport) {
         description.capabilities().digest(),
         11,
         2,
-        2,
-        2048,
-        4096,
+        crucible_campaign::ExecutorHostResources {
+            resident_peak_bytes: 2097152,
+            backing_peak_bytes: 4096,
+            metadata_bytes: 128,
+            staging_bytes: 128,
+            paging_io_slots: 1,
+            cpu_slots: 2,
+            task_slots: 65,
+            file_descriptors: 128,
+        },
         BTreeSet::new(),
     )
     .expect("capacity");

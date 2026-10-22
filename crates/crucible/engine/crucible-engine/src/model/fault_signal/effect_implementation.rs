@@ -368,19 +368,19 @@ fn network_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
         | EffectKind::NetworkControlPlaneService
         | EffectKind::NetworkAssociation
         | EffectKind::NetworkContact => {
-            "crucible-api::vm_lifecycle::network_faults::boundary::tests"
+            "crucible-daemon::vm_lifecycle::network_faults::boundary::tests"
         }
         EffectKind::NetworkAvailability => {
-            "crucible-api::vm_lifecycle::network_faults::tests::availability_transition"
+            "crucible-daemon::vm_lifecycle::network_faults::tests::availability_transition"
         }
         EffectKind::NetworkPauseBackpressure => {
-            "crucible-api::vm_lifecycle::network_faults::route_tests::backpressure"
+            "crucible-daemon::vm_lifecycle::network_faults::route_tests::backpressure"
         }
         EffectKind::NetworkCustodyQueue => {
-            "crucible-api::vm_lifecycle::network_faults::route_tests::custody"
+            "crucible-daemon::vm_lifecycle::network_faults::route_tests::custody"
         }
         EffectKind::NetworkControlResultTransform => {
-            "crucible-api::vm_lifecycle::network_faults::tests::control_result_transform"
+            "crucible-daemon::vm_lifecycle::network_faults::tests::control_result_transform"
         }
         EffectKind::NetworkServiceCurve
         | EffectKind::NetworkTokenBucket
@@ -392,9 +392,11 @@ fn network_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
         | EffectKind::NetworkFirewallDisposition
         | EffectKind::NetworkConnectionState
         | EffectKind::NetworkSharedMedium
-        | EffectKind::NetworkRfChannel => "crucible-api::vm_lifecycle::network_faults::route_tests",
+        | EffectKind::NetworkRfChannel => {
+            "crucible-daemon::vm_lifecycle::network_faults::route_tests"
+        }
         _ => {
-            "crucible-api::vm_lifecycle::network_faults::route_tests::frame_effects::frame_effect_variants_mutate_production_frame_outcomes"
+            "crucible-daemon::vm_lifecycle::network_faults::route_tests::frame_effects::frame_effect_variants_mutate_production_frame_outcomes"
         }
     };
     ProductionConformanceEvidence {
@@ -408,7 +410,7 @@ fn network_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
 fn storage_conformance(effect: EffectKind) -> ProductionConformanceEvidence {
     let (harness, live_gate, observed_state) = match effect {
         EffectKind::NinePResult | EffectKind::NinePVisibility => (
-            "crucible-api::vm_lifecycle::storage_faults and crucible-qemu::supervision::ninep_io_servicer_tests",
+            "crucible-daemon::vm_lifecycle::storage_faults and crucible-qemu::supervision::ninep_io_servicer_tests",
             "gate:live-9p-io",
             &["ResolvedNinepRequestDirective", "NinepFaultState"] as &'static [&'static str],
         ),

@@ -30,6 +30,7 @@ impl PluginSetupCompletion {
             .map_err(|_error| PluginSetupBootBarrierError::ExecutorSlotOutOfRange)?;
         let mapped = self
             .mapped_region
+            .view_mut()
             .node_directed_ring_pair_mut(slot_index, slot_index, net_slot, slot_index, block_slot)
             .map_err(|source| PluginSetupBootBarrierError::MappedRegion { source })?;
         PluginBootBarrier::wait(setup_ack, mapped.node_slot)

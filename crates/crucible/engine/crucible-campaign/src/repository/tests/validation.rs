@@ -127,6 +127,7 @@ fn full_closure_walk_rejects_missing_shared_nested_and_corrupt_merkle_leaves() {
             target: valid_leaf,
         }),
         Arc::new(MemoryRefBackend::new()),
+        crate::CampaignRamAdmission::Unavailable,
     );
     assert!(
         corrupted
@@ -1044,7 +1045,11 @@ fn generated_group_request_replays_identical_ordinals_after_repository_reopen() 
         )
         .expect("resolved request");
 
-    let reopened = CampaignRepository::new(blobs, Arc::new(MemoryRefBackend::new()));
+    let reopened = CampaignRepository::new(
+        blobs,
+        Arc::new(MemoryRefBackend::new()),
+        crate::CampaignRamAdmission::Unavailable,
+    );
     let restored_domain = reopened
         .load_choice_domain(domain.id().expect("domain id"))
         .expect("load persisted group domain");
@@ -2327,7 +2332,11 @@ fn imported_derivation_rejects_changed_semantic_roots() {
         )
         .expect("install forged target");
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         restarted.head("forged-derive-target"),
         Err(CampaignRepositoryError::Integrity {
@@ -2412,7 +2421,11 @@ fn imported_derivation_enforces_the_bounded_generator_closure() {
         .expect("install forged target");
     let objects_before = blobs.object_count().expect("objects before validation");
 
-    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let restarted = CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+        repository.ram_admission().clone(),
+    );
     assert!(matches!(
         restarted.head("bounded-derive-target"),
         Err(CampaignRepositoryError::Integrity {

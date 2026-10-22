@@ -14,7 +14,7 @@ use crucible_qemu_shmem::{
 };
 #[cfg(unix)]
 use crucible_qemu_shmem::{
-    MappedSetupRegion, RegionHeaderSnapshot, RegionSetupValidationError, ValidatedSetupRegion,
+    MappedSetupView, RegionHeaderSnapshot, RegionSetupValidationError, ValidatedSetupRegion,
 };
 
 /// Shared-memory operations the plugin is allowed to perform.
@@ -37,7 +37,7 @@ impl PluginShmemOrdering {
     /// Takes an acquire snapshot of the setup-time mapped region header.
     #[cfg(unix)]
     #[must_use]
-    pub fn setup_header_snapshot(mapped_region: &MappedSetupRegion) -> RegionHeaderSnapshot {
+    pub fn setup_header_snapshot(mapped_region: &MappedSetupView) -> RegionHeaderSnapshot {
         mapped_region.header_snapshot()
     }
 
@@ -49,7 +49,7 @@ impl PluginShmemOrdering {
     /// match the current shared-memory ABI or the setup-provided region length.
     #[cfg(unix)]
     pub fn validate_setup_header(
-        mapped_region: &MappedSetupRegion,
+        mapped_region: &MappedSetupView,
     ) -> Result<ValidatedSetupRegion, RegionSetupValidationError> {
         mapped_region.validate_header()
     }

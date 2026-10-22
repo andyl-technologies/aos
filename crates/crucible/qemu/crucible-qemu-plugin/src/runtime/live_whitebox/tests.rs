@@ -5,6 +5,44 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 
 #[test]
+fn registration_rejects_unowned_branch_decisions_with_typed_causes()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlanEntry;
+    use crucible_qemu_protocol::app_random_transport::app_random_stream_name;
+
+    let config = PluginAppRandomConfig::test_config(0x1234, 4, "node-a");
+    let branch_plan = AppRandomBranchPlan::new(vec![AppRandomBranchPlanEntry::new(
+        0,
+        7,
+        8,
+        [0x5a; 32],
+        app_random_stream_name("node-b", "stream"),
+    )?])?;
+    let mut launch = LiveWhiteboxLaunchPlans::new(None, &branch_plan, None, false);
+
+    let missing = launch.validate_app_random_producer().unwrap_err();
+    assert_eq!(missing, LiveWhiteboxError::AppRandomBranchProducerMissing);
+    assert_eq!(
+        missing.to_string(),
+        "live white-box registration plan failed: app-random branch plan requires an enabled app-random producer"
+    );
+
+    launch.app_random_config = Some(&config);
+    let foreign = launch.validate_app_random_producer().unwrap_err();
+    assert_eq!(foreign, LiveWhiteboxError::AppRandomBranchNodeMismatch);
+    assert_eq!(
+        foreign.to_string(),
+        "live white-box registration plan failed: app-random branch plan names another producer node"
+    );
+
+    let matching_config = PluginAppRandomConfig::test_config(0x1234, 4, "node-b");
+    launch.app_random_config = Some(&matching_config);
+    launch.validate_app_random_producer()?;
+    assert_eq!(branch_plan.entries().len(), 1);
+    Ok(())
+}
+
+#[test]
 fn selectable_pre_instruction_tick_preserves_fractional_phase() -> Result<(), LiveWhiteboxError> {
     assert_eq!(pre_instruction_tick_ps(100, 110, 5_537)?, 5_037);
     assert_eq!(pre_instruction_tick_ps(100, 110, 1_000_537)?, 1_000_037);

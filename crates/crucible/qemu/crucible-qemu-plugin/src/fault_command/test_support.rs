@@ -185,6 +185,7 @@ pub(crate) fn initialized_bridge(
         prepared_commands: BTreeSet::new(),
         prepare_only_commands: BTreeSet::new(),
         pending_command: None,
+        custody: super::bridge::custody::EffectCustody::default(),
         initialized: true,
     }
 }
@@ -369,4 +370,60 @@ pub(crate) fn stage_dispatch_results(headers: &[FaultCommandHeaderV1], capture_s
 pub(crate) fn dispatch_result_is_pending() -> bool {
     super::TEST_DISPATCH_RESULT_PENDING.with(|pending| pending.borrow().is_some())
         || super::TEST_DISPATCH_RESULTS.with(|results| !results.borrow().is_empty())
+}
+
+/// Retains actual fixture transport backing through a bounded local bridge use.
+/// This fixture supplies no Source allocation, operation or native registration.
+pub(crate) fn with_initialized_bridge(
+    test: impl FnOnce(&mut FaultCommandBridge, &RingHeader, &RingHeader),
+) {
+    let commands = RingHeader::new();
+    let results = RingHeader::new();
+    let events = RingHeader::new();
+    let command_arena_header = FaultPayloadArenaHeader::new();
+    let result_arena_header = FaultPayloadArenaHeader::new();
+    let event_arena_header = FaultPayloadArenaHeader::new();
+    let mut command_slots = vec![FaultCommandSlotV1::new(); 4];
+    let mut result_slots = vec![FaultResultSlotV2::new(); 4];
+    let mut event_slots = vec![FaultEventSlotV1::new(); 4];
+    let mut command_arena = vec![0; 512];
+    let mut result_arena = vec![0; 512];
+    let mut event_arena = vec![0; 512];
+    let mut bridge = initialized_bridge(
+        [7; 32],
+        &commands,
+        &mut command_slots,
+        &command_arena_header,
+        &mut command_arena,
+        4096,
+        &results,
+        &mut result_slots,
+        &result_arena_header,
+        &mut result_arena,
+        8192,
+        &events,
+        &mut event_slots,
+        &event_arena_header,
+        &mut event_arena,
+        12288,
+    );
+    test(&mut bridge, &commands, &results);
+}
+
+/// Models one local correlation without a Source or Native operation grant.
+pub(crate) fn set_fixture_query_pending(
+    bridge: &mut FaultCommandBridge,
+    sequence: u64,
+    pending: bool,
+) {
+    if pending {
+        bridge.capability_queries.insert(sequence);
+    } else {
+        bridge.capability_queries.remove(&sequence);
+    }
+}
+
+/// Inspects that fixture correlation while its real test backing remains live.
+pub(crate) fn fixture_query_pending(bridge: &FaultCommandBridge, sequence: u64) -> bool {
+    bridge.capability_queries.contains(&sequence)
 }

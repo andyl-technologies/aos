@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::io::Read;
 use std::sync::Arc;
 
 use super::*;
@@ -1422,7 +1421,6 @@ fn campaign_execution_diagnostics(
             &mut diagnostics,
         );
     }
-    append_process_diagnostics(&mut diagnostics);
     diagnostics
 }
 
@@ -1967,7 +1965,18 @@ pub(super) fn directory_checkpoint_inspection_store(
         "guest-choice-checkpoint-inspection",
         &fixture.objects,
     ));
-    Ok(ExactCheckpointStore::new(backend, 1024 * 1024 * 1024)?)
+    let repository = crucible_campaign::CampaignRepository::new(
+        backend.clone(),
+        Arc::new(crucible_store::content_store::DirectoryRefBackend::new(
+            fixture._temporary.path().join("refs"),
+        )),
+        crucible_campaign::CampaignRamAdmission::Unavailable,
+    );
+    Ok(ExactCheckpointStore::new(
+        backend,
+        1024 * 1024 * 1024,
+        repository.ram_retention_authority(),
+    )?)
 }
 
 fn wait_for_promoted_checkpoint_with_store(
@@ -1987,7 +1996,6 @@ fn wait_for_promoted_checkpoint_with_store(
                 "guest_choice_promotion_probe elapsed_secs={}",
                 started.elapsed().as_secs()
             );
-            diagnose_promotion_qemu_shmem();
             next_probe = Instant::now() + Duration::from_secs(30);
         }
         if let Some(AttemptRuntimeState::Paused { checkpoint, .. }) =
@@ -2010,104 +2018,6 @@ fn wait_for_promoted_checkpoint_with_store(
         attempt_states(fixture)?
     )
     .into())
-}
-
-fn diagnose_promotion_qemu_shmem() {
-    let Ok(processes) = fs::read_dir("/proc") else {
-        println!("guest_choice_promotion_shmem proc_unavailable");
-        return;
-    };
-    for process in processes.flatten() {
-        let Ok(pid) = process.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let path = process.path();
-        if !fs::read_to_string(path.join("comm"))
-            .is_ok_and(|comm| comm.trim().starts_with("qemu-system"))
-        {
-            continue;
-        }
-        let Ok(descriptors) = fs::read_dir(path.join("fd")) else {
-            println!("guest_choice_promotion_shmem pid={pid} fd_unavailable");
-            continue;
-        };
-        for descriptor in descriptors.flatten() {
-            if !fs::read_link(descriptor.path()).is_ok_and(|backing| {
-                backing
-                    .to_string_lossy()
-                    .contains("memfd:crucible-qemu-shmem")
-            }) {
-                continue;
-            }
-            let Ok(mut region) = fs::File::open(descriptor.path()) else {
-                println!("guest_choice_promotion_shmem pid={pid} open_failed");
-                continue;
-            };
-            let mut header = [0u8; crucible_qemu_shmem::REGION_HEADER_SIZE];
-            if region.read_exact(&mut header).is_err() {
-                println!("guest_choice_promotion_shmem pid={pid} header_read_failed");
-                continue;
-            }
-            let Some(magic) = shmem_u64(&header, 0) else {
-                continue;
-            };
-            let Some(version) = shmem_u32(&header, 8) else {
-                continue;
-            };
-            let Some(node_count) = shmem_u32(&header, 12) else {
-                continue;
-            };
-            if magic != crucible_qemu_shmem::REGION_MAGIC
-                || version != crucible_qemu_shmem::ABI_VERSION
-                || node_count == 0
-                || node_count > 64
-            {
-                println!(
-                    "guest_choice_promotion_shmem pid={pid} invalid_header magic={magic:x} version={version} nodes={node_count}"
-                );
-                continue;
-            }
-            let mut slots = vec![0u8; node_count as usize * crucible_qemu_shmem::NODE_SLOT_SIZE];
-            if region.read_exact(&mut slots).is_err() {
-                println!("guest_choice_promotion_shmem pid={pid} slots_read_failed");
-                continue;
-            }
-            let (slot_records, _) = slots.as_chunks::<{ crucible_qemu_shmem::NODE_SLOT_SIZE }>();
-            for (slot_index, slot) in slot_records.iter().enumerate() {
-                let Some(generation) = shmem_u32(slot, 40) else {
-                    continue;
-                };
-                if generation == 0 {
-                    continue;
-                }
-                let Some(tick_ps) = shmem_u64(slot, 0) else {
-                    continue;
-                };
-                let Some(raw_retired) = shmem_u64(slot, 104) else {
-                    continue;
-                };
-                let Some(ceiling_ps) = shmem_u64(slot, 16) else {
-                    continue;
-                };
-                println!(
-                    "guest_choice_promotion_shmem pid={pid} slot={slot_index} generation={generation} tick_ps={tick_ps} raw_retired={raw_retired} ceiling_ps={ceiling_ps} status={} kind={}",
-                    slot[36], slot[37],
-                );
-            }
-        }
-    }
-}
-
-fn shmem_u32(bytes: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        bytes.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-fn shmem_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    Some(u64::from_le_bytes(
-        bytes.get(offset..offset + 8)?.try_into().ok()?,
-    ))
 }
 
 fn resume_campaign(fixture: &FlightFixture, command_identity: &str) -> Result<(), Box<dyn Error>> {

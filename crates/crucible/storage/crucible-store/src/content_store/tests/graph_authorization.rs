@@ -6,12 +6,14 @@ use super::*;
 fn store_graph_configuration_identity_is_canonical_and_complete() {
     let root = node_id("root");
     let config = |maximum| StoreGraphConfig {
+        gc_mark_root: None,
         root: root.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Finding, ObjectKind::Trace]),
         nodes: BTreeMap::from([(
             root.clone(),
             StoreNodeSpec::Memory {
                 max_logical_bytes: maximum,
+                max_objects: 16,
             },
         )]),
     };
@@ -21,15 +23,27 @@ fn store_graph_configuration_identity_is_canonical_and_complete() {
         StoreGraph::build_with_admin(config(1_024)).expect("restarted graph");
     let (changed, changed_admin) =
         StoreGraph::build_with_admin(config(2_048)).expect("changed graph");
+    let mut changed_capacity = config(1_024);
+    let StoreNodeSpec::Memory { max_objects, .. } =
+        changed_capacity.nodes.get_mut(&root).expect("memory root")
+    else {
+        panic!("fixture root must be Memory");
+    };
+    *max_objects = 17;
+    let changed_capacity = StoreGraph::build(changed_capacity).expect("changed object capacity");
 
     assert_eq!(first.configuration_id(), first_admin.configuration_id());
     assert_eq!(first.configuration_id(), restarted.configuration_id());
     assert_eq!(first.configuration_id(), restarted_admin.configuration_id());
     assert_eq!(changed.configuration_id(), changed_admin.configuration_id());
     assert_ne!(first.configuration_id(), changed.configuration_id());
+    assert_ne!(
+        first.configuration_id(),
+        changed_capacity.configuration_id()
+    );
     assert_eq!(
         encode_hex(&first.configuration_id().as_bytes()),
-        "b5d72c74a91d3eea5cf688a42d79dfdbddb9dc4fc0c6fd20cb8f42dcb9d772dd"
+        "824d6e7d3b75479f578fc929d976210358a40786d16b758dc332d54a6c07ab0c"
     );
 }
 
@@ -54,6 +68,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let namespaced = node_id("namespaced");
     let memory = node_id("memory");
     let config = |namespace| StoreGraphConfig {
+        gc_mark_root: None,
         root: namespaced.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
         nodes: BTreeMap::from([
@@ -68,6 +83,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
                 memory.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -80,6 +96,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let bypass = node_id("bypass");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: bypass.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
@@ -100,6 +117,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
                     memory.clone(),
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
             ]),
@@ -112,6 +130,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let nested = node_id("nested-namespace");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: namespaced.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::CampaignFact]),
             nodes: BTreeMap::from([
@@ -133,6 +152,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
                     memory.clone(),
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
             ]),
@@ -167,11 +187,11 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     let id = ContentId::for_bytes(ObjectKind::CampaignFact, 1, bytes);
     let denied_opens = Arc::new(AtomicUsize::new(0));
     let denied_bytes = Arc::new(AtomicUsize::new(0));
-    let denied_source = BlobHandle::new(Arc::new(CountingSource {
+    let denied_source = BlobHandle::new(CountingSource {
         bytes: Arc::from(bytes.as_slice()),
         opens: denied_opens.clone(),
         bytes_read: denied_bytes.clone(),
-    }));
+    });
     assert!(matches!(
         graph.put_if_absent(id, &denied_source),
         Err(StoreError::Unauthorized)
@@ -216,7 +236,7 @@ fn namespaced_graph_authorizes_every_operation_before_child_access() {
     assert_ne!(graph.configuration_id(), alternate.configuration_id());
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "24af313c4576e05b17da6745dc1ecabc020deab10d7d1fe9877f07babc4d8071"
+        "ac39168ecf2d9f7e75abbfcab4696e1e02050eff9525c402610dc2972a6efdd8"
     );
 }
 
@@ -234,6 +254,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
     let profile = node_id("profile");
     let memory = node_id("memory");
     let config = |policy| StoreGraphConfig {
+        gc_mark_root: None,
         root: profile.clone(),
         admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
         nodes: BTreeMap::from([
@@ -248,6 +269,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
                 memory.clone(),
                 StoreNodeSpec::Memory {
                     max_logical_bytes: 1_024,
+                    max_objects: 16,
                 },
             ),
         ]),
@@ -275,6 +297,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("profile graph");
     assert_eq!(graph.describe()[1].kind, StoreNodeKind::ProfileValidated);
@@ -318,17 +341,19 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
         &other_profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("other profile graph");
     assert_ne!(graph.configuration_id(), other.configuration_id());
     assert_eq!(
         encode_hex(&graph.configuration_id().as_bytes()),
-        "c198ff2a2f52c3db30492d38fe125240834876b6ec7ded78d60ac541f9e8cce4"
+        "54de6a5ed1216fb9c2912f445274fd018362d61d9d5eb754ffc30406fe8fa707"
     );
 
     let bypass = node_id("bypass");
     assert!(matches!(
         StoreGraph::build(StoreGraphConfig {
+            gc_mark_root: None,
             root: bypass.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -349,6 +374,7 @@ fn profile_graph_derives_authenticated_classes_without_caller_hints() {
                     memory,
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
             ]),
@@ -381,6 +407,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
         .expect("namespace capability");
     let graph = StoreGraph::build_with_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
             nodes: BTreeMap::from([
@@ -402,6 +429,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
                     memory,
                     StoreNodeSpec::Memory {
                         max_logical_bytes: 1_024,
+                        max_objects: 16,
                     },
                 ),
             ]),
@@ -411,6 +439,7 @@ fn profile_and_namespace_boundaries_compose_at_the_graph_root() {
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("composed boundaries");
     let bytes = b"composed operational boundaries";
@@ -435,6 +464,7 @@ fn profile_graph_validates_deferred_transfer_and_root_inventory() {
         .expect("profile capability");
     let graph = StoreGraph::build_with_all_capabilities(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: profile.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([
@@ -474,6 +504,7 @@ fn profile_graph_validates_deferred_transfer_and_root_inventory() {
         &profilers,
         &StoreGraphPhysicalQuotaBinders::new(),
         &StoreGraphS3Clients::new(),
+        None,
     )
     .expect("profiled write-back graph");
     let bytes = b"profiled deferred finding";
@@ -533,6 +564,7 @@ fn namespaced_graph_authorizes_deferred_transfer_and_root_inventory() {
         .expect("namespace capability");
     let graph = StoreGraph::build_with_authorizers(
         StoreGraphConfig {
+            gc_mark_root: None,
             root: namespaced.clone(),
             admitted_kinds: BTreeSet::from([ObjectKind::Finding]),
             nodes: BTreeMap::from([

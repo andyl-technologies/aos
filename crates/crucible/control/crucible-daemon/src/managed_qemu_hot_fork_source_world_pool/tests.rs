@@ -4,8 +4,9 @@
 #![allow(clippy::expect_used)]
 
 use crate::vm_lifecycle::prepared_multi_node_hot_fork_source_world_for_test;
-use crucible_campaign::{CampaignLineageId, ExactCheckpointId, ExecutorCompatibilityProfile};
 use crucible_engine::ContentHash;
+use crucible_campaign::{CampaignLineageId, ExactCheckpointId, ExecutorCompatibilityProfile};
+
 use crucible_qemu_host::{QemuTestHotForkOutcome, scripted_hot_fork_source_for_test};
 use std::collections::BTreeMap;
 
@@ -82,7 +83,7 @@ fn exact_fallback(byte: u8) -> HotCheckpointFallback {
 
 fn exact_checkpoint(byte: u8) -> ExactCheckpointId {
     ExactCheckpointId::parse(&format!(
-        "crucible.executor.exact-checkpoint-root@exact-manifest.5.{}",
+        "crucible.executor.exact-checkpoint-root@exact-manifest.6.{}",
         format!("{byte:02x}").repeat(32)
     ))
     .expect("exact checkpoint id")

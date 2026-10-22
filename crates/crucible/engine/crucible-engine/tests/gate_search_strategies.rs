@@ -26,6 +26,9 @@ use crucible_engine::{
 
 #[test]
 fn gate_search_strategies_are_reproducible_for_identical_inputs() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     for strategy in search_strategies() {
         let first = run_strategy(strategy, SearchBudget::new(4))?.run;
         let second = run_strategy(strategy, SearchBudget::new(4))?.run;
@@ -42,6 +45,9 @@ fn gate_search_strategies_are_reproducible_for_identical_inputs() -> Result<(), 
 
 #[test]
 fn gate_search_strategies_reach_same_graph_under_complete_budget() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let runs = search_strategies()
         .into_iter()
         .map(|strategy| run_strategy(strategy, SearchBudget::new(4)))
@@ -65,6 +71,9 @@ fn gate_search_strategies_reach_same_graph_under_complete_budget() -> Result<(),
 
 #[test]
 fn gate_search_strategies_depth_bound_stops_before_exhaustion() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut fixture = strategy_fixture()?;
     let run = fixture
         .graph
@@ -93,6 +102,9 @@ fn gate_search_strategies_depth_bound_stops_before_exhaustion() -> Result<(), Bo
 
 #[test]
 fn gate_search_strategies_sample_replay_oracle_checks() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let mut fixture = strategy_fixture()?;
     let config = SearchReplayOracleSamplingConfig::new(
         1,
@@ -133,6 +145,9 @@ fn gate_search_strategies_sample_replay_oracle_checks() -> Result<(), Box<dyn Er
 
 #[test]
 fn gate_breadth_first_breaks_equal_depth_ties_by_content_address() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fixture = run_strategy(SearchStrategy::BreadthFirst, SearchBudget::new(4))?;
     let mut sorted_children = fixture
         .children
@@ -155,6 +170,9 @@ fn gate_breadth_first_breaks_equal_depth_ties_by_content_address() -> Result<(),
 #[test]
 fn gate_priority_and_coverage_guided_break_equal_score_ties_by_content_address()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let priority = run_strategy(
         SearchStrategy::Priority {
             seed: crucible_engine::Seed::from_u64(0x5eed),
@@ -188,6 +206,9 @@ fn gate_priority_and_coverage_guided_break_equal_score_ties_by_content_address()
 
 #[test]
 fn gate_coverage_guided_prefers_recorded_coverage_feedback() -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let fixture = run_strategy(SearchStrategy::CoverageGuided, SearchBudget::new(2))?;
     let selected = fixture.run.expansions[1].frontier;
 
@@ -203,6 +224,9 @@ fn gate_coverage_guided_prefers_recorded_coverage_feedback() -> Result<(), Box<d
 #[test]
 fn gate_search_strategies_report_discovered_failures_deterministically()
 -> Result<(), Box<dyn Error>> {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let reference = strategy_fixture()?;
     let failed_configuration = reference.children[1].id();
     let fingerprint = ContentHash::from_canonical_material(
@@ -260,6 +284,9 @@ fn gate_search_strategies_report_discovered_failures_deterministically()
 #[test]
 fn gate_search_failure_oracle_lowers_prefix_safe_assertion_violations() -> Result<(), Box<dyn Error>>
 {
+    let _decode_scope = crucible_engine::test_support::fixture_decode_scope(64 * 1024 * 1024)
+        .unwrap_or_else(|error| panic!("finite component metadata scope: {error}"));
+
     let liveness_scenario = assertion_lowering_scenario(Property::Sometimes {
         predicate: Predicate::named("never-satisfied-by-black-box-oracle"),
     })?;
@@ -1847,7 +1874,8 @@ fn retained_observable_events_log(
             crucible_engine::test_support::condition_observation_entry_for_test(
                 index as u64,
                 event,
-            ),
+            )
+            .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
         );
     }
     segment.push(
@@ -1855,7 +1883,8 @@ fn retained_observable_events_log(
             segment.len() as u64,
             boundary_at,
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     );
     RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
         EngineError::ScenarioSerialization {
@@ -1870,7 +1899,8 @@ fn retained_boundary_log(at: VirtualTime) -> Result<RecordedAssertionLog, Engine
             0,
             at,
             SchedulerEvaluationBoundaryKind::Quantum,
-        ),
+        )
+        .unwrap_or_else(|error| panic!("finite component event-log operation: {error}")),
     ];
     RecordedAssertionLog::from_segments(vec![segment]).map_err(|source| {
         EngineError::ScenarioSerialization {

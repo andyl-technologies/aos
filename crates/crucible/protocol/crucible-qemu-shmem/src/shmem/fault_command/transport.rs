@@ -132,12 +132,7 @@ pub fn dequeue_fault_command(
         Ok(header)
     });
 
-    arena_header
-        .read_cursor
-        .store(slot.reservation_end, Ordering::Release);
-    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
-
-    Ok(Some(match decoded {
+    let owned = match decoded {
         Ok(header) => DequeuedFaultCommand::Valid {
             header: Box::new(header),
             payload,
@@ -147,7 +142,16 @@ pub fn dequeue_fault_command(
             command_sequence,
             error,
         },
-    }))
+    };
+
+    // The producer may overwrite the shared entry after release. Complete
+    // ownership, including the header allocation, before permitting reuse.
+    arena_header
+        .read_cursor
+        .store(slot.reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
+
+    Ok(Some(owned))
 }
 
 /// One result removed from the transport after its arena reservation is freed.
@@ -294,12 +298,7 @@ pub fn dequeue_fault_result(
         Ok(header)
     });
 
-    arena_header
-        .read_cursor
-        .store(slot.reservation_end, Ordering::Release);
-    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
-
-    Ok(Some(match decoded {
+    let owned = match decoded {
         Ok(header) => DequeuedFaultResult::Valid {
             header: Box::new(header),
             payload,
@@ -308,7 +307,15 @@ pub fn dequeue_fault_result(
             command_sequence,
             error,
         },
-    }))
+    };
+
+    // Keep the shared entry reserved until its complete owned output exists.
+    arena_header
+        .read_cursor
+        .store(slot.reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
+
+    Ok(Some(owned))
 }
 
 #[derive(Clone, Copy)]

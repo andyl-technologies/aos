@@ -70,7 +70,7 @@
     ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
       {
         label = "crate-level standalone docs";
-        needle = "no dependency on RFC-0007 `ratchet` crates";
+        needle = "no dependency on `ratchet` crates";
       }
       {
         label = "content hash type";
@@ -155,7 +155,7 @@
         needle = "use aos_nix";
       }
     ]
-    ++ map (name: "crates/crucible/storage/crucible-store/Cargo.toml: forbidden RFC-0007 dependency ${name}")
+    ++ map (name: "crates/crucible/storage/crucible-store/Cargo.toml: forbidden shared-store dependency ${name}")
     forbiddenDependencyNames;
 in
   if failures != []

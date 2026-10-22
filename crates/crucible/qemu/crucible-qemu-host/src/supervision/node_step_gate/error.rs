@@ -7,6 +7,39 @@ use thiserror::Error;
 /// Error returned by the live [`QemuNode`] bounded-step gate.
 #[derive(Debug, Error)]
 pub enum QemuLiveNodeStepGateError {
+    /// Enabled fingerprinting has no issued prebirth workspace owner.
+    #[error("fingerprint startup requires an issued device-digest workspace")]
+    DeviceDigestWorkspaceUnavailable,
+    /// The same original native account refused the fixed launch purpose.
+    #[cfg(target_os = "linux")]
+    #[error("original native launch account refused: {source}")]
+    OriginalNativeAccount {
+        /// The actual original account or supervision refusal.
+        #[source]
+        source: crate::OriginalActorAccountError,
+    },
+    /// The retained physical owner refused its actual process contract.
+    #[cfg(target_os = "linux")]
+    #[error("installed native process contract refused: {source}")]
+    OriginalNativeContract {
+        /// The actual initiating process-owner refusal.
+        #[source]
+        source: crate::QemuVmRealizationError,
+    },
+    /// The paid same-slot error control retains the first launch and postcut.
+    #[cfg(target_os = "linux")]
+    #[error("original native fresh launch refused: {source}")]
+    OriginalNativeLaunch {
+        /// The same existing shared control retained by the external slot.
+        #[source]
+        source: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
+    },
+    /// The original prebirth startup owner or cancellation role refused.
+    #[error(transparent)]
+    PluginStartup(#[from] crate::spawn::PluginStartupError),
+    /// A live operational budget or original-start outer cap refused progress.
+    #[error(transparent)]
+    HostSupervision(#[from] crucible_host_resources::host_supervision::HostSupervisionError),
     /// A caller requested a runtime trace outside the finite admission range.
     #[error("runtime trace budget {requested} must be within 1..={maximum} bytes")]
     InvalidRuntimeTraceBudget {
@@ -94,6 +127,14 @@ pub enum QemuLiveNodeStepGateError {
     HostSetup {
         /// Underlying host-setup error.
         source: QemuHostPluginSetupError,
+    },
+    /// A pre-CPU RAM controller exchange or inventory admission failed.
+    #[error("{operation} failed: {source}")]
+    RamAdmission {
+        /// Startup phase whose original failure is retained.
+        operation: &'static str,
+        /// Original authenticated transport, supervision, or admission cause.
+        source: crucible_qemu_protocol::ram_control::RamControlError,
     },
     /// The diagnostic path did not name the descriptor-pinned launch directory.
     #[error(
@@ -208,9 +249,7 @@ pub enum QemuLiveNodeStepGateError {
         /// Primary launch or assembly failure.
         primary: Box<QemuLiveNodeStepGateError>,
         /// Independent force-kill/reap failure.
-        cleanup: crate::QemuShutdownTargetError,
-        /// Nonduplicable direct-child handle retained after failed reap.
-        unreaped_child: Option<Box<crate::QemuNodeChild>>,
+        cleanup: crate::QemuNodeError,
     },
     /// A bounded node step failed.
     #[error("{operation} failed")]
@@ -253,18 +292,20 @@ pub enum QemuLiveNodeStepGateError {
 }
 
 impl QemuLiveNodeStepGateError {
-    /// Extracts a direct child whose mandatory synchronous reap failed.
+    /// Reports a retained Source receiver requiring physical disposition.
     ///
-    /// A guarded caller must transfer the returned handle into its attempt
-    /// resource owner before releasing containment or storage authority.
+    /// The same prebirth receiver owns any failed child or Node. The error
+    /// retains only its existing shared control; it never extracts that body.
+    /// A diagnostic alone cannot establish physical return.
     #[must_use]
-    pub fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
-        match self {
-            Self::WhiteboxSetup { source } => source.take_unreaped_child(),
-            Self::ExactVmstatePreparation { source } => source.take_unreaped_child(),
-            Self::NodeFactory { source } => source.take_unreaped_child(),
-            Self::FailedCleanup { unreaped_child, .. } => unreaped_child.take().map(|child| *child),
-            _ => None,
+    pub fn has_retained_owner(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            matches!(self, Self::OriginalNativeLaunch { .. })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
         }
     }
 

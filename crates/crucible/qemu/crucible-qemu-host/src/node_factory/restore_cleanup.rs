@@ -1,31 +1,16 @@
-//! Fail-closed cleanup for rejected restored QEMU realizations.
+//! Preserves borrowed restore cleanup history while its issued owner stays held.
 
-use super::{QemuNode, QemuNodeChild, QemuNodeFactoryError};
+use super::QemuNodeFactoryError;
 
 pub(super) fn reap_failed_restore_child(
-    mut child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     primary: QemuNodeFactoryError,
 ) -> QemuNodeFactoryError {
-    match child.force_kill_and_reap_failed_realization() {
+    match owner.retry_cleanup() {
         Ok(()) => primary,
         Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
             primary: Box::new(primary),
             cleanup,
-            unreaped_child: Some(Box::new(child)),
-        },
-    }
-}
-
-pub(super) fn reap_failed_restored_node(
-    mut node: QemuNode,
-    primary: QemuNodeFactoryError,
-) -> QemuNodeFactoryError {
-    match node.reap_failed_realization() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuNodeFactoryError::FailedRestoreCleanup {
-            primary: Box::new(primary),
-            cleanup,
-            unreaped_child: node.into_direct_child_for_quarantine().map(Box::new),
         },
     }
 }

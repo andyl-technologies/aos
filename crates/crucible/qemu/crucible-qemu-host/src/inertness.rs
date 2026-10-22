@@ -1,6 +1,6 @@
 //! QEMU control-plane inertness assertions.
 //!
-//! RFC-0010 PROTO-24 requires the QEMU control channel to be absent when
+//! The QEMU control channel must be absent when
 //! simulation mode is off and determinism-neutral when simulation mode is on.
 //! This module records that boundary as a host-side assertion that can be used
 //! before process launch and by phase gates.

@@ -1,6 +1,6 @@
 //! `crucible-device` owns deterministic I/O sub-node models.
 //!
-//! Spec index: RFC-0010 files 15.
+//! Implementation contract: Deterministic device queues and modeled I/O lifecycles.
 //!
 //! This L1 crate models a disk, a 9p server, and a network link as **uniform
 //! simulation sub-nodes**: each is a scheduling node with an icount-derived
@@ -53,7 +53,7 @@
 //!   T-IO-13 / T-IO-14) — a uniform [`HarnessDevice`] adapter over all three
 //!   sub-nodes, the [`Script`]/[`run_script`] driver, the run-twice determinism
 //!   and divergence-localization helpers, and the idle-vs-busy-poll equivalence
-//!   proof plus the documented §15.8 spike conclusion ([IO-27]..[IO-30]).
+//!   proof plus the documented exact-delivery tradeoff for busy polling.
 //!
 //! # Determinism
 //!
@@ -77,6 +77,7 @@ pub mod inflight;
 pub mod netlink;
 pub mod ninep;
 pub mod request;
+mod snapshot_allocation;
 mod snapshot_codec;
 pub mod subnode;
 
@@ -120,6 +121,7 @@ pub use request::{
     Response, ResponseStatus,
 };
 
+pub use snapshot_allocation::DeviceSnapshotAllocation;
 pub use subnode::{
     IoCore, IoCoreSnapshot, IoCoreSnapshotCodecError, IoRequestEnqueueFailure, IoSubNode,
     SelectedDeliveryOutcome, ShmemDeliveryFailure, ShmemDeliveryResult, ShmemDequeueResult,

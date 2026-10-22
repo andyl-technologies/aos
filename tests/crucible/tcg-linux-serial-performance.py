@@ -2,8 +2,8 @@
 """Compare ordinary TCG and Sim through the same complete serial milestone.
 
 All rows boot identical stock kernel and initramfs bytes. The primary interval
-starts before QEMU spawn and ends when the common socket reader receives the
-complete pre-request token. It includes emulator startup, QMP setup and boot;
+starts before QEMU spawn and ends at the socket receipt for ordinary controls and at the authenticated
+native stop for managed Sim. These distinct endpoints are recorded per row. It includes emulator startup, QMP setup and boot;
 protocol allocation and post-marker diagnostics are outside the interval.
 
 Ordinary TCG without icount, ordinary TCG with 1 ns per instruction, and Sim
@@ -99,14 +99,15 @@ def main():
             "machine": "pc-q35-9.2", "vcpus": 1, "cpu_model": "qemu64,-rdrand,-rdseed",
             "rtc": "2026-01-01T00:00:00,clock=vm", "seed": "0x0010c004",
             "kernel_cmdline": "console=ttyS0 reboot=k panic=1 quiet rdinit=/init",
-            "serial": "same event-driven Unix socket full-token reader in every row",
+            "serial": "socket receipt for ordinary controls; reconciled token at authenticated native stop for managed Sim",
             "trial_order": "rotate row positions, then reverse rotations; retain every attempt",
             "cache_policy": "ordinary local caches; no forced cache drop",
         },
         "attempts": [], "samples": [], "campaign_complete": False,
     }
     expected_sim = None
-    sim_fields = oracle.WITNESS_KEYS + ("coverage", "fingerprint", "whitebox", "ram_mib", "kernel", "initrd")
+    managed = oracle.managed_oracle()
+    sim_fields = managed.WITNESS_KEYS
 
     def save():
         results["distributions"] = {
@@ -134,7 +135,10 @@ def main():
                        "command": command, "outcome": "started"}
             results["attempts"].append(attempt)
             save()
-            completed = subprocess.run(command, text=True, capture_output=True, check=False)
+            trial_environment = dict(os.environ)
+            trial_environment["CRUCIBLE_TCG_TRIAL_INDEX"] = str(round_index * len(labels) + position)
+            completed = subprocess.run(command, text=True, capture_output=True, check=False,
+                                       env=trial_environment)
             (directory / "stdout.log").write_text(completed.stdout)
             (directory / "stderr.log").write_text(completed.stderr)
             attempt["exit_status"] = completed.returncode
@@ -181,11 +185,11 @@ def main():
                 if not 0 <= sample["startup_seconds"] <= sample["seconds"]:
                     raise AssertionError("serial milestone timing precedes guest startup")
                 if row["mode"] == "sim":
-                    oracle.require_ready_witness(sample, args.ram_mib)
+                    managed.require_witness(sample, "linux", args.ram_mib)
                     witness = {key: sample[key] for key in sim_fields}
                     if expected_sim is None:
                         expected_sim = witness
-                        results["sim_negative_controls"] = oracle.readiness_negative_controls(sample, args.ram_mib)
+                        results["sim_negative_controls"] = managed.negative_controls(sample, "linux", args.ram_mib)
                     elif witness != expected_sim:
                         raise AssertionError("same-fixture Sim native witness changed")
             except (AssertionError, KeyError, ValueError) as error:

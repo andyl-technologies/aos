@@ -18,7 +18,7 @@
   varSizeMiB ? 4096,
 }: let
   toplevel = system.config.system.build.toplevel;
-  expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+  expectedConfigurationIdentity = system.config.aos.crucibleCampaign._runtimeIdentity;
   runtimeTools = [pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.tar];
   runtimePath = lib.makeBinPath (runtimeInputs ++ runtimeTools);
   environmentExports = lib.concatStringsSep "\n" (
