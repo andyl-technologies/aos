@@ -318,8 +318,14 @@ within 600; the registered unit takes 0.017 seconds within 30. The matching
 installed public header, libc and ELF loader are verified. Evidence retains
 583 actual objects, three archives and 585 depfiles as identities, with no
 executable exported. Core evaluation, canonical atomic reconstruction, the
-433-file ledger and engineering hygiene pass. The complete corrected Native
-suite and fresh ABI qualification remain in progress.
+433-file ledger and engineering hygiene pass. The new complete Native attempt
+passes all 187 Source tests and 24 components, including publisher-member-return,
+then fails compiling the pending-constructor positive in 0.378 seconds within
+its unchanged 180-second bound. Its original compiler refusal is retained;
+the stack-bank component is not reached and no complete Native pass is claimed.
+A separate correction and full affected-fixture audit are required. Fresh ABI
+conformance passes. The strict license gate remains blocked by the actual host
+Clippy failure recorded above.
 
 Application allocation remains a separate physical owner: GLib DSO allocation,
 Main-created work freed on RR, TCG contexts, translation pools, global caches,
