@@ -62,7 +62,8 @@
 in {
   name = "sandbox-network-worker-bpffs";
   timeout = 180;
-  bootTimeout = 120;
+  # Include native host evaluation before the harness reaches multi-user.target.
+  bootTimeout = 240;
 
   machines.vm = {inherit system;};
 
