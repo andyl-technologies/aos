@@ -182,6 +182,16 @@ def main():
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS active exposure blocks sealed body retirement after ordinary grace; draining retires the exact publisher inode while preserving exposure pins through final mapping and descriptor closure"],
             "actual sealed exposure retirement actor failed")
+        # The independently privileged observer checks actual private metadata.
+        # Final retirement preserves its historical lease but must not leave
+        # a canonical binding with no body for the next cold inventory.
+        publication = support.root("pin") / "state/publication"
+        records = list(publication.iterdir())
+        require(len(records) == 1 and records[0].name.startswith("retirement-")
+                and records[0].is_file()
+                and not list((support.root("pin") / "sealed").glob("*/*"))
+                and not list((support.root("pin") / "pending-delete").iterdir()),
+                "final sealed retirement retained orphan binding or lost historical lease")
         result = actor("pin", "cold-closure")
         require(result.returncode == 0 and result.stdout.splitlines() == [
             "PASS surface admission requires actual recovery and acknowledged Resume",

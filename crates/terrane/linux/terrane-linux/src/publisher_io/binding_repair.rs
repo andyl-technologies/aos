@@ -52,6 +52,18 @@ pub(super) struct RetainedBinding {
 }
 
 impl RetainedBinding {
+    /// Reinforces a prior removal without accepting a replacement record.
+    pub(super) fn synchronize_absence(&self, path: &Path) -> io::Result<()> {
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("missing binding name"))?;
+        match fs::statat(&self.directory, name, AtFlags::SYMLINK_NOFOLLOW) {
+            Err(rustix::io::Errno::NOENT) => self.directory.sync_all(),
+            Err(error) => Err(error.into()),
+            Ok(_) => Err(io::Error::other("retired binding name is occupied")),
+        }
+    }
+
     pub(super) fn new(directory: File) -> Self {
         Self {
             directory,

@@ -14096,3 +14096,33 @@ native-cache and mandatory application checks at `4f67e30ba9` remain running
 from frozen clean source: 9,358 tracked files, fingerprint
 `e1e0c9fa95aefe6049c4eb803baa617ef68f5171d206a938e6aa42b02a76635f`.
 No trunk acceptance or production worker readiness is asserted.
+
+The corrected `4f67e30ba9` surface VM fails overall in 763.90 seconds, with
+unchanged tracked-source fingerprints. Its actual sealed-file retirement actor
+passes the complete active-protection, drain, original publisher unlink, retained
+mapping/descriptor and final authenticated closure scenario. The following cold
+actor fails during initial recovery, before its new restart scenario: publisher
+inventory reports an unreconciled publication-state record. Retained evidence
+is `/scratch/nix-build/nix-230014-2392941731/build/serial.log`. This narrower
+actor pass is not a passing owning VM or a cold-recovery qualification.
+
+The failure exposes a publisher finalization gap: final sealed-body unlink left
+its immutable publication binding behind with no canonical body. The native
+command owner now checks the original pending inode and, when an original
+verified claim is retained and no newer canonical incarnation exists, captures
+the exact private binding, compares its recorded measurement with the actual
+original seal, and removes and synchronizes that binding before final pending
+unlink. An interrupted attempt may reinforce actual absence without deleting a
+replacement. A newer canonical body retains its shared binding. Historical
+retirement leases remain untouched. This correction does not give an unclaimed
+pending inode content authority or relax orphan-inventory refusal.
+
+The owning supervisor additionally observes the actual private publication
+directory after sealed-file retirement: exactly the historical lease must
+remain, with no orphan binding, canonical body or pending name. Existing cold
+inventory, original inode and native closure assertions remain required.
+Formatting, strict Linux all-target Clippy in all-feature and ordinary Tokio
+profiles, the complete 128-case source inventory and supervisor syntax pass.
+Frozen runtime and mandatory application qualification for this correction
+remain pending. Authenticated worker-channel work remains uncommitted and is
+excluded from this correction's source checkpoint. No trunk task is closed.

@@ -289,6 +289,8 @@ pub(super) struct CommandOwner {
 mod manifest_commands;
 #[path = "retention.rs"]
 mod retention;
+#[path = "sealed_retirement.rs"]
+mod sealed_retirement;
 
 impl CommandOwner {
     pub(super) fn new(
@@ -820,7 +822,8 @@ impl CommandOwner {
                     "pending retirement lease has not expired",
                 ));
             }
-            self.kernel(|native| native.finish_pending_sealed(descriptor, &expected))?;
+            self.finish_sealed_binding(descriptor, claim.as_deref(), &expected)
+                .await?;
             self.bodies.remove(index);
         } else if matches!(transition, Transition::Restore) {
             self.kernel(|native| native.restore_pending_sealed(descriptor, &expected))?;
