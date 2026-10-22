@@ -212,3 +212,38 @@ fn every_initialized_failed_bank_contributes_actual_capacity_to_the_census() {
         size_of::<PacketNativeImport18BootstrapAssignmentData>()
     );
 }
+
+#[test]
+fn every_recipe_octet_uses_the_defining_bytes_encoding() {
+    let ids = ids();
+    let row = native_import18_bootstrap_assignment_quote_data(usize::MAX).unwrap();
+    for octet in 0..=u8::MAX {
+        let mut request = request();
+        request.recipe_identity = Bytes::new(vec![octet; 32]);
+        let mut output = None;
+
+        native_import18_bootstrap_assignment_into_data(
+            ids.each_ref(),
+            &request,
+            &row,
+            usize::MAX,
+            &mut output,
+        )
+        .unwrap();
+
+        let owner = output.as_ref().unwrap();
+        let original = owner.borrowed_history_data().original.unwrap();
+        let body = Value::Object(original.body.clone());
+        assert_eq!(
+            body,
+            serde_json::to_value(&request).unwrap(),
+            "octet {octet}"
+        );
+        assert_eq!(
+            serde_json::from_value::<PacketNativeImport18BootstrapRequest>(body).unwrap(),
+            request
+        );
+        native_import18_bootstrap_ack_assigned_request_digest(original, 65536).unwrap();
+        assert!(owner.retained_requested_bytes_data().unwrap() <= row.axes[0]);
+    }
+}

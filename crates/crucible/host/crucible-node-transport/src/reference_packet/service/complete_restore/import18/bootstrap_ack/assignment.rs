@@ -257,7 +257,7 @@ fn construct(
     owner.funding = Some(Value::Object(Map::new()));
     owner.encoded_recipe = Some(String::with_capacity(43));
     let mut encoded = [0u8; 43];
-    let written = base64::engine::general_purpose::STANDARD_NO_PAD
+    let written = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(request.recipe_identity.as_slice(), &mut encoded)
         .map_err(|_| invalid())?;
     let text = std::str::from_utf8(&encoded[..written]).map_err(|_| invalid())?;

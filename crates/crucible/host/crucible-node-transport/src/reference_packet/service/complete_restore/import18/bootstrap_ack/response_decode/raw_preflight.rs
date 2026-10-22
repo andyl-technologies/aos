@@ -265,7 +265,7 @@ impl Scanner<'_> {
         let value = self.string()?;
         let mut digest = [0; 32];
         if value.length != 43
-            || base64::engine::general_purpose::STANDARD_NO_PAD
+            || base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode_slice(&value.bytes[..value.length], &mut digest)
                 .map_err(|_| refused())?
                 != 32

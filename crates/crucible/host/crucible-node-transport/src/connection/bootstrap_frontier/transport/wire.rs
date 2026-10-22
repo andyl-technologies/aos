@@ -101,7 +101,7 @@ fn exact(map: &Map<String, Value>, field: &str, expected: &str) -> Result<(), Pr
 
 fn digest(map: &Map<String, Value>, field: &str, expected: &Bytes) -> Result<(), ProviderError> {
     let mut encoded = [0u8; 44];
-    let length = base64::engine::general_purpose::STANDARD_NO_PAD
+    let length = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode_slice(expected.as_slice(), &mut encoded)
         .map_err(|_| refused())?;
     if map.get(field).and_then(Value::as_str).map(str::as_bytes) != Some(&encoded[..length]) {
@@ -122,3 +122,7 @@ fn numeric(map: &Map<String, Value>, field: &str, expected: U64) -> Result<(), P
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "wire/tests.rs"]
+mod tests;

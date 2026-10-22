@@ -144,3 +144,65 @@ fn oversized_keys_and_scalars_stop_at_the_fixed_decoded_window() {
         native_import18_bootstrap_raw_preflight_counter_scratch_data() >= 7 * size_of::<Ascii>()
     );
 }
+
+fn digest_paths() -> [String; 4] {
+    let receipt = NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT
+        .replace('~', "~0")
+        .replace('/', "~1");
+    [
+        "/body/result/recipe_identity".into(),
+        format!("/extensions/{receipt}/context_digest"),
+        format!("/extensions/{receipt}/assigned_response"),
+        format!("/extensions/{receipt}/mac"),
+    ]
+}
+
+#[test]
+fn every_digest_octet_uses_the_defining_bytes_encoding_before_dom_construction() {
+    let (original, response) = operands();
+    for octet in 0..=u8::MAX {
+        let expected = Bytes::new(vec![octet; 32]);
+        let encoded = serde_json::to_value(&expected).unwrap();
+        for path in digest_paths() {
+            let mut value = response.clone();
+            *value.pointer_mut(&path).unwrap() = encoded.clone();
+            let raw = serde_json::to_vec(&value).unwrap();
+
+            native_import18_bootstrap_raw_preflight_data(&original, &raw).unwrap();
+
+            assert_eq!(
+                serde_json::from_value::<Bytes>(value.pointer(&path).unwrap().clone()).unwrap(),
+                expected,
+                "octet {octet}, {path}"
+            );
+        }
+    }
+}
+
+#[test]
+fn standard_alphabet_padding_and_noncanonical_trailing_digest_bits_refuse() {
+    let (original, response) = operands();
+    let standard = base64::engine::general_purpose::STANDARD_NO_PAD;
+    let invalid = [
+        standard.encode([0xfb; 32]),
+        standard.encode([0xff; 32]),
+        format!("{}=", "A".repeat(43)),
+        format!("{}B", "A".repeat(42)),
+    ];
+    for text in invalid {
+        assert!(serde_json::from_value::<Bytes>(Value::String(text.clone())).is_err());
+        for path in digest_paths() {
+            let mut value = response.clone();
+            *value.pointer_mut(&path).unwrap() = Value::String(text.clone());
+
+            assert!(
+                native_import18_bootstrap_raw_preflight_data(
+                    &original,
+                    &serde_json::to_vec(&value).unwrap(),
+                )
+                .is_err(),
+                "{path}: {text}"
+            );
+        }
+    }
+}
