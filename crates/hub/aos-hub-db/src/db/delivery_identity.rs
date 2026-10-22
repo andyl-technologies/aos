@@ -2489,6 +2489,62 @@ impl Database {
         error: Option<&str>,
         expected_version: i64,
     ) -> Result<NetworkPolicyRevisionRecord> {
+        self.reconcile_network_policy_revision_inner(
+            boundary_id,
+            revision,
+            state,
+            protected_transport_observed,
+            trusted_ingress_observed,
+            error,
+            expected_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records one boundary-revision observation under both lease and lifecycle CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, observation, or expected lifecycle
+    /// version is invalid, or when the database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reconcile_network_policy_revision_fenced(
+        &self,
+        boundary_id: &str,
+        revision: i64,
+        state: &str,
+        protected_transport_observed: bool,
+        trusted_ingress_observed: &str,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: &super::ControllerLeaseFence<'_>,
+    ) -> Result<NetworkPolicyRevisionRecord> {
+        self.reconcile_network_policy_revision_inner(
+            boundary_id,
+            revision,
+            state,
+            protected_transport_observed,
+            trusted_ingress_observed,
+            error,
+            expected_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_network_policy_revision_inner(
+        &self,
+        boundary_id: &str,
+        revision: i64,
+        state: &str,
+        protected_transport_observed: bool,
+        trusted_ingress_observed: &str,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: Option<&super::ControllerLeaseFence<'_>>,
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if !matches!(
             state,
             "unknown" | "declared" | "probing" | "verified" | "degraded" | "failed"
@@ -2518,8 +2574,11 @@ impl Database {
             bail!("verified observation must exactly match the desired boundary posture");
         }
         let now = unix_now();
-        self.backend
-            .checked_batch(&[
+        let mut statements = Vec::with_capacity(3);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
                 Statement::new(
                     "UPDATE network_policy_observations SET state = ?3,
                      protected_transport_observed = ?4, trusted_ingress_observed = ?5,
@@ -2546,8 +2605,8 @@ impl Database {
                     vals![boundary_id, revision, expected_version],
                 )
                 .expecting(1),
-            ])
-            .await?;
+        ]);
+        self.backend.checked_batch(&statements).await?;
         let observed = self
             .network_policy_revision(boundary_id, revision)
             .await?
@@ -4706,6 +4765,66 @@ impl Database {
         error: Option<&str>,
         expected_version: i64,
     ) -> Result<EndpointObservationRecord> {
+        self.reconcile_endpoint_inner(
+            endpoint_id,
+            observed_generation,
+            boundary_revision,
+            state,
+            listener_observed,
+            tls_observed,
+            error,
+            expected_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records one endpoint observation under both lease and resource CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, observation, or expected resource
+    /// version is invalid, or when the database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reconcile_endpoint_fenced(
+        &self,
+        endpoint_id: &str,
+        observed_generation: i64,
+        boundary_revision: i64,
+        state: &str,
+        listener_observed: bool,
+        tls_observed: bool,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: &super::ControllerLeaseFence<'_>,
+    ) -> Result<EndpointObservationRecord> {
+        self.reconcile_endpoint_inner(
+            endpoint_id,
+            observed_generation,
+            boundary_revision,
+            state,
+            listener_observed,
+            tls_observed,
+            error,
+            expected_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_endpoint_inner(
+        &self,
+        endpoint_id: &str,
+        observed_generation: i64,
+        boundary_revision: i64,
+        state: &str,
+        listener_observed: bool,
+        tls_observed: bool,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: Option<&super::ControllerLeaseFence<'_>>,
+    ) -> Result<EndpointObservationRecord> {
         if !matches!(
             state,
             "declared" | "probing" | "healthy" | "degraded" | "failed"
@@ -4732,8 +4851,11 @@ impl Database {
             "resource_version": expected_version + 1,
             "state": state,
         }))?;
-        self.backend
-            .checked_batch(&[
+        let mut statements = Vec::with_capacity(5);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
                 Statement::new(
                     "INSERT INTO endpoint_generation_observations
                      (endpoint_id, observed_generation, boundary_id, boundary_revision,
@@ -4812,8 +4934,8 @@ impl Database {
                     payload_json: &topology_event_payload,
                     occurred_at: now,
                 }),
-            ])
-            .await?;
+        ]);
+        self.backend.checked_batch(&statements).await?;
         let endpoint = self
             .endpoint(endpoint_id)
             .await?

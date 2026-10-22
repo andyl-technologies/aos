@@ -434,6 +434,10 @@ impl RpcService {
         };
         self.require_permission(&claims, Permission::TopologyReconcile, &reconcile_scope)
             .await?;
+        let lease_target = match surface {
+            SurfaceTarget::Registry(id) => format!("registry:{id}"),
+            SurfaceTarget::BinaryCache(id) => format!("cache:{id}"),
+        };
         let authority = self
             .db
             .surface_write_authority(surface)
@@ -472,6 +476,19 @@ impl RpcService {
                 "error is allowed only when reconciliation state is failed",
             ));
         }
+        if !matches!(req.state.as_str(), "ready" | "failed") {
+            return Err(RpcError::invalid(
+                "reconciliation state must be ready or failed",
+            ));
+        }
+        self.claim_controller_fence(
+            &claims,
+            "write_authority",
+            &lease_target,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let already_reconciled = match req.state.as_str() {
             "ready" => {
                 authority.reconciliation_state == "ready"
@@ -501,20 +518,34 @@ impl RpcService {
         let reconciled = match req.state.as_str() {
             "ready" => {
                 self.db
-                    .confirm_surface_write_authority(
+                    .confirm_surface_write_authority_fenced(
                         authority.id,
                         expected_version,
                         req.desired_generation,
+                        &aos_hub_db::db::ControllerLeaseFence {
+                            target_kind: "write_authority",
+                            target_id: &lease_target,
+                            lease_id: &req.controller_lease_id,
+                            generation: req.controller_generation,
+                            owner_service_account_id: claims.owner_id,
+                        },
                     )
                     .await
             }
             "failed" => {
                 self.db
-                    .fail_surface_write_authority(
+                    .fail_surface_write_authority_fenced(
                         authority.id,
                         expected_version,
                         req.desired_generation,
                         &req.error,
+                        &aos_hub_db::db::ControllerLeaseFence {
+                            target_kind: "write_authority",
+                            target_id: &lease_target,
+                            lease_id: &req.controller_lease_id,
+                            generation: req.controller_generation,
+                            owner_service_account_id: claims.owner_id,
+                        },
                     )
                     .await
             }

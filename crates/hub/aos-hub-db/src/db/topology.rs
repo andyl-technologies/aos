@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::backend::Statement;
 use crate::value::Row;
 
-use super::{unix_now, Database, SurfaceTarget};
+use super::{unix_now, ControllerLeaseFence, Database, SurfaceTarget};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -2357,6 +2357,52 @@ impl Database {
         error: Option<&str>,
         expected_resource_version: i64,
     ) -> Result<GatewayRecord> {
+        self.observe_gateway_inner(
+            gateway_id,
+            generation,
+            state,
+            error,
+            expected_resource_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records gateway reconciliation under both lease and resource CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, gateway state, or expected resource
+    /// version is invalid, or when the database operation fails.
+    pub async fn observe_gateway_fenced(
+        &self,
+        gateway_id: &str,
+        generation: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_resource_version: i64,
+        fence: &ControllerLeaseFence<'_>,
+    ) -> Result<GatewayRecord> {
+        self.observe_gateway_inner(
+            gateway_id,
+            generation,
+            state,
+            error,
+            expected_resource_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    async fn observe_gateway_inner(
+        &self,
+        gateway_id: &str,
+        generation: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_resource_version: i64,
+        fence: Option<&ControllerLeaseFence<'_>>,
+    ) -> Result<GatewayRecord> {
         if !matches!(state, "ready" | "failed") || (state == "ready" && error.is_some()) {
             bail!("gateway observation must be ready without error or failed");
         }
@@ -2374,8 +2420,11 @@ impl Database {
             "resource_version": expected_resource_version + 1,
             "state": state,
         }))?;
-        self.backend
-            .checked_batch(&[
+        let mut statements = Vec::with_capacity(3);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
                 Statement::new(
                     "UPDATE gateways SET observed_generation = ?2,
                  reconciliation_state = ?3, reconciliation_error = ?4,
@@ -2406,8 +2455,8 @@ impl Database {
                     payload_json: &payload,
                     occurred_at: now,
                 }),
-            ])
-            .await?;
+        ]);
+        self.backend.checked_batch(&statements).await?;
         self.gateway(gateway_id)
             .await?
             .context("observed gateway disappeared")

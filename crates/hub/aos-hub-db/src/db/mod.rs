@@ -439,7 +439,9 @@ mod snapshot_insert_tests {
 }
 
 mod cache_write_admission;
+mod controller_leases;
 pub use cache_write_admission::*;
+pub use controller_leases::{ControllerLeaseFence, CONTROLLER_LEASE_TTL_SECONDS};
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
@@ -534,6 +536,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// | 9 | `migration-0009-controller-leases.sql` | Durable controller lease ownership and generations. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -543,6 +546,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
+    include_str!("migration-0009-controller-leases.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
