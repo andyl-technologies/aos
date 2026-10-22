@@ -4,7 +4,8 @@
   workspace,
   trial,
 }: let
-  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure" "rust-cpu" "sysroot" "pgo"];
+  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure" "rust-cpu" "sysroot" "pgo" "linker-closure"];
+  replacedLinker = import ./_bazel-replaced-linker.nix {inherit pkgs;};
   sysroot = variant:
     pkgs.runCommand "aos-bazel-${variant}-headers" {} ''
       cp -as ${pkgs.glibc.dev}/. "$out/"
@@ -52,6 +53,7 @@
           then replacedRust
           else pkgs.rust;
       }
+      // pkgs.lib.optionalAttrs (variant == "linker-closure") replacedLinker
       // pkgs.lib.optionalAttrs (builtins.elem variant ["sysroot" "sysroot-baseline"]) {
         glibc = pkgs.glibc // {dev = sysroot variant;};
         cc = sysrootCompiler variant;
@@ -110,7 +112,7 @@
       pname = "aos-bazel-invalidation-${variant}";
       workspace =
         (
-          if builtins.elem variant ["tool-closure" "sysroot"]
+          if builtins.elem variant ["tool-closure" "sysroot" "linker-closure"]
           then configured variant
           else original
         )

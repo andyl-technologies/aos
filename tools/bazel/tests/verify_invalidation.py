@@ -23,6 +23,7 @@ def verify(baseline, variants, pgo_profiles=None):
         "rust-flags": {"rust_library", "rust_app", "native_app"},
         "link-flags": {"cpp_link"},
         "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "linker-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
         "rust-cpu": {"rust_library", "rust_app", "native_app"},
         "pgo": {"rust_library"},
         "sysroot": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
@@ -39,6 +40,7 @@ def verify(baseline, variants, pgo_profiles=None):
         "generator-environment": (43, 43, 86), "feature": (43, 42, 85),
         "rust-flags": (42, 42, 84), "tool-closure": (42, 42, 84),
         "link-flags": (42, 42, 84),
+        "linker-closure": (42, 42, 84),
         "rust-cpu": (43, 42, 85), "sysroot": (42, 43, 85),
         "pgo": (42, 42, 84),
     }
@@ -85,6 +87,23 @@ def verify(baseline, variants, pgo_profiles=None):
                             and event["mnemonic"] == "CppCompile")
             if not any(entry["path"].endswith("/aos-cache-probe.h") for entry in compiler.get("inputs", [])):
                 raise ValueError("sysroot experiment omitted its actual compiler header input")
+        if variant == "linker-closure":
+            linker_inputs = []
+            for records in [baseline_events, events]:
+                action = next(event for event in records if event["targetLabel"] == "//tools/bazel/tests/fixture:cpp_app"
+                              and event["mnemonic"] == "CppLink")
+                inputs = [entry for entry in action["inputs"] if entry["path"].endswith("/binutils/bin/ld")]
+                if len(inputs) != 1:
+                    raise ValueError("linker experiment omitted its unique selected linker input")
+                linker_inputs.append(inputs[0])
+            if linker_inputs[0]["digest"] == linker_inputs[1]["digest"]:
+                raise ValueError("linker experiment did not replace the linker executable bytes")
+            marker = "AOS_BAZEL_REPLACED_LINKER_EXECUTED"
+            progress = [json.loads(line).get("progress", {}).get("stderr", "")
+                        for line in (build / "evidence/events.json").read_text().splitlines()]
+            if marker not in "".join(progress):
+                raise ValueError("compiler driver did not execute the replaced linker")
+            evidence["selected_linker_inputs"] = {"baseline": linker_inputs[0], "changed": linker_inputs[1]}
         artifacts = package_files(build)
         digests = {}
         for destination, value in zip(["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"], expected_values[variant]):

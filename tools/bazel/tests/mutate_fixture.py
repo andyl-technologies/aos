@@ -50,7 +50,7 @@ def mutate(root, variant, cpu=None):
         replace(root, "BUILD.bazel", 'name = "rust_library",',
                 'name = "rust_library",\n    compile_data = ["cache.profdata"],\n'
                 '    rustc_flags = ["-Copt-level=2", "-Cprofile-use=$(location :cache.profdata)"],')
-    elif variant != "tool-closure":
+    elif variant not in {"tool-closure", "linker-closure"}:
         raise ValueError(f"unsupported cache fixture variant: {variant}")
 
 
