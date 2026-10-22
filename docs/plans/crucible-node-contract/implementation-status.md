@@ -3160,6 +3160,29 @@ constructor and containment window. Controller transaction ownership, genuine
 Initial/Recipe production and the remaining full RFC work are still incomplete.
 No new full-library, configured runtime or VM qualification is claimed here.
 
+## Unrenewed Source Bootstrap Session cut
+
+Commit `4be2a5590b` brackets the dedicated Bootstrap transport operations with
+the deadline captured before the original Hello. Reservation and sealing keep
+sequence two; publication spends sequence three before attempting the write.
+Receive and decode require that spent sequence and the same original cut. Every
+terminal guard runs after either operation outcome, including an already fenced
+endpoint, while constructed outputs and actual SDK custody remain retained.
+Occupied output destinations refuse before further guards or transport effects.
+
+All eleven cut controls pass in both standard and raw-JSON modes. The broader
+affected client namespace passes 194 tests, and all twelve connection frontier
+controls pass after the shared model-fixture extraction. Transport/Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass. The required
+application compilation gate emits 180 test executables across 58 package IDs,
+including 71 integration targets. All 371 owned Rust/Cargo inputs match committed
+`4be2a5590b` and its actual captured Nix source. That gate executes no tests.
+
+These primitives verify no Source MAC and complete no Source transaction. Whole
+Source funding, genuine Initial/Recipe production, Controller transaction work
+and the remaining full RFC obligations remain incomplete. This checkpoint adds
+no full-library, configured runtime or VM qualification.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
