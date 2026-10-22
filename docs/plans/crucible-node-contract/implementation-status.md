@@ -2526,6 +2526,36 @@ no tests. No new VM or configured Engine/Daemon runtime result is claimed.
 Actual paired issuers and native adopters, full phase funding, genuine opaque
 Initial/Recipe production and full RFC acceptance remain unfinished.
 
+## Original typed bootstrap policy normalization
+
+Commit `ba36cff750` lends the actual decoded Source binding, same fixed recipe
+identity, three full selected definitions and current SDK negotiation under the
+original immutable-policy guards. It preserves the existing five-field policy
+wire grammar while avoiding an intermediate Source DOM and copied recipe bank.
+Original input, cut, launch, literal Hello and SDK guards run around either
+callback outcome; only Copy DATA can leave the loan.
+
+The allocation-free projection walks every typed Source field and the full
+announced Recipe24. It prices the original Source-bank and fixed recipe base64
+formatters separately from DOM/JCS, parser and output banks. Fixed loan controls
+have a separate checked quote. No initial row, retained owner or public API
+changes, and no ACK or native phase permission follows from normalization.
+
+The existing fourteen physical-channel cases pass for producer and reactive
+launches, absent policy, changed cut, callback refusal/expiry and SDK containment.
+The projected populations and storage match an independent serializer oracle;
+exact-peak and larger restrictions pass, and one byte less refuses. Both complete
+Transport configurations pass 1,956 tests each with no failures, no filtering
+and sixteen existing ignores. Affected all-feature/all-target checking,
+changed-file formatting and all six architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 300 owned Rust/Cargo inputs
+match the commit and its exact captured source. This gate executes no tests.
+No new VM or configured Engine/Daemon runtime result is claimed. Genuine
+Source/Birth funding, live ACK publication, full phase construction and full
+RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
