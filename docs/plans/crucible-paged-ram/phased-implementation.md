@@ -63,11 +63,67 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed reader `8c55fe5743` imports conventional `0137bd538c`, tree `27234c29`. Exact raw reconstruction and the 351-created-file license inventory pass. Independent import verification matches 990 changed-source hashes, 10,908 evidence files and 156 literal links. The fresh 1,918-object cohort and first corrected normal delivery pass under unchanged bounds. | All 187 packaged Source tests and fresh ABI conformance pass. All 26 bounded custody suites pass at `3cb9frb6ydjxcv66qpjszpw98fpirl8v`; canonical license checking stops at strict controller Clippy. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
+| Native integration | Signed union `cbcf3ee95a` imports conventional `721cc10ccb`, tree `0c3b534f`. Independent review matches 1,025 changed-source hashes, 13,711 sealed evidence files and 156 literal links; the inventory accounts for 386 created files. The 1,918-object cohort passes on `f6d3a6543b`; corrected normal delivery passes on `b9a0c0f71b`. | Exact reconstruction and all 187 packaged Source tests pass. ABI and expanded 32-component custody checks are pending for this import; the 386-created-file license ledger passes. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (923 host-library and 977 host-test errors after compacting QMP context); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 419 committed bindings: 400 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Reader, deferred return and cleanup composition
+
+The signed union `cbcf3ee95a3d9f15dc1b13bd5479cb9a99d32379` imports
+conventional `721cc10ccb37775d1f71306e59056fee8b78d6b8`, exact tree
+`0c3b534fdcffa1d5c3ac1da3966fec4ef33f70af`, with sole upstream parent
+`1ed046750938db278a12dc55c6a7934d5fc68c14`. Both atomic dates remain
+2001-01-01; the signature, DCO, exact message and artifact hashes are checked.
+This composes the retained reader with Source Original borrowing, deferred
+Main-finish receipts, Core execution/cleanup journals, cleanup registration and
+independent Source physical posts. The Native runner adds six self-contained
+suites to the existing 26, preserving each suite's 180-second/6-GiB bound.
+Whole-provider suites still require their genuine configured object closures.
+Exact reconstruction passes at `6q1641k3gg6hgfgvkn0qw8489jdarafl`; the
+386-created-file license inventory passes at `3a800w0v9fzdq3fz13hgyn49is3x8sx5`.
+All 187 packaged Source tests pass at `12bg9s0kjac9a3hxb1da897l7nfrd1ic`.
+Fresh ABI, 32-component Native custody and canonical license checks are pending.
+
+Independent signed-source and working-source verification matches all 1,025
+changed files and all three integration artifacts. Its record has SHA-256
+`3d02bb5d7e8e077978ca117bbd37f669cc18d1f4bde025a3230a27142c7d5431`.
+The final sealed evidence rehash independently matches 13,711 regular files,
+156 literal namespace links and 26 manifest entries without following links.
+Its record has SHA-256
+`8576fd3f1679743a8a5ea8a01def6a7a38b54083d6a304793229533edd5a6d3c`.
+The complete archive's hash is checked; its producer separately verified all
+78,193 Git blobs/modes and 72 source links. That archive-member verification is
+not an independent host re-audit. The license ledger adds 35 files, distinguishes
+explicit SPDX from QEMU defaults and now covers 386 created files, with no removals.
+
+Actual compiled Source is 244,376 bytes. Thirty genuine external getters sum to
+44,270 bytes, yielding fixed floor 288,646, including Native Main-finish 96,
+Core 88 and Outcome 144. Native frame/registry remain 288/10,856; CPUState,
+ARMCPU and X86CPU remain 16,992, 97,712 and 33,568. Geometry grants no issuer.
+
+The full 1,918-object cohort began on `f6d3a6543b` and passed in
+592.310875109 seconds under its unchanged 600-second/6-GiB bound with two
+compilers. The Meson-only `fb72822d57` edit occurred during compilation; it is
+not the executed starting source. Normal delivery first failed on `6d120f8ff2`
+for a missing real Native fixture link. The first and only changed normal run
+on `b9a0c0f71b` passed in 53.120025402 seconds under its unchanged
+60-second/6-GiB bound. Later `721cc10ccb` standalone fixture corrections are
+not a fresh whole-cohort or normal timing claim. All 97 final authenticated
+compiler inputs remain byte-identical and 411 selected functions match the
+actual bodies. Earlier failing inputs and their evidence remain retained.
+
+All 47 delivery/fault/TCG causal controls, 92 preexec classifiers and four
+whole-provider groups pass in the public handoff. Publisher access passes 26
+scenario rows across 16 rebuilt variants in 209.857780791 seconds; per-process
+limits remain 30 seconds. Mapping observations and three independent producer
+omissions pass. Twenty-three direct ordinary entries pass; raw deferred linkage
+still refuses, its genuine configured closure passes, and mandatory dirty
+lifecycle still refuses. Intentionally unavailable or aborting providers prove
+no later assertion. No installed Module Original, semantic RR, independent
+Module cleanup actor, paid selected reader or CPU issuance is claimed. The
+borrower retains one process-wide attempt; sequential reuse and rearm remain open.
 
 #### Native receiver and Initial-read composition
 
@@ -432,7 +488,8 @@ Every host target compiles. Mandatory application compilation passes at
 `c8c8014091309a994d7d14722d157b8ef8e68da4` match immutable source
 `s5namavg5f88s77p5cs10gx399qxqxjb`. The comparison record has SHA-256
 `e34c8f2329f1fb97b36fbdbf5bcc2cc33db9cbb5f1e5157bb7de1ba1061ca51d`.
-All 302 exact supervision cases remain pending.
+All 302 exact supervision cases pass in nine groups at
+`skfakchnr4g9hgrzfjrnp3045zswc4gm`.
 
 #### Complete lazy resource-refusal diagnostics
 

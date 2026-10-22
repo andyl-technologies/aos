@@ -10,6 +10,41 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `accel/tcg/crucible-executor-cleanup.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-outcome-boundary.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `accel/tcg/crucible-quantum-core.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-deferred-main-finish.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-executor-cleanup-core-bridge.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-executor-cleanup-physical.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-executor-cleanup-registration.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-outcome-boundary-physical.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-pending-deferred-custody.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-publisher-access-custody.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-actor-composition.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-core-custody.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-deferred-holder-proposal.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-executor-cleanup-proposal.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-quantum-original-borrow-contract.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-rr-return-post.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-advance-rr-post.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-executor-cleanup-registration.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-native-deferred-main-finish.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-pending-deferred.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-pending-main-finish.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-original.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-access.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-deferred.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-entry.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-advance-rr-post.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-deferred-main-finish.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-executor-cleanup-bridge.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-executor-cleanup-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-executor-cleanup.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-outcome-boundary.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-pending-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-access.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-core-frame.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-original.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-ram-reader-custody.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-ram-reader.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-ram-reader-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
