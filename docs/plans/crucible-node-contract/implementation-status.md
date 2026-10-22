@@ -2719,6 +2719,36 @@ DATA. Complete Host-plan authentication, genuine enclosing Source/Birth funding,
 opaque Initial/Recipe production, live ACK publication and full RFC acceptance
 remain unfinished.
 
+## Original Host-plan checks around completed hash loans
+
+Commit `03328ea912` checks the original complete controller registration plan
+before lending completed normalization hashes. The same immutable original
+launch, Hello declaration and actual native SDK authority remain borrowed.
+Every plan field is checked, including connection-ID grammar, actual session
+and incarnation, all five canonical limits, exact feature/key rosters and
+empty typed extensions. This comparison creates no controller connection.
+
+Original plan, input, channel, cut and SDK guards surround either callback
+outcome. No Value, registration graph or hash bank is copied. The concrete
+Copy result, nested decoded-body loans and comparison controls have checked
+counter quotes; the complete initial schedule includes their sequential maximum.
+Neither resource policy nor the original operational deadline changes.
+
+Twenty physical flights cover both program families, each changed plan field,
+missing/extra fields, incomplete hashes, callback refusal, substituted cut,
+containment, actual SDK revocation and expiry after either callback outcome.
+The original raw/typed owners, launch pointer and computed hashes remain intact.
+Both complete Transport configurations pass 1,962 tests each, with zero failures,
+no filtering and sixteen existing ignores. Affected all-feature/all-target
+checking, formatting and all six architecture gates pass.
+
+The application gate compiles 180 test executables across 58 package identities,
+including 71 integration targets. All 317 owned Rust/Cargo inputs match the
+commit and its exact captured source. The gate runs no tests. No new VM or
+configured Engine/Daemon runtime result is claimed. These callback admissions
+remain models. Genuine enclosing Source/Birth funding, opaque Initial/Recipe,
+actual bootstrap dispatch/publication and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
