@@ -145,6 +145,9 @@
           Slice = "aos-control.slice";
           RuntimeDirectory = "storage-rpc-controller";
           RuntimeDirectoryMode = "0700";
+          # The harness reads the final command acknowledgement after this
+          # fixture exits; PID 1 must retain it until the VM is discarded.
+          RuntimeDirectoryPreserve = "yes";
           StateDirectory = "aos/sandboxd/broker-session/storage";
           StateDirectoryMode = "0700";
           UMask = "0077";
