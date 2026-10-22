@@ -2083,10 +2083,15 @@ refuses before either trusted callback and spends admission. These controls do
 not use the native verifier or grant native Source/Birth provenance. Both
 complete Transport configurations pass 1,911 tests with zero failures, no
 filtering and sixteen existing ignores; affected all-feature/all-target checking
-and scoped formatting pass. The architecture gate rejects the enlarged SDK
-negotiation module above its responsibility-review threshold. Its new pure
-counter is now in a focused child module; qualification of that extraction is
-pending. No threshold or review exception is changed.
+and scoped formatting pass. The architecture gate initially rejected the enlarged
+SDK negotiation module above its responsibility-review threshold. Its new pure
+counter now lives in a focused child module. Commit `ef44e27984` passes all six
+architecture checks and the required application test-target build: 180 test
+executables across 58 packages, including 71 integration targets. All 250 owned
+Rust/manifest inputs match that committed tree and the actual captured application
+source. Both complete Transport configurations pass again after the extraction.
+No threshold, review exception, limit or assertion is changed. No new VM run is
+claimed; the complete borrowed-ordering VM remains scoped to `966aba7b3a`.
 
 These are partial construction terms. Complete decoder/writer and validator
 work, owning leaf clones and backing, native callback measurement/equality,
