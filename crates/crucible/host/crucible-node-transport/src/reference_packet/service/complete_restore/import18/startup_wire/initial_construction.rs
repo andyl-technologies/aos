@@ -33,6 +33,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_selection_counter_scratch_data,
     original_import18_hello_value_construction_bound_data,
     original_import18_hello_value_counter_scratch_data,
+    original_import18_launch_validation_construction_data,
+    original_import18_launch_validation_counter_scratch_data,
     original_import18_public_channel_construction_data,
     original_import18_public_channel_counter_scratch_data,
     original_import18_raw_bootstrap_storage_data,
@@ -41,6 +43,7 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_selection_construction_data,
     original_import18_selection_counter_scratch_data,
 };
+use crate::reference_packet::service::native_startup::PacketNative5LaunchValidationStorage;
 
 /// Retains a numeric construction observation without creating opaque funding.
 pub struct PacketNativeImport18InitialConstructionData {
@@ -111,6 +114,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
+        original_import18_launch_validation_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -168,6 +172,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
+        original_import18_launch_validation_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -211,6 +216,7 @@ fn combine(
     source: [usize; 3],
     formatter: [usize; 3],
     launch_identity: (usize, usize),
+    launch_validation: [usize; 3],
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
@@ -242,6 +248,10 @@ fn combine(
     row[2] = add(row[2], source[2])?.max(add(raw[2], formatter[2])?);
     row[1] = row[1].max(launch_identity.0);
     row[2] = row[2].max(add(raw[2], launch_identity.1)?);
+    // Full pure launch validation runs before native policy adoption. Its
+    // temporary coordinator/policy DATA never replaces original decoded owners.
+    row[1] = row[1].max(launch_validation[1]);
+    row[2] = row[2].max(add(raw[2], launch_validation[2])?);
     let recipe_identity = native_import18_recipe_identity_construction_data(maximum)?;
     row[1] = row[1].max(recipe_identity.0);
     row[2] = row[2].max(add(raw[2], recipe_identity.1)?);
@@ -347,6 +357,8 @@ pub fn native_import18_initial_quote_formatter_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<[usize; 3], ProviderError> {
     let mut row = source_authentication_quote_construction_data(launch)?;
+    let (formatter, _) = launch.validation_construction_projection_storage_data()?;
+    row[1] = row[1].max(formatter);
     row[2] = add(row[2], initial_construction_counter_scratch_data())?;
     Ok(row)
 }
@@ -376,7 +388,9 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
             .max(original_import18_hello_response_counter_scratch_data())
             .max(original_import18_hello_initial_admission_counter_scratch_data())
             .max(original_import18_hello_publication_counter_scratch_data())
+            .max(original_import18_launch_validation_counter_scratch_data())
         + size_of::<[usize; 3]>() // The retained response-publication row.
+        + size_of::<[usize; 3]>() * 2 // Pure launch row argument and combining window.
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()
         + size_of::<[usize; 3]>()

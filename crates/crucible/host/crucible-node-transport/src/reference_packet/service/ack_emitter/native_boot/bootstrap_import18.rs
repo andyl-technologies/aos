@@ -53,6 +53,13 @@ mod native_framing;
 #[path = "bootstrap_import18/normalization.rs"]
 mod normalization;
 
+#[path = "bootstrap_import18/launch_validation.rs"]
+mod launch_validation;
+pub(in crate::reference_packet::service) use launch_validation::{
+    construction_data as launch_validation_construction_data,
+    counter_scratch_data as launch_validation_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/selection.rs"]
 mod selection;
 pub(in crate::reference_packet::service) use selection::{
@@ -192,6 +199,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     bodies: [Vec<u8>; 3],
     inputs: OriginalImport18ReceivingBanks,
     parsed: OriginalImport18DecodedBodies,
+    launch_validation: launch_validation::Attempt,
     selection_construction_row: Option<[usize; 3]>,
     selection_started: bool,
     selection_authenticated: bool,
@@ -266,6 +274,7 @@ impl OriginalImport18RawBootstrap {
             bodies: std::array::from_fn(|_| Vec::new()),
             inputs: OriginalImport18ReceivingBanks::empty(),
             parsed: OriginalImport18DecodedBodies::empty(),
+            launch_validation: launch_validation::Attempt::empty_data(cut),
             selection_construction_row: None,
             selection_started: false,
             selection_authenticated: false,

@@ -81,6 +81,9 @@ mod hello_frames;
 #[path = "initial_reconstruction/selection.rs"]
 mod selection;
 
+#[path = "initial_reconstruction/launch_validation.rs"]
+mod launch_validation;
+
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
@@ -164,6 +167,9 @@ fn operands(case: &str) -> [Value; 3] {
     }
     if case.starts_with("initial_hello_publication_") {
         hello_publication::prepare_selected(case, &mut selected);
+    }
+    if case.starts_with("initial_launch_validation_") {
+        launch_validation::prepare_selected(case, &mut selected);
     }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
@@ -251,6 +257,10 @@ fn required(values: &[Value; 3]) -> [usize; 3] {
 fn flight(case: &str) {
     let mut values = operands(case);
     let mut row = required(&values);
+    if case.starts_with("initial_launch_validation_") {
+        launch_validation::fund_initial_partition(&mut values, row);
+        assert_eq!(required(&values), row);
+    }
     let row_value = json!({
         "retained_requested_bytes": row[0].to_string(),
         "maximum_simultaneous_transient_bytes": row[1].to_string(),
@@ -406,7 +416,18 @@ pub(super) fn assert_child(
             || case.starts_with("initial_context_")
             || case.starts_with("initial_hello_")
             || case.starts_with("initial_selection_")
+            || case.starts_with("initial_launch_validation_")
         {
+            if result.is_err() && case.starts_with("initial_launch_validation_") {
+                eprintln!(
+                    "{case}: initial {:?}, validator {:?}",
+                    owner.initial_construction.as_ref().map(|data| data.row),
+                    super::super::launch_validation::construction_data(
+                        owner.typed_bodies_data().unwrap().launch.launch_data(),
+                        owner.bounds.requested_peak,
+                    )
+                );
+            }
             result.unwrap();
             assert!(owner.initial_reconstructed);
             assert!(owner.initial_construction.is_some());
@@ -417,6 +438,10 @@ pub(super) fn assert_child(
             );
             assert!(!owner.initial_reconstructed);
         }
+    }
+    if case.starts_with("initial_launch_validation_") {
+        launch_validation::assert_child(case, &mut owner);
+        return;
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
