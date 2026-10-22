@@ -62,6 +62,18 @@ consistency alongside executable changes. Record actual results and remaining
 qualification gaps in [implementation-status.md](implementation-status.md);
 component tests do not qualify a complete backend.
 
+Run the registered requirement-map check:
+
+```sh
+aos-dev --release build check crucible.phase1.nodeContractRequirementMap --no-out-link
+```
+
+It compares the complete map with defining RFC anchors, exact chapter locations
+and declared phase/task/suite names. The gate
+also exercises missing, duplicate, stale and foreign-entry controls. Its report
+records planning annotations only; it executes no backend acceptance cases and
+cannot establish a qualified class.
+
 ## 3. Proposed suites and minimum cases
 
 The suite letters match the RFC. Case identifiers below identify planned

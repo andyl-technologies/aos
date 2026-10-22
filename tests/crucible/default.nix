@@ -150,6 +150,7 @@ in rec {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    nodeContractRequirementMap = import ./phase1-node-contract-requirement-map.nix {inherit pkgs lib;};
     rustSourceScrub = import ./rust-source-scrub.nix {inherit pkgs lib;};
     aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
     adversarialHostFixture = import ./phase1-adversarial-host-fixture.nix {inherit pkgs lib;};
