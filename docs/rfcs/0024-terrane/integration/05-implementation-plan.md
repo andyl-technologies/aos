@@ -14525,3 +14525,38 @@ from explicit eviction or index-cap pressure. Formatting, both strict Linux
 all-target profiles, Python syntax, Nix formatting/evaluation and all 128 native
 source declarations pass. Exact-source native and mandatory application
 qualification are pending; no trunk task is accepted by this component alone.
+
+
+The `e37c5014df` frozen checkpoint passes shared/index-cap pressure (639.91s),
+complete surface ownership (708.46s), scoped worker grants (578.08s), forced
+owner/worker death (575.88s), the full native cache (1,401.65s), and required
+application compilation (1,343.48s). Every immutable source file and actual
+installed Cargo ELF is reviewed; the base suite retains all 128 library cases
+and 92 fixture selectors. The corrected `c6c5da62dc` publisher gate and its
+four actual prerequisites are also fully reviewed, including full-cache runtime
+and nine actual Cargo ELFs. Earlier failed aggregate results remain failures.
+
+At `d5b6d36103`, all five surface-related VMs pass and are reviewed: automatic
+host-admission pressure (586.76s), shared/index-cap pressure (623.15s), complete
+surface ownership (691.35s), scoped worker grants (562.39s), and forced crash
+(556.49s). All 8,050 immutable source files, 5,341 base inputs, 5,325 surface
+inputs and five installed Cargo ELFs match that checkpoint. Required application
+compilation passes in 845.24s, with all source and 184 compiler records across
+59 packages reviewed. The full base VM and long T2 gate aggregate are still
+running. None of these component results closes a trunk task.
+
+A native maintenance request now reconciles the complete finite inventory of
+already-draining exposures through the original physical command owner. It
+accepts no public row identifiers or replacement closure evidence. Each actual
+original inode set uses the existing authenticated census, funded durable
+transition and synchronized completion. Active exposures are excluded; blocked
+rows retain their obligations without starving later closures. Cancellation
+leaves the queued work owned, and a later error cannot undo earlier committed
+closures. This operation neither stops workers nor retires namespace entries.
+The genuine index-closure actor checks named and mapped refusals, a later actual
+final-unmap closure behind an earlier blocked row, unchanged unrelated exposure
+and pin custody, and repeated reconciliation. Existing actor and VM bounds stay
+unchanged. Both strict Linux all-target profiles, formatting, Python syntax and
+all 128 native source declarations pass. Native runtime and mandatory application
+qualification for this addition are pending. GC process transport and deployed
+role composition remain unimplemented.

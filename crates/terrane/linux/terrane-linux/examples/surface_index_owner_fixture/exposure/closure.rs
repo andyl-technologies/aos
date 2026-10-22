@@ -4,7 +4,10 @@ use super::{Result, config, limits, now, snapshot};
 use crate::repository_fixture::{MAIN, RepositoryFixture};
 use std::{fs::File, io, os::fd::AsFd, time::Duration};
 use terrane_format::surface::ViewTarget;
-use terrane_linux::{host_cache::NativeMetadataOwner, structural_index::MappedIndex};
+use terrane_linux::{
+    host_cache::{NativeExposureReconciliation, NativeMetadataOwner},
+    structural_index::MappedIndex,
+};
 
 pub(super) async fn verify(
     owner: &NativeMetadataOwner,
@@ -58,6 +61,18 @@ pub(super) async fn verify(
     {
         return Err("active exposure reconciliation changed original obligations".into());
     }
+    if owner.reconcile_draining_surface_exposures().await?
+        != (NativeExposureReconciliation {
+            checked: 1,
+            completed: 0,
+            blocked: 1,
+        })
+        || std::fs::read(&policy)? != before
+    {
+        return Err(
+            "batch reconciliation selected active or released named exposure custody".into(),
+        );
+    }
 
     eprintln!("EXPOSURE_CLOSURE_STAGE drain");
     owner.drain_surface_exposure(&lease).await?;
@@ -88,13 +103,39 @@ pub(super) async fn verify(
     {
         return Err("live kernel mapping released durable exposure obligations".into());
     }
+    if owner.reconcile_draining_surface_exposures().await?
+        != (NativeExposureReconciliation {
+            checked: 2,
+            completed: 0,
+            blocked: 2,
+        })
+        || std::fs::read(&policy)? != before
+    {
+        return Err("batch reconciliation released an original retained mapping".into());
+    }
 
     drop(mapping);
     eprintln!("EXPOSURE_CLOSURE_STAGE final-closure");
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if owner.reconcile_surface_exposure(&id, generation).await? {
+            let report = owner.reconcile_draining_surface_exposures().await?;
+            if report
+                == (NativeExposureReconciliation {
+                    checked: 2,
+                    completed: 1,
+                    blocked: 1,
+                })
+            {
                 return Ok::<(), Box<dyn std::error::Error>>(());
+            }
+            if report
+                != (NativeExposureReconciliation {
+                    checked: 2,
+                    completed: 0,
+                    blocked: 2,
+                })
+            {
+                return Err("batch reconciliation lost original draining inventory".into());
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -123,8 +164,22 @@ pub(super) async fn verify(
             "proven closure released unrelated exposure custody or lost idempotence".into(),
         );
     }
+    let before = std::fs::read(&policy)?;
+    if owner.reconcile_draining_surface_exposures().await?
+        != (NativeExposureReconciliation {
+            checked: 1,
+            completed: 0,
+            blocked: 1,
+        })
+        || std::fs::read(&policy)? != before
+    {
+        return Err("repeated batch reconciliation changed unrelated exposure obligations".into());
+    }
     println!(
         "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure"
+    );
+    println!(
+        "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap"
     );
     Ok(())
 }

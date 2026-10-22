@@ -230,7 +230,8 @@ def main():
         result = actor("index-closure", "index-closure")
         require(result.returncode == 0 and result.stdout.splitlines() == [
             "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure"],
+            "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure",
+            "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap"],
             "independent index exposure closure actor failed")
         verify_surface(image, source)
         print("PASS actual native surface-index admission, cold retirement and separate cap; exposure pins and worker remain unqualified", flush=True)

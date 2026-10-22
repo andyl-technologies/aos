@@ -61,7 +61,8 @@ pub use owner::{
 };
 #[cfg(all(feature = "tokio", feature = "surface-fuse"))]
 pub use owner::{
-    NativeExposureLease, NativeExposureRootBacking, NativeRootIndex, NativeSurfaceIndex,
+    NativeExposureLease, NativeExposureReconciliation, NativeExposureRootBacking, NativeRootIndex,
+    NativeSurfaceIndex,
 };
 pub use quota::ProjectQuota;
 #[cfg(feature = "tokio")]

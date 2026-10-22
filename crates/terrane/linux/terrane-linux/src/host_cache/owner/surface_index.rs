@@ -19,6 +19,7 @@ pub(super) mod pressure;
 pub(super) mod recovery;
 mod scoped;
 
+pub use closure::NativeExposureReconciliation;
 pub use exposure::NativeExposureLease;
 pub use scoped::{NativeExposureRootBacking, NativeRootIndex};
 
