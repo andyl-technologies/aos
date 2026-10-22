@@ -10,7 +10,7 @@ use crucible_host_resources::host_services::native_join::{NativeJoinObservation,
 use crucible_host_resources::host_services::process_birth::{
     AuthenticatedTargetDispatcherPurpose, ServiceBirthError,
 };
-use crucible_host_resources::host_supervision::HostOperationGuard;
+use crucible_host_resources::host_supervision::{HostOperationGuard, HostRetryCadence};
 use rustix::event::epoll;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, TryLockError};
@@ -45,7 +45,7 @@ struct JobSlot {
     failure: Option<JobFailure>,
     failure_reported: bool,
     facade_live: bool,
-    next_retry: Option<Instant>,
+    next_retry: HostRetryCadence,
 }
 
 struct DispatcherState {
@@ -337,7 +337,7 @@ impl TargetDispatcher {
             failure: None,
             failure_reported: false,
             facade_live: false,
-            next_retry: None,
+            next_retry: HostRetryCadence::default(),
         });
         let mut running = Vec::new();
         running
@@ -724,7 +724,7 @@ impl TargetDispatcher {
         slot.failure = None;
         slot.failure_reported = false;
         slot.facade_live = true;
-        slot.next_retry = None;
+        slot.next_retry = HostRetryCadence::default();
         slot.original = Some(original);
         slot.control = Some(control);
         slot.phase = JobPhase::Queued;
@@ -773,6 +773,7 @@ struct JobFailure {
     original: Option<crate::OriginalActorAccountError>,
     control: Option<LinuxQemuCgroupError>,
     poller: Option<LinuxQemuCgroupError>,
+    cadence: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
     after: Option<crate::OriginalActorAccountError>,
     panicked: bool,
 }
@@ -781,8 +782,8 @@ impl std::fmt::Display for JobFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "Target phase {:?}; physical control {:?}; poller {:?}; independent phase {:?}; panic {}",
-            self.original, self.control, self.poller, self.after, self.panicked
+            "Target phase {:?}; physical control {:?}; poller {:?}; retry cadence {:?}; independent phase {:?}; panic {}",
+            self.original, self.control, self.poller, self.cadence, self.after, self.panicked
         )
     }
 }
@@ -794,7 +795,7 @@ struct RunningJob {
     original: Option<TargetWatcherOriginal>,
     draining: bool,
     failure: Option<JobFailure>,
-    next_attempt: Option<Instant>,
+    next_attempt: HostRetryCadence,
 }
 
 /// Publishes loss of the sole worker on every normal return and unwind.
@@ -936,7 +937,7 @@ fn run(state: Arc<DispatcherState>, event_capacity: usize) {
                     original: slot.original.take(),
                     draining: false,
                     failure: None,
-                    next_attempt: None,
+                    next_attempt: HostRetryCadence::default(),
                 });
             }
         }
@@ -979,12 +980,23 @@ fn run(state: Arc<DispatcherState>, event_capacity: usize) {
             // Readiness from another node must not accelerate this node's
             // retry cadence. This scheduling timestamp grants no work budget:
             // the same retained Cleanup was checked above and is checked after.
-            let now = Instant::now();
-            if let Some(next) = job.next_attempt.filter(|next| *next > now) {
-                timeout = timeout.min(next.duration_since(now));
+            let delay = match job.next_attempt.poll(CGROUP_KILL_INTERVAL) {
+                Ok(delay) => delay,
+                Err(source) => {
+                    job.failure
+                        .get_or_insert_default()
+                        .cadence
+                        .get_or_insert(source);
+                    if !return_job(&state, index, entry) {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            if !delay.is_zero() {
+                timeout = timeout.min(delay);
                 continue;
             }
-            job.next_attempt = now.checked_add(CGROUP_KILL_INTERVAL);
             let attempted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 job.control.kill_members()?;
                 job.control.is_populated()
@@ -1107,14 +1119,22 @@ fn retry_quarantined(
             .get_or_insert(source);
         return Err(error);
     }
-    let now = Instant::now();
-    if slot.next_retry.is_some_and(|next| next > now) {
+    let delay = match slot.next_retry.poll(CGROUP_KILL_INTERVAL) {
+        Ok(delay) => delay,
+        Err(source) => {
+            slot.failure
+                .get_or_insert_default()
+                .cadence
+                .get_or_insert(source);
+            return Err(failure(&state.path, source));
+        }
+    };
+    if !delay.is_zero() {
         return Err(failure(
             &state.path,
             "Target physical retry cadence is pending",
         ));
     }
-    slot.next_retry = now.checked_add(CGROUP_KILL_INTERVAL);
     let control = slot
         .control
         .as_mut()

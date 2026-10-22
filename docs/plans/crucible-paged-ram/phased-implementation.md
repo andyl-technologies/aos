@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 513 bindings: 494 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 516 bindings: 497 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -724,7 +724,8 @@ existing public fixture/license files. Its hermetic ABI gate passes at
 `8h4g3gnil4q1hr6fbck7ar3sxnyqsn8f`; its application build remains pending.
 The complete-description revision's application inputs also match all 5,361
 committed Rust/TOML files and all six public fixture/license files. Its
-application build and hermetic ABI gate remain pending.
+application build remains pending; its hermetic ABI gate passes at
+`15al4s7ac4df59wynxd4m9d2k54nxl31`.
 
 The Setup-twelve sender now refuses repeated descriptor handles before socket
 identity checks or transmission. All 169 pair substitutions across the thirteen
@@ -744,6 +745,27 @@ budget owner and initializes it only for a genuine new supervisor or budget
 owner. Delegation and reservation remain in the focused child. The corrected
 content-bound review passes at `zcvijji792yblcv5r97p578pnwrl3izi`; no source
 behavior, size threshold or lint allowance changes.
+
+The Setup-twelve descriptor correction passes its hermetic ABI gate at
+`1ax53270s22xv8swmfi8jqj91jcgc7pp`. Its required application inputs match all
+5,361 committed Rust/TOML files and all six fixture/license files; compilation
+remains pending. The earlier Plan-fifteen revision's mandatory application
+compilation passes at `asnmgd8pwrrb8jsfdmaydyflfvlsg4rd`, with all 5,358
+committed Rust/TOML files matching its immutable source.
+
+Target cleanup retry scheduling now uses a focused host-supervision cadence
+instead of reading the host clock directly in the dispatcher. Actual per-job
+next-attempt facts survive quarantine, unrelated readiness cannot accelerate a
+retry, and zero or unrepresentable intervals refuse without erasing the prior
+schedule. Typed cadence failures stay separate from physical control and
+independent operation failures. Existing Cleanup checks still surround actual
+physical passes; scheduling eligibility supplies no operation authority. All
+three cadence controls, twelve real dispatcher component tests, strict
+all-target resource-crate Clippy and engineering hygiene pass. The existing
+quarantine control now waits out its actual retry interval instead of replacing
+a timestamp. Inventory `dil0nl9vx77fri7frchmccc7z9h606g8` verifies 516 canonical
+bindings: 484 model, thirteen format and nineteen native. The same 148
+requirements remain uncovered and none fully qualified.
 
 #### Initial loader storage component
 

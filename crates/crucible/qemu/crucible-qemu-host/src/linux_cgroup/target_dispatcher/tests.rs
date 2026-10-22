@@ -43,7 +43,7 @@ fn mechanism_state(
                     failure: None,
                     failure_reported: false,
                     facade_live: false,
-                    next_retry: None,
+                    next_retry: HostRetryCadence::default(),
                 })
                 .collect(),
         ),
@@ -349,7 +349,7 @@ fn poisoned_running_cell_returns_its_same_owners_through_explicit_retry()
             original: None,
             draining: true,
             failure: None,
-            next_attempt: None,
+            next_attempt: HostRetryCadence::default(),
         });
     }
     let poisoned = Arc::clone(&state);
@@ -428,7 +428,7 @@ fn slot_poison_exit_preserves_running_and_queued_controls_for_retry()
             original: None,
             draining: false,
             failure: None,
-            next_attempt: None,
+            next_attempt: HostRetryCadence::default(),
         });
     }
     let poisoned = Arc::clone(&state);
@@ -581,17 +581,17 @@ fn abandoned_populated_node_cannot_starve_empty_peer_retirement()
         let slots = state.slots.lock().unwrap();
         assert_eq!(slots[0].phase, JobPhase::Quarantined);
         assert!(slots[0].control.is_some());
-        assert!(slots[0].next_retry.is_some());
+        assert!(slots[0].next_retry.is_scheduled());
         assert_eq!(slots[1].phase, JobPhase::Idle);
         assert!(slots[1].control.is_none());
     }
-    // Model a scheduler timestamp already beyond the next permitted pass;
-    // this changes no Cleanup authority or physical empty observation.
+    // Wait out the actual retry cadence independently of the physical empty
+    // observation; neither fact changes the retained Cleanup authority.
     fs::write(
         directory.path().join("abandoned-0/cgroup.events"),
         "populated 0\n",
     )?;
-    state.slots.lock().unwrap()[0].next_retry = Some(Instant::now());
+    std::thread::sleep(CGROUP_KILL_INTERVAL);
     dispatcher.retry_abandoned_jobs()?;
     assert!(
         state

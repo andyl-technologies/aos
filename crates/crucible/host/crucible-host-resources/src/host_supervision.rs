@@ -28,6 +28,8 @@ mod deferred_cleanup;
 pub use deferred_cleanup::{HostDeferredCleanupControl, HostDeferredCleanupIssuer};
 mod entry;
 mod prepared_start;
+mod retry_cadence;
+pub use retry_cadence::HostRetryCadence;
 mod worker_admission;
 mod quiescence;
 pub use prepared_start::PreparedHostOperationSupervisor;
