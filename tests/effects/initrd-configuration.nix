@@ -15,13 +15,12 @@
     mode = "0444";
   };
   effect = name: value: {
-    enable = true;
     input = value;
-    contract.identity = ["test" "initrd" "configuration" "file" name];
+    identity = ["test" "initrd" "@environment" "configuration" "file" name];
   };
-  inputs = effects:
+  inputs = nodes:
     (import renderer {
-      inherit lib effects;
+      inherit lib nodes;
       runCommand = _: attributes: _: attributes;
       jq = "/nix/store/00000000000000000000000000000000-jq";
       configurationProvider = "/nix/store/00000000000000000000000000000000-provider";
@@ -43,18 +42,49 @@
       });
     writableMode = effect "writable-mode" ((input "/etc/test/mode.conf") // {mode = "0640";});
     runtime = effect "runtime" (input "/run/aos/runtime-only.conf");
-    disabled = (effect "disabled" (input "/etc/test/disabled.conf")) // {enable = false;};
+    otherOperation =
+      (effect "other" (input "/etc/test/other.conf"))
+      // {
+        identity = ["test" "initrd" "@environment" "other" "file" "other"];
+      };
   };
+  initialProcess =
+    (lib.evalModules {
+      inherit lib;
+      modules = [
+        ../../lib/effects/module.nix
+        ../../pkgs/system/_service-management/configuration.nix
+        ../../pkgs/system/_init-system/module.nix
+        ../../pkgs/system/_aos-init-provider/module.nix
+        {
+          aos.activation.scope = ["test" "initrd"];
+          aos.abilities.configuration.operations.file.handler.program = pkgs.buildPackages.aos-configuration-provider;
+          aos.abilities.initSystem.operations.install.effects = {
+            enabled.input.executable = "${pkgs.bash}/bin/bash";
+            disabled = {
+              enable = false;
+              input.executable = "${pkgs.bash}/bin/bash";
+            };
+          };
+        }
+      ];
+    }).config.aos.activation.graph.nodes;
+  composedInputs = builtins.fromJSON (builtins.unsafeDiscardStringContext (inputs initialProcess));
   rendered = import renderer {
     inherit lib;
     inherit (pkgs) runCommand;
     jq = pkgs.buildPackages.jq;
     configurationProvider = pkgs.buildPackages.aos-configuration-provider;
-    effects = fixtures;
+    nodes = fixtures // initialProcess;
   };
 in {
   checks = {
-    selectsOnlyEnabledEtcFiles = builtins.length (builtins.fromJSON (inputs fixtures)) == 4;
+    selectsOnlyEtcConfigurationNodes = builtins.length (builtins.fromJSON (inputs fixtures)) == 4;
+    selectsEnabledConfigurationChildren =
+      builtins.length composedInputs
+      == 1
+      && (builtins.head composedInputs).input.path == "/etc/aos/init.json"
+      && (builtins.head composedInputs).input.value.executable == "${pkgs.bash}/bin/bash";
     rejectsTraversal = rejected {bad = effect "bad" (input "/etc/test/../escape");};
     rejectsLineBreak = rejected {bad = effect "bad" (input "/etc/test/line\nbreak");};
     rejectsForeignIdentity = rejected {bad = effect "bad" ((input "/etc/test/file") // {owner = "daemon";});};
@@ -81,7 +111,10 @@ in {
     test "$(cat ${rendered}/etc/test/data.toml)" = '"enabled" = true'
     test "$(stat -c %a ${rendered}/etc/test/plain.conf)" = 444
     test ! -e ${rendered}/run
-    test ! -e ${rendered}/etc/test/disabled.conf
+    test ! -e ${rendered}/etc/test/other.conf
+    ${pkgs.jq}/bin/jq -e --arg executable '${pkgs.bash}/bin/bash' \
+      '.schema == "aos.init-command/v1" and .executable == $executable' \
+      ${rendered}/etc/aos/init.json > /dev/null
     # Exercise the same projection the initrd builder uses, after Nix has
     # normalized the renderer's store files to read-only modes.
     test "$(stat -c %a ${rendered}/etc/test/mode.conf)" = 444

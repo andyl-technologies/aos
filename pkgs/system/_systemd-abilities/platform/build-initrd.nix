@@ -61,7 +61,7 @@
     inherit (buildContext) runCommand;
     jq = artifacts.buildPackages.jq;
     configurationProvider = artifacts.buildPackages.aos-configuration-provider;
-    effects = stageConfig.aos.abilities.configuration.operations.file.effects;
+    nodes = stageConfig.aos.activation.graph.nodes;
   };
   initrdUnits =
     buildContext.runCommand "systemd-initrd-native-bootstrap" {

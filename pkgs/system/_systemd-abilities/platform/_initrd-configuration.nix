@@ -4,13 +4,22 @@
   runCommand,
   jq,
   configurationProvider,
-  effects,
+  nodes,
 }: let
-  selected = lib.filterAttrs (_: effect:
-    effect.enable && lib.hasPrefix "/etc/" effect.input.path)
-  effects;
-  invocation = name: effect: let
-    input = effect.input;
+  # The lowered graph includes configuration children created by composed
+  # handlers, such as the initial process configuration. Disabled parents and
+  # their children have already been excluded by graph lowering.
+  selected = lib.filterAttrs (_: node: let
+    identityLength = builtins.length node.identity;
+  in
+    identityLength
+    >= 3
+    && builtins.elemAt node.identity (identityLength - 3) == "configuration"
+    && builtins.elemAt node.identity (identityLength - 2) == "file"
+    && lib.hasPrefix "/etc/" node.input.path)
+  nodes;
+  invocation = name: node: let
+    input = node.input;
     components = lib.splitString "/" (lib.removePrefix "/etc/" input.path);
     literal = input.content != null || builtins.all builtins.isString input.fragments;
   in
@@ -21,10 +30,10 @@
     else if input.format == "text" && !literal
     then throw "Initrd configuration '${name}' requires runtime credentials and cannot enter an immutable image."
     else {
-      id = builtins.hashString "sha256" (builtins.toJSON effect.contract.identity);
+      id = builtins.hashString "sha256" (builtins.toJSON node.identity);
       revision = builtins.hashString "sha256" (builtins.toJSON input);
       action = "apply";
-      effect.identity = effect.contract.identity;
+      effect.identity = node.identity;
       inherit input;
     };
   configurations = lib.mapAttrsToList invocation selected;
