@@ -1,13 +1,41 @@
 """Checks that measurement snapshots retain build recipes and exclude outputs."""
 
 from pathlib import Path
+import json
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import measure_end_to_end
 
 
 class EndToEndSnapshotTests(unittest.TestCase):
+    def test_source_edits_during_measurement_cannot_change_later_repetitions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "repository"
+            original.mkdir()
+            (original / "source.rs").write_text("original input")
+            seen = []
+
+            def measure(options, _helper, mode, repetition):
+                seen.append((options.root / "source.rs").read_text())
+                (original / "source.rs").write_text("concurrent edit")
+                return [{"mode": mode, "repetition": repetition, "scenario": "cold", "wall_seconds": 1}]
+
+            arguments = ["measure", "--root", str(original), "--scratch", str(root / "scratch"),
+                         "--output", str(root / "output"), "--cache-root", "/cache", "--nix-tools", "/tools",
+                         "--trial", "snapshot-test"]
+
+            with patch.object(sys, "argv", arguments), patch.object(measure_end_to_end, "measure_series", side_effect=measure):
+                measure_end_to_end.main()
+
+            self.assertEqual(seen, ["original input"] * 6)
+            report = json.loads((root / "output/report.json").read_text())
+            self.assertEqual(len(report["samples"]), 6)
+            self.assertIn("MemAvailable:", report["memory_before"])
+
     def test_bazel_recipes_survive_output_filtering(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

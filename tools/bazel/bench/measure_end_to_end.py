@@ -145,8 +145,16 @@ def main():
     options = parser.parse_args()
     if options.repetitions < 3:
         parser.error("at least three fresh repetitions are required")
+    if options.scratch.resolve().is_relative_to(options.root.resolve()):
+        parser.error("measurement scratch must be outside the source repository")
     options.scratch.mkdir()
     options.output.mkdir()
+    memory_before = Path("/proc/meminfo").read_text()
+    cpu_model = next((line.partition(":")[2].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
+                      if line.partition(":")[0].strip() in {"model name", "Hardware", "Processor"}), None)
+    source = options.scratch / "source"
+    copy_source(options.root, source)
+    options.root = source
     helper = options.scratch / "harness"
     copy_source(Path(__file__).parent, helper)
     samples = []
@@ -161,6 +169,9 @@ def main():
         "schema_version": 1,
         "scope": "Nix evaluation plus realisation of installed boot identity and library unit tests",
         "trial": options.trial, "platform": list(os.uname()), "cpu_count": os.cpu_count(),
+        "available_cpu_affinity": sorted(os.sched_getaffinity(0)),
+        "cpu_model": cpu_model,
+        "memory_before": memory_before, "memory_after": Path("/proc/meminfo").read_text(),
         "nix_tools": str(options.nix_tools), "samples": samples,
         "harness_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                            for path in sorted(helper.glob("*")) if path.is_file()},
