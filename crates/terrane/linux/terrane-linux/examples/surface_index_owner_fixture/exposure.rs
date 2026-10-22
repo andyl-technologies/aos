@@ -28,6 +28,9 @@ mod backing;
 #[path = "exposure/census.rs"]
 mod census;
 
+#[path = "exposure/closure.rs"]
+mod closure;
+
 fn limits() -> RootNodeLimits {
     RootNodeLimits {
         max_entries: 16,
@@ -205,6 +208,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             "ordinary release, drain or receipt drop released exposure object protection".into(),
         );
     }
+    closure::verify(owner, inputs, &fixture).await?;
     println!(
         "PASS scoped exposure root grants the original read-only index; changed policy and draining deny new grants while retained metadata remains readable"
     );

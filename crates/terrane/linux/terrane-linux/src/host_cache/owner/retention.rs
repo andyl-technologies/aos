@@ -83,7 +83,14 @@ pub(super) enum Command {
     #[cfg(feature = "surface-fuse")]
     SurfaceExposure(super::surface_index::exposure::Request),
     #[cfg(feature = "surface-fuse")]
+    ReconcileSurfaceExposure {
+        id: String,
+        generation: u64,
+        response: oneshot::Sender<io::Result<bool>>,
+    },
+    #[cfg(feature = "surface-fuse")]
     EvictSurfaceIndex {
+        draining: bool,
         key: crate::structural_index::IndexKey,
         response: oneshot::Sender<io::Result<bool>>,
     },
@@ -395,9 +402,26 @@ impl NativeMetadataOwner {
                             ));
                         }
                         #[cfg(feature = "surface-fuse")]
-                        Command::EvictSurfaceIndex { key, response } => {
-                            let result = runtime
-                                .block_on(super::surface_index::eviction::retire(&executor, key));
+                        Command::ReconcileSurfaceExposure {
+                            id,
+                            generation,
+                            response,
+                        } => {
+                            let result =
+                                runtime.block_on(super::surface_index::closure::reconcile(
+                                    &executor, &id, generation,
+                                ));
+                            let _ = response.send(result);
+                        }
+                        #[cfg(feature = "surface-fuse")]
+                        Command::EvictSurfaceIndex {
+                            key,
+                            draining,
+                            response,
+                        } => {
+                            let result = runtime.block_on(super::surface_index::eviction::retire(
+                                &executor, key, draining,
+                            ));
                             let _ = response.send(result);
                         }
                         #[cfg(feature = "surface-fuse")]

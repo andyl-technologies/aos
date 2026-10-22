@@ -12,6 +12,7 @@
 //! ```
 
 pub(super) mod bindings;
+pub(super) mod closure;
 pub(super) mod eviction;
 pub(super) mod exposure;
 pub(super) mod recovery;

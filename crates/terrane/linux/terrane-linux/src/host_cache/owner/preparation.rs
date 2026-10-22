@@ -1,9 +1,11 @@
 //! Retains actual native proofs before mutable cache-state initialization.
 
 use super::NativeCacheOwnerConfig;
+#[cfg(feature = "surface-fuse")]
+use crate::host_quota::{ProjectInode, VerifiedProjectCensus};
 use crate::{
     host_cache::{NativeHostLayout, NativeSealCapability},
-    host_quota::{HostQuotaClient, ROOT_LABELS, VerifiedQuotaObservation},
+    host_quota::{HostQuotaClient, QuotaObservation, ROOT_LABELS, VerifiedQuotaObservation},
     publisher_local::client::Client,
     quota_confinement::Installed,
 };
@@ -158,6 +160,26 @@ impl NativeCachePreparation {
         Ok(())
     }
 
+    /// Authenticates exact closure against this owner's original partition.
+    ///
+    /// Failure never replaces the ordinary quota observation or releases policy.
+    #[cfg(feature = "surface-fuse")]
+    pub(super) fn project_census(
+        &mut self,
+        excluded: &[ProjectInode],
+    ) -> io::Result<VerifiedProjectCensus> {
+        self.confinement.check_current()?;
+        self.seal.recheck()?;
+        check_content_custody(&self.config, &self.layout)?;
+        let observed = self.quota_client.query_project_census(
+            &self.config.quota_owner,
+            self.config.location.domain(),
+            excluded,
+        )?;
+        check_quota_value(&self.config, &self.layout, observed.quota())?;
+        Ok(observed)
+    }
+
     /// Borrows the latest authenticated kernel charged-and-reserved observation.
     pub fn quota(&self) -> &VerifiedQuotaObservation {
         &self.observation
@@ -216,7 +238,14 @@ fn check_observation(
     layout: &NativeHostLayout<HostDomainLocation>,
     verified: &VerifiedQuotaObservation,
 ) -> io::Result<()> {
-    let value = verified.observation();
+    check_quota_value(config, layout, verified.observation())
+}
+
+fn check_quota_value(
+    config: &NativeCacheOwnerConfig,
+    layout: &NativeHostLayout<HostDomainLocation>,
+    value: &QuotaObservation,
+) -> io::Result<()> {
     if value.owner_id != config.quota_owner
         || value.domain != config.location.domain()
         || value.configuration_epoch != config.quota_epoch

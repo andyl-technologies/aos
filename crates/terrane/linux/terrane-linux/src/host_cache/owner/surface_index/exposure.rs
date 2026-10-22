@@ -94,7 +94,7 @@ impl NativeMetadataOwner {
     /// This initial lease protects the index only. It grants no file descriptor
     /// and contains no object pins until a checked file preparation attaches
     /// actual backing. Cancellation after enqueue retains the physical obligation.
-    /// No release API is provided: final kernel closure must first be established.
+    /// Reconciliation can discharge it only after authenticated kernel closure.
     ///
     /// # Errors
     /// Refuses disabled admission, a foreign original index or domain, elapsed

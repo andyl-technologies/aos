@@ -1,0 +1,118 @@
+//! Checks actual index-only exposure retirement through authenticated closure.
+
+use super::{Result, config, limits, now, snapshot};
+use crate::repository_fixture::{MAIN, RepositoryFixture};
+use std::{fs::File, io, os::fd::AsFd, time::Duration};
+use terrane_format::surface::ViewTarget;
+use terrane_linux::{host_cache::NativeMetadataOwner, structural_index::MappedIndex};
+
+pub(super) async fn verify(
+    owner: &NativeMetadataOwner,
+    inputs: &config::Inputs,
+    fixture: &RepositoryFixture,
+) -> Result<()> {
+    let preserved = snapshot(inputs).await?;
+    fixture
+        .commit(b"independent index-only closure source")
+        .await?;
+    let target = ViewTarget::Ref(MAIN.parse()?);
+    let selection = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
+    let admitted = owner.prepare_surface_mapping(selection).await?;
+    let key = admitted.key();
+    let lease = owner
+        .retain_surface_exposure(&admitted, now()? + 90)
+        .await?;
+    let id = lease.id().to_owned();
+    let generation = lease.generation();
+    let selection = fixture
+        .repository
+        .prepare_root_read(
+            &ViewTarget::Commit(admitted.commit()),
+            fixture.authority.token(),
+            "sdk",
+            limits(),
+        )
+        .await?;
+    let grant = owner
+        .prepare_exposure_root_backing(&lease, &admitted, selection)
+        .await?;
+    let file = File::from(grant.as_fd().try_clone_to_owned()?);
+    let seal = terrane_linux::verity::measure(&file)?;
+    let maximum = usize::try_from(file.metadata()?.len())?;
+    let mapping = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
+    let policy = inputs.root.join("state/cache/records.toml");
+    let before = std::fs::read(&policy)?;
+    if !matches!(owner.reconcile_surface_exposure(&id, generation).await,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied)
+        || std::fs::read(&policy)? != before
+    {
+        return Err("active exposure reconciliation changed original obligations".into());
+    }
+
+    owner.drain_surface_exposure(&lease).await?;
+    let before = std::fs::read(&policy)?;
+    if !matches!(owner.retire_draining_surface_index(key).await,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock)
+        || !matches!(owner.reconcile_surface_exposure(&id, generation + 1).await,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied)
+        || std::fs::read(&policy)? != before
+    {
+        return Err("retained receipt or foreign generation changed exposure custody".into());
+    }
+    drop(grant);
+    drop(admitted);
+    drop(lease);
+    if !owner.retire_draining_surface_index(key).await?
+        || crate::canonical_path(inputs, key.root()).exists()
+        || mapping.index().lookup(b"file").is_none()
+    {
+        return Err(
+            "draining index retirement lost actual retained mapping or name custody".into(),
+        );
+    }
+    let before = std::fs::read(&policy)?;
+    if owner.reconcile_surface_exposure(&id, generation).await? || std::fs::read(&policy)? != before
+    {
+        return Err("live kernel mapping released durable exposure obligations".into());
+    }
+
+    drop(mapping);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if owner.reconcile_surface_exposure(&id, generation).await? {
+                return Ok::<(), Box<dyn std::error::Error>>(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    let after = snapshot(inputs).await?;
+    let pin_owner = format!("exposure:{id}");
+    if after.exposures.iter().any(|row| row.id == id)
+        || after.pins.iter().any(|row| row.owner == pin_owner)
+        || after.leases.iter().any(|row| row.owner == pin_owner)
+        || preserved
+            .exposures
+            .iter()
+            .any(|row| !after.exposures.contains(row))
+        || preserved.pins.iter().any(|row| {
+            !after.pins.iter().any(|actual| {
+                actual.owner == row.owner
+                    && actual.hash == row.hash
+                    && actual.expires == row.expires
+            })
+        })
+        || owner.reconcile_surface_exposure(&id, generation).await?
+    {
+        return Err(
+            "proven closure released unrelated exposure custody or lost idempotence".into(),
+        );
+    }
+    println!(
+        "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure"
+    );
+    Ok(())
+}

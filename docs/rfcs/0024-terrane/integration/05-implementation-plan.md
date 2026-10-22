@@ -13938,3 +13938,48 @@ The ownership correction passes formatting and strict Linux all-target Clippy
 in both all-feature and ordinary Tokio-only profiles. The actual descriptor
 comparison remains in the native fixture; no success witness, refusal control,
 capacity or timeout is relaxed.
+
+The original-backing application-target qualification at `0ec93fcd1d` passes
+in 1,493.70 seconds. Review matches all 8,022 immutable source files and 184
+actual test-executable compiler records across 59 packages. This is compilation
+only; its native surface failure remains recorded above. Corrected backing and
+authenticated-census qualification is running from clean frozen `fc36f370bc`:
+all 9,352 tracked files share fingerprint
+`100c5ce7c26a084c02c1b813e4b13b551bbbf0d3f7091625efdd0b9eed2803c8`.
+Surface, full native cache and required application builds remain pending.
+
+The next increment separates draining index namespace retirement from exposure
+closure. An explicit serialized maintenance operation requires every matching
+exposure to be durably draining, its original index binding to match the actual
+retained inode, and every admission receipt to be gone. It rechecks those facts
+before unlink, synchronizes the parent, closes the owner's descriptors and
+removes only the index's future copy hold. Every exposure record, lease and pin
+survives that transition. Ordinary eviction still refuses any exposure.
+
+A separate serialized reconciliation request supplies only exposure ID and
+generation. The physical owner validates its original durable record, exact
+filesystem/project and draining phase, then asks the authenticated helper about
+all recorded original inodes. The complete helper partition must match actual
+retained owner roots and configured epoch, limits and charge owner. Unavailable
+or incomplete census and retained kernel references preserve all obligations.
+Only proven closure permits a funded, synchronized snapshot removing that exact
+exposure and its reserved pin owner. This operation does not retain a backing
+descriptor or accept caller-constructed evidence. Cancellation after enqueue
+leaves the original physical executor responsible for the attempted transition.
+Legacy records without native bindings remain unsupported.
+
+The actual guest fixture adds an independent index-only exposure. It requires
+active and wrong-generation refusal without policy effects, retained-receipt
+retirement refusal, readable actual mapping after checked unlink, unchanged
+exposure policy while that mapping survives, and eventual authenticated closure
+after final unmap. It checks exact exposure removal, idempotence and preservation
+of unrelated original exposure records and pins. These runtime assertions are
+pending frozen qualification; no native release pass is claimed yet.
+
+Formatting, strict Linux all-target Clippy in all-feature and ordinary Tokio
+profiles, the complete 128-case native source inventory and VM supervisor syntax
+pass. An initial fixture compile error compared `PinRecord` values without an
+existing equality implementation; the fixture now compares all three contract
+fields explicitly. Cold exposure recovery still refuses before mutation, sealed
+file retirement remains unfinished, and no production worker, authenticated
+backing transport or mount broker is enabled. No trunk task is closed.

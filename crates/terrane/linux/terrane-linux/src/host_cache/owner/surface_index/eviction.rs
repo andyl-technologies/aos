@@ -20,6 +20,7 @@ use std::{
     os::unix::fs::MetadataExt,
     sync::{Arc, mpsc},
 };
+use terrane_sdk::host::cache::{ExposureBackingKind, ExposurePhase};
 use tokio::sync::oneshot;
 
 impl NativeMetadataOwner {
@@ -36,6 +37,24 @@ impl NativeMetadataOwner {
     /// custody, a retained receipt, changed native backing, IO or accounting.
     /// Attempted effects fault writes until completion or genuine recovery.
     pub async fn evict_surface_index(&self, key: IndexKey) -> io::Result<bool> {
+        self.submit_surface_retirement(key, false).await
+    }
+
+    /// Unlinks an index retained only by durably draining exposures.
+    ///
+    /// Every original admission receipt must already be dropped. This closes
+    /// local descriptors and removes the future copy hold, but preserves every
+    /// exposure obligation until a separate authenticated closure observation.
+    /// Cancellation after enqueue does not cancel physical execution.
+    ///
+    /// # Errors
+    /// Refuses live exposures, retained receipts, changed original bindings,
+    /// unavailable Running custody, queue exhaustion, accounting or native IO.
+    pub async fn retire_draining_surface_index(&self, key: IndexKey) -> io::Result<bool> {
+        self.submit_surface_retirement(key, true).await
+    }
+
+    async fn submit_surface_retirement(&self, key: IndexKey, draining: bool) -> io::Result<bool> {
         if self.surface_policy.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -46,7 +65,11 @@ impl NativeMetadataOwner {
         self.commands
             .as_ref()
             .ok_or_else(|| invalid("native owner stopped"))?
-            .try_send(Command::EvictSurfaceIndex { key, response })
+            .try_send(Command::EvictSurfaceIndex {
+                key,
+                draining,
+                response,
+            })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => {
                     io::Error::new(io::ErrorKind::WouldBlock, "native owner queue full")
@@ -65,6 +88,7 @@ impl NativeMetadataOwner {
 pub(in crate::host_cache::owner) async fn retire(
     executor: &NativeOwnerExecutor,
     key: IndexKey,
+    draining: bool,
 ) -> io::Result<bool> {
     let running = executor.admission_context()?;
     let custody = executor.custody();
@@ -73,7 +97,7 @@ pub(in crate::host_cache::owner) async fn retire(
             .lock()
             .map_err(|_| invalid("surface custody poisoned"))?;
         state::check_ready(executor, &owner)?;
-        if retains_index(&owner.state, key) {
+        if !draining && retains_index(&owner.state, key) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "durable exposure retains the surface index",
@@ -98,6 +122,7 @@ pub(in crate::host_cache::owner) async fn retire(
             owner.faulted = true;
             return Err(error);
         }
+        check_exposure_retirement(&owner, key, draining)?;
         let next = owner.state.clone();
         let write = state::begin(executor, &mut owner, &running, next, 0, None)?;
         (owner.generation, write)
@@ -115,6 +140,7 @@ pub(in crate::host_cache::owner) async fn retire(
             return Err(invalid("surface retirement lost funded physical turn"));
         }
 
+        check_exposure_retirement(&owner, key, draining)?;
         unlink_owned(&mut owner, key)?;
         snapshot::prepare(executor, &mut owner)?
     };
@@ -212,4 +238,50 @@ fn retains_index(state: &terrane_sdk::host::cache::CacheState, key: IndexKey) ->
         .exposures
         .iter()
         .any(|row| row.root == root && row.index_version == key.version())
+}
+
+/// Binds every draining obligation to the original inode before unlink effects.
+fn check_exposure_retirement(owner: &Custody, key: IndexKey, draining: bool) -> io::Result<()> {
+    let root = state::hex(&key.root());
+    let records: Vec<_> = owner
+        .state
+        .exposures
+        .iter()
+        .filter(|row| row.root == root && row.index_version == key.version())
+        .collect();
+    if records.is_empty() {
+        return Ok(());
+    }
+    if !draining
+        || records
+            .iter()
+            .any(|row| row.phase != ExposurePhase::Draining)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "live exposure retains index custody",
+        ));
+    }
+    let backing = owner
+        .surface_indexes
+        .get(&key)
+        .and_then(|job| job.backing.as_ref())
+        .ok_or_else(|| invalid("draining index lost original backing"))?;
+    let binding = super::bindings::capture(
+        owner,
+        &backing.file,
+        ExposureBackingKind::Index,
+        &key.root(),
+    )?;
+    if records.iter().any(|row| {
+        row.backings
+            .iter()
+            .find(|item| item.kind == ExposureBackingKind::Index)
+            != Some(&binding)
+    }) {
+        return Err(invalid(
+            "draining exposure differs from original index incarnation",
+        ));
+    }
+    Ok(())
 }

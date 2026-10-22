@@ -203,6 +203,7 @@ def main():
             "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop",
             "PASS durable exposure records match actual original index and file inodes and verity measurements; draining and receipt drop retain all bindings",
             "PASS authenticated census helper retains actual disclosed index custody and refuses an unconfigured owner and domain",
+            "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure",
             "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"],
             "durable native root exposure actor failed")
         verify_surface(image, source)
