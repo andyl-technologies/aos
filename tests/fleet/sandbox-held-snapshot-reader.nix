@@ -23,20 +23,14 @@
     ];
     doCheck = false;
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
-    postBuild = ''
-      mkdir fixture-bin
-      count=0
-      for candidate in target/debug/deps/aos_sandbox_storage-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" fixture-bin/aos-sandbox-held-snapshot-reader-tests
-          count=$((count + 1))
-        fi
-      done
-      test "$count" -eq 1
-    '';
+    postBuild = import ./_cargo-libtest-artifact.nix {
+      inherit lib pkgs;
+      crate = "aos-sandbox-storage";
+      destination = "fixture-bin/aos-sandbox-held-snapshot-reader-tests";
+    };
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 \

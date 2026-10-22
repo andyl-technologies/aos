@@ -35,7 +35,7 @@
     ];
     doCheck = false;
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     cargoEnv = {
       PROTOC = "${pkgs.protobuf}/bin/protoc";
@@ -54,26 +54,13 @@
       "0123456789abcdfghijklmnpqrsvwxyz"
     ];
 
-    postBuild = ''
-      mkdir -p native-tests
-      artifact_dir="''${CARGO_TARGET_DIR:-target}/debug/deps"
-      ${lib.concatMapStringsSep "\n" (owner: let
-          prefix = builtins.replaceStrings ["-"] ["_"] owner;
-        in ''
-          count=0
-          for candidate in "$artifact_dir"/${prefix}-*; do
-            if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-              install -m 0755 "$candidate" native-tests/${owner}
-              count=$((count + 1))
-            fi
-          done
-          if [ "$count" -ne 1 ]; then
-            echo "expected one ${owner} libtest executable, found $count" >&2
-            exit 1
-          fi
-        '')
-        owners}
-    '';
+    postBuild = lib.concatMapStringsSep "\n" (owner:
+      import ./_cargo-libtest-artifact.nix {
+        inherit lib pkgs;
+        crate = owner;
+        destination = "native-tests/${owner}";
+      })
+    owners;
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 native-tests/* "$out/bin/"
