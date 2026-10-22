@@ -9572,12 +9572,17 @@ mod tests {
         }
     }
 
-    fn storage_rpc_prepare_packet() -> Vec<u8> {
+    fn storage_rpc_prepare_packet(operation_id: u8) -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
         let template =
             fs::read(Path::new(STORAGE_RPC_FIXTURE_DIRECTORY).join("prepare-request.pb")).unwrap();
-        let (request, artifacts) =
-            storage_rpc_preparation::fresh(&Fixture::new(), &template, &vm_clock());
+        let mut template = PrepareStorageCatalogRequest::decode_from_slice(&template).unwrap();
+        template.operation_id = vec![operation_id; 16];
+        let (request, artifacts) = storage_rpc_preparation::fresh(
+            &Fixture::new(),
+            &template.encode_to_vec(),
+            &vm_clock(),
+        );
         encode_authorized_request_envelope(
             ProtocolId::StorageBroker,
             method,
@@ -9595,7 +9600,7 @@ mod tests {
 
     fn storage_rpc_prepare() -> Vec<u8> {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG;
-        let packet = storage_rpc_prepare_packet();
+        let packet = storage_rpc_prepare_packet(86);
         let outcome = storage_rpc_session::exchange(
             method,
             BrokerRequestEnvelope::decode_from_slice(&packet).unwrap(),
@@ -9634,7 +9639,7 @@ mod tests {
         if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG {
             // Exercise method admission with a live signed preparation, rather
             // than failing the client on the boot-time template's expiry.
-            let packet = storage_rpc_prepare_packet();
+            let packet = storage_rpc_prepare_packet(87);
             storage_rpc_session::reject_unavailable_method(method, &packet);
             return;
         }

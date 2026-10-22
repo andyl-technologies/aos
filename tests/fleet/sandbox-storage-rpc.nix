@@ -793,7 +793,20 @@ in {
       )
       assert journal_hash() == stable_hash
       if scenario == "prepare-closed":
-          reject_and_stop("prepare-unavailable", "prepare-unavailable")
+          # The known pre-effect refusal has a signed terminal, unlike a lost
+          # transport. A fresh Inventory must retain healthy session history.
+          before = effect_state()
+          controller("prepare-unavailable", "prepare-unavailable")
+          assert effect_state() == before
+          controller("inventory-live", "inventory-live")
+          observer_current = observer_after(observer_current, 1)
+          assert journal_hash() == stable_hash
+          assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
+          assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
+          assert replay_claims() == 1
+          assert dataset_snapshot() == prepare_datasets
+          finish()
+          assert journal_hash() == stable_hash
           return
 
       controller("inventory-live", "inventory-live")

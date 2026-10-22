@@ -16,15 +16,17 @@ use crate::{
     production_deadline_after,
 };
 use aos_sandbox_api::aos::sandbox::local::v1::{
-    ApplyStorageRequest, Audience, BrokerMethod, BrokerRequestEnvelope, InventoryStorageRequest,
-    PrepareStorageCatalogRequest, RepairStorageWorkspacePinRequest,
+    ApplyStorageRequest, Audience, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
+    InventoryStorageRequest, PrepareStorageCatalogRequest, RepairStorageWorkspacePinRequest,
 };
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, authenticated_broker_method_profile_v1,
     profile::production_broker_client_hello_v1,
 };
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
-use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
+};
 use buffa::Message as _;
 
 const RESPONSE_BYTES: u32 = 1_048_576;
@@ -346,7 +348,22 @@ fn installed_storage_rpc_client() {
             let envelope = BrokerRequestEnvelope::decode_from_slice(&packet).unwrap();
             assert_eq!(envelope.method, method);
             match exchange(method, envelope) {
-                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid) => {}
+                Ok(outcome) if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
+                    // A known closed resolver rejects before InFlight. The
+                    // ordinary dispatcher durably signs that no-effect error.
+                    let AuthenticatedBrokerMethodResultV1::Error(error) = outcome.result() else {
+                        panic!("disabled Storage Prepare returned success");
+                    };
+                    assert_eq!(
+                        error.code(),
+                        BrokerErrorCode::BROKER_ERROR_CODE_INVALID_REQUEST
+                    );
+                    assert_eq!(error.safe_message(), "broker request rejected");
+                    assert!(!error.retryable());
+                    assert!(error.missing_feature().is_none());
+                }
+                Err(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
+                    if method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY => {}
                 Err(cause) => panic!("unexpected unavailable {method:?} refusal: {cause:?}"),
                 Ok(outcome) => panic!(
                     "unavailable {method:?} returned a signed outcome: {:?}",
