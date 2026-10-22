@@ -532,6 +532,36 @@ The standalone entry point is `tools/bazel/tests/cross-linux.nix`.
 `tests/evidence/native-linux-aarch64-toolchain.json` retains the combined pass,
 artifact/runtime checks, native fallback rejection, and fresh native cache proofs.
 
+`checks.build.bazel.cross-device` extends the experiment to all 33 device-family
+unit and integration test binaries. It requires AArch64 ELF artifacts and
+foreign standard-library inputs for every first-party compile, while procedural
+macros retain their native standard library. Materialized compiler response
+files preserve the actual Rust target and crate-type flags in the evidence.
+Case discovery and execution use the same validator as the compile-loop
+benchmark, inside an AOS-built AArch64 Linux kernel under QEMU system emulation.
+QEMU user mode rejects `MADV_DONTFORK`, which the two hot-fork mapping tests
+require. These tests remain enabled in the guest-kernel check.
+
+The case oracle is the qualified native inventory with one explicit platform
+alternative: region allocation must reject an unpinned AArch64 developer
+target, replacing the native allocation-success case. Every other case name
+and ignored status must match. This preserves the published x86_64 shared-memory
+allocation policy; it does not extend the supported protocol ABI to AArch64.
+
+The workspace's `compileOnly = true` setting admits its explicit target platform
+for Bazel 9's test analysis, including ordinary `build` commands. The launcher
+rejects `test` and `run` in that configuration, so guest execution remains an
+explicit qualification step. Compiler actions continue to require native
+execution tools. The compilation output exports only the declared test binaries
+and case manifest; compiler logs and expanded arguments live in a separate
+evidence output and do not enter the guest's runtime closure.
+
+`tests/evidence/native-linux-device-aarch64.json` retains the 33 exported
+artifacts, all 642 discovered and executed cases, native procedural-macro
+roles, kernel identity, and the combined suite pass. It also records the two
+user-mode failures against the same binary hash that passes under the guest
+kernel, alongside the current 13-case cache-invalidation qualification.
+
 This qualifies the x86_64 Linux to AArch64 Linux adapter and fixture runtime.
 It does not yet qualify full application families, cross editor workflows,
 Darwin, or the reverse execution/target pairing. Normal workspaces still select
@@ -782,6 +812,14 @@ warm delay is overwhelmingly evaluation, before action-cache lookup or compiler
 execution. This baseline fails the useful end-to-end improvement requirement;
 it does not authorize a family cutover. Source selection and evaluation need
 profiling before larger-family measurements establish acceptance budgets.
+
+`tests/evidence/native-linux-qualification-evaluation.json` records a follow-up
+that removes repeated normalization inside the command-probe adapter while
+retaining validation at its public boundary. The complete evaluation suite and
+malformed-input checks pass, and both boot candidates retain identical Nix
+derivation identities. Three evaluation-only samples measured Bazel's median
+at 14.9 seconds before and 11.1 seconds after; host load varied substantially.
+This does not replace the end-to-end baseline or resolve the remaining gap.
 
 Compiler dependencies are already prepared, filesystem page caches and host
 contention are uncontrolled, and snapshot/runtime checks are outside the timed

@@ -8,17 +8,17 @@ in
     chmod -R u+w fixtures
     mkdir -p "$out"
     export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
-    ${pkgs.python3}/bin/python3 - ${../../tools/bazel/metadata} ${helper}/bin/cargo_toml_variable_extractor "$out" <<'PYTHON'
+    cp ${../../tools/bazel/metadata/export_rust_project.py} export_rust_project.py
+    ${pkgs.python3}/bin/python3 - ${helper}/bin/cargo_toml_variable_extractor "$out" <<'PYTHON'
     import hashlib
     import json
     from pathlib import Path
     import subprocess
     import sys
 
-    sys.path.insert(0, sys.argv[1])
     from export_rust_project import compiler_file_lines
 
-    helper, output = Path(sys.argv[2]), Path(sys.argv[3])
+    helper, output = Path(sys.argv[1]), Path(sys.argv[2])
     records = {}
     for name in ["empty", "standalone", "workspace/subcrate"]:
         manifest = Path("fixtures", name, "Cargo.toml").resolve()

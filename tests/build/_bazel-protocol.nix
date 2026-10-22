@@ -54,7 +54,7 @@ in rec {
     verifier = builtins.path {
       path = ../../tools/bazel/tests;
       name = "aos-protocol-parity-tools";
-      filter = path: type: type == "directory" || builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+      filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
     };
   in
     pkgs.runCommand "aos-bazel-protocol-cargo-parity" {buildDeps = [pkgs.python3];} ''

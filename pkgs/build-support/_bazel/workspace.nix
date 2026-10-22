@@ -16,6 +16,7 @@
   batch ? false,
   analysisTargets ? null,
   targetPlatform ? null,
+  compileOnly ? false,
   dependencyProfile ? null,
 }: let
   rootString = toString root;
@@ -139,6 +140,7 @@
         '');
         rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
         inherit jobs batch;
+        compile_only = compileOnly;
         target_platform = targetPlatform;
         dependency_profile = dependencyProfile;
         # Bazel's test setup and XML writer use these tools too. Never fall back
@@ -194,7 +196,8 @@
     ];
   };
 in
-  assert validInventory; {
+  assert validInventory;
+  assert !compileOnly || targetPlatform != null; {
     inherit source toolchains configuration preparedLock batch;
     # The initial fixtures deliberately use conservative directory selections.
     # Production consumers require the configured-graph inventory before cutover.

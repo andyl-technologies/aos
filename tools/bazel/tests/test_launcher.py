@@ -94,6 +94,28 @@ class LauncherTests(unittest.TestCase):
         arguments = json.loads(self.capture.read_text())["args"]
         self.assertFalse(any(argument.startswith("--platforms=") for argument in arguments))
 
+    def test_compile_only_foreign_tests_require_explicit_external_execution(self):
+        configuration = json.loads(self.config.read_text())
+        configuration.update(compile_only=True, target_platform="//tools/bazel/toolchains:aarch64_linux")
+        self.config.write_text(json.dumps(configuration))
+
+        result = self.invoke(["build", "//:foreign_test"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertIn("--extra_execution_platforms=//tools/bazel/toolchains:aarch64_linux", arguments)
+
+        for command in ["test", "run"]:
+            with self.subTest(command=command):
+                result = self.invoke([command, "//:foreign_test"])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("explicit external target execution", result.stderr)
+
+        configuration.pop("target_platform")
+        self.config.write_text(json.dumps(configuration))
+        result = self.invoke(["build", "//:foreign_test"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires an explicit target platform", result.stderr)
+
     def test_configured_dependency_profile_applies_to_every_analysis_command(self):
         configuration = json.loads(self.config.read_text())
         configuration["dependency_profile"] = "device"
@@ -163,7 +185,7 @@ class LauncherTests(unittest.TestCase):
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",
                        "--genrule_strategy=standalone", "--bes_backend=grpc://example.invalid",
                        "--flagfile=/unreviewed/flags", "--flag_alias=custom=registry",
-                       "--sandbox_block_path="]:
+                       "--sandbox_block_path=", "--extra_execution_platforms=//:unreviewed"]:
             with self.subTest(option=option):
                 result = self.invoke(["build", "//:example", option])
                 self.assertNotEqual(result.returncode, 0)

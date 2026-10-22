@@ -60,6 +60,7 @@ in
       cp ${./measure_pilot.py} tools/measure_pilot.py
       cp ${../metadata/export_packages.py} tools/export_packages.py
       cp ${../tests/verify_cache.py} tools/verify_cache.py
+      cp ${../tests/family_libtest.py} tools/family_libtest.py
       ${pkgs.python3}/bin/python3 tools/measure_family.py \
         --configuration ${configuration} --scratch "$TMPDIR/performance" \
         --output "$out" --repetitions 3 \

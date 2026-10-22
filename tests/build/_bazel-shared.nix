@@ -55,7 +55,7 @@ in rec {
     verifier = builtins.path {
       path = ../../tools/bazel/tests;
       name = "aos-shared-parity-tools";
-      filter = path: type: type == "directory" || builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+      filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
     };
     packageOptions = pkgs.lib.concatMap (name: ["--package-path" "${name}=crates/shared/${name}"]) packages;
   in

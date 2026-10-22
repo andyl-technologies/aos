@@ -272,6 +272,7 @@ in
           [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
+            (import ./_bazel-device-cross.nix {inherit pkgs;})
           ];
       } ''
         mkdir -p "$out"
@@ -280,6 +281,7 @@ in
   }
   // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
     cross-linux = import ./_bazel-cross-linux.nix {inherit pkgs;};
+    cross-device = import ./_bazel-device-cross.nix {inherit pkgs;};
   }
   // pkgs.lib.optionalAttrs (sharedBazelCacheDir != null) {
     cache = import ./_bazel-cache.nix {inherit pkgs workspace;};

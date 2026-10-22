@@ -3,7 +3,7 @@
   verifier = builtins.path {
     path = ../../tools/bazel/tests;
     name = "aos-bazel-wasm-verifier";
-    filter = path: type: type == "directory" || builtins.elem (baseNameOf path) ["verify_wasm.py" "verify_cache.py"];
+    filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_wasm.py" "verify_cache.py"];
   };
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;

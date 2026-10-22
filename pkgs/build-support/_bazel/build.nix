@@ -20,8 +20,9 @@
   declarationTools = builtins.path {
     path = ../../../tools/bazel/metadata;
     name = "aos-bazel-declaration-tools";
+    # Empty output or bytecode directories must not change helper identities.
     filter = path: type:
-      type == "directory" || builtins.elem (baseNameOf path) ["declaration_query.py" "export_inventory.py"];
+      type == "regular" && builtins.elem (baseNameOf path) ["declaration_query.py" "export_inventory.py"];
   };
 in
   assert builtins.elem command ["build" "test"];

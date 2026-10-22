@@ -96,6 +96,11 @@ def main():
         parser.error("a Bazel command is required")
     if arguments[0] not in {"build", "test", "run", "query", "cquery", "aquery", "mod", "info", "clean", "version", "help", "shutdown"}:
         parser.error("unsupported offline Bazel command")
+    if config.get("compile_only"):
+        if not config.get("target_platform"):
+            parser.error("compile-only configuration requires an explicit target platform")
+        if arguments[0] in {"test", "run"}:
+            parser.error("compile-only configuration requires explicit external target execution")
     batch = config.get("batch", True) if options.batch is None else options.batch
     if arguments[0] == "shutdown" and batch:
         parser.error("shutdown requires a configuration with batch=false")
@@ -103,7 +108,7 @@ def main():
     forbidden = ("--remote_", "--remote-", "--experimental_remote_", "--override_repository",
                  "--override_module", "--repo_env", "--action_env", "--host_action_env",
                  "--spawn_strategy", "--strategy", "--modify_execution_info",
-                 "--registry", "--inject_repository", "--extra_toolchains",
+                 "--registry", "--inject_repository", "--extra_toolchains", "--extra_execution_platforms",
                  "--crosstool_top", "--host_crosstool_top", "--workspace_status_command",
                  "--bes_", "--genrule_strategy", "--test_strategy",
                  "--flagfile", "--flag_alias", "--default_override",
@@ -170,6 +175,11 @@ def main():
     if arguments[0] in {"build", "test", "run", "cquery", "aquery"}:
         if config.get("target_platform"):
             policy.append(f"--platforms={config['target_platform']}")
+        if config.get("compile_only"):
+            # Bazel 9 resolves a test execution platform even for `build`.
+            # Admit the foreign platform for analysis only; test/run were
+            # rejected above. Compiler actions still require native tools.
+            policy.append(f"--extra_execution_platforms={config['target_platform']}")
         if config.get("dependency_profile"):
             policy.append(f"--//tools/bazel/rules:dependency_profile={config['dependency_profile']}")
         policy.extend([

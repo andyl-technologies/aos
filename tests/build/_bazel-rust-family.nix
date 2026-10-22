@@ -114,15 +114,15 @@ in rec {
       ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD/source/crates" --output csv \
         --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
         > "$out/diagnostics.csv" 2> "$out/analysis.log"
-    ${pkgs.python3}/bin/python3 - ${../../tools/bazel/tests} "$out" <<'PYTHON'
+    cp ${../../tools/bazel/tests/verify_family_editor.py} verify_family_editor.py
+    ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
     import json
     from pathlib import Path
     import sys
 
-    sys.path.insert(0, sys.argv[1])
     from verify_family_editor import analysis_statistics, diagnostics
 
-    output = Path(sys.argv[2])
+    output = Path(sys.argv[1])
     report = analysis_statistics((output / "analysis.log").read_text())
     report["diagnostics"] = diagnostics(output / "diagnostics.csv")
     (output / "analysis.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -156,7 +156,7 @@ in rec {
     verifier = builtins.path {
       path = ../../tools/bazel/tests;
       name = "aos-rust-family-parity-tools";
-      filter = path: type: type == "directory" || builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+      filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
     };
     packageOptions = pkgs.lib.concatMap (name: ["--package-path" "${name}=${packages.${name}}"]) names;
   in
