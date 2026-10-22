@@ -63,6 +63,18 @@ diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
                  /* Automatically search for the init system */
  
                  m = strv_length(arg_parameters);
+@@ -5652,7 +5683,10 @@
+ 
+         barrier_set_role(&barrier, BARRIER_PARENT);
+ 
+-        fdset_close(fds, /* async= */ false);
++        /* Guest originals must survive retained-supervisor payload reboots.
++         * Child delivery keeps all source descriptors close-on-exec. */
++        if (!arg_aos_guest_agent_fds)
++                fdset_close(fds, /* async= */ false);
+ 
+         fd_inner_socket_pair[1] = safe_close(fd_inner_socket_pair[1]);
+         fd_outer_socket_pair[1] = safe_close(fd_outer_socket_pair[1]);
 @@ -6368,6 +6393,7 @@
                  aos_attachment_anchor_namespace_fd = -EBADF;
          _cleanup_fdset_free_ FDSet *fds = NULL;
