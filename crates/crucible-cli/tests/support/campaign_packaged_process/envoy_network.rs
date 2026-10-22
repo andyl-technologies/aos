@@ -845,12 +845,11 @@ pub(super) fn wait_for_public_attempt(
             .into());
         }
         if Instant::now() >= next_progress {
-            let stderr = service.stderr_tail();
-            let boot = stderr
-                .lines()
-                .rev()
-                .find(|line| line.starts_with("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 "))
-                .unwrap_or("none");
+            let boot = service
+                .stderr_recent_lines_with_prefix("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 ", 1, 4096)
+                .ok()
+                .and_then(|rows| rows.last().cloned())
+                .unwrap_or_else(|| String::from("none"));
             let boot = boot.chars().take(480).collect::<String>();
             let phase = last_explanation
                 .as_ref()
@@ -863,13 +862,23 @@ pub(super) fn wait_for_public_attempt(
 
             // The service's own progress row carries per-node horizons,
             // clocks and realized parallelism; forward the latest one so a
-            // slow attempt is diagnosable before it fails.
-            if let Some(attempt_progress) = stderr
-                .lines()
-                .rev()
-                .find(|line| line.starts_with("CRUCIBLE-ATTEMPT-PROGRESS-V1 "))
+            // slow attempt is diagnosable before it fails. Other service
+            // output can flood the bounded tail, so scan the whole stream.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-ATTEMPT-PROGRESS-V1 ", 1, 4096)
+                && let Some(attempt_progress) = rows.last()
             {
-                eprintln!("{}", attempt_progress.chars().take(4096).collect::<String>());
+                eprintln!("{attempt_progress}");
+            }
+
+            // A host wait row names the publication the controller is blocked
+            // on; the latest one explains a crawl that the progress row only
+            // measures.
+            if let Ok(rows) =
+                service.stderr_recent_lines_with_prefix("CRUCIBLE-HOST-WAIT-V1 ", 1, 4096)
+                && let Some(host_wait) = rows.last()
+            {
+                eprintln!("{}", host_wait.chars().take(1200).collect::<String>());
             }
             next_progress = Instant::now() + Duration::from_secs(30);
         }
