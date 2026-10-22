@@ -6466,10 +6466,19 @@ Both preparation and PID 1 reported mount namespace inode `4026531832`.
 Shared bpffs inodes alone do not establish bind-mount publication.
 
 The native-owner VM at
-`/nix/store/mq9gnlzmww9z7721dps44fwh8a7ql89k-aos-fleet-test-sandbox-native-owner-units-0`
+`/nix/store/nxwqcxyjfhnmdfgim7azh1dybh4cd3bn-aos-fleet-test-sandbox-native-owner-units-0`
 separately executes the actual Rust single-threaded namespace bootstrap API and
 proves it changes the network namespace while retaining the original mount
-namespace. It also passes all 1,784 component tests and 41 required native cases.
+namespace. It also passes all 1,786 component tests and 41 required native cases.
+
+The native inventory contract now distinguishes a never-raised fenced veth
+(`DOWN`, `noop`) from an armed pair (`UP`, `noqueue`). Its local address routes
+and explicitly planned routes remain required while fenced; kernel-generated
+connected and multicast routes become required when armed. The custody VM
+observed the initial down-state addresses, permanent neighbors and local routes.
+The component tests reject missing explicit routes, unexpected connected routes
+while fenced, and arming with the previous fenced route inventory. Captured
+up-state fixtures retain their real link state instead of relabeling it as down.
 
 These gates qualify native namespace bootstrap and template mount visibility.
 They do not yet qualify a complete production Apply transaction from controller
