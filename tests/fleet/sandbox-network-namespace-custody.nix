@@ -7,6 +7,11 @@
 }: let
   gate = pkgs.aos-sandbox-network-lease-gate;
   gateFixtureSource = ../sandbox/network-lease-gate-fixture.c;
+
+  # The initrd provisioning handoff needs headroom beyond the resident image
+  # and fixture closure. This does not change the Network service's limits.
+  memoryMiB = 2048;
+
   fixture = pkgs.mkCargoPackage {
     pname = "aos-sandbox-network-systemd-custody-fixture";
     version = "0.0.0";
@@ -168,32 +173,32 @@ in {
   machines = {
     lifecycle = {
       system = makeSystem {capacity = 2;};
-      memoryMiB = 1024;
+      inherit memoryMiB;
     };
     capacity = {
       system = makeSystem {capacity = 1;};
-      memoryMiB = 1024;
+      inherit memoryMiB;
     };
     denied = {
       system = makeSystem {
         capacity = 2;
         faultMode = "denied";
       };
-      memoryMiB = 1024;
+      inherit memoryMiB;
     };
     malformed = {
       system = makeSystem {
         capacity = 2;
         faultMode = "malformed";
       };
-      memoryMiB = 1024;
+      inherit memoryMiB;
     };
     oversized = {
       system = makeSystem {
         capacity = 2;
         faultMode = "oversized";
       };
-      memoryMiB = 1024;
+      inherit memoryMiB;
     };
   };
 
