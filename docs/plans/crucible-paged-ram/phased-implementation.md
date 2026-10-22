@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 400 committed bindings: 381 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 401 committed bindings: 382 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -287,14 +287,60 @@ Application test-target compilation for `7e8526f394` passes at
 `z1slwb23r1n3r12pxghd9fm02qgryy2m`. All 5,291 committed Rust/TOML inputs match
 immutable source `f99b0v2z37yaivrq4jmm6grygfdsn567`; the comparison record has
 SHA-256 `4b724d844007c340ecdf0ec128d9b3cdbdf25dadb5ba417125aea070fe0bc29a`.
-Compilation and exact supervision for the corrected assertion snapshot remain
-in progress. These four bindings do not establish registered Source read-child
+Corrected-snapshot application compilation also passes at
+`mdqkrrfa1xfb123bsqc54iyhd1yn128r`; all 5,291 Rust/TOML files match
+`gdbfiilk8s0g6mg4gcvflbcnvj2xcmzk`, with comparison SHA-256
+`03a5e7245f638d772447fb1469de999d390c8b72043489a284ba6225e82858ea`.
+Corrected-snapshot exact supervision remains in progress. These four bindings do not establish registered Source read-child
 callbacks, selected Native capture, physical Source return or complete funding.
 
 The next Source contract review exposes a receipt-ordering gap: the next page
 read can replace the Source cell before the Module observes its final consumed
 facts. The proposed registration completion handoff remains under review;
 returned-current alone must not be treated as final Source closure.
+
+#### Typed fault consumer refusals
+
+`3a36467830` retains actual fault transport and fault event causes at inspection
+and three dequeue sites. It defers diagnostic formatting while preserving the
+original display and standard error source. A kernel-backed event-ring control
+seeds impossible indices and a zero-filled event header; actual inspection and
+dequeue refuse without allocations or reallocations, preserving all mapped
+bytes, the untouched wake and the same Original's independent cancellation
+post. The prepared event staging capacity is reserved before the measured cut.
+Those malformed wire observations grant no Native event or consumer authority.
+
+All five mapped-error controls and all 67 runtime regressions pass. The new
+control also passes under the private measurement feature, alongside all nine
+paired fingerprint regressions. Engineering hygiene and mandatory application
+compilation pass. All 5,291 committed Rust/TOML files match immutable source
+`wpswyr9bjhsabp1i6q5m606bp3cjy48d` for application output
+`wifzdjnprlb2aal6v4hnhd3fkgliqnwg`; comparison SHA-256 is
+`a3d08ac6ca4e17d4ed068d232a860686c00e1c6a3c850d5feb08ff7d17f4895e`.
+Exact supervision remains in progress. Complete error payload funding and
+Native admission remain open.
+
+#### Staged Native physical publisher access
+
+Signed `8f188d7b6531f62a284cf7a38b05f536948d3236`, tree `57172146`, remains a
+public Source checkpoint awaiting cumulative integration. The persistent
+nonwaiting preexec gate publishes canonical transitions before unlocked Source
+reciprocals; separate physical identity reentry retains its own receipt. Actual
+callback return, first status, independent identity post and consumption stay
+separate. Known returned negatives can release physical access while semantic
+debt remains. Unknown return or a refused physical post keeps the parent held.
+
+The focused matrix passes 26 cases, with fourteen final owning/configured
+objects rebuilt sequentially under the retained worker/resource bounds. Actual
+preexec ownership grows by 9,040 bytes to 211,176, charged once by its real
+prebirth layout; Source/fixed floor remain 242,328/286,262. Root verification
+matches eleven signed source files and 1,093 regular evidence files, checks
+GPG/DCO/tree/parent and the complete-source archive hash. Its comparison record
+has SHA-256 `bc2fd90fa79aa8db34b47756aa3dda056de4bceea88517c2ef7e6397bea83322`.
+The agent's 78,166-blob/mode reconstruction was not independently rerun by that
+comparison. Initial component stripping failures, noncausal omissions and an
+excluded diagnostic compiler overlap remain retained. These controls do not
+execute genuine populated Module/deferred/RR admission or qualify a whole ELF.
 
 #### Independent revocation and return refusals
 
