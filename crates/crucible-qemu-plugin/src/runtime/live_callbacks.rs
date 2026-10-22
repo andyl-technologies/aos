@@ -76,6 +76,7 @@ mod preemption;
 mod resume;
 mod settlement;
 pub(crate) mod time_ownership_witness;
+mod zero_length_trace;
 
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
@@ -1635,22 +1636,28 @@ impl LiveVcpuTimeCallbackState {
             BoundaryIcountPublication::Settled,
         );
         self.publish_boundary_icount_as(raw_icount, checkpoint_handoff, boundary, publication)
+            .map(|_published| ())
     }
 
+    /// Publishes one exact boundary and reports whether it reached the slot.
+    ///
+    /// `Ok(false)` means the callback committed nothing: a pause, a held
+    /// network output stop, a superseded raw coordinate or a pending idle
+    /// clamp kept the earlier publication in place.
     fn publish_boundary_icount_as(
         &self,
         raw_icount: u64,
         checkpoint_handoff: bool,
         boundary: &'static str,
         publication: BoundaryIcountPublication,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
+    ) -> Result<bool, LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
             self.observe_unpublished_boundary(boundary, "paused", raw_icount);
-            return Ok(());
+            return Ok(false);
         }
         if self.preserve_network_output_stop(raw_icount, boundary)? {
             self.observe_unpublished_boundary(boundary, "output-stop", raw_icount);
-            return Ok(());
+            return Ok(false);
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
         let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
@@ -1661,11 +1668,11 @@ impl LiveVcpuTimeCallbackState {
             // publish a newer exact boundary before the outer callback resumes.
             // The older callback has no remaining state to commit.
             self.observe_unpublished_boundary(boundary, "superseded", raw_icount);
-            return Ok(());
+            return Ok(false);
         }
         if self.pending_idle_advance_clamp(raw_icount)?.is_some() {
             self.observe_unpublished_boundary(boundary, "idle-pending", raw_icount);
-            return Ok(());
+            return Ok(false);
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
         let (ceiling_icount, _) = self.scheduler_advance()?;
@@ -1705,7 +1712,7 @@ impl LiveVcpuTimeCallbackState {
             current_icount,
             settled_ceiling,
         );
-        Ok(())
+        Ok(true)
     }
 
     /// Copies a boundary callback that returned without publishing.

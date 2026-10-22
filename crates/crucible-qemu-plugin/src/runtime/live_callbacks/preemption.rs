@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crucible_shmem::SchedulerPreemptionKind;
 
-use super::{BoundaryIcountPublication, LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState};
+use super::{
+    BoundaryIcountPublication, LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState,
+    zero_length_trace,
+};
 use crate::runtime::installed_console::{DispatchAdvance, DispatchResult};
 use crate::{
     IdleHotLoopError, PluginPreemptionDecision, PluginShmemOrdering, PreemptionWindow,
@@ -85,7 +88,8 @@ impl LiveVcpuTimeCallbackState {
     /// later publication would answer it, yet the host waits for one. An event
     /// due at the current coordinate, such as a frame delivered there, is taken
     /// at this boundary: the publication injects it without moving the clock.
-    /// Each advance publication is answered at most once.
+    /// Each advance publication is answered at most once by a publication
+    /// that reaches the slot; an answer the boundary declined is retried.
     ///
     /// The host's post-quantum clamp is such an advance, and it follows an
     /// all-halted idle publication. The answer retires nothing and wakes no
@@ -105,20 +109,69 @@ impl LiveVcpuTimeCallbackState {
             })?;
         // Sequence zero is the slot's initial state, not a host advance.
         let marker = advance.sequence().wrapping_add(1);
-        if advance.sequence() == 0
-            || advance.ceiling() != current_icount
-            || self.answered_zero_length_advance.load(Ordering::Acquire) == marker
-        {
+        if advance.sequence() == 0 || advance.ceiling() != current_icount {
             return Ok(());
         }
-        self.answered_zero_length_advance
-            .store(marker, Ordering::Release);
-        self.publish_boundary_icount_as(
+        if self.answered_zero_length_advance.load(Ordering::Acquire) == marker {
+            zero_length_trace::note(
+                zero_length_trace::ZeroLengthQuery::AlreadyAnswered,
+                advance.sequence(),
+                advance.ceiling(),
+                current_icount,
+                raw_icount,
+            );
+            return Ok(());
+        }
+        // Claim the advance before publishing: injecting a due frame can
+        // re-enter this query, and the nested call must not answer again.
+        let previous = self
+            .answered_zero_length_advance
+            .swap(marker, Ordering::AcqRel);
+        let published = self.publish_boundary_icount_as(
             raw_icount,
             true,
             "zero-length-advance",
             BoundaryIcountPublication::RetainingIdle,
-        )
+        );
+        zero_length_trace::note(
+            if matches!(published, Ok(true)) {
+                zero_length_trace::ZeroLengthQuery::Published
+            } else {
+                zero_length_trace::ZeroLengthQuery::Declined
+            },
+            advance.sequence(),
+            advance.ceiling(),
+            current_icount,
+            raw_icount,
+        );
+        if !matches!(published, Ok(true)) {
+            // Nothing reached the slot, so the host still waits for this
+            // answer. Release the claim and let the next query retry it.
+            let _ = self.answered_zero_length_advance.compare_exchange(
+                marker,
+                previous,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+        }
+        published.map(|_published| ())
+    }
+
+    /// Notes a budget query that met a zero-length advance, when traced.
+    fn note_zero_length_query(&self, reason: zero_length_trace::ZeroLengthQuery, raw_icount: u64) {
+        if !zero_length_trace::enabled() {
+            return;
+        }
+        let Ok(advance) = self.slot.get().load_scheduler_advance_publication() else {
+            return;
+        };
+        zero_length_trace::note(
+            reason,
+            advance.sequence(),
+            advance.ceiling(),
+            self.last_icount.load(Ordering::Acquire),
+            raw_icount,
+        );
     }
 
     // The ordinary path retains its original scheduler read and ordering.
@@ -131,12 +184,17 @@ impl LiveVcpuTimeCallbackState {
     ) -> Result<(u64, u64), LiveVcpuTimeCallbackError> {
         self.record_rr_vcpu_thread();
         if self.publish_pause_for_boundary(raw_icount, true, false, None, "max-advance")? {
+            self.note_zero_length_query(zero_length_trace::ZeroLengthQuery::Paused, raw_icount);
             return Ok((
                 raw_icount,
                 joined_ceiling.map_or(0, |(_ceiling, logical, _authorization)| logical),
             ));
         }
         if let Some(raw_icount_at_request) = self.pending_idle_advance_clamp(raw_icount)? {
+            self.note_zero_length_query(
+                zero_length_trace::ZeroLengthQuery::IdlePending,
+                raw_icount,
+            );
             return Ok((
                 raw_icount_at_request,
                 joined_ceiling.map_or(0, |(_ceiling, logical, _authorization)| logical),
@@ -196,6 +254,10 @@ impl LiveVcpuTimeCallbackState {
         if self.preemption_enqueue_active.load(Ordering::Acquire) {
             // A synchronous QEMU admission query must leave the outer enqueue
             // owner and its still-pending mailbox command untouched.
+            self.note_zero_length_query(
+                zero_length_trace::ZeroLengthQuery::EnqueueActive,
+                raw_icount,
+            );
             return Ok((raw_ceiling, effective_ceiling));
         }
         self.answer_zero_length_advance(raw_icount, current_icount)?;
