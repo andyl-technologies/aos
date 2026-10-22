@@ -3582,8 +3582,35 @@ Transport/Engine/Daemon all-feature/all-target checking, owned-file formatting
 and all six architecture gates pass. The required application gate compiles
 180 test executables across 58 packages, including 71 integration targets.
 All 437 owned Rust/Cargo inputs match the committed revision and its actual
-captured source. That gate executes no tests. Complete runtime requalification
-is pending; the previous raw reply failure remains unqualified.
+captured source. That gate executes no tests. The complete raw-JSON run passes
+2,081 tests and fails the same reply flight, with 16 ignores and no filtering.
+It now expires in shared correlation preparation before reaching the intended
+reply rejection. The standard run does not start because the script stops at
+that failure. The fixture change does not resolve the raw reply failure.
+
+## Parent Hello fixture preparation
+
+Commit `94c6667d9c` constructs the parent's immutable Hello fixture before
+spawning the deadline-bound child. That fixture reconstructs the selected launch
+and independently measures the parent executable. Sending Hello, validating it,
+publishing its actual response and binding the bootstrap proof still happen on
+the original live channels. The child's original five-second cut is unchanged.
+
+Both standard and raw-JSON Transport test executables compile, and
+Transport/Engine/Daemon all-feature/all-target checking, owned-file formatting
+and all six architecture gates pass. The required application gate compiles
+180 test executables across 58 packages, including 71 integration targets.
+All 437 owned Rust/Cargo inputs match the committed revision and its actual
+captured source. The complete raw-JSON run passes 2,081 tests and fails one,
+with 16 ignores and no filtering, in 452.58 seconds. The reply control fails
+at `initial_policy_kernel_normalizations_host_reply_expire_literal_reservation`:
+shared codec preparation expires at its Proof step before the intended reply
+expiry injection. Correlation, proof and publication pass. Moving parent Hello
+preparation does not resolve the failure. The complete standard run passes all
+2,082 tests, with 16 ignores and no filtering, in 598.05 seconds. Its reply
+control passes. Both suites run against unchanged committed source and stable
+test executables after all compilation jobs finish.
+These results establish no configured runtime, VM or full RFC qualification.
 
 ## Original launch custody and shared startup geometry
 
