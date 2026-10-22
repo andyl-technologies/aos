@@ -40,6 +40,9 @@
   workerProbe = pkgs.writeShellScriptBin "aos-network-worker-bpffs-qualification" ''
     exec ${probe}/bin/network-worker-bpffs-probe worker ${identityRecord} ${pin} ${namespacePin}
   '';
+  pinWorkerProbe = pkgs.writeShellScriptBin "aos-network-pin-worker-qualification" ''
+    exec ${probe}/bin/network-worker-bpffs-probe unpin ${namespacePin}
+  '';
   system = mkSystem [
     ../../systems/server-test.nix
     ({lib, ...}: {
@@ -58,6 +61,8 @@
       # identity probe.
       systemd.services."aos-sandbox-network-worker@".serviceConfig.ExecStart =
         lib.mkForce "${workerProbe}/bin/aos-network-worker-bpffs-qualification";
+      systemd.services."aos-sandbox-network-pin-worker@".serviceConfig.ExecStart =
+        lib.mkForce "${pinWorkerProbe}/bin/aos-network-pin-worker-qualification";
     })
   ];
 in {
@@ -278,6 +283,9 @@ in {
     assert worker_magic == "cafe4a11"
     assert (worker_device, worker_inode) == (host_device, host_inode)
     print(f"worker mount namespace: {worker_mount_namespace}; host: {host_mount_namespace}")
+    assert worker_network_namespace != vm.succeed(
+        f"{COREUTILS}/stat --dereference --format=%i /proc/1/ns/net"
+    ).strip()
 
     # Shared bpffs inodes alone cannot prove mount propagation. Require the
     # worker's actual namespace bind mount to remain visible after it exits.
@@ -287,7 +295,14 @@ in {
     assert vm.succeed(
         f"{COREUTILS}/stat --format=%i ${namespacePin}"
     ).strip() == worker_network_namespace
-    vm.succeed("umount ${namespacePin}")
+    # Teardown must remove the same host-visible mount through its own
+    # production template, rather than unmounting only a private copy.
+    vm.succeed(f"{PROBE} connect /run/aos/sandbox-network-pin-worker/control.sock")
+    vm.wait_until_succeeds(
+        f"test $({COREUTILS}/stat --file-system --format=%t ${namespacePin}) != 6e736673",
+        timeout=30,
+    )
     vm.succeed("rm ${namespacePin}")
+    vm.succeed("rm ${pin}")
   '';
 }

@@ -29,3 +29,9 @@ tempfile = "3"
 name = "fixed-process-session"
 path = "tests/fixed_process_session.rs"
 harness = false
+
+[[test]]
+name = "network-namespace-bootstrap"
+path = "tests/network_namespace_bootstrap.rs"
+harness = false
+required-features = ["kernel-tests"]

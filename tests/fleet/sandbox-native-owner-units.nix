@@ -32,6 +32,7 @@
     buildType = "debug";
     cargoBuildCommands = [
       "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES${packageFlags} --features aos-sandbox-linux/selected-kernel-clone-layout"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-linux --test network-namespace-bootstrap --features kernel-tests"
     ];
     doCheck = false;
     installBins = false;
@@ -54,13 +55,22 @@
       "0123456789abcdfghijklmnpqrsvwxyz"
     ];
 
-    postBuild = lib.concatMapStringsSep "\n" (owner:
-      import ./_cargo-libtest-artifact.nix {
+    postBuild =
+      (lib.concatMapStringsSep "\n" (owner:
+        import ./_cargo-libtest-artifact.nix {
+          inherit lib pkgs;
+          crate = owner;
+          destination = "native-tests/${owner}";
+        })
+      owners)
+      + "\n"
+      + (import ./_cargo-libtest-artifact.nix {
         inherit lib pkgs;
-        crate = owner;
-        destination = "native-tests/${owner}";
-      })
-    owners;
+        crate = "aos-sandbox-linux";
+        target = "network-namespace-bootstrap";
+        kind = "test";
+        destination = "native-tests/network-namespace-bootstrap";
+      });
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 native-tests/* "$out/bin/"
@@ -93,6 +103,8 @@ in {
     ))
 
     vm.wait_for_unit("multi-user.target", timeout=180)
+    namespace_bootstrap = vm.succeed("${tests}/bin/network-namespace-bootstrap")
+    assert "private network namespace retains the original mount namespace" in namespace_bootstrap
     vm.succeed("install -d -m 0700 -o 1000 -g 1000 /var/lib/aos-sandbox-native-unit-tests")
     for owner in ${builtins.toJSON owners}:
         binary = f"/var/lib/aos-sandbox-native-unit-tests/{owner}"

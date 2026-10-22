@@ -1,12 +1,12 @@
-# Selects the current Cargo invocation's libtest, including cache hits.
+# Selects the current Cargo invocation's test executable, including cache hits.
 {
   lib,
   pkgs,
   crate,
   destination,
-}: let
-  target = builtins.replaceStrings ["-"] ["_"] crate;
-in ''
+  target ? builtins.replaceStrings ["-"] ["_"] crate,
+  kind ? "lib",
+}: ''
   # Shared targets can retain older executables with the same crate prefix.
   # Cargo emits the selected artifact even when it is fresh; filenames alone
   # cannot establish which feature set and source this invocation compiled.
@@ -14,7 +14,7 @@ in ''
     --arg target ${lib.escapeShellArg target} '
       [.[] | select(.reason == "compiler-artifact"
         and .target.name == $target and .profile.test == true
-        and (.target.kind | index("lib")) != null
+        and (.target.kind | index(${builtins.toJSON kind})) != null
         and .executable != null)]
       | if length == 1 then .[0].executable
         else error("expected exactly one selected libtest artifact") end

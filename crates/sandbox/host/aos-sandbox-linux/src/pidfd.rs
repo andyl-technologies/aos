@@ -638,6 +638,26 @@ impl SingleThreadedProcess {
     pub fn disable_core_dumps(&self) -> Result<()> {
         crate::process::disable_core_dumps()
     }
+
+    /// Creates a private network namespace while retaining the mount namespace.
+    ///
+    /// The fixed worker performs this syscall directly so namespace bootstrap
+    /// needs no additional privileged process or executable transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel refuses network namespace creation.
+    pub fn create_network_namespace(&self) -> Result<()> {
+        // SAFETY: NEWNET changes neither the descriptor table nor memory. In
+        // particular, FILES, whose unsharing can invalidate Rust-owned FDs in
+        // another thread, is never passed. This token confines the operation
+        // to the verified calling thread of the fixed worker.
+        unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+            .map_err(|source| Error::Syscall {
+                operation: "unshare network namespace",
+                source: source.into(),
+            })
+    }
 }
 
 #[cfg(test)]

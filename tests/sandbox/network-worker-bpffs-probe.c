@@ -5,6 +5,7 @@
 #include <inttypes.h>
 #include <linux/bpf.h>
 #include <linux/magic.h>
+#include <sched.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -149,6 +150,10 @@ static int record_worker_identity(const char *output_path, const char *pin_path,
             "network-worker-bpffs-probe: worker pin parent is unprotected\n");
     return -1;
   }
+  if (unshare(CLONE_NEWNET) != 0) {
+    perror("network-worker-bpffs-probe: create bootstrap network namespace");
+    return -1;
+  }
   if (stat("/proc/self/ns/mnt", &mount_namespace) != 0) {
     perror("network-worker-bpffs-probe: inspect worker mount namespace");
     return -1;
@@ -223,6 +228,13 @@ static int connect_worker_socket(const char *socket_path)
 
 int main(int argc, char **argv)
 {
+  if (argc == 3 && strcmp(argv[1], "unpin") == 0) {
+    if (umount2(argv[2], 0) != 0) {
+      perror("network-worker-bpffs-probe: remove namespace pin");
+      return 1;
+    }
+    return 0;
+  }
   if (argc == 5 && strcmp(argv[1], "worker") == 0)
     return record_worker_identity(argv[2], argv[3], argv[4]) == 0 ? EXIT_SUCCESS
                                                          : EXIT_FAILURE;

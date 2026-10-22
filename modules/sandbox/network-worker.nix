@@ -566,7 +566,10 @@ in {
         MemoryDenyWriteExecute = true;
         MemoryMax = "64M";
         NoNewPrivileges = true;
-        PrivateNetwork = true;
+        # PrivateNetwork also creates a private mount namespace, hiding
+        # teardown unmounts. AF_UNIX-only syscall policy keeps this worker
+        # from opening network sockets while it shares PID1's mount namespace.
+        PrivateNetwork = false;
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
@@ -637,10 +640,11 @@ in {
         MemoryMax = "256M";
         MemoryDenyWriteExecute = false;
         NoNewPrivileges = true;
-        PrivateNetwork = true;
+        PrivateNetwork = false;
         # This worker publishes the target namespace as a bind mount visible to
-        # the host. Filesystem-sandbox directives would create a private mount
-        # namespace and make an otherwise successful pin invisible to netd.
+        # the host. PrivateNetwork and filesystem-sandbox directives would hide
+        # that mount from netd. The fixed paid startup creates only its private
+        # network namespace before READY; it retains PID1's mount namespace.
         RestrictAddressFamilies = ["AF_UNIX" "AF_NETLINK"];
         RestrictNamespaces = ["net"];
         RestrictRealtime = true;
@@ -655,6 +659,7 @@ in {
           "bpf"
           "mount"
           "setns"
+          "unshare"
           # The same signed Destroy P programme removes its exact bind pin.
           # @system-service excludes @mount, so this needs a positive entry.
           "umount2"

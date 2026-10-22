@@ -56,6 +56,7 @@ enum StartupFirst {
     Replay,
     Mutator,
     KernelNotes,
+    BootstrapNamespace,
     Namespace,
     Cgroup,
     Duplicate,
@@ -91,6 +92,7 @@ struct PreparationStartupOriginalV2 {
     mutator: Option<FixedNetworkKernelMutator>,
     kernel: ConfiguredKernelCloneOriginalV1,
     kernel_result: Option<Result<(), aos_linux_descriptors::Error>>,
+    bootstrap_namespace: Option<Result<(), aos_linux_descriptors::Error>>,
     namespace_original: CurrentNetworkNamespaceOriginalV4,
     namespace_result: Option<Result<(), aos_linux_descriptors::Error>>,
     namespace: Option<NamespaceFd>,
@@ -133,6 +135,7 @@ impl PreparationStartupOriginalV2 {
             mutator: None,
             kernel: ConfiguredKernelCloneOriginalV1::new(),
             kernel_result: None,
+            bootstrap_namespace: None,
             namespace_original: CurrentNetworkNamespaceOriginalV4::new(),
             namespace_result: None,
             namespace: None,
@@ -295,6 +298,14 @@ impl PreparationStartupOriginalV2 {
             self.first = Some(StartupFirst::KernelNotes);
             return;
         }
+        // PID1 must retain the host mount namespace for bind-pin publication.
+        // Create only the bootstrap netns here, inside the paid child and its
+        // Source-bracketed startup, before recording or sending READY custody.
+        self.bootstrap_namespace = Some(worker.create_network_namespace());
+        if !matches!(self.bootstrap_namespace, Some(Ok(()))) {
+            self.first = Some(StartupFirst::BootstrapNamespace);
+            return;
+        }
         self.namespace_result = Some(self.namespace_original.capture_once_v4());
         if !matches!(self.namespace_result, Some(Ok(()))) {
             self.first = Some(StartupFirst::Namespace);
@@ -348,6 +359,7 @@ impl PreparationStartupOriginalV2 {
             StartupFirst::Replay => self.replay_opening.failure(),
             StartupFirst::Mutator => self.mutator_opening.failure(),
             StartupFirst::KernelNotes => self.kernel.failure().map(|cause| cause as _),
+            StartupFirst::BootstrapNamespace => failed(&self.bootstrap_namespace),
             StartupFirst::Namespace => self.namespace_original.failure().map(|cause| cause as _),
             StartupFirst::Cgroup => self.cgroup_original.failure(),
             StartupFirst::Duplicate => failed(&self.duplicate),
