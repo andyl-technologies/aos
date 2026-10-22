@@ -40,5 +40,9 @@ required-features = ["surface-fuse"]
 name = "surface_index_owner_fixture"
 required-features = ["surface-fuse", "native-test-fixtures"]
 
+[[example]]
+name = "project_census_fixture"
+required-features = ["surface-fuse"]
+
 [lints]
 workspace = true

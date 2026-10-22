@@ -9,6 +9,13 @@ pub mod initial_enrollment;
 mod native;
 pub use native::{NativeProject, NativeQuota, provision_project, synchronized_allocated_bytes};
 
+#[cfg(feature = "surface-fuse")]
+mod census;
+#[cfg(feature = "surface-fuse")]
+pub use census::{
+    NativeProjectClosure, ProjectCensusLimits, ProjectInode, observe_project_closure,
+};
+
 mod wire;
 pub use wire::{QuotaObservation, QuotaQuery, QuotaRoot};
 

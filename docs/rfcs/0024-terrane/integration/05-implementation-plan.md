@@ -13773,3 +13773,31 @@ The denial regression passes with no ignored cases. Formatting and strict
 Linux all-target Clippy pass in all-feature and ordinary Tokio-only profiles.
 Frozen native execution and mandatory application compilation of the correction
 remain required before a current-source qualification result is claimed.
+
+The next native component observes project-inode closure without guessing from
+byte totals or deletion notifications. It holds distinct non-excluded original
+inodes open through a fresh kernel project-quota query. Retired native identities
+are excluded under every alias. Equality between retained distinct inodes and
+charged project inodes establishes that none of those excluded identities
+remains charged; an incomplete scan or unrelated allocation can conservatively
+prevent equality. A counter smaller than the retained lower bound is refused.
+All counted project bindings are checked around the query. Trusted procfs
+reopens classified original descriptors without a replaceable-name read-open;
+untrusted project setters remain forbidden during observation.
+
+Traversal bounds cover roots, exclusions, visited entries, depth and retained
+descriptors. The new ext4 component fixture uses actual project limits,
+fs-verity index mappings, hard links and ordinary descriptors. Its controls
+require unresolved custody before final unmap or descriptor closure, including
+an inode with no allocated data blocks, and conservative refusal for exhausted
+bounds or incomplete coverage. It uses the existing checked Cargo artifact and
+runtime installer with explicit fixture parameters; structural-mapping defaults
+are preserved. The component is not yet connected to an authenticated helper
+protocol, durable pending retirement, exposure recovery or release. No exposure
+obligation can be discharged by this increment. Native execution and mandatory
+application compilation remain pending, and no trunk task is closed.
+
+The census component passes final formatting and strict Linux all-target Clippy
+in all-feature, surface-only and ordinary Tokio-only profiles. Nix formatting,
+component-installer syntax and the complete ordinary native declaration
+inventory also pass. These checks establish no native census runtime result.

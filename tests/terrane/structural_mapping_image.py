@@ -16,7 +16,8 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def main():
+def main(example="structural_index_fixture", executable_name="structural-index-fixture",
+         scope="Sealed structural mapping component; no worker or exposure authority"):
     """Binds a genuine Cargo launch to one immutable fixture and runtime closure."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
@@ -26,14 +27,14 @@ def main():
     inputs = source_hashes(workspace, source)
     rows = [json.loads(line) for line in (output / "build.jsonl").read_text().splitlines()]
     artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
-                 and row.get("target", {}).get("name") == "structural_index_fixture"
+                 and row.get("target", {}).get("name") == example
                  and row.get("executable")]
     require(len(artifacts) == 1, "ambiguous structural mapping fixture artifact")
     artifact = artifacts[0]
     profile = artifact["profile"]
     require(artifact["target"]["kind"] == ["example"]
             and artifact["target"]["crate_types"] == ["bin"]
-            and Path(artifact["target"]["src_path"]) == workspace / "terrane/linux/terrane-linux/examples/structural_index_fixture.rs"
+            and Path(artifact["target"]["src_path"]) == workspace / ("terrane/linux/terrane-linux/examples/" + example + ".rs")
             and artifact["package_id"].startswith("path+file://" + str(workspace / "terrane/linux/terrane-linux") + "#")
             and artifact["features"] == ["surface-fuse"]
             and not profile["test"] and profile["opt_level"] == "0"
@@ -63,7 +64,7 @@ def main():
     with (output / "cargo-discovery.log").open("w") as log:
         subprocess.run(["cargo", "run", "--frozen", "--offline", "-p", "terrane-linux",
                         "--no-default-features", "--features", "surface-fuse",
-                        "--example", "structural_index_fixture", "--", "--discover"],
+                        "--example", example, "--", "--discover"],
                        env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
     text = capture.read_text()
     require(text.endswith("\n") and text.count("\n") == 1 and text.strip()
@@ -73,12 +74,12 @@ def main():
     libraries, store_directories = runtime_closure(executable, directories, target)
     for name in ["bin", "libexec", "lib"]:
         (output / name).mkdir()
-    installed = output / "libexec/structural-index-fixture"
+    installed = output / "libexec" / executable_name
     shutil.copy2(executable, installed)
     for name, library in libraries.items():
         shutil.copy2(library, output / "lib" / name)
     library_path = ":".join(map(str, [output / "lib", *store_directories]))
-    wrapper = output / "bin/structural-index-fixture"
+    wrapper = output / "bin" / executable_name
     wrapper.write_text("\n".join([
         "#!" + os.environ["CONFIG_SHELL"], "set -eu",
         "export LD_LIBRARY_PATH=" + shlex.quote(library_path),
@@ -94,7 +95,7 @@ def main():
         "source": str(source), "input_sha256": inputs, "artifact": artifact,
         "executable_sha256": original_digest, "runtime_library_path": library_path,
         "copied_runtime_libraries": sorted(libraries),
-        "scope": "Sealed structural mapping component; no worker or exposure authority",
+        "scope": scope,
     }, indent=2) + "\n")
 
 
