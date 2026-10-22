@@ -11,6 +11,8 @@ use std::{collections::BTreeMap, fmt};
 
 use terrane_format::{identity::Digest, tree_format::validate_key};
 
+mod reserved;
+
 const FIRST_INODE: u32 = 16;
 const LAST_INODE: u32 = u32::MAX - 1;
 
@@ -102,6 +104,10 @@ pub enum Error {
     Path,
     /// The configured touched-inode limit is zero or exceeds the numeric range.
     Configuration,
+    /// The reserved table would exceed its explicit startup byte budget.
+    MemoryBudget,
+    /// The allocator could not reserve the bounded startup table.
+    Allocation,
     /// Another first lookup would exceed the connection's retained-inode limit.
     Capacity,
     /// A kernel node identifier is reserved or aliases a distinct full digest.
@@ -117,6 +123,8 @@ impl fmt::Display for Error {
         formatter.write_str(match self {
             Self::Path => "invalid canonical inode path",
             Self::Configuration => "invalid connection inode limit",
+            Self::MemoryBudget => "connection inode memory budget exceeded",
+            Self::Allocation => "connection inode reservation failed",
             Self::Capacity => "connection inode limit exceeded",
             Self::Collision => "kernel node identity collision",
             Self::Links => "inconsistent canonical inode link count",
@@ -142,7 +150,23 @@ impl std::error::Error for Error {
 /// connection owner discards this entire table only after that connection ends.
 pub struct InodeTable {
     limit: u32,
-    entries: BTreeMap<u64, (Digest, Inode)>,
+    entries: Entries,
+}
+
+/// Keeps the maintenance constructor lazy while allowing a worker to reserve
+/// its entire bounded table before servicing requests.
+enum Entries {
+    Lazy(BTreeMap<u64, (Digest, Inode)>),
+    Reserved(reserved::Slots),
+}
+
+impl Entries {
+    fn len(&self) -> usize {
+        match self {
+            Self::Lazy(entries) => entries.len(),
+            Self::Reserved(entries) => entries.len(),
+        }
+    }
 }
 
 impl InodeTable {
@@ -160,6 +184,9 @@ impl InodeTable {
     /// # Ok::<(), terrane_linux::inode_policy::Error>(())
     /// ```
     ///
+    /// First touches may allocate. A worker that must not allocate while serving
+    /// metadata uses [`Self::with_reserved_capacity`] before accepting requests.
+    ///
     /// # Errors
     /// Refuses zero and limits larger than the available presented-inode range.
     pub fn new(limit: u32) -> Result<Self, Error> {
@@ -169,7 +196,30 @@ impl InodeTable {
 
         Ok(Self {
             limit,
-            entries: BTreeMap::new(),
+            entries: Entries::Lazy(BTreeMap::new()),
+        })
+    }
+
+    /// Reserves a connection table before any metadata requests are served.
+    ///
+    /// The table checks its complete slot-storage requirement against
+    /// `max_bytes` before allocating. This budget covers requested slot bytes,
+    /// not allocator overhead or total process RSS. The limit depends on the
+    /// worker's configured touched-inode bound, never the served tree's size.
+    /// Presented numbers are still assigned lazily at first lookup. Neither
+    /// first touches, repeated lookups nor refusals allocate after construction.
+    ///
+    /// # Errors
+    /// Refuses invalid inode limits, unrepresentable slot counts or sizes,
+    /// insufficient byte budgets and failed startup allocation.
+    pub fn with_reserved_capacity(limit: u32, max_bytes: usize) -> Result<Self, Error> {
+        if limit == 0 || limit > LAST_INODE - FIRST_INODE + 1 {
+            return Err(Error::Configuration);
+        }
+
+        Ok(Self {
+            limit,
+            entries: Entries::Reserved(reserved::Slots::new(limit, max_bytes)?),
         })
     }
 
@@ -188,7 +238,11 @@ impl InodeTable {
         if links == 0 {
             return Err(Error::Links);
         }
-        if let Some((digest, inode)) = self.entries.get(&identity.node_id) {
+        let entries = match &mut self.entries {
+            Entries::Lazy(entries) => entries,
+            Entries::Reserved(entries) => return entries.touch(identity, links, self.limit),
+        };
+        if let Some((digest, inode)) = entries.get(&identity.node_id) {
             if *digest != identity.digest {
                 return Err(Error::Collision);
             }
@@ -197,7 +251,7 @@ impl InodeTable {
             }
             return Ok(*inode);
         }
-        let assigned = u32::try_from(self.entries.len()).map_err(|_| Error::Capacity)?;
+        let assigned = u32::try_from(entries.len()).map_err(|_| Error::Capacity)?;
         if assigned >= self.limit {
             return Err(Error::Capacity);
         }
@@ -206,8 +260,7 @@ impl InodeTable {
             number: FIRST_INODE.checked_add(assigned).ok_or(Error::Capacity)?,
             links,
         };
-        self.entries
-            .insert(identity.node_id, (identity.digest, inode));
+        entries.insert(identity.node_id, (identity.digest, inode));
         Ok(inode)
     }
 
@@ -241,7 +294,7 @@ impl InodeTable {
     /// Returns whether no entry has been touched on this connection.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.len() == 0
     }
 }
 

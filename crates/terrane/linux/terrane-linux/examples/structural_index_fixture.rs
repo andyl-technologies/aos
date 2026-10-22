@@ -20,6 +20,9 @@ use terrane_linux::inode_policy::InodeTable;
 use terrane_linux::structural_index::{CompiledIndex, Kind, MappedIndex, MappingError};
 use terrane_sdk::host::publication::VerityBinding;
 
+#[path = "../src/inode_policy/tests/allocation.rs"]
+mod allocation;
+
 fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(rustix::process::getuid().as_raw(), 840);
     assert_eq!(rustix::process::geteuid().as_raw(), 840);
@@ -172,13 +175,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         graft_metadata.graft_overrides.get(b"x.override"),
         Some(b"\x03".as_slice())
     );
-    let mut inodes = InodeTable::new(1)?;
-    let alias_inode = inodes.touch_entry(alias)?;
-    assert_eq!(inodes.touch_entry(file_entry)?, alias_inode);
-    assert_eq!(alias_inode.1.number(), 16);
-    assert_eq!(alias_inode.1.links(), 2);
-    assert_eq!(inodes.len(), 1);
+    let (control, allocations) = allocation::measure(|| std::hint::black_box(vec![9u8; 128]));
+    assert_eq!(control.len(), 128);
+    assert!(allocations > 0);
+    let mut inodes = InodeTable::with_reserved_capacity(1, 4096)?;
+    let (checked, allocations) = allocation::measure(|| -> Result<(), Box<dyn Error>> {
+        let alias_inode = inodes.touch_entry(alias)?;
+        assert_eq!(inodes.touch_entry(file_entry)?, alias_inode);
+        assert_eq!(alias_inode.1.number(), 16);
+        assert_eq!(alias_inode.1.links(), 2);
+        assert_eq!(inodes.len(), 1);
+        for path in [b"dir".as_slice(), b"other"] {
+            let directory = index.lookup(path).ok_or("directory missing")?;
+            for child in directory.children()? {
+                let _ = child.metadata()?;
+                let _ = child.kind();
+            }
+            assert!(matches!(
+                inodes.touch_entry(directory),
+                Err(terrane_linux::inode_policy::Error::Capacity)
+            ));
+        }
+        assert_eq!(inodes.touch_entry(alias)?, alias_inode);
+        Ok(())
+    });
+    checked?;
+    assert_eq!(allocations, 0);
     println!("PASS: mapped recorded metadata and canonical hard-link inode assignment");
+    println!("PASS: reserved first-touch inode assignment and mapped metadata allocate nothing");
     assert!(OpenOptions::new().write(true).open(&path).is_err());
     assert!(file.set_len(0).is_err());
 

@@ -13509,3 +13509,44 @@ publication bodies are unchanged. Python syntax and the complete native
 source-declaration inventory pass. Native signed-root VM execution, the owning
 root proof and required application-target compilation remain pending for this
 increment; no exposure or trunk task is closed.
+
+
+The cold and warm surface checkpoints also pass mandatory application-target
+compilation in 1,531.00 and 1,533.93 seconds respectively. Independent review
+matches all 8,002 and 8,004 immutable source files, with 184 compiler records
+across 59 packages in each artifact. These are compilation-only results.
+At `4eb964fc5b`, the owning wasm profile passes in 52.34 seconds. Independent
+review matches all 8,007 immutable source files, 5,288 bound inputs and both
+retained portable libraries, including the actual wasm headers of all 32 object
+members. This does not establish a native filesystem or mounted surface.
+
+First inode touches can now use an explicitly reserved connection table.
+Its checked startup slot budget depends on the configured touched-inode limit,
+not total tree size. Numbers are still assigned lazily and never recycled;
+full-digest collision and immutable link-count checks precede every reuse.
+The original lazy maintenance constructor remains available without attempting
+an enormous allocation for a numerically valid limit. Both implementations run
+the original identity, capacity, metadata and collision controls. New cases
+exercise budget refusal before allocation, wrapped probe chains and actual
+allocation counts during first touches and checked metadata operations. The
+counter has a positive allocation control and exists only in test artifacts;
+its allocator forwarding is the only new unsafe code.
+
+Local verification passes all eight inode cases, the surface-only Linux library
+suite (53 passed, three existing privileged cases ignored), strict all-feature
+Linux all-target Clippy and formatting. The ext4 mapping fixture now uses the
+reserved table and measures real mapped metadata and hard-link first touches
+under its original UID, capability, memory and time limits. The owning
+structural proof requires all 22 structural and eight inode cases. Frozen VM
+and mandatory application compilation for this increment remain pending;
+this component does not operate a FUSE connection or grant exposure authority.
+
+
+The signed-root native VM passes at `4eb964fc5b` in 650.23 seconds with all
+9,333 tracked files unchanged. Independent review matches all 8,007 immutable
+source files, 5,304 base and 5,288 surface inputs, the four original native
+Cargo ELF artifacts and the actual fifth surface-owner ELF. Actual signed-root
+admission, closing-policy denial and foreign-domain refusal pass alongside all
+original admission, recovery, quota and retirement witnesses. This VM does not
+execute the base image's 128-case library inventory. The owning root proof and
+mandatory application-target compilation remain pending at that checkpoint.

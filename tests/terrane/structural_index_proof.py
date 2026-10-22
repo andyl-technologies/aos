@@ -43,6 +43,9 @@ INODE_CASES = [
     "metadata_refusal_consumes_no_number_or_existing_identity",
     "truncated_collision_cannot_alias_or_replace_a_retained_entry",
     "invalid_bounds_and_paths_fail_before_table_growth",
+    "reserved_budget_refuses_before_allocation_and_keeps_number_assignment_lazy",
+    "reserved_probe_chains_keep_collisions_and_full_table_refusals_distinct",
+    "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
 ]
 
 
