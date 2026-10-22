@@ -64,7 +64,8 @@ pub async fn run(printer: &Printer, config_path: &Path) -> Result<()> {
     // Load or generate the JWT signing secret.
     let jwt_secret = load_jwt_secret(&cfg).context("loading JWT secret")?;
 
-    let view_mgr = views::ViewManager::new(root.clone(), cfg.views.clone());
+    let view_mgr = views::ViewManager::new(root.clone(), cfg.views.clone())
+        .context("validating view configuration")?;
     view_mgr
         .init_directories()
         .context("initializing view directories")?;

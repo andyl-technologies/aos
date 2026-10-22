@@ -158,6 +158,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    AOS_LIBSSH2_PREFIX = "${libssh2}";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
@@ -431,7 +432,7 @@
     # retain the union of all four command closures here. The Rust programs
     # dynamically link only these shared libraries; command-specific tools are
     # referenced exclusively by the corresponding installed wrapper.
-    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${zlib}/lib";
+    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${libssh2}/lib -Wl,-rpath,${zlib}/lib";
 
     # The pinned-bus cases belong to the explicit Rust test derivation. Running
     # them in the runtime build would compile a second debug dependency graph.

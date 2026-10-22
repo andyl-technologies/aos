@@ -64,6 +64,43 @@ impl Claims {
     }
 }
 
+/// Explains why a request does not have access to a view.
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ViewAccessError {
+    /// The endpoint requires credentials, but none were supplied.
+    AuthenticationRequired,
+    /// The token does not cover the requested view.
+    ViewNotAuthorized,
+    /// The token does not carry the requested permission.
+    PermissionRequired,
+}
+
+/// Applies the common view and permission policy for REST and ConnectRPC.
+///
+/// Anonymous access succeeds only when the caller explicitly enables it for
+/// the endpoint. Authenticated access must cover the requested view and carry
+/// `permission`. An empty permission checks view membership only.
+pub(crate) fn require_view_permission(
+    claims: Option<&Claims>,
+    view: &str,
+    permission: &str,
+    allow_anonymous: bool,
+) -> Result<(), ViewAccessError> {
+    if allow_anonymous {
+        return Ok(());
+    }
+
+    let claims = claims.ok_or(ViewAccessError::AuthenticationRequired)?;
+    if !claims.has_view(view) {
+        return Err(ViewAccessError::ViewNotAuthorized);
+    }
+    if !permission.is_empty() && !claims.has_permission(permission) {
+        return Err(ViewAccessError::PermissionRequired);
+    }
+
+    Ok(())
+}
+
 /// Creates a signed JWT access token from a validated provisioning token
 /// record.
 ///
@@ -166,6 +203,16 @@ pub enum AuthResult {
     Anonymous,
 }
 
+impl AuthResult {
+    /// Returns authenticated claims, or `None` for an anonymous request.
+    pub(crate) fn claims(&self) -> Option<&Claims> {
+        match self {
+            Self::Authenticated(claims) => Some(claims),
+            Self::Anonymous => None,
+        }
+    }
+}
+
 impl FromRequestParts<Arc<AppState>> for AuthResult {
     type Rejection = Response;
 
@@ -192,6 +239,48 @@ impl FromRequestParts<Arc<AppState>> for AuthResult {
         })?;
 
         Ok(AuthResult::Authenticated(claims))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Claims, ViewAccessError, require_view_permission};
+
+    fn claims(views: &[&str], permissions: &[&str]) -> Claims {
+        Claims {
+            sub: "test-token".into(),
+            views: views.iter().map(|value| (*value).to_string()).collect(),
+            permissions: permissions
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            iat: 0,
+            exp: usize::MAX,
+        }
+    }
+
+    #[test]
+    fn view_permission_policy_covers_private_and_anonymous_reads() {
+        let alpha_reader = claims(&["alpha"], &["read"]);
+        let alpha_builder = claims(&["alpha"], &["build"]);
+        let beta_reader = claims(&["beta"], &["read"]);
+        let wildcard_reader = claims(&["*"], &["read"]);
+
+        assert_eq!(
+            require_view_permission(None, "alpha", "read", false),
+            Err(ViewAccessError::AuthenticationRequired)
+        );
+        assert_eq!(
+            require_view_permission(Some(&beta_reader), "alpha", "read", false),
+            Err(ViewAccessError::ViewNotAuthorized)
+        );
+        assert_eq!(
+            require_view_permission(Some(&alpha_builder), "alpha", "read", false),
+            Err(ViewAccessError::PermissionRequired)
+        );
+        assert!(require_view_permission(Some(&alpha_reader), "alpha", "read", false).is_ok());
+        assert!(require_view_permission(Some(&wildcard_reader), "alpha", "read", false).is_ok());
+        assert!(require_view_permission(None, "public", "read", true).is_ok());
     }
 }
 
