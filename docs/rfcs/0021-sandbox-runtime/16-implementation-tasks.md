@@ -10641,3 +10641,26 @@ The current effect-module checks pass at
 `/nix/store/4917w2597wh6426x00lg1ixcn977f8rz-aos-effect-module-checks-0`.
 Core evaluation passes at
 `/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
+
+### Fixed private-directory child creation (installed execution pending)
+
+The fixed view-root walker creates children beneath Controller-owned mode-0700
+ancestry after its fresh-only chown. DAC_READ_SEARCH permits traversal, but not
+that mkdir. The original setup unit now also bounds CAP_DAC_OVERRIDE; only the
+static runtime-roots SELinux role receives the matching permission. Shell view
+preparers remain denied that capability, and the provider still cannot open
+protected journal or credential files. Existing foreign ownership, labels,
+mount crossings and creation races remain refusal, without repair or adoption.
+
+All 149 policy-checker tests pass, including missing-provider-capability and
+foreign-preparer-capability mutations. The combined startup profile evaluates
+with the exact four-capability setup bound. Full compiled-policy and installed
+execution remain pending; this source correction grants no Root or public
+lifecycle qualification.
+
+The manager-user-namespace installed retry
+`/nix/store/5isha6w0zcsvn7m7brgyg0262mh5y929-aos-fleet-test-sandbox-host-phase0-readiness-0.drv`
+still fails at USER with EPERM before the target executes. The namespace-create
+policy grant is therefore insufficient to qualify phase 0. A diagnostic against
+that exact image is required before another permission change. This standalone
+Host fixture uses 16 vCPUs without a TPM device; it is not a TPM receipt.

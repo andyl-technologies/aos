@@ -1124,7 +1124,22 @@ class EffectivePolicyTest(unittest.TestCase):
                 effective_policy.Access(root, storage_lock, "file", permission)
             )
 
-    def test_static_view_provider_dac_search_never_opens_protected_data(self) -> None:
+    def test_static_view_provider_dac_access_never_opens_protected_data(self) -> None:
+        provisioner = effective_policy.PROVISIONER_DOMAIN
+        for permission in ("dac_override", "dac_read_search"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(provisioner, provisioner, "capability", permission)
+                )
+        for preparer in (
+            "aos_sandbox_source_view_preparer_t",
+            "aos_sandbox_cache_view_preparer_t",
+        ):
+            with self.subTest(preparer=preparer):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(preparer, preparer, "capability", "dac_override")
+                )
+
         for target in (
             "aos_sandbox_source_journal_t",
             "aos_sandbox_cache_journal_t",

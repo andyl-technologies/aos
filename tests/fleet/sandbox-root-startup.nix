@@ -70,7 +70,7 @@ in
             return wait_for_root_accept()
 
         # The history listener must enter its own confined role before any
-        # normal Root credentials exist, and survive that writer's lifecycle.
+        # normal Root credentials exist, and survive normal Root's lifecycle.
         history = wait_for_history_accept()
         vm.succeed("${command} external-root-credentials-bootstrap")
         first = start_root()

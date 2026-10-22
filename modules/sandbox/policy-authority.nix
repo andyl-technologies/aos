@@ -580,7 +580,9 @@ in {
         # This separately accounted setup unit never uses the privileged '+'
         # command flag or changes the confined view script's execution context.
         NoNewPrivileges = false;
-        CapabilityBoundingSet = ["CAP_CHOWN" "CAP_DAC_READ_SEARCH" "CAP_SYS_ADMIN"];
+        # The fixed walker creates children after fresh-only chown of their
+        # private Controller ancestry. Read/search alone cannot authorize mkdir.
+        CapabilityBoundingSet = ["CAP_CHOWN" "CAP_DAC_OVERRIDE" "CAP_DAC_READ_SEARCH" "CAP_SYS_ADMIN"];
         StandardOutput = "journal+console";
         StandardError = "journal+console";
         UMask = "0077";

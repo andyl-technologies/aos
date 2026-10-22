@@ -57,6 +57,7 @@
   assert viewRoots.TasksMax == parent.fixedServices.pids;
   assert !(viewRoots.PermissionsStartOnly or false);
   assert !(viewRoots.NoNewPrivileges);
+  assert viewRoots.CapabilityBoundingSet == ["CAP_CHOWN" "CAP_DAC_OVERRIDE" "CAP_DAC_READ_SEARCH" "CAP_SYS_ADMIN"];
   assert (viewService.serviceConfig.ExecStartPre or []) == [];
   assert builtins.elem "aos-sandbox-view-roots.service" viewService.requires;
   assert builtins.elem "aos-sandbox-view-roots.service" viewService.after;

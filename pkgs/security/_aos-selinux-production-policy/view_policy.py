@@ -148,7 +148,10 @@ def matrix(Access, Transition, accesses, roles):
     negative.append(Access(source, "*", "unix_stream_socket", "bind"))
 
     positive.append(Access(controller, "aos_sandbox_cache_signer_t", "unix_stream_socket", "connectto"))
+    positive.append(Access(provisioner, provisioner, "capability", "dac_override"))
     positive.append(Access(provisioner, provisioner, "capability", "dac_read_search"))
+    for preparer in ("aos_sandbox_source_view_preparer_t", "aos_sandbox_cache_view_preparer_t"):
+        negative.append(Access(preparer, preparer, "capability", "dac_override"))
     positive.append(Access("aos_sandbox_view_parent_t", "fs_t", "filesystem", "associate"))
     positive.append(Access("aos_method46_tpm_device_t", "device_t", "filesystem", "associate"))
     for role in ("controller", "storage"):

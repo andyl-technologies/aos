@@ -4,7 +4,7 @@ require {
     type fs_t;
     type tmpfs_t;
     type nsfs_t;
-    class capability { chown dac_read_search setgid setuid sys_admin };
+    class capability { chown dac_override dac_read_search setgid setuid sys_admin };
     class filesystem { associate getattr remount unmount };
     class dir mounton;
     class user_namespace create;
@@ -57,10 +57,10 @@ allow aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_exec_t:file { 
 allow aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_t:process transition;
 type_transition aos_sandbox_cache_view_preparer_t aos_sandbox_runtime_roots_exec_t:process aos_sandbox_runtime_roots_t;
 allow aos_sandbox_runtime_roots_t aos_sandbox_cache_view_preparer_t:process sigchld;
-# The existing preparer bound already carries DAC_READ_SEARCH. Metadata
-# preflight/name reopens must reach Controller-owned 0700 directories after
-# fresh-only chown; protected file open/read remains explicitly denied.
-allow aos_sandbox_runtime_roots_t self:capability dac_read_search;
+# Metadata preflight/name reopens and fixed child creation must reach
+# Controller-owned 0700 ancestry after fresh-only chown. Only this static
+# provider gains DAC_OVERRIDE; protected file open/read remains denied by MAC.
+allow aos_sandbox_runtime_roots_t self:capability { dac_override dac_read_search };
 allow aos_sandbox_runtime_roots_t var_run_t:dir { add_name create getattr open read search write };
 allow aos_sandbox_runtime_roots_t { aos_sandbox_view_parent_t aos_sandbox_source_journal_t aos_sandbox_cache_journal_t aos_sandbox_cache_object_t aos_sandbox_source_view_mount_t aos_sandbox_cache_view_mount_t }:dir { add_name create getattr open read search setattr write };
 # Fixed Root compiler/evidence directories use the same fresh-only engine.
