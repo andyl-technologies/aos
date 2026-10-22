@@ -40,6 +40,11 @@ in {
   initrd = replay initrd;
   hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
   == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
+  hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment
+  == {
+    variables = {};
+    search_path = [];
+  }; true;
   hostLocaleDefaults = assert replayedHost.environment.sessionVariables.LANG == config.environment.sessionVariables.LANG;
   assert replayedHost.environment.sessionVariables.LOCPATH == config.environment.sessionVariables.LOCPATH;
   assert map toString replayedHost.aos.system.localePackages == map toString config.aos.system.localePackages; true;

@@ -9749,6 +9749,13 @@ Both checks pass, including the expanded profile check at
 `/nix/store/fg5vak7ndcf4a3y1cx3hh573cklf838w-aos-native-profile-replay`.
 An installed rerun still determines whether host activation completes.
 
+Host store seeding now declares an empty service environment and search path:
+its script uses only absolute tool paths and the immutable registration. This
+also prevents unrelated initrd filesystem or owner-root options from changing
+its image projection. The replay checks enforce that boundary; the expanded
+profile check passes at
+`/nix/store/xzw32f90bpifrpdxfj3zkb3g5nidny92-aos-native-profile-replay`.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

@@ -265,6 +265,12 @@
     (substrateService {
       key = "aos-host-store-seed";
       description = "Hydrate the immutable image store before host verification";
+      # This script uses absolute tool paths and the immutable registration.
+      # Initrd filesystem and owner-root policy is not an input to host seeding.
+      environment = {
+        variables = {};
+        search_path = [];
+      };
       dependencies =
         emptyDependencies
         // {
