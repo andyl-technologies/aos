@@ -102,6 +102,38 @@ fn closed_shapes_cover_actual_values_backing_and_canonical_output() {
                     actual_serialization_storage_data(&value, metadata, usize::MAX).unwrap();
                 let shape = [&projected.request, &projected.response][index];
 
+                assert_eq!(
+                    projected.tree_populations_data()[index],
+                    [metadata.tree_containers, metadata.tree_entries]
+                );
+                if index == 0 {
+                    let mut native = MetadataObserver::new();
+                    native.observe(&envelope.body).unwrap();
+                    native.observe(&envelope.extensions).unwrap();
+                    let native = native.finish();
+                    assert_eq!(
+                        projected.native_request_trees,
+                        [native.tree_containers, native.tree_entries]
+                    );
+                    assert!(
+                        projected
+                            .request_native_backing_storage_data(
+                                native.maximum_tree_key_value_bytes,
+                                native.maximum_tree_entry_alignment,
+                            )
+                            .unwrap()
+                            >= requested_metadata_backing_storage_data(&native).unwrap()
+                                + envelope.protocol.capacity()
+                                + envelope.session_id.0.as_ref().unwrap().allocated_capacity()
+                                + envelope
+                                    .incarnation_id
+                                    .0
+                                    .as_ref()
+                                    .unwrap()
+                                    .allocated_capacity()
+                                + envelope.request_id.0.as_ref().unwrap().allocated_capacity()
+                    );
+                }
                 assert_eq!(shape.serialized_value_nodes, [49, 63][index]);
                 assert_eq!(shape.serialized_value_nodes, actual.serialized_value_nodes);
                 assert_eq!(

@@ -19,9 +19,58 @@ use std::mem::size_of;
 pub struct PacketNativeImport18BootstrapEnvelopeProjectionData {
     request: Shape,
     response: Shape,
+    trees: [[usize; 2]; 2],
+    native_request_trees: [usize; 2],
 }
 
 impl PacketNativeImport18BootstrapEnvelopeProjectionData {
+    /// Prices native request backing under an enclosing typed tree census.
+    ///
+    /// The serialized Envelope's outer object is absent from its typed owner.
+    /// Its remaining maps use the enclosing census's largest entry layout;
+    /// projected text and other backing remain independently retained.
+    ///
+    /// # Errors
+    /// Refuses unsupported tree alignment or checked layout overflow.
+    pub(crate) fn request_native_backing_storage_data(
+        &self,
+        entry_bytes: usize,
+        entry_alignment: usize,
+    ) -> Result<usize, ProviderError> {
+        use crate::retained_metadata::requested_storage::tree_storage_data;
+        use serde_json::Value;
+        use std::mem::align_of;
+
+        let value_entry = size_of::<String>() + size_of::<Value>();
+        let value_alignment = align_of::<String>().max(align_of::<Value>());
+        let [containers, entries] = self.trees[0];
+        let serialized_trees =
+            tree_storage_data(containers, entries, value_entry, value_alignment)?;
+        let [containers, entries] = self.native_request_trees;
+        let native_trees = tree_storage_data(
+            containers,
+            entries,
+            value_entry.max(entry_bytes),
+            value_alignment.max(entry_alignment),
+        )?;
+        self.request
+            .retained_value_backing_bytes
+            .checked_sub(serialized_trees)
+            .and_then(|bytes| bytes.checked_add(native_trees))
+            .ok_or_else(invalid)
+    }
+
+    /// Returns compiled object-container/member populations for both envelopes.
+    pub(crate) const fn tree_populations_data(&self) -> [[usize; 2]; 2] {
+        self.trees
+    }
+
+    /// Prices unformatted serializer errors and bounded canonical reason text.
+    pub(crate) fn serialization_failure_requested_bytes_data() -> usize {
+        crate::reference_packet::continuation_models::serde_partials::diagnostic_error_impl_allocation_upper_bytes_data()
+            + canonical::CANONICAL_JSON_INVALID_REASON_BYTES_DATA
+    }
+
     /// Returns sealed-request and completed-response encoded bounds, in that order.
     ///
     /// These bound closed serialized outputs, not arbitrary incoming JSON spelling.
@@ -67,18 +116,26 @@ impl PacketNativeImport18BootstrapEnvelopeProjectionData {
 pub fn native_import18_bootstrap_envelope_projection_data(
     maximum: usize,
 ) -> Result<PacketNativeImport18BootstrapEnvelopeProjectionData, ProviderError> {
+    let mut request_trees = [0; 2];
     let mut request = Projection::new(maximum)?;
-    envelope(&mut request, "request")?;
+    envelope(&mut request, &mut request_trees, "request")?;
+    let request_header_trees = request_trees;
     object(
         &mut request,
+        &mut request_trees,
         &["schema", "recipe_identity", "initial_funding"],
     )?;
     request.add_string(NATIVE_IMPORT18_BOOTSTRAP_REQUEST_SCHEMA)?;
     digest(&mut request)?;
-    funding(&mut request)?;
-    object(&mut request, &[NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF])?;
+    funding(&mut request, &mut request_trees)?;
     object(
         &mut request,
+        &mut request_trees,
+        &[NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF],
+    )?;
+    object(
+        &mut request,
+        &mut request_trees,
         &["schema", "algorithm", "context_digest", "mac"],
     )?;
     request.add_string(NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF)?;
@@ -87,27 +144,35 @@ pub fn native_import18_bootstrap_envelope_projection_data(
     digest(&mut request)?;
     let request = request.finish(maximum)?;
 
+    let mut response_trees = [0; 2];
     let mut response = Projection::new(maximum)?;
-    envelope(&mut response, "response")?;
+    envelope(&mut response, &mut response_trees, "response")?;
     object(
         &mut response,
+        &mut response_trees,
         &["status", "operation_state", "result", "extensions"],
     )?;
     response.add_string("completed")?;
     response.add_string("completed")?;
     object(
         &mut response,
+        &mut response_trees,
         &["schema", "state", "recipe_identity", "initial_funding"],
     )?;
     response.add_string(NATIVE_IMPORT18_BOOTSTRAP_RESULT_SCHEMA)?;
     response.add_string("bootstrap_only")?;
     digest(&mut response)?;
-    funding(&mut response)?;
+    funding(&mut response, &mut response_trees)?;
     // The common completed body retains an independently owned empty map.
-    object(&mut response, &[])?;
-    object(&mut response, &[NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT])?;
+    object(&mut response, &mut response_trees, &[])?;
     object(
         &mut response,
+        &mut response_trees,
+        &[NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT],
+    )?;
+    object(
+        &mut response,
+        &mut response_trees,
         &[
             "schema",
             "algorithm",
@@ -125,12 +190,29 @@ pub fn native_import18_bootstrap_envelope_projection_data(
     }
     let response = response.finish(maximum)?;
 
-    Ok(PacketNativeImport18BootstrapEnvelopeProjectionData { request, response })
+    Ok(PacketNativeImport18BootstrapEnvelopeProjectionData {
+        request,
+        response,
+        trees: [request_trees, response_trees],
+        native_request_trees: [
+            request_trees[0]
+                .checked_sub(request_header_trees[0])
+                .ok_or_else(invalid)?,
+            request_trees[1]
+                .checked_sub(request_header_trees[1])
+                .ok_or_else(invalid)?,
+        ],
+    })
 }
 
-fn envelope(out: &mut Projection, message: &str) -> Result<(), ProviderError> {
+fn envelope(
+    out: &mut Projection,
+    trees: &mut [usize; 2],
+    message: &str,
+) -> Result<(), ProviderError> {
     object(
         out,
+        trees,
         &[
             "protocol",
             "message",
@@ -159,9 +241,10 @@ fn envelope(out: &mut Projection, message: &str) -> Result<(), ProviderError> {
     out.add_string("native_import18_bootstrap")
 }
 
-fn funding(out: &mut Projection) -> Result<(), ProviderError> {
+fn funding(out: &mut Projection, trees: &mut [usize; 2]) -> Result<(), ProviderError> {
     object(
         out,
+        trees,
         &[
             "retained_requested_bytes",
             "maximum_simultaneous_transient_bytes",
@@ -174,7 +257,13 @@ fn funding(out: &mut Projection) -> Result<(), ProviderError> {
     Ok(())
 }
 
-fn object(out: &mut Projection, fields: &[&str]) -> Result<(), ProviderError> {
+fn object(
+    out: &mut Projection,
+    trees: &mut [usize; 2],
+    fields: &[&str],
+) -> Result<(), ProviderError> {
+    trees[0] = trees[0].checked_add(1).ok_or_else(invalid)?;
+    trees[1] = trees[1].checked_add(fields.len()).ok_or_else(invalid)?;
     out.add_object()?;
     for field in fields {
         out.add_field(field)?;
@@ -193,6 +282,10 @@ pub fn native_import18_bootstrap_envelope_projection_counter_scratch_data() -> u
         + size_of::<PacketNativeImport18BootstrapEnvelopeProjectionData>()
         + size_of::<Result<PacketNativeImport18BootstrapEnvelopeProjectionData, ProviderError>>()
         + size_of::<&mut Projection>()
+        + size_of::<[[usize; 2]; 2]>()
+        + size_of::<[usize; 6]>()
+        + size_of::<&PacketNativeImport18BootstrapEnvelopeProjectionData>()
+        + size_of::<&mut [usize; 2]>()
         + size_of::<&str>()
         + size_of::<&[&str]>()
         + size_of::<std::slice::Iter<'static, &'static str>>()

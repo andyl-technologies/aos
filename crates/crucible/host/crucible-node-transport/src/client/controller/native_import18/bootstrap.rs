@@ -20,7 +20,8 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
     NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF, NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT,
     NATIVE_IMPORT18_BOOTSTRAP_FEATURE, PacketNativeImport18BootstrapAssignmentData,
     PacketNativeImport18BootstrapMaterializationRowData, PacketNativeImport18BootstrapRequest,
-    PacketNativeImport18BootstrapReservationRowData, PacketNativeImport18BootstrapSealingData,
+    PacketNativeImport18BootstrapReservationRowData, PacketNativeImport18BootstrapSdkRowData,
+    PacketNativeImport18BootstrapSealingData,
 };
 use crate::retained_metadata::{
     aliases::MetadataSharedKind, requested_metadata_backing_storage_data,
@@ -33,6 +34,8 @@ mod assignment;
 mod history;
 #[path = "bootstrap/materialization.rs"]
 mod materialization;
+#[path = "bootstrap/publication.rs"]
+mod publication;
 #[path = "bootstrap/reservation.rs"]
 mod reservation;
 #[path = "bootstrap/signing.rs"]
@@ -47,7 +50,7 @@ pub use storage::OriginalNativeImport18BootstrapConstructionData;
 
 /// Retains the same Bootstrap18 row and moved typed inputs after either outcome.
 ///
-/// This noncloneable owner carries no publishing, decoding or completed getter.
+/// This noncloneable owner retains original publication progress and failures.
 /// The actual Controller, Hello journal, private Source/Birth guards and whole
 /// owner debit remain independently retained by the genuine caller.
 pub struct OriginalNativeImport18Bootstrap {
@@ -63,6 +66,12 @@ pub struct OriginalNativeImport18Bootstrap {
     materialization_row: Option<PacketNativeImport18BootstrapMaterializationRowData>,
     materialization_started: bool,
     sealing: Option<PacketNativeImport18BootstrapSealingData>,
+    sdk_row: Option<PacketNativeImport18BootstrapSdkRowData>,
+    sdk_started: bool,
+    sdk_sealed: bool,
+    publication_row: Option<PacketNativeImport18BootstrapSdkRowData>,
+    publication_started: bool,
+    published: bool,
     retained: bool,
     failed: bool,
 }
@@ -106,6 +115,12 @@ impl CnpController {
             materialization_row: None,
             materialization_started: false,
             sealing: None,
+            sdk_row: None,
+            sdk_started: false,
+            sdk_sealed: false,
+            publication_row: None,
+            publication_started: false,
+            published: false,
             retained: false,
             failed: true,
         });
@@ -161,6 +176,12 @@ impl OriginalNativeImport18Bootstrap {
             materialization_row: _,
             materialization_started: _,
             sealing,
+            sdk_row: _,
+            sdk_started: _,
+            sdk_sealed: _,
+            publication_row: _,
+            publication_started: _,
+            published: _,
             retained: _,
             failed: _,
         } = self;
@@ -186,7 +207,9 @@ impl OriginalNativeImport18Bootstrap {
     /// Refuses a foreign creator process or thread.
     pub fn retained_metadata_counter_scratch_data(&self) -> Result<usize, ProviderError> {
         self.row.controller.ensure_current()?;
-        Ok(if self.materialization_started {
+        Ok(if self.sdk_started || self.publication_started {
+            CnpController::original_native_import18_bootstrap_sdk_counter_scratch_data()
+        } else if self.materialization_started {
             CnpController::original_native_import18_bootstrap_materialization_counter_scratch_data()
         } else if self.reservation_started {
             CnpController::original_native_import18_bootstrap_reservation_counter_scratch_data()

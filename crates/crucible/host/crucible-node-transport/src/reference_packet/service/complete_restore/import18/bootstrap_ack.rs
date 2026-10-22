@@ -20,6 +20,8 @@ mod reservation;
 pub use reservation::PacketNativeImport18BootstrapReservationRowData;
 mod materialization;
 pub use materialization::PacketNativeImport18BootstrapMaterializationRowData;
+mod sdk_sealing;
+pub use sdk_sealing::PacketNativeImport18BootstrapSdkRowData;
 mod sealing;
 pub use sealing::{
     PacketNativeImport18BootstrapSealingData, PacketNativeImport18BootstrapSealingFailure,

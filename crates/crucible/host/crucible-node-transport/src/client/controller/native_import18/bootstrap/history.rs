@@ -49,6 +49,18 @@ pub struct OriginalNativeImport18BootstrapHistoryData<'a> {
     pub materialization_row: Option<&'a PacketNativeImport18BootstrapMaterializationRowData>,
     /// Reports spent materialization entry independently of its surviving outputs.
     pub materialization_started: bool,
+    /// Borrows the exact independently admitted SDK registration row.
+    pub sdk_row: Option<&'a PacketNativeImport18BootstrapSdkRowData>,
+    /// Reports a spent SDK registration attempt, including refusal.
+    pub sdk_started: bool,
+    /// Reports successful registration independently of publication.
+    pub sdk_sealed: bool,
+    /// Borrows the exact independently admitted publication row.
+    pub publication_row: Option<&'a PacketNativeImport18BootstrapSdkRowData>,
+    /// Reports a spent publication attempt, including partial writes.
+    pub publication_started: bool,
+    /// Reports completed original publication without claiming a response.
+    pub published: bool,
     /// Borrows the moved assignment, proof, DOM and literal after either outcome.
     pub sealing: Option<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapSealingHistoryData<'a>>,
     /// Reports only successful typed-owner retention, never bootstrap completion.
@@ -122,6 +134,12 @@ impl OriginalNativeImport18Bootstrap {
             reserved: self.reserved,
             materialization_row: self.materialization_row.as_ref(),
             materialization_started: self.materialization_started,
+            sdk_row: self.sdk_row.as_ref(),
+            sdk_started: self.sdk_started,
+            sdk_sealed: self.sdk_sealed,
+            publication_row: self.publication_row.as_ref(),
+            publication_started: self.publication_started,
+            published: self.published,
             sealing: self
                 .sealing
                 .as_ref()

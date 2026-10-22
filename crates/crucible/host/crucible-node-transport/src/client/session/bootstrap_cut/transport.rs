@@ -40,6 +40,40 @@ impl ClientSession {
             + size_of::<[Result<(), ProviderError>; 2]>()
     }
 
+    /// Checks registered custody and publication under the same original cut.
+    ///
+    /// # Errors
+    /// Refuses changed cut, sequence, SDK original or actual literal progress.
+    pub(in crate::client) fn authenticate_original_bootstrap_registered_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        proof: &PacketNativeImport18BootstrapAckProof,
+        literal: (&[u8], Option<usize>),
+        state: (OperationalDeadline, bool),
+    ) -> Result<(), ProviderError> {
+        let deadline = self
+            .authenticate_original_bootstrap_effect_cut_data(state.0, if state.1 { 3 } else { 2 });
+        let registered = self
+            .connection
+            .authenticate_original_bootstrap_registered_data(
+                original, request, proof, literal, state.1,
+            );
+        deadline?;
+        registered
+    }
+
+    /// Names SDK registration, physical progress and original clock controls.
+    pub(in crate::client) fn original_bootstrap_registered_counter_scratch_data() -> usize {
+        Self::original_bootstrap_materialization_counter_scratch_data()
+            + Connection::<DeadlineStream>::original_bootstrap_sealing_counter_scratch_data()
+            + crate::transport::original_frames::original_frames_iterator_counter_scratch_data()
+            + size_of::<crate::transport::original_frames::OriginalFrame<'static>>() * 2
+            + size_of::<(&'static [u8], Option<usize>)>()
+            + size_of::<(OperationalDeadline, bool)>()
+            + size_of::<[Result<(), ProviderError>; 2]>()
+    }
+
     /// Lends the unchanged reserved unsigned original under its actual SDK cut.
     ///
     /// The caller independently admits this guard and its signing callback,

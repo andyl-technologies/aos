@@ -17,6 +17,8 @@ use crate::reference_packet::service::complete_restore::import18::{
 };
 use crate::transport::{RetainedFrame, original_frames::FrameDirection};
 
+#[path = "transport/sealing_storage.rs"]
+mod sealing_storage;
 #[path = "transport/storage.rs"]
 mod storage;
 #[path = "transport/wire.rs"]
@@ -37,6 +39,52 @@ impl<S: ProviderStream> Connection<S> {
         self.authenticate_original_bootstrap_frontier_data()?;
         wire::authenticate_data(&self.authority, original, request, Some(proof))?;
         self.authenticate_pending_native_import18_data(original, &[], slot, false)
+    }
+
+    /// Checks the registered original and its exact physical publication state.
+    ///
+    /// # Errors
+    /// Refuses changed scope, proof, sole SDK original, slot, bytes or progress.
+    pub(crate) fn authenticate_original_bootstrap_registered_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        proof: &PacketNativeImport18BootstrapAckProof,
+        literal: (&[u8], Option<usize>),
+        published: bool,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_original_bootstrap_endpoint_data()?;
+        wire::authenticate_data(&self.authority, original, request, Some(proof))?;
+        self.guard.original_bootstrap_pending_data(original)?;
+        if !published {
+            return self
+                .authenticate_pending_native_import18_data(original, literal.0, literal.1, true);
+        }
+
+        let bank = self
+            .original_frames
+            .as_ref()
+            .ok_or_else(refused)?
+            .try_borrow()
+            .map_err(|_| refused())?;
+        let slot = literal.1.ok_or_else(refused)?;
+        let (last, _) = bank.frames().enumerate().last().ok_or_else(refused)?;
+        if last != slot {
+            return Err(refused());
+        }
+        bank.authenticate_completed_send(slot, literal.0)?;
+        let frame = bank.frame(slot).ok_or_else(refused)?;
+        let named = bank.original_outgoing_request_frame_data(
+            original.request_id.0.as_ref().ok_or_else(refused)?,
+        )?;
+        if frame.bytes != named.bytes
+            || frame.direction != named.direction
+            || frame.complete != named.complete
+            || frame.transferred != named.transferred
+        {
+            return Err(refused());
+        }
+        Ok(())
     }
 
     /// Checks the actual reserved unsigned bootstrap without constructing a DTO.
@@ -362,6 +410,21 @@ impl<S: ProviderStream> Connection<S> {
             .unwrap()
             .borrow()
             .storage_facts(maximum)
+    }
+
+    /// Copies actual model SDK and frame state solely for refusal assertions.
+    pub(crate) fn original_bootstrap_model_registered_state_data(
+        &self,
+        slot: usize,
+    ) -> (Vec<u8>, usize, bool, Vec<Envelope>) {
+        let bank = self.original_frames.as_ref().unwrap().borrow();
+        let frame = bank.frame(slot).unwrap();
+        (
+            frame.bytes.to_vec(),
+            frame.transferred,
+            frame.complete,
+            self.guard.pending_requests().cloned().collect(),
+        )
     }
 
     /// Lends inert model negotiation operands; it creates no Source permission.

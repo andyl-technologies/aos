@@ -204,7 +204,7 @@ fn authenticate_terminal(
     literal
 }
 
-fn check_retained(
+pub(super) fn check_retained(
     owner: &OriginalNativeImport18Bootstrap,
     row: &PacketNativeImport18BootstrapMaterializationRowData,
 ) -> Result<(), ProviderError> {

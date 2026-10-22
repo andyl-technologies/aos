@@ -74,7 +74,7 @@ fn id(text: &str) -> Id {
     Id::new(text).unwrap()
 }
 
-fn scope() -> (Handshake, Connection<UnixStream>, UnixStream) {
+pub(super) fn scope() -> (Handshake, Connection<UnixStream>, UnixStream) {
     scope_with_declaration_fault(None)
 }
 
@@ -381,7 +381,7 @@ pub(super) fn scope_inputs(
     (handshake, authority, selection, installed)
 }
 
-fn proposal(
+pub(super) fn proposal(
     connection: &Connection<UnixStream>,
 ) -> (
     Envelope,

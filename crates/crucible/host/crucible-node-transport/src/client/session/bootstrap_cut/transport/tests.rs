@@ -345,8 +345,48 @@ fn retained_materialization_seals_and_publishes_the_same_actual_reserved_assignm
         .seal_original_bootstrap_data(original, &request, proof, (bytes, slot), cut)
         .unwrap();
     session
+        .authenticate_original_bootstrap_registered_data(
+            original,
+            &request,
+            proof,
+            (bytes, slot),
+            (cut, false),
+        )
+        .unwrap();
+    assert!(
+        session
+            .authenticate_original_bootstrap_registered_data(
+                original,
+                &request,
+                proof,
+                (bytes, slot),
+                (cut, true),
+            )
+            .is_err()
+    );
+    session
         .publish_original_bootstrap_data(original, &request, proof, (bytes, slot), cut)
         .unwrap();
+    session
+        .authenticate_original_bootstrap_registered_data(
+            original,
+            &request,
+            proof,
+            (bytes, slot),
+            (cut, true),
+        )
+        .unwrap();
+    assert!(
+        session
+            .authenticate_original_bootstrap_registered_data(
+                original,
+                &request,
+                proof,
+                (bytes, slot),
+                (cut, false),
+            )
+            .is_err()
+    );
 
     let mut received = vec![0; bytes.len() + 4];
     peer.read_exact(&mut received).unwrap();
@@ -792,4 +832,61 @@ fn occupied_raw_destination_refuses_before_a_later_cut_check_or_reader_effect() 
         .authenticate_original_bootstrap_endpoint_data()
         .unwrap();
     assert_eq!(session.sequence.get(), 3);
+}
+
+#[test]
+fn registered_guard_refusals_preserve_actual_sdk_and_literal_progress() {
+    for fault in 0..7 {
+        let (mut lease, mut session, mut peer) = scope();
+        let mut sealed = seal(&mut session);
+        let published = fault >= 4;
+        if published {
+            publish(&mut session, &mut peer, &sealed);
+        }
+        let sequence = session.sequence;
+        let cut = session.deadline.original_cut();
+        let slot = sealed.slot.unwrap();
+        let storage = session.connection.original_bootstrap_model_storage_data();
+        let before = session
+            .connection
+            .original_bootstrap_model_registered_state_data(slot);
+
+        match fault {
+            0 => sealed.slot = None,
+            1 => sealed.proof.mac = Bytes::new(vec![9; 32]),
+            2 => sealed.bytes[0] ^= 1,
+            3 => session.deadline.reset(Duration::from_secs(60)).unwrap(),
+            4 => lease.contain(),
+            5 => sealed.slot = Some(slot + 1),
+            6 => sealed.request.initial_funding.retained_requested_bytes = U64::new(2),
+            _ => unreachable!(),
+        }
+        assert!(
+            session
+                .authenticate_original_bootstrap_registered_data(
+                    &sealed.original,
+                    &sealed.request,
+                    &sealed.proof,
+                    (&sealed.bytes, sealed.slot),
+                    (sealed.cut, published),
+                )
+                .is_err(),
+            "fault {fault}"
+        );
+
+        assert_eq!(session.sequence, sequence);
+        if fault != 3 {
+            assert_eq!(session.deadline.original_cut(), cut);
+        }
+        assert_eq!(
+            session.connection.original_bootstrap_model_storage_data(),
+            storage
+        );
+        assert_eq!(
+            session
+                .connection
+                .original_bootstrap_model_registered_state_data(slot),
+            before
+        );
+    }
 }
