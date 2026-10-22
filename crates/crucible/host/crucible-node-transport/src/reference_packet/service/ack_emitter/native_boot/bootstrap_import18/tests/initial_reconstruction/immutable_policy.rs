@@ -7,6 +7,7 @@ use super::super::super::immutable_policy::OriginalImport18ImmutablePolicyAdmiss
 use super::*;
 use crate::reference_packet::NativeImport18PolicyData;
 use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18BootstrapTypedBirthView;
+use crate::reference_packet::service::complete_restore::import18::hello::PacketNativeImport18CurrentRegistrationView;
 use crate::reference_packet::service::complete_restore::import18::{
     PacketNativeImport18PrivateBootWireData, native_import18_declared_features_data,
     native_import18_restored_record_schema_data, native_import18_schema_data,
@@ -159,6 +160,11 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             .is_err()
     );
     assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
+    assert!(
+        original
+            .with_bootstrap_native_registration_wire_data(|_| Ok(()))
+            .is_err()
+    );
     if case == "initial_policy_kernel_missing_policy" {
         super::bootstrap_kernel::assert_missing_policy(original);
         return;
@@ -184,6 +190,8 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             | "initial_policy_reactive"
             | "initial_policy_callback_refused"
             | "initial_policy_loan_expired"
+            | "initial_policy_registration_loan_expired"
+            | "initial_policy_registration_error_expired"
             | "initial_policy_substituted_cut"
             | "initial_policy_later_contained"
     ) || case.starts_with("initial_policy_kernel_");
@@ -227,10 +235,22 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         original
             .with_bootstrap_birth_wire_data(|view| assert_bootstrap_birth_wire(&original, view))
             .unwrap();
+        original
+            .with_bootstrap_native_registration_wire_data(|view| {
+                assert_bootstrap_native_registration(original, view)
+            })
+            .unwrap();
         if case.starts_with("initial_policy_kernel_") {
             super::bootstrap_kernel::assert_child(case, original);
         }
         if case == "initial_policy_callback_refused" {
+            assert!(
+                original
+                    .with_bootstrap_native_registration_wire_data::<()>(|_| Err(
+                        ProviderError::Conflict("native registration callback model")
+                    ))
+                    .is_err()
+            );
             assert!(
                 original
                     .with_bootstrap_birth_wire_data::<()>(|_| Err(ProviderError::Conflict(
@@ -243,9 +263,39 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         if case == "initial_policy_substituted_cut" {
             let prior = original.cut;
             original.cut = OperationalDeadline::after(Duration::from_secs(3)).unwrap();
+            assert!(
+                original
+                    .with_bootstrap_native_registration_wire_data(|_| Ok(()))
+                    .is_err()
+            );
             assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
             original.cut = prior;
             original.with_immutable_policy_data(|_| Ok(())).unwrap();
+        }
+        if matches!(
+            case,
+            "initial_policy_registration_loan_expired"
+                | "initial_policy_registration_error_expired"
+        ) {
+            assert!(
+                original
+                    .with_bootstrap_native_registration_wire_data(|_| {
+                        std::thread::sleep(Duration::from_secs(5));
+                        if case == "initial_policy_registration_error_expired" {
+                            Err(ProviderError::Conflict(
+                                "expired native registration callback model",
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .is_err()
+            );
+            assert!(
+                original
+                    .with_hello_authority_data(|lease| lease.ensure_live())
+                    .is_err()
+            );
         }
         if case == "initial_policy_loan_expired" {
             assert!(
@@ -257,9 +307,19 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                     .is_err()
             );
             assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
+            assert!(
+                original
+                    .with_bootstrap_native_registration_wire_data(|_| Ok(()))
+                    .is_err()
+            );
         }
         if case == "initial_policy_later_contained" {
             original.hello_registrar.contain_admission_data().unwrap();
+            assert!(
+                original
+                    .with_bootstrap_native_registration_wire_data(|_| Ok(()))
+                    .is_err()
+            );
             assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
         }
     } else {
@@ -270,6 +330,11 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .is_err()
         );
         assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
+        assert!(
+            original
+                .with_bootstrap_native_registration_wire_data(|_| Ok(()))
+                .is_err()
+        );
         assert!(original.with_immutable_policy_data(|_| Ok(())).is_err());
         assert!(
             original
@@ -337,6 +402,8 @@ fn model_absent_policy_keeps_actual_launch_hello_lease_and_every_terminal_owner(
         "initial_policy_finish_expired",
         "initial_policy_callback_refused",
         "initial_policy_loan_expired",
+        "initial_policy_registration_loan_expired",
+        "initial_policy_registration_error_expired",
         "initial_policy_substituted_cut",
         "initial_policy_later_contained",
     ] {
@@ -541,5 +608,81 @@ fn assert_bootstrap_birth_wire(
     boot["birth_id"] = json!(Bytes::new(vec![0; 31]));
     let malformed: PacketNativeImport18PrivateBootWireData = serde_json::from_value(boot).unwrap();
     assert!(malformed.bootstrap_birth_wire_data().is_err());
+    Ok(())
+}
+
+/// Checks all nine wire fields independently against the actual live SDK authority.
+fn assert_bootstrap_native_registration(
+    original: &OriginalImport18RawBootstrap,
+    view: &PacketNativeImport18CurrentRegistrationView<'_>,
+) -> Result<(), ProviderError> {
+    use crate::reference_packet::service::complete_restore::import18::hello::{
+        NATIVE_IMPORT18_CONNECTION_ID, native_import18_current_registration_view_data,
+    };
+    use crate::retained_metadata::MetadataObserver;
+    use crate::retained_metadata::serialization_storage::actual_serialization_storage_data;
+
+    let projected = view.native_serialization_data(usize::MAX).unwrap();
+    original.with_hello_authority_data(|authority| {
+        assert_eq!(
+            authority.connection_id().as_str(),
+            NATIVE_IMPORT18_CONNECTION_ID
+        );
+        let expected = json!({
+            "schema": "source-owned.packet-canonical-ack-registration/5",
+            "role": "native",
+            "connection_id": authority.connection_id(),
+            "session_id": authority.session_id(),
+            "incarnation_id": authority.incarnation_id(),
+            "limits": authority.limits(),
+            "features": authority.selected_features(),
+            "extensions": authority.selected_extensions().unwrap(),
+            "envelope_extensions": authority.envelope_extensions(),
+        });
+        assert_eq!(serde_json::to_value(view).unwrap(), expected);
+        Ok(())
+    })?;
+
+    let actual =
+        actual_serialization_storage_data(view, MetadataObserver::new().finish(), usize::MAX)
+            .unwrap();
+    let projected_fields = policy_shape_fields(&projected);
+    let actual_fields = policy_shape_fields(&actual);
+    for index in [0, 1, 2, 3, 4, 6, 7, 8, 9, 10] {
+        assert_eq!(
+            projected_fields[index], actual_fields[index],
+            "shape field {index}"
+        );
+    }
+    // The shared projection retains its original twenty-byte scalar reserve.
+    assert_eq!(projected.serializer_temporary_requested_bytes, 20);
+    let peak = projected.requested_total().unwrap();
+    for restriction in [peak, peak + 4096] {
+        assert_eq!(
+            policy_shape_fields(&view.native_serialization_data(restriction).unwrap()),
+            projected_fields
+        );
+    }
+    assert!(view.native_serialization_data(peak - 1).is_err());
+    assert!(view.native_serialization_data(1).is_err());
+    assert!(
+        OriginalImport18RawBootstrap::bootstrap_native_registration_loan_counter_scratch_data::<()>(
+        )
+        .unwrap()
+            > OriginalImport18RawBootstrap::bootstrap_policy_loan_counter_scratch_data::<()>()
+                .unwrap()
+    );
+
+    let controller = Id::new("original-controller").unwrap();
+    original.with_hello_authority_data(|authority| {
+        let controller_view =
+            native_import18_current_registration_view_data(authority, Some(&controller))?;
+        assert!(
+            controller_view
+                .native_serialization_data(usize::MAX)
+                .is_err()
+        );
+        Ok(())
+    })?;
     Ok(())
 }

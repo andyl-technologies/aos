@@ -26,6 +26,10 @@ pub(in crate::reference_packet) use materialization::{
     native_import18_hello_projection_counter_scratch_data,
     native_import18_hello_registration_projection_data,
 };
+pub(in crate::reference_packet) use registration::{
+    PacketNativeImport18CurrentRegistrationView, native_import18_current_registration_view_data,
+};
+
 pub use registration::{
     PacketNativeImport18ProspectiveHostRegistrationData, PacketNativeImport18RegistrationSideData,
     authenticate_native_import18_current_host_registration_data,

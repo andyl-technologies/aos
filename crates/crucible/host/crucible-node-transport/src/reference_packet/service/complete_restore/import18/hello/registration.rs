@@ -1,6 +1,11 @@
 //! Retains actual registration authority checks and the borrowed wire view.
 //!
 //! Planned grammar, prospective projection and hash DATA share one lower body.
+//!
+//! ```text
+//! registration9 = {schema,role,connection_id,session_id,incarnation_id,
+//!                  limits,features,extensions,envelope_extensions}
+//! ```
 
 use super::*;
 use crate::handshake::{ConnectionAuthority, Limits};
@@ -149,8 +154,9 @@ pub fn authenticate_native_import18_current_host_registration_data(
     authority.ensure_live()
 }
 
+/// Borrows all nine role-normalized fields from an actual current SDK authority.
 #[derive(Serialize)]
-struct Registration<'a> {
+pub(in crate::reference_packet) struct PacketNativeImport18CurrentRegistrationView<'a> {
     schema: &'static str,
     role: &'static str,
     connection_id: &'a Id,
@@ -161,6 +167,11 @@ struct Registration<'a> {
     extensions: &'a [crucible_node_format::ExtensionSelection],
     envelope_extensions: &'a std::collections::BTreeSet<String>,
 }
+
+type Registration<'a> = PacketNativeImport18CurrentRegistrationView<'a>;
+
+#[path = "registration/native_view.rs"]
+mod native_view;
 
 /// Borrows the complete current registration9 DATA without copying its children.
 ///
@@ -174,6 +185,20 @@ pub fn native_import18_current_registration_wire_data<'a>(
     authority: &'a ConnectionAuthority,
     controller_connection_id: Option<&'a Id>,
 ) -> Result<impl Serialize + 'a, ProviderError> {
+    native_import18_current_registration_view_data(authority, controller_connection_id)
+}
+
+/// Borrows the actual role-normalized registration without copying SDK children.
+///
+/// Complete Source/Hello/role provenance remains the original caller's guard.
+/// This view creates no connection, Source permission or native ACK.
+///
+/// # Errors
+/// Refuses a revoked authority or absent actual typed extension registration.
+pub(in crate::reference_packet) fn native_import18_current_registration_view_data<'a>(
+    authority: &'a ConnectionAuthority,
+    controller_connection_id: Option<&'a Id>,
+) -> Result<PacketNativeImport18CurrentRegistrationView<'a>, ProviderError> {
     authority.ensure_live()?;
     Ok(Registration {
         schema: PLANNED_SCHEMA,
@@ -197,7 +222,10 @@ pub fn native_import18_registration_counter_scratch_data() -> usize {
     shared_registration::native_import18_registration_counter_scratch_data()
         + size_of::<Registration<'static>>()
         + size_of::<&ConnectionAuthority>()
-        + size_of::<Result<Registration<'static>, ProviderError>>()
+        + size_of::<Result<Registration<'static>, ProviderError>>() // Original public adapter result.
+        + size_of::<Result<Registration<'static>, ProviderError>>() // Shared constructor result.
+        + size_of::<Option<&Id>>()
+        + size_of::<&ConnectionAuthority>()
         + size_of::<&PacketNativeImport18HelloDeclarationData>()
         + size_of::<&shared::PacketNativeImport18HelloDeclarationData>()
         + size_of::<Result<(), ProviderError>>()
