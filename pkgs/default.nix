@@ -1841,6 +1841,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) mkAosBazelToolchains mkAosBazelCrossToolchains aosBazelModules aosBazelToolchains;
       inherit (bazelSupport) mkAosBazelWorkspace mkAosBazelBuild;
       inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
+      inherit (bazelSupport) mkAosBazelNativeLibraries;
       inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater;
       inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
@@ -2149,6 +2150,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         controllerOnly = true;
       };
       sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
+      zstdStaticMultithread = callPackage ./compression/zstd.nix {enableStaticMultithread = true;};
 
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the

@@ -62,6 +62,33 @@ Production consumers retain their Cargo or direct-rustc recipes. These fixtures 
 production feature parity, cross-platform support, or completion of the RFC. The remaining platform/invalidation checks and
 family-specific performance budgets remain required before production cutover.
 
+## Native library imports
+
+`mkAosBazelNativeLibraries` supplies a Nix-built repository of named `CcInfo`
+providers. Each entry chooses an AOS package, header package/directory, library
+file, and explicit `shared` or `static` linkage. The package's target system
+must match the repository platform. Imported headers and library bytes are
+declared Bazel inputs; each link also consumes a manifest of the selected
+variant's realized runtime closure. These library identities remain separate
+from the compiler identity. Shared imports add their immutable AOS library
+directory to the consumer's runtime search path.
+
+`checks.build.bazel.native-libraries` checks shared and static SQLite/zstd
+imports through both C and Rust consumers. The programs execute an in-memory
+SQL query and a zstd round trip, require SQLite FTS5/thread support, and exercise
+zstd's worker configuration. The static test explicitly selects
+`pkgs.zstdStaticMultithread`: upstream's ordinary static
+archive disables threading even though its shared library enables it. The
+default zstd derivation identity remains unchanged.
+
+The check inspects sandboxed compiler/link actions for declared headers,
+closure manifests, and the selected library byte hashes. It verifies ELF
+dependencies and runtime paths, checks the license closure, and requires
+analysis to reject a foreign target or an absent Nix repository override.
+`tests/evidence/native-linux-native-libraries.json` retains the qualification.
+This qualifies native Linux imports; the store/campaign build-script bindings
+and a fully static guest executable still require their family checks.
+
 ## Rust package identity
 
 Each migrated Rust package declares `aos_rust_package` in its BUILD file. The

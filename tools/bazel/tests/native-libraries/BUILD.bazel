@@ -1,0 +1,28 @@
+load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+
+cc_library(
+    name = "probe",
+    srcs = ["probe.c"],
+    hdrs = ["probe.h"],
+    deps = ["@aos_native//:sqlite", "@aos_native//:zstd"],
+)
+
+cc_binary(
+    name = "c_app",
+    srcs = ["main.c"],
+    deps = [":probe"],
+)
+
+rust_binary(
+    name = "rust_app",
+    srcs = ["main.rs"],
+    edition = "2024",
+    link_deps = [":probe"],
+)
+
+aos_license_check(
+    name = "license_closure",
+    roots = [":c_app", ":rust_app"],
+    license_domain = "apache-host",
+)
