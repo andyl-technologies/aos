@@ -11,7 +11,7 @@ use aos_hub_db::direct_upload::*;
 use aos_hub_db::storage_work::StorageWorkKey;
 use sha2::{Digest as _, Sha256};
 
-use super::{finish, run, LogicalReply, Published, Ready, Reserved, Runtime};
+use super::{finish, run, FailurePhase, LogicalReply, Published, Ready, Reserved, Runtime};
 use crate::direct_upload::control;
 
 mod http;
@@ -163,6 +163,7 @@ struct PhysicalFixture {
     promotion_peak: Cell<usize>,
     promotion_order: RefCell<Vec<String>>,
     acknowledged: RefCell<BTreeSet<String>>,
+    failures: RefCell<Vec<FailurePhase>>,
 }
 
 struct FixtureStore {
@@ -254,6 +255,7 @@ impl PhysicalFixture {
             promotion_peak: Cell::new(0),
             promotion_order: RefCell::new(Vec::new()),
             acknowledged: RefCell::new(BTreeSet::new()),
+            failures: RefCell::new(Vec::new()),
         }
     }
 
@@ -264,6 +266,10 @@ impl PhysicalFixture {
 
 #[async_trait::async_trait(?Send)]
 impl Runtime for PhysicalFixture {
+    fn failed(&self, phase: FailurePhase, _: &DirectRequestContext) {
+        self.failures.borrow_mut().push(phase);
+    }
+
     fn maximum(&self) -> usize {
         3
     }
@@ -501,6 +507,10 @@ async fn batches_use_four_actual_http_phase_calls_and_keep_partial_errors() {
             .collect::<Vec<_>>()
     );
     assert_eq!(runtime.store.count(), 6);
+    assert_eq!(
+        *runtime.failures.borrow(),
+        [FailurePhase::BaselineAuthorization]
+    );
     assert_eq!(runtime.acknowledged.borrow().len(), 6);
     assert_eq!(
         output.errors,
@@ -646,6 +656,7 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
 
     assert_eq!(server.captured().requests.len(), 4);
     assert_eq!(first.errors.len(), 4);
+    assert_eq!(*runtime.failures.borrow(), [FailurePhase::Commit]);
     assert_eq!(runtime.store.count(), 4);
     assert!(runtime.acknowledged.borrow().is_empty());
 
@@ -665,6 +676,7 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
     run(&runtime, &context, &public_bytes, items(), &mut replay).await;
 
     assert!(replay.errors.is_empty());
+    assert!(runtime.failures.borrow().is_empty());
     assert_eq!(runtime.store.count(), 4);
     assert_eq!(runtime.acknowledged.borrow().len(), 4);
     assert!(runtime.promotion_order.borrow().is_empty());

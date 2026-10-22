@@ -5,8 +5,8 @@ use aos_hub_db::direct_upload::*;
 use worker::{Env, Request};
 
 use super::{
-    finish, require_historical_original, require_historical_publication, Published, Ready,
-    Reserved, Runtime,
+    finish, require_historical_original, require_historical_publication, FailurePhase, Published,
+    Ready, Reserved, Runtime,
 };
 use crate::direct_upload::{
     broker::{created, current, fresh_context_at, logical_with_clock, parallelism},
@@ -26,6 +26,18 @@ pub(super) struct WorkerRuntime<'a> {
 impl Runtime for WorkerRuntime<'_> {
     fn maximum(&self) -> usize {
         self.qualified.map(parallelism).unwrap_or(1)
+    }
+
+    fn failed(&self, phase: FailurePhase, context: &DirectRequestContext) {
+        let now = guard_latest_now(self.env);
+        let remaining = now
+            .as_ref()
+            .map(|now| context.foreground.expires_at.get().saturating_sub(*now))
+            .unwrap_or(0);
+        worker::console_error!(
+            "direct_completion_refused phase={phase:?} clock_available={} foreground_remaining_seconds={remaining}",
+            now.is_ok()
+        );
     }
 
     fn fresh_context(&self, original: &DirectRequestContext) -> Result<DirectRequestContext> {

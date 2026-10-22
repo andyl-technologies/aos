@@ -18,9 +18,28 @@ mod tests;
 #[cfg(target_arch = "wasm32")]
 mod worker;
 
+/// Closed diagnostic categories exclude request identities and error contents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FailurePhase {
+    Freeze,
+    FreezeAuthorization,
+    Prepare,
+    Evidence,
+    Baseline,
+    BaselineAuthorization,
+    ReservationContext,
+    Reserve,
+    PromotionAuthorization,
+    Promote,
+    Commit,
+    CommitAuthorization,
+    Acknowledge,
+}
+
 #[async_trait::async_trait(?Send)]
 trait Runtime {
     fn maximum(&self) -> usize;
+    fn failed(&self, phase: FailurePhase, context: &DirectRequestContext);
     fn fresh_context(&self, original: &DirectRequestContext) -> Result<DirectRequestContext>;
     async fn logical(
         &self,
@@ -204,6 +223,7 @@ async fn run<R: Runtime>(
     let frozen = match fresh_logical(runtime, context, freeze).await {
         Ok(reply) => reply,
         Err(error) => {
+            runtime.failed(FailurePhase::Freeze, context);
             for item in &items {
                 response.errors.push(item_error(&item.operation_id, &error));
             }
@@ -220,6 +240,7 @@ async fn run<R: Runtime>(
                 complete_intent: Some(complete.clone()),
             };
             if !frozen.reply.authorizations.contains(&expected) {
+                runtime.failed(FailurePhase::FreezeAuthorization, context);
                 missing_authorization(response, &complete, &frozen.reply);
                 return None;
             }
@@ -228,6 +249,7 @@ async fn run<R: Runtime>(
                     && admission.logical_fingerprint == complete.session.logical_fingerprint
             });
             if admitted.is_none() {
+                runtime.failed(FailurePhase::FreezeAuthorization, context);
                 missing_authorization(response, &complete, &frozen.reply);
             }
             admitted.map(|admission| (admission.clone(), complete))
@@ -268,12 +290,18 @@ async fn run<R: Runtime>(
             Ok(Some(ready)) if ready.settled.len() == ready.admission.placements.len() => {
                 match finish(ready, context) {
                     Ok(item) => published.push(item),
-                    Err(error) => response.errors.push(item_error(&identity, &error)),
+                    Err(error) => {
+                        runtime.failed(FailurePhase::Evidence, context);
+                        response.errors.push(item_error(&identity, &error));
+                    }
                 }
             }
             Ok(Some(ready)) => pending.push(ready),
             Ok(None) => {}
-            Err(error) => response.errors.push(item_error(&identity, &error)),
+            Err(error) => {
+                runtime.failed(FailurePhase::Prepare, context);
+                response.errors.push(item_error(&identity, &error));
+            }
         }
     }
 
@@ -291,6 +319,7 @@ async fn run<R: Runtime>(
             }
             Ok(_) => false,
             Err(error) => {
+                runtime.failed(FailurePhase::Evidence, context);
                 let error = anyhow::Error::from(error);
                 response
                     .errors
@@ -313,6 +342,7 @@ async fn run<R: Runtime>(
                 pending.retain(|item| {
                     let allowed = authorized(item, &reply.reply);
                     if !allowed {
+                        runtime.failed(FailurePhase::BaselineAuthorization, context);
                         missing_authorization(response, &item.complete, &reply.reply);
                     }
                     allowed
@@ -320,6 +350,7 @@ async fn run<R: Runtime>(
                 merge_reply(response, reply.reply);
             }
             Err(error) => {
+                runtime.failed(FailurePhase::Baseline, context);
                 fail_ready(response, &pending, &error);
                 pending.clear();
             }
@@ -331,6 +362,7 @@ async fn run<R: Runtime>(
     let promotion_context = match runtime.fresh_context(context) {
         Ok(value) => value,
         Err(error) => {
+            runtime.failed(FailurePhase::ReservationContext, context);
             fail_ready(response, &pending, &error);
             pending.clear();
             context.clone()
@@ -351,7 +383,10 @@ async fn run<R: Runtime>(
     for (identity, result) in reservations {
         match result {
             Ok(item) => reserved.push(item),
-            Err(error) => response.errors.push(item_error(&identity, &error)),
+            Err(error) => {
+                runtime.failed(FailurePhase::Reserve, context);
+                response.errors.push(item_error(&identity, &error));
+            }
         }
     }
 
@@ -365,6 +400,7 @@ async fn run<R: Runtime>(
                 reserved.retain(|item| {
                     let allowed = authorized(&item.ready, &reply.reply);
                     if !allowed {
+                        runtime.failed(FailurePhase::PromotionAuthorization, context);
                         missing_authorization(response, &item.ready.complete, &reply.reply);
                     }
                     allowed
@@ -385,11 +421,15 @@ async fn run<R: Runtime>(
                     match result {
                         Ok(Some(item)) => published.push(item),
                         Ok(None) => {}
-                        Err(error) => response.errors.push(item_error(&identity, &error)),
+                        Err(error) => {
+                            runtime.failed(FailurePhase::Promote, context);
+                            response.errors.push(item_error(&identity, &error));
+                        }
                     }
                 }
             }
             Err(error) => {
+                runtime.failed(FailurePhase::PromotionAuthorization, context);
                 for item in &reserved {
                     response
                         .errors
@@ -410,6 +450,7 @@ async fn run<R: Runtime>(
     let committed = match settlement {
         Ok(reply) => reply,
         Err(error) => {
+            runtime.failed(FailurePhase::Commit, context);
             for item in &published {
                 response
                     .errors
@@ -423,6 +464,7 @@ async fn run<R: Runtime>(
     // held. Only an exact signed committed status can release its guards.
     for item in &published {
         if !is_committed(item, &committed.reply) {
+            runtime.failed(FailurePhase::CommitAuthorization, context);
             missing_authorization(response, &item.ready.complete, &committed.reply);
         }
     }
@@ -440,6 +482,7 @@ async fn run<R: Runtime>(
     merge_reply(response, committed.reply);
     for (identity, result) in acknowledged {
         if let Err(error) = result {
+            runtime.failed(FailurePhase::Acknowledge, context);
             response.errors.push(item_error(identity, &error));
         }
     }
