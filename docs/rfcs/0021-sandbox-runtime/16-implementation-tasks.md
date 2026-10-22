@@ -9932,6 +9932,19 @@ that the selected Coreutils `stat` has no libselinux support. The fixture now
 uses the AOS-built `getfattr` to compare the actual raw `security.selinux`
 values, following the DSO links. This label comparison remains unqualified
 until the installed rerun passes.
+The next installed run passes all four DSO comparisons, including both raw
+labels. It then reaches the real phase-zero start, where PID1 refuses the
+probe and target because that image has no resource bank. Observation-only
+Host work can now install the same finite base bank without an enabled
+Controller, retaining its unused reservation and rejecting online subdivisions.
+The fixture uses the existing funded vectors and backs them with 16 CPUs,
+36 GiB memory and a 96 GiB disk; guest checks compare actual CPU, memory and
+free storage before the probe. Its stage0 uses the selected manager package.
+The standalone-bank contract rejects an absent owner and an online subdivision.
+It passes at
+`/nix/store/v550crz3mhhfk94q7fv2hap81vv2s1sg-sandbox-standalone-resource-bank-check`.
+Core evaluation also passes. The installed Host rerun remains pending; the earlier
+DSO comparison is component evidence, not phase-zero or backend readiness.
 
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.

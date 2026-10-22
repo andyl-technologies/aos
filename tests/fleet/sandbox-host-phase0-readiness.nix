@@ -5,6 +5,8 @@
   systems,
   ...
 }: let
+  fundedSystem = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
+  fundedPolicy = fundedSystem.config.aos.sandbox.resourceBank.policy;
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
@@ -56,6 +58,7 @@
         # The fixture releases only admission. Its policy, kernel readback and
         # provisioner retain the image's exact UID and fixed-view assignments.
         aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+          systemd = config.aos.manager.selected.package;
           aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
           aos-selinux-runtime-roots = config.aos.security.selinux._runtimeRootsProvisioner;
           admissionUnit = "";
@@ -63,6 +66,12 @@
           expectedPolicyKernel = config.system.build.kernel;
         });
         aos.services.dbus.enable = true;
+        # PID1 charges these fixed probe and broker jobs to Components. Keep
+        # the existing Controller reservation unused and all online families
+        # absent; this image supplies no Controller startup or effect loan.
+        aos.sandbox.resourceBank.policy = {
+          inherit (fundedPolicy) node epoch capacity baseline controller components;
+        };
         aos.sandbox.hostBroker = {
           enable = true;
           credentials = {
@@ -126,6 +135,9 @@ in {
     inherit system;
     bootMode = "image";
     firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
+    vcpuCount = 16;
+    memoryMiB = 36864;
+    imageDiskMiB = 98304;
   };
 
   testScript =
@@ -233,6 +245,11 @@ in {
       vm.wait_for_unit("multi-user.target", timeout=180)
       vm.succeed("test -f /sys/fs/selinux/enforce")
       assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+      assert int(vm.succeed("nproc").strip()) == 16
+      memory_kib = int(vm.succeed("awk '/^MemTotal:/ {print $2}' /proc/meminfo").strip())
+      assert memory_kib * 1024 >= ${toString fundedPolicy.capacity.memory-bytes}
+      available_storage = int(vm.succeed("df -B1 --output=avail /var | tail -n 1").strip())
+      assert available_storage >= ${toString fundedPolicy.capacity.storage-bytes}
 
       # Data deduplication must not turn the nested Guest copy into a Host
       # inode alias, change immutable ownership/modes, or replace its label.

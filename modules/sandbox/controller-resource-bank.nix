@@ -552,13 +552,17 @@ in {
       {
         assertion =
           config.aos.sandbox.controllerService.enable
-          || (config.aos.sandbox.nixOfflinePrepare.enable
+          || ((config.aos.sandbox.nixOfflinePrepare.enable
+              || (config.aos.sandbox.hostBroker.enable
+                && !config.aos.sandbox.hostBroker.componentControl
+                && !config.aos.sandbox.hostBroker.canary))
             && cfg.policy.hostService == null
             && cfg.policy.hostControl == null);
-        # Installation jobs precede the online owners. They still pay manager
-        # jobs through the same finite bank, retaining the unused Controller
-        # envelope. Online subdivisions require their original enabled owners.
-        message = "Shared resource enrollment requires the fixed Controller, or a standalone offline installation with the base finite bank and no online subdivisions.";
+        # Offline installation and observation-only Host jobs can precede the
+        # Controller. Their manager jobs still use the same finite base bank;
+        # the unused Controller reservation never becomes a component loan.
+        # Online subdivisions require their original enabled owners.
+        message = "Shared resource enrollment requires the fixed Controller, or standalone offline/observation-only Host work with the base finite bank and no online subdivisions.";
       }
       {
         assertion =
