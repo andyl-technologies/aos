@@ -9570,6 +9570,17 @@ including removal of each host activation permission; compiled-policy and
 installed-image qualification remain pending. No activation journal is erased
 or repaired to turn the failed first effect into a successful boot.
 
+The full Root and lifecycle-funded images separately reached closure assembly
+and rejected duplicate `50-udev-default.rules` providers. Immutable root
+assembly now uses the existing selected-daemon udev collector, with the
+merged-usr physical store prefix and the active host/manager closure list.
+Other complete systemd builds cannot supply the selected daemon's rules;
+identical shared rules coalesce, conflicting bytes still fail, and additional
+stored upgrade closures contribute no active rules. The collector check passes
+at `/nix/store/40h3l4ir1r4mpjqfc5d11vi41m4kg4qg-initrd-udev-rules-check-1`,
+including the physical-prefix and inactive-upgrade cases. These image builds
+and their enforcing boots still require reruns.
+
 GNU build identity is a separate admission prerequisite. The previously built
 AOS systemd executable lacks the required GNU build-ID note, and an unflagged
 AOS Rust probe built without one. The systemd and Mount daemon package

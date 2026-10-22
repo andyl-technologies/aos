@@ -47,6 +47,27 @@ pkgs.mkDerivation {
         fi
         grep -Fq 'selected udev provider is incomplete' missing.log
 
+        # The merged-usr root stores closures at a physical prefix and admits
+        # only active providers. Additional image closures cannot add rules.
+        mkdir -p physical/usr/lib/aos/nix
+        cp -a root/nix/store physical/usr/lib/aos/nix/
+        ln -s usr/lib physical/lib
+        inactive=physical/usr/lib/aos/nix/store/inactive-upgrade/lib/udev/rules.d
+        mkdir -p "$inactive"
+        printf 'TAG+="inactive-upgrade"\n' > "$inactive/99-inactive.rules"
+        printf '%s\n' /nix/store/a-systemd /nix/store/b-systemd-deployment \
+          "$foreign" "$selected" > active-packages
+        ${pkgs.bash}/bin/bash "$collector" "$PWD/physical" "$selected" \
+          /usr/lib/aos "$PWD/active-packages"
+        test "$(readlink physical/usr/lib/udev/rules.d/64-btrfs.rules)" = \
+          "$selected/lib/udev/rules.d/64-btrfs.rules"
+        test "$(readlink physical/usr/lib/udev/rules.d/50-shared.rules)" = \
+          /nix/store/a-systemd/lib/udev/rules.d/50-shared.rules
+        test ! -L physical/usr/lib/udev/rules.d/65-foreign.rules
+        test ! -L physical/usr/lib/udev/rules.d/99-inactive.rules
+        ${pkgs.bash}/bin/bash "$collector" "$PWD/physical" "$selected" \
+          /usr/lib/aos "$PWD/active-packages"
+
         printf 'SUBSYSTEM=="block", TAG-="systemd"\n' > "$second/50-shared.rules"
         if ${pkgs.bash}/bin/bash "$collector" "$PWD/root" "$selected" > conflict.log 2>&1; then
           echo "conflicting udev rules were accepted" >&2

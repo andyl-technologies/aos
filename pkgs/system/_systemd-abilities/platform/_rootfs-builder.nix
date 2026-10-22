@@ -185,7 +185,7 @@
   # Identify the active system separately from additional stored closures.
   # Upgrade candidates and test packages must not install their udev rules.
   activeSystemInfo = closureInfoFor {
-    rootPaths = [toplevel];
+    rootPaths = [toplevel] ++ managerClosureRoots;
   };
 
   # Symlink-farm script fragment — one block per package. Ordering
@@ -256,6 +256,7 @@ in
       buildDeps =
         [
           buildPackages.coreutils
+          buildPackages.diffutils
           buildPackages.findutils
           buildPackages.tar
           buildPackages.e2fsprogs
@@ -263,7 +264,6 @@ in
           buildPackages.util-linux
           buildPackages.erofs-utils
         ]
-        ++ lib.optionals erofsDeduplication [buildPackages.diffutils]
         ++ lib.optional (fsType == "erofs") buildPackages.image-hardlink-tree
         # Verity sub-step tooling is gated so the non-verity path's
         # build environment (and thus its derivation hash) is unchanged.
@@ -395,21 +395,11 @@ in
               # but udev does not discover rule directories through PATH.
               # In particular, device-mapper's rules publish /dev/mapper/*
               # nodes to systemd after dm-verity and dm-crypt activation.
-              mkdir -p rootfs/usr/lib/udev/rules.d
-              cp "$ACTIVE_SYSTEM_INFO/store-paths" active-system-paths
-              while IFS= read -r rule_root; do
-                rules_dir="$rule_root/lib/udev/rules.d"
-                [ -d "$rules_dir" ] || continue
-                for rule in "$rules_dir"/*.rules; do
-                  [ -e "$rule" ] || continue
-                  name=$(basename "$rule")
-                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
-                    echo "rootfs-builder: duplicate udev rule $name" >&2
-                    exit 1
-                  fi
-                  ln -s "$rule" "rootfs/usr/lib/udev/rules.d/$name"
-                done
-              done < active-system-paths
+              ${lib.optionalString (checkedManagerRootfsPlan != null) ''
+                $CONFIG_SHELL ${./collect-udev-rules.sh} "$PWD/rootfs" \
+                  ${system.config.aos.manager.selected.package} /usr/lib/aos \
+                  "$ACTIVE_SYSTEM_INFO/store-paths"
+              ''}
 
               # ── 3. Selected init and compat symlinks ────────────────────────
               ${managerInitScript}
