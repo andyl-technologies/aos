@@ -29,7 +29,7 @@ use crate::{
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan,
     WhiteboxDoorbellSetupResources, WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent,
-    WhiteboxMarkerPayload, WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
+    WhiteboxMarkerPayload, WhiteboxMarkerSinkError,
 };
 
 mod api;
@@ -703,9 +703,6 @@ impl LiveWhiteboxState {
             Ok(())
         } else {
             let setup_complete = is_setup_complete_marker(payload);
-            // Other handlers take their own snapshot. Return this inspection
-            // buffer before their reads, publications or deferred VMStop work.
-            drop(buffer);
             if setup_complete
                 && let Some(selectable) = self.selectable.as_mut()
             {
@@ -715,13 +712,15 @@ impl LiveWhiteboxState {
             }
             self.marker_sink
                 .bind_callback_coordinate(raw_icount, trap_tick_ps);
-            let marker_result = handle_whitebox_doorbell_callback(
-                &self.doorbell,
-                &mut reader,
+            let marker_result = self.doorbell.service_trap_snapshot(
                 &mut self.marker_sink,
                 event,
+                payload,
             );
             self.marker_sink.clear_callback_coordinate();
+            // Recording has finished with the snapshot. Return it before any
+            // readiness callback can defer VMStop work.
+            drop(buffer);
             let marker =
                 marker_result.map_err(|source| LiveWhiteboxError::DoorbellCallback { source })?;
             if let WhiteboxMarkerPayload::Event(event) = marker.into_decoded_payload() {

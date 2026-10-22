@@ -589,6 +589,30 @@ execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
 
+#### Ordinary marker service from the retained trap snapshot
+
+The live ordinary marker path now decodes the retained initial guest snapshot.
+It no longer repeats the guest read or creates an intermediate owned frame
+payload. Explicit reader-based APIs still return the same owned marker and
+use the shared borrowed decoder. Marker payload ownership, typed fields and
+sink recording remain unchanged. The native read array returns after recording
+and coordinate clearing, before readiness callbacks or deferred VMStop work.
+Snapshot validation is shared with app-random: mode, range bounds and exact
+length precede decoding or service effects.
+
+The existing snapshot control checks that service retains the trap's coverage
+value while guest memory contains a later mutation, with unchanged recorded
+coordinates and one reader call. The malformed-frame control checks the live
+snapshot entry against its independent typed-error and diagnostic oracle.
+All 129 white-box controls, compilation of every plugin test target and
+engineering hygiene pass. Mandatory application compilation, the unchanged
+327-case supervision gate and ABI conformance are being collected.
+
+The returned marker still owns its raw payload and variable-length decoded
+fields. Selectable service still rereads its request. The initial native array,
+sink/transport storage, complete operation funding and Native authority remain
+separate open work.
+
 #### Borrowed app-random request service
 
 The live app-random service now consumes the retained initial native snapshot,
@@ -608,8 +632,17 @@ The first compile caught two remaining test call sites passing owned frames;
 those call sites now explicitly borrow the frame. All 129 white-box controls,
 all codec and golden-vector integration controls, compilation of every
 protocol/plugin test target and engineering hygiene pass against the corrected
-source. Mandatory application compilation, ABI conformance and the unchanged
+source. Mandatory application compilation passes at
+`k6dazcm1n34zb7fv1bqsdshkh2dbxna3`. ABI conformance and the unchanged
 327-case supervision gate are being collected against that final source.
+All 5,312 committed Rust/TOML files at
+`3259e4797771b3a039a56459f28a3d13f6332015` match immutable application source
+`m4jih9wff12azk5vn4w9nrp9zj89ph6x`; the comparison record has SHA-256
+`07342d829bfbde04090d539f05a46ad9c0453c04e9e48aa10d7b9afedced9e92`.
+The initial ABI and supervision snapshots retain the same two outdated test
+call-site compile refusals; their corrected-source reruns remain distinct.
+Canonical license checking stops at 909 host-library and 963 host-test Clippy
+errors before boundary assertions.
 
 The GLib read allocation, owned request fields, decision records, transport
 encoding, dynamic callback errors and complete operation funding remain open.
@@ -650,7 +683,9 @@ and reply delivery, including the full-width maximum value.
 
 All 129 white-box tests, compilation of every plugin test target and engineering
 hygiene pass. Mandatory application compilation and the unchanged exact
-325-case supervision run are being collected. Request decoding, decision
+325-case supervision run were collected. All 325 exact cases pass at
+`dzypdrngbc2f4bhfpllvcg9k570998s6`, with nine actual test groups.
+Request decoding, decision
 storage, callback errors and complete operation funding remain open. Mandatory
 application compilation subsequently passes at `1yiz4pkj33pixl3hzkdg29r0kv6ci9jn`.
 All 5,310

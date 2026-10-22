@@ -192,13 +192,28 @@ impl PluginWhiteboxDoorbell {
         R: GuestMemoryReader + ?Sized,
         S: WhiteboxMarkerSink + ?Sized,
     {
-        if !self.mode.is_on() {
-            return Err(WhiteboxDoorbellError::TrapWhileDisabled);
-        }
-        self.validate_payload_range(event.payload_range())?;
-
         let payload = read_doorbell_payload(self, reader, event)?;
-        let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, self.max_payload_len()) {
+        self.service_trap_snapshot(sink, event, &payload)
+    }
+
+    /// Records a marker from the retained snapshot of its trapping instruction.
+    ///
+    /// # Errors
+    ///
+    /// Refuses disabled mode, invalid ranges, mismatched snapshot lengths,
+    /// malformed or non-observational frames, and marker sink failures.
+    pub(crate) fn service_trap_snapshot<S>(
+        &self,
+        sink: &mut S,
+        event: WhiteboxDoorbellTrapEvent,
+        payload: &[u8],
+    ) -> Result<WhiteboxMarker, WhiteboxDoorbellError>
+    where
+        S: WhiteboxMarkerSink + ?Sized,
+    {
+        self.validate_snapshot(event, payload)?;
+
+        let frame = match WhiteboxDoorbellFrameView::decode_bounded(payload, self.max_payload_len()) {
             Ok(frame) => frame,
             Err(source) => {
                 record_decode_diagnostic(
@@ -211,7 +226,7 @@ impl PluginWhiteboxDoorbell {
                 });
             }
         };
-        let decoded_payload = match decode_whitebox_marker_payload(&frame) {
+        let decoded_payload = match decode_whitebox_marker_payload_view(frame) {
             Ok(decoded_payload) => decoded_payload,
             Err(source) => {
                 record_decode_diagnostic(
@@ -317,6 +332,24 @@ impl PluginWhiteboxDoorbell {
                 })
             }
         }
+    }
+
+    fn validate_snapshot(
+        &self,
+        event: WhiteboxDoorbellTrapEvent,
+        payload: &[u8],
+    ) -> Result<(), WhiteboxDoorbellError> {
+        if !self.mode.is_on() {
+            return Err(WhiteboxDoorbellError::TrapWhileDisabled);
+        }
+        self.validate_payload_range(event.payload_range())?;
+        if payload.len() != event.payload_range().len() {
+            return Err(WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: event.payload_range().len(),
+                actual_len: payload.len(),
+            });
+        }
+        Ok(())
     }
 
     fn validate_payload_range(&self, range: GuestMemoryRange) -> Result<(), WhiteboxDoorbellError> {
@@ -441,22 +474,9 @@ where
     D: BackendRngEvidenceSource + ?Sized,
     W: WhiteboxGuestInputWriter + ?Sized,
 {
-    if !doorbell.mode.is_on() {
-        return Err(AppRandomDoorbellError::Doorbell(
-            WhiteboxDoorbellError::TrapWhileDisabled,
-        ));
-    }
     doorbell
-        .validate_payload_range(event.payload_range())
+        .validate_snapshot(event, payload)
         .map_err(AppRandomDoorbellError::Doorbell)?;
-    if payload.len() != event.payload_range().len() {
-        return Err(AppRandomDoorbellError::Doorbell(
-            WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
-                requested_len: event.payload_range().len(),
-                actual_len: payload.len(),
-            },
-        ));
-    }
 
     let frame = match WhiteboxDoorbellFrameView::decode_bounded(payload, doorbell.max_payload_len()) {
         Ok(frame) => frame,

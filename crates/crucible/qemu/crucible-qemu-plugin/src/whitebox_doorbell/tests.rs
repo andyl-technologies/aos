@@ -390,7 +390,7 @@ fn whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount() {
     );
     let event = WhiteboxDoorbellTrapEvent::from_shared_page(3, 1234, range);
     let mut reader =
-        MutatingSnapshotGuestMemoryReader::new(trap_snapshot, later_guest_memory.clone());
+        MutatingSnapshotGuestMemoryReader::new(trap_snapshot.clone(), later_guest_memory.clone());
     let mut sink = RecordingMarkerSink::default();
 
     let marker = match handle_whitebox_doorbell_callback(&doorbell, &mut reader, &mut sink, event) {
@@ -407,7 +407,16 @@ fn whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount() {
         marker.decoded_payload(),
         WhiteboxMarkerPayload::Coverage(body) if body.point == "trap-snapshot"
     ));
-    assert_eq!(sink.markers, vec![marker]);
+    assert_eq!(sink.markers, vec![marker.clone()]);
+
+    let mut snapshot_sink = RecordingMarkerSink::default();
+    let retained = doorbell
+        .service_trap_snapshot(&mut snapshot_sink, event, &trap_snapshot)
+        .unwrap();
+    assert_eq!(retained, marker);
+    assert_eq!(snapshot_sink.markers, vec![retained]);
+    assert_eq!(reader.calls, vec![(3, 1234, range)]);
+    assert_eq!(reader.memory_after_read, later_guest_memory);
 }
 
 #[test]
@@ -432,6 +441,20 @@ fn whitebox_doorbell_rejects_malformed_frame_without_marker() {
             },
         })
     );
+    let mut snapshot_sink = RecordingMarkerSink::default();
+    assert_eq!(
+        doorbell.service_trap_snapshot(&mut snapshot_sink, event, b"mark"),
+        Err(WhiteboxDoorbellError::DoorbellFrameDecode {
+            marker_icount: 777,
+            source: WhiteboxDoorbellFrameDecodeError::TruncatedFrame {
+                len: 4,
+                minimum_len: WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
+            },
+        }),
+    );
+    assert!(snapshot_sink.markers.is_empty());
+    assert_eq!(snapshot_sink.diagnostics, sink.diagnostics);
+
     assert_eq!(reader.calls, vec![(2, 777, range)]);
     assert!(sink.markers.is_empty());
     assert_eq!(
