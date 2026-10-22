@@ -260,7 +260,7 @@ impl Attempt {
         original: &OriginalImport18RawBootstrap,
         inspect: impl FnOnce(&BootstrapAckOperands<'_>, Digests) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
-        if !self.complete || self.failed || self.finished != 5 {
+        if !self.complete || self.failed || self.finished != 5 || self.value.is_some() {
             return Err(refused());
         }
         original.with_bootstrap_ack_operands_data(|operands| {
@@ -307,6 +307,22 @@ impl Attempt {
         original: &OriginalImport18RawBootstrap,
         inspect: impl FnOnce(Digests) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_host_bound_operands_data(original, |_, digests| inspect(digests))
+    }
+
+    /// Lends the same already guarded SDK operands for a composite DATA phase.
+    ///
+    /// The full original loan remains open around the entire callback. Its
+    /// borrowed authority can recheck revocation between separately admitted
+    /// operations without reconstructing the immutable original custody chain.
+    ///
+    /// # Errors
+    /// Preserves every original/Host/SDK, callback and terminal refusal.
+    pub(super) fn with_host_bound_operands_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        inspect: impl FnOnce(&BootstrapAckOperands<'_>, Digests) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         self.with_completed_digests_data(original, |operands, digests| {
             let bodies = original.typed_bodies_data()?;
             let launch = bodies.launch.launch_data();
@@ -314,7 +330,7 @@ impl Attempt {
             let planned = bodies.boot.expected_host_registration_data();
             operands.authenticate_host_plan_data(launch, declaration, planned)?;
 
-            let outcome = inspect(digests);
+            let outcome = inspect(operands, digests);
             let terminal = operands.authenticate_host_plan_data(launch, declaration, planned);
             let result = outcome?;
             terminal?;
@@ -332,6 +348,9 @@ impl Attempt {
     {
         [
             native_import18_registration_counter_scratch_data(),
+            size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<R>(),
+            size_of::<Result<R, ProviderError>>(),
             size_of::<&Self>(),
             size_of::<&OriginalImport18RawBootstrap>(),
             size_of::<Digests>() * 2,

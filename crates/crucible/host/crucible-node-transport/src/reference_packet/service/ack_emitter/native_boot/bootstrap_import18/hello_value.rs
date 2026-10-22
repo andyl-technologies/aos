@@ -8,7 +8,7 @@ use serde_json::Value;
 #[path = "hello_value/attempt.rs"]
 mod attempt;
 #[path = "hello_value/storage.rs"]
-mod storage;
+pub(super) mod storage;
 pub(super) use attempt::Attempt;
 
 /// Admits the actual strict parser without a native policy or protocol response.

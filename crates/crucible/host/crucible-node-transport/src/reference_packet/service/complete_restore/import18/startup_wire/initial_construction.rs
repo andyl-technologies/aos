@@ -11,6 +11,10 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_bootstrap_kernel_construction_data,
     original_import18_bootstrap_kernel_counter_scratch_data,
     original_import18_bootstrap_literal_construction_data,
+    original_import18_bootstrap_retained_schedule_data,
+    original_import18_bootstrap_schedule_counter_scratch_data,
+    original_import18_bootstrap_value_construction_data,
+    original_import18_bootstrap_value_counter_scratch_data,
     original_import18_controller_measurement_construction_data,
     original_import18_hello_envelope_construction_bound_data,
     original_import18_hello_envelope_counter_scratch_data,
@@ -122,6 +126,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         original_import18_launch_validation_construction_data(launch, maximum)?,
         super::initial_normalizations::construction_data(launch, private, maximum)?,
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
+        original_import18_bootstrap_value_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -182,6 +187,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         original_import18_launch_validation_construction_data(launch, maximum)?,
         super::initial_normalizations::construction_data(launch, &private, maximum)?,
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
+        original_import18_bootstrap_value_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -228,6 +234,7 @@ fn combine(
     launch_validation: [usize; 3],
     normalizations: [usize; 3],
     bootstrap_literal: [usize; 3],
+    bootstrap_value: [usize; 3],
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
@@ -359,15 +366,24 @@ fn combine(
     row[0] = add(row[0], publication[0])?;
     row[1] = row[1].max(publication[1]);
     row[2] = row[2].max(add(raw[2], publication[2])?);
-    // The external normalization attempt retains its current Value/output until
-    // whole-owner observation. These five constructors run sequentially.
-    row[0] = add(row[0], normalizations[0])?;
+    // Failed normalization keeps its current Value beside empty later owners.
+    // Only completed, Value-free normalizations permit raw receipt and parsing.
+    row[0] = add(
+        row[0],
+        original_import18_bootstrap_retained_schedule_data(
+            normalizations,
+            bootstrap_literal,
+            bootstrap_value,
+        )?,
+    )?;
     row[1] = row[1].max(normalizations[1]);
     row[2] = row[2].max(add(raw[2], normalizations[2])?);
     // The completed hashes remain retained beside the first post-Hello raw frame.
-    row[0] = add(row[0], bootstrap_literal[0])?;
     row[1] = row[1].max(bootstrap_literal[1]);
     row[2] = row[2].max(add(raw[2], bootstrap_literal[2])?);
+    // Strict bootstrap DATA and failed reasons survive beside the raw bank.
+    row[1] = row[1].max(bootstrap_value[1]);
+    row[2] = row[2].max(add(raw[2], bootstrap_value[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -396,7 +412,9 @@ pub fn native_import18_initial_quote_formatter_data(
     // remain charged outside their shared maximum work window.
     row[2] = add(
         row[2],
-        normalizations[2].max(initial_construction_counter_scratch_data()),
+        normalizations[2]
+            .max(initial_construction_counter_scratch_data())
+            .max(original_import18_bootstrap_value_counter_scratch_data()?),
     )?;
     Ok(row)
 }
@@ -406,6 +424,7 @@ pub(in crate::reference_packet) use native_import18_initial_quote_formatter_data
 /// Names the real projection, Source checker, combining and returned controls.
 pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
     original_import18_bootstrap_kernel_counter_scratch_data()
+        + original_import18_bootstrap_schedule_counter_scratch_data()
         + size_of::<[usize; 3]>()
         + prospective::counter_scratch_data()
         + super::private_identity::counter_scratch_data()
@@ -415,6 +434,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The strict post-Hello parser constructor row.
         + size_of::<[usize; 3]>() // The first post-Hello literal constructor row.
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
         + size_of::<[usize; 3]>() // The retained complete initial SDK row.

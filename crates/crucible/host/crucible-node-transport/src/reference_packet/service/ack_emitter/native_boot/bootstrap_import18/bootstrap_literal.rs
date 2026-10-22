@@ -9,6 +9,7 @@
 //! ```
 
 use super::bootstrap_normalizations::Attempt as Normalizations;
+use super::bootstrap_operands::BootstrapAckOperands;
 use super::*;
 use crate::client::OriginalNativePublicBirthChannel;
 use crate::reference_packet::service::PacketNative5SourceLaunch;
@@ -150,6 +151,9 @@ impl Attempt {
             size_of::<&OriginalImport18RawBootstrap>(),
             size_of::<&Normalizations>(),
             size_of::<&[u8]>(),
+            size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<R>(),
+            size_of::<Result<R, ProviderError>>(),
             size_of::<R>(),
             size_of::<R>(),
             size_of::<Result<R, ProviderError>>(),
@@ -179,15 +183,31 @@ impl Attempt {
         normalizations: &Normalizations,
         inspect: impl FnOnce(&[u8]) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_body_and_operands_data(original, normalizations, |raw, _| inspect(raw))
+    }
+
+    /// Lends the literal and same borrowed live SDK inside one full original loan.
+    ///
+    /// Composite DATA consumers recheck that authority between callbacks; the
+    /// complete original Host/SDK guards still surround either final outcome.
+    ///
+    /// # Errors
+    /// Preserves every literal, original, SDK, callback and terminal refusal.
+    pub(super) fn with_body_and_operands_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        normalizations: &Normalizations,
+        inspect: impl FnOnce(&[u8], &BootstrapAckOperands<'_>) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         if !self.complete || self.failed || self.received != self.bank.len() {
             return Err(refused());
         }
-        normalizations.with_host_bound_digests_data(original, |_| {
+        normalizations.with_host_bound_operands_data(original, |operands, _| {
             self.guard(original)?;
             if self.bank.len() <= 4 || self.digest != Some(*blake3::hash(&self.bank).as_bytes()) {
                 return Err(refused());
             }
-            let outcome = inspect(&self.bank[4..]);
+            let outcome = inspect(&self.bank[4..], operands);
             let terminal = self.guard(original);
             let result = outcome?;
             terminal?;

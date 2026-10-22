@@ -226,6 +226,27 @@ pub(in super::super::super) fn assert_child(
     assert_eq!(attempt.received, received);
 }
 
+/// Completes the original raw receiver for a separately admitted parser fixture.
+pub(in super::super::super) fn complete_for_value(
+    original: &mut OriginalImport18RawBootstrap,
+) -> (Normalizations, Attempt) {
+    let normalizations = super::super::bootstrap_normalizations::tests::complete_for_host(original);
+    let mut attempt = Attempt::empty_data();
+    let model = Model {
+        suffix: "complete",
+        original: original.retained_requested_bytes().unwrap(),
+        normalizations: normalizations
+            .retained_requested_bytes_data(original)
+            .unwrap(),
+        calls: Cell::new(0),
+    };
+    original
+        .receive_bootstrap_literal_data(&normalizations, &mut attempt, &model)
+        .unwrap();
+    assert_eq!(model.calls.get(), 2);
+    (normalizations, attempt)
+}
+
 #[test]
 fn literal_reader_preserves_prefixes_and_leaves_the_next_frame_unread() {
     for body in [b"x".as_slice(), BODY] {

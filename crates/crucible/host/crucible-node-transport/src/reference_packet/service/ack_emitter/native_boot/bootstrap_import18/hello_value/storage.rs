@@ -16,7 +16,7 @@ use crucible_node_format::canonical;
 ///
 /// # Errors
 /// Refuses unsupported layouts, invalid populations, overflow or short restriction.
-pub(super) fn actual_data(
+pub(in super::super) fn actual_data(
     raw: &[u8],
     maximum: usize,
 ) -> Result<([usize; 3], BootstrapBodyMetadataProfileData), ProviderError> {
@@ -40,7 +40,11 @@ pub(super) fn maximum_data(bytes: usize, maximum: usize) -> Result<[usize; 3], P
     population_data(original_json_value_storage_extent_data(bytes)?, maximum).map(|(row, _)| row)
 }
 
-fn population_data(
+/// Prices strict parser populations independently of their original role.
+///
+/// # Errors
+/// Refuses unsupported layouts, arithmetic overflow or a short restriction.
+pub(in super::super) fn population_data(
     extent: OriginalJsonValueStorageExtentData,
     maximum: usize,
 ) -> Result<([usize; 3], BootstrapBodyMetadataProfileData), ProviderError> {

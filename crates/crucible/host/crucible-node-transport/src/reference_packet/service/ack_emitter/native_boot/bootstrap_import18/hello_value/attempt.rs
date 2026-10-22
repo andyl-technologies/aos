@@ -1,4 +1,4 @@
-//! Retains one strict Hello Value and its actual allocating or scalar failure.
+//! Retains one strict original-body Value and its owned or scalar failure.
 
 use super::*;
 use crate::protocol_snapshot::ProtocolCaptureOwner;
@@ -62,7 +62,7 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses foreign custody or a previously spent occurrence.
-    pub(super) fn start_data(&mut self) -> Result<(), ProviderError> {
+    pub(in super::super) fn start_data(&mut self) -> Result<(), ProviderError> {
         self.owner.ensure_current()?;
         if self.stage != Stage::Empty {
             return Err(refused());
@@ -75,7 +75,7 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses foreign custody, re-entry or missing original start.
-    pub(super) fn quote_data(
+    pub(in super::super) fn quote_data(
         &mut self,
         row: [usize; 3],
         profile: BootstrapBodyMetadataProfileData,
@@ -94,7 +94,11 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses incomplete admission, stale custody or malformed strict JSON.
-    pub(super) fn parse_data(&mut self, raw: &[u8], nesting: usize) -> Result<(), ProviderError> {
+    pub(in super::super) fn parse_data(
+        &mut self,
+        raw: &[u8],
+        nesting: usize,
+    ) -> Result<(), ProviderError> {
         self.owner.ensure_current()?;
         if self.stage != Stage::Quoted
             || self.row.is_none()
@@ -131,7 +135,7 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses stale custody, incomplete parsing or retained failure.
-    pub(super) fn complete_data(&mut self) -> Result<(), ProviderError> {
+    pub(in super::super) fn complete_data(&mut self) -> Result<(), ProviderError> {
         self.owner.ensure_current()?;
         if self.stage != Stage::Parsed || self.value.is_none() || self.failure.is_some() {
             return Err(refused());
@@ -141,7 +145,7 @@ impl Attempt {
     }
 
     /// Permanently refuses this occurrence while retaining initialized owners.
-    pub(super) fn refuse_data(&mut self) {
+    pub(in super::super) fn refuse_data(&mut self) {
         self.stage = Stage::Failed;
     }
 
@@ -208,7 +212,7 @@ impl Attempt {
     }
 
     /// Names the actual parser, failure-classification and capacity controls.
-    pub(super) fn counter_scratch_data() -> usize {
+    pub(in super::super) fn counter_scratch_data() -> usize {
         storage::counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&mut Self>()

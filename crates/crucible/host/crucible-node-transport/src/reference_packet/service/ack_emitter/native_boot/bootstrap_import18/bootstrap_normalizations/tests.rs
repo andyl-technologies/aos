@@ -384,5 +384,9 @@ pub(in super::super) fn complete_for_host(original: &mut OriginalImport18RawBoot
     assert_eq!(model.entered.get(), 31);
     assert_eq!(model.observed.get(), 31);
     assert_eq!(attempt.digests, model.digests.get());
+    assert_eq!(
+        attempt.retained_requested_bytes_data(original).unwrap(),
+        size_of::<Attempt>()
+    );
     attempt
 }
