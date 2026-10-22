@@ -12889,3 +12889,49 @@ three-inode observer and all 128 native library cases; its remaining full contro
 are still running. These results do not accept a FUSE task: real scoped backing
 integration, structural-index ownership, exposure leases, worker transport,
 actual kernel reference drain and the mounted surface remain open.
+
+
+#### Scoped native whole-file disclosure
+
+The physical native owner now consumes the SDK's opaque prepared file read to
+return actual whole-file backing. Its own worker compares the selected storage
+domain with its configured domain before accepting pin effects. It selects the
+exact typed content identity through genuine publication or verified recovery
+custody, synchronizes the independent consumer pin, checks the actual inode's
+size against signed file metadata, and finishes the original scoped SDK Read
+before returning a descriptor. It never opens a content pathname, substitutes
+manifest metadata or chunk ranges, fetches missing content, or constructs a raw
+backing grant. Failed closing authorization drops private backing and attempts
+durable release; cancellation and failed cleanup retain the actual owner's
+finite expiry obligations.
+
+The returned owner retains the real descriptor and physical grant with the
+selected commit, root and logical size. Its transport must retain that owner
+through all worker duplicates and kernel references. Physical renewal grants
+no enduring repository Read or exposure scope. Checked retained-memory accounting
+includes the wrapper; a queued domain label is bounded by the same existing
+input window and cannot coexist with an encoded upload in that command.
+
+A dedicated native fixture uses genuine separately initialized signed local
+repositories and the actual native owner. It checks a successful original sealed
+inode, a real policy advance that refuses disclosure, and an authorized selection
+from another domain that leaves physical pin policy unchanged. An already
+returned descriptor remains readable through later refusal and physical release.
+The root observer independently compares the returned inode observation with the
+publisher-owned file, its original bytes, ownership and mode. The new domain is
+appended to the existing domain inventory; all preceding project assignments,
+selectors, native library controls and runtime bounds remain unchanged. Strict
+native all-target Clippy, formatting and Python syntax checks pass. Runtime and
+committed-source qualification remain pending. This supplies neither an exposure
+lease nor a mounted FUSE surface or task acceptance.
+
+The complete corrected cold-consumer VM at `e7a8e757e2` fails after its new cold
+whole-file and independent three-inode checks and all 128 native library cases
+pass. The later existing `manifest-pending-metadata-cold` recovery control receives
+publisher inventory `Unavailable`; the retained run takes 1,253.83 seconds. Its
+full result remains failed, with no inferred cause, widened deadline or replacement
+by passing component cases. Required application-target compilation at
+`e9a5168efc` passes in 1,669.83 seconds; independent review matches 7,981 immutable
+source files and 184 compiler records across 59 packages. Frozen scoped SDK
+metadata qualification at `da56eb46f2` and its required application build are
+still running.

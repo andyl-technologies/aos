@@ -51,11 +51,11 @@ pub use owner::{
     NativeAdmissionHandoffReport, NativeCacheEvictionReport, NativeCacheHandoffError,
     NativeCacheHandoffReport, NativeCacheOwnerConfig, NativeCachePreparation, NativeChunkAdmission,
     NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeChunkFetchRequest,
-    NativeConsumerLease, NativeFetchedChunk, NativeIndexRepairReport, NativeInlinePublication,
-    NativeLeaseAccounting, NativeManifestPublication, NativeMetadataAdmission,
-    NativeMetadataAdmissionError, NativeMetadataOwner, NativeProducerReadClosure, NativeReadChunk,
-    NativeResidentChunkSource, NativeResumeError, NativeSealedBacking, NativeSealedObjectLease,
-    NativeSourceCleanupReport, RetainedManifest,
+    NativeConsumerLease, NativeFetchedChunk, NativeFileBacking, NativeIndexRepairReport,
+    NativeInlinePublication, NativeLeaseAccounting, NativeManifestPublication,
+    NativeMetadataAdmission, NativeMetadataAdmissionError, NativeMetadataOwner,
+    NativeProducerReadClosure, NativeReadChunk, NativeResidentChunkSource, NativeResumeError,
+    NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
 #[cfg(feature = "tokio")]

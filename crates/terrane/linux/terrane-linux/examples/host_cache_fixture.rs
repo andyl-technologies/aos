@@ -36,6 +36,8 @@ mod read_through;
 mod recovery;
 #[path = "host_cache_fixture/running_retention.rs"]
 mod running_retention;
+#[path = "host_cache_fixture/scoped_file.rs"]
+mod scoped_file;
 #[path = "host_cache_fixture/sealed_consumer.rs"]
 mod sealed_consumer;
 #[path = "host_cache_fixture/source_cleanup.rs"]
@@ -86,6 +88,7 @@ fn main() -> std::process::ExitCode {
             "sealed-consumer",
             "seed-sealed-consumer-cold",
             "sealed-consumer-cold",
+            "scoped-file",
             "publish-inline",
             "publish-inline-read-failure",
             "publish-inline-prepare-failure",

@@ -111,6 +111,7 @@ CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-re
 CASES += ["read-through"]
 CASES += ["sealed-consumer"]
 CASES += ["sealed-consumer-cold"]
+CASES += ["scoped-file"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1513,6 +1514,22 @@ def main():
                 "whole-file consumers lack their two actual immutable publisher-owned inodes")
         # This isolated domain has no dependency on the other component cases.
         cold_consumer_helper["run"](sys.modules[__name__], uuid, cold_consumer_originals)
+        scoped_file = actor("scoped-file", "scoped-file", uuid)
+        require("PASS actual signed scoped file returns original sealed inode; changed policy denies disclosure, foreign domain leaves physical policy unchanged, retained descriptor survives release" in scoped_file,
+                "missing actual SDK-authorized native file backing witness")
+        scoped_inodes = [line for line in scoped_file.splitlines()
+                         if line.startswith("SCOPED_FILE_INODE ")]
+        scoped_files = list((root("scoped-file") / "sealed").glob("*/*"))
+        require(len(scoped_files) == len(scoped_inodes) == 1,
+                "scoped file lacks one independently observed original inode")
+        scoped_path = scoped_files[0]
+        scoped_stat = scoped_path.stat()
+        require(scoped_path.read_bytes() == b"scoped native whole-file backing"
+                and scoped_inodes[0] == f"SCOPED_FILE_INODE inode={scoped_stat.st_ino} size={scoped_stat.st_size}"
+                and scoped_stat.st_uid == scoped_stat.st_gid == 841
+                and scoped_stat.st_nlink == 1 and scoped_stat.st_mode & 0o7777 == 0o400,
+                "scoped backing differs from the original publisher-owned inode")
+        print("PASS independent observer matches SDK-authorized backing to the original immutable publisher inode", flush=True)
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)

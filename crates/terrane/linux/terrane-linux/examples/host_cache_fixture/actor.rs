@@ -30,6 +30,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "consumer-leases"
             | "sealed-consumer"
             | "sealed-consumer-cold"
+            | "scoped-file"
             | "empty"
             | "refuse"
             | "late-refuse"
@@ -193,6 +194,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "sealed-consumer-cold" => {
             super::recovery::sealed_objects::run(&owner, &runtime, &inputs, original)?;
+        }
+        "scoped-file" => {
+            super::scoped_file::run(&owner, &runtime, &inputs, original)?;
         }
         "publish-manifest"
         | "publish-manifest-cancel"

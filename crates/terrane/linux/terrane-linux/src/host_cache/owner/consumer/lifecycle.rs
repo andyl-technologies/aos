@@ -44,9 +44,23 @@ pub(in crate::host_cache::owner) async fn acquire(
 pub(in crate::host_cache::owner) async fn acquire_object(
     executor: &mut NativeOwnerExecutor,
     identity: Identity,
+    domain: Option<&str>,
     expires: u64,
 ) -> io::Result<NativeConsumerLease> {
     let deadline = Deadline::new(expires)?;
+    if let Some(domain) = domain {
+        let owner = executor
+            .custody()
+            .lock()
+            .map_err(|_| invalid("scoped consumer custody poisoned"))?;
+        if domain != owner.preparation.config.location.domain() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "scoped file belongs to another physical domain",
+            ));
+        }
+    }
+
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
     let source = Arc::new(ConsumerSource::prepare_object(executor, identity).await?);

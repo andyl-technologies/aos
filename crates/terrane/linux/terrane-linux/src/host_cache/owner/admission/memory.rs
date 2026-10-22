@@ -124,7 +124,10 @@ fn check_parts(
         .and_then(|n| n.checked_add(1))
         .ok_or_else(overflow)?;
     // Each retained or queued input is bounded by CAPACITY, including both
-    // metadata Vecs together. The active Arc refers to its existing job input.
+    // metadata Vecs together. A scoped whole-file command instead owns only
+    // its selected domain label, checked against the same input window before
+    // queuing; it cannot also contain an encoded upload. The active Arc refers
+    // to its existing job input.
     add(jobs, window)?;
 
     // One-hop dictionary decoding holds its decoded Vec and returned plaintext

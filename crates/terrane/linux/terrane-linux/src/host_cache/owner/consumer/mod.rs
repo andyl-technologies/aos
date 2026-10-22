@@ -7,12 +7,14 @@
 
 pub(in crate::host_cache::owner) mod clock;
 mod lifecycle;
+mod scoped_file;
 pub(in crate::host_cache::owner) mod source;
 pub(in crate::host_cache::owner) mod state;
 mod sweep;
 mod view;
 
 pub(in crate::host_cache::owner) use lifecycle::{acquire, acquire_object, release, renew};
+pub use scoped_file::NativeFileBacking;
 pub(in crate::host_cache::owner) use sweep::{background as sweep_background, run as sweep};
 pub use view::NativeSealedBacking;
 pub(in crate::host_cache::owner) use view::{ReadBudget, ReadView};
@@ -166,6 +168,7 @@ pub(in crate::host_cache::owner) enum ConsumerCommand {
     /// Pins only a complete sealed publication for whole-file descriptor access.
     PinObject {
         identity: Identity,
+        domain: Option<String>,
         expires: u64,
         response: oneshot::Sender<io::Result<NativeSealedObjectLease>>,
     },
@@ -200,10 +203,11 @@ pub(in crate::host_cache::owner) async fn execute(
     match command {
         ConsumerCommand::PinObject {
             identity,
+            domain,
             expires,
             response,
         } => {
-            let result = acquire_object(executor, identity, expires)
+            let result = acquire_object(executor, identity, domain.as_deref(), expires)
                 .await
                 .map(|lease| NativeSealedObjectLease { lease });
             let _ = response.send(result);
@@ -250,6 +254,15 @@ impl NativeMetadataOwner {
         identity: Identity,
         expires: u64,
     ) -> io::Result<NativeSealedObjectLease> {
+        self.pin_object(identity, None, expires).await
+    }
+
+    async fn pin_object(
+        &self,
+        identity: Identity,
+        domain: Option<String>,
+        expires: u64,
+    ) -> io::Result<NativeSealedObjectLease> {
         if !matches!(
             identity.kind(),
             IdentityKind::Chunk | IdentityKind::Manifest
@@ -260,6 +273,7 @@ impl NativeMetadataOwner {
         let (response, receive) = oneshot::channel();
         self.send_consumer_command(ConsumerCommand::PinObject {
             identity,
+            domain,
             expires,
             response,
         })?;

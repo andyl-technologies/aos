@@ -321,7 +321,9 @@ pub(in crate::host_cache::owner) fn storage_bytes(
         )
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
         // Each whole-object lease can retain one delegated descriptor owner.
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::NativeSealedBacking>()))
+        // Its scoped wrapper additionally owns the closing selection's fixed
+        // commit/root/size metadata and a clone of the same physical grant.
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::NativeFileBacking>()))
         // A verified encoded read records both actual body and dictionary units.
         .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Arc<ReadActivity>>()))
         // The consumer view owns one additional verified identity clone.

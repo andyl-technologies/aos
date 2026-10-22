@@ -55,7 +55,8 @@ pub use admission::{
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use consumer::{
-    NativeConsumerLease, NativeLeaseAccounting, NativeSealedBacking, NativeSealedObjectLease,
+    NativeConsumerLease, NativeFileBacking, NativeLeaseAccounting, NativeSealedBacking,
+    NativeSealedObjectLease,
 };
 pub use fetch::{NativeChunkFetchRequest, NativeFetchedChunk};
 #[cfg(feature = "native-test-fixtures")]
