@@ -22,6 +22,9 @@ use std::collections::BTreeSet;
 
 const RETAINED: u64 = i64::MAX as u64;
 
+mod backing;
+pub use backing::{ExposureBackingKind, ExposureBackingRecord};
+
 /// Distinguishes an exposure accepting work from one retaining drain obligations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -53,6 +56,12 @@ pub struct ExposureRecord {
     pub deadline: u64,
     /// Current disclosure and drain phase, independent of physical closure.
     pub phase: ExposurePhase,
+    /// Original sealed inode obligations, requiring snapshot version 3.
+    ///
+    /// Empty legacy records retain their obligations and cannot establish native
+    /// recovery or closure. Decoding these observations grants no native custody.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backings: Vec<ExposureBackingRecord>,
 }
 
 impl ExposureRecord {
@@ -88,13 +97,15 @@ impl CacheState {
         if !exposure.accepts_work(exposure.generation, now) {
             return Err(capacity());
         }
+        let exposure_records = self.exposure_record_count().ok_or_else(capacity)?;
         let count = self
             .pins
             .len()
             .checked_add(self.leases.len())
             .and_then(|count| count.checked_add(self.reservations.len()))
             .and_then(|count| count.checked_add(self.residences.len()))
-            .and_then(|count| count.checked_add(self.exposures.len()))
+            .and_then(|count| count.checked_add(exposure_records))
+            .and_then(|count| count.checked_add(exposure.backings.len()))
             .and_then(|count| count.checked_add(objects.len()))
             .and_then(|count| count.checked_add(2))
             .ok_or_else(capacity)?;
@@ -104,7 +115,9 @@ impl CacheState {
 
         let mut next = self.clone();
         let owner = exposure.pin_owner();
-        next.version = 2;
+        next.version = next
+            .version
+            .max(if exposure.backings.is_empty() { 2 } else { 3 });
         next.leases.push(LeaseRecord {
             owner: owner.clone(),
             expires: RETAINED,
@@ -139,6 +152,10 @@ impl CacheState {
     pub(super) fn validate_exposures(&self) -> Result<(), StoreFailure> {
         let mut owners = BTreeSet::new();
         for exposure in &self.exposures {
+            if self.version < 3 && !exposure.backings.is_empty() {
+                return Err(capacity());
+            }
+            backing::validate(exposure, &self.pins)?;
             let owner = exposure.pin_owner();
             if exposure.id.len() != 32
                 || !exposure
@@ -166,7 +183,7 @@ impl CacheState {
             }
         }
         // Reserved names cannot create immortal pins without their full context.
-        if self.version == 2
+        if self.version >= 2
             && (self.leases.iter().any(|lease| {
                 lease.owner.starts_with("exposure:") && !owners.contains(&lease.owner)
             }) || self
@@ -177,6 +194,14 @@ impl CacheState {
             return Err(capacity());
         }
         Ok(())
+    }
+
+    pub(super) fn exposure_record_count(&self) -> Option<usize> {
+        self.exposures
+            .iter()
+            .try_fold(self.exposures.len(), |count, exposure| {
+                count.checked_add(exposure.backings.len())
+            })
     }
 }
 

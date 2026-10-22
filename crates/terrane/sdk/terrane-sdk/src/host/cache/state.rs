@@ -9,7 +9,9 @@
 //! ```
 //!
 //! Version 2 adds exposure context and non-expiring physical obligations. Version
-//! 1 remains the encoding for ordinary state until its first exposure. Manifests,
+//! 3 adds original sealed inode observations, with full-width device and inode
+//! numbers encoded as fixed-width hexadecimal strings. Version 1 remains the
+//! encoding for ordinary state until its first exposure. Manifests,
 //! index bytes, queues and tree nodes never enter this snapshot. Sealed reads do
 //! not access this module. Publication owns its separate verity state.
 
@@ -18,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
 
 mod exposure;
-pub use exposure::{ExposurePhase, ExposureRecord};
+pub use exposure::{ExposureBackingKind, ExposureBackingRecord, ExposurePhase, ExposureRecord};
 
 /// Bounds untrusted state parsing and accepted durable record counts.
 #[derive(Clone, Copy, Debug)]
@@ -90,8 +92,8 @@ pub struct CacheState {
     version: u32,
     /// Durable exposure context whose pins survive expiry and disconnection.
     ///
-    /// Nonempty context requires snapshot version 2. Version 1 readers refuse
-    /// the upgrade rather than treating exposure pins as expiring consumers.
+    /// Nonempty context requires snapshot version 2; original native backing
+    /// observations require version 3. Older readers refuse these upgrades.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exposures: Vec<ExposureRecord>,
     /// Consumer promises acknowledged after durable synchronization.
@@ -147,9 +149,12 @@ impl CacheState {
             .checked_add(self.reservations.len())
             .and_then(|count| count.checked_add(self.leases.len()))
             .and_then(|count| count.checked_add(self.residences.len()))
-            .and_then(|count| count.checked_add(self.exposures.len()))
+            .and_then(|count| {
+                self.exposure_record_count()
+                    .and_then(|extra| count.checked_add(extra))
+            })
             .ok_or_else(capacity)?;
-        if !matches!(self.version, 1 | 2)
+        if !matches!(self.version, 1..=3)
             || (self.version == 1 && !self.exposures.is_empty())
             || count > limits.records
         {

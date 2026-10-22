@@ -17,7 +17,7 @@ use std::{
     sync::{Arc, mpsc},
 };
 use terrane_format::identity::Digest;
-use terrane_sdk::host::cache::{ExposurePhase, ExposureRecord, PinRecord};
+use terrane_sdk::host::cache::{ExposureBackingKind, ExposurePhase, ExposureRecord, PinRecord};
 use terrane_sdk::store::{StoreErrorKind, StoreFailure};
 use tokio::sync::oneshot;
 
@@ -267,6 +267,12 @@ async fn transition(
             owner.faulted = true;
             return Err(error);
         }
+        let index_binding = super::bindings::capture(
+            &owner,
+            &lease.index.backing.file,
+            ExposureBackingKind::Index,
+            &lease.index.key().root(),
+        )?;
         let mut next = owner.state.clone();
         match operation {
             Operation::Retain { domain, expires } => {
@@ -286,6 +292,7 @@ async fn transition(
                         index_version: lease.index.key().version(),
                         deadline: expires,
                         phase: ExposurePhase::Active,
+                        backings: vec![index_binding],
                     },
                     &[],
                     now,
@@ -305,6 +312,14 @@ async fn transition(
                             && row.index_version == lease.index.key().version()
                     })
                     .ok_or_else(|| invalid("exposure lost its original durable context"))?;
+                if row
+                    .backings
+                    .iter()
+                    .find(|binding| binding.kind == ExposureBackingKind::Index)
+                    != Some(&index_binding)
+                {
+                    return Err(invalid("exposure lost its original durable index binding"));
+                }
                 match operation {
                     Operation::Check | Operation::ProtectObject { .. }
                         if !row.accepts_work(lease.generation, now) =>
@@ -313,9 +328,20 @@ async fn transition(
                     }
                     Operation::Check => return Ok(lease),
                     Operation::ProtectObject { source } => {
-                        let (hashes, expires) = source.exposure_pins(executor, &owner)?;
+                        let (hashes, expires, binding) = source.exposure_pins(executor, &owner)?;
                         if expires > row.deadline {
                             return Err(read_denied(&lease.id));
+                        }
+                        if let Some(existing) = row.backings.iter().find(|existing| {
+                            existing.kind == binding.kind && existing.hash == binding.hash
+                        }) {
+                            if existing != &binding {
+                                return Err(invalid(
+                                    "exposure file belongs to another original inode",
+                                ));
+                            }
+                        } else {
+                            row.backings.push(binding);
                         }
                         let pin_owner = row.pin_owner();
                         for hash in hashes {

@@ -91,7 +91,11 @@ impl NativeSealedObjectLease {
         &self,
         executor: &super::retention::NativeOwnerExecutor,
         owner: &Custody,
-    ) -> io::Result<(Vec<String>, u64)> {
+    ) -> io::Result<(
+        Vec<String>,
+        u64,
+        terrane_sdk::host::cache::ExposureBackingRecord,
+    )> {
         self.expires_at()?;
         let job = self
             .exposure_job(executor)?
@@ -102,7 +106,23 @@ impl NativeSealedObjectLease {
         };
         deadline.check_live()?;
         state::check_job(owner, &job, self.owner(), deadline.expires)?;
-        Ok((job.source.protected_hashes().to_vec(), deadline.expires))
+        let kind = match self.identity().kind() {
+            IdentityKind::Chunk => terrane_sdk::host::cache::ExposureBackingKind::Inline,
+            IdentityKind::Manifest => terrane_sdk::host::cache::ExposureBackingKind::Manifest,
+            _ => return Err(invalid("exposure source is not whole-file content")),
+        };
+        let file = std::fs::File::from(job.source.duplicate_object_backing()?);
+        let digest = self
+            .identity()
+            .digest()
+            .try_into()
+            .map_err(|_| invalid("exposure source digest has an unsupported width"))?;
+        let binding = super::surface_index::bindings::capture(owner, &file, kind, digest)?;
+        Ok((
+            job.source.protected_hashes().to_vec(),
+            deadline.expires,
+            binding,
+        ))
     }
 
     #[cfg(feature = "surface-fuse")]

@@ -11,6 +11,7 @@
 //! reservation id = surface-index:<random-operation-hex>
 //! ```
 
+pub(super) mod bindings;
 pub(super) mod eviction;
 pub(super) mod exposure;
 pub(super) mod recovery;

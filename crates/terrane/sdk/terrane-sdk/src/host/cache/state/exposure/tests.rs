@@ -18,16 +18,16 @@ fn record() -> ExposureRecord {
         index_version: 2,
         deadline: 100,
         phase: ExposurePhase::Active,
+        backings: Vec::new(),
     }
 }
 
 #[test]
-fn exposure_deadline_drains_but_never_expires_physical_pins() {
+fn exposure_deadline_drains_but_never_expires_physical_pins()
+-> Result<(), Box<dyn std::error::Error>> {
     let exposure = record();
     let mut state = CacheState::default();
-    state
-        .retain_exposure(exposure.clone(), &["12".repeat(32)], 99, limits())
-        .unwrap();
+    state.retain_exposure(exposure.clone(), &["12".repeat(32)], 99, limits())?;
     state.leases.push(LeaseRecord {
         owner: "ordinary".into(),
         expires: 100,
@@ -49,28 +49,28 @@ fn exposure_deadline_drains_but_never_expires_physical_pins() {
     assert!(state.sweep_expired(u64::MAX).is_empty());
     assert_eq!(state.pins.len(), 1);
     assert_eq!(state.pins[0].owner, exposure.pin_owner());
-    state.validate(limits()).unwrap();
+    state.validate(limits())?;
 
-    let encoded = toml::to_string(&state).unwrap();
-    let recovered: CacheState = toml::from_str(&encoded).unwrap();
-    recovered.validate(limits()).unwrap();
+    let encoded = toml::to_string(&state)?;
+    let recovered: CacheState = toml::from_str(&encoded)?;
+    recovered.validate(limits())?;
     assert_eq!(recovered.exposures, state.exposures);
     assert_eq!(recovered.pins[0].hash, state.pins[0].hash);
+    Ok(())
 }
 
 #[test]
-fn exposure_snapshot_requires_explicit_version_and_complete_immortal_pin_context() {
-    let legacy: CacheState =
-        toml::from_str("version = 1\npins = []\nleases = []\nreservations = []\nresidences = []\n")
-            .unwrap();
-    legacy.validate(limits()).unwrap();
-    assert!(!toml::to_string(&legacy).unwrap().contains("exposures"));
+fn exposure_snapshot_requires_explicit_version_and_complete_immortal_pin_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let legacy: CacheState = toml::from_str(
+        "version = 1\npins = []\nleases = []\nreservations = []\nresidences = []\n",
+    )?;
+    legacy.validate(limits())?;
+    assert!(!toml::to_string(&legacy)?.contains("exposures"));
 
     let mut valid = legacy;
-    valid
-        .retain_exposure(record(), &["12".repeat(32)], 99, limits())
-        .unwrap();
-    assert!(toml::to_string(&valid).unwrap().starts_with("version = 2"));
+    valid.retain_exposure(record(), &["12".repeat(32)], 99, limits())?;
+    assert!(toml::to_string(&valid)?.starts_with("version = 2"));
     for damage in 0..7 {
         let mut broken = valid.clone();
         match damage {
@@ -84,15 +84,17 @@ fn exposure_snapshot_requires_explicit_version_and_complete_immortal_pin_context
         }
         assert!(broken.validate(limits()).is_err(), "damage {damage}");
     }
+    Ok(())
 }
 
 #[test]
-fn exposure_duplicate_expiry_and_capacity_refusals_preserve_original_state() {
+fn exposure_duplicate_expiry_and_capacity_refusals_preserve_original_state()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut state = CacheState::default();
-    let before = toml::to_string(&state).unwrap();
+    let before = toml::to_string(&state)?;
     for now in [100, u64::MAX] {
         assert!(state.retain_exposure(record(), &[], now, limits()).is_err());
-        assert_eq!(toml::to_string(&state).unwrap(), before);
+        assert_eq!(toml::to_string(&state)?, before);
     }
     for bound in [
         StateLimits {
@@ -105,10 +107,139 @@ fn exposure_duplicate_expiry_and_capacity_refusals_preserve_original_state() {
         },
     ] {
         assert!(state.retain_exposure(record(), &[], 99, bound).is_err());
-        assert_eq!(toml::to_string(&state).unwrap(), before);
+        assert_eq!(toml::to_string(&state)?, before);
     }
-    state.retain_exposure(record(), &[], 99, limits()).unwrap();
-    let before = toml::to_string(&state).unwrap();
+    state.retain_exposure(record(), &[], 99, limits())?;
+    let before = toml::to_string(&state)?;
     assert!(state.retain_exposure(record(), &[], 99, limits()).is_err());
-    assert_eq!(toml::to_string(&state).unwrap(), before);
+    assert_eq!(toml::to_string(&state)?, before);
+    Ok(())
+}
+
+fn index_binding() -> ExposureBackingRecord {
+    ExposureBackingRecord {
+        kind: ExposureBackingKind::Index,
+        hash: record().root,
+        filesystem_uuid: "12".repeat(16),
+        device: 7,
+        inode: 100,
+        project_id: 79,
+        uid: 840,
+        gid: 845,
+        mode: 0o400,
+        size: 512,
+        allocated: 8192,
+        verity_algorithm: 1,
+        verity_digest: "34".repeat(32),
+    }
+}
+
+#[test]
+fn exposure_original_backings_require_version_three_and_complete_native_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut exposure = record();
+    exposure.backings.push(index_binding());
+    let mut object = index_binding();
+    object.kind = ExposureBackingKind::Manifest;
+    object.hash = "56".repeat(32);
+    object.inode += 1;
+    object.uid = 841;
+    object.size = 0;
+    object.allocated = 0;
+    exposure.backings.push(object);
+    let mut state = CacheState::default();
+    state.retain_exposure(exposure.clone(), &["56".repeat(32)], 99, limits())?;
+
+    let encoded = toml::to_string(&state)?;
+    assert!(encoded.starts_with("version = 3"));
+    let recovered: CacheState = toml::from_str(&encoded)?;
+    recovered.validate(limits())?;
+    assert_eq!(recovered.exposures, state.exposures);
+
+    for invalid in [
+        "\"7\"",
+        "\"000000000000000A\"",
+        "7",
+        "\"10000000000000000\"",
+    ] {
+        let damaged = encoded.replace(
+            "device = \"0000000000000007\"",
+            &format!("device = {invalid}"),
+        );
+        assert_ne!(damaged, encoded);
+        assert!(toml::from_str::<CacheState>(&damaged).is_err());
+    }
+
+    for damage in 0..16 {
+        let mut broken = recovered.clone();
+        let exposure = &mut broken.exposures[0];
+        match damage {
+            0 => broken.version = 2,
+            1 => broken.version = 4,
+            2 => exposure.backings[0].hash = "78".repeat(32),
+            3 => exposure.backings[0].device = 0,
+            4 => exposure.backings[0].inode = 0,
+            5 => exposure.backings[0].project_id = 0,
+            6 => exposure.backings[0].mode = 0o600,
+            7 => exposure.backings[0].filesystem_uuid = "AB".repeat(16),
+            8 => exposure.backings[0].verity_algorithm = 3,
+            9 => {
+                exposure.backings[0].verity_digest.pop();
+            }
+            10 => exposure.backings[0].size = u64::MAX,
+            11 => exposure.backings[0].mode = 0o100400,
+            12 => exposure.backings[1].inode = exposure.backings[0].inode,
+            13 => exposure.backings.push(exposure.backings[0].clone()),
+            14 => {
+                exposure.backings.remove(0);
+            }
+            _ => broken.pins.clear(),
+        }
+        assert!(broken.validate(limits()).is_err(), "damage {damage}");
+    }
+    let mut full_width = state.clone();
+    full_width.exposures[0].backings[0].device = u64::MAX;
+    full_width.exposures[0].backings[0].inode = u64::MAX;
+    full_width.validate(limits())?;
+    let encoded = toml::to_string(&full_width)?;
+    let decoded: CacheState = toml::from_str(&encoded)?;
+    assert_eq!(decoded.exposures, full_width.exposures);
+
+    assert!(state.sweep_expired(u64::MAX).is_empty());
+    assert_eq!(state.exposures[0].backings, exposure.backings);
+    Ok(())
+}
+
+#[test]
+fn exposure_original_backings_count_toward_atomic_snapshot_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut exposure = record();
+    exposure.backings.push(index_binding());
+    let mut state = CacheState::default();
+    let before = toml::to_string(&state)?;
+    for bound in [
+        StateLimits {
+            bytes: 8192,
+            records: 2,
+        },
+        StateLimits {
+            bytes: 256,
+            records: 16,
+        },
+    ] {
+        assert!(
+            state
+                .retain_exposure(exposure.clone(), &[], 99, bound)
+                .is_err()
+        );
+        assert_eq!(toml::to_string(&state)?, before);
+    }
+    let mut object_without_pin = index_binding();
+    object_without_pin.kind = ExposureBackingKind::Inline;
+    object_without_pin.hash = "56".repeat(32);
+    object_without_pin.inode += 1;
+    exposure.backings.push(object_without_pin);
+    assert!(state.retain_exposure(exposure, &[], 99, limits()).is_err());
+    assert_eq!(toml::to_string(&state)?, before);
+    Ok(())
 }

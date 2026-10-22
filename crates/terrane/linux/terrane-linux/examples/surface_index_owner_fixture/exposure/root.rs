@@ -7,7 +7,10 @@ use std::{
 };
 use terrane_linux::{host_cache::NativeExposureRootBacking, structural_index::MappedIndex};
 
-pub(super) fn check(grant: &NativeExposureRootBacking, inputs: &config::Inputs) -> Result<()> {
+pub(super) async fn check(
+    grant: &NativeExposureRootBacking,
+    inputs: &config::Inputs,
+) -> Result<()> {
     let key = grant.exposure().key();
     let file = File::from(grant.as_fd().try_clone_to_owned()?);
     let canonical = inputs.root.join("objects").join(format!(
@@ -24,6 +27,14 @@ pub(super) fn check(grant: &NativeExposureRootBacking, inputs: &config::Inputs) 
         return Err("scoped root grant lost the original read-only index inode".into());
     }
     let seal = terrane_linux::verity::measure(&file)?;
+    super::backing::check(
+        &file,
+        grant.exposure().id(),
+        terrane_sdk::host::cache::ExposureBackingKind::Index,
+        &hex(&key.root()),
+        inputs,
+    )
+    .await?;
     let maximum = usize::try_from(actual.len())?;
     let mapped = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
     if mapped.index().root_hash() != key.root() || mapped.index().lookup(b"file").is_none() {

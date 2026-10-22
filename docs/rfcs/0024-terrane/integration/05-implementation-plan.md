@@ -13826,3 +13826,51 @@ before propagating a timeout, and the actor reports startup/Resume stages on
 stderr. Every success witness, refusal assertion, capacity, actor timeout and
 guest timeout remains unchanged. This diagnostic increment does not itself
 fix or dismiss the timeout; new frozen execution remains required.
+
+The frozen native surface VM at `40f73092f1` passes in 684.00 seconds with
+the original actor and guest timeouts. Actual original-index descriptor grants,
+whole-file exposure pins, changed-policy closing Read denial, draining,
+cancelled-waiter retention, deadline transitions and cold-exposure refusal all
+pass. Independent review matches all 8,019 immutable source files, 5,314 base
+inputs, 5,298 surface inputs and all five installed Cargo ELFs. This is actual
+surface-owner execution, not execution of the base image's library inventory.
+The previous timeout remains retained with its cause undetermined. Application
+test-target compilation at `23189c4246` also passes in 1,512.58 seconds; review
+matches all 8,015 immutable source files and 184 compiler records across 59
+packages. Application-target builds also pass at `c2453b236a` in 1,499.18
+seconds and `40f73092f1` in 1,045.29 seconds. Each independent review matches
+all 8,019 immutable source files and 184 compiler records across 59 packages;
+these are compilation results rather than test execution.
+
+Exposure recovery additionally needs the exact original native incarnations
+that were protected before disclosure. Snapshot version 3 adds bounded backing
+records containing the typed content/root identity, filesystem UUID, device and
+inode, project, ownership, mode, logical size, observed allocation and actual
+kernel fs-verity measurement. Full-width device and inode values use exactly
+16 lowercase hexadecimal digits rather than TOML's signed integers. Every
+binding counts toward both record and encoded-byte limits. An index binding
+must match the exposure root; whole-file bindings require their non-expiring
+exposure pin in the same snapshot. Duplicate typed keys or original inode
+identities, malformed native context and unsupported versions are refused.
+Legacy version 1/2 records remain readable without inventing missing bindings;
+older readers refuse the new snapshot version.
+
+The native physical queue captures index bindings from its original retained
+index and whole-file bindings from the actual registered consumer job. It checks
+device, project assignment, ownership, read-only mode, link count and native
+seal before synchronizing the funded snapshot and acknowledging disclosure.
+Subsequent requests require the exact original recorded incarnation. The native
+fixture compares these durable records with actual granted descriptors and
+requires that draining, expiry and receipt drop retain them. SDK controls cover
+versioning, corruption, full-width identities, strict encoding and atomic
+capacity refusals. Formatting, strict Linux all-target Clippy in all-feature
+and ordinary Tokio-only profiles, strict SDK all-target Clippy in the native
+surface profile, native declaration inventory and VM supervisor syntax pass.
+The five owning SDK exposure cases are still compiling; frozen native and
+mandatory application qualification remain pending for this increment.
+
+These observations are custody policy, not serving authority or proof of current
+native state. Cold exposure recovery still refuses before mutation. Authenticated
+census transport, durable pending retirement and physical release remain required;
+no SDK row, dropped receipt or deletion notification discharges an obligation.
+No trunk task is closed by this increment.

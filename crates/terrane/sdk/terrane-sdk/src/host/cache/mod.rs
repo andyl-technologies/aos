@@ -25,8 +25,8 @@ pub use reassembly::ReassemblyMode;
 pub use recovery::{ReconstructedPackIndex, reconstruct_pack_index};
 pub use residence::{HostResidenceReader, HostResidentContent, ResidenceChunk};
 pub use state::{
-    CacheState, ExposurePhase, ExposureRecord, LeaseRecord, PinRecord, ReservationRecord,
-    ResidenceRecord, StateLimits,
+    CacheState, ExposureBackingKind, ExposureBackingRecord, ExposurePhase, ExposureRecord,
+    LeaseRecord, PinRecord, ReservationRecord, ResidenceRecord, StateLimits,
 };
 pub use verification::{inspect_standalone_length, maximum_encoded_chunk_bytes};
 

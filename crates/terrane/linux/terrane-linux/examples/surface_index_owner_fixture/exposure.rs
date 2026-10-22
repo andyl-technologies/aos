@@ -22,6 +22,9 @@ use terrane_sdk::{
 #[path = "exposure/root.rs"]
 mod root;
 
+#[path = "exposure/backing.rs"]
+mod backing;
+
 fn limits() -> RootNodeLimits {
     RootNodeLimits {
         max_entries: 16,
@@ -84,7 +87,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("root descriptor grant lost the exact original exposure context".into());
     }
-    root::check(&root_grant, inputs)?;
+    root::check(&root_grant, inputs).await?;
     let closing_root = fixture
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
@@ -102,6 +105,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("root descriptor escaped a changed actual complete-root policy".into());
     }
 
+    let retained_backings = snapshot(inputs).await?.exposures[0].backings.clone();
     owner.drain_surface_exposure(&lease).await?;
     owner.drain_surface_exposure(&lease).await?;
     let selection = fixture
@@ -113,7 +117,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("draining exposure granted a new index descriptor".into());
     }
-    root::check(&root_grant, inputs)?;
+    root::check(&root_grant, inputs).await?;
     drop(root_grant);
 
     let before = fs::read(&policy)?;
@@ -182,6 +186,12 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("exposure receipt drop or expiry released original index obligations".into());
     }
     let state = snapshot(inputs).await?;
+    if state.exposures[0].backings != retained_backings
+        || retained_backings.len() != 2
+        || state.exposures.iter().any(|row| row.backings.is_empty())
+    {
+        return Err("drain, expiry or receipt drop lost original inode obligations".into());
+    }
     if !state
         .pins
         .iter()
@@ -199,6 +209,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     );
     println!(
         "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop"
+    );
+    println!(
+        "PASS durable exposure records match actual original index and file inodes and verity measurements; draining and receipt drop retain all bindings"
     );
     Ok(())
 }
@@ -245,6 +258,15 @@ async fn verify_file(
         return Err("exposure file backing escaped the actual closing Read".into());
     }
     let inputs = config::Inputs::load()?;
+    let file = std::fs::File::from(std::os::fd::AsFd::as_fd(&backing).try_clone_to_owned()?);
+    backing::check(
+        &file,
+        lease.id(),
+        terrane_sdk::host::cache::ExposureBackingKind::Inline,
+        &object,
+        &inputs,
+    )
+    .await?;
     let state = snapshot(&inputs).await?;
     if !state
         .pins
