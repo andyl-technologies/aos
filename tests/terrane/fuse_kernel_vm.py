@@ -201,6 +201,16 @@ def expect_disconnected(action):
         raise RuntimeError("disconnected userspace operation unexpectedly succeeded")
 
 
+def close_fuse_file(descriptor):
+    try:
+        os.close(descriptor)
+    except OSError as error:
+        # close still closes the descriptor when final FUSE flush reports
+        # the already aborted connection.
+        if error.errno != errno.ENOTCONN:
+            raise
+
+
 def run(root, executable):
     body = executable.read_bytes()
     require(body.startswith(b"\x7fELF"), "probe executable is not an actual ELF")
@@ -294,6 +304,9 @@ def run(root, executable):
                 "unlink or abort prematurely released retained backing's charge")
         require(os.pread(opened[0], len(body), 0) == body and mapping[:] == body,
                 "unlink changed the retained passthrough descriptor or mapping")
+        close_fuse_file(opened.pop(0))
+        require(mapping[:] == body and charge(root) == original_charge,
+                "consumer descriptor close prematurely released mapped backing")
         probe.check()
         print("OBSERVED " + json.dumps({
             "kernel": os.uname().release,
@@ -305,6 +318,7 @@ def run(root, executable):
             "abort_direct_read_errno": errno.ENOTCONN,
             "abort_existing_passthrough_readable": True,
             "abort_existing_mapping_readable": True,
+            "closed_consumer_fd_mapping_readable": True,
             "passthrough_userspace_reads": probe.reads[2],
             "project_hard_limit_bytes": 8 * 1024 * 1024,
             "unlinked_retained_project_bytes": original_charge[0],
@@ -316,13 +330,7 @@ def run(root, executable):
         if mapping is not None:
             mapping.close()
         for handle in opened:
-            try:
-                os.close(handle)
-            except OSError as error:
-                # close still closes the descriptor when its final FUSE flush
-                # reports the already aborted connection.
-                if error.errno != errno.ENOTCONN:
-                    raise
+            close_fuse_file(handle)
         try:
             if overlay_mounted:
                 command(["umount", str(merged)])

@@ -13151,3 +13151,12 @@ required. No domain, project, administrative scaffold or outer deadline is
 added. The image inventory requires all 93 selectors and all 128 native library
 cases. Strict native all-target Clippy, Rust formatting and Python syntax checks
 pass. Native and required application qualification remain pending.
+
+The kernel quota probe additionally closes the consumer's passthrough descriptor
+while retaining its mapping, after the worker descriptor, backing ID and backing
+name are already gone and the connection is aborted. The mapping must still
+return all original bytes and the quota charge must remain unchanged before
+final teardown. The initial VM run passes with the same original charge and
+zero final charge; its new structured witness requires committed qualification
+and independent source review. It does not substitute for production exposure
+or kernel-reference custody.
