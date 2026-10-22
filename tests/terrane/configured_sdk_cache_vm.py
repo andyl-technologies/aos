@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import pathlib
+import runpy
 import select
 import struct
 import subprocess
@@ -278,6 +279,49 @@ def verify_funding(driver, directory, before, after):
         end = lease["expires"] + (1 if lease["owner"].startswith("consumer:") else 0)
         driver.require(end <= now,
                        "native SDK dropped consumer funding before its original grace expired")
+
+
+def run_surface(driver, image, surface_image):
+    """Requires configured bounds to reach the original enrolled physical owners."""
+    subprocess.run([sys.executable, str(image / "share/configured_sdk_proof.py"),
+                    "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
+    runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](
+        surface_image, driver.SOURCE)
+    parent = driver.ROOT / "configured-surface"
+    parent.mkdir(mode=0o700)
+    os.chown(parent, 840, 840)
+    root = parent / "original"
+    actor(driver, image, "surface-source-setup",
+          ["configured-sdk-cache-example", "setup", root, 840])
+    config = root / "config.toml"
+    original = config.read_text()
+
+    for mode in ["disabled", "bound", "admit"]:
+        text = original + host_configuration(driver)
+        if mode != "disabled":
+            node_bytes = 32 if mode == "bound" else 65536
+            text += f"""
+[host_tier.domains.public.cache.surface_index]
+max_entries = 16
+max_node_bytes = {node_bytes}
+max_index_bytes = 65536
+capacity_bytes = 25165824
+future_hold_bytes = 327680
+"""
+        config.write_text(text)
+        stdout, _ = actor(driver, surface_image, "surface-" + mode,
+                          ["surface-index-owner-fixture", "configured-surface", config, mode],
+                          mount_policy="readonly")
+        witness = (
+            "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
+            if mode == "admit" else
+            f"PASS configured surface {mode} policy refuses before durable mutation")
+        driver.require(stdout.decode().splitlines() == [witness],
+                       "configured surface control lacks its exact native witness: " + mode)
+
+    runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](
+        surface_image, driver.SOURCE)
+    print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
 
 
 def run(driver, image):

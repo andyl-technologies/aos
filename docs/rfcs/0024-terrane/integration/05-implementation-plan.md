@@ -14672,3 +14672,35 @@ policies. The existing native preflight control additionally checks explicit
 policy support under the actual compiled feature profile. Frozen native and
 mandatory application qualification remain pending; configured surface admission
 has not yet been exercised end to end by a native runtime fixture.
+
+
+All five private-channel checkpoint `4d4bfc9e65` checks have now passed:
+the full native cache completes in 1,372.16 seconds and application compilation
+in 1,321.27 seconds. Application review matches all 8,055 immutable source files
+and 184 compiler records across 59 packages; native cache review is running.
+Complete surface review at protected-listener checkpoint `9e9d6857e4` also passes
+and matches the dedicated listener/channel input and five-ELF identities.
+
+Explicit-resource checkpoint `6f07f3c860` is pushed. Its frozen module check
+passes in 15.52 seconds; native cache and application compilation continue.
+Strict SDK and configuration integration lint also pass. No configured surface
+runtime result is attributed to that checkpoint.
+
+`checks.terrane.integration.native-configured-surface-index` now adds a separate
+native enrollment scenario. It reuses actual same-process fresh enrollment,
+authenticated quota queries, the original two-domain publisher and an independently
+signed SDK source fixture. A fresh capability-free serving actor parses the
+actual TOML, checks `NativeCachePlan` before confinement, then opens genuinely
+recovered native caches through that plan. Separate actors require omitted
+policy to refuse with Unsupported and a 32-byte canonical-node policy to refuse
+with InvalidInput, each before index-related durable mutation. Explicit funded
+admission must create the exact kernel-sealed native inode, match independent
+canonical compilation and synchronized allocation, and reuse the same original
+inode without another durable policy write. Publisher-private directories use
+the existing inode-preserving read-only mount controls. All actors retain their
+30-second bounds and the complete enrollment supervisor retains its original
+240-second bound. The added selector uses a separate boxed future to preserve
+other actors' stack sizes. Both strict Linux feature profiles, Python syntax,
+Nix formatting and check evaluation pass. Actual native execution and mandatory
+application compilation remain pending; this adds no production role or task
+acceptance claim.

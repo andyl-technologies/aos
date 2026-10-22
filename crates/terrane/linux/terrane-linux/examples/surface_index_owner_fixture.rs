@@ -31,6 +31,9 @@ mod pressure;
 #[path = "surface_index_owner_fixture/maintenance.rs"]
 mod maintenance;
 
+#[path = "surface_index_owner_fixture/configured.rs"]
+mod configured;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -56,6 +59,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "configured-surface" {
+        return configured::run();
+    }
     if mode == "worker-child" {
         return scoped_worker::child();
     }

@@ -194,7 +194,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "sdk"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "sdk", "surface"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -205,7 +205,11 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        if SCENARIO == "sdk":
+        if SCENARIO == "surface":
+            runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run_surface"](
+                sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
+                pathlib.Path(os.environ["TERRANE_CONFIGURED_SURFACE_IMAGE"]))
+        elif SCENARIO == "sdk":
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]))
         elif SCENARIO == "reassembly":
@@ -262,7 +266,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "sdk"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "sdk", "surface"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix

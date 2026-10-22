@@ -4,6 +4,7 @@
   lib,
   sourceGateWithInputs,
   configuredSdkProof,
+  surfaceImage,
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
   image =
@@ -46,11 +47,14 @@
         then "terrane-native-initial-enrollment-ext4"
         else if scenario == "reassembly"
         then "terrane-native-reassembly-ext4"
+        else if scenario == "surface"
+        then "terrane-native-configured-surface-index-ext4"
         else "terrane-native-sdk-cache-ext4";
       memory = 1024;
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
-        ++ lib.optional (scenario == "sdk") configuredSdkProof.image;
+        ++ lib.optional (builtins.elem scenario ["sdk" "surface"]) configuredSdkProof.image
+        ++ lib.optional (scenario == "surface") surfaceImage;
       testScript = ''
         set -eu
         test "$(cat ${verified}/verified-image)" = ${lib.escapeShellArg (toString image)}
@@ -96,8 +100,11 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
-        ${lib.optionalString (scenario == "sdk") ''
+        ${lib.optionalString (builtins.elem scenario ["sdk" "surface"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
+        ''}
+        ${lib.optionalString (scenario == "surface") ''
+          export TERRANE_CONFIGURED_SURFACE_IMAGE=${surfaceImage}
         ''}
         export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
         ${pkgs.python3}/bin/python3 ${image}/share/initial_enrollment_image.py verify ${image} ${pkgs.terrane.src}
@@ -124,4 +131,5 @@ in {
   native = nativeFor "enrollment";
   reassembly = nativeFor "reassembly";
   sdk = nativeFor "sdk";
+  surface = nativeFor "surface";
 }
