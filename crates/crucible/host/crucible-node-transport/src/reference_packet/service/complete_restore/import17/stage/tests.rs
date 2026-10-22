@@ -5,13 +5,13 @@ use crate::envelope::{Envelope, MessageKind};
 use crucible_node_format::{Bytes, ContentRef, U64};
 use serde_json::{Value, json};
 
-const PHASES: [PacketNativeImport17Stage; 3] = [
+pub(super) const PHASES: [PacketNativeImport17Stage; 3] = [
     PacketNativeImport17Stage::Arm,
     PacketNativeImport17Stage::World,
     PacketNativeImport17Stage::FirstObserve,
 ];
 
-fn reference(name: &str) -> ContentRef {
+pub(super) fn reference(name: &str) -> ContentRef {
     canonical::content_ref(name.as_bytes(), "application/json").unwrap()
 }
 
@@ -20,7 +20,7 @@ fn pair(name: &str) -> Value {
         "terminal":reference(&format!("{name}-terminal"))})
 }
 
-fn bytes(byte: u8) -> Bytes {
+pub(super) fn bytes(byte: u8) -> Bytes {
     Bytes::new(vec![byte; 32])
 }
 
@@ -60,11 +60,11 @@ fn fixture(phase: PacketNativeImport17Stage) -> Value {
     })
 }
 
-fn binding(phase: PacketNativeImport17Stage) -> PacketNativeImport17StageBinding {
+pub(super) fn binding(phase: PacketNativeImport17Stage) -> PacketNativeImport17StageBinding {
     serde_json::from_value(fixture(phase)).unwrap()
 }
 
-fn original(binding: &PacketNativeImport17StageBinding) -> Envelope {
+pub(super) fn original(binding: &PacketNativeImport17StageBinding) -> Envelope {
     let target = &binding.target;
     let mut original = crate::envelope::tests::request();
     original.method = binding.phase.method_data();
@@ -100,7 +100,7 @@ fn original(binding: &PacketNativeImport17StageBinding) -> Envelope {
     original
 }
 
-fn context(
+pub(super) fn context(
     binding: &PacketNativeImport17StageBinding,
     original: &Envelope,
 ) -> PacketNativeImport17StageContext {

@@ -16,6 +16,7 @@ use crucible_node_format::canonical;
 mod assigned;
 mod crypto;
 mod data;
+mod exchange;
 mod projection;
 mod retained;
 
@@ -31,6 +32,8 @@ pub use crypto::{
     native_import17_stage_receipt_data, verify_native_import17_stage_proof_data,
     verify_native_import17_stage_receipt_data,
 };
+pub use exchange::PacketNativeImport18StageExchangeData;
+
 pub use projection::{
     PacketNativeImport17StageCryptoProjectionData, native_import17_stage_crypto_construction_data,
     native_import17_stage_crypto_counter_scratch_data,
