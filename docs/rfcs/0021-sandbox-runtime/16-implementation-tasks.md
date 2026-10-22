@@ -9931,6 +9931,18 @@ survives switch-root but cannot bind from its retained, detached initrd `/run`
 mount. It now reopens the attached `/run` through the retained new root after
 the pin gate; the same files remain on the transferred filesystem. Both actual
 post-pin mutations and the complete handoff test remain unqualified.
+The next installed transcript confirms that all four switch-root substitutions
+complete in the parent namespace while the isolated manager reaches its agent.
+The overall test then fails waiting for the clean guest's multi-user target:
+both clean and attacked guests fail native SSH configuration creation. The
+low-level stage0 fixture had omitted the retained initrd policy input that
+enables labeling the persistent `/etc` upper. It now retains the same immutable
+labeling selection as production without enabling the production assertions
+that deliberately reject these adversarial stage0 packages. Native replay now
+checks this fixture as well as the production immutable profile; it passes at
+`/nix/store/q8qm9v85lz96s58rp82qrkh6ba25szh7-aos-native-profile-replay`.
+This source check does not qualify daemon-reexec or the complete installed
+handoff matrix; a rerun remains required.
 The installed Host test passes byte, distinct-inode, mode/ownership and raw
 SELinux-label comparisons for the Host and copied Guest DSOs. Both metadata
 tools follow the versioned DSO symlinks; AOS-built `getfattr` supplies raw

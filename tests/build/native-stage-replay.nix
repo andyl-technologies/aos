@@ -41,7 +41,7 @@ in {
   initrd = replay initrd;
   initrdConfigurationLabeling = assert replayedInitrd.aos.services."boot-preparations.etc-overlay-setup".environment.variables.AOS_CONFIGURATION_SELINUX_LABELS
   == (
-    if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+    if config.system.build.immutableSelinuxPolicy != null
     then "true"
     else "false"
   ); true;

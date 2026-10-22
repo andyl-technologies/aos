@@ -2041,7 +2041,7 @@ in rec {
           };
       native-profile-replay = let
         checks = import ./tests/build/native-profile-replay.nix {
-          inherit lib;
+          inherit lib pkgs;
           system = serverSystem;
           secureBootSystem = discoverSystems.server-secureboot-lockdown;
         };

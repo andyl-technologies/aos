@@ -1,6 +1,7 @@
 ##! Replays optional native profile policies from their retained operator sources.
 {
   lib,
+  pkgs,
   system,
   secureBootSystem,
 }: let
@@ -31,6 +32,12 @@
       }
     ];
   };
+  lowLevelSelinux = secureBootSystem.extendModules {
+    modules = [
+      ../../systems/_server-test-packages.nix
+      ((import ../fleet/_selinux-stage0-fixture.nix {inherit lib pkgs;}) pkgs.aos-selinux-stage0)
+    ];
+  };
   localeEffects = localeOverride.config.aos.abilities.configuration.operations.file.effects;
   localeSession = localeOverride.config.environment.sessionVariables;
   replay = selected:
@@ -43,6 +50,7 @@ in {
   localeOverride = replay localeOverride;
   crucible = replay crucible;
   immutableSelinux = replay immutableSelinux;
+  lowLevelSelinux = replay lowLevelSelinux;
   debugPolicy = assert debug.config.aos.getty.autologin.enable;
   assert debug.config.aos.security.level == "debug"; true;
   localeOverridePolicy = assert localeOverride.config.aos.system.locale == "de_DE.UTF-8";
