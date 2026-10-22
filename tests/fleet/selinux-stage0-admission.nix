@@ -143,7 +143,7 @@
   productionSystemFor = stage0:
     systems.server-secureboot-lockdown.extendModules {
       modules =
-        [productionModule]
+        [../../systems/_server-test-packages.nix productionModule]
         ++ lib.optional (!builtins.isNull stage0) {
           aos.boot.initrd.stage0 = lib.mkForce stage0;
         };
@@ -156,6 +156,9 @@
     builtins.elem message (failedAssertionMessages evaluated);
 
   productionSystem = productionSystemFor null;
+  productionPolicy = productionSystem.config.aos.security.selinux._productionPolicy;
+  productionReadback = productionSystem.config.aos.security.selinux._canonicalReadback;
+  productionRoots = productionSystem.config.aos.security.selinux._runtimeRootsProvisioner;
   loadedOverrideSystem = productionSystemFor loadedPolicyOverride;
   expectedOverrideSystem = productionSystemFor expectedPolicyOverride;
   kernelBindingOverrideSystem = productionSystemFor kernelBindingOverride;
@@ -166,7 +169,7 @@
 
   systemFor = stage0:
     systems.server-secureboot-lockdown.extendModules {
-      modules = [(admissionModule stage0)];
+      modules = [../../systems/_server-test-packages.nix (admissionModule stage0)];
     };
   validSystem = systemFor runtimeValidStage0;
   invalidSystem = systemFor runtimeInvalidStage0;
@@ -174,11 +177,13 @@
   validConfig = validSystem.config;
 in
   assert productionSystem.config.aos.boot.initrd.stage0 == canonicalStage0;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.loadedPolicy == canonicalPolicy;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == canonicalReadbackPath;
+  # Production selects policy and provisioner variants for its actual roles.
+  # The deliberately low-level runtime-negative fixtures above use defaults.
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.loadedPolicy == "${productionPolicy}/etc/selinux/aos/policy/policy.33";
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicy == "${productionReadback}/policy.33";
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.expectedPolicyKernel == canonicalKernel;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.immutablePolicy == pkgs.aos-selinux-production-policy;
-  assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == pkgs.aosSelinuxRuntimeRootsForKernel canonicalKernel;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.immutablePolicy == productionPolicy;
+  assert productionSystem.config.aos.boot.initrd.stage0.passthru.runtimeRootsProvisioner == productionRoots;
   assert productionSystem.config.aos.boot.initrd.stage0.passthru.admissionUnit == "aos-selinux-stage0-hold.target";
   assert rejects "immutable SELinux stage 0 must load the canonical production policy." loadedOverrideSystem;
   assert rejects "immutable SELinux stage 0 must authenticate the selected kernel's canonical policy readback." expectedOverrideSystem;

@@ -10717,3 +10717,12 @@ Strict static C17 compilation with warnings as errors passes at
 This compile-only artifact embeds the preceding Host manifest and policy; it is
 not an installed boot or authority receipt. Early admission and installed Host
 retries are still required before qualifying the corrected root transition.
+
+The early-admission fixture now includes the same server test packages as the
+other enforcing image fixtures. Its production assertions compare against the
+selected image's actual policy, kernel readback and provisioner variants. The
+low-level negative fixtures retain their deliberately independent defaults.
+The shared fixture no longer duplicates rootflags=nodev, which the base
+filesystem module already supplies. Complete evaluation passes all existing
+production rejection assertions and the exact-one-parameter assertions; the
+expanded test script compiles. Installed admission remains pending.

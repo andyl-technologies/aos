@@ -11,7 +11,6 @@
     "security=selinux"
     "enforcing=1"
     "aos.selinux.root_handoff=1"
-    "rootflags=nodev"
   ];
   aos.boot.initrd.stage0 = stage0;
   # Native initrd replay must label the writable /etc upper even when this
