@@ -3668,8 +3668,10 @@ match the committed revision and its actual captured source.
 
 The complete raw-JSON Transport run passes all 2,083 tests, with zero failures,
 16 existing ignores and no filtering, in 428.03 seconds. The previously failing
-reply control passes. The complete standard run is still executing against the
-same stable source and test executables; it is not yet qualified at this entry.
+reply control passes. The complete standard run also passes all 2,083 tests,
+with zero failures, the same 16 ignores and no filtering, in 427.55 seconds.
+Both suites use unchanged committed Rust inputs and stable test executables
+after this change's compilation jobs finish.
 These results establish no refreshed configured runtime, VM, full signed
 Source/native restoration or complete RFC qualification. Strict Clippy remains
 unqualified; its last measured library checkpoint has 74 errors.
