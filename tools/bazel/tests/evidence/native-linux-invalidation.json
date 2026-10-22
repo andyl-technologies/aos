@@ -1,49 +1,99 @@
 {
   "cases": {
     "cpp-source": {
-      "baseline": "/nix/store/vzcpnbaplvx6mpknqqmx7z9716w1jhqr-aos-bazel-cpp-source-baseline-1",
+      "baseline": "/nix/store/ppy64r3laa20ky29v37dj8l3v451mr2p-aos-bazel-cpp-source-baseline-1",
       "schema_version": 1,
       "variants": {
         "cpp-source": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "df226c9a8a61c9b4d331871ea2978b8f4640ea33706841e7fd404240c874e2d5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "fingerprint": "6ee231145093abd531cab9bd3d0045290301f19f4e0c1e5e2947c747e283a1af",
               "runner": "disk cache hit"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "ef1e2d36b010e3f8468b90ee441ed9553ae5480849d84882877b9601ffc7b4d2",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "1545c0e23a8bdfce01b1d2cd1151018e37374a5fbb86543f6c0f8a234ccd53fe",
+              "fingerprint": "10afd843d0af2daa271da72be62a71179888850e6c4af4c51f0c3d6c5d3f48d6",
+              "runner": "linux-sandbox"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "0b8cf2b1500086279af290229fc13d4075b480e2a64c90ac4416894a450432f4",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "3ff1b5a1761e6157141c4d2435700f368e1f33aa63a65e1cec33faab058881d8",
               "runner": "linux-sandbox"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
               "runner": "disk cache hit"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
               "runner": "disk cache hit"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "39ca451d30b34a0c18f53b4e8fb2b838ec30d3fea93a04bbb0ec4700ab23ee7e",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "10b449069a88dbe27dd6c49a51e685117c2f6574ac610d2fc21b4eaebbb2c0ee",
+              "fingerprint": "9016f1c92b9f17e5dd30adb10624b84024bef13681d041347cf789f57dabfbae",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "41dbeffb9a923dfe2004b8b80a6898c72110bfbe862fc72601b88de5f3d6f614",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "352cd47e61f631ee703b4954384133451cd695d12364806f35820abcd9de745c",
+              "fingerprint": "1d87102ebea3002906a63a2bd455596e09cab64fa7e23008bfdeeed5e8754ad5",
               "runner": "disk cache hit"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "6835b49787577bd7be76005cefdd8fa4c2411f19340e949974ec473ca28a19e8",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "a5b88304089c51c9a6297ac6ac5bbb09fe2287e8edbcff388b5f173e81139f2b",
+              "fingerprint": "67c9ee2dcd061e7ef593111340fd683d2658d68d10ab621a1423a4a63b89b81a",
               "runner": "disk cache hit"
             }
           },
@@ -52,54 +102,104 @@
             "bin/native-fixture": "1640643d1e5ddd8eacf5b07a669d6767cf0b84c4ed8ec8f2d7afc1b7aa6a6299",
             "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
           },
-          "build": "/nix/store/s8zkd5fhlrzw2kf96d2rg7h1wwn2sh03-aos-bazel-invalidation-cpp-source-1"
+          "build": "/nix/store/azxrknq9adzq2hy9lspha6xhh5bj9dsy-aos-bazel-invalidation-cpp-source-1"
         }
       }
     },
     "feature": {
-      "baseline": "/nix/store/5pvizy8sdvp9k9rqvxcbagipbxnzs3fl-aos-bazel-feature-baseline-1",
+      "baseline": "/nix/store/6mbln9hgv6xfpia0xknyds7axk2f0yjj-aos-bazel-feature-baseline-1",
       "schema_version": 1,
       "variants": {
         "feature": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "df226c9a8a61c9b4d331871ea2978b8f4640ea33706841e7fd404240c874e2d5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "fingerprint": "6ee231145093abd531cab9bd3d0045290301f19f4e0c1e5e2947c747e283a1af",
               "runner": "disk cache hit"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "7f1b174821fe89069ec039374f50459364eea1479ed2da5ffe47d91d4f099b02",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "fingerprint": "8f89ac70e8639f3f4e13fe515677621dc309b642f76eeeb4adeecf92e9d84eee",
+              "runner": "disk cache hit"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "e78f107d7af0c770f481b4c2aabcc3770a97577e4dca93be4bd6bdfa120e9329",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "92481ac6ea67ce9a6afb017c85a326f68924a5aa00448b16ef26da4dc74c4923",
               "runner": "disk cache hit"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
               "runner": "disk cache hit"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
               "runner": "disk cache hit"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "9878d553983574121f98807daf944533f06feb73afee0877ec15809cc4b0e390",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "df8175fb3f05e7c1f6390d9f5c1226941797387a1c423b5d068ee80b2f85b456",
+              "fingerprint": "93d9e719dfc8e283651c3e42d69573b376347195d52b183d890d15925fb1d7c4",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "7b1a064007884fdf93d19595fbc69de2fa3886d15b582726cf7660cf3bde2978",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "6f311f66e0add2acc5b40a23a2ddab5f06fcee18ac28e821d2b31b508158c470",
+              "fingerprint": "d376657468595fa7edbf3b9b72112f1bcecacffeb39ae0a65d1741f3497b5ec7",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "ebf8dd2caa9dab91eac91e7d8276861a7742911f492acfe9b11e41f35246fd0f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "5d0324c2ecc801e74b8d3422e97d086ba7b44a225764b3c0a470f01f45b0aeaa",
+              "fingerprint": "0cb150322bd6083d3758bb721fcd78179ac7dc2e1fc85197712a36715b47a87a",
               "runner": "linux-sandbox"
             }
           },
@@ -108,54 +208,104 @@
             "bin/native-fixture": "53edfc29f811e9f487ab8dfe8f53b5dc145ec9828d7a279860e856fa2f5f488b",
             "bin/rust-fixture": "5ca16aa9033689bb811706566d397b958b4e13c1644bff1170837044bd96bf3e"
           },
-          "build": "/nix/store/bwryfgc7a25lbhp7azfprdf7cf5403xc-aos-bazel-invalidation-feature-1"
+          "build": "/nix/store/mwlyn396vmmjmb72gh2s89s3wrnnxmyh-aos-bazel-invalidation-feature-1"
         }
       }
     },
     "generated-input": {
-      "baseline": "/nix/store/0l3ldlcwl04ikjyn9ka8vcdjqg9d498b-aos-bazel-generated-input-baseline-1",
+      "baseline": "/nix/store/68kfj16zapn6d01cz84sdcw31hfkwkry-aos-bazel-generated-input-baseline-1",
       "schema_version": 1,
       "variants": {
         "generated-input": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "c0577116446305970b9646b1cae4117ea1c52289b120ab82517adc9ccf81392b",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "130a112f6c95d381f18a0012b22ca3db9da4e274e9f94bbd4052c441fd7bc6a7",
+              "fingerprint": "795ef9ca29cedc41fac92baac5e67f264ea0ecdccfce4583650b71f47dff7575",
               "runner": "linux-sandbox"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "4a278481c0caefc3425632acd9a38b0c1707ec24af6eccb59ab9c82b5782e8ce",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "aa9e15863a8404ffa1642869fe15fabfec86811958c5dc4a0cea6d5ad53c1416",
+              "fingerprint": "8eb12c273831866ff75ca254471b771e5ac954d2116b4efd6ebcc7e3f8328be3",
+              "runner": "linux-sandbox"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "0b8cf2b1500086279af290229fc13d4075b480e2a64c90ac4416894a450432f4",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "3ff1b5a1761e6157141c4d2435700f368e1f33aa63a65e1cec33faab058881d8",
               "runner": "linux-sandbox"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "7435ff3b5bf6d3ec2e32d08c8e63359ae89e3e78bce7fe66838503af4e464a04",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "b7f4e0e058d9da749584550300c4d7a34be613d94a66743c06a6f8d8577db95d",
+              "fingerprint": "472020d9cf2c904d7e22c42c0a7460c9c02713673486e7e9311d0b3c6f358d7b",
               "runner": "linux-sandbox"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "ebc9dbbf39543cc4621f0ff4018cd2b29bf1d446a79a7289d4e81d31c50062f7",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "4ddd7aef252cd8409923930e7f1a3519e6ff98b17a2b8d99006166ab74200cf9",
+              "fingerprint": "effbc6eeb73bc01314911b1e5221c59c0d823afd94cae4bcc18bb84da6905cd4",
               "runner": "linux-sandbox"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "5fd0e0114a442a2e1d0a77a1e9f23dd385dee61354cc03047ae870c13d7dd12a",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "0412f069d272565a81e2507dcabb90a53318a25644fb9a493fbe1a4097ee0c6d",
+              "fingerprint": "1d89b44b08f9ae4de277dacb3113c7b74bcea567e797f0699ab8ee18c002c757",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "b1fba5dad9702b29fb820468bc79c2907cfebcc5b7682597eb4e0a5a7b3d486c",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "bf8a6ecad55a09c9ee65442f9ef4f60cc4dc9e0ae6e9987c5e8ed45b6871463b",
+              "fingerprint": "3e8ef171b15a05ab1cef13946c8c97ef41e786b6e34c5753ecd6e1484e81d234",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "e3817c8b9b26d582a5287ac9a0806c36b4a6df2bb62afa646bad0ce652abbdde",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "53cadae1d5ad5f7199323a7a24802186b5841de217a5101e972486c5cc9316d7",
+              "fingerprint": "e8043a2ffd6f74db442ef44a4c3b824006de7fa4ba1f5d2a0c66b39c0dc91ec1",
               "runner": "linux-sandbox"
             }
           },
@@ -164,54 +314,104 @@
             "bin/native-fixture": "283cf226bd99b8a0e238c84d360a674a2927ecd3e8bb83dfd8db91d150d2b2e6",
             "bin/rust-fixture": "46417887d2177cad0243546dd88ae51adf1e3b4b096f3904ebb74e77b6fbe5c2"
           },
-          "build": "/nix/store/dblf2l7awrj567xq2m2bdj0k7a642msw-aos-bazel-invalidation-generated-input-1"
+          "build": "/nix/store/r2rn8qf1ffvp7p51dfm6f4vp0pfyr0ps-aos-bazel-invalidation-generated-input-1"
         }
       }
     },
     "generator-environment": {
-      "baseline": "/nix/store/343n4j3gvxhkvh3ks4sdcvsz02a75ajz-aos-bazel-generator-environment-baseline-1",
+      "baseline": "/nix/store/0wklnkcrmlap7p8gs2l6p3a5knb19fp8-aos-bazel-generator-environment-baseline-1",
       "schema_version": 1,
       "variants": {
         "generator-environment": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "c0577116446305970b9646b1cae4117ea1c52289b120ab82517adc9ccf81392b",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "130a112f6c95d381f18a0012b22ca3db9da4e274e9f94bbd4052c441fd7bc6a7",
+              "fingerprint": "795ef9ca29cedc41fac92baac5e67f264ea0ecdccfce4583650b71f47dff7575",
               "runner": "linux-sandbox"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "4a278481c0caefc3425632acd9a38b0c1707ec24af6eccb59ab9c82b5782e8ce",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "aa9e15863a8404ffa1642869fe15fabfec86811958c5dc4a0cea6d5ad53c1416",
+              "fingerprint": "8eb12c273831866ff75ca254471b771e5ac954d2116b4efd6ebcc7e3f8328be3",
+              "runner": "linux-sandbox"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "0b8cf2b1500086279af290229fc13d4075b480e2a64c90ac4416894a450432f4",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "3ff1b5a1761e6157141c4d2435700f368e1f33aa63a65e1cec33faab058881d8",
               "runner": "linux-sandbox"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "9ee2b750112716c968da28f385e0872cc8d113cc92c4f789f151165faf40194c",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "3f0135af4f64e339066457df0c6f52c4d18ee2cd65123f795a5bfc6ff9d5e11d",
+              "fingerprint": "9799b49318b7ba2fdd239a44a42dda6a531158c963712fbcedb1c418c03c59bf",
               "runner": "linux-sandbox"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "ebc9dbbf39543cc4621f0ff4018cd2b29bf1d446a79a7289d4e81d31c50062f7",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "4ddd7aef252cd8409923930e7f1a3519e6ff98b17a2b8d99006166ab74200cf9",
+              "fingerprint": "effbc6eeb73bc01314911b1e5221c59c0d823afd94cae4bcc18bb84da6905cd4",
               "runner": "linux-sandbox"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "5fd0e0114a442a2e1d0a77a1e9f23dd385dee61354cc03047ae870c13d7dd12a",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "0412f069d272565a81e2507dcabb90a53318a25644fb9a493fbe1a4097ee0c6d",
+              "fingerprint": "1d89b44b08f9ae4de277dacb3113c7b74bcea567e797f0699ab8ee18c002c757",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "b1fba5dad9702b29fb820468bc79c2907cfebcc5b7682597eb4e0a5a7b3d486c",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "bf8a6ecad55a09c9ee65442f9ef4f60cc4dc9e0ae6e9987c5e8ed45b6871463b",
+              "fingerprint": "3e8ef171b15a05ab1cef13946c8c97ef41e786b6e34c5753ecd6e1484e81d234",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "e3817c8b9b26d582a5287ac9a0806c36b4a6df2bb62afa646bad0ce652abbdde",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "53cadae1d5ad5f7199323a7a24802186b5841de217a5101e972486c5cc9316d7",
+              "fingerprint": "e8043a2ffd6f74db442ef44a4c3b824006de7fa4ba1f5d2a0c66b39c0dc91ec1",
               "runner": "linux-sandbox"
             }
           },
@@ -220,54 +420,104 @@
             "bin/native-fixture": "283cf226bd99b8a0e238c84d360a674a2927ecd3e8bb83dfd8db91d150d2b2e6",
             "bin/rust-fixture": "46417887d2177cad0243546dd88ae51adf1e3b4b096f3904ebb74e77b6fbe5c2"
           },
-          "build": "/nix/store/2zwf6ikhi32bsd9dcn0d0yyyi4vxnl6n-aos-bazel-invalidation-generator-environment-1"
+          "build": "/nix/store/ichr3hf6nxv031bg78ccqhcnvnpa4fdq-aos-bazel-invalidation-generator-environment-1"
         }
       }
     },
     "header": {
-      "baseline": "/nix/store/84djcajlvzwrj3zclpa03b46978p2msz-aos-bazel-header-baseline-1",
+      "baseline": "/nix/store/7qz6naa22zqlkl4zfjfyxnwr2rvzsj9g-aos-bazel-header-baseline-1",
       "schema_version": 1,
       "variants": {
         "header": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "70d4e15aba0112e964b3091e1017a9fd7f618ee09786d0a223854381bfd4b964",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "23de7ba8efdd7d563f5e57aaef622c4ff826b8ab47b8026e87d9fbfbc4406b2f",
+              "fingerprint": "e16a4ec8955bcfc296c3939a8476b2622428945bc439b000e9b1edeb91383c27",
               "runner": "linux-sandbox"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "cf32417ae0d7a6c592793707fa05549b2191c9fc40c971629a59e0c1b5ab5a58",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "ff49eaf044377bebbb099821965aef201b0010aa9a2daf84525adefe2f053e92",
+              "fingerprint": "59e96a3d70611b16b7522e195c24154c0386831b547192216624dd1c611349ff",
+              "runner": "linux-sandbox"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "0b8cf2b1500086279af290229fc13d4075b480e2a64c90ac4416894a450432f4",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "3ff1b5a1761e6157141c4d2435700f368e1f33aa63a65e1cec33faab058881d8",
               "runner": "linux-sandbox"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
               "runner": "disk cache hit"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
               "runner": "disk cache hit"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "39ca451d30b34a0c18f53b4e8fb2b838ec30d3fea93a04bbb0ec4700ab23ee7e",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "10b449069a88dbe27dd6c49a51e685117c2f6574ac610d2fc21b4eaebbb2c0ee",
+              "fingerprint": "9016f1c92b9f17e5dd30adb10624b84024bef13681d041347cf789f57dabfbae",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "41dbeffb9a923dfe2004b8b80a6898c72110bfbe862fc72601b88de5f3d6f614",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "352cd47e61f631ee703b4954384133451cd695d12364806f35820abcd9de745c",
+              "fingerprint": "1d87102ebea3002906a63a2bd455596e09cab64fa7e23008bfdeeed5e8754ad5",
               "runner": "disk cache hit"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "6835b49787577bd7be76005cefdd8fa4c2411f19340e949974ec473ca28a19e8",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "a5b88304089c51c9a6297ac6ac5bbb09fe2287e8edbcff388b5f173e81139f2b",
+              "fingerprint": "67c9ee2dcd061e7ef593111340fd683d2658d68d10ab621a1423a4a63b89b81a",
               "runner": "disk cache hit"
             }
           },
@@ -276,54 +526,210 @@
             "bin/native-fixture": "1640643d1e5ddd8eacf5b07a669d6767cf0b84c4ed8ec8f2d7afc1b7aa6a6299",
             "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
           },
-          "build": "/nix/store/q1xygg2v3159qj5rhmjd06jcbyw7ahi4-aos-bazel-invalidation-header-1"
+          "build": "/nix/store/djh5pshczhk4kaj3r6p5qs360p0y4pg9-aos-bazel-invalidation-header-1"
+        }
+      }
+    },
+    "link-flags": {
+      "baseline": "/nix/store/and265fmw6fqlildmhh6j1861p5y2a1p-aos-bazel-link-flags-baseline-1",
+      "schema_version": 1,
+      "variants": {
+        "link-flags": {
+          "actions": {
+            "cpp_app": {
+              "action_digest": {
+                "hash": "df226c9a8a61c9b4d331871ea2978b8f4640ea33706841e7fd404240c874e2d5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "6ee231145093abd531cab9bd3d0045290301f19f4e0c1e5e2947c747e283a1af",
+              "runner": "disk cache hit"
+            },
+            "cpp_library": {
+              "action_digest": {
+                "hash": "7f1b174821fe89069ec039374f50459364eea1479ed2da5ffe47d91d4f099b02",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "8f89ac70e8639f3f4e13fe515677621dc309b642f76eeeb4adeecf92e9d84eee",
+              "runner": "disk cache hit"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "72baae1aa071d9d17891284e8012f7b9e6812c974ca55f03f3b006e05de648fa",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "2713bfb4ffe3682c858cea6131358d8eb588ef49875de4a1af060a4f5a544f53",
+              "runner": "linux-sandbox"
+            },
+            "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
+              "runner": "disk cache hit"
+            },
+            "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
+              "runner": "disk cache hit"
+            },
+            "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
+              "runner": "disk cache hit"
+            },
+            "native_app": {
+              "action_digest": {
+                "hash": "cab61f3321f498b9d82659e720d0ccced4ebeae5bf424fdc36eec343c4df049f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "c51988793a0e8176112cdac148454da43df5216f8f9fc636e97a88c33246eba8",
+              "runner": "disk cache hit"
+            },
+            "rust_app": {
+              "action_digest": {
+                "hash": "41dbeffb9a923dfe2004b8b80a6898c72110bfbe862fc72601b88de5f3d6f614",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "1d87102ebea3002906a63a2bd455596e09cab64fa7e23008bfdeeed5e8754ad5",
+              "runner": "disk cache hit"
+            },
+            "rust_library": {
+              "action_digest": {
+                "hash": "6835b49787577bd7be76005cefdd8fa4c2411f19340e949974ec473ca28a19e8",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "67c9ee2dcd061e7ef593111340fd683d2658d68d10ab621a1423a4a63b89b81a",
+              "runner": "disk cache hit"
+            }
+          },
+          "artifacts": {
+            "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+            "bin/native-fixture": "b49e6839c6c9189dfd6d7e5036622aec57df3920857a82bed3fd2559afb79dd0",
+            "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
+          },
+          "build": "/nix/store/411kcnbb07k15mfklaqmjglaxj5a3110-aos-bazel-invalidation-link-flags-1"
         }
       }
     },
     "rust-flags": {
-      "baseline": "/nix/store/zrrj63qibxfmj0w4bbs3hdina8if51lv-aos-bazel-rust-flags-baseline-1",
+      "baseline": "/nix/store/w5h0ia14f1ib5q70xn5dpcg6ph38h6pp-aos-bazel-rust-flags-baseline-1",
       "schema_version": 1,
       "variants": {
         "rust-flags": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "df226c9a8a61c9b4d331871ea2978b8f4640ea33706841e7fd404240c874e2d5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "fingerprint": "6ee231145093abd531cab9bd3d0045290301f19f4e0c1e5e2947c747e283a1af",
               "runner": "disk cache hit"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "7f1b174821fe89069ec039374f50459364eea1479ed2da5ffe47d91d4f099b02",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "fingerprint": "8f89ac70e8639f3f4e13fe515677621dc309b642f76eeeb4adeecf92e9d84eee",
+              "runner": "disk cache hit"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "e78f107d7af0c770f481b4c2aabcc3770a97577e4dca93be4bd6bdfa120e9329",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "92481ac6ea67ce9a6afb017c85a326f68924a5aa00448b16ef26da4dc74c4923",
               "runner": "disk cache hit"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
               "runner": "disk cache hit"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
               "runner": "disk cache hit"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "ee7c0813ae2c0bbf875fa3cdb7c35a4605f1cc4c97d211a3409700869ccf3f7b",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "bcf66243d6872476bf0088024a2289ea2eae299e3b191990537ca642e00ac9e5",
+              "fingerprint": "b5c00bb73858f9cd47a4473ece60e35bc78a6b1304733fd847aeb672c1e84d95",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "8f78d40fc4a7a864d7f7b6e81fde18e842107f8b748dd7b64280313f57b7b4f0",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "04408639bcbb181ea9a90ddf1afb8cf77b903ee6d24f6a2cfbff48f84977ef26",
+              "fingerprint": "c96495d632c81e830cfaeebdae0aa32b8575d8e19dfe710bd7e9f8d329e05f7b",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "7835963ae8a95aad966e195e844bee0269d4bae94d1d7b8c9ec99f61cbf0823c",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "e4dc7d2a351673d0ec4867df8785e6c4f7dfeb55f3664558f4c3b2603947ea6b",
+              "fingerprint": "212a4f9b52543210179e9fa2781164fb99cccb6257e19e07dab16941d2d3bc9e",
               "runner": "linux-sandbox"
             }
           },
@@ -332,54 +738,104 @@
             "bin/native-fixture": "097f512137df237e85982dfc14ac1a9fd21ad65c48c11e0960b1bc1a1f9b39d3",
             "bin/rust-fixture": "b00635f694f885503778729b426f8b712dfd50db06715d5b83f95d2632063aa0"
           },
-          "build": "/nix/store/njwr2fn85xnc85lnzkgx58d09kbaj7zd-aos-bazel-invalidation-rust-flags-1"
+          "build": "/nix/store/j2rd77p4gv0wn2g96pkw500kc6i3a5nn-aos-bazel-invalidation-rust-flags-1"
         }
       }
     },
     "rust-source": {
-      "baseline": "/nix/store/rgvpaaln5274q5vif3m1syi8g7q8g2rb-aos-bazel-rust-source-baseline-1",
+      "baseline": "/nix/store/1jak2fag52ay26p1sbpgfavp75133v7w-aos-bazel-rust-source-baseline-1",
       "schema_version": 1,
       "variants": {
         "rust-source": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "df226c9a8a61c9b4d331871ea2978b8f4640ea33706841e7fd404240c874e2d5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "045c7485e1db6cff3f688a09e4d7ec06f66de3db3abd62100b33b0b34c1aab4a",
+              "fingerprint": "6ee231145093abd531cab9bd3d0045290301f19f4e0c1e5e2947c747e283a1af",
               "runner": "disk cache hit"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "7f1b174821fe89069ec039374f50459364eea1479ed2da5ffe47d91d4f099b02",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "3301da4026e9905200ac970404a245a9c61fb02963f36a36ce02a7518cc2b726",
+              "fingerprint": "8f89ac70e8639f3f4e13fe515677621dc309b642f76eeeb4adeecf92e9d84eee",
+              "runner": "disk cache hit"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "e78f107d7af0c770f481b4c2aabcc3770a97577e4dca93be4bd6bdfa120e9329",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": true,
+              "fingerprint": "92481ac6ea67ce9a6afb017c85a326f68924a5aa00448b16ef26da4dc74c4923",
               "runner": "disk cache hit"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "d56101509bc77cf7d23cfa3088e48756b96e5bd0e046391cb0da91312f5c545f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "b2c1918dc3ce77d3d348b080f5ac7115923efe110fc7de9877b2af58cfdb43f8",
+              "fingerprint": "0d5e3e9fb223815cc0dc0b345a2af1167ac132e84a01227bf729586589f522d9",
               "runner": "disk cache hit"
             },
             "generated": {
+              "action_digest": {
+                "hash": "c1bcad103cd0f32448812b440875a57504ae4e20a6f54a2d2ed30ad930a39d3f",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "c2c1cfb3620d87013de0d7b8bb8ed00b81a209fb1e3af0b797ae160e8623ee7a",
+              "fingerprint": "53a8d0cc8244ab750fd6cd37bc6095b9d3f5c3d66bbe80dec0cad1bcf13a506d",
               "runner": "disk cache hit"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "bbca1bf9aff1815cca02f4896f1b29104c03995598f39a1ee36bfe90c218bf01",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": true,
-              "fingerprint": "898ab5f9af13bff19a9c6d6f267282f27324af7848e6f926c6d36499c29e816d",
+              "fingerprint": "a9da236af72340e00039747d8fc2cadbca25aff4a26ab9b88bb68bb50d096059",
               "runner": "disk cache hit"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "76bb82ba9255f30af41cb8c58d4485dd6e5044d03f5465e21c159167dde78c56",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "02240136f66ed39e92d195ad00bece9a915b6475cf3b651198a666136edec25c",
+              "fingerprint": "a089f25c8814342d72365bb5852f1266f1dbb46355129e4c5cb0cf463eaf958e",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "31927e2b181246ceba71b6703e3890c8cfb17cb972e9d8634bc315dc9bf63679",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "f47d7f07a5c81d3fa0551857d2f714d3051cb2f82605f2cc62dd11cef0449027",
+              "fingerprint": "e85a2775b647c77cecc0adb2cefa4422d3a0f4c3770aa6ea56b1cb7a966a0088",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "59bab89e8dde4c767f06ed141a2d3ccd523808ee2fe30088aef0461acc1093fc",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "dc930f307ab5fddacd0c0d73d1e9df24711942a11c3d1ca044fcf37eda0cab96",
+              "fingerprint": "db86ce8a16c6754af4db6d8fefafb986283284dc17a7cdfecd308b5a529f0266",
               "runner": "linux-sandbox"
             }
           },
@@ -388,54 +844,104 @@
             "bin/native-fixture": "6faf9d04b164109dccd0c8a9df37f2fa7dc4bb3c22f1cad638efbb1a7a097e4e",
             "bin/rust-fixture": "dda4371b23d957d32710a047bd6c431a832b2e116656de07b43cc5df17a8525a"
           },
-          "build": "/nix/store/4lqx3wdqnhjl4fagzis3kyh3n41g3cd8-aos-bazel-invalidation-rust-source-1"
+          "build": "/nix/store/hdh9p5lcxq7vvgp7rn8s3wn2clvpm0zq-aos-bazel-invalidation-rust-source-1"
         }
       }
     },
     "tool-closure": {
-      "baseline": "/nix/store/0mzld2rjj7g44q7inzdyngrb02dg02zz-aos-bazel-tool-closure-baseline-1",
+      "baseline": "/nix/store/wjbmq4xijc9sbyg5bsra3y7fv1dkin8x-aos-bazel-tool-closure-baseline-1",
       "schema_version": 1,
       "variants": {
         "tool-closure": {
           "actions": {
             "cpp_app": {
+              "action_digest": {
+                "hash": "2d17304f17a6e6bba32ef61cae4578d17660dcffbf4a355f50db43bcaff7add9",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "e6fabc3c221fcdc2eefd6b30158d718f1aa470cf4585f6239bce57cb4433ef5a",
+              "fingerprint": "ee9806565a599010728f83d2c9f4517754585d1b8b5311f17c9e47a902099613",
               "runner": "linux-sandbox"
             },
             "cpp_library": {
+              "action_digest": {
+                "hash": "5daf9908a1ed4c8776418e8ddf1e7d4a1867abdddf33596e0a56986f1d7c77f5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "1f5bdc0ea2a9f552e1639731563b6549fb9705879376650462610f2367c4a52f",
+              "fingerprint": "4dd086b3ec2915e008b779da70c19a4c3cf63a23934eddde6e8fb7a2d17b54f7",
+              "runner": "linux-sandbox"
+            },
+            "cpp_link": {
+              "action_digest": {
+                "hash": "f85faf105d661eae5aba03d2bd61ed247738edd0decc9352644c6b03f43a1c33",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
+              "cache_hit": false,
+              "fingerprint": "748301ab0267dcd13475a6e6f3e86b1d554e5d9d69414005d331db9dfafb4fd9",
               "runner": "linux-sandbox"
             },
             "fixture_macro": {
+              "action_digest": {
+                "hash": "fc65f128a0b7f56b25fa105a2209b7342a843714e40f264a3de714ec1643b2f5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "8871e2d3e2b054d4537519e408693ada40af4b3b406edec1fb26541723c0f8b1",
+              "fingerprint": "73c1c6785b4a12a30d17c5066e2df82efe84d6b696c758413bc98141935748c4",
               "runner": "linux-sandbox"
             },
             "generated": {
+              "action_digest": {
+                "hash": "d9b88dfb9e84273a393c5f64a56afa02b334b020878ffb81ae5e6dce81d39a35",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "e01628105d57690255bd88ff2c63f585168d8715f4b76d9e6d3b85c557af1356",
+              "fingerprint": "c26bfcd3fe7dbffbcbe99e622af24f279697dd6822af0f1149e7b4a9a8bd4907",
               "runner": "linux-sandbox"
             },
             "generated_library": {
+              "action_digest": {
+                "hash": "15cfdfb9eb56af9e9a85e232ba4ca4691cf85c2b69b0bc49e7ecf5e2778e70d8",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "d7bd0d2089f254a3d586d9af5040ed4c806e34d41d56f062216176336535696b",
+              "fingerprint": "f905ae840ead057e36145c9e9bbfdd87e570cc0c97affb9fd75e32074fbec72e",
               "runner": "linux-sandbox"
             },
             "native_app": {
+              "action_digest": {
+                "hash": "dfd28259a9469c6613e983ebf200f07c529b47d0d8dcf27a4021d7cbab2f2efa",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "c48a95ca8b40a64ef49280033a9e292d8feba6e1a18ed51d2e1280b7b0789cc1",
+              "fingerprint": "8d928a695981fadcfa101c172b408f7f19dc3a300ae97036f61f202401d1830b",
               "runner": "linux-sandbox"
             },
             "rust_app": {
+              "action_digest": {
+                "hash": "9153517dcfc0e66d16092950b5b12f377d13180dcaf78d032a26a46c428b5834",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "b845e9c58466caa215fcfe105860a387d6a2a86b47a20abf7062fdcbf91bd8cc",
+              "fingerprint": "7dd3f6cd3de61ad9c66e2a6bd1d4ba210836ce11217916021544b116878db92b",
               "runner": "linux-sandbox"
             },
             "rust_library": {
+              "action_digest": {
+                "hash": "2233308e301776b219f347d584c45ca12c5be90a6acf46453b94472ae6ecb3f5",
+                "hashFunctionName": "SHA256",
+                "sizeBytes": "146"
+              },
               "cache_hit": false,
-              "fingerprint": "08e55466df3d0da00949f58f1ffd70ca028fd7f9fcb95087caf62d1faba86952",
+              "fingerprint": "e0530c103c1858676ad0b1a5428e16711d2f451f760b7fef2bba5edb5bc28ded",
               "runner": "linux-sandbox"
             }
           },
@@ -444,7 +950,7 @@
             "bin/native-fixture": "b49e6839c6c9189dfd6d7e5036622aec57df3920857a82bed3fd2559afb79dd0",
             "bin/rust-fixture": "37ab4d2d6a11ed5d737625092ead1edf1234edd76b51494ee2b4f45c2318fb63"
           },
-          "build": "/nix/store/vw1x1nxi68alzns41hw9mav8i1ybmw05-aos-bazel-invalidation-tool-closure-1"
+          "build": "/nix/store/lw8zf4q17w01fjgv9w9zi744iswc2gd0-aos-bazel-invalidation-tool-closure-1"
         }
       }
     }

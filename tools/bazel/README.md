@@ -46,9 +46,9 @@ lock covering setup and execution per output base. Only the disk action cache
 is shared across independent builds. Release mode uses a temporary output base
 and requests no shared cache.
 
-Production consumers still use Cargo. These fixtures do not establish
+Production consumers retain their Cargo or direct-rustc recipes. These fixtures do not establish
 production feature parity, cross-platform support, editor integration, or
-completion of the RFC. The full cache invalidation/concurrency matrix and
+completion of the RFC. The remaining platform/invalidation checks and
 family-specific performance budgets remain required before production cutover.
 
 ## Local cache evidence
@@ -61,8 +61,10 @@ edited Rust and C++ applications rebuilt. The edited cached and uncached
 executables matched byte for byte and both returned `answer=43` (the original
 returned `answer=42`). The unchanged native-link binary combines the two library
 results and returns `answer=84`. Each build had an independent
-output base. Event fingerprints cover declared arguments, environment, and
-input content hashes; they are not advertised as Bazel's remote Action digest.
+output base. The qualification retains Bazel's actual action digests for the
+cache-enabled executions. Separate event fingerprints cover declared arguments,
+environment, and input content hashes for comparison with the uncached oracle,
+where Bazel omits the action digest.
 
 Use an empty dedicated cache to repeat the registered qualification:
 
@@ -74,15 +76,16 @@ AOS_DEV_CACHE_DIR=/var/tmp/aos-bazel-trial aos-dev \
 ```
 
 The cache-specific checks are exposed only when a shared Bazel cache is
-selected; release `allChecks` includes the uncached infrastructure suite.
+selected; release `allChecks` includes infrastructure checks and recovery tests
+using a disposable cache.
 `tests/cache-proof.nix` also accepts a unique `trial` and sandbox `cacheDir`
 for new measurements without substituting a completed qualification output.
 `cache.invalidation.all` tests Rust/C++ implementation edits, headers, generated
-input, generator environment, Rust features/flags, and a tool closure identity
-change with unchanged logical compiler labels. Every case has a separate cold
+input, generator environment, Rust features/flags, C++ linker flags, and an actual
+compiler executable/closure change with unchanged logical compiler labels. Every case has a separate cold
 namespace and baseline Nix derivation, so equivalent outputs from a different
 case cannot mask a required miss. It checks affected misses, unaffected hits,
-semantic fingerprints, and all three executable results. The passing native
+action digests, semantic fingerprints, and all three executable results. The passing native
 Linux evidence is in `tests/evidence/native-linux-invalidation.json`.
 
 `cache.concurrent` runs independent Nix builds against the same cache namespace,
@@ -95,7 +98,7 @@ in `tests/evidence/native-linux-concurrent.json`.
 Build evidence also retains launcher wall/CPU time, child peak RSS, block I/O,
 UID mappings, namespaces, command, and cache selection. These are individual execution measurements;
 they do not establish production performance budgets. Foreign-target, CPU,
-linker/sysroot, and PGO invalidation, interrupted/corrupt-cache recovery, and
+linker executable/sysroot, and PGO invalidation and
 family-specific performance baselines remain required before their cutovers.
 
 ## Updating rule dependencies
@@ -254,3 +257,29 @@ including module includes. Declaration discovery queries the configured aspect's
 target set rather than traversing an unconfigured dependency closure. Refresh
 combined package/test inventories with `metadata/merge_inventory.py`; it rejects
 stale declaration and exporter fingerprints before merging them.
+
+## Cache integrity and recovery
+
+`checks.build.bazel.recovery` uses a disposable disk cache inside a Nix sandbox.
+Every invocation gets a fresh workspace and output base. It checks warm reuse,
+missing blobs, corruption of a compiler artifact and captured stdout, complete
+cache eviction, and cancellation after a generator writes a partial output.
+The resumed build must regenerate that action and reproduce the original
+package bytes and runtime behavior. Published CAS entries are hashed after
+cancellation; temporary cache writes are never treated as published results.
+The test retains per-case logs and metrics and never modifies the host's shared
+cache.
+
+AOS patches Bazel 9's disk-cache client to verify both path-backed copies and
+streamed CAS downloads. The unpatched client accepted an altered compiler
+artifact in the recovery experiment. Verification hashes materialized bytes,
+preserves filesystem copy/reflink support, and rejects digest mismatches before
+successful action completion. Action-cache keys identify actions rather than
+the serialized ActionResult, so CAS verification does not incorrectly treat
+those keys as content hashes. A corrupt shared entry can be bypassed with
+`--no-bazel-cache` while it is removed through the cache maintenance commands.
+
+The invalidation matrix also checks C++ link-action digests and a linker-flag
+change that leaves compile actions reusable. The compiler replacement case
+changes a real executable and its realized Nix closure under the same logical
+Bazel label, preserving program behavior.

@@ -45,6 +45,7 @@
   source ? null,
   update ? null,
   qualification ? null,
+  sourcePatches ? [],
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
@@ -1459,7 +1460,7 @@ in
       }
       {
         name = "patch";
-        script = ''
+        script = lib.concatMapStrings (sourcePatch: "patch --batch -p1 < ${sourcePatch}\n") sourcePatches + ''
                   ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
             # The dist archive bundles an empty Android emulator
             # snapshot. Recreate it with AOS-built qemu-img and zip.

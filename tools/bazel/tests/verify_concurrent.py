@@ -48,6 +48,10 @@ def verify(left, right, original, edited):
     for target in evidence["actions"]["left"]:
         if evidence["actions"]["left"][target]["fingerprint"] != evidence["actions"]["right"][target]["fingerprint"]:
             raise ValueError(f"unchanged concurrent action identity differs: {target}")
+        left_digest = evidence["actions"]["left"][target]["action_digest"]
+        right_digest = evidence["actions"]["right"][target]["action_digest"]
+        if left_digest is None or left_digest != right_digest:
+            raise ValueError(f"unchanged concurrent Bazel action digest differs: {target}")
     return evidence
 
 

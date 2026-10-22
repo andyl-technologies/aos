@@ -4,8 +4,32 @@
   workspace,
   trial,
 }: let
-  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "tool-closure"];
-  toolchains = variant: pkgs.mkAosBazelToolchains {identity = "invalidation:${trial}:${variant}";};
+  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure"];
+  replacedRust =
+    pkgs.runCommand "aos-bazel-replaced-rust-executable" {
+      version = pkgs.rust.version;
+      runtimeDeps = [pkgs.rust pkgs.bash];
+      dontNukeRefs = true;
+    } ''
+      mkdir -p "$out/bin"
+      cat > "$out/bin/rustc.unwrapped" <<'RUSTC'
+      #!${pkgs.bash}/bin/bash
+      exec ${pkgs.rust}/bin/rustc.unwrapped "$@"
+      RUSTC
+      chmod +x "$out/bin/rustc.unwrapped"
+      ln -s ${pkgs.rust}/bin/rustdoc.unwrapped "$out/bin/rustdoc.unwrapped"
+      ln -s ${pkgs.rust}/lib "$out/lib"
+    '';
+  toolchains = variant:
+    pkgs.mkAosBazelToolchains {
+      identity = "invalidation:${trial}";
+      # Replace an actual compiler executable and its realized closure while
+      # keeping the logical Bazel compiler label and output behavior unchanged.
+      rust =
+        if variant == "tool-closure"
+        then replacedRust
+        else pkgs.rust;
+    };
   configured = variant:
     pkgs.mkAosBazelWorkspace {
       root = ../..;

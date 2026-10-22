@@ -5,6 +5,7 @@ from collections import Counter
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 
 
@@ -37,11 +38,19 @@ def require_action(events, label, mnemonic, hit):
         raise ValueError(f"unexpected cache result for {label}: {event['runner']}, hit={event['cacheHit']}")
     if hit and "cache" not in event["runner"]:
         raise ValueError(f"cache hit unexpectedly used an execution runner: {event['runner']}")
-    # Retain the exact semantic inputs alongside their content digests. Bazel's
-    # JSON log does not expose the remote Action digest itself.
+    action_digest = event.get("digest")
+    if action_digest is not None:
+        if (action_digest.get("hashFunctionName") != "SHA256"
+                or not re.fullmatch(r"[0-9a-f]{64}", action_digest.get("hash", ""))
+                or int(action_digest.get("sizeBytes", 0)) <= 0):
+            raise ValueError(f"invalid Bazel action digest for {label}: {action_digest}")
+    if hit and action_digest is None:
+        raise ValueError(f"cache hit omitted its Bazel action digest: {label}")
+    # With the cache disabled Bazel omits the REAPI action digest. Keep a
+    # separate semantic fingerprint for comparison with the uncached oracle.
     identity = {key: event.get(key) for key in ["commandArgs", "environmentVariables", "inputs", "platform"]}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return {"fingerprint": fingerprint, "runner": event["runner"], "cache_hit": hit}
+    return {"fingerprint": fingerprint, "action_digest": action_digest, "runner": event["runner"], "cache_hit": hit}
 
 
 def main():
@@ -69,6 +78,10 @@ def main():
             raise ValueError(f"unchanged action identity differs across Nix derivations: {target}")
         if not unchanged and actions["producer"]["fingerprint"] == actions["consumer"]["fingerprint"]:
             raise ValueError(f"edited action did not change identity: {target}")
+        if any(actions[name]["action_digest"] is None for name in ["producer", "consumer"]):
+            raise ValueError(f"disk-cache experiment omitted an action digest: {target}")
+        if (actions["producer"]["action_digest"] == actions["consumer"]["action_digest"]) != unchanged:
+            raise ValueError(f"unexpected Bazel action digest across Nix derivations: {target}")
         evidence["actions"][target] = actions
 
     artifacts = {name: package_files(build) for name, build in builds.items()}

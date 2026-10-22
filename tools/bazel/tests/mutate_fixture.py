@@ -27,6 +27,8 @@ def mutate(root, variant):
     elif variant in {"feature", "rust-flags"}:
         setting = 'crate_features = ["extra"],' if variant == "feature" else 'rustc_flags = ["-Copt-level=1"],'
         replace(root, "BUILD.bazel", 'crate_name = "fixture_library",', 'crate_name = "fixture_library",\n    ' + setting)
+    elif variant == "link-flags":
+        replace(root, "BUILD.bazel", 'name = "cpp_app",', 'name = "cpp_app",\n    linkopts = ["-Wl,--no-undefined"],')
     elif variant != "tool-closure":
         raise ValueError(f"unsupported cache fixture variant: {variant}")
 

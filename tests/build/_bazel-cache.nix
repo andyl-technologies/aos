@@ -8,6 +8,7 @@
       builder = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/build.nix;
       launcher = builtins.hashFile "sha256" ../../tools/bazel/launcher.py;
       toolchains = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/toolchains.nix;
+      bazel = toString pkgs.bazel;
     }),
 }: let
   lib = pkgs.lib;

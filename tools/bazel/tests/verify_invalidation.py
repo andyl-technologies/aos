@@ -14,37 +14,44 @@ def verify(baseline, variants):
     # Expected misses follow dependency edges, including both native and Rust
     # consumers of the generator. Unrelated actions must remain cache hits.
     changed = {
-        "header": {"cpp_library", "cpp_app", "native_app"},
-        "cpp-source": {"cpp_library", "native_app"},
+        "header": {"cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "cpp-source": {"cpp_library", "cpp_link", "native_app"},
         "rust-source": {"rust_library", "rust_app", "native_app"},
-        "generated-input": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "native_app"},
-        "generator-environment": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "native_app"},
+        "generated-input": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "generator-environment": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "cpp_link", "native_app"},
         "feature": {"rust_library", "rust_app", "native_app"},
         "rust-flags": {"rust_library", "rust_app", "native_app"},
-        "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "native_app"},
+        "link-flags": {"cpp_link"},
+        "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
     }
     actions = {
         "generated": "AosPythonGenerate", "generated_library": "Rustc",
         "rust_library": "Rustc", "rust_app": "Rustc", "fixture_macro": "Rustc",
         "cpp_library": "CppCompile", "cpp_app": "CppCompile", "native_app": "Rustc",
+        "cpp_link": "CppLink",
     }
     expected_values = {
         "header": (42, 43, 85), "cpp-source": (42, 43, 85),
         "rust-source": (43, 42, 85), "generated-input": (43, 43, 86),
         "generator-environment": (43, 43, 86), "feature": (43, 42, 85),
         "rust-flags": (42, 42, 84), "tool-closure": (42, 42, 84),
+        "link-flags": (42, 42, 84),
     }
     evidence = {"schema_version": 1, "baseline": str(baseline), "variants": {}}
     for variant, build in variants.items():
         events = execution_events(build)
         results = {}
         for target, mnemonic in actions.items():
-            label = "//tools/bazel/tests/fixture:" + target
+            label = "//tools/bazel/tests/fixture:" + ("cpp_app" if target == "cpp_link" else target)
             original = require_action(baseline_events, label, mnemonic, hit=False)
             result = require_action(events, label, mnemonic, hit=target not in changed[variant])
             same_identity = result["fingerprint"] == original["fingerprint"]
             if same_identity != (target not in changed[variant]):
                 raise ValueError(f"unexpected semantic identity for {variant}: {target}")
+            if original["action_digest"] is None or result["action_digest"] is None:
+                raise ValueError(f"invalidation experiment omitted an action digest: {variant}: {target}")
+            if (original["action_digest"] == result["action_digest"]) != same_identity:
+                raise ValueError(f"unexpected Bazel action digest for {variant}: {target}")
             results[target] = result
         artifacts = package_files(build)
         digests = {}
