@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `d1c072e984` imports conventional `a994efb547`, tree `79cdafee`. Independent review matches all 78,235 source entries, 24,232 evidence files, six literal evidence links and 36 sealed artifacts. The complete Source floor is 298,814 bytes; the cumulative ledger contains 428 created files. | Genuine configured fixture-provider dependencies close the previous extracted cleanup link failure. Final normal delivery passes within its unchanged 60-second bound; the complete publisher-access inventory passes within 600 seconds. Packaged reconstruction, ledger, Source and Native custody checks for this import are pending. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
+| Native integration | Signed atomic `d1c072e984` imports conventional `a994efb547`, tree `79cdafee`. Independent review matches all 78,235 source entries, 24,232 evidence files, six literal evidence links and 36 sealed artifacts. The complete Source floor is 298,814 bytes; the cumulative ledger contains 428 created files. | Genuine configured fixture-provider dependencies close the previous extracted cleanup link failure. Final normal delivery passes within its unchanged 60-second bound; the complete publisher-access inventory passes within 600 seconds. Packaged reconstruction and license ledger pass; the Native gate passes all 36 components and its embedded 187 Source tests. ABI conformance passes. The separately registered Source gate and full packaged ordinary fixture delivery remain pending. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -85,6 +85,58 @@ Core evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`.
 This infrastructure does not yet import or qualify the bounded pthread provider,
 change QEMU's loader, or admit a selected stack profile. The actual provider's
 release reentry correction and immutable source handoff remain separate work.
+
+#### Packaged physical stack/member qualification
+
+The `d1c072e984` import reconstructs successfully at
+`qavz36q8skncd70rapajwrrhihwlxckk`; its complete license ledger passes at
+`c37zb150np9khn2zja51r4dkawb4amjf`. The hermetic Native custody gate passes
+at `1mwdpdp466h28zxva03cwdysn20lz47f`, including all 36 separately bounded
+components and its embedded 187 actual Source tests. This closes the preceding
+extracted cleanup bridge's genuine-provider link failure without weakening its
+bounds. The separately registered Source gate and full packaged ordinary
+fixture delivery remain pending.
+
+ABI conformance passes at `5bmw67dp0dxp493520gi2az5hrkf428l`. Engineering
+hygiene passes at `zcvijji792yblcv5r97p578pnwrl3izi`. The canonical
+license-boundary gate still fails on 908 Host-library and 962 Host-test Clippy
+errors; its boundary assertions did not run. These passing physical component
+checks do not qualify Module/Core semantic issuance, a populated matched
+execution, lower residency, bounded application closure or stack admission.
+
+#### Isolated bounded-thread libc package
+
+`pkgs.glibc-crucible` imports the exact signed glibc implementation
+`dae19eda3e0ca54dc8198ef83e8ba1a6c187441e`, including the correction that
+serializes physical arena release with allocation and retains reentry debt.
+It builds matching libc, loader, headers and thread-debug outputs; the private
+TCB change requires those matching components. The production libc and public
+compiler output identities remain unchanged after adding the optional build
+hooks. The complete upstream source and exact patch remain corresponding-source
+evidence, with a ledger covering all 33 changed upstream paths.
+
+Independent review verifies both signed implementation commits, all 169 sealed
+artifacts and all 19,481 signed source/archive entries, including the one literal
+source link. All 19,473 upstream baseline entries match the pinned glibc source.
+Applying the two-commit patch in an isolated index produces the exact signed
+tree `54b4ee8cfae3fd4241985304b0edc70e0150e992`. The complete bundle verifies;
+19,136 actual build files and twenty literal output links match their sealed
+inventory without differences. The source proof is
+`6aa38955b85c90becc730fd48d1d3e12fa30f0fca45ef02dc800f683340683b8`;
+the independent output/patch proof is
+`05ee7061177f17819205a3e663c1dd111e73fe557b95705b1de52c68b7bda811`.
+
+The sealed implementation's full build, bounded-thread controls and eleven
+ordinary regression targets pass. Its ABI invocation remains an overall
+failure: nineteen checks pass and the libc check reports the prefix-dependent
+`_nl_default_dirname` data-size difference. No ABI waiver is introduced.
+The new hermetic package build is pending. It runs the actual bounded and eleven
+ordinary targets using its built loader/libc and an explicit source-built
+unwinder. It checks every test runner's original exit status and PASS result,
+because the upstream single-test make target can return zero after a failure.
+Each process is limited to two GiB of address space. No QEMU loader change,
+caller application closure, nonwaiting creation/TLS/callback claim or stack
+profile admission follows from this package.
 
 #### Physical stack/member and genuine fixture-provider composition
 

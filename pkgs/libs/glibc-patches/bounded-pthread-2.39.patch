@@ -1,0 +1,3750 @@
+From ce6644ba7f40ac9436a9cc0bb2c30b69bf8f977a Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Thu, 22 Oct 2026 07:10:12 -0700
+Subject: [PATCH 1/2] Add bounded supplied-stack pthread storage and terminal
+ return
+
+Add an explicit strict interface backed by a caller-retained physical arena. Route thread DTV, dynamic TLS, extra TSD, destructor nodes and priority bookkeeping through enforced finite requests, retaining canonical birth and physical-return facts.
+
+Use nonwaiting registry and terminal lock attempts, preserve joined threads with outstanding cleanup debt, reject retained-span aliases and stale incarnations, and refuse unsupported heap and per-thread state producers before their ordinary paths.
+
+Build the complete library with one compiler lane and a two-GiB per-process address-space ceiling. The real bounded controls and eleven targeted ordinary regressions pass. Nineteen ABI checks pass; libc check-abi retains the documented private-prefix LOCALEDIR data-size mismatch. Creation, TLS lookup, user callbacks and arbitrary caller profiles remain explicitly unqualified for nonwaiting execution.
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ dlfcn/dlerror.c                               |  16 +
+ dlfcn/libc_dlerror_result.c                   |  11 +
+ elf/dl-libc.c                                 |  17 +
+ elf/dl-tls.c                                  |  81 +-
+ include/pthread-bounded-internal.h            |   1 +
+ include/pthread-bounded.h                     |   1 +
+ malloc/arena.c                                |  16 +
+ malloc/malloc.c                               |  80 ++
+ nptl/Makefile                                 |   9 +
+ nptl/README.bounded-pthread                   | 352 +++++++
+ nptl/Versions                                 |   6 +
+ nptl/allocatestack.c                          |  32 +-
+ nptl/descr.h                                  |   3 +
+ nptl/nptl_deallocate_tsd.c                    |   6 +-
+ nptl/pthread-bounded-internal.h               | 262 ++++++
+ nptl/pthread-bounded.c                        | 560 ++++++++++++
+ nptl/pthread-bounded.h                        | 149 +++
+ nptl/pthread_create.c                         |  54 +-
+ nptl/pthread_detach.c                         |   3 +
+ nptl/pthread_join_common.c                    |   3 +
+ nptl/pthread_setspecific.c                    |  11 +-
+ nptl/tpp.c                                    |   8 +-
+ nptl/tst-pthread-bounded-mod.c                |  26 +
+ nptl/tst-pthread-bounded.c                    | 863 ++++++++++++++++++
+ resolv/res-close.c                            |  16 +
+ resolv/res_init.c                             |   9 +
+ resolv/resolv_context.c                       |  23 +
+ stdlib/cxa_thread_atexit_impl.c               |  21 +-
+ string/strerror_l.c                           |   9 +
+ string/strsignal.c                            |   9 +
+ sunrpc/rpc_thread.c                           |  20 +
+ sysdeps/unix/sysv/linux/tls-internal.c        |  11 +
+ .../unix/sysv/linux/x86_64/64/libc.abilist    |   4 +
+ 33 files changed, 2672 insertions(+), 20 deletions(-)
+ create mode 100644 include/pthread-bounded-internal.h
+ create mode 100644 include/pthread-bounded.h
+ create mode 100644 nptl/README.bounded-pthread
+ create mode 100644 nptl/pthread-bounded-internal.h
+ create mode 100644 nptl/pthread-bounded.c
+ create mode 100644 nptl/pthread-bounded.h
+ create mode 100644 nptl/tst-pthread-bounded-mod.c
+ create mode 100644 nptl/tst-pthread-bounded.c
+
+diff --git a/dlfcn/dlerror.c b/dlfcn/dlerror.c
+index 26965af..565055b 100644
+--- a/dlfcn/dlerror.c
++++ b/dlfcn/dlerror.c
+@@ -27,10 +27,19 @@
+ #include <libc-symbols.h>
+ #include <assert.h>
+ #include <dlerror.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ char *
+ __dlerror (void)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return (char *) "Dynamic loader operations are unavailable in a bounded thread";
++    }
++
+ # ifdef SHARED
+   if (GLRO (dl_dlfcn_hook) != NULL)
+     return GLRO (dl_dlfcn_hook)->dlerror ();
+@@ -111,6 +120,13 @@ compat_symbol (libdl, __dlerror, dlerror, GLIBC_2_0);
+ int
+ _dlerror_run (void (*operate) (void *), void *args)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return 1;
++    }
++
+   struct dl_action_result *result = __libc_dlerror_result;
+   if (result != NULL)
+     {
+diff --git a/dlfcn/libc_dlerror_result.c b/dlfcn/libc_dlerror_result.c
+index 8351fea..fe60f53 100644
+--- a/dlfcn/libc_dlerror_result.c
++++ b/dlfcn/libc_dlerror_result.c
+@@ -17,6 +17,8 @@
+    <http://www.gnu.org/licenses/>.  */
+ 
+ #include <dlerror.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ /* This pointer is either NULL, dl_action_result_malloc_failed (), or
+    has been allocated using malloc by the namespace that also contains
+@@ -27,6 +29,15 @@ __thread struct dl_action_result *__libc_dlerror_result attribute_tls_model_ie;
+ void
+ __libc_dlerror_result_free (void)
+ {
++  if (__pthread_bounded_current () != NULL
++      && __libc_dlerror_result != NULL
++      && __libc_dlerror_result != dl_action_result_malloc_failed)
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   if (__libc_dlerror_result != NULL)
+     {
+       if (__libc_dlerror_result != dl_action_result_malloc_failed)
+diff --git a/elf/dl-libc.c b/elf/dl-libc.c
+index 3c048cc..bd6351d 100644
+--- a/elf/dl-libc.c
++++ b/elf/dl-libc.c
+@@ -20,6 +20,7 @@
+ #include <stdlib.h>
+ #include <ldsodefs.h>
+ #include <dl-hash.h>
++#include <pthread-bounded-internal.h>
+ 
+ extern int __libc_argc attribute_hidden;
+ extern char **__libc_argv attribute_hidden;
+@@ -38,6 +39,14 @@ extern char **__environ;
+ static int
+ dlerror_run (void (*operate) (void *), void *args)
+ {
++  struct __pthread_bounded *bounded = __pthread_bounded_current ();
++  if (bounded != NULL)
++    {
++      __pthread_bounded_refuse_heap (bounded, NULL);
++      __set_errno (ENOTSUP);
++      return 1;
++    }
++
+   const char *objname;
+   const char *last_errstring = NULL;
+   bool malloced;
+@@ -150,6 +159,14 @@ do_dlsym_private (void *ptr)
+ void *
+ __libc_dlopen_mode (const char *name, int mode)
+ {
++  struct __pthread_bounded *bounded = __pthread_bounded_current ();
++  if (bounded != NULL)
++    {
++      __pthread_bounded_refuse_heap (bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   struct do_dlopen_args args;
+   args.name = name;
+   args.mode = mode;
+diff --git a/elf/dl-tls.c b/elf/dl-tls.c
+index 7b3dd9a..b6863b8 100644
+--- a/elf/dl-tls.c
++++ b/elf/dl-tls.c
+@@ -28,6 +28,7 @@
+ #include <tls.h>
+ #include <dl-tls.h>
+ #include <ldsodefs.h>
++#include <pthread-bounded-internal.h>
+ 
+ #if PTHREAD_IN_LIBC
+ # include <list.h>
+@@ -355,6 +356,27 @@ _dl_determine_tlsoffset (void)
+ }
+ #endif /* SHARED */
+ 
++/* TLS_TPADJ is the sole conversion between a pthread descriptor and the
++   TLS pointer used by the loader.  Ordinary descriptors keep a NULL owner.  */
++static inline struct __pthread_bounded *
++bounded_for_tcb (void *tcb)
++{
++#if TLS_TCB_AT_TP
++  return ((struct pthread *) tcb)->bounded;
++#else
++  return ((struct pthread *) ((char *) tcb - TLS_PRE_TCB_SIZE))->bounded;
++#endif
++}
++
++static inline void
++release_tls_block (struct __pthread_bounded *bounded, void *pointer)
++{
++  if (bounded != NULL)
++    __pthread_bounded_release (bounded, pointer);
++  else
++    free (pointer);
++}
++
+ static void *
+ allocate_dtv (void *result)
+ {
+@@ -367,7 +389,23 @@ allocate_dtv (void *result)
+      initial set of modules.  This should avoid in most cases expansions
+      of the dtv.  */
+   dtv_length = max_modid + DTV_SURPLUS;
+-  dtv = calloc (dtv_length + 2, sizeof (dtv_t));
++  struct __pthread_bounded *bounded = bounded_for_tcb (result);
++  if (bounded != NULL)
++    {
++      if (max_modid > SIZE_MAX - DTV_SURPLUS - 2
++          || dtv_length + 2 > SIZE_MAX / sizeof (dtv_t))
++        {
++          __set_errno (ENOMEM);
++          return NULL;
++        }
++      dtv = __pthread_bounded_allocate
++        (bounded, PTHREAD_BOUNDED_DTV,
++         (dtv_length + 2) * sizeof (dtv_t), _Alignof (dtv_t));
++      if (dtv == NULL)
++        __set_errno (ENOMEM);
++    }
++  else
++    dtv = calloc (dtv_length + 2, sizeof (dtv_t));
+   if (dtv != NULL)
+     {
+       /* This is the initial length of the dtv.  */
+@@ -476,14 +514,30 @@ extern dtv_t _dl_static_dtv[];
+ #endif
+ 
+ static dtv_t *
+-_dl_resize_dtv (dtv_t *dtv, size_t max_modid)
++_dl_resize_dtv (dtv_t *dtv, size_t max_modid,
++                struct __pthread_bounded *bounded)
+ {
+   /* Resize the dtv.  */
+   dtv_t *newp;
+   size_t newsize = max_modid + DTV_SURPLUS;
+   size_t oldsize = dtv[-1].counter;
+ 
+-  if (dtv == GL(dl_initial_dtv))
++  if (bounded != NULL)
++    {
++      if (max_modid > SIZE_MAX - DTV_SURPLUS - 2
++          || newsize + 2 > SIZE_MAX / sizeof (dtv_t))
++        oom ();
++
++      newp = __pthread_bounded_allocate
++        (bounded, PTHREAD_BOUNDED_DTV,
++         (newsize + 2) * sizeof (dtv_t), _Alignof (dtv_t));
++      if (newp == NULL)
++        oom ();
++
++      memcpy (newp, &dtv[-1], (oldsize + 2) * sizeof (dtv_t));
++      __pthread_bounded_release (bounded, &dtv[-1]);
++    }
++  else if (dtv == GL(dl_initial_dtv))
+     {
+       /* This is the initial dtv that was either statically allocated in
+ 	 __libc_setup_tls or allocated during rtld startup using the
+@@ -537,7 +591,8 @@ _dl_allocate_tls_init (void *result, bool init_tls)
+   if (dtv[-1].counter < GL(dl_tls_max_dtv_idx))
+     {
+       /* Resize the dtv.  */
+-      dtv = _dl_resize_dtv (dtv, GL(dl_tls_max_dtv_idx));
++      dtv = _dl_resize_dtv (dtv, GL(dl_tls_max_dtv_idx),
++                            bounded_for_tcb (result));
+ 
+       /* Install this new dtv in the thread data structures.  */
+       INSTALL_DTV (result, &dtv[-1]);
+@@ -635,14 +690,15 @@ void
+ _dl_deallocate_tls (void *tcb, bool dealloc_tcb)
+ {
+   dtv_t *dtv = GET_DTV (tcb);
++  struct __pthread_bounded *bounded = bounded_for_tcb (tcb);
+ 
+   /* We need to free the memory allocated for non-static TLS.  */
+   for (size_t cnt = 0; cnt < dtv[-1].counter; ++cnt)
+-    free (dtv[1 + cnt].pointer.to_free);
++    release_tls_block (bounded, dtv[1 + cnt].pointer.to_free);
+ 
+   /* The array starts with dtv[-1].  */
+   if (dtv != GL(dl_initial_dtv))
+-    free (dtv - 1);
++    release_tls_block (bounded, dtv - 1);
+ 
+   if (dealloc_tcb)
+     free (*tcb_to_pointer_to_free_location (tcb));
+@@ -673,6 +729,14 @@ rtld_hidden_def (_dl_deallocate_tls)
+ static struct dtv_pointer
+ allocate_dtv_entry (size_t alignment, size_t size)
+ {
++  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
++  if (bounded != NULL)
++    {
++      void *pointer = __pthread_bounded_allocate
++        (bounded, PTHREAD_BOUNDED_DYNAMIC_TLS, size, alignment);
++      return (struct dtv_pointer) { pointer, pointer };
++    }
++
+   if (powerof2 (alignment) && alignment <= _Alignof (max_align_t))
+     {
+       /* The alignment is supported by malloc.  */
+@@ -806,7 +870,7 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+ 		    continue;
+ 
+ 		  /* Resizing the dtv aborts on failure: bug 16134.  */
+-		  dtv = _dl_resize_dtv (dtv, max_modid);
++		  dtv = _dl_resize_dtv (dtv, max_modid, THREAD_SELF->bounded);
+ 
+ 		  assert (modid <= dtv[-1].counter);
+ 
+@@ -819,7 +883,8 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+ 		 dtv entry free it.  Note: this is not AS-safe.  */
+ 	      /* XXX Ideally we will at some point create a memory
+ 		 pool.  */
+-	      free (dtv[modid].pointer.to_free);
++	      release_tls_block (THREAD_SELF->bounded,
++                         dtv[modid].pointer.to_free);
+ 	      dtv[modid].pointer.val = TLS_DTV_UNALLOCATED;
+ 	      dtv[modid].pointer.to_free = NULL;
+ 
+diff --git a/include/pthread-bounded-internal.h b/include/pthread-bounded-internal.h
+new file mode 100644
+index 0000000..b724c27
+--- /dev/null
++++ b/include/pthread-bounded-internal.h
+@@ -0,0 +1 @@
++#include <nptl/pthread-bounded-internal.h>
+diff --git a/include/pthread-bounded.h b/include/pthread-bounded.h
+new file mode 100644
+index 0000000..aee95a1
+--- /dev/null
++++ b/include/pthread-bounded.h
+@@ -0,0 +1 @@
++#include <nptl/pthread-bounded.h>
+diff --git a/malloc/arena.c b/malloc/arena.c
+index cfb1ff8..64789e5 100644
+--- a/malloc/arena.c
++++ b/malloc/arena.c
+@@ -891,6 +891,22 @@ arena_get_retry (mstate ar_ptr, size_t bytes)
+ void
+ __malloc_arena_thread_freeres (void)
+ {
++#if IS_IN (libc)
++  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
++  if (bounded != NULL)
++    {
++      /* A strict thread must never have acquired ordinary allocator state.
++         Retain factual debt rather than taking global locks to conceal a
++         violated profile or silently claiming its heap was returned.  */
++      if (thread_arena != NULL)
++        {
++          atomic_store_release (&bounded->fact.cleanup_blocked, 1);
++          __pthread_bounded_error (bounded, EPROTO);
++          return;
++        }
++    }
++#endif
++
+   /* Shut down the thread cache first.  This could deallocate data for
+      the thread arena, so do this before we put the arena on the free
+      list.  */
+diff --git a/malloc/malloc.c b/malloc/malloc.c
+index bcb6e5b..00ba18d 100644
+--- a/malloc/malloc.c
++++ b/malloc/malloc.c
+@@ -238,6 +238,10 @@
+ 
+ /* For ALIGN_UP et. al.  */
+ #include <libc-pointer-arith.h>
++#if IS_IN (libc)
++# include <pthread-bounded-internal.h>
++# include <sys/single_threaded.h>
++#endif
+ 
+ /* For DIAG_PUSH/POP_NEEDS_COMMENT et al.  */
+ #include <libc-diag.h>
+@@ -3209,6 +3213,16 @@ tcache_next (tcache_entry *e)
+ static void
+ tcache_thread_shutdown (void)
+ {
++#if IS_IN (libc)
++  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
++  if (bounded != NULL && tcache != NULL)
++    {
++      atomic_store_release (&bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (bounded, EPROTO);
++      return;
++    }
++#endif
++
+   int i;
+   tcache_perthread_struct *tcache_tmp = tcache;
+ 
+@@ -3288,10 +3302,31 @@ tcache_thread_shutdown (void)
+ 
+ #endif /* !USE_TCACHE  */
+ 
++/* A strict bounded thread has no ordinary heap owner.  Refuse before
++   ptmalloc initialization, tcache creation or any global allocator lock.
++   During early single-threaded startup the thread pointer need not exist.  */
++static inline bool
++bounded_heap_refused (void *pointer)
++{
++#if IS_IN (libc)
++  struct __pthread_bounded *owner = __pthread_bounded_current ();
++  if (owner != NULL)
++    {
++      __pthread_bounded_refuse_heap (owner, pointer);
++      __set_errno (ENOTSUP);
++      return true;
++    }
++#endif
++  return false;
++}
++
+ #if IS_IN (libc)
+ void *
+ __libc_malloc (size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   mstate ar_ptr;
+   void *victim;
+ 
+@@ -3363,6 +3398,9 @@ __libc_free (void *mem)
+   if (mem == 0)                              /* free(0) has no effect */
+     return;
+ 
++  if (bounded_heap_refused (mem))
++    return;
++
+   /* Quickly check that the freed pointer matches the tag for the memory.
+      This gives a useful double-free detection.  */
+   if (__glibc_unlikely (mtag_enabled))
+@@ -3405,6 +3443,9 @@ libc_hidden_def (__libc_free)
+ void *
+ __libc_realloc (void *oldmem, size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   mstate ar_ptr;
+   INTERNAL_SIZE_T nb;         /* padded request size */
+ 
+@@ -3541,6 +3582,9 @@ libc_hidden_def (__libc_realloc)
+ void *
+ __libc_memalign (size_t alignment, size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   if (!__malloc_initialized)
+     ptmalloc_init ();
+ 
+@@ -3554,6 +3598,9 @@ void *
+ weak_function
+ aligned_alloc (size_t alignment, size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   if (!__malloc_initialized)
+     ptmalloc_init ();
+ 
+@@ -3664,6 +3711,9 @@ _mid_memalign (size_t alignment, size_t bytes, void *address)
+ void *
+ __libc_valloc (size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   if (!__malloc_initialized)
+     ptmalloc_init ();
+ 
+@@ -3675,6 +3725,9 @@ __libc_valloc (size_t bytes)
+ void *
+ __libc_pvalloc (size_t bytes)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   if (!__malloc_initialized)
+     ptmalloc_init ();
+ 
+@@ -3697,6 +3750,9 @@ __libc_pvalloc (size_t bytes)
+ void *
+ __libc_calloc (size_t n, size_t elem_size)
+ {
++  if (bounded_heap_refused (NULL))
++    return NULL;
++
+   mstate av;
+   mchunkptr oldtop;
+   INTERNAL_SIZE_T sz, oldtopsize;
+@@ -5206,6 +5262,9 @@ mtrim (mstate av, size_t pad)
+ int
+ __malloc_trim (size_t s)
+ {
++  if (bounded_heap_refused (NULL))
++    return 0;
++
+   int result = 0;
+ 
+   if (!__malloc_initialized)
+@@ -5247,6 +5306,9 @@ musable (void *mem)
+ size_t
+ __malloc_usable_size (void *m)
+ {
++  if (bounded_heap_refused (NULL))
++    return 0;
++
+   if (m == NULL)
+     return 0;
+   return musable (m);
+@@ -5324,6 +5386,9 @@ int_mallinfo (mstate av, struct mallinfo2 *m)
+ struct mallinfo2
+ __libc_mallinfo2 (void)
+ {
++  if (bounded_heap_refused (NULL))
++    return (struct mallinfo2) { 0 };
++
+   struct mallinfo2 m;
+   mstate ar_ptr;
+ 
+@@ -5349,6 +5414,9 @@ libc_hidden_def (__libc_mallinfo2)
+ struct mallinfo
+ __libc_mallinfo (void)
+ {
++  if (bounded_heap_refused (NULL))
++    return (struct mallinfo) { 0 };
++
+   struct mallinfo m;
+   struct mallinfo2 m2 = __libc_mallinfo2 ();
+ 
+@@ -5374,6 +5442,9 @@ __libc_mallinfo (void)
+ void
+ __malloc_stats (void)
+ {
++  if (bounded_heap_refused (NULL))
++    return;
++
+   int i;
+   mstate ar_ptr;
+   unsigned int in_use_b = mp_.mmapped_mem, system_b = in_use_b;
+@@ -5557,6 +5628,9 @@ do_set_hugetlb (size_t value)
+ int
+ __libc_mallopt (int param_number, int value)
+ {
++  if (bounded_heap_refused (NULL))
++    return 0;
++
+   mstate av = &main_arena;
+   int res = 1;
+ 
+@@ -5781,6 +5855,9 @@ malloc_printerr (const char *str)
+ int
+ __posix_memalign (void **memptr, size_t alignment, size_t size)
+ {
++  if (bounded_heap_refused (NULL))
++    return ENOTSUP;
++
+   void *mem;
+ 
+   if (!__malloc_initialized)
+@@ -5812,6 +5889,9 @@ weak_alias (__posix_memalign, posix_memalign)
+ int
+ __malloc_info (int options, FILE *fp)
+ {
++  if (bounded_heap_refused (NULL))
++    return -1;
++
+   /* For now, at least.  */
+   if (options != 0)
+     return EINVAL;
+diff --git a/nptl/Makefile b/nptl/Makefile
+index bf09603..ef853c7 100644
+--- a/nptl/Makefile
++++ b/nptl/Makefile
+@@ -27,6 +27,7 @@ headers := \
+   bits/semaphore.h \
+   bits/struct_mutex.h \
+   bits/struct_rwlock.h \
++  pthread-bounded.h \
+   pthread.h \
+   semaphore.h \
+   # headers
+@@ -63,6 +64,7 @@ routines = \
+   old_pthread_cond_signal \
+   old_pthread_cond_timedwait \
+   old_pthread_cond_wait \
++  pthread-bounded \
+   pthread_atfork \
+   pthread_attr_copy \
+   pthread_attr_destroy \
+@@ -371,6 +373,7 @@ tests-internal := \
+   tst-mutex8-static \
+   tst-mutexpi8 \
+   tst-mutexpi8-static \
++  tst-pthread-bounded \
+   tst-robustpi8 \
+   tst-rwlock19 \
+   tst-rwlock20 \
+@@ -475,6 +478,7 @@ modules-names = \
+   tst-audit-threads-mod2 \
+   tst-compat-forwarder-mod \
+   tst-execstack-threads-mod \
++  tst-pthread-bounded-mod \
+   tst-stack4mod \
+   tst-tls3mod \
+   tst-tls5mod \
+@@ -710,3 +714,8 @@ ifneq ($(filter %tests,$(MAKECMDGOALS)),)
+ .NOTPARALLEL:
+ endif
+ endif
++
++$(objpfx)tst-pthread-bounded.out: $(objpfx)tst-pthread-bounded-mod.so
++
++# Exercise the real allocator calls, including failed tiny allocations.
++CFLAGS-tst-pthread-bounded.c += -fno-builtin
+diff --git a/nptl/README.bounded-pthread b/nptl/README.bounded-pthread
+new file mode 100644
+index 0000000..52bdecb
+--- /dev/null
++++ b/nptl/README.bounded-pthread
+@@ -0,0 +1,352 @@
++Bounded supplied-stack pthreads, interface version 1
++==================================================
++
++Copyright (C) 2026 Dylan Plecki.
++This documentation is distributed under the GNU Lesser General Public
++License, version 2.1 or (at your option) any later version; see COPYING.LIB.
++
++This experimental additive interface implements a real allocator for selected
++NPTL and ELF TLS storage, with an explicitly selected strict execution mode.
++It is not a complete bounded profile for an arbitrary pthread entry point.
++Strict threads cannot use the ordinary allocator, resolver state, legacy RPC
++state or dynamic-loader operations.  User callbacks and application/library
++code still require an audited call closure and their own actual resource
++owners.  In particular, this implementation alone does not qualify a QEMU
++worker or its application allocations.
++
++The interface is declared in <pthread-bounded.h>.  It supports Linux/x86-64
++LP64 supplied stacks.  The four new symbols are pthread_bounded_init_np,
++pthread_bounded_create_np, pthread_bounded_query_np and
++pthread_bounded_tryretire_np, exported at GLIBC_2.39.  The configuration and
++receipt carry explicit version and size fields; version 1 rejects a different
++configuration version or layout.  This is a downstream ABI, not an upstream
++glibc API or a promise of compatibility with another implementation using the
++same symbol names.  The consumer must retain the matching headers, libc and
++ELF interpreter as a single runtime.  The private pthread descriptor grows to
++hold its owner pointer; its public pthread_t representation and ordinary
++pthread calling conventions do not change.  Mixing the patched libc with an
++old loader or old libthread_db is not qualified.
++
++Physical admission and custody
++------------------------------
++
++The caller supplies two distinct writable physical spans:
++
++* A guarded stack passed using pthread_attr_setstack.  The caller supplies
++  and retains the guards.  The supplied usable span already contains struct
++  pthread, static TLS, alignment padding and the first TSD block.  These bytes
++  are not charged a second time to the separate arena.  The actual
++  allocatestack geometry is recorded as supplied, reserved and available
++  stack bytes, including in a failed initial DTV allocation.
++* A containing arena passed to pthread_bounded_init_np.  Its beginning holds
++  the actual opaque control, immutable configuration and canonical factual
++  receipt.  Each allocation then consumes metadata, alignment padding and
++  payload inside that same span.  Metadata stores the actual owner, payload
++  size, allocation kind and logical-release flag.  It is not a copied credit.
++
++Each of the five kinds has an admitted request count, maximum payload bytes
++per request and maximum power-of-two alignment.  Init checks every arithmetic
++operation and reserves the sum of the control and each request's worst-case
++payload, metadata and alignment padding against actual arena bytes.  The
++allocator checks all three limits again at every request.  Neither exhaustion
++nor an alignment failure falls back to the ordinary heap.  Every allocation
++is zero-initialized, including the payload used for dynamic TLS.
++
++The implementation is deliberately monotonic.  Replacing a DTV consumes a new
++request; releasing its previous DTV records a logical release but does not
++make those bytes available for another request.  All padding, superseded
++blocks, released destructor nodes and unused reservation remain under the
++containing owner's custody until final terminal return.  There is no bounded
++stack cache.  A caller cannot use this interface's arena allocator for
++unrelated objects, transfer its nodes to another thread, copy its control,
++modify it, or release its backing while registered.
++
++Admission also consumes one of 128 actual fixed libc registry entries.  This
++process-level storage is separate from all per-thread arenas: on x86-64 the
++pointer array is 1024 bytes, with an additional 8-byte incarnation counter and
++4-byte trylock, plus actual compiler/linker alignment.  A complete enclosing
++profile must account for that process-level backing rather than invent a
++per-thread allowance that silently owns it.  Registry exhaustion returns
++EAGAIN.  The registry rejects a new arena overlapping any retained arena or
++supplied stack before writing control bytes.  Stack reservation rejects
++intersection with every retained arena and stack before allocating TLS or
++attempting clone.
++
++The configured x86-64 object currently places these in a 1056-byte .bss
++section with alignment 32: lock at offset 0, serial at offset 8, and pointer
++array at offset 32.  This includes 20 bytes of internal padding.  These are
++measured object-layout facts, not an allocator transfer or a complete process
++image charge.
++
++Init returns the canonical control address and a nonzero monotonically
++allocated incarnation.  Exhaustion of the 64-bit identity space returns
++EOVERFLOW; it never wraps.  Every subsequent operation requires both the
++actual control and the separately retained expected incarnation.  A registry
++lookup compares the nominated address before dereferencing it.  A stale
++incarnation at a reused address returns ESTALE.  A receipt copy, including a
++forged backing_returned flag, cannot register, reinitialize or release an
++owner.  These checks do not defend against arbitrary memory corruption within
++the calling process: the caller must honor opaque storage and exclusive
++lifetime custody, just as for other libc synchronization objects.
++
++Covered allocation and release paths
++------------------------------------
++
++The explicit bounded owner routes the following real allocation sites:
++
++* Initial DTV calloc, DTV growth/replacement, obsolete dynamic TLS release and
++  final DTV/dynamic TLS deallocation in elf/dl-tls.c.
++* Aligned dynamic TLS payload allocation reached through __tls_get_addr.
++* Second-level pthread_setspecific arrays and their exit-time releases.
++* __cxa_thread_atexit_impl destructor nodes and their actual post-callback
++  releases in __call_tls_dtors.
++* Priority-protection bookkeeping created by __pthread_tpp_change_priority
++  and released by the terminal provider.
++
++The first TSD array stays in the supplied TCB.  Static TLS stays on the
++supplied stack.  No heap allocation backs the bounded control or its
++per-request bookkeeping.  Ordinary threads have a NULL owner and continue to
++use their original allocation and stack-cache paths.  Ordinary join and
++detach reject an explicitly bounded thread with EINVAL; its containing owner
++must perform retirement.
++
++Initial DTV exhaustion returns creation failure before clone.  TSD exhaustion
++returns ENOMEM.  Bounded TLS destructor registration returns ENOMEM without
++publishing a destructor node.  Generated C++ callers may not handle such a
++failure usefully, so a complete supported caller must admit the real maximum
++number and size of its destructor registrations.  Unknown dynamic TLS module
++sizes, alignments or DTV growth are not harmless: the __tls_get_addr ABI has
++no error return.  Exceeding those admitted limits reaches glibc's existing
++fatal TLS OOM path, which exits the process with its existing diagnostic.
++There is no heap fallback.  A supported caller must preadmit the actual TLS
++module/request closure; an arbitrary future dlopen is not covered merely by
++having some numeric TLS allowance.
++
++Storage admission is separate from execution locks.  Destructor registration
++still takes dl_load_lock, finds the real DSO map and increments its actual
++l_tls_dtor_count.  On exit __call_tls_dtors invokes each callback before
++decrementing that map's reference count with release ordering and releasing
++the arena node.  The decrement itself takes no loader lock, but a callback
++can block, register another destructor, or touch dynamic TLS.  Allocating a
++destructor node therefore proves neither a bounded callback nor a nonwaiting
++exit tail.
++
++Initial TLS setup takes dl_load_tls_lock.  Dynamic TLS first access can also
++take that lock while deciding between static and forced-dynamic placement.
++_dl_update_slotinfo walks the process's actual module-slot list and can grow
++this thread's arena DTV.  _dl_add_to_slotinfo instead extends the process-wide
++loader slot list with ordinary malloc during module loading; that shared
++list is not charged to the thread arena.  Strict public loader operations
++and libc's internal dlopen/error wrappers refuse before entering those
++loader operations.  Another ordinary thread can still load modules: its
++global loader storage needs its own actual containing process owner, while
++the bounded thread pays only its actual DTV and dynamic TLS requests.  The
++growth test exercises that distinction and does not qualify a complete
++module-loading profile.  Terminal tryretire only deallocates the already
++bounded thread's nodes; it does not execute callbacks or grow slotinfo.
++
++Creation and terminal facts
++---------------------------
++
++One creation attempt consumes an initialized control, including a validation
++or no-birth failure.  The public receipt separates create_attempted,
++clone_attempted, born, user-entry dispatch and actual exit-cleanup completion.
++A clone followed by failed affinity or scheduler setup remains a retained,
++joinable, never-entered birth.  The creating operation releases it to perform
++its existing early kernel exit and returns the creation error without joining
++or freeing it.  Its real thread-count adjustment remains pending until the
++kernel exit is observed.  Ordinary pthread_create retains its original
++blocking partial-failure cleanup.
++
++The caller must retain its own semantic operation permission.  No libc
++thread count, ID, incarnation, receipt or successful resource return grants
++permission to perform another operation.
++
++Tryretire attempts each internal lock once.  It never waits on a futex,
++spins behind a busy lock, calls the ordinary stack-cache retirement path or
++returns memory to the ordinary heap.  It first observes the kernel's
++clear-child-tid store with acquire ordering.  Only then can it mark the actual
++kernel join.  A completed entry point or last destructor alone is insufficient:
++rseq and other kernel references can remain live until kernel exit.
++
++After the join, a busy real loader stack-list/cache lock returns EBUSY with
++joined and kernel_exited preserved and list/TLS/backing custody retained.  A
++later call can remove the exact supplied-stack list member and return its
++bounded TLS nodes.  A normal successful birth whose actual libc destructor
++and freeres tail did not complete retains EPROTO debt even if its kernel tid
++is clear.  A raw SYS_exit must not be mistaken for libc cleanup.  The known
++born-never-entered setup-failure path is handled separately.
++
++The provider checks that all actual arena allocations have corresponding
++logical releases, then actually releases its registry entry and returns stack
++and arena custody.  It does not munmap the caller's spans.  The external final
++receipt records stack_returned, registration_returned and backing_returned;
++only this completed terminal operation permits the containing caller to
++return those actual spans.  All receipt and result buffers must reside
++outside both spans.  A copied successful receipt cannot return another
++incarnation.  After final return the old control is no longer queryable;
++the external receipt is the retained history.
++
++Every writable output is checked against all canonical retained arenas and
++supplied stacks under the registry trylock at the actual write.  Creation
++uses a local pthread_t until publishing its output.  If another admission
++occupies an output span during creation, publication refuses and canonical
++birth/custody facts remain queryable; it does not undo a real birth.  Output
++publication itself may return EBUSY without a new external snapshot.  The
++caller retains its previous history and can query the canonical owner again.
++
++The first error is sticky and independent of current retirement status and
++physical facts.  A later successful return can truthfully coexist with an
++earlier EBUSY or independent negative operation.  A caller's own negative
++post or unknown cleanup does not erase known resource consumption and cannot
++justify reusing uncertain live storage.
++
++Actual exit-tail audit and limits
++---------------------------------
++
++pthread_create runs __call_tls_dtors, __nptl_deallocate_tsd and
++__libc_thread_freeres before normal kernel exit.  The completion flag is stored
++only after all three actually return.  User callbacks can block, allocate or
++exit abnormally; tryretire reports retained debt while their kernel thread
++remains live and does not claim the callback's external resources are bounded.
++
++Version 1 requires PTHREAD_BOUNDED_STRICT in config.flags.  It enforces
++these additional restrictions before the corresponding ordinary producer:
++
++* malloc, calloc, realloc, aligned allocation and allocator management refuse
++  before ptmalloc initialization, tcache, arena selection or global locks.
++  Pointer-returning allocations return NULL with errno ENOTSUP;
++  posix_memalign returns ENOTSUP without modifying its output.  Management
++  functions return their failure/empty result with errno ENOTSUP.
++* free(NULL) remains a no-op.  Any nonnull free refuses before inspecting the
++  pointer or entering the allocator.  It records the first refused pointer
++  and sticky foreign-free debt.  Because free has no error result, the
++  receipt is the explicit failure channel; errno is also ENOTSUP.  This
++  retained debt prevents backing return even after a successful kernel join.
++  The provider never claims that the foreign allocation was consumed.
++* Resolver initialization/context acquisition and explicit resolver close
++  refuse before ordinary allocations, configuration references or socket
++  effects.  They report the ABI's failure result and errno ENOTSUP.
++* strsignal returns NULL with errno ENOTSUP.  strerror_l returns a static
++  unsupported-operation diagnostic with errno ENOTSUP, before translation
++  or buffer production.  dlerror similarly returns a static diagnostic;
++  _dlerror_run refuses before loader operations and error allocation.
++* Legacy RPC variable access has no usable operation error ABI.  It records
++  refusal and terminates the process with exit_group(127), before once
++  initialization, allocation, or access to fabricated shared state.
++
++The allocator_refusals and foreign_free_refusals counters are saturated
++monotonic lower bounds.  Each recording operation attempts one strong CAS;
++if it loses, a competing increment already supplied a positive lower bound.
++There is no retry loop, wrap, allocator call or lock fallback.  Concurrent or
++reentrant refusals can coalesce.  Sticky first_error and first_refused_free
++are independently recorded with one strong CAS.
++
++The real freeres routines still run.  Before resolver/RPC/error-buffer or
++allocator cleanup can enter an ordinary allocator or global-state cleanup,
++they inspect the actual per-thread state.  Unexpected nonempty state sets
++cleanup_blocked and retains it without pretending to release it.  The normal
++exit-cleanup completion flag is then withheld, and retirement retains EPROTO
++debt after the factual kernel join.  A supported strict thread has no such
++state: tcache and thread_arena remain NULL, resolver and RPC state remain
++empty, and TLS/error buffers remain NULL.  The no-state cleanup path reaches
++no ordinary allocator or allocator global lock.
++
++Invalid, foreign or duplicate arena-node release also sets sticky
++cleanup_blocked debt.  Equal allocated/released counters alone cannot return
++backing after an uncertain TLS pointer release.  Terminal code withholds
++tls_returned if the actual TLS deallocation encountered that debt, while
++preserving earlier factual list removal and individual logical releases.
++
++This is scoped libc thread/TLS/control enforcement.  It does not intercept
++arbitrary mmap, file/socket operations, user allocators, external libraries,
++or every unrelated libc global-state API.  Application allocations needed by
++a caller require a distinct genuine preadmitted allocator owner and return
++protocol or existing paid storage.  They cannot be relabeled as a TLS/control
++allowance.  Actual caller compatibility must be audited; copied limits and
++successful bounded storage tests cannot establish that call closure.
++
++Debug thread-event reporting is refused before bounded creation.  Debugger
++mutation of descriptors, namespace duplication of libc, cross-thread use of
++arena nodes, asynchronous signal-handler allocation and interposed thread/TLS
++implementations are not qualified.  The API supplies nonwaiting *retirement*,
++not a latency guarantee for creation, TLS lookup, user callbacks or thread
++exit.  Creation still uses the supplied-stack list lock, TLS loader locks,
++first-thread late_init and stdio lock initialization, and any stopped-start
++scheduling handoff.  It can therefore wait; no whole-operation nonwaiting
++creation claim is made.  The nonwaiting guarantees apply to registry/init,
++query and terminal tryretire lock cuts.  Ordinary pthread behavior remains
++unchanged.
++
++Causal controls
++---------------
++
++tst-pthread-bounded uses a genuinely guarded caller mapping and separate
++physical arena.  It checks initial-DTV exhaustion with no clone; a real
++empty-affinity post-clone failure that never enters user code; enforced TSD
++and destructor request exhaustion; actual priority-control storage; alignment;
++actual process slot-list growth and thread DTV growth using 80 distinct loaded
++DSOs; last-destructor retention;
++actual held stack-list/cache lock refusal after a factual kernel join; sticky
++negative history; canonical registration despite a modified receipt; rejection
++of an arena overlapping live worker-local bytes; supplied-stack alias refusal;
++exact per-kind final logical release; same-backing reuse with a new
++incarnation; stale-incarnation refusal; and fatal dynamic TLS exhaustion
++rather than heap fallback; strict allocator/resolver/error refusals;
++foreign-free retained debt; unexpected exit-tail state; raw kernel exit;
++and independent-owner output alias rejection preserving live stack bytes.
++These are implementation controls, not a complete
++application profile or proof for an unexecuted platform.
++
++Qualification on Linux/x86-64 LP64
++----------------------------------
++
++A standard full library build completed with GNU GCC 16.2.0, binutils 2.41,
++GNU make 4.4 and source-built prerequisites, with private regular source and
++output copies.  Compilation used one compiler lane and an inherited 2 GiB
++per-process address-space ceiling.  The largest recorded compiler-child peak
++resident set was 135168 KiB over 16465 recorded driver invocations, including
++failed and incremental builds and test compilation.  This is a measured child
++peak, not an aggregate process-tree memory guarantee.  The first successful
++full build took approximately 14 minutes 22 seconds.  Later full builds
++included the final strict enforcement and initial-DTV failure fix.
++
++The actual tst-pthread-bounded test reports PASS with original exit status 0.
++Its exhaustion and retained-debt cases exercise the provider, rather than a
++mock allocator.  The measured x86-64 sizes are: opaque owner 544 bytes,
++allocation metadata 24 bytes, configuration 136 bytes, receipt 368 bytes and
++struct pthread 2432 bytes.  All sizes and ABI qualifications are specific to
++this configured build.  The control test uses -fno-builtin so allocator calls
++whose refusal is asserted remain actual calls; a prior optimized test that
++removed those calls was retained as a failed control, not counted as PASS.
++
++Eleven targeted ordinary tests also report PASS: tst-basic1, tst-join1,
++tst-join2, tst-key1, tst-key3, tst-tls3 and tst-attr3 in nptl; and tst-malloc,
++tst-calloc, tst-memalign and tst-malloc-thread-exit in malloc.  The join and
++cancellation tests require a genuine source-built libgcc_s.so.1, explicitly
++added after the freshly built libc directories in the test interpreter's
++library path.  An earlier tst-join1 failure without that runtime was retained
++as a missing-runtime prerequisite failure.  These ordinary tests do not
++qualify bounded pthread_exit or cancellation: their unwind/runtime loader
++closure needs a separate audit, and strict internal loader entry refuses
++before an unsupported lazy load.  Interposed allocators and foreign unwinding
++implementations are outside this qualification.
++
++The complete check-abi invocation reports failure: 19 individual ABI checks
++pass, and check-abi-libc differs only in _nl_default_dirname data size, 0x12
++versus 0x3d.  The configured private install prefix makes LOCALEDIR longer;
++all other libc entries, including the four additive GLIBC_2.39 symbols,
++match.  The upstream default-prefix ABI entry was deliberately not rewritten
++to conceal that configured-prefix difference.  No complete check-abi PASS,
++full testsuite PASS, different-platform qualification or complete caller
++profile is claimed.
++
++Initial build and test failures were retained before fixes: private source
++executable-mode restoration, Python resource-module availability, generated
++build prerequisites, header identifiers and atomic primitives, stack pointer
++arithmetic, malloc-debug source inclusion, control-test interpreter-global
++lookup, rtld-private errno on failed initial DTV allocation, and optimized
++away test allocations.  In particular, the bounded initial-DTV failure now
++returns ENOMEM before the ordinary path's libc-errno assertion; the ordinary
++path retains its original assertion and behavior.  Successful later runs do
++not erase those first failures.
+diff --git a/nptl/Versions b/nptl/Versions
+index 3221de8..1b9795a 100644
+--- a/nptl/Versions
++++ b/nptl/Versions
+@@ -378,6 +378,12 @@ libc {
+     tss_get;
+     tss_set;
+   }
++  GLIBC_2.39 {
++    pthread_bounded_init_np;
++    pthread_bounded_create_np;
++    pthread_bounded_query_np;
++    pthread_bounded_tryretire_np;
++  }
+   GLIBC_PRIVATE {
+     __libc_alloca_cutoff;
+     __lll_lock_wake_private;
+diff --git a/nptl/allocatestack.c b/nptl/allocatestack.c
+index f35a836..3d1eca9 100644
+--- a/nptl/allocatestack.c
++++ b/nptl/allocatestack.c
+@@ -212,7 +212,8 @@ advise_stack_range (void *mem, size_t size, uintptr_t pd, size_t guardsize)
+    PDP must be non-NULL.  */
+ static int
+ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
+-		void **stack, size_t *stacksize)
++		void **stack, size_t *stacksize,
++                struct __pthread_bounded *bounded)
+ {
+   struct pthread *pd;
+   size_t size;
+@@ -279,6 +280,9 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
+ 
+       /* The user provided stack memory needs to be cleared.  */
+       memset (pd, '\0', sizeof (struct pthread));
++      pd->bounded = bounded;
++      if (bounded != NULL)
++        bounded->pd = pd;
+ 
+       /* The first TSD block is included in the TCB.  */
+       pd->specific[0] = pd->specific_1stblock;
+@@ -301,9 +305,27 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
+       /* Don't allow setxid until cloned.  */
+       pd->setxid_futex = -1;
+ 
++      if (bounded != NULL)
++        {
++#if TLS_TCB_AT_TP
++          char *available_top = (char *) (pd + 1) - tls_static_size_for_stack;
++#else
++          char *available_top = (char *) (pd - 1);
++#endif
++          bounded->fact.stack_available_bytes
++            = available_top - (char *) pd->stackblock;
++          bounded->fact.stack_reserved_bytes
++            = size - bounded->fact.stack_available_bytes;
++        }
++
+       /* Allocate the DTV for this thread.  */
+       if (_dl_allocate_tls (TLS_TPADJ (pd)) == NULL)
+ 	{
++	  /* The bounded loader allocator has no libc errno-producing heap
++	     call.  rtld's private errno must not be read as libc errno.  */
++	  if (bounded != NULL)
++	    return ENOMEM;
++
+ 	  /* Something went wrong.  */
+ 	  assert (errno == ENOMEM);
+ 	  return errno;
+@@ -315,6 +337,8 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
+ 
+       /* And add to the list of stacks in use.  */
+       list_add (&pd->list, &GL (dl_stack_user));
++      if (bounded != NULL)
++        bounded->fact.list_linked = 1;
+ 
+       lll_unlock (GL (dl_stack_cache_lock), LLL_PRIVATE);
+     }
+@@ -563,6 +587,12 @@ allocate_stack (const struct pthread_attr *attr, struct pthread **pdp,
+   *stacksize = stacktop - pd->stackblock;
+   *stack = pd->stackblock;
+ 
++  if (bounded != NULL)
++    {
++      bounded->fact.stack_available_bytes = *stacksize;
++      bounded->fact.stack_reserved_bytes = size - *stacksize;
++    }
++
+   return 0;
+ }
+ 
+diff --git a/nptl/descr.h b/nptl/descr.h
+index 8cef958..197d583 100644
+--- a/nptl/descr.h
++++ b/nptl/descr.h
+@@ -323,6 +323,9 @@ struct pthread
+   /* True if events must be reported.  */
+   bool report_events;
+ 
++  /* Non-NULL only for explicitly admitted bounded threads.  */
++  struct __pthread_bounded *bounded;
++
+   /* True if the user provided the stack.  */
+   bool user_stack;
+ 
+diff --git a/nptl/nptl_deallocate_tsd.c b/nptl/nptl_deallocate_tsd.c
+index 4c3960b..3aa4746 100644
+--- a/nptl/nptl_deallocate_tsd.c
++++ b/nptl/nptl_deallocate_tsd.c
+@@ -16,6 +16,7 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <pthreadP.h>
++#include <pthread-bounded-internal.h>
+ 
+ /* Deallocate POSIX thread-local-storage.  */
+ void
+@@ -100,7 +101,10 @@ __nptl_deallocate_tsd (void)
+             {
+               /* The first block is allocated as part of the thread
+                  descriptor.  */
+-              free (level2);
++              if (self->bounded != NULL)
++                __pthread_bounded_release (self->bounded, level2);
++              else
++                free (level2);
+               THREAD_SETMEM_NC (self, specific, cnt, NULL);
+             }
+         }
+diff --git a/nptl/pthread-bounded-internal.h b/nptl/pthread-bounded-internal.h
+new file mode 100644
+index 0000000..5646854
+--- /dev/null
++++ b/nptl/pthread-bounded-internal.h
+@@ -0,0 +1,262 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _PTHREAD_BOUNDED_INTERNAL_H
++#define _PTHREAD_BOUNDED_INTERNAL_H 1
++
++#include <pthread-bounded.h>
++#include <atomic.h>
++#include <errno.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <string.h>
++#include <tls.h>
++#include <sys/single_threaded.h>
++
++#define PTHREAD_BOUNDED_MAGIC UINT64_C (0x6270746872656164)
++
++enum __pthread_bounded_state
++{
++  __PTHREAD_BOUNDED_READY,
++  __PTHREAD_BOUNDED_CREATING,
++  __PTHREAD_BOUNDED_ACTIVE,
++  __PTHREAD_BOUNDED_NO_BIRTH,
++  __PTHREAD_BOUNDED_FAILED_BIRTH,
++  __PTHREAD_BOUNDED_RETIRED
++};
++
++/* This control is part of the actual containing allocation.  It cannot be
++   copied to transfer custody.  The parent/child ownership handoff is the
++   pthread creation handoff; retirement only inspects child-written data
++   after the acquire observation of the kernel's clear-child-tid store.  */
++struct __pthread_bounded
++{
++  uint64_t magic;
++  uintptr_t self;
++  int lock;
++  int allocation_lock;
++  enum __pthread_bounded_state state;
++  struct pthread *pd;
++  struct pthread_bounded_config config;
++  struct pthread_bounded_receipt fact;
++};
++
++/* libc may allocate during startup before a thread pointer exists.  An
++   explicit bounded birth is possible only after NPTL has completed its
++   single-to-multithreaded initialization.  */
++static inline struct __pthread_bounded *
++__pthread_bounded_current (void)
++{
++#if IS_IN (libc)
++  if (!__libc_single_threaded_internal)
++    return THREAD_SELF->bounded;
++#endif
++  return NULL;
++}
++
++struct __pthread_bounded_block
++{
++  struct __pthread_bounded *owner;
++  size_t size;
++  enum pthread_bounded_kind kind;
++  bool released;
++};
++
++static inline void
++__pthread_bounded_error (struct __pthread_bounded *owner, int error)
++{
++  int expected = 0;
++  __atomic_compare_exchange_n (&owner->fact.first_error, &expected, error,
++                               false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
++}
++
++/* Unsupported ordinary allocator requests are distinct from the scoped
++   TLS/control inventory.  Counters are monotonic lower bounds: a failed
++   strong CAS means another increment already recorded a positive refusal.
++   There is one attempt, no retry, and no wrap at saturation.  */
++static inline void
++__pthread_bounded_refuse_heap (struct __pthread_bounded *owner, void *pointer)
++{
++  size_t *counter = pointer == NULL ? &owner->fact.allocator_refusals
++                                   : &owner->fact.foreign_free_refusals;
++  size_t value = atomic_load_relaxed (counter);
++  if (value != SIZE_MAX)
++    __atomic_compare_exchange_n (counter, &value, value + 1, false,
++                                  __ATOMIC_RELAXED, __ATOMIC_RELAXED);
++
++  if (pointer != NULL)
++    {
++      uintptr_t expected = 0;
++      __atomic_compare_exchange_n (&owner->fact.first_refused_free, &expected,
++                                    (uintptr_t) pointer, false,
++                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED);
++    }
++  __pthread_bounded_error (owner, ENOTSUP);
++}
++
++/* Try-locking also bounds signal-handler reentry: it refuses rather than
++   corrupting a partially constructed block or spinning behind itself.  */
++static inline void *
++__pthread_bounded_allocate (struct __pthread_bounded *owner,
++                            enum pthread_bounded_kind kind,
++                            size_t bytes, size_t alignment)
++{
++  struct pthread_bounded_allocation_fact *fact = &owner->fact.allocation[kind];
++  const struct pthread_bounded_limit *limit = &owner->config.limit[kind];
++  int error = ENOMEM;
++
++  if (atomic_exchange_acquire (&owner->allocation_lock, 1) != 0)
++    {
++      __pthread_bounded_error (owner, EBUSY);
++      return NULL;
++    }
++
++  if (fact->attempted == SIZE_MAX)
++    goto failed;
++  atomic_fetch_add_relaxed (&fact->attempted, 1);
++
++  if (alignment == 0 || (alignment & (alignment - 1)) != 0
++      || alignment > limit->alignment || bytes > limit->request_bytes
++      || fact->allocated >= limit->requests)
++    goto failed;
++
++  if (alignment < _Alignof (struct __pthread_bounded_block))
++    alignment = _Alignof (struct __pthread_bounded_block);
++
++  size_t used = owner->fact.arena_used;
++  size_t capacity = owner->fact.backing_bytes;
++  size_t prefix = sizeof (struct __pthread_bounded_block);
++  uintptr_t base = owner->fact.backing;
++
++  if (used > capacity || prefix > capacity - used
++      || alignment - 1 > capacity - used - prefix)
++    goto failed;
++
++  uintptr_t address = (base + used + prefix + alignment - 1)
++                      & ~(uintptr_t) (alignment - 1);
++  size_t offset = address - base;
++  if (offset > capacity || bytes > capacity - offset)
++    goto failed;
++
++  struct __pthread_bounded_block *block
++    = (struct __pthread_bounded_block *) address - 1;
++  *block = (struct __pthread_bounded_block)
++    { owner, bytes, kind, false };
++  atomic_store_relaxed (&owner->fact.arena_used, offset + bytes);
++  atomic_fetch_add_relaxed (&fact->allocated, 1);
++  atomic_fetch_add_relaxed (&fact->bytes, bytes);
++  memset ((void *) address, 0, bytes);
++  atomic_store_release (&owner->allocation_lock, 0);
++  return (void *) address;
++
++ failed:
++  if (fact->first_error == 0)
++    atomic_store_relaxed (&fact->first_error, error);
++  __pthread_bounded_error (owner, error);
++  atomic_store_release (&owner->allocation_lock, 0);
++  return NULL;
++}
++
++/* Storage stays physically consumed until retirement.  No ordinary free,
++   allocator cache, callback, lock, or heap fallback is reached here.  */
++static inline bool
++__pthread_bounded_release (struct __pthread_bounded *owner, void *pointer)
++{
++  if (pointer == NULL)
++    return true;
++
++  uintptr_t address = (uintptr_t) pointer;
++  uintptr_t base = owner->fact.backing;
++  size_t prefix = sizeof (struct __pthread_bounded_block);
++  if (address < base || address - base < sizeof (*owner) + prefix
++      || address - base > owner->fact.arena_used)
++    {
++      atomic_store_release (&owner->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (owner, EPROTO);
++      return false;
++    }
++
++  struct __pthread_bounded_block *block
++    = (struct __pthread_bounded_block *) pointer - 1;
++  if (block->owner != owner || block->released
++      || block->kind >= PTHREAD_BOUNDED_KINDS)
++    {
++      atomic_store_release (&owner->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (owner, EPROTO);
++      return false;
++    }
++
++  block->released = true;
++  atomic_fetch_add_relaxed (&owner->fact.allocation[block->kind].released, 1);
++  return true;
++}
++
++/* CREATE and RETIRE hold the control lock.  The child updates only the
++   fields loaded atomically here; a receipt may be taken while it runs.  */
++static inline void
++__pthread_bounded_snapshot (struct __pthread_bounded *owner,
++                            struct pthread_bounded_receipt *result)
++{
++#define COPY(field) result->field = owner->fact.field
++#define OBSERVE(field) result->field = atomic_load_relaxed (&owner->fact.field)
++  COPY (version);
++  COPY (size);
++  COPY (incarnation);
++  COPY (backing);
++  COPY (backing_bytes);
++  COPY (stack);
++  COPY (stack_bytes);
++  COPY (stack_reserved_bytes);
++  COPY (stack_available_bytes);
++  OBSERVE (arena_used);
++  OBSERVE (allocator_refusals);
++  OBSERVE (foreign_free_refusals);
++  OBSERVE (first_refused_free);
++  OBSERVE (cleanup_blocked);
++  OBSERVE (first_error);
++  COPY (create_status);
++  COPY (create_attempted);
++  COPY (clone_attempted);
++  COPY (born);
++  OBSERVE (entered);
++  OBSERVE (exit_cleanup_completed);
++  COPY (kernel_exited);
++  COPY (joined);
++  COPY (list_linked);
++  COPY (list_returned);
++  COPY (tls_returned);
++  COPY (stack_returned);
++  COPY (registration_returned);
++  COPY (backing_returned);
++  COPY (retire_attempts);
++  COPY (retire_status);
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    {
++      OBSERVE (allocation[i].attempted);
++      OBSERVE (allocation[i].allocated);
++      OBSERVE (allocation[i].released);
++      OBSERVE (allocation[i].bytes);
++      OBSERVE (allocation[i].first_error);
++    }
++#undef OBSERVE
++#undef COPY
++}
++
++extern int __pthread_create_bounded (pthread_t *, const pthread_attr_t *,
++                                     void *(*) (void *), void *,
++                                     struct __pthread_bounded *) attribute_hidden;
++#endif
+diff --git a/nptl/pthread-bounded.c b/nptl/pthread-bounded.c
+new file mode 100644
+index 0000000..03b458e
+--- /dev/null
++++ b/nptl/pthread-bounded.c
+@@ -0,0 +1,560 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <pthreadP.h>
++#include <pthread-bounded-internal.h>
++#include <nptl-stack.h>
++#include <ldsodefs.h>
++#include <shlib-compat.h>
++
++/* Registration is a real finite admission resource.  Lookup compares the
++   nominated address before dereferencing it.  Callers serialize lifetime
++   operations on a control and retain its arena until final return.  */
++#define BOUNDED_REGISTRATIONS 128
++static struct __pthread_bounded *registered[BOUNDED_REGISTRATIONS];
++static uint64_t next_incarnation;
++static int registration_lock;
++
++static int
++registration (struct __pthread_bounded *owner)
++{
++  if (owner == NULL)
++    return -1;
++
++  for (int i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++    if (atomic_load_acquire (&registered[i]) == owner)
++      return i;
++  return -1;
++}
++
++/* The registry lock pins a nominated control until its own try-lock is
++   held.  All lock acquisition is a single attempt, including final return.  */
++static int
++lock_control (struct __pthread_bounded *owner, uint64_t incarnation, int *slot)
++{
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    return EBUSY;
++
++  *slot = registration (owner);
++  int status = ESRCH;
++  if (*slot >= 0)
++    {
++      status = atomic_exchange_acquire (&owner->lock, 1) != 0 ? EBUSY : 0;
++      if (status == 0 && owner->fact.incarnation != incarnation)
++        {
++          atomic_store_release (&owner->lock, 0);
++          status = ESTALE;
++        }
++    }
++
++  atomic_store_release (&registration_lock, 0);
++  return status;
++}
++
++static bool
++spans_overlap (uintptr_t first, size_t first_size,
++               uintptr_t second, size_t second_size)
++{
++  return first <= second ? second - first < first_size
++                         : first - second < second_size;
++}
++
++/* Reserve the supplied mapping against every still-retained arena and
++   stack.  The registry and actual owner, rather than a copied receipt,
++   establish whether a span is already in custody.  */
++static int
++reserve_stack (struct __pthread_bounded *owner, uintptr_t base, size_t bytes)
++{
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    return EBUSY;
++
++  int status = 0;
++  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++    {
++      struct __pthread_bounded *other = atomic_load_acquire (&registered[i]);
++      if (other != NULL
++          && (spans_overlap (base, bytes,
++                             other->fact.backing, other->fact.backing_bytes)
++              || (other != owner
++                  && spans_overlap (base, bytes,
++                                    other->fact.stack, other->fact.stack_bytes))))
++        {
++          status = EBUSY;
++          break;
++        }
++    }
++
++  if (status == 0)
++    {
++      owner->fact.stack = base;
++      owner->fact.stack_bytes = bytes;
++    }
++  atomic_store_release (&registration_lock, 0);
++  return status;
++}
++
++/* Output validation and writes share the registry lock.  A separately
++   admitted owner cannot begin occupying an output span between the check
++   and the write.  Only canonical registry entries supply peer geometry.  */
++static bool
++external_span_locked (const void *pointer, size_t bytes)
++{
++  uintptr_t address = (uintptr_t) pointer;
++  if (pointer == NULL || bytes > UINTPTR_MAX - address)
++    return false;
++
++  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++    {
++      struct __pthread_bounded *other = registered[i];
++      if (other != NULL
++          && (spans_overlap (address, bytes,
++                             other->fact.backing, other->fact.backing_bytes)
++              || spans_overlap (address, bytes,
++                                other->fact.stack, other->fact.stack_bytes)))
++        return false;
++    }
++  return true;
++}
++
++static bool
++outputs_locked (struct pthread_bounded_receipt *receipt,
++                void *extra, size_t extra_bytes)
++{
++  return external_span_locked (receipt, sizeof (*receipt))
++    && (extra == NULL
++        || (external_span_locked (extra, extra_bytes)
++            && !spans_overlap ((uintptr_t) extra, extra_bytes,
++                               (uintptr_t) receipt, sizeof (*receipt))));
++}
++
++static int
++validate_outputs (struct pthread_bounded_receipt *receipt,
++                  void *extra, size_t extra_bytes)
++{
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    return EBUSY;
++  int status = outputs_locked (receipt, extra, extra_bytes) ? 0 : EINVAL;
++  atomic_store_release (&registration_lock, 0);
++  return status;
++}
++
++static int
++publish_receipt (struct __pthread_bounded *owner,
++                 struct pthread_bounded_receipt *receipt,
++                 pthread_t *thread, pthread_t value)
++{
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    return EBUSY;
++  int status = outputs_locked (receipt, thread, sizeof (*thread)) ? 0 : EINVAL;
++  if (status == 0)
++    {
++      if (thread != NULL)
++        *thread = value;
++      __pthread_bounded_snapshot (owner, receipt);
++    }
++  atomic_store_release (&registration_lock, 0);
++  return status;
++}
++
++int
++__pthread_bounded_init_np (void *backing, size_t bytes,
++                           const struct pthread_bounded_config *config,
++                           pthread_bounded_t **control, uint64_t *incarnation_out)
++{
++#if !defined __linux__ || !defined __x86_64__ || !defined __LP64__
++  return ENOTSUP;
++#else
++  uintptr_t address = (uintptr_t) backing;
++  if (backing == NULL || config == NULL || control == NULL
++      || incarnation_out == NULL
++      || config->version != PTHREAD_BOUNDED_VERSION
++      || config->size != sizeof (*config)
++      || config->flags != PTHREAD_BOUNDED_STRICT || config->reserved != 0
++      || (address & (_Alignof (struct __pthread_bounded) - 1)) != 0
++      || bytes < sizeof (struct __pthread_bounded)
++      || bytes > UINTPTR_MAX - address
++      || spans_overlap (address, bytes, (uintptr_t) config, sizeof (*config))
++      || spans_overlap (address, bytes, (uintptr_t) control, sizeof (*control))
++      || spans_overlap (address, bytes, (uintptr_t) incarnation_out,
++                        sizeof (*incarnation_out)))
++    return EINVAL;
++
++  /* Reserve enough physical space for every admitted request at its worst
++     alignment.  Actual requests may consume less; their unused reservation
++     still belongs to this arena until terminal return.  */
++  size_t required = sizeof (struct __pthread_bounded);
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    {
++      const struct pthread_bounded_limit *limit = &config->limit[i];
++      size_t alignment = limit->alignment;
++      if (alignment == 0 || (alignment & (alignment - 1)) != 0)
++        return EINVAL;
++      if (alignment < _Alignof (struct __pthread_bounded_block))
++        alignment = _Alignof (struct __pthread_bounded_block);
++
++      size_t block;
++      size_t reservation;
++      if (__builtin_add_overflow (limit->request_bytes,
++                                  sizeof (struct __pthread_bounded_block),
++                                  &block)
++          || __builtin_add_overflow (block, alignment - 1, &block)
++          || __builtin_mul_overflow (block, limit->requests, &reservation)
++          || __builtin_add_overflow (required, reservation, &required))
++        return EOVERFLOW;
++    }
++  if (required > bytes)
++    return ENOMEM;
++
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    return EBUSY;
++
++  if (!external_span_locked (control, sizeof (*control))
++      || !external_span_locked (incarnation_out, sizeof (*incarnation_out))
++      || spans_overlap ((uintptr_t) control, sizeof (*control),
++                         (uintptr_t) incarnation_out, sizeof (*incarnation_out)))
++    {
++      atomic_store_release (&registration_lock, 0);
++      return EINVAL;
++    }
++
++  /* Initialization must not overwrite an arena already in libc custody.  */
++  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++    {
++      struct __pthread_bounded *other = atomic_load_acquire (&registered[i]);
++      if (other != NULL
++          && (spans_overlap (address, bytes,
++                             other->fact.backing, other->fact.backing_bytes)
++              || spans_overlap (address, bytes,
++                                other->fact.stack, other->fact.stack_bytes)))
++        {
++          atomic_store_release (&registration_lock, 0);
++          return EBUSY;
++        }
++    }
++
++  uint64_t incarnation = atomic_load_relaxed (&next_incarnation);
++  if (incarnation == UINT64_MAX)
++    {
++      atomic_store_release (&registration_lock, 0);
++      return EOVERFLOW;
++    }
++  /* Registration serializes the sole writer.  No CAS retry is needed.  */
++  atomic_store_relaxed (&next_incarnation, incarnation + 1);
++
++  struct __pthread_bounded *owner = backing;
++  memset (owner, 0, sizeof (*owner));
++  owner->magic = PTHREAD_BOUNDED_MAGIC;
++  owner->self = address;
++  owner->config = *config;
++  owner->fact.version = PTHREAD_BOUNDED_VERSION;
++  owner->fact.size = sizeof (owner->fact);
++  owner->fact.incarnation = incarnation + 1;
++  owner->fact.backing = address;
++  owner->fact.backing_bytes = bytes;
++  owner->fact.arena_used = sizeof (*owner);
++
++  for (size_t i = 0; i < BOUNDED_REGISTRATIONS; ++i)
++    {
++      struct __pthread_bounded *expected = NULL;
++      if (__atomic_compare_exchange_n (&registered[i], &expected, owner, false,
++                                        __ATOMIC_RELEASE, __ATOMIC_RELAXED))
++        {
++          *control = owner;
++          *incarnation_out = owner->fact.incarnation;
++          atomic_store_release (&registration_lock, 0);
++          return 0;
++        }
++    }
++
++  owner->magic = 0;
++  atomic_store_release (&registration_lock, 0);
++  return EAGAIN;
++#endif
++}
++versioned_symbol (libc, __pthread_bounded_init_np, pthread_bounded_init_np,
++                  GLIBC_2_39);
++
++int
++__pthread_bounded_create_np (pthread_bounded_t *owner, uint64_t incarnation,
++                             pthread_t *thread,
++                             const pthread_attr_t *attr,
++                             void *(*start) (void *), void *arg,
++                             struct pthread_bounded_receipt *receipt)
++{
++  int slot;
++  int locked = lock_control (owner, incarnation, &slot);
++  if (locked != 0)
++    return locked;
++
++  pthread_t created_thread = 0;
++  int status = validate_outputs (receipt, thread, sizeof (*thread));
++  if (status != 0)
++    goto unlock;
++  status = EINVAL;
++  if (owner->state != __PTHREAD_BOUNDED_READY)
++    {
++      status = EALREADY;
++      goto observe;
++    }
++
++  owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
++  owner->fact.create_attempted = 1;
++  if (THREAD_SELF->report_events)
++    {
++      status = ENOTSUP;
++      goto failed;
++    }
++
++  if (thread == NULL || attr == NULL || start == NULL
++      || spans_overlap ((uintptr_t) thread, sizeof (*thread),
++                        owner->fact.backing, owner->fact.backing_bytes))
++    goto failed;
++
++  const struct pthread_attr *internal = (const struct pthread_attr *) attr;
++  uintptr_t top = (uintptr_t) internal->stackaddr;
++  size_t bytes = internal->stacksize;
++  if ((internal->flags & ATTR_FLAG_STACKADDR) == 0
++      || (internal->flags & ATTR_FLAG_DETACHSTATE) != 0
++      || bytes == 0 || top < bytes
++      || spans_overlap (top - bytes, bytes,
++                        owner->fact.backing, owner->fact.backing_bytes)
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) receipt, sizeof (*receipt))
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) thread, sizeof (*thread))
++      || spans_overlap (top - bytes, bytes,
++                        (uintptr_t) attr, sizeof (*attr)))
++    goto failed;
++
++  status = reserve_stack (owner, top - bytes, bytes);
++  if (status != 0)
++    goto failed;
++
++  owner->state = __PTHREAD_BOUNDED_CREATING;
++  status = __pthread_create_bounded (&created_thread, attr, start, arg, owner);
++  if (status == 0)
++    owner->state = __PTHREAD_BOUNDED_ACTIVE;
++  else if (!owner->fact.born)
++    owner->state = __PTHREAD_BOUNDED_NO_BIRTH;
++
++ failed:
++  owner->fact.create_status = status;
++  if (status != 0)
++    __pthread_bounded_error (owner, status);
++ observe:
++  {
++    int post = publish_receipt (owner, receipt,
++                                status == 0 ? thread : NULL, created_thread);
++    if (post != 0)
++      {
++        __pthread_bounded_error (owner, post);
++        if (status == 0)
++          status = post;
++      }
++  }
++ unlock:
++  atomic_store_release (&owner->lock, 0);
++  return status;
++}
++versioned_symbol (libc, __pthread_bounded_create_np, pthread_bounded_create_np,
++                  GLIBC_2_39);
++
++int
++__pthread_bounded_query_np (pthread_bounded_t *owner, uint64_t incarnation,
++                            struct pthread_bounded_receipt *receipt)
++{
++  int slot;
++  int locked = lock_control (owner, incarnation, &slot);
++  if (locked != 0)
++    return locked;
++
++  int status = publish_receipt (owner, receipt, NULL, 0);
++  atomic_store_release (&owner->lock, 0);
++  return status;
++}
++versioned_symbol (libc, __pthread_bounded_query_np, pthread_bounded_query_np,
++                  GLIBC_2_39);
++
++int
++__pthread_bounded_tryretire_np (pthread_bounded_t *owner, uint64_t incarnation,
++                               void **result,
++                               struct pthread_bounded_receipt *receipt)
++{
++  int slot;
++  int locked = lock_control (owner, incarnation, &slot);
++  if (locked != 0)
++    return locked;
++
++  int status = validate_outputs (receipt, result, sizeof (*result));
++  if (status != 0)
++    goto unlock;
++  status = EINVAL;
++
++  if (owner->fact.retire_attempts == UINT_MAX)
++    {
++      status = EOVERFLOW;
++      goto observe;
++    }
++  ++owner->fact.retire_attempts;
++  if (result != NULL
++      && (spans_overlap ((uintptr_t) result, sizeof (*result),
++                         owner->fact.backing, owner->fact.backing_bytes)
++          || spans_overlap ((uintptr_t) result, sizeof (*result),
++                            owner->fact.stack, owner->fact.stack_bytes)
++          || spans_overlap ((uintptr_t) result, sizeof (*result),
++                            (uintptr_t) receipt, sizeof (*receipt))))
++    goto observe;
++
++  struct pthread *pd = owner->pd;
++  if (owner->fact.born && !owner->fact.joined)
++    {
++      if (pd == NULL || pd == THREAD_SELF)
++        goto observe;
++
++      if (atomic_load_acquire (&pd->tid) != 0)
++        {
++          status = EBUSY;
++          goto observe;
++        }
++
++      /* The kernel clear-child-tid store is the terminal observation.
++         Neither user entry return nor the last destructor supplies it.  */
++      owner->fact.kernel_exited = 1;
++      if (pd->joinid != NULL)
++        {
++          status = EBUSY;
++          goto observe;
++        }
++      pd->joinid = THREAD_SELF;
++      pd->tid = -1;
++      owner->fact.joined = 1;
++      if (owner->state == __PTHREAD_BOUNDED_FAILED_BIRTH)
++        atomic_fetch_add_relaxed (&__nptl_nthreads, -1);
++    }
++
++  /* A raw kernel exit can clear tid without running libc's destructor
++     and freeres tail.  Kernel join is factual, but is insufficient to
++     return any backing in that case.  Only the deliberate setup-failure
++     path is known to have skipped all application/runtime entry.  */
++  if (owner->fact.born && owner->state != __PTHREAD_BOUNDED_FAILED_BIRTH
++      && !atomic_load_acquire (&owner->fact.exit_cleanup_completed))
++    {
++      status = EPROTO;
++      goto observe;
++    }
++
++  if (atomic_load_acquire (&owner->fact.cleanup_blocked))
++    {
++      status = EPROTO;
++      goto observe;
++    }
++  if (atomic_load_acquire (&owner->fact.foreign_free_refusals) != 0)
++    {
++      status = ENOTSUP;
++      goto observe;
++    }
++
++  if (owner->fact.list_linked && !owner->fact.list_returned)
++    {
++      if (lll_trylock (GL (dl_stack_cache_lock)) != 0)
++        {
++          status = EBUSY;
++          goto observe;
++        }
++
++      __nptl_stack_list_del (&pd->list);
++      owner->fact.list_returned = 1;
++      lll_unlock (GL (dl_stack_cache_lock), LLL_PRIVATE);
++    }
++
++  if (!owner->fact.tls_returned)
++    {
++      if (pd != NULL && GET_DTV (TLS_TPADJ (pd)) != NULL)
++        _dl_deallocate_tls (TLS_TPADJ (pd), false);
++      if (atomic_load_acquire (&owner->fact.cleanup_blocked))
++        {
++          status = EPROTO;
++          goto observe;
++        }
++      owner->fact.tls_returned = 1;
++    }
++
++  if (pd != NULL && pd->tpp != NULL)
++    {
++      if (!__pthread_bounded_release (owner, pd->tpp))
++        {
++          status = EPROTO;
++          goto observe;
++        }
++      pd->tpp = NULL;
++    }
++
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    if (owner->fact.allocation[i].allocated
++        != owner->fact.allocation[i].released)
++      {
++        status = EBUSY;
++        goto observe;
++      }
++
++  if (atomic_exchange_acquire (&registration_lock, 1) != 0)
++    {
++      status = EBUSY;
++      goto observe;
++    }
++
++  if (!outputs_locked (receipt, result, sizeof (*result)))
++    {
++      atomic_store_release (&registration_lock, 0);
++      status = EINVAL;
++      goto observe;
++    }
++  if (owner->fact.born && result != NULL)
++    *result = pd->result;
++  atomic_store_release (&registered[slot], NULL);
++  owner->fact.registration_returned = 1;
++  owner->fact.stack_returned = owner->fact.stack_bytes != 0;
++  owner->fact.backing_returned = 1;
++  owner->state = __PTHREAD_BOUNDED_RETIRED;
++  status = 0;
++
++ observe:
++  owner->fact.retire_status = status;
++  if (status != 0)
++    __pthread_bounded_error (owner, status);
++  if (owner->fact.backing_returned)
++    {
++      __pthread_bounded_snapshot (owner, receipt);
++      atomic_store_release (&owner->lock, 0);
++      atomic_store_release (&registration_lock, 0);
++      return status;
++    }
++  {
++    int post = publish_receipt (owner, receipt, NULL, 0);
++    if (post != 0)
++      {
++        __pthread_bounded_error (owner, post);
++        if (status == 0)
++          status = post;
++      }
++  }
++ unlock:
++  atomic_store_release (&owner->lock, 0);
++  return status;
++}
++versioned_symbol (libc, __pthread_bounded_tryretire_np,
++                  pthread_bounded_tryretire_np, GLIBC_2_39);
+diff --git a/nptl/pthread-bounded.h b/nptl/pthread-bounded.h
+new file mode 100644
+index 0000000..ef04db1
+--- /dev/null
++++ b/nptl/pthread-bounded.h
+@@ -0,0 +1,149 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _PTHREAD_BOUNDED_H
++#define _PTHREAD_BOUNDED_H 1
++
++#include <pthread.h>
++#include <stddef.h>
++#include <stdint.h>
++
++__BEGIN_DECLS
++
++#define PTHREAD_BOUNDED_VERSION 1
++#define PTHREAD_BOUNDED_STRICT 1
++
++enum pthread_bounded_kind
++{
++  PTHREAD_BOUNDED_DTV,
++  PTHREAD_BOUNDED_DYNAMIC_TLS,
++  PTHREAD_BOUNDED_TSD,
++  PTHREAD_BOUNDED_DESTRUCTOR,
++  PTHREAD_BOUNDED_PRIORITY,
++  PTHREAD_BOUNDED_KINDS
++};
++
++/* Each allocation consumes one request permanently, including a request
++   whose storage is logically released before thread exit.  */
++struct pthread_bounded_limit
++{
++  size_t requests;
++  size_t request_bytes;
++  size_t alignment;
++};
++
++struct pthread_bounded_config
++{
++  unsigned int version;
++  unsigned int size;
++  /* Must select PTHREAD_BOUNDED_STRICT: no ordinary heap ownership.  */
++  unsigned int flags;
++  unsigned int reserved;
++  struct pthread_bounded_limit limit[PTHREAD_BOUNDED_KINDS];
++};
++
++struct pthread_bounded_allocation_fact
++{
++  size_t attempted;
++  size_t allocated;
++  size_t released;
++  size_t bytes;
++  int first_error;
++};
++
++/* A receipt is an observation, never permission to reuse a resource.
++   Only backing_returned relinquishes the containing arena.  A successful
++   kernel join alone does not return the arena or supplied stack.  */
++struct pthread_bounded_receipt
++{
++  unsigned int version;
++  unsigned int size;
++  uint64_t incarnation;
++  uintptr_t backing;
++  size_t backing_bytes;
++  uintptr_t stack;
++  size_t stack_bytes;
++  size_t stack_reserved_bytes;
++  size_t stack_available_bytes;
++  size_t arena_used;
++  /* Saturated monotonic lower bounds; concurrent refusals may coalesce.  */
++  size_t allocator_refusals;
++  size_t foreign_free_refusals;
++  uintptr_t first_refused_free;
++  unsigned int cleanup_blocked;
++  int first_error;
++  int create_status;
++  unsigned int create_attempted;
++  unsigned int clone_attempted;
++  unsigned int born;
++  unsigned int entered;
++  unsigned int exit_cleanup_completed;
++  unsigned int kernel_exited;
++  unsigned int joined;
++  unsigned int list_linked;
++  unsigned int list_returned;
++  unsigned int tls_returned;
++  unsigned int stack_returned;
++  unsigned int registration_returned;
++  unsigned int backing_returned;
++  unsigned int retire_attempts;
++  int retire_status;
++  struct pthread_bounded_allocation_fact allocation[PTHREAD_BOUNDED_KINDS];
++};
++
++typedef struct __pthread_bounded pthread_bounded_t;
++
++/* Initializes CONTROL and its nonwrapping INCARNATION inside caller-owned
++   BACKING.  BACKING must remain exclusively owned and writable until a
++   terminal receipt returns it.
++   CONFIG describes enforced bounds, not a numeric credit transfer.
++   Writable outputs must not overlap any registered arena or retained stack.
++   The current implementation supports Linux/x86-64 supplied stacks.  */
++extern int pthread_bounded_init_np (void *__backing, size_t __bytes,
++                                  const struct pthread_bounded_config *__config,
++                                  pthread_bounded_t **__control,
++                                  uint64_t *__incarnation) __THROW;
++
++/* Creates one joinable thread on an explicit supplied stack.  Creation may
++   wait.  Once valid outputs are admitted, a creation attempt consumes CONTROL,
++   even if no thread is born.
++   A publication failure can follow an actual birth; query the canonical
++   control instead of treating every returned error as no birth.  */
++extern int pthread_bounded_create_np (pthread_bounded_t *__control,
++                                    uint64_t __incarnation,
++                                    pthread_t *__thread_id,
++                                    const pthread_attr_t *__attr,
++                                    void *(*__start) (void *), void *__arg,
++                                    struct pthread_bounded_receipt *__receipt);
++
++/* Obtains the canonical control's current factual snapshot.  The caller
++   must retain exclusive lifetime custody while querying the control.  */
++extern int pthread_bounded_query_np
++  (pthread_bounded_t *__control, uint64_t __incarnation,
++   struct pthread_bounded_receipt *__receipt) __THROW;
++
++/* Tries kernel join and terminal resource return without waiting on a
++   futex or libc lock.  EBUSY retains all outstanding debt.  Repeated calls
++   preserve birth, join and physical-return facts and the first error.
++   All outputs must reside outside every registered arena and retained stack.
++   An output publication refusal can return without a new receipt.  */
++extern int pthread_bounded_tryretire_np
++  (pthread_bounded_t *__control, uint64_t __incarnation, void **__result,
++   struct pthread_bounded_receipt *__receipt) __THROW;
++
++__END_DECLS
++#endif
+diff --git a/nptl/pthread_create.c b/nptl/pthread_create.c
+index 1d3665d..c52479f 100644
+--- a/nptl/pthread_create.c
++++ b/nptl/pthread_create.c
+@@ -42,6 +42,7 @@
+ #include <shlib-compat.h>
+ 
+ #include <stap-probe.h>
++#include <pthread-bounded-internal.h>
+ 
+ 
+ /* Globally enabled events.  */
+@@ -294,6 +295,9 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
+       .stack_size = stacksize,
+       .tls = (uintptr_t) tp,
+     };
++  if (pd->bounded != NULL)
++    pd->bounded->fact.clone_attempted = 1;
++
+   int ret = __clone_internal (&args, &start_thread, pd);
+   if (__glibc_unlikely (ret == -1))
+     return errno;
+@@ -301,6 +305,8 @@ static int create_thread (struct pthread *pd, const struct pthread_attr *attr,
+   /* It's started now, so if we fail below, we'll have to let it clean itself
+      up.  */
+   *thread_ran = true;
++  if (pd->bounded != NULL)
++    pd->bounded->fact.born = 1;
+ 
+   /* Now we have the possibility to set scheduling parameters etc.  */
+   if (attr != NULL)
+@@ -432,6 +438,9 @@ start_thread (void *arg)
+ 
+       LIBC_PROBE (pthread_start, 3, (pthread_t) pd, pd->start_routine, pd->arg);
+ 
++      if (pd->bounded != NULL)
++        atomic_store_release (&pd->bounded->fact.entered, 1);
++
+       /* Run the code the user provided.  */
+       void *ret;
+       if (pd->c11)
+@@ -457,6 +466,10 @@ start_thread (void *arg)
+   /* Clean up any state libc stored in thread-local variables.  */
+   __libc_thread_freeres ();
+ 
++  if (pd->bounded != NULL
++      && !atomic_load_acquire (&pd->bounded->fact.cleanup_blocked))
++    atomic_store_release (&pd->bounded->fact.exit_cleanup_completed, 1);
++
+   /* Report the death of the thread if this is wanted.  */
+   if (__glibc_unlikely (pd->report_events))
+     {
+@@ -620,9 +633,10 @@ report_thread_creation (struct pthread *pd)
+ }
+ 
+ 
+-int
+-__pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+-		      void *(*start_routine) (void *), void *arg)
++static int
++pthread_create_internal (pthread_t *newthread, const pthread_attr_t *attr,
++                         void *(*start_routine) (void *), void *arg,
++                         struct __pthread_bounded *bounded)
+ {
+   void *stackaddr = NULL;
+   size_t stacksize = 0;
+@@ -652,7 +666,7 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+     }
+ 
+   struct pthread *pd = NULL;
+-  int err = allocate_stack (iattr, &pd, &stackaddr, &stacksize);
++  int err = allocate_stack (iattr, &pd, &stackaddr, &stacksize, bounded);
+   int retval = 0;
+ 
+   if (__glibc_unlikely (err != 0))
+@@ -842,6 +856,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+ 
+   if (__glibc_unlikely (retval != 0))
+     {
++      if (bounded != NULL)
++        {
++          if (thread_ran)
++            {
++              pd->setup_failed = 1;
++              lll_unlock (pd->lock, LLL_PRIVATE);
++              bounded->state = __PTHREAD_BOUNDED_FAILED_BIRTH;
++            }
++          else
++            bounded->state = __PTHREAD_BOUNDED_NO_BIRTH;
++
++          if (!thread_ran)
++            atomic_fetch_add_relaxed (&__nptl_nthreads, -1);
++          goto out;
++        }
++
+       if (thread_ran)
+ 	/* State (c) and we not have PD ownership (see CONCURRENCY NOTES
+ 	   above).  We can assert that STOPPED_START must have been true
+@@ -899,6 +929,22 @@ __pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
+ 
+   return retval;
+ }
++
++int
++__pthread_create_2_1 (pthread_t *newthread, const pthread_attr_t *attr,
++                      void *(*start_routine) (void *), void *arg)
++{
++  return pthread_create_internal (newthread, attr, start_routine, arg, NULL);
++}
++
++int
++__pthread_create_bounded (pthread_t *newthread, const pthread_attr_t *attr,
++                          void *(*start_routine) (void *), void *arg,
++                          struct __pthread_bounded *bounded)
++{
++  return pthread_create_internal (newthread, attr, start_routine, arg, bounded);
++}
++
+ versioned_symbol (libc, __pthread_create_2_1, pthread_create, GLIBC_2_34);
+ libc_hidden_ver (__pthread_create_2_1, __pthread_create)
+ #ifndef SHARED
+diff --git a/nptl/pthread_detach.c b/nptl/pthread_detach.c
+index 25eea52..a05a949 100644
+--- a/nptl/pthread_detach.c
++++ b/nptl/pthread_detach.c
+@@ -25,6 +25,9 @@ ___pthread_detach (pthread_t th)
+ {
+   struct pthread *pd = (struct pthread *) th;
+ 
++  if (pd->bounded != NULL)
++    return EINVAL;
++
+   /* Make sure the descriptor is valid.  */
+   if (INVALID_NOT_TERMINATED_TD_P (pd))
+     /* Not a valid thread handle.  */
+diff --git a/nptl/pthread_join_common.c b/nptl/pthread_join_common.c
+index 9c685c7..d74439f 100644
+--- a/nptl/pthread_join_common.c
++++ b/nptl/pthread_join_common.c
+@@ -39,6 +39,9 @@ __pthread_clockjoin_ex (pthread_t threadid, void **thread_return,
+ {
+   struct pthread *pd = (struct pthread *) threadid;
+ 
++  if (pd->bounded != NULL)
++    return EINVAL;
++
+   /* Make sure the descriptor is valid.  */
+   if (INVALID_NOT_TERMINATED_TD_P (pd))
+     /* Not a valid thread handle.  */
+diff --git a/nptl/pthread_setspecific.c b/nptl/pthread_setspecific.c
+index ae1d79c..23807ed 100644
+--- a/nptl/pthread_setspecific.c
++++ b/nptl/pthread_setspecific.c
+@@ -19,6 +19,7 @@
+ #include <stdlib.h>
+ #include "pthreadP.h"
+ #include <shlib-compat.h>
++#include <pthread-bounded-internal.h>
+ 
+ int
+ ___pthread_setspecific (pthread_key_t key, const void *value)
+@@ -65,9 +66,13 @@ ___pthread_setspecific (pthread_key_t key, const void *value)
+ 	       be NULL.  We can save the memory allocation.  */
+ 	    return 0;
+ 
+-	  level2
+-	    = (struct pthread_key_data *) calloc (PTHREAD_KEY_2NDLEVEL_SIZE,
+-						  sizeof (*level2));
++	  if (self->bounded != NULL)
++            level2 = __pthread_bounded_allocate
++              (self->bounded, PTHREAD_BOUNDED_TSD,
++               PTHREAD_KEY_2NDLEVEL_SIZE * sizeof (*level2),
++               _Alignof (struct pthread_key_data));
++          else
++            level2 = calloc (PTHREAD_KEY_2NDLEVEL_SIZE, sizeof (*level2));
+ 	  if (level2 == NULL)
+ 	    return ENOMEM;
+ 
+diff --git a/nptl/tpp.c b/nptl/tpp.c
+index 0cae7d8..cc5cfbf 100644
+--- a/nptl/tpp.c
++++ b/nptl/tpp.c
+@@ -20,6 +20,7 @@
+ #include <atomic.h>
+ #include <errno.h>
+ #include <pthreadP.h>
++#include <pthread-bounded-internal.h>
+ #include <sched.h>
+ #include <stdlib.h>
+ #include <atomic.h>
+@@ -73,7 +74,12 @@ __pthread_tpp_change_priority (int previous_prio, int new_prio)
+       size_t size = sizeof *tpp;
+       size += (fifo_max_prio - fifo_min_prio + 1)
+ 	      * sizeof (tpp->priomap[0]);
+-      tpp = calloc (size, 1);
++      if (self->bounded != NULL)
++        tpp = __pthread_bounded_allocate
++          (self->bounded, PTHREAD_BOUNDED_PRIORITY, size,
++           _Alignof (struct priority_protection_data));
++      else
++        tpp = calloc (size, 1);
+       if (tpp == NULL)
+ 	return ENOMEM;
+       tpp->priomax = fifo_min_prio - 1;
+diff --git a/nptl/tst-pthread-bounded-mod.c b/nptl/tst-pthread-bounded-mod.c
+new file mode 100644
+index 0000000..b3606f0
+--- /dev/null
++++ b/nptl/tst-pthread-bounded-mod.c
+@@ -0,0 +1,26 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <stddef.h>
++
++static __thread unsigned char block[97] __attribute__ ((aligned (64)));
++
++void *
++bounded_tls_address (void)
++{
++  return block;
++}
+diff --git a/nptl/tst-pthread-bounded.c b/nptl/tst-pthread-bounded.c
+new file mode 100644
+index 0000000..1f67d38
+--- /dev/null
++++ b/nptl/tst-pthread-bounded.c
+@@ -0,0 +1,863 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <pthread-bounded.h>
++#include <pthread-bounded-internal.h>
++#include <pthreadP.h>
++#include <dlfcn.h>
++#include <errno.h>
++#include <sched.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/mman.h>
++#include <unistd.h>
++#include <support/check.h>
++#include <support/capture_subprocess.h>
++#include <sys/wait.h>
++#include <sys/syscall.h>
++#include <signal.h>
++#include <string.h>
++#include <locale.h>
++#include <resolv.h>
++#include <malloc.h>
++#include <support/support.h>
++#include <support/temp_file.h>
++#include <support/xthread.h>
++#include <shlib-compat.h>
++
++/* Obtain the shared loader layout after other headers, then access its
++   actual exported object through dlsym rather than a copy relocation.  */
++#define SHARED
++#include <ldsodefs.h>
++#undef SHARED
++#undef GL
++#define GL(name) (loader_state->_##name)
++
++static struct rtld_global *loader_state;
++
++#define ARENA_BYTES (128 * 1024)
++#define STACK_BYTES (1024 * 1024)
++#define MODULES 80
++
++extern int __cxa_thread_atexit_impl (void (*) (void *), void *, void *);
++extern void *__dso_handle;
++struct rpc_createerr;
++extern struct rpc_createerr *__rpc_thread_createerr (void);
++compat_symbol_reference (libc, __rpc_thread_createerr, __rpc_thread_createerr,
++                         GLIBC_2_0);
++
++struct fixture
++{
++  void *arena;
++  void *mapping;
++  size_t mapping_bytes;
++  pthread_attr_t attr;
++  pthread_bounded_t *owner;
++  uint64_t incarnation;
++  pthread_t thread;
++  unsigned int worker_finished;
++  struct pthread_bounded_receipt receipt;
++};
++
++struct worker_state
++{
++  pthread_barrier_t ready;
++  pthread_barrier_t loaded;
++  unsigned int destructor_entered;
++  unsigned int destructor_release;
++  unsigned int tsd_finished;
++  pthread_key_t key;
++  volatile uint64_t *stack_sentinel;
++  void *(*address[MODULES]) (void);
++};
++
++static struct pthread_bounded_config
++configuration (void)
++{
++  struct pthread_bounded_config config =
++    { .version = PTHREAD_BOUNDED_VERSION, .size = sizeof (config),
++      .flags = PTHREAD_BOUNDED_STRICT };
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    config.limit[i] = (struct pthread_bounded_limit) { 1, 512, 16 };
++  config.limit[PTHREAD_BOUNDED_DTV]
++    = (struct pthread_bounded_limit) { 4, 4096, 16 };
++  config.limit[PTHREAD_BOUNDED_DYNAMIC_TLS]
++    = (struct pthread_bounded_limit) { MODULES, 1024, 64 };
++  return config;
++}
++
++static struct fixture
++fixture (struct pthread_bounded_config *config)
++{
++  struct fixture result = { 0 };
++  size_t pagesize = sysconf (_SC_PAGESIZE);
++  result.mapping_bytes = STACK_BYTES + 2 * pagesize;
++  result.mapping = mmap (NULL, result.mapping_bytes, PROT_NONE,
++                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (result.mapping != MAP_FAILED);
++  TEST_COMPARE (mprotect ((char *) result.mapping + pagesize, STACK_BYTES,
++                          PROT_READ | PROT_WRITE), 0);
++
++  result.arena = mmap (NULL, ARENA_BYTES, PROT_READ | PROT_WRITE,
++                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (result.arena != MAP_FAILED);
++  TEST_COMPARE (pthread_bounded_init_np (result.arena, ARENA_BYTES,
++                                         config, &result.owner,
++                                         &result.incarnation), 0);
++
++  xpthread_attr_init (&result.attr);
++  /* The deliberately unaligned usable span exercises actual TCB/static
++     TLS placement and alignment, with guards outside the supplied span.  */
++  TEST_COMPARE (pthread_attr_setstack (&result.attr,
++                                       (char *) result.mapping + pagesize + 16,
++                                       STACK_BYTES - 32), 0);
++  return result;
++}
++
++static void
++release_fixture (struct fixture *fixture)
++{
++  TEST_VERIFY (fixture->receipt.backing_returned);
++  xpthread_attr_destroy (&fixture->attr);
++  TEST_COMPARE (munmap (fixture->arena, ARENA_BYTES), 0);
++  TEST_COMPARE (munmap (fixture->mapping, fixture->mapping_bytes), 0);
++}
++
++static void
++retire (struct fixture *fixture)
++{
++  int status;
++  do
++    {
++      status = pthread_bounded_tryretire_np (fixture->owner, fixture->incarnation, NULL,
++                                             &fixture->receipt);
++      if (status == EBUSY)
++        sched_yield ();
++    }
++  while (status == EBUSY);
++  TEST_COMPARE (status, 0);
++}
++
++static void *
++never_entered (void *argument)
++{
++  __atomic_store_n ((unsigned int *) argument, 1, __ATOMIC_RELEASE);
++  return argument;
++}
++
++static void
++test_unfunded_dtv (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  config.limit[PTHREAD_BOUNDED_DTV].requests = 0;
++  struct fixture test = fixture (&config);
++  unsigned int entered = 0;
++
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 never_entered, &entered, &test.receipt), EAGAIN);
++  TEST_COMPARE (test.receipt.clone_attempted, 0);
++  TEST_COMPARE (test.receipt.born, 0);
++  TEST_COMPARE (test.receipt.first_error, ENOMEM);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DTV].attempted, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DTV].allocated, 0);
++
++  retire (&test);
++  TEST_COMPARE (entered, 0);
++  TEST_COMPARE (test.receipt.kernel_exited, 0);
++  TEST_COMPARE (test.receipt.joined, 0);
++  release_fixture (&test);
++}
++
++static void
++test_born_never_entered (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  cpu_set_t empty;
++  CPU_ZERO (&empty);
++  TEST_COMPARE (pthread_attr_setaffinity_np (&test.attr, sizeof (empty),
++                                            &empty), 0);
++  unsigned int entered = 0;
++
++  /* Linux rejects an empty effective CPU set only after clone.  This is a
++     deterministic real partial creation failure, independent of privilege.  */
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 never_entered, &entered, &test.receipt), EINVAL);
++  TEST_COMPARE (test.receipt.clone_attempted, 1);
++  TEST_COMPARE (test.receipt.born, 1);
++
++  retire (&test);
++  TEST_COMPARE (entered, 0);
++  TEST_COMPARE (test.receipt.entered, 0);
++  TEST_COMPARE (test.receipt.kernel_exited, 1);
++  TEST_COMPARE (test.receipt.joined, 1);
++  TEST_COMPARE (test.receipt.exit_cleanup_completed, 0);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DTV].allocated, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DTV].released, 1);
++  release_fixture (&test);
++}
++
++static void
++tls_destructor (void *argument)
++{
++  struct worker_state *state = argument;
++  __atomic_store_n (&state->destructor_entered, 1, __ATOMIC_RELEASE);
++  while (!__atomic_load_n (&state->destructor_release, __ATOMIC_ACQUIRE))
++    sched_yield ();
++}
++
++static void
++tsd_destructor (void *argument)
++{
++  struct worker_state *state = argument;
++  __atomic_store_n (&state->tsd_finished, 1, __ATOMIC_RELEASE);
++}
++
++static void *
++worker (void *argument)
++{
++  struct worker_state *state = argument;
++  _Alignas (16) volatile uint64_t sentinel[1024]
++    = { UINT64_C (0xa15c7e9d42b603f8) };
++  state->stack_sentinel = &sentinel[0];
++  xpthread_barrier_wait (&state->ready);
++  xpthread_barrier_wait (&state->loaded);
++
++  for (size_t i = 0; i < MODULES; ++i)
++    {
++      unsigned char *block = state->address[i] ();
++      TEST_VERIFY (((uintptr_t) block & 63) == 0);
++      TEST_COMPARE (block[0], 0);
++      block[0] = i + 1;
++    }
++  TEST_COMPARE (pthread_setspecific (state->key, state), 0);
++  TEST_COMPARE (__cxa_thread_atexit_impl
++                (tls_destructor, state, &__dso_handle), 0);
++  TEST_COMPARE (sentinel[0], UINT64_C (0xa15c7e9d42b603f8));
++  return state;
++}
++
++struct exhaustion_state
++{
++  pthread_key_t first;
++  pthread_key_t second;
++  unsigned int destructor_calls;
++  pthread_mutex_t priority;
++};
++
++static void
++count_destructor (void *argument)
++{
++  struct exhaustion_state *state = argument;
++  ++state->destructor_calls;
++}
++
++static void *
++exhaustion_worker (void *argument)
++{
++  struct exhaustion_state *state = argument;
++  TEST_COMPARE (pthread_setspecific (state->first, state), 0);
++  TEST_COMPARE (pthread_setspecific (state->second, state), ENOMEM);
++  TEST_COMPARE (__cxa_thread_atexit_impl
++                (count_destructor, state, &__dso_handle), 0);
++  TEST_COMPARE (__cxa_thread_atexit_impl
++                (count_destructor, state, &__dso_handle), ENOMEM);
++
++  int status = pthread_mutex_lock (&state->priority);
++  TEST_VERIFY (status == 0 || status == EINVAL);
++  if (status == 0)
++    TEST_COMPARE (pthread_mutex_unlock (&state->priority), 0);
++  return NULL;
++}
++
++static void
++test_enforced_requests (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  struct exhaustion_state state = { 0 };
++  pthread_key_t keys[65];
++  for (size_t i = 0; i < 65; ++i)
++    TEST_COMPARE (pthread_key_create (&keys[i], NULL), 0);
++  state.first = keys[32];
++  state.second = keys[64];
++
++  pthread_mutexattr_t attr;
++  TEST_COMPARE (pthread_mutexattr_init (&attr), 0);
++  TEST_COMPARE (pthread_mutexattr_setprotocol (&attr, PTHREAD_PRIO_PROTECT), 0);
++  TEST_COMPARE (pthread_mutexattr_setprioceiling (&attr, 1), 0);
++  TEST_COMPARE (pthread_mutex_init (&state.priority, &attr), 0);
++  TEST_COMPARE (pthread_mutexattr_destroy (&attr), 0);
++
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 exhaustion_worker, &state, &test.receipt), 0);
++  retire (&test);
++  TEST_COMPARE (state.destructor_calls, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_TSD].attempted, 2);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_TSD].allocated, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_TSD].released, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_TSD].first_error, ENOMEM);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DESTRUCTOR].attempted, 2);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DESTRUCTOR].allocated, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DESTRUCTOR].released, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_PRIORITY].allocated, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_PRIORITY].released, 1);
++  TEST_COMPARE (pthread_mutex_destroy (&state.priority), 0);
++  for (size_t i = 0; i < 65; ++i)
++    TEST_COMPARE (pthread_key_delete (keys[i]), 0);
++  release_fixture (&test);
++}
++
++static void *
++fatal_tls_worker (void *argument)
++{
++  void *(*address) (void) = argument;
++  address ();
++  /* A normal return would prove that the admitted zero-request bound was
++     bypassed.  Exit with a distinct status rather than matching libc OOM.  */
++  _exit (99);
++}
++
++static void
++fatal_tls_child (void *argument)
++{
++  struct pthread_bounded_config config = configuration ();
++  config.limit[PTHREAD_BOUNDED_DYNAMIC_TLS].requests = 0;
++  struct fixture test = fixture (&config);
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 fatal_tls_worker, argument, &test.receipt), 0);
++  for (;;)
++    pause ();
++}
++
++static void
++test_fatal_tls_exhaustion (void)
++{
++  char *path = xasprintf ("%s/nptl/tst-pthread-bounded-mod.so",
++                          support_objdir_root);
++  void *module = dlopen (path, RTLD_NOW | RTLD_LOCAL);
++  TEST_VERIFY_EXIT (module != NULL);
++  void *address = dlsym (module, "bounded_tls_address");
++  TEST_VERIFY_EXIT (address != NULL);
++
++  struct support_capture_subprocess capture
++    = support_capture_subprocess (fatal_tls_child, address);
++  TEST_VERIFY (WIFEXITED (capture.status));
++  TEST_COMPARE (WEXITSTATUS (capture.status), 127);
++  TEST_COMPARE_STRING
++    (capture.err.buffer,
++     "cannot allocate memory for thread-local data: ABORT\n");
++  support_capture_subprocess_free (&capture);
++  TEST_COMPARE (dlclose (module), 0);
++  free (path);
++}
++
++static void *
++fatal_rpc_worker (void *argument)
++{
++  __rpc_thread_createerr ();
++  _exit (99);
++}
++
++static void
++fatal_rpc_child (void *argument)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 fatal_rpc_worker, NULL, &test.receipt), 0);
++  for (;;)
++    pause ();
++}
++
++static void
++test_fatal_rpc_refusal (void)
++{
++  struct support_capture_subprocess capture
++    = support_capture_subprocess (fatal_rpc_child, NULL);
++  TEST_VERIFY (WIFEXITED (capture.status));
++  TEST_COMPARE (WEXITSTATUS (capture.status), 127);
++  TEST_COMPARE_STRING (capture.err.buffer, "");
++  support_capture_subprocess_free (&capture);
++}
++
++static void
++test_terminal_and_growth (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  struct worker_state state = { 0 };
++  xpthread_barrier_init (&state.ready, NULL, 2);
++  xpthread_barrier_init (&state.loaded, NULL, 2);
++
++  pthread_key_t keys[33];
++  for (size_t i = 0; i < 33; ++i)
++    TEST_COMPARE (pthread_key_create (&keys[i], tsd_destructor), 0);
++  state.key = keys[32];
++
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 worker, &state, &test.receipt), 0);
++  xpthread_barrier_wait (&state.ready);
++  TEST_COMPARE (pthread_join (test.thread, NULL), EINVAL);
++  TEST_COMPARE (pthread_detach (test.thread), EINVAL);
++  pthread_bounded_t *overlap;
++  uint64_t overlap_incarnation = 0;
++  uintptr_t stack_address = (uintptr_t) state.stack_sentinel;
++  uintptr_t overlap_base = stack_address;
++  struct pthread_bounded_config overlap_config = config;
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    overlap_config.limit[i].requests = 0;
++  TEST_VERIFY (overlap_base >= test.receipt.stack);
++  TEST_VERIFY (overlap_base + 4096
++               <= test.receipt.stack + test.receipt.stack_bytes);
++  TEST_COMPARE (pthread_bounded_init_np
++                ((void *) overlap_base, 4096, &overlap_config,
++                 &overlap, &overlap_incarnation), EBUSY);
++  TEST_COMPARE (*state.stack_sentinel, UINT64_C (0xa15c7e9d42b603f8));
++
++  /* Outputs from an independent canonical owner must not overwrite this
++     still-live stack.  Reject before a create attempt or terminal return.  */
++  struct fixture output_peer = fixture (&config);
++  struct pthread_bounded_receipt *peer_receipt
++    = (void *) state.stack_sentinel;
++  TEST_COMPARE (pthread_bounded_query_np
++                (output_peer.owner, output_peer.incarnation, peer_receipt),
++                EINVAL);
++  TEST_COMPARE (pthread_bounded_query_np
++                (output_peer.owner, output_peer.incarnation, test.arena),
++                EINVAL);
++  TEST_COMPARE (pthread_bounded_query_np
++                (test.owner, test.incarnation, &test.receipt), 0);
++  unsigned int output_entered = 0;
++  TEST_COMPARE (pthread_bounded_create_np
++                (output_peer.owner, output_peer.incarnation,
++                 (pthread_t *) state.stack_sentinel, &output_peer.attr,
++                 never_entered, &output_entered, &output_peer.receipt), EINVAL);
++  TEST_COMPARE (pthread_bounded_create_np
++                (output_peer.owner, output_peer.incarnation,
++                 &output_peer.thread, &output_peer.attr, never_entered,
++                 &output_entered, peer_receipt), EINVAL);
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (output_peer.owner, output_peer.incarnation,
++                 (void **) state.stack_sentinel, &output_peer.receipt), EINVAL);
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (output_peer.owner, output_peer.incarnation, NULL,
++                 peer_receipt), EINVAL);
++  TEST_COMPARE (pthread_bounded_query_np
++                (output_peer.owner, output_peer.incarnation,
++                 &output_peer.receipt), 0);
++  TEST_COMPARE (output_peer.receipt.create_attempted, 0);
++  TEST_COMPARE (output_peer.receipt.backing_returned, 0);
++
++  void *output_arena = mmap (NULL, ARENA_BYTES, PROT_READ | PROT_WRITE,
++                             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++  TEST_VERIFY_EXIT (output_arena != MAP_FAILED);
++  TEST_COMPARE (pthread_bounded_init_np
++                (output_arena, ARENA_BYTES, &config,
++                 (pthread_bounded_t **) state.stack_sentinel,
++                 &overlap_incarnation), EINVAL);
++  TEST_COMPARE (pthread_bounded_init_np
++                (output_arena, ARENA_BYTES, &config, &overlap,
++                 (uint64_t *) state.stack_sentinel), EINVAL);
++  TEST_COMPARE (munmap (output_arena, ARENA_BYTES), 0);
++  TEST_COMPARE (*state.stack_sentinel, UINT64_C (0xa15c7e9d42b603f8));
++  retire (&output_peer);
++  release_fixture (&output_peer);
++
++  /* Copy the same real DSO to distinct inodes after thread creation.  Its
++     new module IDs force DTV growth and aligned dynamic TLS allocations.  */
++  size_t slot_lists_before = 0;
++  for (struct dtv_slotinfo_list *slots = GL (dl_tls_dtv_slotinfo_list);
++       slots != NULL; slots = slots->next)
++    ++slot_lists_before;
++  char *directory = support_create_temp_directory ("tst-pthread-bounded");
++  char *source = xasprintf ("%s/nptl/tst-pthread-bounded-mod.so",
++                            support_objdir_root);
++  void *handles[MODULES];
++  for (size_t i = 0; i < MODULES; ++i)
++    {
++      char *path = xasprintf ("%s/%zu.so", directory, i);
++      support_copy_file (source, path);
++      add_temp_file (path);
++      handles[i] = dlopen (path, RTLD_NOW | RTLD_LOCAL);
++      TEST_VERIFY_EXIT (handles[i] != NULL);
++      state.address[i] = dlsym (handles[i], "bounded_tls_address");
++      TEST_VERIFY_EXIT (state.address[i] != NULL);
++      free (path);
++    }
++  size_t slot_lists_after = 0;
++  for (struct dtv_slotinfo_list *slots = GL (dl_tls_dtv_slotinfo_list);
++       slots != NULL; slots = slots->next)
++    ++slot_lists_after;
++  TEST_VERIFY (slot_lists_after > slot_lists_before);
++  free (source);
++  free (directory);
++  xpthread_barrier_wait (&state.loaded);
++
++  while (!__atomic_load_n (&state.destructor_entered, __ATOMIC_ACQUIRE))
++    sched_yield ();
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (test.owner, test.incarnation, NULL, &test.receipt), EBUSY);
++  TEST_COMPARE (test.receipt.entered, 1);
++  TEST_COMPARE (test.receipt.exit_cleanup_completed, 0);
++  TEST_COMPARE (test.receipt.joined, 0);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++
++  pthread_bounded_t *another;
++  struct pthread_bounded_receipt copied = test.receipt;
++  copied.backing_returned = 1;
++  TEST_COMPARE (pthread_bounded_init_np
++                (test.arena, ARENA_BYTES, &config, &another, &test.incarnation), EBUSY);
++  TEST_COMPARE (pthread_bounded_query_np (test.owner, test.incarnation, &test.receipt), 0);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++  TEST_COMPARE (copied.backing_returned, 1);
++
++  struct fixture alias = fixture (&config);
++  TEST_COMPARE (pthread_attr_setstack (&alias.attr,
++                                       (void *) test.receipt.stack,
++                                       test.receipt.stack_bytes), 0);
++  unsigned int alias_entered = 0;
++  TEST_COMPARE (pthread_bounded_create_np
++                (alias.owner, alias.incarnation, &alias.thread, &alias.attr,
++                 never_entered, &alias_entered, &alias.receipt), EBUSY);
++  TEST_COMPARE (alias.receipt.clone_attempted, 0);
++  TEST_COMPARE (alias.receipt.born, 0);
++  retire (&alias);
++  TEST_COMPARE (alias_entered, 0);
++  release_fixture (&alias);
++
++  /* Hold the actual loader stack-list/cache lock across kernel exit.
++     Retirement must report an actual join and retained list/TLS debt.  */
++  int expected = 0;
++  while (!__atomic_compare_exchange_n (&GL (dl_stack_cache_lock), &expected,
++                                       1, false, __ATOMIC_ACQUIRE,
++                                       __ATOMIC_RELAXED))
++    {
++      expected = 0;
++      sched_yield ();
++    }
++  __atomic_store_n (&state.destructor_release, 1, __ATOMIC_RELEASE);
++  do
++    {
++      TEST_COMPARE (pthread_bounded_tryretire_np
++                    (test.owner, test.incarnation, NULL, &test.receipt), EBUSY);
++      sched_yield ();
++    }
++  while (!test.receipt.joined);
++
++  TEST_COMPARE (test.receipt.kernel_exited, 1);
++  TEST_COMPARE (test.receipt.list_linked, 1);
++  TEST_COMPARE (test.receipt.list_returned, 0);
++  TEST_COMPARE (test.receipt.tls_returned, 0);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++  TEST_COMPARE (test.receipt.exit_cleanup_completed, 1);
++  TEST_COMPARE (state.tsd_finished, 1);
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (test.owner, test.incarnation, test.arena, &test.receipt), EINVAL);
++  TEST_COMPARE (test.receipt.joined, 1);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++  __atomic_store_n (&GL (dl_stack_cache_lock), 0, __ATOMIC_RELEASE);
++
++  void *result = NULL;
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (test.owner, test.incarnation, &result, &test.receipt), 0);
++  TEST_VERIFY (result == &state);
++  TEST_COMPARE (test.receipt.first_error, EBUSY);
++  TEST_COMPARE (test.receipt.retire_status, 0);
++  TEST_COMPARE (test.receipt.list_returned, 1);
++  TEST_COMPARE (test.receipt.tls_returned, 1);
++  TEST_COMPARE (test.receipt.backing_returned, 1);
++  TEST_VERIFY (test.receipt.arena_used <= ARENA_BYTES);
++  TEST_COMPARE (test.receipt.stack_available_bytes
++                + test.receipt.stack_reserved_bytes, STACK_BYTES - 32);
++  TEST_VERIFY (test.receipt.stack_reserved_bytes >= sizeof (struct pthread));
++  TEST_VERIFY (test.receipt.allocation[PTHREAD_BOUNDED_DTV].allocated >= 2);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DYNAMIC_TLS].allocated,
++                MODULES);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_TSD].allocated, 1);
++  TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DESTRUCTOR].allocated, 1);
++  for (size_t i = 0; i < PTHREAD_BOUNDED_KINDS; ++i)
++    TEST_COMPARE (test.receipt.allocation[i].allocated,
++                  test.receipt.allocation[i].released);
++
++  uint64_t incarnation = test.receipt.incarnation;
++  TEST_COMPARE (pthread_bounded_init_np
++                (test.arena, ARENA_BYTES, &config, &test.owner,
++                 &test.incarnation), 0);
++  TEST_COMPARE (pthread_bounded_query_np (test.owner, test.incarnation, &test.receipt), 0);
++  TEST_VERIFY (test.receipt.incarnation > incarnation);
++  TEST_COMPARE (pthread_bounded_query_np
++                (test.owner, incarnation, &test.receipt), ESTALE);
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (test.owner, incarnation, NULL, &test.receipt), ESTALE);
++  retire (&test);
++  release_fixture (&test);
++
++  for (size_t i = 0; i < MODULES; ++i)
++    TEST_COMPARE (dlclose (handles[i]), 0);
++  for (size_t i = 0; i < 33; ++i)
++    TEST_COMPARE (pthread_key_delete (keys[i]), 0);
++  xpthread_barrier_destroy (&state.ready);
++  xpthread_barrier_destroy (&state.loaded);
++}
++
++static void *
++strict_refusal_worker (void *argument)
++{
++  /* The test disables allocator builtins so these reach the real entry
++     points even when only their failure result is observed.  */
++  errno = 0;
++  TEST_VERIFY (malloc (16) == NULL);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_VERIFY (calloc (1, 16) == NULL);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_VERIFY (realloc (NULL, 16) == NULL);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_VERIFY (memalign (64, 64) == NULL);
++  TEST_VERIFY (aligned_alloc (64, 64) == NULL);
++  TEST_VERIFY (valloc (16) == NULL);
++  TEST_VERIFY (pvalloc (16) == NULL);
++  void *aligned = argument;
++  TEST_COMPARE (posix_memalign (&aligned, 64, 64), ENOTSUP);
++  TEST_VERIFY (aligned == argument);
++  TEST_COMPARE (malloc_trim (0), 0);
++  TEST_COMPARE (errno, ENOTSUP);
++
++  TEST_VERIFY (strsignal (SIGRTMIN) == NULL);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_COMPARE_STRING (strerror_l (99999, LC_GLOBAL_LOCALE),
++                       "Error formatting is unavailable in a bounded thread");
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_COMPARE (res_init (), -1);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_VERIFY (dlopen ("nonexistent-bounded-module", RTLD_NOW) == NULL);
++  TEST_COMPARE (errno, ENOTSUP);
++  TEST_COMPARE_STRING
++    (dlerror (), "Dynamic loader operations are unavailable in a bounded thread");
++  struct fixture *test = argument;
++  __atomic_store_n (&test->worker_finished, 1, __ATOMIC_RELEASE);
++  return NULL;
++}
++
++static void
++test_strict_refusals (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 strict_refusal_worker, &test, &test.receipt), 0);
++  while (!__atomic_load_n (&test.worker_finished, __ATOMIC_ACQUIRE))
++    sched_yield ();
++  TEST_COMPARE (pthread_bounded_query_np
++                (test.owner, test.incarnation, &test.receipt), 0);
++  TEST_VERIFY (test.receipt.allocator_refusals >= 14);
++  retire (&test);
++  TEST_VERIFY (test.receipt.allocator_refusals >= 14);
++  TEST_COMPARE (test.receipt.foreign_free_refusals, 0);
++  TEST_COMPARE (test.receipt.cleanup_blocked, 0);
++  TEST_COMPARE (test.receipt.exit_cleanup_completed, 1);
++  TEST_COMPARE (test.receipt.first_error, ENOTSUP);
++  TEST_COMPARE (test.receipt.backing_returned, 1);
++  release_fixture (&test);
++}
++
++static void *
++foreign_free_worker (void *argument)
++{
++  free (argument);
++  return NULL;
++}
++
++static void *
++unknown_tail_worker (void *argument)
++{
++  /* Supply a real ordinary allocation owned outside this bounded thread.
++     The exit guard must retain it before any ordinary free or lock.  */
++  THREAD_SELF->tls_state.strsignal_buf = argument;
++  return NULL;
++}
++
++static void *
++raw_exit_worker (void *argument)
++{
++  INTERNAL_SYSCALL_CALL (exit, 0);
++  __builtin_unreachable ();
++}
++
++static void *
++foreign_tls_worker (void *argument)
++{
++  /* Inject a foreign ownership claim into the real DTV released by the
++     terminal provider.  Equal arena counters cannot justify this return.  */
++  dtv_t *dtv = THREAD_DTV ();
++  TEST_VERIFY (dtv[1].pointer.to_free == NULL);
++  dtv[1].pointer.to_free = argument;
++  return NULL;
++}
++
++static void
++retained_debt_child (void *argument)
++{
++  uintptr_t scenario = (uintptr_t) argument;
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  unsigned char *foreign = malloc (16);
++  TEST_VERIFY_EXIT (foreign != NULL);
++  memset (foreign, 0x42, 16);
++  void *(*start) (void *) = scenario == 0 ? foreign_free_worker
++                            : scenario == 1 ? unknown_tail_worker
++                            : scenario == 2 ? raw_exit_worker
++                                            : foreign_tls_worker;
++  TEST_COMPARE (pthread_bounded_create_np
++                (test.owner, test.incarnation, &test.thread, &test.attr,
++                 start, foreign, &test.receipt), 0);
++  int status;
++  do
++    {
++      status = pthread_bounded_tryretire_np
++        (test.owner, test.incarnation, NULL, &test.receipt);
++      if (status == EBUSY)
++        sched_yield ();
++    }
++  while (status == EBUSY);
++
++  TEST_COMPARE (status, scenario == 0 ? ENOTSUP : EPROTO);
++  TEST_COMPARE (test.receipt.kernel_exited, 1);
++  TEST_COMPARE (test.receipt.joined, 1);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++  TEST_COMPARE (test.receipt.stack_returned, 0);
++  TEST_COMPARE (test.receipt.registration_returned, 0);
++  TEST_COMPARE (test.receipt.list_returned, scenario == 3);
++  TEST_COMPARE (test.receipt.tls_returned, 0);
++  if (scenario == 0)
++    {
++      TEST_COMPARE (test.receipt.foreign_free_refusals, 1);
++      TEST_VERIFY (test.receipt.first_refused_free == (uintptr_t) foreign);
++    }
++  if (scenario == 1 || scenario == 3)
++    TEST_COMPARE (test.receipt.cleanup_blocked, 1);
++  if (scenario == 3)
++    {
++      TEST_COMPARE (test.receipt.exit_cleanup_completed, 1);
++      TEST_COMPARE (test.receipt.allocation[PTHREAD_BOUNDED_DTV].allocated,
++                    test.receipt.allocation[PTHREAD_BOUNDED_DTV].released);
++    }
++  for (size_t i = 0; i < 16; ++i)
++    TEST_COMPARE (foreign[i], 0x42);
++
++  pthread_bounded_t *another;
++  uint64_t incarnation;
++  TEST_COMPARE (pthread_bounded_init_np
++                (test.arena, ARENA_BYTES, &config, &another, &incarnation), EBUSY);
++  /* Deliberately retained debt has no invented cancellation receipt.
++     This subprocess's actual process reap is its containing return.  */
++}
++
++static void
++test_retained_unknown_debt (void)
++{
++  for (uintptr_t scenario = 0; scenario < 4; ++scenario)
++    {
++      struct support_capture_subprocess capture
++        = support_capture_subprocess (retained_debt_child, (void *) scenario);
++      TEST_VERIFY (WIFEXITED (capture.status));
++      TEST_COMPARE (WEXITSTATUS (capture.status), 0);
++      TEST_COMPARE_STRING (capture.err.buffer, "");
++      support_capture_subprocess_free (&capture);
++    }
++}
++
++struct refusal_contention
++{
++  pthread_barrier_t barrier;
++  pthread_bounded_t *owner;
++};
++
++static void *
++record_refusal (void *argument)
++{
++  struct refusal_contention *state = argument;
++  xpthread_barrier_wait (&state->barrier);
++  for (size_t i = 0; i < 10000; ++i)
++    __pthread_bounded_refuse_heap (state->owner, NULL);
++  return NULL;
++}
++
++static void
++test_refusal_contention (void)
++{
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  struct refusal_contention state = { .owner = test.owner };
++  xpthread_barrier_init (&state.barrier, NULL, 2);
++  pthread_t first = xpthread_create (NULL, record_refusal, &state);
++  pthread_t second = xpthread_create (NULL, record_refusal, &state);
++  xpthread_join (first);
++  xpthread_join (second);
++  TEST_COMPARE (pthread_bounded_query_np
++                (test.owner, test.incarnation, &test.receipt), 0);
++  TEST_VERIFY (test.receipt.allocator_refusals > 0);
++  TEST_VERIFY (test.receipt.allocator_refusals <= 20000);
++  TEST_COMPARE (test.receipt.first_error, ENOTSUP);
++
++  /* This internal control injects the saturation boundary, then executes
++     the real recording helper.  Identity and history must never wrap.  */
++  test.owner->fact.allocator_refusals = SIZE_MAX - 1;
++  __pthread_bounded_refuse_heap (test.owner, NULL);
++  __pthread_bounded_refuse_heap (test.owner, NULL);
++  TEST_COMPARE (test.owner->fact.allocator_refusals, SIZE_MAX);
++  retire (&test);
++  TEST_COMPARE (test.receipt.backing_returned, 1);
++  xpthread_barrier_destroy (&state.barrier);
++  release_fixture (&test);
++}
++
++static int
++do_test (void)
++{
++  loader_state = dlsym (RTLD_DEFAULT, "_rtld_global");
++  TEST_VERIFY_EXIT (loader_state != NULL);
++  printf ("bounded layout: control=%zu block=%zu config=%zu receipt=%zu "
++          "pthread=%zu\n", sizeof (pthread_bounded_t),
++          sizeof (struct __pthread_bounded_block),
++          sizeof (struct pthread_bounded_config),
++          sizeof (struct pthread_bounded_receipt), sizeof (struct pthread));
++  struct pthread_bounded_receipt receipt;
++  TEST_COMPARE (pthread_bounded_query_np
++                ((pthread_bounded_t *) (uintptr_t) 1, 1, &receipt), ESRCH);
++  test_refusal_contention ();
++  test_unfunded_dtv ();
++  test_born_never_entered ();
++  test_enforced_requests ();
++  test_strict_refusals ();
++  test_retained_unknown_debt ();
++  test_terminal_and_growth ();
++  test_fatal_tls_exhaustion ();
++  test_fatal_rpc_refusal ();
++  return 0;
++}
++
++#define TIMEOUT 30
++#include <support/test-driver.c>
+diff --git a/resolv/res-close.c b/resolv/res-close.c
+index 5cd4b2f..934c4ab 100644
+--- a/resolv/res-close.c
++++ b/resolv/res-close.c
+@@ -83,6 +83,8 @@
+  */
+ 
+ #include <resolv-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <resolv_context.h>
+ #include <resolv_conf.h>
+ #include <not-cancel.h>
+@@ -93,6 +95,13 @@
+ void
+ __res_iclose (res_state statp, bool free_addr)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return;
++    }
++
+   if (statp->_vcsock >= 0)
+     {
+       __close_nocancel_nostatus (statp->_vcsock);
+@@ -129,6 +138,13 @@ libc_hidden_def (__res_nclose)
+ void
+ __res_thread_freeres (void)
+ {
++  if (__pthread_bounded_current () != NULL && _res.nscount != 0)
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   __resolv_context_freeres ();
+ 
+   if (_res.nscount == 0)
+diff --git a/resolv/res_init.c b/resolv/res_init.c
+index 263263d..344ac99 100644
+--- a/resolv/res_init.c
++++ b/resolv/res_init.c
+@@ -85,6 +85,8 @@
+ #include <ctype.h>
+ #include <netdb.h>
+ #include <resolv/resolv-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <res_hconf.h>
+ #include <stdio.h>
+ #include <stdio_ext.h>
+@@ -619,6 +621,13 @@ __resolv_conf_load (struct __res_state *preinit,
+ int
+ __res_vinit (res_state statp, int preinit)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return -1;
++    }
++
+   struct resolv_conf *conf;
+   if (preinit && has_preinit_values (statp))
+     /* For the preinit case, we cannot use the cached configuration
+diff --git a/resolv/resolv_context.c b/resolv/resolv_context.c
+index d62d8cc..79f497f 100644
+--- a/resolv/resolv_context.c
++++ b/resolv/resolv_context.c
+@@ -17,6 +17,8 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <resolv_context.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <resolv_conf.h>
+ #include <resolv-internal.h>
+ 
+@@ -175,6 +177,13 @@ context_reuse (void)
+ static struct resolv_context *
+ context_get (bool preinit)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   if (current != NULL)
+     return context_reuse ();
+ 
+@@ -206,6 +215,13 @@ libc_hidden_def (__resolv_context_get_preinit)
+ struct resolv_context *
+ __resolv_context_get_override (struct __res_state *resp)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   /* NB: As explained asbove, context_alloc will put the context on
+      the current list.  */
+   struct resolv_context *ctx = context_alloc (resp);
+@@ -240,6 +256,13 @@ libc_hidden_def (__resolv_context_put)
+ void
+ __resolv_context_freeres (void)
+ {
++  if (__pthread_bounded_current () != NULL && (current != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   /* Deallocate the entire chain of context objects.  */
+   struct resolv_context *ctx = current;
+   current = NULL;
+diff --git a/stdlib/cxa_thread_atexit_impl.c b/stdlib/cxa_thread_atexit_impl.c
+index c215bdd..7813c71 100644
+--- a/stdlib/cxa_thread_atexit_impl.c
++++ b/stdlib/cxa_thread_atexit_impl.c
+@@ -74,6 +74,8 @@
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ #include <ldsodefs.h>
+ #include <pointer_guard.h>
+ 
+@@ -103,7 +105,19 @@ __cxa_thread_atexit_impl (dtor_func func, void *obj, void *dso_symbol)
+   PTR_MANGLE (func);
+ 
+   /* Prepend.  */
+-  struct dtor_list *new = calloc (1, sizeof (struct dtor_list));
++  struct __pthread_bounded *bounded = THREAD_SELF->bounded;
++  struct dtor_list *new;
++  if (bounded != NULL)
++    new = __pthread_bounded_allocate
++      (bounded, PTHREAD_BOUNDED_DESTRUCTOR, sizeof (*new),
++       _Alignof (struct dtor_list));
++  else
++    new = calloc (1, sizeof (*new));
++  /* This internal ABI returns an error to its generated-code caller.
++     Bounded registration must not fall through to the heap or terminate
++     the process merely because its admitted request count was exceeded.  */
++  if (new == NULL && bounded != NULL)
++    return ENOMEM;
+   if (__glibc_unlikely (new == NULL))
+     __libc_fatal ("Fatal glibc error: failed to register TLS destructor: "
+ 		  "out of memory\n");
+@@ -160,7 +174,10 @@ __call_tls_dtors (void)
+ 	 potential DSO unload in _dl_close_worker, which happens when
+ 	 l_tls_dtor_count is 0.  See CONCURRENCY NOTES for more detail.  */
+       atomic_fetch_add_release (&cur->map->l_tls_dtor_count, -1);
+-      free (cur);
++      if (THREAD_SELF->bounded != NULL)
++        __pthread_bounded_release (THREAD_SELF->bounded, cur);
++      else
++        free (cur);
+     }
+ }
+ libc_hidden_def (__call_tls_dtors)
+diff --git a/string/strerror_l.c b/string/strerror_l.c
+index 15cce26..63d2a45 100644
+--- a/string/strerror_l.c
++++ b/string/strerror_l.c
+@@ -20,6 +20,8 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ 
+ static const char *
+@@ -36,6 +38,13 @@ translate (const char *str, locale_t loc)
+ char *
+ __strerror_l (int errnum, locale_t loc)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return (char *) "Error formatting is unavailable in a bounded thread";
++    }
++
+   int saved_errno = errno;
+   char *err = (char *) __get_errlist (errnum);
+   if (__glibc_unlikely (err == NULL))
+diff --git a/string/strsignal.c b/string/strsignal.c
+index 3114601..25a3793 100644
+--- a/string/strsignal.c
++++ b/string/strsignal.c
+@@ -21,11 +21,20 @@
+ #include <string.h>
+ #include <libintl.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ /* Return a string describing the meaning of the signal number SIGNUM.  */
+ char *
+ strsignal (int signum)
+ {
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      __set_errno (ENOTSUP);
++      return NULL;
++    }
++
+   const char *desc = __sigdescr_np (signum);
+   if (desc != NULL)
+     return _(desc);
+diff --git a/sunrpc/rpc_thread.c b/sunrpc/rpc_thread.c
+index a04b7ec..da7b627 100644
+--- a/sunrpc/rpc_thread.c
++++ b/sunrpc/rpc_thread.c
+@@ -1,5 +1,8 @@
+ #include <stdio.h>
+ #include <rpc/rpc.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
++#include <sysdep.h>
+ #include <assert.h>
+ 
+ #include <libc-lock.h>
+@@ -19,6 +22,13 @@ static __thread struct rpc_thread_variables *thread_rpc_vars
+ void
+ __rpc_thread_destroy (void)
+ {
++  if (__pthread_bounded_current () != NULL && (thread_rpc_vars != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+ 	struct rpc_thread_variables *tvp = thread_rpc_vars;
+ 
+ 	if (tvp != NULL) {
+@@ -51,6 +61,16 @@ rpc_thread_multi (void)
+ struct rpc_thread_variables *
+ __rpc_thread_variables (void)
+ {
++  /* These legacy variable-accessor ABIs cannot return an operation error.
++     Fail before once initialization or allocation instead of returning a
++     fake shared variable object or dereferencing a failed allocation.  */
++  if (__pthread_bounded_current () != NULL)
++    {
++      __pthread_bounded_refuse_heap (THREAD_SELF->bounded, NULL);
++      INTERNAL_SYSCALL_CALL (exit_group, 127);
++      __builtin_unreachable ();
++    }
++
+ 	__libc_once_define (static, once);
+ 	struct rpc_thread_variables *tvp = thread_rpc_vars;
+ 
+diff --git a/sysdeps/unix/sysv/linux/tls-internal.c b/sysdeps/unix/sysv/linux/tls-internal.c
+index 81ebcdf..8b9153c 100644
+--- a/sysdeps/unix/sysv/linux/tls-internal.c
++++ b/sysdeps/unix/sysv/linux/tls-internal.c
+@@ -18,10 +18,21 @@
+ 
+ #include <string.h>
+ #include <tls-internal.h>
++#include <pthread-bounded-internal.h>
++#include <tls.h>
+ 
+ void
+ __glibc_tls_internal_free (void)
+ {
++  if (__pthread_bounded_current () != NULL
++      && (THREAD_SELF->tls_state.strsignal_buf != NULL
++          || THREAD_SELF->tls_state.strerror_l_buf != NULL))
++    {
++      atomic_store_release (&THREAD_SELF->bounded->fact.cleanup_blocked, 1);
++      __pthread_bounded_error (THREAD_SELF->bounded, EPROTO);
++      return;
++    }
++
+   struct pthread *self = THREAD_SELF;
+   free (self->tls_state.strsignal_buf);
+   free (self->tls_state.strerror_l_buf);
+diff --git a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
+index aea7848..35198ff 100644
+--- a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
++++ b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
+@@ -2587,6 +2587,10 @@ GLIBC_2.39 pidfd_spawn F
+ GLIBC_2.39 pidfd_spawnp F
+ GLIBC_2.39 posix_spawnattr_getcgroup_np F
+ GLIBC_2.39 posix_spawnattr_setcgroup_np F
++GLIBC_2.39 pthread_bounded_create_np F
++GLIBC_2.39 pthread_bounded_init_np F
++GLIBC_2.39 pthread_bounded_query_np F
++GLIBC_2.39 pthread_bounded_tryretire_np F
+ GLIBC_2.39 stdc_bit_ceil_uc F
+ GLIBC_2.39 stdc_bit_ceil_ui F
+ GLIBC_2.39 stdc_bit_ceil_ul F
+-- 
+2.54.0
+
+
+From dae19eda3e0ca54dc8198ef83e8ba1a6c187441e Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Thu, 22 Oct 2026 07:14:53 -0700
+Subject: [PATCH 2/2] Serialize bounded releases and retain reentry debt
+
+Share the allocation try-lock with release, refuse busy release without touching node metadata, and retain sticky cleanup debt. Validate alignment, complete header and payload spans, and allocation kind before recording a logical release.
+
+Exercise real signal-handler release at the held allocation lock, duplicate release and malformed alignment, prefix, endpoint and size controls. The full one-lane build, bounded controls and eleven ordinary regression tests pass under the unchanged two-GiB per-process ceiling. The repeated ABI check retains its sole documented private-prefix locale-directory size difference.
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+---
+ nptl/README.bounded-pthread     | 11 +++-
+ nptl/pthread-bounded-internal.h | 47 ++++++++++++-----
+ nptl/tst-pthread-bounded.c      | 91 +++++++++++++++++++++++++++++++++
+ 3 files changed, 134 insertions(+), 15 deletions(-)
+
+diff --git a/nptl/README.bounded-pthread b/nptl/README.bounded-pthread
+index 52bdecb..87bf267 100644
+--- a/nptl/README.bounded-pthread
++++ b/nptl/README.bounded-pthread
+@@ -252,6 +252,13 @@ state: tcache and thread_arena remain NULL, resolver and RPC state remain
+ empty, and TLS/error buffers remain NULL.  The no-state cleanup path reaches
+ no ordinary allocator or allocator global lock.
+ 
++Allocation and release share one actual nonwaiting allocation try-lock.
++Signal-handler release reentry refuses with sticky cleanup debt instead of
++reading a partially constructed header or releasing a node twice.  Release
++validates alignment and the complete header and payload span before reading
++nominated metadata.  Asynchronous signal-handler allocation remains outside
++the supported caller profile; this lock cut limits damage from reentry.
++
+ Invalid, foreign or duplicate arena-node release also sets sticky
+ cleanup_blocked debt.  Equal allocated/released counters alone cannot return
+ backing after an uncertain TLS pointer release.  Terminal code withholds
+@@ -294,7 +301,9 @@ exact per-kind final logical release; same-backing reuse with a new
+ incarnation; stale-incarnation refusal; and fatal dynamic TLS exhaustion
+ rather than heap fallback; strict allocator/resolver/error refusals;
+ foreign-free retained debt; unexpected exit-tail state; raw kernel exit;
+-and independent-owner output alias rejection preserving live stack bytes.
++and independent-owner output alias rejection preserving live stack bytes;
++actual signal-handler release at a held allocation lock; duplicate release;
++and malformed alignment, prefix, endpoint and payload-size refusal.
+ These are implementation controls, not a complete
+ application profile or proof for an unexecuted platform.
+ 
+diff --git a/nptl/pthread-bounded-internal.h b/nptl/pthread-bounded-internal.h
+index 5646854..b5c64a2 100644
+--- a/nptl/pthread-bounded-internal.h
++++ b/nptl/pthread-bounded-internal.h
+@@ -171,38 +171,57 @@ __pthread_bounded_allocate (struct __pthread_bounded *owner,
+   return NULL;
+ }
+ 
+-/* Storage stays physically consumed until retirement.  No ordinary free,
+-   allocator cache, callback, lock, or heap fallback is reached here.  */
++/* Storage stays physically consumed until retirement.  Allocation and
++   release share one try-lock, including signal-handler reentry.  An
++   interrupted release is retained debt, never a successful physical free.  */
+ static inline bool
+ __pthread_bounded_release (struct __pthread_bounded *owner, void *pointer)
+ {
+   if (pointer == NULL)
+     return true;
+ 
+-  uintptr_t address = (uintptr_t) pointer;
+-  uintptr_t base = owner->fact.backing;
+-  size_t prefix = sizeof (struct __pthread_bounded_block);
+-  if (address < base || address - base < sizeof (*owner) + prefix
+-      || address - base > owner->fact.arena_used)
++  int error = EPROTO;
++  if (atomic_exchange_acquire (&owner->allocation_lock, 1) != 0)
+     {
+       atomic_store_release (&owner->fact.cleanup_blocked, 1);
+-      __pthread_bounded_error (owner, EPROTO);
++      __pthread_bounded_error (owner, EBUSY);
+       return false;
+     }
+ 
++  uintptr_t address = (uintptr_t) pointer;
++  uintptr_t base = owner->fact.backing;
++  size_t used = owner->fact.arena_used;
++  size_t capacity = owner->fact.backing_bytes;
++  size_t prefix = sizeof (struct __pthread_bounded_block);
++
++  /* Validate the complete aligned header before reading nominated metadata.
++     Subtraction checks avoid wrapping either endpoint of the span.  */
++  if (used < sizeof (*owner) || used > capacity
++      || capacity > UINTPTR_MAX - base || address < base
++      || address % _Alignof (struct __pthread_bounded_block) != 0)
++    goto failed;
++  size_t offset = address - base;
++  if (offset > used || offset < sizeof (*owner)
++      || prefix > offset - sizeof (*owner))
++    goto failed;
++
+   struct __pthread_bounded_block *block
+     = (struct __pthread_bounded_block *) pointer - 1;
+   if (block->owner != owner || block->released
+-      || block->kind >= PTHREAD_BOUNDED_KINDS)
+-    {
+-      atomic_store_release (&owner->fact.cleanup_blocked, 1);
+-      __pthread_bounded_error (owner, EPROTO);
+-      return false;
+-    }
++      || (unsigned int) block->kind >= PTHREAD_BOUNDED_KINDS
++      || block->size > used - offset)
++    goto failed;
+ 
+   block->released = true;
+   atomic_fetch_add_relaxed (&owner->fact.allocation[block->kind].released, 1);
++  atomic_store_release (&owner->allocation_lock, 0);
+   return true;
++
++ failed:
++  atomic_store_release (&owner->fact.cleanup_blocked, 1);
++  __pthread_bounded_error (owner, error);
++  atomic_store_release (&owner->allocation_lock, 0);
++  return false;
+ }
+ 
+ /* CREATE and RETIRE hold the control lock.  The child updates only the
+diff --git a/nptl/tst-pthread-bounded.c b/nptl/tst-pthread-bounded.c
+index 1f67d38..111a759 100644
+--- a/nptl/tst-pthread-bounded.c
++++ b/nptl/tst-pthread-bounded.c
+@@ -834,6 +834,96 @@ test_refusal_contention (void)
+   release_fixture (&test);
+ }
+ 
++static pthread_bounded_t *release_signal_owner;
++static void *release_signal_pointer;
++static volatile sig_atomic_t release_signal_refused;
++
++static void
++release_signal_handler (int signal_number)
++{
++  release_signal_refused
++    = !__pthread_bounded_release (release_signal_owner, release_signal_pointer);
++}
++
++static void
++release_debt_child (void *argument)
++{
++  uintptr_t scenario = (uintptr_t) argument;
++  struct pthread_bounded_config config = configuration ();
++  struct fixture test = fixture (&config);
++  void *pointer = __pthread_bounded_allocate
++    (test.owner, PTHREAD_BOUNDED_TSD, 64, 16);
++  TEST_VERIFY_EXIT (pointer != NULL);
++
++  if (scenario == 0)
++    {
++      struct sigaction action = { .sa_handler = release_signal_handler };
++      sigemptyset (&action.sa_mask);
++      TEST_COMPARE (sigaction (SIGUSR1, &action, NULL), 0);
++      release_signal_owner = test.owner;
++      release_signal_pointer = pointer;
++      release_signal_refused = 0;
++
++      /* Interrupt the actual allocation/release exclusion cut.  The handler
++         must return instead of waiting behind the interrupted operation.  */
++      atomic_store_release (&test.owner->allocation_lock, 1);
++      TEST_COMPARE (raise (SIGUSR1), 0);
++      TEST_COMPARE (release_signal_refused, 1);
++      TEST_COMPARE (test.owner->fact.allocation[PTHREAD_BOUNDED_TSD].released, 0);
++      atomic_store_release (&test.owner->allocation_lock, 0);
++      TEST_VERIFY (__pthread_bounded_release (test.owner, pointer));
++      TEST_COMPARE (test.owner->fact.first_error, EBUSY);
++    }
++  else if (scenario == 1)
++    {
++      TEST_VERIFY (__pthread_bounded_release (test.owner, pointer));
++      TEST_VERIFY (!__pthread_bounded_release (test.owner, pointer));
++      TEST_COMPARE (test.owner->fact.allocation[PTHREAD_BOUNDED_TSD].released, 1);
++    }
++  else
++    {
++      void *invalid;
++      if (scenario == 2)
++        invalid = (char *) pointer + 1;
++      else if (scenario == 3)
++        invalid = (char *) test.owner + sizeof (*test.owner);
++      else if (scenario == 4)
++        invalid = (char *) test.arena + test.owner->fact.arena_used + 16;
++      else
++        {
++          struct __pthread_bounded_block *block
++            = (struct __pthread_bounded_block *) pointer - 1;
++          block->size = SIZE_MAX;
++          invalid = pointer;
++        }
++      TEST_VERIFY (!__pthread_bounded_release (test.owner, invalid));
++      TEST_COMPARE (test.owner->fact.allocation[PTHREAD_BOUNDED_TSD].released, 0);
++    }
++
++  TEST_COMPARE (pthread_bounded_tryretire_np
++                (test.owner, test.incarnation, NULL, &test.receipt), EPROTO);
++  TEST_COMPARE (test.receipt.cleanup_blocked, 1);
++  TEST_COMPARE (test.receipt.registration_returned, 0);
++  TEST_COMPARE (test.receipt.backing_returned, 0);
++  TEST_COMPARE (test.owner->allocation_lock, 0);
++  /* Even a later successful logical release cannot erase uncertainty.
++     Actual subprocess reap is the containing return for this debt.  */
++}
++
++static void
++test_release_debt (void)
++{
++  for (uintptr_t scenario = 0; scenario < 6; ++scenario)
++    {
++      struct support_capture_subprocess capture
++        = support_capture_subprocess (release_debt_child, (void *) scenario);
++      TEST_VERIFY (WIFEXITED (capture.status));
++      TEST_COMPARE (WEXITSTATUS (capture.status), 0);
++      TEST_COMPARE_STRING (capture.err.buffer, "");
++      support_capture_subprocess_free (&capture);
++    }
++}
++
+ static int
+ do_test (void)
+ {
+@@ -848,6 +938,7 @@ do_test (void)
+   TEST_COMPARE (pthread_bounded_query_np
+                 ((pthread_bounded_t *) (uintptr_t) 1, 1, &receipt), ESRCH);
+   test_refusal_contention ();
++  test_release_debt ();
+   test_unfunded_dtv ();
+   test_born_never_entered ();
+   test_enforced_requests ();
+-- 
+2.54.0
+
