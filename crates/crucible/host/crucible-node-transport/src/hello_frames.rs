@@ -66,6 +66,34 @@ pub(crate) fn original_hello_frame_digests(
     })
 }
 
+/// Names the actual borrowed scan, framing operands and fixed public hash state.
+///
+/// This counter owns no byte bank and performs no hash or protocol validation.
+/// Input custody, enclosing guards and caller inspection remain independent.
+pub(crate) fn original_hello_frame_digests_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+    crate::transport::original_frames::original_frames_iterator_counter_scratch_data()
+        + size_of::<&OriginalFrameReservation>()
+        + size_of::<EndpointRole>()
+        + size_of::<crate::transport::original_frames::OriginalFrame<'static>>()
+        + size_of::<Option<crate::transport::original_frames::OriginalFrame<'static>>>()
+        + size_of::<[u8; 4]>()
+        + size_of::<u32>()
+        + size_of::<usize>() * 2
+        + size_of::<Option<usize>>()
+        + size_of::<&[u8]>() * 3
+        + size_of::<blake3::Hasher>() * 2
+        + size_of::<blake3::Hash>()
+        + size_of::<[u8; 32]>() * 3
+        + size_of::<Option<[u8; 32]>>() * 2
+        + size_of::<&mut Option<[u8; 32]>>()
+        + size_of::<OriginalHelloFrameDigests>()
+        + size_of::<Result<OriginalHelloFrameDigests, ProviderError>>()
+        + size_of::<Result<[u8; 4], std::array::TryFromSliceError>>()
+        + size_of::<Result<usize, std::num::TryFromIntError>>()
+        + size_of::<bool>()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

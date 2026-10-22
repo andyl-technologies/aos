@@ -126,6 +126,14 @@ impl OriginalNativeHelloPublication {
         )
     }
 
+    /// Names completed raw-pair inspection beside this actual publication owner.
+    pub(crate) fn completed_frame_digests_counter_scratch_data<S: Read + Write>() -> usize {
+        Self::counter_scratch_data::<S>()
+            + crate::hello_frames::original_hello_frame_digests_counter_scratch_data()
+            + size_of::<crate::hello_frames::OriginalHelloFrameDigests>()
+            + size_of::<Result<crate::hello_frames::OriginalHelloFrameDigests, ProviderError>>()
+    }
+
     /// Prices byte publication into an already reserved journal and actual stream.
     ///
     /// The caller separately prices its prepared body, stream implementation

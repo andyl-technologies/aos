@@ -160,11 +160,7 @@ impl OriginalImport18RawBootstrap {
     /// Refuses checked overflow for the caller's concrete Copy result layout.
     pub(in super::super) fn published_hello_body_loan_counter_scratch_data<R: Copy>()
     -> Result<usize, ProviderError> {
-        let fixed = Self::hello_authority_loan_counter_scratch_data::<()>()
-            + Attempt::counter_scratch_data::<OriginalNativePublicBirthChannel>()
-            + size_of::<&Self>() * 2
-            + size_of::<&[u8]>() * 2
-            + size_of::<Result<(), ProviderError>>() * 3;
+        let fixed = body_loan_fixed_counter_scratch_data();
         fixed
             .checked_add(size_of::<R>())
             .and_then(|n| n.checked_add(size_of::<R>()))
@@ -196,6 +192,15 @@ impl OriginalImport18RawBootstrap {
     }
 }
 
+/// Names completed-body loan controls independently of the callback result type.
+pub(super) fn body_loan_fixed_counter_scratch_data() -> usize {
+    OriginalImport18RawBootstrap::hello_authority_loan_counter_scratch_data::<()>()
+        + Attempt::counter_scratch_data::<OriginalNativePublicBirthChannel>()
+        + size_of::<&OriginalImport18RawBootstrap>() * 2
+        + size_of::<&[u8]>() * 2
+        + size_of::<Result<(), ProviderError>>() * 3
+}
+
 /// Quotes complete original encoding/publication without constructing output.
 ///
 /// # Errors
@@ -213,6 +218,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {
     // Fixed outer operands below coexist with whichever window is active.
     storage::counter_scratch_data()
         .max(OriginalImport18RawBootstrap::hello_authority_loan_counter_scratch_data::<()>())
+        .max(super::hello_evidence::counter_scratch_data())
         + size_of::<&OriginalImport18RawBootstrap>() * 2
         + size_of::<&mut OriginalImport18RawBootstrap>() * 2
         + size_of::<&dyn OriginalImport18HelloPublicationAdmission>()

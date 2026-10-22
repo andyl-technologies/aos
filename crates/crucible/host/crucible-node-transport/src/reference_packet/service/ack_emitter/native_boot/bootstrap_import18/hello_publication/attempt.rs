@@ -207,6 +207,20 @@ impl Attempt {
         Ok(&self.body)
     }
 
+    /// Reads physical role digests only after complete enclosing publication.
+    ///
+    /// # Errors
+    /// Refuses incomplete/refused output, original cut/bank changes or partial
+    /// physical frames. The enclosing root additionally authenticates its SDK lease.
+    pub(in super::super) fn frame_digests_data<S: Read + Write>(
+        &self,
+        exchange: &OriginalNativeHelloExchange<S>,
+        cut: OperationalDeadline,
+    ) -> Result<crate::hello_frames::OriginalHelloFrameDigests, ProviderError> {
+        self.body_data(cut)?;
+        self.publication.completed_frame_digests_data(exchange, cut)
+    }
+
     /// Counts initialized backing independently of phase completion and expiry.
     ///
     /// # Errors

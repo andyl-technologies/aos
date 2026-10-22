@@ -5,6 +5,7 @@
 
 use super::super::super::hello_publication::OriginalImport18HelloPublicationAdmission;
 use super::*;
+use crate::hello_frames::OriginalHelloFrameDigests;
 use std::cell::Cell;
 
 /// Gives the refusal control a request-sized limit below its complete response.
@@ -101,6 +102,7 @@ fn publishes(case: &str) -> bool {
             | "initial_hello_publication_finish_expired"
             | "initial_hello_publication_callback_refused"
             | "initial_hello_publication_loan_expired"
+            | "initial_hello_publication_digest_loan_expired"
             | "initial_hello_publication_substituted_cut"
     )
 }
@@ -131,6 +133,14 @@ pub(super) fn assert_parent_bytes(case: &str, bytes: &[u8]) {
     assert_eq!(result.provider_nonce.as_slice().len(), 32);
     assert_eq!(result.controller_nonce.as_slice(), &[19; 32]);
     assert!(result.resumed_operations.is_empty());
+}
+
+/// Computes the oracle directly from retained literal bytes and their wire header.
+fn literal_frame_digest(body: &[u8]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_derive_key("source-owned.cnp-original-hello-frame/5");
+    hash.update(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    hash.update(body);
+    *hash.finalize().as_bytes()
 }
 
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
@@ -196,7 +206,42 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
         owner
             .with_hello_authority_data(|lease| lease.ensure_live())
             .unwrap();
+        let expected_digests = OriginalHelloFrameDigests {
+            request_frame_digest: owner
+                .with_hello_literal_data(|body| Ok(literal_frame_digest(body)))
+                .unwrap(),
+            response_frame_digest: owner
+                .with_published_hello_body_data(|body| Ok(literal_frame_digest(body)))
+                .unwrap(),
+        };
+        assert_eq!(
+            owner.with_published_hello_frame_digests_data(Ok).unwrap(),
+            expected_digests
+        );
+        owner
+            .with_hello_exchange_data(|exchange| {
+                assert!(
+                    exchange
+                        .originals()
+                        .original_literal_frame_digests()
+                        .is_err()
+                );
+                Ok(())
+            })
+            .unwrap();
+
         if case == "initial_hello_publication_callback_refused" {
+            assert!(
+                owner
+                    .with_published_hello_frame_digests_data::<()>(|_| {
+                        Err(ProviderError::Conflict("digest inspection refused"))
+                    })
+                    .is_err()
+            );
+            assert_eq!(
+                owner.with_published_hello_frame_digests_data(Ok).unwrap(),
+                expected_digests
+            );
             assert!(
                 owner
                     .with_published_hello_body_data::<()>(|_| Err(ProviderError::Conflict(
@@ -215,13 +260,29 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
             let original = owner.cut;
             owner.cut = OperationalDeadline::after(Duration::from_secs(3)).unwrap();
             assert!(owner.with_published_hello_body_data(|_| Ok(())).is_err());
+            assert!(owner.with_published_hello_frame_digests_data(Ok).is_err());
             owner.cut = original;
+            assert_eq!(
+                owner.with_published_hello_frame_digests_data(Ok).unwrap(),
+                expected_digests
+            );
             assert_eq!(
                 owner
                     .with_published_hello_body_data(|body| Ok(body.len()))
                     .unwrap(),
                 expected
             );
+        }
+        if case == "initial_hello_publication_digest_loan_expired" {
+            assert!(
+                owner
+                    .with_published_hello_frame_digests_data(|_| {
+                        std::thread::sleep(Duration::from_secs(5));
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(owner.with_published_hello_frame_digests_data(Ok).is_err());
         }
         if case == "initial_hello_publication_loan_expired" {
             assert!(
@@ -233,9 +294,11 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
                     .is_err()
             );
             assert!(owner.with_published_hello_body_data(|_| Ok(())).is_err());
+            assert!(owner.with_published_hello_frame_digests_data(Ok).is_err());
         }
     } else {
         assert!(outcome.is_err(), "{case}");
+        assert!(owner.with_published_hello_frame_digests_data(Ok).is_err());
         assert!(owner.with_published_hello_body_data(|_| Ok(())).is_err());
         assert!(owner.with_hello_authority_data(|_| Ok(())).is_err());
         if let Some(lease) = owner.hello_registrar.retained_authority_fixture_data() {
@@ -282,6 +345,7 @@ fn original_response_publication_keeps_same_lease_socket_and_terminal_custody() 
         "initial_hello_publication_callback_refused",
         "initial_hello_publication_substituted_cut",
         "initial_hello_publication_loan_expired",
+        "initial_hello_publication_digest_loan_expired",
     ] {
         flight(case);
     }

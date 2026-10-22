@@ -106,6 +106,9 @@ pub(in crate::reference_packet::service) use hello_publication::{
     counter_scratch_data as hello_publication_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_evidence.rs"]
+mod hello_evidence;
+
 #[path = "bootstrap_import18/hello_response.rs"]
 mod hello_response;
 pub(in crate::reference_packet::service) use hello_response::{
