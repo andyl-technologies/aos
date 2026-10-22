@@ -9864,7 +9864,10 @@ manager store links, and the combined inventory points to native unit bytes in
 their separate immutable output. Collision rejection remains in force. No
 resolver fallback, mutable lookup or new MAC permission is introduced. The
 selected-manager build contract now inspects the actual funded toplevel and
-inventory. Core evaluation passes; installed reruns determine the result.
+inventory. It passes from the clean qualification worktree at
+`/nix/store/4bhiqsmskldshiwi9f7j5iq41rv29071-sandbox-selected-manager-stage0-contract`.
+The prior installed toplevel demonstrably violates its direct-link check.
+Core evaluation passes; installed reruns determine the runtime result.
 
 The post-pin handoff adversary now retains its procfs and target descriptors
 in one C process, survives switch-root's final signal broadcast, and publishes
