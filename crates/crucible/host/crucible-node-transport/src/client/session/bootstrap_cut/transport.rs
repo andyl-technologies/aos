@@ -13,6 +13,69 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
 use crate::transport::RetainedFrame;
 
 impl ClientSession {
+    /// Lends the unchanged reserved unsigned original under its actual SDK cut.
+    ///
+    /// The caller independently admits this guard and its signing callback,
+    /// retaining every callback output before returning either result. The Copy
+    /// return carries no request, mutable endpoint or Source completion witness.
+    /// No schema factory, serializer, allocation or transport operation runs here.
+    ///
+    /// # Errors
+    /// Refuses an expired/replaced cut, changed original slot, pending traffic,
+    /// revoked endpoint, callback refusal or a failed terminal guard.
+    pub(in crate::client) fn with_original_bootstrap_unsigned_data<R: Copy>(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        cut: OperationalDeadline,
+        slot: Option<usize>,
+        inspect: impl FnOnce(&Envelope) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.authenticate_original_bootstrap_unsigned_data(original, request, cut, slot)?;
+        let result = inspect(original);
+        let terminal =
+            self.authenticate_original_bootstrap_unsigned_data(original, request, cut, slot);
+        let output = result?;
+        terminal?;
+        Ok(output)
+    }
+
+    fn authenticate_original_bootstrap_unsigned_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        cut: OperationalDeadline,
+        slot: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        // Capture both results before propagation: a changed/fenced endpoint
+        // still evaluates the original deadline, and a bad cut cannot hide a
+        // changed physical literal from the defining terminal observation.
+        let deadline = self.authenticate_original_bootstrap_effect_cut_data(cut, 2);
+        let literal = self
+            .connection
+            .authenticate_original_bootstrap_unsigned_data(original, request, slot);
+        deadline?;
+        literal?;
+        Ok(())
+    }
+
+    /// Names the concrete readonly callback and actual reserved-slot controls.
+    pub(in crate::client) fn original_bootstrap_unsigned_loan_counter_scratch_data<R: Copy>()
+    -> usize {
+        Self::original_bootstrap_effect_cut_counter_scratch_data()
+            + crate::connection::native_import18::pending_assignment_counter_scratch_data()
+            + Connection::<DeadlineStream>::original_bootstrap_frontier_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&Envelope>() * 2
+            + size_of::<&PacketNativeImport18BootstrapRequest>()
+            + Connection::<DeadlineStream>::original_bootstrap_reservation_counter_scratch_data()
+            + size_of::<OperationalDeadline>()
+            + size_of::<Option<usize>>()
+            + size_of::<R>()
+            + size_of::<Result<R, ProviderError>>()
+            + size_of::<[Result<(), ProviderError>; 3]>()
+    }
+
     /// Checks the original deadline after assignment has spent the unused SDK.
     ///
     /// # Errors

@@ -31,6 +31,8 @@ mod assignment;
 mod history;
 #[path = "bootstrap/reservation.rs"]
 mod reservation;
+#[path = "bootstrap/signing.rs"]
+mod signing;
 #[path = "bootstrap/storage.rs"]
 mod storage;
 

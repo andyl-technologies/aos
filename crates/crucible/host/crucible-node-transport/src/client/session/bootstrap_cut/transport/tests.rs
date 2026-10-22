@@ -89,6 +89,186 @@ fn proposal(
     (original, request, proof)
 }
 
+#[test]
+fn unsigned_signing_loan_preserves_the_actual_reserved_original_and_bank() {
+    let (_lease, mut session, mut peer) = scope();
+    let (original, request, _) = proposal(&session);
+    let cut = session.original_bootstrap_hello_cut_data().unwrap();
+    let mut slot = None;
+    session
+        .reserve_original_bootstrap_data(&original, &request, cut, 65536, &mut slot)
+        .unwrap();
+    let before = session.connection.original_bootstrap_model_storage_data();
+    let calls = std::cell::Cell::new(0);
+
+    let sequence = session
+        .with_original_bootstrap_unsigned_data(&original, &request, cut, slot, |borrowed| {
+            calls.set(calls.get() + 1);
+            assert!(std::ptr::eq(borrowed, &original));
+            assert!(borrowed.extensions.is_empty());
+            Ok(borrowed.sequence)
+        })
+        .unwrap();
+
+    assert_eq!(sequence.get(), 2);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(session.sequence.get(), 2);
+    assert_eq!(
+        session.connection.original_bootstrap_model_storage_data(),
+        before
+    );
+    session.original_bootstrap_hello_cut_data().unwrap();
+    assert!(ClientSession::original_bootstrap_unsigned_loan_counter_scratch_data::<U64>() > 0);
+    peer.set_nonblocking(true).unwrap();
+    assert_eq!(
+        peer.read(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn unsigned_signing_loan_keeps_callback_prefixes_and_errors_when_the_clock_changes() {
+    for failed in [false, true] {
+        let (_lease, mut session, _peer) = scope();
+        let (original, request, _) = proposal(&session);
+        let cut = session.original_bootstrap_hello_cut_data().unwrap();
+        let mut slot = None;
+        session
+            .reserve_original_bootstrap_data(&original, &request, cut, 65536, &mut slot)
+            .unwrap();
+        let before = session.connection.original_bootstrap_model_storage_data();
+        let retained_prefix = std::cell::Cell::new(None);
+
+        let result = session.with_original_bootstrap_unsigned_data(
+            &original,
+            &request,
+            cut,
+            slot,
+            |borrowed| {
+                retained_prefix.set(Some(borrowed.sequence));
+                session.deadline.reset(Duration::from_secs(60)).unwrap();
+                if failed {
+                    Err(ProviderError::Correlation(
+                        "original signing callback failure",
+                    ))
+                } else {
+                    Ok(true)
+                }
+            },
+        );
+
+        assert!(result.is_err());
+        if failed {
+            assert!(matches!(
+                result,
+                Err(ProviderError::Correlation(
+                    "original signing callback failure"
+                ))
+            ));
+        }
+        assert_eq!(retained_prefix.get(), Some(U64::new(2)));
+        assert_eq!(
+            session.connection.original_bootstrap_model_storage_data(),
+            before
+        );
+        assert_eq!(session.sequence.get(), 2);
+        assert!(session.original_bootstrap_hello_cut_data().is_err());
+    }
+}
+
+#[test]
+fn unsigned_signing_loan_refuses_foreign_headers_bodies_slots_and_lost_leases_before_callback() {
+    for fault in 0..8 {
+        let (mut lease, mut session, mut peer) = scope();
+        let (mut original, request, _) = proposal(&session);
+        let cut = session.original_bootstrap_hello_cut_data().unwrap();
+        let mut slot = None;
+        session
+            .reserve_original_bootstrap_data(&original, &request, cut, 65536, &mut slot)
+            .unwrap();
+        let before = session.connection.original_bootstrap_model_storage_data();
+        match fault {
+            0 => original.method = Method::Admit,
+            1 => original.session_id = Nullable(Some(Id::new("foreign-session").unwrap())),
+            2 => {
+                original.body.insert("extra".into(), Value::Null);
+            }
+            3 => slot = None,
+            4 => {
+                original
+                    .extensions
+                    .insert("foreign-proof".into(), Value::Null);
+            }
+            5 => session.deadline.reset(Duration::from_secs(60)).unwrap(),
+            6 => lease.contain(),
+            _ => {
+                original.body.get_mut("initial_funding").unwrap()["retained_requested_bytes"] =
+                    Value::String("01".into())
+            }
+        }
+        let called = std::cell::Cell::new(false);
+
+        assert!(
+            session
+                .with_original_bootstrap_unsigned_data(&original, &request, cut, slot, |_| {
+                    called.set(true);
+                    Ok(())
+                },)
+                .is_err(),
+            "fault {fault}"
+        );
+
+        assert!(!called.get());
+        assert_eq!(
+            session.connection.original_bootstrap_model_storage_data(),
+            before
+        );
+        assert_eq!(session.sequence.get(), 2);
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn unsigned_signing_terminal_lease_revocation_preserves_both_callback_outcomes() {
+    for failed in [false, true] {
+        let (mut lease, mut session, _peer) = scope();
+        let (original, request, _) = proposal(&session);
+        let cut = session.original_bootstrap_hello_cut_data().unwrap();
+        let mut slot = None;
+        session
+            .reserve_original_bootstrap_data(&original, &request, cut, 65536, &mut slot)
+            .unwrap();
+        let before = session.connection.original_bootstrap_model_storage_data();
+
+        let result =
+            session.with_original_bootstrap_unsigned_data(&original, &request, cut, slot, |_| {
+                lease.contain();
+                if failed {
+                    Err(ProviderError::Correlation("retained failed signer"))
+                } else {
+                    Ok(())
+                }
+            });
+
+        assert!(result.is_err());
+        if failed {
+            assert!(matches!(
+                result,
+                Err(ProviderError::Correlation("retained failed signer"))
+            ));
+        }
+        assert_eq!(
+            session.connection.original_bootstrap_model_storage_data(),
+            before
+        );
+        assert_eq!(session.sequence.get(), 2);
+    }
+}
+
 struct Sealed {
     original: Envelope,
     request: PacketNativeImport18BootstrapRequest,

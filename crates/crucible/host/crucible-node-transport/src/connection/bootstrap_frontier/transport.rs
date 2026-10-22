@@ -23,6 +23,21 @@ mod storage;
 mod wire;
 
 impl<S: ProviderStream> Connection<S> {
+    /// Checks the actual reserved unsigned bootstrap without constructing a DTO.
+    ///
+    /// # Errors
+    /// Refuses a changed endpoint, header/body, SDK frontier or literal slot.
+    pub(crate) fn authenticate_original_bootstrap_unsigned_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        slot: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_original_bootstrap_frontier_data()?;
+        wire::authenticate_data(&self.authority, original, request, None)?;
+        self.authenticate_pending_native_import18_data(original, &[], slot, false)
+    }
+
     /// Checks the original endpoint after its unused frontier has been spent.
     ///
     /// This allocation-free guard lends no decoded body or selected phase.
