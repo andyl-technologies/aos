@@ -8,6 +8,7 @@
 //!                immutable command correlation | termination history
 //! entry[1024] = CRUCDEN1 | schema=1 | bytes=1024 | factual journal |
 //!               optional actual CRUCACT2 cohort[896]
+//! return[128] = CRUCDRT1 | schema=1 | bytes=128 | independent owner disposition
 //! ```
 //!
 //! These records belong to the separately proposed Setup 9, plan 12, service 7,
@@ -20,6 +21,12 @@
 
 mod entry;
 pub use entry::{DEFERRED_CLEANUP_ENTRY_BYTES, DeferredCleanupEntry, DeferredCleanupEntryFacts};
+
+mod physical_return;
+pub use physical_return::{
+    DEFERRED_CLEANUP_RETURN_BYTES, DeferredCleanupReturn, DeferredCleanupReturnFacts,
+    DeferredCleanupReturnKind,
+};
 
 #[cfg(test)]
 mod tests;

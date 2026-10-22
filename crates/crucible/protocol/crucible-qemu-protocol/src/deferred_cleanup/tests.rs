@@ -350,3 +350,112 @@ fn entries_refuse_unknown_facts_unreturned_statuses_and_unbound_output() {
     assert!(other.encode().is_ok());
     assert!(other.validate_for(&capability(), &request()).is_err());
 }
+
+fn physical_return() -> DeferredCleanupReturn {
+    DeferredCleanupReturn {
+        sequence: 28,
+        reservation: capability().reservation,
+        request_sequence: Some(request().sequence),
+        entered_incarnation: Some(19),
+        return_incarnation: 20,
+        kind: DeferredCleanupReturnKind::EnteredOwner,
+        facts: DeferredCleanupReturnFacts {
+            attempted: true,
+            returned: false,
+            consumed: true,
+            post_attempted: true,
+            post_returned: true,
+            uncertain: true,
+        },
+        first_status: 0,
+        post_status: -5,
+    }
+}
+
+#[test]
+fn physical_consumption_survives_unknown_return_capture_and_failed_post() {
+    let observation = physical_return();
+    let bytes = observation.encode().unwrap();
+
+    assert_eq!(&bytes[..8], b"CRUCDRT1");
+    assert_eq!(&bytes[64..72], &24_u64.to_be_bytes());
+    assert_eq!(&bytes[72..80], &19_u64.to_be_bytes());
+    assert_eq!(&bytes[80..88], &20_u64.to_be_bytes());
+    assert_eq!(bytes[91], 1);
+    assert_eq!(bytes[95], 61);
+    assert_eq!(&bytes[100..104], &(-5_i32).to_be_bytes());
+    assert_eq!(DeferredCleanupReturn::decode(&bytes), Ok(observation));
+    assert!(observation.validate_for(&capability()).is_ok());
+    assert!(observation.facts.consumed);
+    assert!(!observation.facts.returned);
+}
+
+#[test]
+fn physical_return_kind_keeps_each_parent_history_separate() {
+    for kind in [
+        DeferredCleanupReturnKind::Reservation,
+        DeferredCleanupReturnKind::Funding,
+    ] {
+        let mut observation = physical_return();
+        observation.kind = kind;
+        observation.request_sequence = None;
+        observation.entered_incarnation = None;
+
+        let bytes = observation.encode().unwrap();
+        assert_eq!(&bytes[64..80], &[0; 16]);
+        assert_eq!(DeferredCleanupReturn::decode(&bytes), Ok(observation));
+    }
+    let mut observation = physical_return();
+    observation.request_sequence = None;
+    assert!(observation.encode().is_err());
+    observation.request_sequence = Some(24);
+    observation.entered_incarnation = None;
+    assert!(observation.encode().is_err());
+}
+
+#[test]
+fn physical_returns_refuse_stale_reservation_unknown_facts_and_bad_status_capture() {
+    let mut other = physical_return();
+    other.reservation.incarnation += 1;
+    assert!(other.encode().is_ok());
+    assert!(other.validate_for(&capability()).is_err());
+
+    let original = physical_return().encode().unwrap();
+    for facts in [0, 64, 1 | 16] {
+        let mut bytes = original;
+        put32(&mut bytes, 92, facts);
+        assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+    }
+    for kind in [0, 4, u32::MAX] {
+        let mut bytes = original;
+        put32(&mut bytes, 88, kind);
+        assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+    }
+    for (offset, value) in [(16, 27), (56, u64::MAX), (64, 23), (72, u64::MAX), (80, 0)] {
+        let mut bytes = original;
+        put64(&mut bytes, offset, value);
+        assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+    }
+    let mut bytes = original;
+    put32(&mut bytes, 96, (-12_i32) as u32);
+    assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+    let mut observation = physical_return();
+    observation.post_status = 1;
+    assert!(observation.encode().is_err());
+}
+
+#[test]
+fn physical_returns_refuse_every_truncation_and_reserved_byte() {
+    let original = physical_return().encode().unwrap();
+    for length in 0..original.len() {
+        assert!(DeferredCleanupReturn::decode(&original[..length]).is_err());
+    }
+    for offset in 104..128 {
+        let mut bytes = original;
+        bytes[offset] = 1;
+        assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+    }
+    let mut bytes = original.to_vec();
+    bytes.push(0);
+    assert!(DeferredCleanupReturn::decode(&bytes).is_err());
+}

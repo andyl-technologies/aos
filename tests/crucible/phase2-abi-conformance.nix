@@ -515,6 +515,17 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
+              require_test_set 13 protocol-deferred-cleanup \
+                deferred_cleanup::tests::physical_consumption_survives_unknown_return_capture_and_failed_post \
+                -p crucible-qemu-protocol --lib deferred_cleanup::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib deferred_cleanup::tests:: \
+                -- --test-threads=1
               require_test_set 6 protocol-quantum-cleanup \
                 publisher_subscription::quantum::tests::paired_publication_matches_independent_role_bytes_and_refuses_legacy_decoding \
                 -p crucible-qemu-protocol --lib publisher_subscription::quantum::tests::

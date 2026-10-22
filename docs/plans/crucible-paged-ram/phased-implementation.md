@@ -331,6 +331,16 @@ delegated local entry authority, complete same-parent physical funding,
 installation and end-to-end entry/return remain required. The current entered
 schema-two Cleanup row cannot substitute for this dormant capability.
 
+The separate 128-byte physical-return codec now preserves independent entered
+owner, reservation and funding histories. Known consumption survives interrupted
+return capture or a negative post; absent request/entry fields for parent returns
+do not prove no-entry. Thirteen Cleanup controls and all 213 protocol unit tests
+pass, with strict protocol Clippy. The independent implementation accepts or
+refuses all 99 public syntax vectors as specified and re-encodes all 24 accepted
+records byte-for-byte; this does not establish executed C interoperability.
+The ABI gate now requires the exact thirteen-test group and a canonical named
+consumption case before running it, preventing a zero-test filter from passing.
+
 #### Installed bounded-pthread QEMU consumer
 
 The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,
