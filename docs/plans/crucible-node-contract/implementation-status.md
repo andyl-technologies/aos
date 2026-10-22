@@ -2438,6 +2438,36 @@ claimed. This DATA transition does not supply genuine Source/Birth funding,
 a live Native18 policy/ACK, opaque Initial/Recipe, native phase authority or full
 RFC acceptance; those obligations remain open.
 
+## Closed Stage17 DATA under explicit Stage18 selection
+
+Commit `e7b2ccdbfa` implements the declared closed Stage17 binding, context,
+proof and receipt grammars for Arm, World and first Observe. Bindings carry
+actual typed Prepare/Commit17 receipts, the full target, physical Hold reference
+and phase-specific completed pairs. Nullable history fields remain mandatory.
+The Stage18 definition and unchanged inner17 cryptographic domains select this
+DATA explicitly; old activation/observation proofs and transfer12 receipts do
+not substitute for it.
+
+Assignment checks bind the complete original Envelope and baseline target body,
+omitting only the carrying proof or receipt from its respective digest. First
+Observe requires exactly one item after sequence zero. Exhaustive retained
+metadata counts malformed owners as well as valid DATA. These codecs create no
+Source grant, SDK history, native phase, World publication or released witness.
+
+All nine focused controls pass, including complete compiled field-list agreement,
+mandatory histories, full target and receipt joins, assignment mutation, phase/key
+substitution and recomputed-digest attacks. Both complete Transport configurations
+pass 1,949 tests each with no failures, no filtering and sixteen existing ignores.
+Affected all-feature/all-target checking, changed-file formatting and all six
+architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 291 owned Rust/Cargo inputs
+match the commit and its exact captured application source. This gate executes
+no tests. No new VM or configured Engine/Daemon runtime result is claimed.
+Actual paired Source issuers/native consumers, full phase construction rows,
+genuine Birth funding and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
