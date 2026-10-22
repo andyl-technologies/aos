@@ -1,11 +1,15 @@
 //! Closes an original complete-root Read around physical index preparation.
 
-use super::{NativeMetadataOwner, NativeSurfaceIndex};
+use super::{NativeExposureLease, NativeMetadataOwner, NativeSurfaceIndex};
 use crate::{
     host_cache::{NativeFileBacking, content::native_failure},
     structural_index::{Index, IndexKey, Kind, MappedIndex},
 };
-use std::io;
+use std::{
+    fs::File,
+    io,
+    os::fd::{AsFd, BorrowedFd},
+};
 use terrane_format::identity::Digest;
 use terrane_format::identity::{IdentityKind, TERRANE_V1};
 use terrane_sdk::{
@@ -26,6 +30,31 @@ pub struct NativeRootIndex {
     pub(super) admission: NativeSurfaceIndex,
     pub(super) commit: Digest,
     pub(super) domain: String,
+}
+
+/// Retains original sealed index backing after a fresh complete-root Read.
+///
+/// This value has no raw-file constructor. Its descriptor is the original
+/// read-only admitted inode, protected by an acknowledged durable exposure.
+/// A trusted worker transport must bind the exposure generation and peer before
+/// disclosure. The grant supplies neither a worker credential nor enduring Read.
+/// Dropping it closes its descriptor without releasing durable obligations.
+pub struct NativeExposureRootBacking {
+    backing: File,
+    exposure: NativeExposureLease,
+}
+
+impl AsFd for NativeExposureRootBacking {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.backing.as_fd()
+    }
+}
+
+impl NativeExposureRootBacking {
+    /// Borrows the original acknowledged exposure context for this index grant.
+    pub const fn exposure(&self) -> &NativeExposureLease {
+        &self.exposure
+    }
 }
 
 impl NativeRootIndex {
@@ -54,6 +83,59 @@ impl NativeRootIndex {
 }
 
 impl NativeMetadataOwner {
+    /// Prepares original index backing and closes a fresh complete-root Read.
+    ///
+    /// The actual SDK selection must match the exposure and mapped commit,
+    /// canonical root and physical domain. A live physical queue check and
+    /// original-incarnation descriptor duplication precede the same selection's
+    /// closing authorization. No content bodies are fetched or paths reopened.
+    /// Failure drops private descriptors while retaining durable index custody.
+    ///
+    /// The caller still authenticates its worker transport, checks live exposure
+    /// context and bounds in-flight delegation. This is an authorized read result,
+    /// not permission to start a connection after draining. An
+    /// already disclosed descriptor can remain readable after draining; it is
+    /// never a kernel-closure acknowledgment.
+    ///
+    /// # Errors
+    /// Refuses mismatched selection, foreign or draining exposure context,
+    /// incompatible chunk geometry, changed native backing, queue exhaustion
+    /// and any closing complete-root authorization failure.
+    pub async fn prepare_exposure_root_backing<S: Store, C: Clock>(
+        &self,
+        exposure: &NativeExposureLease,
+        served: &NativeRootIndex,
+        selection: PreparedRootRead<'_, S, C>,
+    ) -> Result<NativeExposureRootBacking, Error> {
+        let metadata = selection.metadata();
+        if exposure.commit() != served.commit
+            || exposure.key() != served.key()
+            || metadata.commit() != served.commit
+            || metadata.root() != served.key().root()
+            || selection.storage_domain() != served.domain
+        {
+            return Err(Error::Denied);
+        }
+        if metadata.minimum_chunk_size() != self.chunk_profile.minimum() as u64 {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported).into());
+        }
+        let identity = root_identity(&selection)?;
+        self.check_surface_exposure(exposure)
+            .await
+            .map_err(|error| native_failure(error, &identity))?;
+        let backing = exposure
+            .original_root_file(&served.admission)
+            .map_err(|error| native_failure(error, &identity))?;
+        selection.finish().await?;
+        served
+            .check_native_backing()
+            .map_err(|error| native_failure(error, &identity))?;
+        Ok(NativeExposureRootBacking {
+            backing,
+            exposure: exposure.clone(),
+        })
+    }
+
     /// Admits an original authorized root and closes its Read before returning.
     ///
     /// The physical worker checks the exact selected storage domain before any

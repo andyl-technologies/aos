@@ -60,7 +60,9 @@ pub use owner::{
     NativeSealedBacking, NativeSealedObjectLease, NativeSourceCleanupReport, RetainedManifest,
 };
 #[cfg(all(feature = "tokio", feature = "surface-fuse"))]
-pub use owner::{NativeExposureLease, NativeRootIndex, NativeSurfaceIndex};
+pub use owner::{
+    NativeExposureLease, NativeExposureRootBacking, NativeRootIndex, NativeSurfaceIndex,
+};
 pub use quota::ProjectQuota;
 #[cfg(feature = "tokio")]
 pub use ready::NativeReady;

@@ -19,6 +19,17 @@ use terrane_sdk::{
     store::{Clock, TokioClock, TokioLocalFs},
 };
 
+#[path = "exposure/root.rs"]
+mod root;
+
+fn limits() -> RootNodeLimits {
+    RootNodeLimits {
+        max_entries: 16,
+        max_metadata_bytes: 65536,
+        max_path_bytes: 4096,
+    }
+}
+
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
     fixture.commit(b"signed surface source").await?;
@@ -28,11 +39,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             &ViewTarget::Ref(MAIN.parse()?),
             fixture.authority.token(),
             "sdk",
-            RootNodeLimits {
-                max_entries: 16,
-                max_metadata_bytes: 65536,
-                max_path_bytes: 4096,
-            },
+            limits(),
         )
         .await?;
     let mapped = owner.prepare_surface_mapping(selection).await?;
@@ -64,6 +71,24 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("exposure acknowledgment differs from original durable index context".into());
     }
+    let target = ViewTarget::Commit(mapped.commit());
+    let selection = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
+    let root_grant = owner
+        .prepare_exposure_root_backing(&lease, &mapped, selection)
+        .await?;
+    if root_grant.exposure().id() != lease.id()
+        || root_grant.exposure().generation() != lease.generation()
+    {
+        return Err("root descriptor grant lost the exact original exposure context".into());
+    }
+    root::check(&root_grant, inputs)?;
+    let closing_root = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
     owner.renew_surface_exposure(&lease, expires + 10).await?;
     let view = View::parse(MAIN)?;
     let draining_selection = fixture
@@ -71,8 +96,26 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
         .await?;
     let (pin_owner, object) = verify_file(owner, &mapped, &lease, &fixture, expires - 1).await?;
+    if !matches!(owner.prepare_exposure_root_backing(&lease, &mapped, closing_root).await,
+        Err(terrane_sdk::repository::Error::Store(error)) if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Denied { .. }))
+    {
+        return Err("root descriptor escaped a changed actual complete-root policy".into());
+    }
+
     owner.drain_surface_exposure(&lease).await?;
     owner.drain_surface_exposure(&lease).await?;
+    let selection = fixture
+        .repository
+        .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
+        .await?;
+    if !matches!(owner.prepare_exposure_root_backing(&lease, &mapped, selection).await,
+        Err(terrane_sdk::repository::Error::Store(error)) if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Denied { .. }))
+    {
+        return Err("draining exposure granted a new index descriptor".into());
+    }
+    root::check(&root_grant, inputs)?;
+    drop(root_grant);
+
     let before = fs::read(&policy)?;
     if owner
         .renew_surface_exposure(&lease, expires + 20)
@@ -148,6 +191,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             "ordinary release, drain or receipt drop released exposure object protection".into(),
         );
     }
+    println!(
+        "PASS scoped exposure root grants the original read-only index; changed policy and draining deny new grants while retained metadata remains readable"
+    );
     println!(
         "PASS actual sealed exposure file is pinned before closing Read; ordinary release and draining preserve durable object protection"
     );

@@ -17,7 +17,7 @@ pub(super) mod recovery;
 mod scoped;
 
 pub use exposure::NativeExposureLease;
-pub use scoped::NativeRootIndex;
+pub use scoped::{NativeExposureRootBacking, NativeRootIndex};
 
 use super::{
     consumer::state,

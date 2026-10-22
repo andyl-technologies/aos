@@ -13726,3 +13726,28 @@ still cannot become canonical body keys or recovery-completion proof. The
 cache owner can read and project-check its own original inodes before Resume.
 This correction is based on descriptor/DAC inspection before another guest
 run; no failing VM or passing runtime is fabricated for this intermediate fix.
+
+The native exposure root grant now duplicates only the original admitted index
+incarnation after matching its durable lease, signed commit, root, version and
+physical domain against a fresh SDK complete-root preparation. It closes that
+same preparation's Read after descriptor duplication and rechecks native backing
+before returning an opaque read-only grant. Failure closes private descriptors
+and retains durable custody. The native controls compare actual device/inode,
+descriptor access mode, permanent seal and mapped contents, refuse a genuine
+changed-policy closing Read and new grants after draining, and preserve readable
+previously granted metadata through draining.
+
+This grant is one authorized Read result. Authenticated worker transport must
+still check its peer and live generation and bound in-flight delegation; the
+grant does not authorize a new connection after draining. No production worker,
+mount broker, kernel closure acknowledgment or physical release is introduced.
+Owning native and required application qualification remain pending for this
+increment. The application-target build at `e5c9160d45` passes in 1,452.14 seconds;
+review matches all 8,014 immutable files and 184 test-target compiler records
+across 59 packages. That is compilation evidence, and its native VM failure
+remains retained. No trunk task is closed.
+
+The root-grant increment passes formatting, strict Linux all-target Clippy for
+both all-feature and ordinary Tokio-only profiles, the complete native source
+declaration inventory and VM supervisor syntax. Native execution and mandatory
+application-target compilation must still qualify its frozen source.

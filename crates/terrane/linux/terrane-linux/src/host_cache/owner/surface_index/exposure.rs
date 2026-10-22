@@ -34,6 +34,24 @@ pub struct NativeExposureLease {
 }
 
 impl NativeExposureLease {
+    /// Duplicates only the exact index incarnation retained by this exposure.
+    ///
+    /// # Errors
+    /// Refuses another original index, changed native custody or descriptor IO.
+    pub(super) fn original_root_file(
+        &self,
+        admitted: &NativeSurfaceIndex,
+    ) -> io::Result<std::fs::File> {
+        if !Arc::ptr_eq(&self.index.backing, &admitted.backing) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "exposure root belongs to another index incarnation",
+            ));
+        }
+        self.index.check_native_backing()?;
+        self.index.backing.file.try_clone()
+    }
+
     /// Returns the immutable signed commit selected for this exposure.
     pub const fn commit(&self) -> Digest {
         self.commit
