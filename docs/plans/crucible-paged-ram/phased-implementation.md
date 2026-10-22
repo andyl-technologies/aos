@@ -778,9 +778,24 @@ including retained error sizes. This is not a passing license-boundary gate.
 Five direct refusal adapters now pass their existing functions without
 redundant closures, and the fixed-length parent-park identity reader uses
 array chunks after its exact-length check. These changes retain the same
-errors, custody and parser acceptance. Focused receipt tests and a fresh
-mandatory application-target build are running; the remaining strict findings
-remain unresolved.
+errors, custody and parser acceptance. All fifteen existing parent-park receipt
+tests pass. The fresh mandatory application-target build has all 5,362
+committed Rust/TOML inputs and six fixture/license files verified; compilation
+remains pending. The remaining strict findings remain unresolved.
+
+All 399 counted supervision cases pass at
+`by431cc4vnwvazylwxbdx6jlv76jd0pk`, including the three retry-cadence cases.
+The fresh canonical license-boundary attempt still fails in its Host dependency
+with 908 Clippy findings; no suppression or error-custody weakening is applied.
+
+The existing missing-helper-owner regression now expects the concrete
+`HelperCustodyUnavailable` refusal instead of an obsolete constructed I/O
+wrapper. Its actual negative run passes and still removes the image before
+launch to prove that unavailable custody refuses before path revalidation.
+This corrects one stale assertion from the earlier full-library failure report;
+it creates no Source owner and does not qualify the separate helper execution
+cases that need genuine retained Main/Source custody. Mandatory application
+compilation for this test correction is running.
 
 #### Initial loader storage component
 

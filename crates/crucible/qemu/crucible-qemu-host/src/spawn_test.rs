@@ -1772,10 +1772,7 @@ fn guarded_spawn_without_return_owner_refuses_before_path_revalidation()
 
     assert!(matches!(
         result,
-        Err(QemuSpawnError::Io {
-            operation: "retain guarded helper",
-            source,
-        }) if source.kind() == io::ErrorKind::InvalidInput
+        Err(QemuSpawnError::HelperCustodyUnavailable)
     ));
     assert!(!vmstate_path.exists());
     Ok(())
