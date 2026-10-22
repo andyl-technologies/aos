@@ -33,36 +33,49 @@
     };
     bootstrapJSON = builtins.toJSON bootstrapServices;
     bootstrapGroupsJSON = builtins.toJSON (lib.mapAttrsToList (_: group: group.input) (import ./bootstrap-resource-groups.nix {inherit config lib;}));
-    units =
+    nativeUnits =
       runCommand "systemd-native-bootstrap-units" {
         inherit bootstrapJSON bootstrapGroupsJSON;
         passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
       } ''
         ${pkgs.buildPackages.systemd.handlers}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
         ${pkgs.buildPackages.systemd.handlers}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
-        # Native and typed declarations may contribute distinct drop-ins, but
-        # neither may silently replace the other's actual unit or install link.
-        ${pkgs.findutils}/bin/find ${baseUnits} -mindepth 1 \( -type f -o -type l \) -print | while IFS= read -r source; do
-          destination="$out/''${source#${baseUnits}/}"
-          if [ -e "$destination" ] || [ -L "$destination" ]; then
-            echo "Native and typed manager entries collide: $destination" >&2
+      '';
+    units = runCommand "systemd-image-units" {} ''
+      mkdir -p "$out"
+      cp -a --no-preserve=mode ${nativeUnits}/. "$out/"
+      # Package metadata belongs to this combined output, not the unit inventory.
+      rm -rf "$out/nix-support"
+      # Immutable enrollment authenticates each unit through a direct store
+      # symlink. Retain native bytes in their own output, just like typed units.
+      ${pkgs.findutils}/bin/find ${nativeUnits} -path ${nativeUnits}/nix-support -prune -o -type f -print | while IFS= read -r source; do
+        destination="$out/''${source#${nativeUnits}/}"
+        ln -sfn "$source" "$destination"
+      done
+
+      # Native and typed declarations may contribute distinct drop-ins, but
+      # neither may silently replace the other's actual unit or install link.
+      ${pkgs.findutils}/bin/find ${baseUnits} -mindepth 1 \( -type f -o -type l \) -print | while IFS= read -r source; do
+        destination="$out/''${source#${baseUnits}/}"
+        if [ -e "$destination" ] || [ -L "$destination" ]; then
+          echo "Native and typed manager entries collide: $destination" >&2
+          exit 1
+        fi
+      done
+      # Keep the new output writable for its own metadata finalization.
+      cp -a --no-preserve=mode ${baseUnits}/. "$out/"
+
+      # Explicit requests retain unchanged selected-package bases beside
+      # authored drop-ins. Ordinary images request none; every collision fails.
+      ${lib.concatMapStringsSep "\n" (name: ''
+          if [ -e "$out/${name}" ] || [ -L "$out/${name}" ]; then
+            echo "The requested package base collides with another manager entry: ${name}" >&2
             exit 1
           fi
-        done
-        # Keep the new output writable for its own metadata finalization.
-        cp -a --no-preserve=mode ${baseUnits}/. "$out/"
-
-        # Explicit requests retain unchanged selected-package bases beside
-        # authored drop-ins. Ordinary images request none; every collision fails.
-        ${lib.concatMapStringsSep "\n" (name: ''
-            if [ -e "$out/${name}" ] || [ -L "$out/${name}" ]; then
-              echo "The requested package base collides with another manager entry: ${name}" >&2
-              exit 1
-            fi
-            cp --no-preserve=mode ${systemdPackage}/lib/systemd/system/${name} "$out/${name}"
-          '')
-          config.systemd.packagedBaseUnits}
-      '';
+          ln -s ${systemdPackage}/lib/systemd/system/${name} "$out/${name}"
+        '')
+        config.systemd.packagedBaseUnits}
+    '';
     presets =
       runCommand "systemd-system-preset" {
         presetRules = config.system.build.systemdPresetText;

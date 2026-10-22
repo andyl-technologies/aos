@@ -587,7 +587,14 @@ in {
                   ln -sfn ${config.system.build.etcBasedir} $out/etc-basedir
                   ln -sfn ${config.system.build.etcDump} $out/etc-dump
                   for managerEntry in ${managerConfigurationOutput}/*; do
-                    ln -sfn "$managerEntry" "$out/''${managerEntry##*/}"
+                    # Keep direct store links for the authenticated image walk.
+                    # Wrapping a manager symlink adds an unrecognized hop.
+                    if [ -L "$managerEntry" ]; then
+                      managerTarget=$(readlink "$managerEntry")
+                    else
+                      managerTarget="$managerEntry"
+                    fi
+                    ln -sfn "$managerTarget" "$out/''${managerEntry##*/}"
                   done
                   ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                   ln -sfn ${config.system.build.kernel} $out/kernel

@@ -9854,6 +9854,28 @@ Its complete rendered unit text must equal that reference's unit text. The
 hardware fixture build plan evaluates with this association. Installed reruns
 remain required; these failures perform no approved TPM initialization.
 
+The typed reference alone does not resolve the installed refusal: the next
+three offline tests still fail to pin that fragment. Funded startup now passes
+the selected-manager handoff check, then fails original parent enclosure.
+The manager-output migration introduced an extra `systemd-units` symlink hop
+and placed native unit files directly in the combined inventory. Both disagree
+with the existing physical image walk. Toplevel publication now retains direct
+manager store links, and the combined inventory points to native unit bytes in
+their separate immutable output. Collision rejection remains in force. No
+resolver fallback, mutable lookup or new MAC permission is introduced. The
+selected-manager build contract now inspects the actual funded toplevel and
+inventory. Core evaluation passes; installed reruns determine the result.
+
+The post-pin handoff adversary now retains its procfs and target descriptors
+in one C process, survives switch-root's final signal broadcast, and publishes
+its continuation only after all replacement-byte checks finish. This avoids
+executing additional dynamic tools after replacing the parent's loader. The
+helper builds through AOS with warnings treated as errors; its installed
+switch-root and reexec attacks remain unqualified until the rerun completes.
+The Host library check now follows the versioned DSO symlink when comparing
+the actual library inodes, modes and security contexts. Its prior installed run
+passed byte comparison but stopped while reading the symlink's context.
+
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.
 That immutable source predates V6 and V7: it qualifies its original hardware
@@ -10098,8 +10120,11 @@ boot at the image closure audit: the selected enforcing carrier runtime measures
 1,154,603,480 bytes, above the fixtures' former 1 GiB allowance. Both carrier
 fleet fixtures now declare and assert a bounded 1,152 MiB runtime closure,
 with no change to production image limits or Controller funding. Installed
-QEMU reruns remain pending; neither component receipt admits `AOSMMCAP1` or
-public Create.
+The next installed QEMU first-launcher run passes the closure audit and reaches
+its test body, but native host activation cannot create a configuration
+temporary and `multi-user.target` fails. Its wrong-hash machine independently
+refuses the altered carrier as intended. The retained positive path remains
+unqualified; neither component receipt admits `AOSMMCAP1` or public Create.
 
 The selected carrier input now appends the signed `dm_mod.major=252`
 parameter. Its module rejects a removed parameter, a conflicting value and
