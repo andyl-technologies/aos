@@ -31,12 +31,14 @@ COMPONENTS = (
     "executor-cleanup-registration", "executor-cleanup-bridge",
     "executor-cleanup", "quantum-execution", "outcome-boundary",
     "quantum-rr-parent", "quantum-wrapper",
+    "quantum-rr-execution", "quantum-rr-terminal",
 )
 POSITIONAL_ARGUMENTS = {
     "advance-content", "advance-post-refusal", "advance-recipient-leaves",
     "advance-registration", "publisher-initial-state", "pending-command", "pending-offer",
     "pending-constructor", "ram-reader-custody", "quantum-original",
     "quantum-rr-parent", "quantum-wrapper",
+    "quantum-rr-execution", "quantum-rr-terminal",
 }
 NAMED_SOURCE_ARGUMENTS = {
     "executor-cleanup-registration": "--proof-dir",

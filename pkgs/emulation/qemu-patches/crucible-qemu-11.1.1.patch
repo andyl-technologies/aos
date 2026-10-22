@@ -1,8 +1,8 @@
-From 7dcd9a8912f74d6b51ee97b1dcb4a13c44a2713f Mon Sep 17 00:00:00 2001
+From 91aec7e4401204c0ef9aa9be8f4cb2581b57be89 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose retained RR parent and wrapper retirement
- custody
+Subject: [PATCH] crucible: compose RR execution and terminal registration
+ metadata
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -1332,6 +1332,35 @@ under their actual executed identities; do not present them as repeated timing
 qualification of this composition. The mandatory dirty-lifecycle refusal remains
 and genuine paid Module, nominal borrower, semantic RR and selected reader or
 CPU execution remain unexecuted.
+
+Join retained RR execution and terminal callback metadata registration from
+signed 3c39c0fc and 18f1d02f while retaining the complete signed prerequisite
+histories and the reader/wrapper integration. Keep both new implementations
+and factual test bodies byte-identical to their signed checkpoints.
+
+Preserve the exact original complete constructor journal, completed positive
+Original and physical identity post eligibility, and all symmetric Runtime
+output exclusions. Execution registers 216 bytes of canonical fields and
+observation/result spans; terminal registers 168. Only the exact registered
+152-byte execution or 136-byte terminal observation has its own narrow writer
+exception. Neither 32-byte result nor any canonical holder/epoch has a generic
+output exception. Preserve reader r2, returning-only parent identity and the
+sticky process-wide Original borrower attempt.
+
+Measure the complete joined Source as 248440 bytes and all thirty actual
+physical getter extents as 44270 bytes, for a 292710-byte fixed floor. The
+200-byte execution and 152-byte terminal registration records are embedded
+in that real Source layout. Rebuild the 713 affected configured objects and
+actual x86_64/AArch64 owning system links, then qualify the changed dependency,
+extractor, span and bounded component closures independently. Retain prior
+normal-delivery and full-cohort timing samples under their executed identities;
+this composition does not repeat those unchanged expensive measurements.
+
+These APIs register metadata only. They do not issue a callback, owner,
+SourceUse, Module guard, cleanup actor or selected execution permission. Keep
+CPU admission unsupported, preserve the genuine dirty-lifecycle refusal, and
+leave populated Module execution, launched paid readers and sequential
+borrower reuse/rearm unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -24700,10 +24729,10 @@ index 0000000000000000000000000000000000000000..68ec1052c938d3ad0f91c1f4abf4482e
 +Selected CPU admission and advertised activation remain unavailable.
 diff --git a/docs/devel/crucible-quantum-rr-parent.rst b/docs/devel/crucible-quantum-rr-parent.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..8aa574f5bfbe3b8aabcd227cff8b2d3a06804285
+index 0000000000000000000000000000000000000000..ac97ad5ef398247092bfa75234bee331c9885b60
 --- /dev/null
 +++ b/docs/devel/crucible-quantum-rr-parent.rst
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,212 @@
 +Retained Main-side Quantum RR parent
 +===================================
 +
@@ -24823,6 +24852,99 @@ index 0000000000000000000000000000000000000000..8aa574f5bfbe3b8aabcd227cff8b2d3a
 +Real paid installation, Module prepare/current, partial semantic birth, RR
 +execution, cleanup and physical semantic return remain unexecuted qualification
 +gaps. Production object compilation is distinct from those missing positives.
++
++Executor callback registration
++------------------------------
++
++``qemu_plugin_crucible_quantum_rr_execution_register_v1`` installs the separate
++four-callback executor table beneath the already retained paid v6 Runtime and
++its completed RR-parent registration. It authenticates that same registration
++again, including both independent installer post attempts and returns. It
++invokes no callbacks, publishes no execution owner and grants no RR permission.
++Its own independent Original and physical identity posts retain attempted,
++returned and negative facts separately. A negative installing post does not
++make the retained registration disappear or permit a second installation.
++
++The table has four distinct operations: ``acquire`` and ``current`` borrow the
++same actual Module RR parent under a genuine ``SourceAdvanceUse``;
++``return_child`` and ``returned_current`` require the separately prepared and
++actually entered ``SourceExecutorCleanupUse``. Cleanup must not query an ended
++work Original or acquire another allowance. The 56-byte receipt corroborates
++real Module/Core ownership; its flags, serials and successful status do not
++construct that ownership. Source must save each born output before independent
++Current, and must preserve physical consumption after a negative post.
++
++The six mutually disjoint Runtime fields are the Source execution holder and
++epoch (16 bytes), Module CPU-execution holder and epoch (16), exact existing
++Advance-use observation (152), and registration result (32): 216 bytes in total.
++They lie outside the original complete constructor journal. Every opaque
++Module/Core execution and cleanup body still needs actual complete-layout
++payment in that original journal. Registration validates the exact same journal
++identity and extent, not an interchangeable decoded capacity. Only the exact
++152-byte observation has an output exception; result and canonical fields have
++none. The existing ``advance_use_observe_v1`` declaration remains the intended
++RR observation surface, rather than the Main-only constructor observer.
++
++The Source actor, genuine Module CPU-execution producer, prepared nonwaiting
++cleanup guard, and partial-executor terminal cleanup are not supplied by this
++registration. In particular, the physical RR return's no-child assertion cannot
++consume a Module child after a failed cleanup Prepare. Those actual parents
++must join before any such child or execution effects begin. CPU admission
++remains ``ENOTSUP``; no substitute callback table or accepting observer is
++provided. The literal field tests exercise physical geometry and exclusion
++leaves, not a paid Runtime, registration callback or semantic execution.
++
++Future actor eligibility must require both attempted and returned facts for
++each execution-registration post, together with zero saved statuses. Default
++zero status fields in an interrupted registration are not completed positive
++cuts. No current entry in this checkpoint consumes those fields as permission.
++
++Partial-executor terminal registration
++-------------------------------------
++
++``qemu_plugin_crucible_quantum_rr_terminal_register_v1`` installs a separate
++24-byte return table beneath the completed execution registration. Both of that
++registration's post attempts and returns, with zero statuses, must be present;
++interrupted default-zero fields do not qualify. The terminal registration itself
++saves independent Original and physical identity post history. It invokes no
++callback, births no child and leaves CPU admission refused.
++
++The exact 136-byte cleanup observation and 32-byte result occupy two separate,
++aligned fields in the same retained complete Runtime, outside the originally
++registered complete constructor journal. They are mutually disjoint and cannot
++overwrite any existing protected output or canonical field. Only the exact
++observation pointer and complete size have an output exception. The result has
++none. These additional 168 bytes do not pay an opaque Module/Core guard or an
++execution stack. Every opaque owner still requires its actual complete journal
++and genuine retained parent before birth.
++
++The two callbacks describe a specific missing physical-return path. After a
++negative per-executor Prepare with a born CPU execution, ordinary executor
++cleanup may not have an entered guard. The independently retained terminal
++cleanup owner must have been retained before CPU construction. Its actual v6
++``cleanup_enter`` and independent ``cleanup_current`` must enter and authenticate
++a nonwaiting guard before a Source cleanup use is published. They cannot query
++an expired work Original or substitute Main/thread identity for that guard.
++No such callback is invoked by registration.
++
++Under that genuine guard, ``return_partial`` must attempt the executor guard,
++executor cleanup owner and CPU execution in that order, each at most once. It
++retains every early output and physical consumption fact before any independent
++post. ``returned_current`` uses the live terminal parent/guard and private
++physical-return journals, never an ended child. An absent category needs genuine
++constructor-authenticated no-entry; null pointers, negative status or copied
++receipt bits do not establish it. The 80-byte receipt corroborates these facts
++and grants no authority. A consumed child remains consumed after a negative
++post; an uncertain child remains retained without destructor retry.
++
++The terminal guard must survive the actual CPU cleanup and QOM physical tail.
++The persistent RR parent and later command membership have separate return
++obligations. Registration supplies none of those producers. The actual RR actor,
++Module execution producer, independently prepared guard, Source cleanup-use
++entry, RR-parent return and final command return remain unjoined. Therefore no
++RR execution child is made reachable here. Genuine paid registration and Module
++callback positives remain unexecuted; literal geometry and exclusion controls
++exercise physical leaves only.
 diff --git a/docs/devel/crucible-quantum-rr-return-post.rst b/docs/devel/crucible-quantum-rr-return-post.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..b0dcfa65c347524cc8f44909bc73966eafd1f47d
@@ -73853,7 +73975,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5223b3fc32ad9c3732e4da26eb3154d1504ca96 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..74c3e8188bf426a070d4830abd16c78b4b743818 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -74183,7 +74305,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5223b3fc32ad9c3732e4da26eb3154d
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,541 +1147,7416 @@ QEMU_PLUGIN_API
+@@ -827,541 +1147,7573 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -81523,6 +81645,163 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5223b3fc32ad9c3732e4da26eb3154d
 +    void *module_journal, size_t module_journal_bytes,
 +    uint32_t version, size_t bytes,
 +    struct qemu_plugin_crucible_executor_cleanup_registration_v1 *out);
++
++
++/*
++ * Per-executor borrowing of the existing registered Quantum RR parent.
++ * Installation creates no Source execution, Module owner, guard or permission.
++ * Acquire/Current use only a genuine RR actor. Return/ReturnedCurrent require
++ * the independently prepared and entered executor cleanup guard; neither may
++ * query an ended work Original. Receipts corroborate actual nominal owners.
++ */
++typedef struct QemuCrucibleSourceQuantumRRExecution
++    QemuCrucibleSourceQuantumRRExecution;
++
++struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1 {
++    uint32_t schema_version;       /* 1 */
++    uint32_t struct_size;          /* exact sizeof this edition */
++    uint32_t execution_attempted;
++    uint32_t execution_born;
++    uint32_t return_attempted;
++    uint32_t execution_returned;
++    uint32_t local_consumed;
++    uint32_t reserved;             /* zero */
++    uint64_t execution_serial;
++    uint64_t parent_serial;
++    int32_t first_status;
++    int32_t post_status;
++};
++
++typedef int (*QemuCrucibleModuleQuantumRRExecutionAcquireV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleSourceAdvanceUse *use,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t *execution_epoch,
++    struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1 *receipt,
++    void *userdata);
++
++typedef int (*QemuCrucibleModuleQuantumRRExecutionCurrentV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t execution_epoch,
++    QemuCrucibleSourceAdvanceUse *use,
++    struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1 *receipt,
++    void *userdata);
++
++/* These callbacks run only under the independently prepared, actually entered
++ * nonwaiting executor cleanup guard. They cannot reacquire expired work. */
++typedef int (*QemuCrucibleModuleQuantumRRExecutionReturnV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t *execution_epoch,
++    QemuCrucibleSourceExecutorCleanupUse *cleanup_use,
++    struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1 *receipt,
++    void *userdata);
++
++typedef int (*QemuCrucibleModuleQuantumRRExecutionReturnedCurrentV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t execution_epoch,
++    QemuCrucibleSourceExecutorCleanupUse *cleanup_use,
++    struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1 *receipt,
++    void *userdata);
++
++struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 {
++    uint32_t schema_version;       /* 1 */
++    uint32_t struct_size;
++    QemuCrucibleModuleQuantumRRExecutionAcquireV1 acquire;
++    QemuCrucibleModuleQuantumRRExecutionCurrentV1 current;
++    QemuCrucibleModuleQuantumRRExecutionReturnV1 return_child;
++    QemuCrucibleModuleQuantumRRExecutionReturnedCurrentV1 returned_current;
++};
++
++struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 {
++    uint32_t schema_version;       /* 1 */
++    uint32_t struct_size;
++    uint32_t registered;
++    uint32_t reserved;             /* zero */
++    uint64_t registration_serial;
++    int32_t first_status;
++    int32_t post_status;
++};
++
++/* Installing registration only, no owner birth/callback/permission. Every
++ * canonical field, exact observation152 and result32 is a separate field in
++ * the actual retained complete Runtime, outside its original complete journal.
++ * The journal must already pay every opaque Module/Core/cleanup owner. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_quantum_rr_execution_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 *callbacks,
++    QemuCrucibleSourceQuantumRRExecution **source_holder, uint64_t *source_epoch,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t *execution_epoch,
++    struct qemu_plugin_crucible_advance_use_observation_v1 *observation,
++    void *module_journal, size_t module_journal_bytes,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *out);
++
++
++
++/* Partial executor return under the independently entered terminal cleanup
++ * guard. These receipt fields corroborate the registered private journals;
++ * they never issue the guard or establish no-entry from null outputs. */
++struct qemu_plugin_crucible_quantum_rr_terminal_receipt_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint32_t execution_return_attempted;
++    uint32_t execution_returned;
++    uint32_t execution_consumed;
++    uint32_t guard_return_attempted;
++    uint32_t guard_returned;
++    uint32_t guard_consumed;
++    uint32_t owner_return_attempted;
++    uint32_t owner_returned;
++    uint32_t owner_consumed;
++    uint32_t reserved;
++    uint64_t execution_serial;
++    uint64_t guard_serial;
++    uint64_t owner_serial;
++    int32_t first_status;
++    int32_t post_status;
++};
++
++typedef int (*QemuCrucibleModuleQuantumRRTerminalReturnV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleModuleCpuExecution **execution_holder, uint64_t *execution_epoch,
++    QemuCrucibleModuleExecutorCleanup **cleanup_holder, uint64_t *cleanup_epoch,
++    QemuCrucibleModuleExecutorCleanupGuard **guard_holder, uint64_t *guard_epoch,
++    QemuCrucibleModuleAdvanceCleanup **terminal_holder, uint64_t terminal_epoch,
++    QemuCrucibleModuleAdvanceCleanupGuard **terminal_guard_holder,
++    uint64_t terminal_guard_epoch,
++    QemuCrucibleSourceAdvanceCleanupUse *use,
++    struct qemu_plugin_crucible_quantum_rr_terminal_receipt_v1 *receipt,
++    void *userdata);
++
++typedef int (*QemuCrucibleModuleQuantumRRTerminalReturnedCurrentV1)(
++    QemuCrucibleModuleQuantumRRParent **parent_holder, uint64_t parent_epoch,
++    QemuCrucibleModuleAdvanceCleanup **terminal_holder, uint64_t terminal_epoch,
++    QemuCrucibleModuleAdvanceCleanupGuard **terminal_guard_holder,
++    uint64_t terminal_guard_epoch,
++    QemuCrucibleSourceAdvanceCleanupUse *use,
++    struct qemu_plugin_crucible_quantum_rr_terminal_receipt_v1 *receipt,
++    void *userdata);
++
++struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    QemuCrucibleModuleQuantumRRTerminalReturnV1 return_partial;
++    QemuCrucibleModuleQuantumRRTerminalReturnedCurrentV1 returned_current;
++};
++
++/* Installing metadata only: no callback, owner birth or execution permission.
++ * The exact observation136 and result32 are distinct aligned Runtime fields,
++ * outside the original complete constructor journal and every protected field.
++ * Return ordering is executor guard, cleanup owner, then execution. A genuine
++ * terminal guard must remain retained through the real CPU/QOM physical tail. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_quantum_rr_terminal_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 *table,
++    struct qemu_plugin_crucible_advance_cleanup_observation_v1 *observation,
++    void *module_journal, size_t module_journal_bytes,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *out);
 +
 +
 +typedef struct QemuCrucibleCommandReceiveProgress {
@@ -115304,10 +115583,10 @@ index 0000000000000000000000000000000000000000..519afa3957f4cc3aa673d1e343b75ce3
 +}
 diff --git a/plugins/crucible-callback-child.inc.h b/plugins/crucible-callback-child.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e7a067f3a188059eecc238ea6d7dc3309caf479b
+index 0000000000000000000000000000000000000000..cdb0411d60c3200d18033bf77197fbb51b59ca8c
 --- /dev/null
 +++ b/plugins/crucible-callback-child.inc.h
-@@ -0,0 +1,936 @@
+@@ -0,0 +1,966 @@
 +/*
 + * Source-owned callback-child allocation and physical custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -115332,6 +115611,10 @@ index 0000000000000000000000000000000000000000..e7a067f3a188059eecc238ea6d7dc330
 +{
 +    QemuCrucibleCommandConsumerRegistry *registry = &startup_source.commands;
 +    const void *fields[] = {
++        startup_source.quantum_rr_execution_registration.holder,
++        startup_source.quantum_rr_execution_registration.epoch,
++        startup_source.quantum_rr_execution_registration.module_holder,
++        startup_source.quantum_rr_execution_registration.module_epoch,
 +        startup_source.quantum_rr_parent_registration.holder,
 +        startup_source.quantum_rr_parent_registration.epoch,
 +        startup_source.quantum_rr_parent_registration.module_holder,
@@ -115411,6 +115694,32 @@ index 0000000000000000000000000000000000000000..e7a067f3a188059eecc238ea6d7dc330
 +    if (callback_child_output_overlap(output, bytes,
 +            startup_source.quantum_rr_parent_registration.output,
 +            sizeof(*startup_source.quantum_rr_parent_registration.output))) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_rr_execution_registration.output,
++            sizeof(*startup_source.quantum_rr_execution_registration.output))) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_rr_execution_registration.observation,
++            sizeof(*startup_source.quantum_rr_execution_registration.observation)) &&
++        !(output == startup_source.quantum_rr_execution_registration.observation &&
++          observation == startup_source.quantum_rr_execution_registration.observation &&
++          bytes == sizeof(*startup_source.quantum_rr_execution_registration.observation))) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_rr_terminal_registration.output,
++            sizeof(*startup_source.quantum_rr_terminal_registration.output))) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_rr_terminal_registration.observation,
++            sizeof(*startup_source.quantum_rr_terminal_registration.observation)) &&
++        !(output == startup_source.quantum_rr_terminal_registration.observation &&
++          observation == startup_source.quantum_rr_terminal_registration.observation &&
++          bytes == sizeof(*startup_source.quantum_rr_terminal_registration.observation))) {
 +        return true;
 +    }
 +    if (callback_child_output_overlap(output, bytes, &startup_source, sizeof(startup_source))) {
@@ -197896,6 +198205,225 @@ index 0000000000000000000000000000000000000000..be8d29ac4024b5574a0e420cf0371cc6
 +    return -ENOTSUP;
 +#endif
 +}
+diff --git a/plugins/crucible-quantum-rr-execution.inc.h b/plugins/crucible-quantum-rr-execution.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..c51360b90a57aa8176ae60a67e5c950590290e87
+--- /dev/null
++++ b/plugins/crucible-quantum-rr-execution.inc.h
+@@ -0,0 +1,213 @@
++/*
++ * Registered borrowing surface for the same retained Quantum RR operation.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static bool quantum_rr_execution_fields_valid(
++    QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleSourceQuantumRRExecution **holder, uint64_t *epoch,
++    QemuCrucibleModuleCpuExecution **module_holder, uint64_t *module_epoch,
++    struct qemu_plugin_crucible_advance_use_observation_v1 *observation,
++    void *journal, size_t journal_bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *output)
++{
++    const QemuCruciblePendingConstructorRegistration *constructor =
++        &member->pending_constructor;
++    const void *fields[] = {
++        holder, epoch, module_holder, module_epoch, observation, output,
++    };
++    const size_t sizes[] = {
++        sizeof(*holder), sizeof(*epoch), sizeof(*module_holder),
++        sizeof(*module_epoch), sizeof(*observation), sizeof(*output),
++    };
++
++    /* An extent is corroboration of the already retained Runtime. It neither
++     * pays an opaque Core object nor authorizes any executor effects. */
++    if (!constructor->registered || journal != constructor->module_journal ||
++        !journal_bytes || journal_bytes != constructor->module_journal_bytes) {
++        return false;
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(fields); index++) {
++        if (!pending_runtime_field(member->runtime_base, member->runtime_extent,
++                                  fields[index], sizes[index], _Alignof(uint64_t)) ||
++            callback_child_output_overlap(fields[index], sizes[index],
++                                          journal, journal_bytes)) {
++            return false;
++        }
++        for (size_t earlier = 0; earlier < index; earlier++) {
++            if (callback_child_output_overlap(fields[index], sizes[index],
++                                              fields[earlier], sizes[earlier])) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool quantum_rr_execution_table_valid(
++    const struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 *table)
++{
++    return table->schema_version == 1 && table->struct_size == sizeof(*table) &&
++        table->acquire && table->current && table->return_child &&
++        table->returned_current;
++}
++
++/* Physical installing identity only. No Module callback, Original Current or
++ * executor guard is entered beneath the Source registry mutex. */
++static int quantum_rr_execution_registration_identity_locked(bool *output_current)
++{
++    QemuCrucibleQuantumRRExecutionRegistration *registration =
++        &startup_source.quantum_rr_execution_registration;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    int status;
++
++    *output_current = false;
++    if (!registration->attempted || !registration->registered ||
++        registration->process != getpid() ||
++        !qemu_thread_is_self(&registration->creator) ||
++        registration->member != member ||
++        !registration->result.registration_serial ||
++        registration->result.registration_serial == UINT64_MAX) {
++        return -ESTALE;
++    }
++    status = command_member_live_locked(member);
++    if (!status) {
++        status = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (status) {
++        return status;
++    }
++    if (registration->runtime_owner != member->child_owner ||
++        registration->runtime_base != member->runtime_base ||
++        registration->runtime_extent != member->runtime_extent ||
++        !quantum_rr_execution_fields_valid(member, registration->holder,
++            registration->epoch, registration->module_holder, registration->module_epoch,
++            registration->observation, registration->module_journal,
++            registration->module_journal_bytes, registration->output)) {
++        return -ESTALE;
++    }
++    *output_current = true;
++    return *registration->holder || *registration->epoch ||
++        *registration->module_holder || *registration->module_epoch ? -ESTALE : 0;
++}
++#endif
++
++int qemu_plugin_crucible_quantum_rr_execution_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 *table,
++    QemuCrucibleSourceQuantumRRExecution **holder, uint64_t *epoch,
++    QemuCrucibleModuleCpuExecution **module_holder, uint64_t *module_epoch,
++    struct qemu_plugin_crucible_advance_use_observation_v1 *observation,
++    void *journal, size_t journal_bytes, uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumRRExecutionRegistration *registration =
++        &startup_source.quantum_rr_execution_registration;
++    struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 copied;
++    const void *fields[] = { holder, epoch, module_holder, module_epoch, observation, out };
++    const size_t sizes[] = {
++        sizeof(*holder), sizeof(*epoch), sizeof(*module_holder),
++        sizeof(*module_epoch), sizeof(*observation), sizeof(*out),
++    };
++    bool output_current;
++    int first;
++    int post;
++    int identity;
++
++    if (!startup_invocation(id) || startup_source.install_returned) {
++        return -EPERM;
++    }
++    first = command_registry_identity(id);
++    if (first) {
++        return first;
++    }
++    if (version != 1 || bytes != sizeof(*out) || !table ||
++        (uintptr_t)table % _Alignof(*table) ||
++        (uintptr_t)table > UINTPTR_MAX - sizeof(*table)) {
++        return -EINVAL;
++    }
++    first = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first) {
++        first = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!first) {
++        first = quantum_rr_parent_registration_identity_locked(&output_current);
++    }
++    if (!first && (member->child_owner != startup_source.publisher_module.runtime_owner ||
++        member->runtime_base != startup_source.publisher_module.runtime_base ||
++        member->runtime_extent != startup_source.publisher_module.runtime_extent ||
++        startup_source.quantum_rr_parent_registration.member != member ||
++        !startup_source.quantum_rr_parent_registration.registered ||
++        !quantum_rr_parent_registration_posts_complete(
++            &startup_source.quantum_rr_parent_registration))) {
++        first = -ESTALE;
++    }
++    if (!first && registration->attempted) {
++        first = -EALREADY;
++    }
++    if (!first && !quantum_rr_execution_fields_valid(member, holder, epoch,
++            module_holder, module_epoch, observation, journal, journal_bytes, out)) {
++        first = -EINVAL;
++    }
++    if (!first && callback_child_output_conflicts_locked(table, sizeof(*table))) {
++        first = -EINVAL;
++    }
++    for (size_t index = 0; !first && index < G_N_ELEMENTS(fields); index++) {
++        if (callback_child_output_conflicts_locked(fields[index], sizes[index]) ||
++            callback_child_output_overlap(fields[index], sizes[index], table, sizeof(*table))) {
++            first = -EINVAL;
++        }
++    }
++    if (!first && (*holder || *epoch || *module_holder || *module_epoch)) {
++        first = -EBUSY;
++    }
++    if (!first) {
++        copied = *table;
++        if (!quantum_rr_execution_table_valid(&copied)) {
++            first = -EINVAL;
++        }
++    }
++    if (!first) {
++        *registration = (QemuCrucibleQuantumRRExecutionRegistration) {
++            .table = copied, .member = member, .runtime_owner = member->child_owner,
++            .holder = holder, .epoch = epoch,
++            .module_holder = module_holder, .module_epoch = module_epoch,
++            .observation = observation, .module_journal = journal,
++            .module_journal_bytes = journal_bytes,
++            .runtime_base = member->runtime_base, .runtime_extent = member->runtime_extent,
++            .output = out, .process = getpid(), .attempted = true,
++            .registered = true, .original_post_attempted = true,
++            .result = { .schema_version = 1, .struct_size = sizeof(*out),
++                        .registered = 1, .registration_serial = 1 },
++        };
++        qemu_thread_get_self(&registration->creator);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    post = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    registration->original_post_status = post;
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = true;
++    identity = quantum_rr_execution_registration_identity_locked(&output_current);
++    registration->identity_post_status = identity;
++    registration->identity_post_returned = true;
++    registration->result.post_status = post ? post : identity;
++    if (output_current) {
++        *registration->output = registration->result;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return post ? post : identity;
++#else
++    return -ENOTSUP;
++#endif
++}
 diff --git a/plugins/crucible-quantum-rr-parent.inc.h b/plugins/crucible-quantum-rr-parent.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..4dac51af59792dca56b52addb914e37ec13f2c5d
@@ -198402,6 +198930,201 @@ index 0000000000000000000000000000000000000000..4dac51af59792dca56b52addb914e37e
 +    }
 +    parent->observing = false;
 +    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-quantum-rr-terminal.inc.h b/plugins/crucible-quantum-rr-terminal.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..8502c5f5dd32096c384cdc9b9e7f3342693080a4
+--- /dev/null
++++ b/plugins/crucible-quantum-rr-terminal.inc.h
+@@ -0,0 +1,189 @@
++/*
++ * Registered terminal return for partial Quantum executor construction.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static bool quantum_rr_terminal_fields_valid(
++    QemuCrucibleCommandConsumerMember *member,
++    struct qemu_plugin_crucible_advance_cleanup_observation_v1 *observation,
++    void *journal, size_t journal_bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *output)
++{
++    const QemuCruciblePendingConstructorRegistration *constructor =
++        &member->pending_constructor;
++
++    if (!constructor->registered || journal != constructor->module_journal ||
++        !journal_bytes || journal_bytes != constructor->module_journal_bytes) {
++        return false;
++    }
++    return pending_runtime_field(member->runtime_base, member->runtime_extent,
++               observation, sizeof(*observation), _Alignof(uint64_t)) &&
++        pending_runtime_field(member->runtime_base, member->runtime_extent,
++               output, sizeof(*output), _Alignof(uint64_t)) &&
++        !callback_child_output_overlap(observation, sizeof(*observation),
++                                       journal, journal_bytes) &&
++        !callback_child_output_overlap(output, sizeof(*output), journal, journal_bytes) &&
++        !callback_child_output_overlap(output, sizeof(*output),
++                                       observation, sizeof(*observation));
++}
++
++static bool quantum_rr_execution_registration_posts_complete(
++    const QemuCrucibleQuantumRRExecutionRegistration *registration)
++{
++    return registration->original_post_attempted &&
++        registration->original_post_returned &&
++        !registration->original_post_status &&
++        registration->identity_post_attempted &&
++        registration->identity_post_returned &&
++        !registration->identity_post_status;
++}
++
++static bool quantum_rr_terminal_table_valid(
++    const struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 *table)
++{
++    return table->schema_version == 1 && table->struct_size == sizeof(*table) &&
++        table->return_partial && table->returned_current;
++}
++
++/* A physical installer identity can withhold a result after an independent
++ * Original refusal. It never enters a Module guard beneath the Source mutex. */
++static int quantum_rr_terminal_registration_identity_locked(bool *output_current)
++{
++    QemuCrucibleQuantumRRTerminalRegistration *registration =
++        &startup_source.quantum_rr_terminal_registration;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    int status;
++
++    *output_current = false;
++    if (!registration->attempted || !registration->registered ||
++        registration->process != getpid() ||
++        !qemu_thread_is_self(&registration->creator) ||
++        registration->member != member ||
++        !registration->result.registration_serial ||
++        registration->result.registration_serial == UINT64_MAX) {
++        return -ESTALE;
++    }
++    status = command_member_live_locked(member);
++    if (!status) {
++        status = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (status) {
++        return status;
++    }
++    if (registration->runtime_owner != member->child_owner ||
++        registration->runtime_base != member->runtime_base ||
++        registration->runtime_extent != member->runtime_extent ||
++        !quantum_rr_terminal_fields_valid(member, registration->observation,
++            registration->module_journal, registration->module_journal_bytes,
++            registration->output)) {
++        return -ESTALE;
++    }
++    *output_current = true;
++    return 0;
++}
++#endif
++
++int qemu_plugin_crucible_quantum_rr_terminal_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 *table,
++    struct qemu_plugin_crucible_advance_cleanup_observation_v1 *observation,
++    void *journal, size_t journal_bytes, uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumRRTerminalRegistration *registration =
++        &startup_source.quantum_rr_terminal_registration;
++    QemuCrucibleQuantumRRExecutionRegistration *execution =
++        &startup_source.quantum_rr_execution_registration;
++    struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 copied;
++    bool output_current;
++    int first;
++    int post;
++    int identity;
++
++    if (!startup_invocation(id) || startup_source.install_returned) {
++        return -EPERM;
++    }
++    first = command_registry_identity(id);
++    if (first) {
++        return first;
++    }
++    if (version != 1 || bytes != sizeof(*out) || !table ||
++        (uintptr_t)table % _Alignof(*table) ||
++        (uintptr_t)table > UINTPTR_MAX - sizeof(*table)) {
++        return -EINVAL;
++    }
++    first = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first) {
++        first = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!first) {
++        first = quantum_rr_execution_registration_identity_locked(&output_current);
++    }
++    if (!first && (execution->member != member || !execution->registered ||
++        !quantum_rr_execution_registration_posts_complete(execution))) {
++        first = -ESTALE;
++    }
++    if (!first && registration->attempted) {
++        first = -EALREADY;
++    }
++    if (!first && !quantum_rr_terminal_fields_valid(member, observation,
++                                                  journal, journal_bytes, out)) {
++        first = -EINVAL;
++    }
++    if (!first && (callback_child_output_conflicts_locked(table, sizeof(*table)) ||
++        callback_child_output_conflicts_locked(observation, sizeof(*observation)) ||
++        callback_child_output_conflicts_locked(out, sizeof(*out)) ||
++        callback_child_output_overlap(observation, sizeof(*observation), table, sizeof(*table)) ||
++        callback_child_output_overlap(out, sizeof(*out), table, sizeof(*table)))) {
++        first = -EINVAL;
++    }
++    if (!first) {
++        copied = *table;
++        if (!quantum_rr_terminal_table_valid(&copied)) {
++            first = -EINVAL;
++        }
++    }
++    if (!first) {
++        /* Publish retained metadata before either independent post. No owner
++         * or callback is born; uncertain installation remains once-only. */
++        *registration = (QemuCrucibleQuantumRRTerminalRegistration) {
++            .table = copied, .member = member, .runtime_owner = member->child_owner,
++            .observation = observation, .module_journal = journal,
++            .module_journal_bytes = journal_bytes,
++            .runtime_base = member->runtime_base, .runtime_extent = member->runtime_extent,
++            .output = out, .process = getpid(), .attempted = true,
++            .registered = true, .original_post_attempted = true,
++            .result = { .schema_version = 1, .struct_size = sizeof(*out),
++                        .registered = 1, .registration_serial = 1 },
++        };
++        qemu_thread_get_self(&registration->creator);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    post = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    registration->original_post_status = post;
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = true;
++    identity = quantum_rr_terminal_registration_identity_locked(&output_current);
++    registration->identity_post_status = identity;
++    registration->identity_post_returned = true;
++    registration->result.post_status = post ? post : identity;
++    if (output_current) {
++        *registration->output = registration->result;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return post ? post : identity;
 +#else
 +    return -ENOTSUP;
 +#endif
@@ -205996,10 +206719,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdb52f9658cba3bbfb69535aeebe9e05252c34e9
+index 0000000000000000000000000000000000000000..db8823c8422a4d1e364e5938699f7f3146ae3d36
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8723 @@
+@@ -0,0 +1,8725 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -214711,6 +215434,8 @@ index 0000000000000000000000000000000000000000..bdb52f9658cba3bbfb69535aeebe9e05
 +#include "crucible-executor-cleanup-registration.inc.h"
 +#include "crucible-quantum-rr-parent.inc.h"
 +#include "crucible-quantum-wrapper.inc.h"
++#include "crucible-quantum-rr-execution.inc.h"
++#include "crucible-quantum-rr-terminal.inc.h"
 +
 +#include "crucible-device-workspace.inc.h"
 +
@@ -214725,10 +215450,10 @@ index 0000000000000000000000000000000000000000..bdb52f9658cba3bbfb69535aeebe9e05
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..704397e5e81b1e2fca2ff2d419d7c807bfc4a5be
+index 0000000000000000000000000000000000000000..dbb786c364bab9d0be24a2b837f7ac671143ad90
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,3937 @@
+@@ -0,0 +1,3990 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -217856,6 +218581,57 @@ index 0000000000000000000000000000000000000000..704397e5e81b1e2fca2ff2d419d7c807
 +
 +/* Installation-only binding. This actual Source storage is included in the
 + * prebirth fixed floor. It holds no prepared executor or semantic permission. */
++typedef struct QemuCrucibleQuantumRRExecutionRegistration {
++    struct qemu_plugin_crucible_quantum_rr_execution_callbacks_v1 table;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleCallbackChildOwner *runtime_owner;
++    QemuCrucibleSourceQuantumRRExecution **holder;
++    uint64_t *epoch;
++    QemuCrucibleModuleCpuExecution **module_holder;
++    uint64_t *module_epoch;
++    struct qemu_plugin_crucible_advance_use_observation_v1 *observation;
++    void *module_journal;
++    size_t module_journal_bytes;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *output;
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 result;
++    QemuThread creator;
++    pid_t process;
++    int original_post_status;
++    int identity_post_status;
++    bool attempted;
++    bool registered;
++    bool original_post_attempted;
++    bool original_post_returned;
++    bool identity_post_attempted;
++    bool identity_post_returned;
++} QemuCrucibleQuantumRRExecutionRegistration;
++
++/* Installing terminal callbacks only; no prepared cleanup guard is born. */
++typedef struct QemuCrucibleQuantumRRTerminalRegistration {
++    struct qemu_plugin_crucible_quantum_rr_terminal_callbacks_v1 table;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleCallbackChildOwner *runtime_owner;
++    struct qemu_plugin_crucible_advance_cleanup_observation_v1 *observation;
++    void *module_journal;
++    size_t module_journal_bytes;
++    uintptr_t runtime_base;
++    uint64_t runtime_extent;
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *output;
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 result;
++    QemuThread creator;
++    pid_t process;
++    int original_post_status;
++    int identity_post_status;
++    bool attempted;
++    bool registered;
++    bool original_post_attempted;
++    bool original_post_returned;
++    bool identity_post_attempted;
++    bool identity_post_returned;
++} QemuCrucibleQuantumRRTerminalRegistration;
++
 +typedef struct QemuCrucibleExecutorCleanupRegistration {
 +    QemuCrucibleCommandConsumerMember *member;
 +    QemuCrucibleCallbackChildOwner *runtime_owner;
@@ -217986,6 +218762,8 @@ index 0000000000000000000000000000000000000000..704397e5e81b1e2fca2ff2d419d7c807
 +    QemuCrucibleSourceDeferredQuantumConstructor pending_deferred;
 +    QemuCrucibleExecutorCleanupRegistration executor_cleanup_registration;
 +    QemuCrucibleQuantumRRParentRegistration quantum_rr_parent_registration;
++    QemuCrucibleQuantumRRExecutionRegistration quantum_rr_execution_registration;
++    QemuCrucibleQuantumRRTerminalRegistration quantum_rr_terminal_registration;
 +    QemuCrucibleSourceQuantumRRParent quantum_rr_parent;
 +    QemuCrucibleQuantumWrapperRegistration quantum_wrapper_registration;
 +    QemuCrucibleSourceQuantumWrapperRetirement quantum_wrapper;
@@ -230160,7 +230938,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2b75614a3a462d1b4441699676f62fb8dc5ebda9
+index 0000000000000000000000000000000000000000..2c77a6264006195f7bc861fd1f82005e896d3d79
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,111 @@
@@ -230192,9 +230970,9 @@ index 0000000000000000000000000000000000000000..2b75614a3a462d1b4441699676f62fb8
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
++        '2afc62027b4ef7494d0f666cf5a11df6c6494f1856a47d177adaef21986bab91',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
++        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +}
@@ -284248,7 +285026,7 @@ index 0000000000000000000000000000000000000000..25aafdfc06f195785e3c99f5a6847c71
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1fba2470d3cd9dad0840191b141c25d6b6a6ac41
+index 0000000000000000000000000000000000000000..4bc8236b2c84d9074b19cba1bba5fc3c5c4b9507
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -284266,7 +285044,7 @@ index 0000000000000000000000000000000000000000..1fba2470d3cd9dad0840191b141c25d6
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
++        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
 +}
 +
 +FUNCTIONS = (
@@ -284354,7 +285132,7 @@ index 0000000000000000000000000000000000000000..1fba2470d3cd9dad0840191b141c25d6
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..48a38ce2e1d2ac1e2273ee1f39d435184e8feaf0
+index 0000000000000000000000000000000000000000..afafb9e32eb0a515fee79d85fac8aa7bf3fb83ff
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -284375,17 +285153,17 @@ index 0000000000000000000000000000000000000000..48a38ce2e1d2ac1e2273ee1f39d43518
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '0b3a685878779d6f8a62ec9e0e15a519380fba13906dd2cf03e35052bcbc2897',
++        'f705afce8014dfd10168c87a2b6626c9348602215459ce78344021ec7adf2649',
 +    'plugins/crucible-startup-source.h':
-+        '35764afbe4f67a79e11d41d5805a8d22060cace3497db60611d71fa2a82d74fd',
++        '6ab4cdbbbada3316f98cc648d4fce9103e7f5c437f0f300712ae17bcba36e8dc',
 +    'include/plugins/qemu-plugin.h':
-+        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
++        '2afc62027b4ef7494d0f666cf5a11df6c6494f1856a47d177adaef21986bab91',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
++        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
 +}
 +
 +FUNCTIONS = (
@@ -284601,7 +285379,7 @@ index 0000000000000000000000000000000000000000..48a38ce2e1d2ac1e2273ee1f39d43518
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9db2321700ac9eaa29a2ffda62b0910497d18736
+index 0000000000000000000000000000000000000000..b168b19a23acdbb5b2281aa3bdc80772193165c5
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -284625,7 +285403,7 @@ index 0000000000000000000000000000000000000000..9db2321700ac9eaa29a2ffda62b09104
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
++        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
 +}
 +
 +FUNCTIONS = (
@@ -284719,7 +285497,7 @@ index 0000000000000000000000000000000000000000..9db2321700ac9eaa29a2ffda62b09104
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..903045c51d5a331d49fff3ec008839df92363a9b
+index 0000000000000000000000000000000000000000..77aad58538e7a37fe5e3fff1a149399c89ae950a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,705 @@
@@ -284760,21 +285538,21 @@ index 0000000000000000000000000000000000000000..903045c51d5a331d49fff3ec008839df
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
++        '2afc62027b4ef7494d0f666cf5a11df6c6494f1856a47d177adaef21986bab91',
 +    'plugins/crucible-process-purpose.c':
 +        '71bfd2c2b7817d1bf6563e18eb679a07ac3a5d63149b81a9ccfdc8905ef6f8d1',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
++        'a87857504e5aa3033dc52fbbdde6f5aa295166185d6363145badccbde08af886',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'a5748137896a41ef29d8536c8b7a170295616f6ccd3ec8028c0708e30bbbdd9c',
++        '44191d2bfc100d57de5dfe62be2ab3d37034e1af05e360eedc6b3b7522504019',
 +    'meson.build':
 +        '2dd1cc86257dfcbb7216ac4228b11e00dc0204e26700f8112264320b4a0ee4f5',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '58019f6598264e0a7d4b782196f9f72b3a168c8ee99b7f502c2d2280fa6f3a1c',
 +    'tests/unit/meson.build':
-+        '912062f90332b45a1d9f7e05ed71601fef54baf7bef4bf0fd6b0b6d3905c29f6',
++        '4540335a5d453cf8e9da683ee40214b1d01fa42350aa78f313676fbc9cbd5724',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -285430,10 +286208,10 @@ index 0000000000000000000000000000000000000000..903045c51d5a331d49fff3ec008839df
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7505f72826056c2fd0dba49e3235d4b52d242dc
+index 0000000000000000000000000000000000000000..2a07106a6f93a49ff8c9afe3a227619f932ad9b6
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1579 @@
+@@ -0,0 +1,1583 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -285464,6 +286242,10 @@ index 0000000000000000000000000000000000000000..a7505f72826056c2fd0dba49e3235d4b
 +        '02f6a794d04674e7f43bac714900d18ac01c850ec00beb633ab2532e62fbf19d',
 +    'tests/unit/test-crucible-deferred-main-finish.py':
 +        '044a146178522c78106c17d62fa3ee0983fa5dc9420a4a1af12770b038f3d18e',
++    'plugins/crucible-quantum-rr-execution.inc.h': 'eb30fe82ac9ea9507581f8dfcf24dce768ff9551fd3d1e436e1bf14261655e2f',
++    'plugins/crucible-quantum-rr-terminal.inc.h': '92683b1d373a9961eef572738057eccdd3f79d6e2b2dd12e0d618d5343cf1095',
++    'tests/unit/test-crucible-quantum-rr-terminal.py': '25bd3aed7558ab1d1641c221d308666935aa5bf7ff3415d8a52a55579fcff1b6',
++    'tests/unit/test-crucible-quantum-rr-execution.py': '1a378e611474164a1f17ef0caa5e4159235a76417091067cd078272b635028ba',
 +    'plugins/crucible-quantum-rr-parent.inc.h': 'ce376a472fc6f9f80d571113cf654cff1fb3ba0c89ccefd8087cc99e0de8ea5b',
 +    'tests/unit/test-crucible-quantum-rr-parent.py': '6716350f25308f8e7089ffd32f348d468de17af8566ec9029c464eda017cb9d2',
 +    'tests/unit/test-crucible-executor-cleanup-bridge.py':
@@ -285615,7 +286397,7 @@ index 0000000000000000000000000000000000000000..a7505f72826056c2fd0dba49e3235d4b
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '912062f90332b45a1d9f7e05ed71601fef54baf7bef4bf0fd6b0b6d3905c29f6',
++        '4540335a5d453cf8e9da683ee40214b1d01fa42350aa78f313676fbc9cbd5724',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -285823,21 +286605,21 @@ index 0000000000000000000000000000000000000000..a7505f72826056c2fd0dba49e3235d4b
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '0b3a685878779d6f8a62ec9e0e15a519380fba13906dd2cf03e35052bcbc2897',
++        'f705afce8014dfd10168c87a2b6626c9348602215459ce78344021ec7adf2649',
 +    'plugins/crucible-startup-source.h':
-+        '35764afbe4f67a79e11d41d5805a8d22060cace3497db60611d71fa2a82d74fd',
++        '6ab4cdbbbada3316f98cc648d4fce9103e7f5c437f0f300712ae17bcba36e8dc',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
++        '2afc62027b4ef7494d0f666cf5a11df6c6494f1856a47d177adaef21986bab91',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
 +        'bcf6c52bccd7660a6f2208ab0a47fa6cf97b19df64adb8c1c203cf02042f3e42',
 +    'plugins/crucible-callback-child.inc.h':
-+        '7e86b3443dcd8d225f2ff760d37f7e98a3c6fa5c01d43470ea17ce80d29cd51f',
++        '0f697bc053e884c8052bc2797b1ec9e0cb012b422f9ca5119dab7f9b8b2e6cf8',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a',
 +    'plugins/crucible-plugin-worker.inc.h':
@@ -287112,7 +287894,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..18f4cd28c3f685988e29f75eb4a7882055279a99 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..7c8118247e3bcaf34718b69cc7e70e81f71add3c 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -287187,7 +287969,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..18f4cd28c3f685988e29f75eb4a78820
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1432 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1436 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -287937,6 +288719,10 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..18f4cd28c3f685988e29f75eb4a78820
 +    depend_files: files(
 +                        '../../plugins/crucible-ram-reader.inc.h',
 +                        'test-crucible-ram-reader-custody.py',
++                        '../../plugins/crucible-quantum-rr-execution.inc.h',
++                        '../../plugins/crucible-quantum-rr-terminal.inc.h',
++                        'test-crucible-quantum-rr-terminal.py',
++                        'test-crucible-quantum-rr-execution.py',
 +                        '../../plugins/crucible-quantum-rr-parent.inc.h',
 +                        'test-crucible-quantum-rr-parent.py',
 +                        '../../plugins/crucible-quantum-wrapper.inc.h',
@@ -346762,6 +347548,208 @@ index 0000000000000000000000000000000000000000..42ad2691dec6766f901acc587c00140e
 +
 +if __name__ == '__main__':
 +    main()
+diff --git a/tests/unit/test-crucible-quantum-rr-execution.py b/tests/unit/test-crucible-quantum-rr-execution.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..fd0c40cbc19b0daab5a32e4e0c59ef31be639232
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-rr-execution.py
+@@ -0,0 +1,196 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check actual RR execution field geometry without issuing an owner.
++
++The initialized buffer is a physical span, not a Runtime/payer/provider. No
++Module callback is installed or invoked. Each omission is independently rebuilt
++and must fail its named assertion, rather than merely terminate unsuccessfully.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++
++
++CHECKS = r'''
++static void check(bool condition, const char *name)
++{
++    if (!condition) {
++        fprintf(stderr, "rr-execution:%s\n", name);
++        abort();
++    }
++}
++
++int main(void)
++{
++    union { max_align_t alignment; uint8_t bytes[4096]; } storage = { 0 };
++    QemuCrucibleCommandConsumerMember member = { 0 };
++    QemuCrucibleQuantumRRExecutionRegistration *registration =
++        &startup_source.quantum_rr_execution_registration;
++    QemuCrucibleSourceQuantumRRExecution **holder = (void *)&storage.bytes[0];
++    uint64_t *epoch = (void *)&storage.bytes[8];
++    QemuCrucibleModuleCpuExecution **module_holder = (void *)&storage.bytes[16];
++    uint64_t *module_epoch = (void *)&storage.bytes[24];
++    struct qemu_plugin_crucible_advance_use_observation_v1 *observation =
++        (void *)&storage.bytes[32];
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *result =
++        (void *)&storage.bytes[256];
++    void *journal = &storage.bytes[512];
++    size_t journal_bytes = 512;
++    uint64_t unprotected;
++
++    /* This initialized span is not a retained Runtime or an issuer. */
++    member.runtime_base = (uintptr_t)&storage;
++    member.runtime_extent = sizeof(storage);
++    member.pending_constructor.registered = true;
++    member.pending_constructor.module_journal = journal;
++    member.pending_constructor.module_journal_bytes = journal_bytes;
++    check(sizeof(registration->table) == 40 && sizeof(*result) == 32 &&
++          sizeof(*observation) == 152 &&
++          sizeof(struct qemu_plugin_crucible_quantum_rr_execution_receipt_v1) == 56,
++          "abi");
++    check(quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, result), "geometry");
++    member.pending_constructor.registered = false;
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, result), "constructor-registration");
++    member.pending_constructor.registered = true;
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, (char *)journal + 8, journal_bytes, result), "journal-identity");
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes - 8, result), "journal-size");
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, (void *)observation), "pairwise");
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, journal), "journal-disjoint");
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, (void *)&storage.bytes[217]), "alignment");
++    check(!quantum_rr_execution_fields_valid(&member, holder, epoch, module_holder,
++          module_epoch, observation, journal, journal_bytes, (void *)&storage.bytes[4080]), "upper");
++    member.runtime_base = UINTPTR_MAX - 4095;
++    member.runtime_extent = 8192;
++    check(!quantum_rr_execution_fields_valid(&member, (void *)member.runtime_base,
++          (void *)(member.runtime_base + 8), (void *)(member.runtime_base + 16),
++          (void *)(member.runtime_base + 24), (void *)(member.runtime_base + 32),
++          journal, journal_bytes, (void *)(member.runtime_base + 184)), "overflow");
++
++    /* Only nominated exclusion fields are installed here: no callback table,
++     * registration, borrower or semantic producer is created. */
++    registration->holder = holder;
++    registration->epoch = epoch;
++    registration->module_holder = module_holder;
++    registration->module_epoch = module_epoch;
++    registration->observation = observation;
++    registration->output = result;
++    check(callback_child_output_conflicts_locked(holder, sizeof(*holder)), "source-holder");
++    check(callback_child_output_conflicts_locked(epoch, sizeof(*epoch)), "source-epoch");
++    check(callback_child_output_conflicts_locked(module_holder, sizeof(*module_holder)), "module-holder");
++    check(callback_child_output_conflicts_locked(module_epoch, sizeof(*module_epoch)), "module-epoch");
++    check(callback_child_output_conflicts_locked(result, sizeof(*result)), "registration-result");
++    check(callback_child_output_conflicts_except_locked(result, sizeof(*result), result), "no-result-exception");
++    check(callback_child_output_conflicts_locked(observation, sizeof(*observation)), "observation");
++    check(!callback_child_output_conflicts_except_locked(observation, sizeof(*observation), observation), "exact-observation");
++    check(callback_child_output_conflicts_except_locked((char *)observation + 8,
++          sizeof(*observation), observation), "interior-observation");
++    check(callback_child_output_conflicts_except_locked(observation,
++          sizeof(*observation) - 8, observation), "short-observation");
++    check(!callback_child_output_conflicts_locked(&unprotected, sizeof(unprotected)), "unprotected");
++    check(!registration->registered && !registration->attempted && !*holder &&
++          !*epoch && !*module_holder && !*module_epoch, "no-owner-issued");
++    return 0;
++}
++'''
++
++
++def limits():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('source', type=Path)
++    parser.add_argument('output', type=Path)
++    args = parser.parse_args()
++    root = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    extract = runpy.run_path(str(root / 'tests/unit/extract-crucible-startup-source-controls.py'))
++    function = extract['function']
++
++    def selected(path, declarations):
++        text = (root / path).read_text()
++        return '\n'.join(function(text, declaration) for declaration in declarations)
++
++    native = (root / 'plugins/crucible-native-deferred-main-finish.inc.h').read_text()
++    owner = native[native.index('struct QemuCrucibleNativeDeferredMainFinish {'):
++                   native.index('static int native_deferred_main_finish_identity_locked(')]
++    prefix = ('#include "qemu/osdep.h"\n#include "plugins/crucible-startup-source.h"\n'
++              'static QemuCrucibleStartupSourceControl startup_source;\n' + owner + '\n' +
++              selected('plugins/crucible-native-invocation.c', ['static bool group_output_overlaps(']) +
++              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1('))
++    body = '\n'.join([
++        selected('plugins/crucible-callback-child.inc.h', [
++            'static bool callback_child_output_overlap(',
++            'static bool callback_child_output_conflicts_except_locked(',
++            'static bool callback_child_output_conflicts_locked(']),
++        selected('plugins/crucible-pending-command.inc.h', ['static bool pending_runtime_field(']),
++        selected('plugins/crucible-quantum-rr-execution.inc.h', [
++            'static bool quantum_rr_execution_fields_valid(']),
++    ])
++    mutations = {
++        'constructor-registration': ('!constructor->registered || ', ''),
++        'journal-identity': ('journal != constructor->module_journal ||', 'false ||'),
++        'journal-size': ('journal_bytes != constructor->module_journal_bytes', 'false'),
++        'pairwise': ('fields[earlier], sizes[earlier]))', 'NULL, 0))'),
++        'journal-disjoint': ('journal, journal_bytes))', 'NULL, 0))'),
++        'alignment': ('address % alignment == 0 &&', 'true &&'),
++        'upper': ('address - base <= extent - bytes', 'true'),
++        'overflow': ('extent <= UINTPTR_MAX - base &&', 'true &&'),
++        'source-holder': ('        startup_source.quantum_rr_execution_registration.holder,\n', ''),
++        'source-epoch': ('        startup_source.quantum_rr_execution_registration.epoch,\n', ''),
++        'module-holder': ('        startup_source.quantum_rr_execution_registration.module_holder,\n', ''),
++        'module-epoch': ('        startup_source.quantum_rr_execution_registration.module_epoch,\n', ''),
++        'registration-result': ('startup_source.quantum_rr_execution_registration.output,', 'NULL,'),
++        'observation': ('startup_source.quantum_rr_execution_registration.observation,\n            sizeof(*startup_source.quantum_rr_execution_registration.observation)) &&', 'NULL, 0) &&'),
++        'short-observation': ('bytes == sizeof(*startup_source.quantum_rr_execution_registration.observation)', 'true'),
++        'interior-observation': ('output == startup_source.quantum_rr_execution_registration.observation &&', 'true &&'),
++    }
++    records = []
++    for name, mutation in [('physical-leaves', None), *mutations.items()]:
++        changed = body
++        if mutation:
++            old, new = mutation
++            if changed.count(old) != 1:
++                raise ValueError(f'{name}: expected one actual fragment, got {changed.count(old)}')
++            changed = changed.replace(old, new, 1)
++        source = output / (name + '.c')
++        executable = output / name
++        source.write_text(prefix + '\n' + changed + '\n' + CHECKS)
++        command = (shlex.split(os.environ.get('CC', 'cc')) +
++                   shlex.split(os.environ.get('CFLAGS', '')) +
++                   [str(source), '-o', str(executable)] +
++                   shlex.split(os.environ.get('LDFLAGS', '')))
++        (output / (name + '.command.json')).write_text(json.dumps(command, indent=2) + '\n')
++        built = subprocess.run(command, capture_output=True, timeout=180, preexec_fn=limits)
++        (output / (name + '.compile.log')).write_bytes(built.stdout + built.stderr)
++        built.check_returncode()
++        result = subprocess.run([str(executable)], capture_output=True, timeout=30, preexec_fn=limits)
++        (output / (name + '.run.log')).write_bytes(result.stdout + result.stderr)
++        expected = 0 if mutation is None else -signal.SIGABRT
++        classifier = b'' if mutation is None else ('rr-execution:' + name + '\n').encode()
++        record = dict(case=name, status=result.returncode, expected=expected,
++                      exact_assertion=classifier.decode(), classified=classifier in result.stderr)
++        records.append(record)
++        (output / 'results.json').write_text(json.dumps(records, indent=2) + '\n')
++        if result.returncode != expected or classifier not in result.stderr:
++            raise RuntimeError(f'{name}: wrong status or assertion classifier')
++
++
++if __name__ == '__main__':
++    main()
 diff --git a/tests/unit/test-crucible-quantum-rr-parent.py b/tests/unit/test-crucible-quantum-rr-parent.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..5cdf2f48a36f030a0799618a45383aa5d444578f
@@ -347047,6 +348035,278 @@ index 0000000000000000000000000000000000000000..5cdf2f48a36f030a0799618a45383aa5
 +        (output / (name + '.run.log')).write_bytes(result.stdout + result.stderr)
 +        expected = 0 if mutation is None else -signal.SIGABRT
 +        classifier = b'' if mutation is None else ('rr-parent:' + name + '\n').encode()
++        record = dict(case=name, status=result.returncode, expected=expected,
++                      exact_assertion=classifier.decode(), classified=classifier in result.stderr)
++        records.append(record)
++        (output / 'results.json').write_text(json.dumps(records, indent=2) + '\n')
++        if result.returncode != expected or classifier not in result.stderr:
++            raise RuntimeError(f'{name}: wrong status or assertion classifier')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tests/unit/test-crucible-quantum-rr-terminal.py b/tests/unit/test-crucible-quantum-rr-terminal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f268972192cf7d7d5d86a84522f82f577a409990
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-rr-terminal.py
+@@ -0,0 +1,266 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check actual RR terminal field geometry without issuing an owner.
++
++The initialized buffer is a physical span, not a Runtime/payer/provider. No
++Module callback is installed or invoked. Each omission is independently rebuilt
++and must fail its named assertion, rather than merely terminate unsuccessfully.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++
++
++CHECKS = r'''
++
++static void check(bool condition, const char *name)
++{
++    if (!condition) {
++        fprintf(stderr, "rr-terminal:%s\n", name);
++        abort();
++    }
++}
++
++int main(void)
++{
++    union { max_align_t alignment; uint8_t bytes[4096]; } storage = { 0 };
++    QemuCrucibleCommandConsumerMember member = { 0 };
++    QemuCrucibleQuantumRRTerminalRegistration *registration =
++        &startup_source.quantum_rr_terminal_registration;
++    QemuCrucibleQuantumRRExecutionRegistration execution = { 0 };
++    struct qemu_plugin_crucible_advance_cleanup_observation_v1 *observation =
++        (void *)&storage.bytes[0];
++    struct qemu_plugin_crucible_quantum_rr_execution_registration_v1 *result =
++        (void *)&storage.bytes[256];
++    void *journal = &storage.bytes[512];
++    size_t journal_bytes = 512;
++    uint64_t unprotected;
++
++    /* This initialized span is a physical leaf, never an enrolled Runtime. */
++    member.runtime_base = (uintptr_t)&storage;
++    member.runtime_extent = sizeof(storage);
++    member.pending_constructor.registered = true;
++    member.pending_constructor.module_journal = journal;
++    member.pending_constructor.module_journal_bytes = journal_bytes;
++    check(sizeof(registration->table) == 24 && sizeof(*result) == 32 &&
++          sizeof(*observation) == 136 &&
++          sizeof(struct qemu_plugin_crucible_quantum_rr_terminal_receipt_v1) == 80,
++          "abi");
++    check(quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, result), "geometry");
++    member.pending_constructor.registered = false;
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, result), "constructor-registration");
++    member.pending_constructor.registered = true;
++    check(!quantum_rr_terminal_fields_valid(&member, observation, (char *)journal + 8,
++          journal_bytes, result), "journal-identity");
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes - 8, result), "journal-size");
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, (void *)observation), "pairwise");
++    check(!quantum_rr_terminal_fields_valid(&member, journal, journal,
++          journal_bytes, result), "observation-journal");
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, journal), "result-journal");
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, (void *)&storage.bytes[217]), "alignment");
++    check(!quantum_rr_terminal_fields_valid(&member, observation, journal,
++          journal_bytes, (void *)&storage.bytes[4080]), "upper");
++    member.runtime_base = UINTPTR_MAX - 4095;
++    member.runtime_extent = 8192;
++    check(!quantum_rr_terminal_fields_valid(&member, (void *)member.runtime_base,
++          journal, journal_bytes, (void *)(member.runtime_base + 256)), "overflow");
++
++    /* Saved completion flags are facts, not a semantic producer fixture. */
++    execution.original_post_attempted = true;
++    execution.original_post_returned = true;
++    execution.identity_post_attempted = true;
++    execution.identity_post_returned = true;
++    check(quantum_rr_execution_registration_posts_complete(&execution), "posts");
++#define CHECK_POST_FLAG(field, name) do { \
++    execution.field = false; \
++    check(!quantum_rr_execution_registration_posts_complete(&execution), name); \
++    execution.field = true; \
++} while (0)
++    CHECK_POST_FLAG(original_post_attempted, "original-attempted");
++    CHECK_POST_FLAG(original_post_returned, "original-returned");
++    CHECK_POST_FLAG(identity_post_attempted, "identity-attempted");
++    CHECK_POST_FLAG(identity_post_returned, "identity-returned");
++    execution.original_post_status = -ETIME;
++    check(!quantum_rr_execution_registration_posts_complete(&execution), "original-status");
++    execution.original_post_status = 0;
++    execution.identity_post_status = -ESTALE;
++    check(!quantum_rr_execution_registration_posts_complete(&execution), "identity-status");
++
++    registration->observation = observation;
++    registration->output = result;
++    check(callback_child_output_conflicts_locked(result, sizeof(*result)), "registration-result");
++    check(callback_child_output_conflicts_except_locked(result, sizeof(*result), result), "no-result-exception");
++    check(callback_child_output_conflicts_locked(observation, sizeof(*observation)), "observation");
++    check(!callback_child_output_conflicts_except_locked(observation, sizeof(*observation), observation), "exact-observation");
++    check(callback_child_output_conflicts_except_locked((char *)observation + 8,
++          sizeof(*observation), observation), "interior-observation");
++    check(callback_child_output_conflicts_except_locked(observation,
++          sizeof(*observation) - 8, observation), "short-observation");
++    check(!callback_child_output_conflicts_locked(&unprotected, sizeof(unprotected)), "unprotected");
++    check(!registration->registered && !registration->attempted, "no-owner-issued");
++    return 0;
++}
++
++'''
++
++
++def limits():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('source', type=Path)
++    parser.add_argument('output', type=Path)
++    args = parser.parse_args()
++    root = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    extract = runpy.run_path(str(root / 'tests/unit/extract-crucible-startup-source-controls.py'))
++    function = extract['function']
++
++    def selected(path, declarations):
++        text = (root / path).read_text()
++        return '\n'.join(function(text, declaration) for declaration in declarations)
++
++    native = (root / 'plugins/crucible-native-deferred-main-finish.inc.h').read_text()
++    owner = native[native.index('struct QemuCrucibleNativeDeferredMainFinish {'):
++                   native.index('static int native_deferred_main_finish_identity_locked(')]
++    prefix = ('#include "qemu/osdep.h"\n#include "plugins/crucible-startup-source.h"\n'
++              'static QemuCrucibleStartupSourceControl startup_source;\n' + owner + '\n' +
++              selected('plugins/crucible-native-invocation.c', ['static bool group_output_overlaps(']) +
++              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1('))
++    body = '\n'.join([
++        selected('plugins/crucible-callback-child.inc.h', [
++            'static bool callback_child_output_overlap(',
++            'static bool callback_child_output_conflicts_except_locked(',
++            'static bool callback_child_output_conflicts_locked(']),
++        selected('plugins/crucible-pending-command.inc.h', ['static bool pending_runtime_field(']),
++        selected('plugins/crucible-quantum-rr-terminal.inc.h', [
++            'static bool quantum_rr_terminal_fields_valid(',
++            'static bool quantum_rr_execution_registration_posts_complete(']),
++    ])
++    mutations = {
++        'constructor-registration': (
++            '!constructor->registered || ',
++            '',
++        ),
++        'journal-identity': (
++            'journal != constructor->module_journal ||',
++            'false ||',
++        ),
++        'journal-size': (
++            'journal_bytes != constructor->module_journal_bytes',
++            'false',
++        ),
++        'pairwise': (
++            '!callback_child_output_overlap(output, sizeof(*output),\n                                       observation, sizeof(*observation))',
++            'true',
++        ),
++        'observation-journal': (
++            '!callback_child_output_overlap(observation, sizeof(*observation),\n                                       journal, journal_bytes)',
++            'true',
++        ),
++        'result-journal': (
++            '!callback_child_output_overlap(output, sizeof(*output), journal, journal_bytes)',
++            'true',
++        ),
++        'alignment': (
++            'address % alignment == 0 &&',
++            'true &&',
++        ),
++        'upper': (
++            'address - base <= extent - bytes',
++            'true',
++        ),
++        'overflow': (
++            'extent <= UINTPTR_MAX - base &&',
++            'true &&',
++        ),
++        'original-attempted': (
++            'registration->original_post_attempted &&',
++            'true &&',
++        ),
++        'original-returned': (
++            'registration->original_post_returned &&',
++            'true &&',
++        ),
++        'identity-attempted': (
++            'registration->identity_post_attempted &&',
++            'true &&',
++        ),
++        'identity-returned': (
++            'registration->identity_post_returned &&',
++            'true &&',
++        ),
++        'original-status': (
++            '!registration->original_post_status &&',
++            'true &&',
++        ),
++        'identity-status': (
++            '!registration->identity_post_status;',
++            'true;',
++        ),
++        'registration-result': (
++            'startup_source.quantum_rr_terminal_registration.output,',
++            'NULL,',
++        ),
++        'observation': (
++            'startup_source.quantum_rr_terminal_registration.observation,\n            sizeof(*startup_source.quantum_rr_terminal_registration.observation)) &&',
++            'NULL, 0) &&',
++        ),
++        'short-observation': (
++            'bytes == sizeof(*startup_source.quantum_rr_terminal_registration.observation)',
++            'true',
++        ),
++        'interior-observation': (
++            'output == startup_source.quantum_rr_terminal_registration.observation &&',
++            'true &&',
++        ),
++    }
++    records = []
++    for name, mutation in [('physical-leaves', None), *mutations.items()]:
++        changed = body
++        if mutation:
++            old, new = mutation
++            if changed.count(old) != 1:
++                raise ValueError(f'{name}: expected one actual fragment, got {changed.count(old)}')
++            changed = changed.replace(old, new, 1)
++        source = output / (name + '.c')
++        executable = output / name
++        source.write_text(prefix + '\n' + changed + '\n' + CHECKS)
++        command = (shlex.split(os.environ.get('CC', 'cc')) +
++                   shlex.split(os.environ.get('CFLAGS', '')) +
++                   [str(source), '-o', str(executable)] +
++                   shlex.split(os.environ.get('LDFLAGS', '')))
++        (output / (name + '.command.json')).write_text(json.dumps(command, indent=2) + '\n')
++        built = subprocess.run(command, capture_output=True, timeout=180, preexec_fn=limits)
++        (output / (name + '.compile.log')).write_bytes(built.stdout + built.stderr)
++        built.check_returncode()
++        result = subprocess.run([str(executable)], capture_output=True, timeout=30, preexec_fn=limits)
++        (output / (name + '.run.log')).write_bytes(result.stdout + result.stderr)
++        expected = 0 if mutation is None else -signal.SIGABRT
++        classifier = b'' if mutation is None else ('rr-terminal:' + name + '\n').encode()
 +        record = dict(case=name, status=result.returncode, expected=expected,
 +                      exact_assertion=classifier.decode(), classified=classifier in result.stderr)
 +        records.append(record)

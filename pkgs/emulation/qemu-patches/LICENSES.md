@@ -10,6 +10,10 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `plugins/crucible-quantum-rr-execution.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-rr-terminal.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-rr-execution.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-rr-terminal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-quantum-rr-parent.rst` | GPL-2.0-or-later | QEMU default |
 | `docs/devel/crucible-quantum-wrapper-retirement.rst` | GPL-2.0-or-later | QEMU default |
 | `plugins/crucible-quantum-rr-parent.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
