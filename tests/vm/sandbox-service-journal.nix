@@ -10,6 +10,8 @@
     src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
     cargoDeps = pkgs.aos.passthru.cargoDeps;
     cargoRoot = "crates";
+    # The shared journal probe links guarded, non-release qualification code.
+    buildType = "debug";
     cargoFlags = "-p aos-sandbox-service-journal-probe --bin aos-sandbox-service-journal-probe";
     doCheck = false;
     # The journal crate's shared protocol dependency generates its Rust types.
