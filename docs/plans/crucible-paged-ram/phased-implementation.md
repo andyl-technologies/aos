@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 484 bindings: 465 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 497 bindings: 478 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -601,6 +601,14 @@ suite and strict all-target Clippy pass after replacing the test's randomized
 name set with an ordered set. The initial Clippy refusal remains retained.
 This adds a tenth root-transfer case to the counted ABI group; C compilation
 and execution remain unqualified at this source checkpoint.
+
+The refreshed inventory at `9c6xv6gc2b9skkwd163y3jiaaka0ra30` verifies 497
+bindings: 465 model, thirteen format and nineteen native, across 243 requirements.
+It leaves 148 requirements uncovered and grants no execution qualification.
+The mandatory application build for `5579c1d09b` is pending; independent comparison
+matches all 5,356 committed Rust/TOML files to immutable source
+`l4dh43sfyz2vmqbbpjxcd6yk9y8n6vg5`, with zero mismatches. Its comparison record
+has SHA256 `479a7d43a32a3d466271d065a08aad941ae2bf570fa2260011a83dc411097428`.
 
 #### Selected allocator fail-stop component
 
