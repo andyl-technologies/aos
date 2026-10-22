@@ -119,6 +119,23 @@ modify entries. `--stat` reports added, removed and modified entry counts and
 the policy-change flag. These are metadata differences, without plaintext reads
 or text-line statistics. An unchanged comparison has no default output.
 
+Audit the entry's current object through its signed commit history:
+
+```sh
+terrane blame "${terrane_local[@]}" refs/heads/_/main feature.txt
+terrane blame "${terrane_local[@]}" "commit:$terrane_first" message.txt
+```
+
+`blame` reports the selected view, its actual introducing commit, and the merge
+commits that carried the current object in parent-before-child order. Each
+record includes the issuer, token identifier, subject, principal kind, workload,
+process, advisory timestamps, writer epoch and source. String claims are quoted.
+Embedded token chains, commit messages and object bodies are excluded. The path
+is relative to the view, including a view selected with `:/subtree`. A later
+metadata edit can preserve the original object introduction; replacing its
+content produces a new introduction. Fixed views still require current path
+read authorization.
+
 ```sh
 terrane log "${terrane_local[@]}"
 terrane log "${terrane_local[@]}" --reference refs/heads/_/feature \

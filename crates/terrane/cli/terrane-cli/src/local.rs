@@ -19,11 +19,21 @@ use terrane_sdk::{
     surface::{Endpoint, EndpointKind, ReaderMode, RealizationHints, View},
 };
 
+mod blame;
 mod difference;
 mod history;
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Show the signed introduction and merge history of one entry.
+    Blame {
+        #[command(flatten)]
+        repository: LocalArguments,
+        /// Select a ref or commit:DIGEST, optionally with :/subtree.
+        view: String,
+        /// Select this entry relative to the view subtree.
+        path: PathBuf,
+    },
     /// Compare the authorized metadata of two refs or commit views.
     Diff {
         #[command(flatten)]
@@ -221,6 +231,25 @@ impl Command {
     /// registered realization, and local filesystem errors.
     pub(crate) async fn run(self) -> Result<(), Error> {
         let commit = match self {
+            Self::Blame {
+                repository: arguments,
+                view,
+                path,
+            } => {
+                use std::os::unix::ffi::OsStrExt;
+
+                let (repository, authority) = arguments.open().await?;
+                let result = repository
+                    .blame(
+                        &View::parse(&view)?,
+                        path.as_os_str().as_bytes(),
+                        authority.token(),
+                        "sdk",
+                    )
+                    .await?;
+                blame::write(&result, &mut std::io::stdout().lock())?;
+                return Ok(());
+            }
             Self::Diff {
                 repository: arguments,
                 before,

@@ -256,6 +256,37 @@ where
         token: &[u8],
         surface: &str,
     ) -> Result<FileReadMetadata, Error> {
+        let (snapshot, absolute) = self.entry_read_metadata(view, path, token, surface).await?;
+        let (location, _) = snapshot
+            .history
+            .locate(snapshot.commit.identity(), &absolute[1..])
+            .map_err(|_| Error::Absent)?;
+        let (content, size) = match snapshot
+            .history
+            .entry(&location)
+            .map_err(|_| Error::Absent)?
+            .kind
+        {
+            EntryKind::File { content, size, .. } => (content, size),
+            _ => return Err(Error::Unrealizable),
+        };
+
+        Ok(FileReadMetadata {
+            snapshot,
+            absolute,
+            content,
+            size,
+        })
+    }
+
+    /// Selects one trusted entry without fetching content or exposing siblings.
+    pub(super) async fn entry_read_metadata(
+        &self,
+        view: &View,
+        path: &[u8],
+        token: &[u8],
+        surface: &str,
+    ) -> Result<(AuthorizedSnapshot, Vec<u8>), Error> {
         tree_format::validate_key(path)?;
         if view.policy.is_some() {
             return Err(Error::UnavailableOperation("unregistered view policy"));
@@ -279,7 +310,7 @@ where
                     .await?
             }
         };
-        let (content, size) = {
+        {
             let mut any = Vec::new();
             cbor::write_text(&mut any, "any");
             let selector = Selector::from_property(&any).map_err(|_| Error::Denied)?;
@@ -296,26 +327,8 @@ where
             if !trust.accepts_path(&relative) {
                 return Err(Error::Absent);
             }
-            let (location, _) = snapshot
-                .history
-                .locate(snapshot.commit.identity(), &relative)
-                .map_err(|_| Error::Absent)?;
-            match snapshot
-                .history
-                .entry(&location)
-                .map_err(|_| Error::Absent)?
-                .kind
-            {
-                EntryKind::File { content, size, .. } => (content, size),
-                _ => return Err(Error::Unrealizable),
-            }
-        };
-        Ok(FileReadMetadata {
-            snapshot,
-            absolute,
-            content,
-            size,
-        })
+        }
+        Ok((snapshot, absolute))
     }
 
     #[cfg(all(test, feature = "surface-sdk", unix))]

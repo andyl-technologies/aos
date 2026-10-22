@@ -134,6 +134,171 @@ async fn local_diff_reports_quoted_changes_stats_and_refuses_unauthorized_output
     Ok(())
 }
 
+#[tokio::test]
+async fn local_blame_preserves_introduction_through_merges_and_refuses_unauthorized_output()
+-> Result<(), Error> {
+    let fixture = Fixture::new().await?;
+    fixture.initialize()?;
+    let token = fs::read(fixture.authority.join("token.cbor"))?;
+    let issuer = fs::read(fixture.authority.join("issuer.seed"))?;
+    let terminal = fs::read(fixture.authority.join("terminal.seed"))?;
+    let source = fixture.root.join("source");
+    fs::create_dir(&source)?;
+    fs::create_dir(source.join("nested"))?;
+    fs::write(source.join("nested/original"), b"original content\n")?;
+    symlink("nested/original", source.join("link"))?;
+    let original = fixture.succeed(
+        "commit",
+        &[
+            &fixture.path_text("source")?,
+            "--message",
+            "Original content",
+        ],
+    )?;
+    fixture.succeed(
+        "fork",
+        &["refs/heads/_/feature", "--message", "Fork feature"],
+    )?;
+    fs::write(source.join("feature"), b"feature content\n")?;
+    let feature = fixture.succeed(
+        "commit",
+        &[
+            "--reference",
+            "refs/heads/_/feature",
+            &fixture.path_text("source")?,
+            "--message",
+            "Feature content",
+        ],
+    )?;
+    fs::remove_file(source.join("feature"))?;
+    fs::set_permissions(
+        source.join("nested/original"),
+        fs::Permissions::from_mode(0o640),
+    )?;
+    fs::write(source.join("main"), b"main content\n")?;
+    fixture.succeed(
+        "commit",
+        &[&fixture.path_text("source")?, "--message", "Main content"],
+    )?;
+    let merged = fixture.succeed(
+        "merge",
+        &["refs/heads/_/feature", "--message", "Merge feature"],
+    )?;
+
+    let blame = fixture.succeed("blame", &["refs/heads/_/main", "feature"])?;
+    let rows = blame.lines().collect::<Vec<_>>();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0], format!("view={merged}"));
+    assert!(rows[1].starts_with(&format!(
+        "introduction commit={feature} issuer=\"local\" token_id="
+    )));
+    assert!(
+        rows[1].contains(" subject=\"owner\" kind=Human workload=None process=\"terrane-cli\" at=")
+    );
+    assert!(rows[1].ends_with(" source=Uploaded"));
+    assert!(rows[2].starts_with(&format!("fold commit={merged} ")));
+    assert!(rows[2].ends_with(" source=Merged"));
+    assert!(!blame.contains("embedded_token"));
+
+    // Subtree and immutable views resolve the same original content. Ordinary
+    // later commits and the unrelated feature introduction cannot replace it.
+    let nested = fixture.succeed("blame", &["refs/heads/_/main:/nested", "original"])?;
+    assert!(
+        nested
+            .lines()
+            .nth(1)
+            .ok_or("missing introduction")?
+            .starts_with(&format!("introduction commit={original} "))
+    );
+    let pinned = fixture.succeed("blame", &[&format!("commit:{original}"), "nested/original"])?;
+    assert_eq!(pinned.lines().count(), 2);
+    assert!(
+        pinned
+            .lines()
+            .nth(1)
+            .ok_or("missing pinned introduction")?
+            .starts_with(&format!("introduction commit={original} "))
+    );
+    let link = fixture.succeed("blame", &["refs/heads/_/main", "link"])?;
+    assert!(
+        link.lines()
+            .nth(1)
+            .ok_or("missing link introduction")?
+            .starts_with(&format!("introduction commit={original} "))
+    );
+
+    // A second independent merge must retain ancestry order, regardless of
+    // digest sorting or signer timestamps shared by rapid consecutive commits.
+    fs::write(source.join("feature"), b"feature content\n")?;
+    fixture.succeed("fork", &["refs/heads/_/second", "--message", "Fork second"])?;
+    fs::write(source.join("second"), b"second feature\n")?;
+    fixture.succeed(
+        "commit",
+        &[
+            "--reference",
+            "refs/heads/_/second",
+            &fixture.path_text("source")?,
+            "--message",
+            "Second feature",
+        ],
+    )?;
+    fs::remove_file(source.join("second"))?;
+    fs::write(source.join("main-second"), b"second main\n")?;
+    fixture.succeed(
+        "commit",
+        &[&fixture.path_text("source")?, "--message", "Advance main"],
+    )?;
+    let second_merge = fixture.succeed(
+        "merge",
+        &["refs/heads/_/second", "--message", "Merge second"],
+    )?;
+    let carried = fixture.succeed("blame", &["refs/heads/_/main", "feature"])?;
+    let carried_rows = carried.lines().collect::<Vec<_>>();
+    assert_eq!(carried_rows.len(), 4);
+    assert!(carried_rows[1].starts_with(&format!("introduction commit={feature} ")));
+    assert!(carried_rows[2].starts_with(&format!("fold commit={merged} ")));
+    assert!(carried_rows[3].starts_with(&format!("fold commit={second_merge} ")));
+
+    // Replacing content introduces a new object and clears the old fold chain.
+    fs::write(source.join("nested/original"), b"replacement content\n")?;
+    fs::write(source.join("feature"), b"feature content\n")?;
+    let replaced = fixture.succeed(
+        "commit",
+        &[
+            &fixture.path_text("source")?,
+            "--message",
+            "Replace original",
+        ],
+    )?;
+    let current = fixture.succeed("blame", &["refs/heads/_/main", "nested/original"])?;
+    assert_eq!(current.lines().count(), 2);
+    assert!(
+        current
+            .lines()
+            .nth(1)
+            .ok_or("missing replacement")?
+            .starts_with(&format!("introduction commit={replaced} "))
+    );
+    assert_eq!(fs::read(fixture.authority.join("issuer.seed"))?, issuer);
+    assert_eq!(fs::read(fixture.authority.join("terminal.seed"))?, terminal);
+    assert_eq!(fs::read(fixture.authority.join("token.cbor"))?, token);
+
+    for (view, path) in [
+        ("refs/heads/_/main", "missing"),
+        ("refs/heads/_/main", "../escape"),
+        ("refs/heads/_/missing", "feature"),
+    ] {
+        let refused = fixture.invoke("blame", &[view, path])?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+    }
+    fs::write(fixture.authority.join("token.cbor"), [0x80])?;
+    let refused = fixture.invoke("blame", &["refs/heads/_/main", "feature"])?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    Ok(())
+}
+
 struct Fixture {
     root: PathBuf,
     bucket: String,

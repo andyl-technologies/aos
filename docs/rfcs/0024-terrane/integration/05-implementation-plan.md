@@ -15568,3 +15568,32 @@ views or refused tokens. The owning CLI gate now requires all five workflow
 cases. Its execution and the mandatory application-target compilation for this
 new Rust source remain pending; older native and package results do not qualify
 the new frontend source.
+
+#### CLI diff workflow qualification and signed graph blame preparation
+
+The frozen `cfa35db2fe` CLI workflow passes all five exact cases in 333.891
+seconds, with no ignored cases. Independent review matches all 8,075 immutable
+source files, the exact inventory and each retained execution log, and both
+actual CLI compiler artifacts. The new regression confirms added, removed and
+modified rows, exact statistics, unchanged comparisons, preserved credentials
+and empty output for missing views or refused tokens. This is the protected
+hermetic repository workflow, not ext4 deployment qualification. Its mandatory
+application-target compilation remains pending at this checkpoint.
+
+The next implementation adds SDK and CLI `blame` over the existing verified
+introduction and carrying-history evidence. It returns only owned descriptive
+provenance, excludes embedded token chains, and closes with fresh path Read.
+Merge carrying records follow signed parent order; signer timestamps and digest
+order do not establish ancestry. A shared private entry-selection helper retains
+the same scoped trust checks used by file reads. No object body is requested.
+The owning `obs-blame` check requires real SDK scoped read-only and metadata-only
+regressions plus the separate-process CLI audit regression. The expanded local
+workflow requires all six cases. These new runtime checks and application-target
+compilation have not yet passed; OBS-13 and T-OBS-1 are not accepted by preparation.
+
+Final strict all-target CLI lint, the SDK blame target lint, both integration
+binary compilations, portable SDK `std` compilation and Rust formatting pass.
+The intermediate formatting check caught a new assertion's line wrapping; the
+final check runs after formatting and passes. All 2,646 Nix files format, the
+eight operator-guide shell blocks parse, its relative links resolve, and
+`git diff --check` passes. Compilation supplies no integration runtime claim.

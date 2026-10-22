@@ -8,6 +8,7 @@
 mod audit;
 #[cfg(unix)]
 mod audit_codec;
+mod blame;
 #[cfg(all(feature = "surface-sdk", unix))]
 mod checkout;
 mod diff;
@@ -40,6 +41,7 @@ mod validator;
 pub use crate::guard::ListedRef;
 #[cfg(unix)]
 pub use audit::RegisteredDomainAudit;
+pub use blame::{EntryBlame, EntryProvenance};
 pub use diff::Difference;
 pub use error::Error;
 pub use file_read::PreparedFileRead;
