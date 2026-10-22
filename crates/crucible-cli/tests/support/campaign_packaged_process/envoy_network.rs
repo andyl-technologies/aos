@@ -7,7 +7,9 @@ use crucible_campaign::{
 };
 use crucible_core::NetworkFaultSelectable;
 
-use super::attempt_progress::{AttemptProgressWatch, AttemptWaitLimits};
+use super::attempt_progress::{
+    ATTEMPT_PROGRESS_ROW, AttemptProgressWatch, AttemptWaitLimits, reported_guest_progress,
+};
 
 #[path = "envoy_network/flight_limits.rs"]
 mod flight_limits;
@@ -32,6 +34,15 @@ const RETAIN_AND_PROBE: [u8; 32] = [0x11; 32];
 /// fail on stalled progress rather than on a fixed host-time ceiling.
 pub(super) fn envoy_attempt_limits() -> AttemptWaitLimits {
     AttemptWaitLimits::for_policy_horizon(ENVOY_POLICY_VIRTUAL_TIME_PS)
+}
+
+/// Reads the guest progress in the service's newest RUN progress row.
+fn service_guest_progress(service: &CampaignServiceChild) -> Option<String> {
+    service
+        .stderr_recent_lines_with_prefix(ATTEMPT_PROGRESS_ROW, 1, 8192)
+        .ok()?
+        .pop()
+        .and_then(|row| reported_guest_progress(&row))
 }
 
 pub(super) struct FlightProgress {
@@ -684,6 +695,7 @@ fn wait_for_capture_ready(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        watch.sample_guest_progress(|| service_guest_progress(service));
         watch.observe(&format!("snapshot={snapshot}"))?;
         let output = connected_campaign(fixture)
             .args([
@@ -736,6 +748,7 @@ fn wait_for_public_completed_attempt(
         }
         let head = campaign_status(fixture)?;
         let snapshot = json_string(&head, "snapshot")?;
+        watch.sample_guest_progress(|| service_guest_progress(service));
         let Some(explanation) = explain_public_attempt(fixture, &snapshot, &attempt.to_string())?
         else {
             watch.observe(&format!("snapshot={snapshot}"))?;
@@ -877,6 +890,7 @@ pub(super) fn wait_for_public_attempt(
             .as_ref()
             .and_then(|report: &Value| report["runtime"]["phase"].as_str())
             .unwrap_or("unadmitted");
+        watch.sample_guest_progress(|| service_guest_progress(service));
         if let Err(stall) = watch.observe(&format!("snapshot={snapshot} phase={phase}")) {
             let diagnostics = initial_discovery_diagnostics(
                 fixture,
