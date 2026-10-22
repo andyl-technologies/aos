@@ -2,14 +2,14 @@
 
 use super::{NativeMetadataOwner, NativeSurfaceIndex};
 use crate::{
-    host_cache::content::native_failure,
-    structural_index::{Index, IndexKey, MappedIndex},
+    host_cache::{NativeFileBacking, content::native_failure},
+    structural_index::{Index, IndexKey, Kind, MappedIndex},
 };
 use std::io;
 use terrane_format::identity::Digest;
 use terrane_format::identity::{IdentityKind, TERRANE_V1};
 use terrane_sdk::{
-    repository::{Error, PreparedRootRead},
+    repository::{Error, PreparedFileRead, PreparedRootRead},
     store::{Clock, Store, StoreErrorKind, StoreFailure},
 };
 
@@ -25,6 +25,7 @@ pub struct NativeRootIndex {
     mapping: MappedIndex,
     admission: NativeSurfaceIndex,
     commit: Digest,
+    domain: String,
 }
 
 impl NativeRootIndex {
@@ -102,6 +103,7 @@ impl NativeMetadataOwner {
         let commit = selection.metadata().commit();
         let admission = self.admit_prepared_root(&selection).await?;
         let mapping = map_original(&admission).map_err(|error| native_failure(error, &identity))?;
+        let domain = selection.storage_domain().to_owned();
         selection.finish().await?;
         admission
             .check_native_backing()
@@ -110,7 +112,52 @@ impl NativeMetadataOwner {
             mapping,
             admission,
             commit,
+            domain,
         })
+    }
+
+    /// Prepares backing only for a freshly authorized file in this served root.
+    ///
+    /// The exact signed commit, canonical root and effective physical domain must
+    /// match the original mapped selection. Its checked path must name the same
+    /// typed content and logical size. These comparisons precede physical pin
+    /// effects. The ordinary native file bridge then checks original backing and
+    /// finishes this file's fresh scoped Read before returning its descriptor.
+    ///
+    /// This supplies object-scope checking, not an exposure ID, durable exposure
+    /// lease or local transport credential. The caller must separately verify
+    /// those and retain the returned backing through all delegated references.
+    ///
+    /// # Errors
+    /// Denies a selection outside the mapped root, native backing failures and
+    /// any initial or closing authorization refusal. Existing whole-file backing
+    /// must be available; this method does not fetch missing content.
+    pub async fn prepare_surface_file_backing<S: Store, C: Clock>(
+        &self,
+        served: &NativeRootIndex,
+        selection: PreparedFileRead<'_, S, C>,
+        expires: u64,
+    ) -> Result<NativeFileBacking, Error> {
+        if selection.commit() != served.commit
+            || selection.root() != served.key().root()
+            || selection.storage_domain() != served.domain
+        {
+            return Err(Error::Denied);
+        }
+        let path = selection.path().strip_prefix(b"/").ok_or(Error::Denied)?;
+        let entry = served.index().lookup(path).ok_or(Error::Denied)?;
+        if !matches!(entry.kind(), Kind::File { content, size }
+            if content == selection.content() && size == selection.size())
+        {
+            return Err(Error::Denied);
+        }
+        let identity = TERRANE_V1
+            .from_digest(IdentityKind::Node, &served.key().root())
+            .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported))?;
+        served
+            .check_native_backing()
+            .map_err(|error| native_failure(error, &identity))?;
+        self.prepare_file_backing(selection, expires).await
     }
 
     async fn admit_prepared_root<S: Store, C: Clock>(

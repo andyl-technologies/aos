@@ -5,13 +5,16 @@ use super::{
     repository_fixture::{MAIN, RepositoryFixture},
 };
 use std::{fs, io};
-use terrane_format::surface::ViewTarget;
+use terrane_format::surface::{View, ViewTarget};
 use terrane_linux::host_cache::NativeMetadataOwner;
 use terrane_linux::structural_index::Kind;
 use terrane_sdk::{
     repository::{Error, RootNodeLimits},
     store::StoreErrorKind,
 };
+
+#[path = "scoped/files.rs"]
+mod files;
 
 fn limits() -> RootNodeLimits {
     RootNodeLimits {
@@ -63,6 +66,12 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
+    let view = View::parse(MAIN)?;
+    let backing = files::admit(owner, &mapped, &fixture, &view).await?;
+    let file_selection = fixture
+        .repository
+        .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+        .await?;
     let mapping_selection = fixture
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
@@ -78,10 +87,33 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("mapped index escaped a changed actual policy head".into());
     }
+    if !matches!(owner.prepare_surface_file_backing(&mapped, file_selection, files::deadline()?).await,
+        Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. }))
+    {
+        return Err("surface backing escaped a changed actual policy head".into());
+    }
+    let selection = fixture
+        .repository
+        .prepare_file_read(&view, b"file", fixture.authority.token(), "sdk")
+        .await?;
+    let policy = inputs.root.join("state/cache/records.toml");
+    let before = fs::read(&policy)?;
+    if !matches!(
+        owner
+            .prepare_surface_file_backing(&mapped, selection, files::deadline()?)
+            .await,
+        Err(Error::Denied)
+    ) || fs::read(&policy)? != before
+    {
+        return Err("another served commit reached physical surface pin effects".into());
+    }
+    files::check(&backing)?;
+    owner.release_sealed_object_lease(backing.lease()).await?;
+    files::check(&backing)?;
+    drop(backing);
     admitted.check_native_backing()?;
     let first_key = admitted.key();
     drop(admitted);
-    let policy = inputs.root.join("state/cache/records.toml");
     let before = fs::read(&policy)?;
     if !matches!(owner.evict_surface_index(first_key).await,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock)
@@ -122,6 +154,9 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     );
     println!(
         "PASS signed-root mapping retains original sealed cache custody, refuses changed policy before disclosure and blocks warm retirement until drop"
+    );
+    println!(
+        "PASS mapped signed root scopes actual sealed file backing; another commit is denied before pin effects and changed policy denies disclosure"
     );
     Ok(())
 }

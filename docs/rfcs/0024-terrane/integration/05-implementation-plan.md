@@ -13574,3 +13574,27 @@ Strict all-feature Linux all-target Clippy, formatting, Python syntax and the
 complete native source inventory pass locally for the signed mapping bridge.
 The native VM now requires its new witness explicitly; source compilation is
 not substituted for runtime admission and mapping qualification.
+
+
+Required application-target compilation at `4eb964fc5b` passes in 1,526.21
+seconds with all 9,333 tracked files unchanged. Independent review matches all
+8,007 immutable source files and 184 compiler records across 59 packages. The
+owning root proof is still running; no current-head aggregate pass is inferred.
+
+The mapped-root file bridge now checks a fresh actual SDK file selection against
+the exact served commit, root, effective domain, full path, typed content and
+logical size before physical pin effects. It then uses the existing native
+whole-file bridge and its original closing Read. This does not supply exposure
+identity, a durable exposure lease or transport authentication, and it does not
+fetch missing backing. The native fixture publishes a genuine sealed inline
+file, compares its original inode and bytes, refuses a later served commit
+without state effects and denies disclosure when policy advances after file
+preparation. An already disclosed descriptor remains readable through policy
+advance and physical release, under its retained original owner.
+
+Local strict all-feature Linux all-target Clippy, formatting, Python syntax and
+the complete native source inventory pass. The first formatter attempt caught
+an explicit-path child-module resolution error; a matching `scoped/files.rs`
+module path fixes it. Original runtime bounds and all existing controls remain.
+Frozen native and mandatory application qualification for this increment remain
+pending. Exposure, worker and trunk acceptance are unchanged.
