@@ -37,10 +37,16 @@ const BODIES: [&[u8]; 3] = [
 ];
 
 fn bounds() -> Import18RawBootstrapBounds {
+    // Fund the positive control's complete current physical row. The negative
+    // controls subtract one byte from each axis or from this independent peak.
+    let requested_peak = raw_storage_floor(BODIES.map(<[u8]>::len))
+        .unwrap()
+        .into_iter()
+        .sum();
     Import18RawBootstrapBounds {
         bodies: [256; 3],
         complete_private_bytes: NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES + 3 * 256,
-        requested_peak: 1024 * 1024,
+        requested_peak,
     }
 }
 
@@ -203,7 +209,7 @@ fn inherited_raw_bootstrap_child() {
         selected_bounds.requested_peak = source_authentication::required_peak(&case) - 1;
     }
     if case == "independent_peak" {
-        selected_bounds.requested_peak = 1;
+        selected_bounds.requested_peak -= 1;
     }
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
