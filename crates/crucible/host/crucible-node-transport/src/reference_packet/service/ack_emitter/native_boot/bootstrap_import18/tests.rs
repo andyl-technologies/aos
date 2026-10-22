@@ -79,6 +79,17 @@ fn prefix_for_bodies(
 }
 
 fn child(case: &str, wire: &[u8]) {
+    // Parse and hash immutable fixture inputs before the child's original cut.
+    // Actual Hello frames and the child process identity are still bound later.
+    let prepared_proof = if case.contains("_normalizations_host_proof_")
+        || case.contains("_normalizations_host_reply_")
+        || case.contains("_normalizations_host_publication_")
+    {
+        Some(super::bootstrap_proof::tests::prepare_wire_data(wire))
+    } else {
+        None
+    };
+
     let (mut parent, inherited) = UnixStream::pair().unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -192,7 +203,7 @@ fn child(case: &str, wire: &[u8]) {
         if case.contains("_normalizations_host_publication_") {
             super::bootstrap_proof::tests::write_parent_publication_frame(
                 public_peer.as_mut().unwrap(),
-                wire,
+                prepared_proof.as_ref().unwrap(),
                 process.id(),
                 &hello,
             )
@@ -210,7 +221,7 @@ fn child(case: &str, wire: &[u8]) {
                     case
                 },
                 public_peer.as_mut().unwrap(),
-                wire,
+                prepared_proof.as_ref().unwrap(),
                 process.id(),
                 &hello,
             )

@@ -12,9 +12,10 @@ use crate::reference_packet::service::complete_restore::import18::hello::{
     NATIVE_IMPORT18_CONNECTION_ID, native_import18_hello_declaration_data,
 };
 use crate::reference_packet::service::complete_restore::import18::{
-    NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, PacketNativeImport18SelectedLaunchWireData,
-    decode_native_import18_private_prefix_data, native_import18_restored_record_schema_data,
-    native_import18_schema_data, native_import18_stage_schema_data,
+    NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, PacketNativeImport18PrivatePrefixData,
+    PacketNativeImport18SelectedLaunchWireData, decode_native_import18_private_prefix_data,
+    native_import18_restored_record_schema_data, native_import18_schema_data,
+    native_import18_stage_schema_data,
 };
 use crucible_node_format::canonical;
 use serde_json::{Value, json};
@@ -82,34 +83,85 @@ impl PublicationOracle {
 /// Sends a proof while keeping its independent response oracle in the parent.
 pub(in super::super::super::super) fn write_parent_publication_frame(
     peer: &mut UnixStream,
-    wire: &[u8],
+    prepared: &PreparedProofWire,
     native_pid: u32,
     hello_body: &[u8],
 ) -> std::io::Result<(Vec<u8>, PublicationOracle)> {
     write_parent_frame_and_oracle(
         "initial_policy_kernel_normalizations_host_proof_complete",
         peer,
-        wire,
+        prepared,
         native_pid,
         hello_body,
     )
+}
+
+/// Retains immutable fixture operands independently of the live public exchange.
+pub(in super::super::super::super) struct PreparedProofWire {
+    prefix: PacketNativeImport18PrivatePrefixData,
+    bodies: Vec<Value>,
+    selected: PacketNativeImport18SelectedLaunchWireData,
+    source_birth: Bytes,
+    host_registration: Bytes,
+}
+
+/// Prepares static fixture DATA before spawning the deadline-bound child.
+///
+/// Actual child identity, published Hello, negotiation and assigned proof remain
+/// live-exchange inputs. This preparation supplies no Source or native grant.
+///
+/// # Panics
+/// Panics if the test fixture has malformed private framing or typed launch DATA.
+pub(in super::super::super::super) fn prepare_wire_data(wire: &[u8]) -> PreparedProofWire {
+    let prefix = decode_native_import18_private_prefix_data(
+        &wire[..NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES],
+        [usize::MAX; 3],
+        usize::MAX,
+    )
+    .unwrap();
+    let lengths = prefix.body_lengths_data().unwrap();
+    let mut offset = NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES;
+    let mut bodies = Vec::new();
+    for length in lengths {
+        bodies.push(serde_json::from_slice::<Value>(&wire[offset..offset + length]).unwrap());
+        offset += length;
+    }
+    assert_eq!(offset, wire.len());
+    let selected: PacketNativeImport18SelectedLaunchWireData =
+        serde_json::from_value(bodies[1].clone()).unwrap();
+    let boot = &bodies[2];
+    let source_birth = digest(
+        &json!({"schema":"source-owned.packet-native-import-bootstrap-birth-association/18",
+        "birth_id":boot["birth_id"],"private_launch":boot["private_launch"],"host_executable":boot["host_executable"],
+        "source_binding":boot["source_birth"],"expected_host_registration":boot["expected_host_registration"]}),
+    );
+    let host_registration = digest(&boot["expected_host_registration"]);
+
+    PreparedProofWire {
+        prefix,
+        bodies,
+        selected,
+        source_birth,
+        host_registration,
+    }
 }
 
 /// Reads the actual response before computing and sending the bootstrap proof.
 pub(in super::super::super::super) fn write_parent_frame(
     case: &str,
     peer: &mut UnixStream,
-    wire: &[u8],
+    prepared: &PreparedProofWire,
     native_pid: u32,
     hello_body: &[u8],
 ) -> std::io::Result<Vec<u8>> {
-    write_parent_frame_and_oracle(case, peer, wire, native_pid, hello_body).map(|(frame, _)| frame)
+    write_parent_frame_and_oracle(case, peer, prepared, native_pid, hello_body)
+        .map(|(frame, _)| frame)
 }
 
 fn write_parent_frame_and_oracle(
     case: &str,
     peer: &mut UnixStream,
-    wire: &[u8],
+    prepared: &PreparedProofWire,
     native_pid: u32,
     hello_body: &[u8],
 ) -> std::io::Result<(Vec<u8>, PublicationOracle)> {
@@ -128,22 +180,13 @@ fn write_parent_frame_and_oracle(
     assert_eq!(hello_response.body["status"], "completed");
     let result = &hello_response.body["result"];
 
-    let prefix = decode_native_import18_private_prefix_data(
-        &wire[..NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES],
-        [usize::MAX; 3],
-        usize::MAX,
-    )
-    .unwrap();
-    let lengths = prefix.body_lengths_data().unwrap();
-    let mut offset = NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES;
-    let mut bodies = Vec::new();
-    for length in lengths {
-        bodies.push(serde_json::from_slice::<Value>(&wire[offset..offset + length]).unwrap());
-        offset += length;
-    }
-    assert_eq!(offset, wire.len());
-    let selected: PacketNativeImport18SelectedLaunchWireData =
-        serde_json::from_value(bodies[1].clone()).unwrap();
+    let PreparedProofWire {
+        prefix,
+        bodies,
+        selected,
+        source_birth,
+        host_registration,
+    } = prepared;
     let launch = selected.launch_data();
     let launch_value = &bodies[1]["launch"];
     let boot = &bodies[2];
@@ -198,11 +241,7 @@ fn write_parent_frame_and_oracle(
     let mut context = Context {
         schema: NATIVE_IMPORT18_BOOTSTRAP_ACK_CONTEXT.into(),
         algorithm: PACKET_COMPLETE_RESTORE_ALGORITHM.into(),
-        source_birth: digest(
-            &json!({"schema":"source-owned.packet-native-import-bootstrap-birth-association/18",
-            "birth_id":boot["birth_id"],"private_launch":boot["private_launch"],"host_executable":boot["host_executable"],
-            "source_binding":boot["source_birth"],"expected_host_registration":boot["expected_host_registration"]}),
-        ),
+        source_birth: source_birth.clone(),
         kernel_binding: digest(
             &json!({"schema":"source-owned.packet-canonical-ack-kernel-binding/5",
             "controller":{"pid":launch_value["controller_pid"],"uid":launch_value["controller_uid"],"executable":launch_value["controller_executable"]},
@@ -215,7 +254,7 @@ fn write_parent_frame_and_oracle(
                 "stage":native_import18_stage_schema_data().unwrap(),"record":native_import18_restored_record_schema_data().unwrap()},
             "negotiated":negotiated}),
         ),
-        host_registration: digest(&boot["expected_host_registration"]),
+        host_registration: host_registration.clone(),
         native_registration: digest(
             &json!({"schema":"source-owned.packet-canonical-ack-registration/5","role":"native",
             "connection_id":NATIVE_IMPORT18_CONNECTION_ID,"session_id":result["session_id"],"incarnation_id":result["incarnation_id"],

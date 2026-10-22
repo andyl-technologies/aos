@@ -7,7 +7,9 @@ const PREFIX: &str = "initial_policy_kernel_normalizations_host_proof_";
 
 #[path = "fixture.rs"]
 mod fixture;
-pub(in super::super::super) use fixture::{write_parent_frame, write_parent_publication_frame};
+pub(in super::super::super) use fixture::{
+    prepare_wire_data, write_parent_frame, write_parent_publication_frame,
+};
 
 struct Model<'a> {
     suffix: &'a str,
