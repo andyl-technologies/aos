@@ -8,6 +8,8 @@
 use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
 use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
+    original_import18_bootstrap_codec_construction_data,
+    original_import18_bootstrap_codec_counter_scratch_data,
     original_import18_bootstrap_kernel_construction_data,
     original_import18_bootstrap_kernel_counter_scratch_data,
     original_import18_bootstrap_literal_construction_data,
@@ -127,6 +129,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         super::initial_normalizations::construction_data(launch, private, maximum)?,
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         original_import18_bootstrap_value_construction_data(launch, maximum)?,
+        original_import18_bootstrap_codec_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -188,6 +191,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         super::initial_normalizations::construction_data(launch, &private, maximum)?,
         original_import18_bootstrap_literal_construction_data(launch, maximum)?,
         original_import18_bootstrap_value_construction_data(launch, maximum)?,
+        original_import18_bootstrap_codec_construction_data(launch, maximum)?,
         HelloConstructionData {
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
@@ -235,6 +239,7 @@ fn combine(
     normalizations: [usize; 3],
     bootstrap_literal: [usize; 3],
     bootstrap_value: [usize; 3],
+    bootstrap_codec: [usize; 3],
     hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
@@ -374,6 +379,7 @@ fn combine(
             normalizations,
             bootstrap_literal,
             bootstrap_value,
+            bootstrap_codec,
         )?,
     )?;
     row[1] = row[1].max(normalizations[1]);
@@ -384,6 +390,9 @@ fn combine(
     // Strict bootstrap DATA and failed reasons survive beside the raw bank.
     row[1] = row[1].max(bootstrap_value[1]);
     row[2] = row[2].max(add(raw[2], bootstrap_value[2])?);
+    // Typed Envelope/body/proof outputs coexist with the raw bank and strict tree.
+    row[1] = row[1].max(bootstrap_codec[1]);
+    row[2] = row[2].max(add(raw[2], bootstrap_codec[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -414,7 +423,8 @@ pub fn native_import18_initial_quote_formatter_data(
         row[2],
         normalizations[2]
             .max(initial_construction_counter_scratch_data())
-            .max(original_import18_bootstrap_value_counter_scratch_data()?),
+            .max(original_import18_bootstrap_value_counter_scratch_data()?)
+            .max(original_import18_bootstrap_codec_counter_scratch_data()?),
     )?;
     Ok(row)
 }
@@ -434,6 +444,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The typed post-Hello decoder constructor row.
         + size_of::<[usize; 3]>() // The strict post-Hello parser constructor row.
         + size_of::<[usize; 3]>() // The first post-Hello literal constructor row.
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.

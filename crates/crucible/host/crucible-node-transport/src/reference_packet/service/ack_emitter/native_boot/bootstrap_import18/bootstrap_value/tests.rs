@@ -416,16 +416,54 @@ fn retained_schedule_counts_failed_normalization_or_complete_literal_and_parser(
     let normalizations = [size_of::<Normalizations>() + 1_000_000, 1, 1];
     let literal = [size_of::<Literal>() + 65540, 1, 1];
     let value = [size_of::<Attempt>() + 10000, 1, 1];
+    let codec = [
+        size_of::<super::super::bootstrap_codec::Attempt>() + 1000,
+        1,
+        1,
+    ];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value).unwrap(),
-        normalizations[0] + size_of::<Literal>() + size_of::<Attempt>()
+        retained_schedule_data(normalizations, literal, value, codec).unwrap(),
+        normalizations[0]
+            + size_of::<Literal>()
+            + size_of::<Attempt>()
+            + size_of::<super::super::bootstrap_codec::Attempt>()
     );
     let value = [size_of::<Attempt>() + 2_000_000, 1, 1];
     assert_eq!(
-        retained_schedule_data(normalizations, literal, value).unwrap(),
-        size_of::<Normalizations>() + literal[0] + value[0]
+        retained_schedule_data(normalizations, literal, value, codec).unwrap(),
+        size_of::<Normalizations>() + literal[0] + value[0] + codec[0]
     );
-    assert!(retained_schedule_data([usize::MAX; 3], literal, value).is_err());
-    assert!(retained_schedule_data(normalizations, [usize::MAX; 3], value).is_err());
-    assert!(retained_schedule_data(normalizations, literal, [usize::MAX; 3]).is_err());
+    assert!(retained_schedule_data([usize::MAX; 3], literal, value, codec).is_err());
+    assert!(retained_schedule_data(normalizations, [usize::MAX; 3], value, codec).is_err());
+    assert!(retained_schedule_data(normalizations, literal, [usize::MAX; 3], codec).is_err());
+}
+
+/// Completes strict DATA without spending another full original loan.
+pub(in super::super::super) fn complete_for_codec(
+    original: &mut OriginalImport18RawBootstrap,
+) -> (Normalizations, Literal, Attempt) {
+    let (normalizations, literal) =
+        super::super::bootstrap_literal::tests::complete_for_value(original);
+    let mut attempt = Attempt::empty_data();
+    let model = Model {
+        suffix: "complete",
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+        ],
+        calls: Cell::new(0),
+    };
+    original
+        .decode_bootstrap_value_data(&normalizations, &literal, &mut attempt, &model)
+        .unwrap();
+    assert_eq!(model.calls.get(), 3);
+    (normalizations, literal, attempt)
+}
+
+#[test]
+fn retained_schedule_refuses_typed_codec_overflow() {
+    assert!(retained_schedule_data([1; 3], [1; 3], [1; 3], [usize::MAX; 3]).is_err());
 }

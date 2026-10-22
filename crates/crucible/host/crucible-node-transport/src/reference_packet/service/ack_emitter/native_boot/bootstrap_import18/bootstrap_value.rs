@@ -148,12 +148,30 @@ impl Attempt {
         literal: &Literal,
         inspect: impl FnOnce(&Value) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_value_and_operands_data(original, normalizations, literal, |value, _| {
+            inspect(value)
+        })
+    }
+
+    /// Lends strict DATA and the same original borrowed SDK without reopening it.
+    ///
+    /// Callback allocation and its concrete Copy result require separate credit.
+    ///
+    /// # Errors
+    /// Refuses incomplete parsing, stale original custody, SDK or either outcome.
+    pub(in super::super) fn with_value_and_operands_data<R: Copy>(
+        &self,
+        original: &OriginalImport18RawBootstrap,
+        normalizations: &Normalizations,
+        literal: &Literal,
+        inspect: impl FnOnce(&Value, &BootstrapAckOperands<'_>) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         if !self.complete || self.failed {
             return Err(refused());
         }
-        literal.with_body_data(original, normalizations, |_| {
+        literal.with_body_and_operands_data(original, normalizations, |_, operands| {
             self.guard(original)?;
-            let outcome = inspect(self.value.value_data()?);
+            let outcome = inspect(self.value.value_data()?, operands);
             let terminal = self
                 .guard(original)
                 .and_then(|()| self.value.value_data().map(|_| ()));
@@ -175,6 +193,9 @@ impl Attempt {
             size_of::<&Normalizations>(),
             size_of::<&Literal>(),
             size_of::<&Value>(),
+            size_of::<&BootstrapAckOperands<'static>>(),
+            size_of::<R>(),
+            size_of::<Result<R, ProviderError>>(),
             size_of::<R>(),
             size_of::<R>(),
             size_of::<Result<R, ProviderError>>(),
@@ -330,9 +351,9 @@ pub(in crate::reference_packet::service) fn construction_data(
 
 /// Prices the retained maximum across normalization and subsequent decoding.
 ///
-/// A failed normalization keeps its Value while both later owners remain empty.
+/// A failed normalization keeps its Value while later owners remain empty.
 /// A completed normalization retains only its header before literal receipt or
-/// strict decoding can begin. Failed later phases retain their entire prefix.
+/// strict or typed decoding can begin. Failed later phases retain their prefix.
 /// This lifetime calculation supplies DATA only, never resource permission.
 ///
 /// # Errors
@@ -341,21 +362,24 @@ pub(in crate::reference_packet::service) fn retained_schedule_data(
     normalizations: [usize; 3],
     literal: [usize; 3],
     value: [usize; 3],
+    codec: [usize; 3],
 ) -> Result<usize, ProviderError> {
     let normalizing = normalizations[0]
         .checked_add(size_of::<Literal>())
         .and_then(|sum| sum.checked_add(size_of::<Attempt>()))
+        .and_then(|sum| sum.checked_add(size_of::<super::bootstrap_codec::Attempt>()))
         .ok_or_else(exhausted)?;
     let decoding = size_of::<Normalizations>()
         .checked_add(literal[0])
         .and_then(|sum| sum.checked_add(value[0]))
+        .and_then(|sum| sum.checked_add(codec[0]))
         .ok_or_else(exhausted)?;
     Ok(normalizing.max(decoding))
 }
 
 /// Names the fixed retained-lifetime calculation and checked sum controls.
 pub(in crate::reference_packet::service) fn schedule_counter_scratch_data() -> usize {
-    size_of::<[usize; 3]>() * 3
+    size_of::<[usize; 3]>() * 4
         + size_of::<usize>() * 4
         + size_of::<Option<usize>>()
         + size_of::<Result<usize, ProviderError>>()

@@ -34,6 +34,25 @@ pub(in super::super) struct BootstrapAckOperands<'a> {
 }
 
 impl BootstrapAckOperands<'_> {
+    /// Compares bootstrap target DATA with the actual current SDK registration.
+    ///
+    /// This comparison neither assigns a request nor authenticates its proof.
+    ///
+    /// # Errors
+    /// Refuses another session/incarnation or revoked/contained authority.
+    pub(super) fn authenticate_bootstrap_envelope_target_data(
+        &self,
+        envelope: &crate::envelope::Envelope,
+    ) -> Result<(), ProviderError> {
+        self.authority.ensure_live()?;
+        if envelope.session_id.0.as_ref() != Some(self.authority.session_id())
+            || envelope.incarnation_id.0.as_ref() != Some(self.authority.incarnation_id())
+        {
+            return Err(refused());
+        }
+        self.authority.ensure_live()
+    }
+
     /// Rechecks the same borrowed live SDK without reopening the aggregate loan.
     ///
     /// # Errors

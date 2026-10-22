@@ -193,7 +193,9 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 });
         }
         assert_eq!(admission.calls.get(), 2);
-        if case.contains("_normalizations_host_value_") {
+        if case.contains("_normalizations_host_codec_") {
+            super::super::super::bootstrap_codec::tests::assert_child(case, original);
+        } else if case.contains("_normalizations_host_value_") {
             super::super::super::bootstrap_value::tests::assert_child(case, original);
         } else if case.contains("_normalizations_host_frame_") {
             super::super::super::bootstrap_literal::tests::assert_child(case, original);
