@@ -15613,3 +15613,25 @@ No assertion, privilege boundary, actor or timeout is weakened. A fresh bounded
 VM must establish what changed before deciding whether production behavior or
 the expected lifecycle needs correction. The independent `646d990f96` blame
 qualification continues on its immutable source.
+
+#### Blame root-scope fixture correction
+
+The frozen `646d990f96` `obs-blame` gate fails in 157.138 seconds when its new
+positive case requests a `root("/file")` caveat for a file contained in the `/`
+authorization root. AUTH-25/26 grants authority per canonical root, so the
+existing guard correctly refuses that token. No production guard is changed.
+The corrected fixture retains a read-only `/` root caveat, publishes a genuine
+sibling graft authorization root while preserving the original file, and
+requires that sibling's entry to be denied. Both current and fixed views must
+report the original signed introduction. The original failed result remains
+retained; the corrected owning gate requires a fresh runtime result.
+
+The earlier `cfa35db2fe` mandatory application check also finishes successfully
+in 1,469.277 seconds. Complete review matches all 8,075 immutable source files
+and 185 actual test compiler artifacts across 59 packages. This is compilation
+only and qualifies neither the later blame fixture nor its runtime behavior.
+
+The corrected SDK fixture passes strict target Clippy, integration-binary
+compilation and Rust formatting. All 2,646 Nix formatting checks and
+`git diff --check` pass. These checks do not execute repository fixtures on
+the host; corrected runtime qualification remains pending.

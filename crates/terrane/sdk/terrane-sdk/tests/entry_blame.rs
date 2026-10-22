@@ -15,10 +15,16 @@ use terrane_format::{
     auth::{self, Attenuation, Caveat, Grant, Token, Verbs},
     identity::{Identity, IdentityKind},
     surface::{View, ViewTarget},
+    tree_builder::Tree,
+    tree_format::{self, Entry, EntryKind, LeafItem, NodeItems, TreeUse},
 };
 use terrane_sdk::store::{
     ByteRange, Capabilities, CapabilityReport, ContentStore, ContentUpload, IdentityPrefix,
     StoreErrorKind, StoreFailure,
+};
+use terrane_sdk::{
+    ref_advance::StagedUpload,
+    repository::{PreparedTree, RootNodeLimits},
 };
 
 fn attenuated(
@@ -34,15 +40,16 @@ fn attenuated(
 }
 
 #[tokio::test]
-async fn blame_requires_only_selected_path_read_and_refuses_other_scopes() -> TestResult {
+async fn blame_requires_only_selected_root_read_and_refuses_other_scopes() -> TestResult {
     let fixture = Fixture::new().await?;
     let commit = fixture.commit_bytes(OLD).await?;
+    let current = publish_unrelated_graft(&fixture).await?;
     let view = View::parse(MAIN)?;
     let scoped = attenuated(
         &fixture,
         Attenuation {
             grants: Some(vec![Grant::new(MAIN.into(), Verbs::new(1)?)?]),
-            caveats: vec![Caveat::Root("/file".into())],
+            caveats: vec![Caveat::Root("/".into())],
             ..Default::default()
         },
     )?;
@@ -51,7 +58,7 @@ async fn blame_requires_only_selected_path_read_and_refuses_other_scopes() -> Te
         .repository
         .blame(&view, b"file", &scoped, "sdk")
         .await?;
-    assert_eq!(blame.view_commit, commit);
+    assert_eq!(blame.view_commit, current);
     assert_eq!(blame.introduction.commit, commit);
     assert_eq!(blame.introduction.subject, "owner");
     assert!(blame.fold_chain.is_empty());
@@ -68,11 +75,13 @@ async fn blame_requires_only_selected_path_read_and_refuses_other_scopes() -> Te
             "sdk",
         )
         .await?;
-    assert_eq!(pinned, blame);
+    assert_eq!(pinned.view_commit, commit);
+    assert_eq!(pinned.introduction, blame.introduction);
+    assert!(pinned.fold_chain.is_empty());
 
     let secret_path = fixture
         .repository
-        .blame(&view, b"sibling", &scoped, "sdk")
+        .blame(&view, b"graft/leaf", &scoped, "sdk")
         .await;
     assert!(
         matches!(secret_path, Err(terrane_sdk::repository::Error::Store(error))
@@ -132,6 +141,90 @@ async fn blame_uses_signed_metadata_without_requesting_object_bodies() -> TestRe
     assert_eq!(blame.introduction.commit, commit);
     assert_eq!(bodies.load(Ordering::Relaxed), 0);
     Ok(())
+}
+
+/// Adds a real sibling authorization root while preserving the original file.
+async fn publish_unrelated_graft(
+    fixture: &Fixture,
+) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    let target = ViewTarget::Ref(MAIN.parse()?);
+    let limits = RootNodeLimits {
+        max_entries: 64,
+        max_metadata_bytes: 65536,
+        max_path_bytes: 4096,
+    };
+    let baseline = fixture
+        .repository
+        .read_root_nodes(&target, fixture.authority.token(), "sdk", limits)
+        .await?;
+    let (prepared, uploads) = {
+        let original_root = tree_format::decode_node(
+            &baseline.nodes()[&baseline.root()],
+            true,
+            baseline.minimum_chunk_size(),
+        )?;
+        let entry = |kind| Entry {
+            kind,
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        };
+        // Publish newly authored metadata through the real admission path.
+        // Moving a previously attributed entry without source proof is refused.
+        let child = Tree::build(
+            vec![LeafItem {
+                key: b"leaf".to_vec(),
+                entry: entry(EntryKind::Directory { mode: 0o555 }),
+            }],
+            original_root.props.clone(),
+            baseline.minimum_chunk_size(),
+            TreeUse::Ordinary,
+        )?;
+        let uploads = child
+            .nodes()
+            .map(|node| StagedUpload::Meta {
+                kind: IdentityKind::Node,
+                bytes: node.encoded().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        let NodeItems::Leaf(mut entries) = original_root.items else {
+            return Err("expected published original leaf root".into());
+        };
+        // Keep the original file at its exact attributed path. Only the new
+        // unrelated graft requires fresh metadata admission and provenance.
+        entries.push(LeafItem {
+            key: b"graft".to_vec(),
+            entry: entry(EntryKind::Tree {
+                root: child.root_identity(),
+                props: None,
+            }),
+        });
+        let tree = Tree::build(
+            entries,
+            original_root.props,
+            baseline.minimum_chunk_size(),
+            TreeUse::Ordinary,
+        )?;
+        (PreparedTree::from_tree(&tree)?, uploads)
+    };
+    let mut session = fixture
+        .repository
+        .begin(MAIN, fixture.authority.token(), "sdk")
+        .await?;
+    let mut request = fixture.repository.source_request(
+        &fixture.authority,
+        fixture::metadata("Publish genuine nested root"),
+    );
+    request.commit.tree = prepared.root();
+    request.commit.parents = vec![baseline.commit()];
+    request.uploads.extend(uploads);
+    Ok(fixture
+        .repository
+        .commit(&mut session, prepared, request)
+        .await?
+        .commit)
 }
 
 struct MetadataOnly<S> {
