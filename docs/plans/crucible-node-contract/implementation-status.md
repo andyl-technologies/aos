@@ -3252,6 +3252,29 @@ Source funding, genuine Initial/Recipe production, the complete Bootstrap
 transaction and remaining full RFC obligations remain unfinished. No new
 full-library, configured runtime or VM qualification is claimed here.
 
+## Retained Source Bootstrap proof and canonical request construction
+
+Commit `3c4cfce86d` moves the actual unsigned assignment and typed proof into a
+retained DATA materializer before fallible validation. The same original gains
+its sole proof extension, while its full DOM and canonical literal occupy
+independent banks. Failed construction keeps all initialized outputs and writer
+prefixes. The quote counts moved typed capacities separately from serialized
+copies; no SDK, Source signing permission or MAC verification follows.
+
+All 26 Bootstrap ACK and sixteen original-cut controls pass in both standard
+and raw-JSON modes. The socket control takes the retained assignment through
+actual reservation, materialization, sealing and publication, then compares the
+peer's bytes with the same canonical bank and checks the unchanged original cut.
+Transport/Engine/Daemon all-feature/all-target checking and all six architecture
+gates pass. The required application gate compiles 180 test executables across
+58 package IDs, including 71 integration targets. All 384 owned Rust/Cargo
+inputs match committed `3c4cfce86d` and its captured source. That gate runs no tests.
+
+This DATA materializer does not complete the Controller/Source transaction.
+Independent whole-holder funding, genuine Initial/Recipe production, private
+receipt verification and the remaining full RFC obligations remain unfinished.
+No new full-library, configured runtime or VM qualification is claimed here.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
