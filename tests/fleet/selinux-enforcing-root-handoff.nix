@@ -23,6 +23,33 @@
   libcapBasename = builtins.baseNameOf pkgs.libcap;
   dynamicLinker = pkgs.stdenv.hostPlatform.dynamicLinker;
 
+  postPinAdversary = pkgs.mkDerivation {
+    pname = "aos-root-handoff-post-pin-adversary";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "build";
+        script = ''
+          $CC -std=c17 -Wall -Wextra -Werror \
+            ${../sandbox/root-handoff-post-pin-adversary.c} \
+            -o aos-root-handoff-post-pin-adversary
+        '';
+      }
+      {
+        name = "install";
+        script = ''
+          mkdir -p $out/bin
+          cp aos-root-handoff-post-pin-adversary $out/bin/
+        '';
+      }
+    ];
+    meta.license = "Apache-2.0";
+  };
+  postPinCommand = phase:
+    "${postPinAdversary}/bin/aos-root-handoff-post-pin-adversary ${phase} "
+    + "${systemdBasename} ${glibcBasename} ${libcapBasename} ${dynamicLinker}";
+
   custodySocket = {
     description = "AOS root-handoff descriptor custody socket";
     wantedBy = ["sockets.target"];
@@ -61,139 +88,23 @@
     unitConfig.IgnoreOnIsolate = "yes";
     serviceConfig = {
       Type = "notify";
-      NotifyAccess = "all";
+      # Switch-root broadcasts SIGTERM after isolating the target. The attack
+      # must remain alive until PID1 reaches the qualification-only pin gate.
+      SurviveFinalKillSignal = true;
+      ExecStart = postPinCommand "switch-root";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
-    script = ''
-      set -eu
-
-      exec 3< /sysroot/usr/lib/aos/nix/store/${systemdBasename}
-      exec 4< /sysroot/nix/store/${glibcBasename}
-      exec 5< /sysroot/nix/store/${libcapBasename}
-      exec 6< /sysroot
-      exec 7< /run
-
-      ${pkgs.coreutils}/bin/mkdir -p /proc/self/fd/7/aos
-      printf 'AOS_POST_PIN_ATTACKER_SYSTEMD\n' \
-        > /proc/self/fd/7/aos/post-pin-systemd
-      printf 'AOS_POST_PIN_ATTACKER_LOADER\n' \
-        > /proc/self/fd/7/aos/post-pin-loader
-      printf 'AOS_POST_PIN_ATTACKER_DSO\n' \
-        > /proc/self/fd/7/aos/post-pin-dso
-      printf '/run/aos/post-pin-attacker.so\n' \
-        > /proc/self/fd/7/aos/post-pin-preload
-      ${pkgs.coreutils}/bin/chmod 0555 \
-        /proc/self/fd/7/aos/post-pin-systemd \
-        /proc/self/fd/7/aos/post-pin-loader \
-        /proc/self/fd/7/aos/post-pin-dso
-
-      ${pkgs.systemd}/bin/systemd-notify --ready
-
-      until test -e \
-        /proc/self/fd/7/aos/root-handoff-post-pin.switch-root.ready; do
-        ${pkgs.coreutils}/bin/sleep 0.01
-      done
-
-      parent_namespace="$(${pkgs.coreutils}/bin/readlink /proc/self/ns/mnt)"
-      pid1_namespace="$(${pkgs.coreutils}/bin/readlink /proc/1/ns/mnt)"
-      test "$parent_namespace" != "$pid1_namespace"
-
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-systemd \
-        /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-loader \
-        /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-dso \
-        /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-preload \
-        /proc/self/fd/6/etc/ld.so.preload
-
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
-        /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
-        /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
-        /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.grep}/bin/grep -Fq post-pin-attacker.so \
-        /proc/self/fd/6/etc/ld.so.preload
-
-      printf 'parent_namespace=%s\npid1_namespace=%s\n' \
-        "$parent_namespace" "$pid1_namespace" \
-        > /proc/self/fd/7/aos/post-pin-switch-root.done
-      printf 'continue\n' \
-        > /proc/self/fd/7/aos/root-handoff-post-pin.switch-root.continue
-      ${pkgs.coreutils}/bin/chmod 0444 \
-        /proc/self/fd/7/aos/root-handoff-post-pin.switch-root.continue
-      echo "AOS post-pin parent attack complete: switch-root $parent_namespace != $pid1_namespace"
-    '';
   };
   postPinReexecAdversary = {
     description = "Attack the parent mount namespace after daemon-reexec pinning";
     wantedBy = ["multi-user.target"];
     serviceConfig = {
       Type = "notify";
-      NotifyAccess = "all";
+      ExecStart = postPinCommand "reexec";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
-    script = ''
-      set -eu
-
-      exec 3< /usr/lib/aos/nix/store/${systemdBasename}
-      exec 4< /nix/store/${glibcBasename}
-      exec 5< /nix/store/${libcapBasename}
-      exec 6< /
-      exec 7< /run
-
-      ${pkgs.systemd}/bin/systemd-notify --ready
-
-      until test -e /proc/self/fd/7/aos/post-pin-reexec.arm; do
-        ${pkgs.coreutils}/bin/sleep 0.1
-      done
-      until test -e \
-        /proc/self/fd/7/aos/root-handoff-post-pin.reexec.ready; do
-        ${pkgs.coreutils}/bin/sleep 0.01
-      done
-
-      parent_namespace="$(${pkgs.coreutils}/bin/readlink /proc/self/ns/mnt)"
-      pid1_namespace="$(${pkgs.coreutils}/bin/readlink /proc/1/ns/mnt)"
-      test "$parent_namespace" != "$pid1_namespace"
-
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-systemd \
-        /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-loader \
-        /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-dso \
-        /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.util-linux}/bin/mount --bind \
-        /proc/self/fd/7/aos/post-pin-preload \
-        /proc/self/fd/6/etc/ld.so.preload
-
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
-        /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
-        /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
-        /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.grep}/bin/grep -Fq post-pin-attacker.so \
-        /proc/self/fd/6/etc/ld.so.preload
-
-      printf 'parent_namespace=%s\npid1_namespace=%s\n' \
-        "$parent_namespace" "$pid1_namespace" \
-        > /proc/self/fd/7/aos/post-pin-reexec.done
-      printf 'continue\n' \
-        > /proc/self/fd/7/aos/root-handoff-post-pin.reexec.continue
-      ${pkgs.coreutils}/bin/chmod 0444 \
-        /proc/self/fd/7/aos/root-handoff-post-pin.reexec.continue
-      echo "AOS post-pin parent attack complete: reexec $parent_namespace != $pid1_namespace"
-    '';
   };
 
   fixtureModule = mode: {

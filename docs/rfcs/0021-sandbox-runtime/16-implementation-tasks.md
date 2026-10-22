@@ -9839,7 +9839,9 @@ genesis tests pass; both selected `online-nix` Security interoperability tests
 pass against those existing native equations. The selected test invocation
 uses the real domain-3333 AOS Store-reader header; an ordinary Cargo shell
 without that generated header correctly fails compilation. The complete Rust
-target check is running. This codec publishes no credentials or journals,
+target check passes at
+`/nix/store/vbvmmmfbimpffknih566d2pcai5xnmpr-aos-test-targets-0.1.0`.
+This codec publishes no credentials or journals,
 touches no TPM and grants no runtime currentness.
 
 The V6 approval-delivery and original hardware installed QEMU tests reach their

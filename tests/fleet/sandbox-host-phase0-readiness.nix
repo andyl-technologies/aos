@@ -236,14 +236,15 @@ in {
 
       # Data deduplication must not turn the nested Guest copy into a Host
       # inode alias, change immutable ownership/modes, or replace its label.
+      # Inspect the library inode behind the versioned library symlink.
       outer_library = "${pkgs.openssl}/lib/libcrypto.so.4"
       guest_library = "${pkgs.aos-sandbox-guest-root-template}/root${pkgs.openssl}/lib/libcrypto.so.4"
       vm.succeed(f"${pkgs.diffutils}/bin/cmp {outer_library} {guest_library}")
-      identities = vm.succeed(f"stat -c '%d:%i' {outer_library} {guest_library}").splitlines()
+      identities = vm.succeed(f"stat -L -c '%d:%i' {outer_library} {guest_library}").splitlines()
       assert len(identities) == 2 and identities[0] != identities[1], identities
-      metadata = vm.succeed(f"stat -c '%a %u %g' {outer_library} {guest_library}").splitlines()
+      metadata = vm.succeed(f"stat -L -c '%a %u %g' {outer_library} {guest_library}").splitlines()
       assert metadata == ["555 0 0", "555 0 0"], metadata
-      contexts = vm.succeed(f"stat -c '%C' {outer_library} {guest_library}").splitlines()
+      contexts = vm.succeed(f"stat -L -c '%C' {outer_library} {guest_library}").splitlines()
       assert contexts == ["system_u:object_r:lib_t", "system_u:object_r:lib_t"], contexts
 
       vm.succeed("test -s /run/credentials/@system/phase0-test-seed")
