@@ -29,14 +29,17 @@ use crate::reference_packet::service::complete_restore::restored_settled18::NATI
 /// the same BodyPlan, launch and target. Full compiled definition correspondence,
 /// executable provenance, planned registration and Source custody remain its
 /// independent obligations; this type implements none of those permissions.
-pub(in crate::reference_packet) struct NativeImport18BootstrapProspectiveOperands<'a> {
+pub(in crate::reference_packet) struct NativeImport18BootstrapProspectiveOperands<
+    'a,
+    H: Serialize = serde_json::Value,
+> {
     pub(in crate::reference_packet) launch: &'a PacketNative5SourceLaunch,
     pub(in crate::reference_packet) hello: &'a PacketNativeImport18HelloDeclarationData,
     pub(in crate::reference_packet) declaration: &'a PacketNativeImport18SourceDeclarationView<'a>,
     pub(in crate::reference_packet) private_launch: &'a Id,
     pub(in crate::reference_packet) host_executable: &'a ContentRef,
     pub(in crate::reference_packet) native_executable: &'a ContentRef,
-    pub(in crate::reference_packet) expected_host_registration: &'a serde_json::Value,
+    pub(in crate::reference_packet) expected_host_registration: &'a H,
     pub(in crate::reference_packet) import: &'a SchemaRef,
     pub(in crate::reference_packet) stage: &'a SchemaRef,
     pub(in crate::reference_packet) record: &'a SchemaRef,
@@ -52,8 +55,10 @@ pub(in crate::reference_packet) struct NativeImport18BootstrapProspectiveOperand
 /// # Errors
 /// Refuses a changed Hello declaration/target, checked extent overflow or a
 /// complete role above the independent projection restriction.
-pub(in crate::reference_packet) fn native_import18_bootstrap_prospective_operands_data(
-    operands: &NativeImport18BootstrapProspectiveOperands<'_>,
+pub(in crate::reference_packet) fn native_import18_bootstrap_prospective_operands_data<
+    H: Serialize,
+>(
+    operands: &NativeImport18BootstrapProspectiveOperands<'_, H>,
     maximum: usize,
 ) -> Result<[OriginalSerializationStorageData; 4], ProviderError> {
     if operands.launch.controller_pid.get() == 0
@@ -141,9 +146,9 @@ pub(in crate::reference_packet) fn native_import18_bootstrap_prospective_operand
     Ok([birth, kernel, policy, registration.finish(maximum)?])
 }
 
-fn source_binding(
+fn source_binding<H: Serialize>(
     out: &mut Projection,
-    operands: &NativeImport18BootstrapProspectiveOperands<'_>,
+    operands: &NativeImport18BootstrapProspectiveOperands<'_, H>,
 ) -> Result<(), ProviderError> {
     object(
         out,

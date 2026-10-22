@@ -128,6 +128,10 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .is_err()
         );
     }
+    if case.ends_with("normalizations_missing_kernel") {
+        super::super::super::bootstrap_normalizations::tests::assert_child(case, original);
+        return;
+    }
     let admission = Admission {
         case,
         before,
@@ -151,7 +155,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
     assert_eq!(original.bootstrap_kernel.complete, completed);
 
     if completed {
-        if !case.contains("_operands_") {
+        if !case.contains("_operands_") && !case.contains("_normalizations_") {
             original
                 .with_bootstrap_kernel_wire_data(|view| {
                     let value = serde_json::to_value(view).unwrap();
@@ -186,6 +190,9 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 });
         }
         assert_eq!(admission.calls.get(), 2);
+        if case.contains("_normalizations_") {
+            super::super::super::bootstrap_normalizations::tests::assert_child(case, original);
+        }
         if case.contains("_operands_") {
             super::bootstrap_operands::assert_child(case, original);
         }

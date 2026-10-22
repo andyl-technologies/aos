@@ -343,10 +343,12 @@ pub use operands::{
 };
 
 pub(in crate::reference_packet) use operands::{
-    PacketNativeImport18BootstrapTypedPolicyView,
+    NativeImport18BootstrapProspectiveOperands, PacketNativeImport18BootstrapTypedPolicyView,
     native_import18_bootstrap_birth_serialization_data,
     native_import18_bootstrap_kernel_serialization_data,
     native_import18_bootstrap_policy_serialization_data,
+    native_import18_bootstrap_prospective_operands_counter_scratch_data,
+    native_import18_bootstrap_prospective_operands_data,
     native_import18_bootstrap_typed_policy_wire_data,
 };
 

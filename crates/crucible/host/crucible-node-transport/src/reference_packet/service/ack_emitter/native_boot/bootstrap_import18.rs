@@ -60,6 +60,13 @@ pub(in crate::reference_packet::service) use launch_validation::{
     counter_scratch_data as launch_validation_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/bootstrap_normalizations.rs"]
+mod bootstrap_normalizations;
+pub(in crate::reference_packet::service) use bootstrap_normalizations::{
+    construction_data as bootstrap_normalizations_construction_data,
+    counter_scratch_data as bootstrap_normalizations_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/bootstrap_operands.rs"]
 mod bootstrap_operands;
 
@@ -228,6 +235,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     launch_validation: launch_validation::Attempt,
     immutable_policy: immutable_policy::Attempt,
     bootstrap_kernel: bootstrap_kernel::Attempt,
+    bootstrap_normalizations_started: bool,
     selection_construction_row: Option<[usize; 3]>,
     selection_started: bool,
     selection_authenticated: bool,
@@ -305,6 +313,7 @@ impl OriginalImport18RawBootstrap {
             launch_validation: launch_validation::Attempt::empty_data(cut),
             immutable_policy: immutable_policy::Attempt::empty_data(cut),
             bootstrap_kernel: bootstrap_kernel::Attempt::empty_data(cut),
+            bootstrap_normalizations_started: false,
             selection_construction_row: None,
             selection_started: false,
             selection_authenticated: false,

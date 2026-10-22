@@ -320,6 +320,13 @@ impl ConnectionAuthority {
         register()
     }
 
+    /// Revokes the actual shared epoch while an immutable test loan is active.
+    #[cfg(test)]
+    pub(crate) fn revoke_epoch_fixture_data(&self) {
+        self.shared_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+
     /// Verifies that the host still permits registration on this connection.
     ///
     /// # Errors

@@ -76,6 +76,9 @@ pub(in crate::reference_packet) use decoding::{
     private_body_decode_backing_data, private_body_decode_counter_scratch_data,
 };
 
+#[path = "startup_wire/initial_normalizations.rs"]
+mod initial_normalizations;
+
 #[path = "startup_wire/prospective.rs"]
 mod prospective;
 

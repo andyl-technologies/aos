@@ -15,7 +15,10 @@ use serde_json::{Value, json};
 
 /// Prepares an independent image oracle outside the timed receiver operation.
 pub(super) fn prepare_independent_kernel_image(case: &str) {
-    if case.starts_with("initial_policy_kernel_") && !case.contains("_operands_") {
+    if case.starts_with("initial_policy_kernel_")
+        && !case.contains("_operands_")
+        && !case.contains("_normalizations_")
+    {
         bootstrap_kernel::prepare_independent_image();
     }
 }

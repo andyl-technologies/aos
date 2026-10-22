@@ -96,7 +96,10 @@ pub(super) fn fund_initial_partition(values: &mut [Value; 3], row: [usize; 3]) {
         escrow[1] = escrow[1].max(axes[1]);
         escrow[2] = escrow[2].max(axes[2]);
     }
-    assert!(escrow.into_iter().sum::<usize>() <= typed::bounds().requested_peak);
+    assert!(
+        escrow.into_iter().sum::<usize>() <= typed::bounds().requested_peak,
+        "initial={row:?}, escrow={escrow:?}"
+    );
     recipe["escrow"] = json!(escrow.map(|axis| axis.to_string()));
     let identity =
         serde_json::from_value::<PacketNativeImport18PrebirthRecipeWireData>(recipe.clone())

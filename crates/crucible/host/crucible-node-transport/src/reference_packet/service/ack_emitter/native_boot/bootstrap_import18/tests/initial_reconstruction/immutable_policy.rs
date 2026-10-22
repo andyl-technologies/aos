@@ -26,6 +26,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
         "initial_policy_reactive"
             | "initial_policy_kernel_reactive"
             | "initial_policy_kernel_operands_reactive"
+            | "initial_policy_kernel_normalizations_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -693,4 +694,25 @@ fn assert_bootstrap_native_registration(
         Ok(())
     })?;
     Ok(())
+}
+
+#[test]
+fn original_normalizations_keep_complete_and_refused_output_owners() {
+    for case in [
+        "initial_policy_kernel_normalizations_complete",
+        "initial_policy_kernel_normalizations_reactive",
+        "initial_policy_kernel_normalizations_missing_kernel",
+        "initial_policy_kernel_normalizations_changed_cut",
+        "initial_policy_kernel_normalizations_reject_construction",
+        "initial_policy_kernel_normalizations_reject_policy",
+        "initial_policy_kernel_normalizations_retain_birth",
+        "initial_policy_kernel_normalizations_retain_kernel",
+        "initial_policy_kernel_normalizations_retain_policy",
+        "initial_policy_kernel_normalizations_retain_native",
+        "initial_policy_kernel_normalizations_retain_host",
+        "initial_policy_kernel_normalizations_expire_policy",
+        "initial_policy_kernel_normalizations_revoke_native",
+    ] {
+        flight(case);
+    }
 }

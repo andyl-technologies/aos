@@ -6,6 +6,7 @@
 //! Source/Birth funding, a bootstrap ACK, a model or native phase permission.
 
 use super::*;
+use crate::handshake::ConnectionAuthority;
 use crate::reference_packet::service::complete_restore::import18::OriginalImport18DecodedBodyLoans;
 use crate::reference_packet::service::complete_restore::import18::PacketNativeImport18BootstrapTypedBirthView;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
@@ -20,6 +21,7 @@ use crate::retained_metadata::serialization_storage::OriginalSerializationStorag
 
 /// Borrows the four actual preimages in birth, kernel, policy and native-role order.
 pub(in super::super) struct BootstrapAckOperands<'a> {
+    authority: &'a ConnectionAuthority,
     /// Borrows the original complete birth association, excluding the signing key.
     pub(in super::super) birth: &'a PacketNativeImport18BootstrapTypedBirthView<'a>,
     /// Borrows the authenticated controller and actual measured native coordinates.
@@ -31,6 +33,14 @@ pub(in super::super) struct BootstrapAckOperands<'a> {
 }
 
 impl BootstrapAckOperands<'_> {
+    /// Rechecks the same borrowed live SDK without reopening the aggregate loan.
+    ///
+    /// # Errors
+    /// Refuses revocation or containment of the original connection.
+    pub(super) fn ensure_current_authority_data(&self) -> Result<(), ProviderError> {
+        self.authority.ensure_live()
+    }
+
     /// Projects every preimage before any allocating normalization serializer runs.
     ///
     /// Each result names its independent DOM/JCS, parser/output and formatter
@@ -46,6 +56,7 @@ impl BootstrapAckOperands<'_> {
         maximum: usize,
     ) -> Result<[OriginalSerializationStorageData; 4], ProviderError> {
         let Self {
+            authority: _,
             birth,
             kernel,
             policy,
@@ -83,6 +94,7 @@ impl OriginalImport18RawBootstrap {
             let birth = bodies.boot.bootstrap_birth_wire_data()?;
             let registration = native_import18_current_registration_view_data(authority, None)?;
             inspect(&BootstrapAckOperands {
+                authority,
                 birth: &birth,
                 kernel,
                 policy,
