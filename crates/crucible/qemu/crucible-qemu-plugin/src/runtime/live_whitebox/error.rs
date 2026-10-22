@@ -232,6 +232,106 @@ pub enum LiveWhiteboxError {
         /// Original catalog refusal without diagnostic replacement.
         source: crate::SelectableCatalogError,
     },
+    /// The selectable reply ring refused an observation or consumption.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyRing {
+        /// Original ring geometry, index or consumer-admission refusal.
+        source: crucible_qemu_shmem::SpscRingError,
+    },
+    /// A selectable reply envelope failed fixed-layout validation.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyEntry {
+        /// Original entry validation refusal.
+        source: crucible_qemu_shmem::WhiteboxMarkerEntryError,
+    },
+    /// A selectable reply failed canonical decoding or encoding.
+    #[error("safe white-box callback failed: {source}")]
+    SelectableReplyProtocol {
+        /// Original protocol refusal.
+        source: crucible_qemu_protocol::SelectableProtocolError,
+    },
+    /// The host-to-plugin selectable ring contained another message kind.
+    #[error("safe white-box callback failed: selectable reply ring carried unexpected kind {kind}")]
+    SelectableReplyUnexpectedKind {
+        /// Observed envelope kind.
+        kind: u16,
+    },
+    /// The retained trap cannot represent its following stopped boundary.
+    #[error("safe white-box callback failed: selectable stopped-boundary tick overflowed")]
+    SelectableReplyStoppedTickOverflow,
+    /// The reply envelope names another stopped request boundary.
+    #[error(
+        "safe white-box callback failed: selectable reply coordinate ({actual_tick_ps}, {actual_vcpu}) differs from pending request stopped tick ({expected_tick_ps}, {expected_vcpu})"
+    )]
+    SelectableReplyCoordinate {
+        /// Simulation tick retained in the reply envelope.
+        actual_tick_ps: u64,
+        /// vCPU retained in the reply envelope.
+        actual_vcpu: u32,
+        /// Stopped tick derived from the retained guest trap.
+        expected_tick_ps: u64,
+        /// vCPU that owns the retained guest trap.
+        expected_vcpu: u32,
+    },
+    /// The callback resumed before the retained request's stop.
+    #[error(
+        "safe white-box callback failed: selectable reply resume tick {current_tick_ps} precedes stopped request boundary {stopped_tick_ps}"
+    )]
+    SelectableReplyEarlyResume {
+        /// Actual resume tick.
+        current_tick_ps: u64,
+        /// Required stopped boundary.
+        stopped_tick_ps: u64,
+    },
+    /// A previously observed reply was absent at consumption.
+    #[error(
+        "safe white-box callback failed: selectable reply disappeared between peek and consume"
+    )]
+    SelectableReplyDisappeared,
+    /// The consumed envelope differed from the validated observation.
+    #[error("safe white-box callback failed: selectable reply changed between peek and consume")]
+    SelectableReplyChanged,
+    /// The decoded reply names another retained request sequence.
+    #[error(
+        "safe white-box callback failed: selectable reply sequence {actual} differs from pending request {expected}"
+    )]
+    SelectableReplySequence {
+        /// Sequence owned by the retained request.
+        expected: u64,
+        /// Sequence decoded from the reply.
+        actual: u64,
+    },
+    /// A valid reply exceeds the guest's retained reservation.
+    #[error(
+        "safe white-box callback failed: selectable reply has {len} bytes but guest reserved {capacity}"
+    )]
+    SelectableReplyCapacity {
+        /// Canonical encoded reply length.
+        len: usize,
+        /// Guest reservation length.
+        capacity: usize,
+    },
+    /// The retained reservation exceeds its containing Runtime workspace.
+    #[error(
+        "safe white-box callback failed: selectable reservation exceeds its fixed reply workspace"
+    )]
+    SelectableReplyWorkspace,
+    /// The backend refused delivery after the exact reply was consumed.
+    #[error(
+        "safe white-box callback failed: selectable guest reply write failed at retained coordinate ({trap_icount}, {trap_vcpu}) during resume ({resume_tick_ps}, {resume_vcpu}): {source}"
+    )]
+    SelectableReplyGuestWrite {
+        /// Original raw trap icount.
+        trap_icount: u64,
+        /// vCPU that owns the retained request.
+        trap_vcpu: u32,
+        /// Actual callback resume tick.
+        resume_tick_ps: u64,
+        /// Actual callback vCPU.
+        resume_vcpu: u32,
+        /// Original guest-memory write failure, moved without formatting.
+        source: crate::WhiteboxGuestInputWriteError,
+    },
     /// A remaining safe doorbell service rejected the live event.
     #[error("safe white-box callback failed: {message}")]
     Callback {

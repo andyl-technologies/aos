@@ -268,7 +268,16 @@ fn available_reply_keeps_kind_and_unsolicited_errors_before_consumption()
                 &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
             )
             .err();
-        assert!(error.is_some_and(|error| error.to_string().contains(expected)));
+        let error = error.expect("the queued envelope must be refused");
+        assert!(error.to_string().contains(expected));
+        if kind == WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY {
+            assert_eq!(error, LiveWhiteboxError::SelectableReplyWithoutPending);
+        } else {
+            assert_eq!(
+                error,
+                LiveWhiteboxError::SelectableReplyUnexpectedKind { kind }
+            );
+        }
         assert_eq!(writer.delivery_icount, None);
         assert_eq!(ring.header.read_index(), 0);
         assert_eq!(state.catalog().total_completed_requests(), 0);
@@ -315,28 +324,44 @@ fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
     )?)?;
     let mut writer = RecordingWriter::default();
 
-    assert!(
-        state
-            .deliver_reply(
-                1_000_086,
-                2,
-                &mut writer,
-                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
-            )
-            .is_err()
+    let early = state
+        .deliver_reply(
+            1_000_086,
+            2,
+            &mut writer,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
+        .unwrap_err();
+    assert_eq!(
+        early,
+        LiveWhiteboxError::SelectableReplyEarlyResume {
+            current_tick_ps: 1_000_086,
+            stopped_tick_ps: 1_000_087,
+        }
     );
     assert_eq!(ring.header.read_index(), 0);
     assert!(state.catalog().pending_request().is_some());
 
-    assert!(
-        state
-            .deliver_reply(
-                1_000_137,
-                2,
-                &mut writer,
-                &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES]
-            )
-            .is_err()
+    let malformed = state
+        .deliver_reply(
+            1_000_137,
+            2,
+            &mut writer,
+            &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
+        )
+        .unwrap_err();
+    let original = SelectionReply::decode(b"bad reply").unwrap_err();
+    assert_eq!(
+        malformed,
+        LiveWhiteboxError::SelectableReplyProtocol {
+            source: original.clone()
+        }
+    );
+    assert_eq!(
+        std::error::Error::source(&malformed).and_then(|source| {
+            source.downcast_ref::<crucible_qemu_protocol::SelectableProtocolError>()
+        }),
+        Some(&original),
     );
     assert_eq!(ring.header.read_index(), 1);
     assert_eq!(writer.delivery_icount, None);
@@ -348,7 +373,9 @@ fn available_reply_preserves_early_resume_and_post_dequeue_decode_errors()
 #[test]
 fn available_reply_keeps_guest_write_failure_after_consumption()
 -> Result<(), Box<dyn std::error::Error>> {
-    struct RejectingWriter;
+    struct RejectingWriter {
+        refusal: Option<WhiteboxGuestInputWriteError>,
+    }
 
     impl WhiteboxGuestInputWriter for RejectingWriter {
         fn write_whitebox_input(
@@ -357,7 +384,7 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
             _range: crate::GuestMemoryRange,
             _payload: &[u8],
         ) -> Result<(), WhiteboxGuestInputWriteError> {
-            Err(WhiteboxGuestInputWriteError::new("injected write failure"))
+            Err(self.refusal.take().expect("the backend is called once"))
         }
     }
 
@@ -372,15 +399,38 @@ fn available_reply_keeps_guest_write_failure_after_consumption()
         &reply.encode()?,
     )?)?;
 
+    let cause = WhiteboxGuestInputWriteError::new("injected write failure");
+    let diagnostic_address = cause.message().as_ptr();
+    let mut writer = RejectingWriter {
+        refusal: Some(cause),
+    };
     let error = state
         .deliver_reply(
             1_000_137,
             2,
-            &mut RejectingWriter,
+            &mut writer,
             &mut [0xa5; SELECTABLE_MESSAGE_MAX_BYTES],
         )
-        .err();
-    assert!(error.is_some_and(|error| error.to_string().contains("injected write failure")));
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "safe white-box callback failed: selectable guest reply write failed at retained coordinate (700, 2) during resume (1000137, 2): white-box guest input write failed: injected write failure",
+    );
+    let source = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<WhiteboxGuestInputWriteError>())
+        .expect("the original typed guest write cause stays inspectable");
+    assert_eq!(source.message().as_ptr(), diagnostic_address);
+    assert!(matches!(
+        &error,
+        LiveWhiteboxError::SelectableReplyGuestWrite {
+            trap_icount: 700,
+            trap_vcpu: 2,
+            resume_tick_ps: 1_000_137,
+            resume_vcpu: 2,
+            ..
+        }
+    ));
+    assert!(writer.refusal.is_none());
     assert_eq!(ring.header.read_index(), 1);
     assert!(state.catalog().pending_request().is_some());
     assert_eq!(state.catalog().total_completed_requests(), 1);

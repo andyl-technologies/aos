@@ -161,19 +161,23 @@ impl LiveSelectableReplyShmemConsumer {
 
     fn has_reply(&mut self) -> Result<bool, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
-        header.has_whitebox_marker(entries).map_err(callback_error)
+        header
+            .has_whitebox_marker(entries)
+            .map_err(|source| LiveWhiteboxError::SelectableReplyRing { source })
     }
 
     fn peek(&mut self) -> Result<Option<WhiteboxMarkerEntry>, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
-        header.peek_whitebox_marker(entries).map_err(callback_error)
+        header
+            .peek_whitebox_marker(entries)
+            .map_err(|source| LiveWhiteboxError::SelectableReplyRing { source })
     }
 
     fn dequeue(&mut self) -> Result<Option<WhiteboxMarkerEntry>, LiveWhiteboxError> {
         let (header, entries) = self.ring_parts();
         header
             .dequeue_whitebox_marker(entries)
-            .map_err(callback_error)
+            .map_err(|source| LiveWhiteboxError::SelectableReplyRing { source })
     }
 }
 
@@ -236,12 +240,11 @@ impl LiveSelectableState {
         let Some(entry) = self.reply_input.peek()? else {
             return Ok(None);
         };
-        let entry = entry.validate().map_err(callback_error)?;
+        let entry = entry
+            .validate()
+            .map_err(|source| LiveWhiteboxError::SelectableReplyEntry { source })?;
         if entry.kind() != WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY {
-            return Err(callback_error(format!(
-                "selectable reply ring carried unexpected kind {}",
-                entry.kind()
-            )));
+            return Err(LiveWhiteboxError::SelectableReplyUnexpectedKind { kind: entry.kind() });
         }
         let reply_input = &mut self.reply_input;
         let disposition = self.catalog.resolve_pending_with(
@@ -250,7 +253,7 @@ impl LiveSelectableState {
                 let stopped_tick_ps = trap_coordinate
                     .tick_ps()
                     .checked_add(SELECTABLE_NATIVE_HANDOFF_TICKS_PS)
-                    .ok_or_else(|| callback_error("selectable stopped-boundary tick overflowed"))?;
+                    .ok_or(LiveWhiteboxError::SelectableReplyStoppedTickOverflow)?;
                 // The host binds its reply to the stopped request boundary. QEMU's
                 // resume callback may report a later raw reservation boundary even
                 // though no subsequent guest TB has executed, so the memory write can
@@ -259,60 +262,60 @@ impl LiveSelectableState {
                 if entry.current_icount() != stopped_tick_ps
                     || entry.vcpu_index() != trap_coordinate.vcpu_index()
                 {
-                    return Err(callback_error(format!(
-                        "selectable reply coordinate ({}, {}) differs from pending request stopped tick ({stopped_tick_ps}, {})",
-                        entry.current_icount(),
-                        entry.vcpu_index(),
-                        trap_coordinate.vcpu_index()
-                    )));
+                    return Err(LiveWhiteboxError::SelectableReplyCoordinate {
+                        actual_tick_ps: entry.current_icount(),
+                        actual_vcpu: entry.vcpu_index(),
+                        expected_tick_ps: stopped_tick_ps,
+                        expected_vcpu: trap_coordinate.vcpu_index(),
+                    });
                 }
                 if vcpu_index != trap_coordinate.vcpu_index() {
                     return Ok(SelectableReplyDisposition::Pending);
                 }
                 if current_icount < stopped_tick_ps {
-                    return Err(callback_error(format!(
-                        "selectable reply resume tick {current_icount} precedes stopped request boundary {stopped_tick_ps}"
-                    )));
+                    return Err(LiveWhiteboxError::SelectableReplyEarlyResume {
+                        current_tick_ps: current_icount,
+                        stopped_tick_ps,
+                    });
                 }
-                let consumed = reply_input.dequeue()?.ok_or_else(|| {
-                    callback_error("selectable reply disappeared between peek and consume")
-                })?;
+                let consumed = reply_input
+                    .dequeue()?
+                    .ok_or(LiveWhiteboxError::SelectableReplyDisappeared)?;
                 if consumed != entry {
-                    return Err(callback_error(
-                        "selectable reply changed between peek and consume",
-                    ));
+                    return Err(LiveWhiteboxError::SelectableReplyChanged);
                 }
-                let reply = SelectionReply::decode(entry.payload()).map_err(callback_error)?;
+                let reply = SelectionReply::decode(entry.payload())
+                    .map_err(|source| LiveWhiteboxError::SelectableReplyProtocol { source })?;
                 if reply.sequence() != pending.request().sequence() {
-                    return Err(callback_error(format!(
-                        "selectable reply sequence {} differs from pending request {}",
-                        reply.sequence(),
-                        pending.request().sequence()
-                    )));
+                    return Err(LiveWhiteboxError::SelectableReplySequence {
+                        expected: pending.request().sequence(),
+                        actual: reply.sequence(),
+                    });
                 }
-                let reply_len = reply.encoded_len().map_err(callback_error)?;
+                let reply_len = reply
+                    .encoded_len()
+                    .map_err(|source| LiveWhiteboxError::SelectableReplyProtocol { source })?;
                 if reply_len > pending.reply_range().len() {
-                    return Err(callback_error(format!(
-                        "selectable reply has {} bytes but guest reserved {}",
-                        reply_len,
-                        pending.reply_range().len()
-                    )));
+                    return Err(LiveWhiteboxError::SelectableReplyCapacity {
+                        len: reply_len,
+                        capacity: pending.reply_range().len(),
+                    });
                 }
                 let bytes = reply_buffer
                     .get_mut(..pending.reply_range().len())
-                    .ok_or_else(|| {
-                        callback_error("selectable reservation exceeds its fixed reply workspace")
-                    })?;
+                    .ok_or(LiveWhiteboxError::SelectableReplyWorkspace)?;
                 bytes.fill(0);
-                reply.encode_into(bytes).map_err(callback_error)?;
+                reply
+                    .encode_into(bytes)
+                    .map_err(|source| LiveWhiteboxError::SelectableReplyProtocol { source })?;
                 writer
                     .write_whitebox_input(current_icount, pending.reply_range(), bytes)
-                    .map_err(|error| {
-                        callback_error(format!(
-                            "selectable guest reply write failed at retained coordinate ({}, {}) during resume ({current_icount}, {vcpu_index}): {error}",
-                            trap_coordinate.raw_icount(),
-                            trap_coordinate.vcpu_index(),
-                        ))
+                    .map_err(|source| LiveWhiteboxError::SelectableReplyGuestWrite {
+                        trap_icount: trap_coordinate.raw_icount(),
+                        trap_vcpu: trap_coordinate.vcpu_index(),
+                        resume_tick_ps: current_icount,
+                        resume_vcpu: vcpu_index,
+                        source,
                     })?;
                 Ok(SelectableReplyDisposition::Reply(reply))
             },

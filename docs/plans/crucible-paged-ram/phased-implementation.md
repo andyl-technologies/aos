@@ -69,6 +69,27 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Typed selectable reply failures
+
+The actual reply consumer and resumed delivery path now move typed ring,
+envelope and protocol refusals into the existing live error. Unexpected kind,
+coordinate mismatch, early resume, sequence mismatch, reservation bounds and
+peek/consume failures retain fixed fields instead of allocating formatted
+Strings. A guest-write refusal retains its original typed backend cause plus
+trap/resume coordinates; the existing bounded diagnostic writer formats them
+only when reporting the failure. The rendered diagnostics and consume/write
+ordering remain unchanged.
+
+All 1,177 plugin unit tests pass. Existing controls now require exact typed
+unexpected-kind, unsolicited, early-resume and malformed-protocol refusals.
+The write-failure control requires its exact original full diagnostic, concrete
+trap/resume fields and the same original backend diagnostic-buffer address
+through the standard error-source chain. No new case name or binding is added.
+Compilation of all plugin targets passes. Required packaged checks are in progress.
+Backend-created dynamic diagnostics, decoded payloads and remaining catalog
+service errors still need complete funding; this is not an allocation-free
+execution or Source-admission qualification.
+
 #### Borrowed selectable resolution
 
 The decision service and actual resumed guest-reply path now borrow the same
@@ -92,8 +113,16 @@ refusal corrects that regression. No assertion is removed or renamed.
 Decoded messages, initial counter-map insertion, admission-time pending copies
 and remaining diagnostic payloads still allocate. This removes repeated copies;
 it does not qualify complete funding, a Core Quantum issuer or CPU admission.
-Mandatory application, engineering hygiene and ABI checks are being collected.
-No test binding or source-policy exception is added.
+Engineering hygiene passes. Mandatory compilation against the final committed
+source is in progress; all 5,313 Rust/TOML files at
+`b077245bdba7c982707dcd73f1b1115fbee1bb8c` match immutable source
+`66djsciyjq6gkig2d1b3ri7kv8jfiadq`, with comparison record SHA-256
+`07e2ce704ca9046042eacfe43ed74067d0f10b9893a0e0cc8f4c81810597b4e4`.
+An earlier compilation passes against `06nq3g8qwd5yiyrgc8sm346f9v5clr1y`,
+but that precedes the final catalog whitespace/digest refresh and does not
+replace the committed-source check. The initial hygiene invocation refused a stale 1,314-line digest/count record;
+the final refreshed 1,315-line record passes. No source-policy exception
+or test binding is added.
 
 #### Selectable catalog deltas in the retained workspace
 
@@ -126,7 +155,8 @@ files at `f765fe354e1ce5c2e2e23ba210d65b32e57d4086` match immutable source
 `qsxggcjh567dgaw25nakp115kbxp9cia`, with comparison record SHA-256
 `1dd54536105d789fb29ea0d92032d316e4a8895f6f909f046c06696693cfbc76`.
 ABI conformance passes at `d9dcfc7i0h6a2jczh9znkldxjg6fyps2`.
-Exact supervision results are being collected. The fresh strict license check
+All 327 exact supervision cases in nine groups pass at
+`wp33x0dzka9d65dsh6l5db9l0yx19wcf`. The fresh strict license check
 fails before its boundary assertions with 909 host-library and 963 host-test
 Clippy errors. No test binding is added.
 
