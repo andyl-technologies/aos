@@ -97,7 +97,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     assert_eq!(selectable_catalog[1], "4");
     assert_eq!(
         selectable_catalog[2],
-        "crucible-protocol::selectable_catalog_plan"
+        "crucible-qemu-protocol::selectable_catalog_plan"
     );
     assert_eq!(selectable_catalog[3], "process-protocol-message");
     let mut owned_campaign_schemas = CampaignRecordKind::ALL
@@ -311,7 +311,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         (
             "crucible.qemu.vm-snapshot",
             "4",
-            "crucible-qemu::realization",
+            "crucible-qemu-host::realization",
             "device-state",
         ),
         (
@@ -329,7 +329,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         (
             "crucible.production-exact-closure",
             "9",
-            "crucible-api::vm_lifecycle",
+            "crucible-daemon::vm_lifecycle",
             "device-state",
         ),
         (
@@ -380,7 +380,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         (
             "crucible.lifecycle.resume-observation-source",
             "1",
-            "crucible-api::lifecycle::session_contract",
+            "crucible-control-api::lifecycle::session_contract",
             "component-message",
         ),
     ] {
@@ -605,7 +605,7 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         (
             "crucible.campaign.fresh-lineage-baseline",
             "1",
-            "crucible-cas::cas::campaign_codec",
+            "crucible-store::cas::campaign_codec",
             "physical-record",
         ),
     ] {
@@ -626,92 +626,92 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
     for (schema, owner, kind) in [
         (
             "crucible.content-envelope",
-            "crucible-cas::content_envelope",
+            "crucible-store::content_envelope",
             "envelope",
         ),
         (
             "crucible.content-id-text",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "identity",
         ),
         (
             "crucible.content-store.graph-configuration",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.directory-ref",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "mutable-ref",
         ),
         (
             "crucible.content-store.directory-inventory-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.directory-ref-inventory-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.s3-ref",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "physical-record",
         ),
         (
             "crucible.content-store.s3-ref-inventory-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.s3-object-inventory-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.write-back-transfer-journal",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.compressed-object",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "physical-record",
         ),
         (
             "crucible.content-store.encrypted-object",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "physical-record",
         ),
         (
             "crucible.content-store.compressed-encrypted-object",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "physical-record",
         ),
         (
             "crucible.content-store.encryption-key-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.logical-quota-state",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.pack",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "physical-record",
         ),
         (
             "crucible.content-store.pack-index",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
         (
             "crucible.content-store.pack-repack-plan",
-            "crucible-cas::content_store",
+            "crucible-store::content_store",
             "administrative-record",
         ),
     ] {
