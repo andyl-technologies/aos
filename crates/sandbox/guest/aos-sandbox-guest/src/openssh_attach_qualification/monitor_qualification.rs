@@ -428,7 +428,7 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
 
 fn qualify_same_uid_denials(child: u32, relay: u32, uid: u32, gid: u32) {
     let output = Command::new(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "openssh_attach_certificate::qualification::monitor_qualification::same_uid_actor_cannot_inject_or_steal_confined_producer", "--test-threads=1"])
+        .args(["--ignored", "--exact", "openssh_attach_qualification::monitor_qualification::same_uid_actor_cannot_inject_or_steal_confined_producer", "--test-threads=1"])
         .env("AOS_ATTACH_ATTACK_TARGETS", format!("{child},{relay}"))
         .uid(uid).gid(gid).output().unwrap();
     assert!(
