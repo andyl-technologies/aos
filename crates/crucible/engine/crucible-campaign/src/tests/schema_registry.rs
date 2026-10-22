@@ -514,7 +514,11 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
             "4",
             "crucible-daemon::crucible_artifact",
         ),
-        ("crucible.execution.scenario-form", "9", "crucible::model"),
+        (
+            "crucible.execution.scenario-form",
+            "9",
+            "crucible-engine::model",
+        ),
         (
             "crucible.executor.crucible-configuration-payload",
             "4",
@@ -523,17 +527,17 @@ pub(super) fn schema_registry_is_unique_complete_and_names_real_gates() {
         (
             "crucible.execution.measurement-definitions",
             "1",
-            "crucible::model",
+            "crucible-engine::model",
         ),
         (
             "crucible.execution.measurement-evaluation",
             "1",
-            "crucible::model",
+            "crucible-engine::model",
         ),
         (
             "crucible.execution.reproduction-artifact",
             "9",
-            "crucible::model",
+            "crucible-engine::model",
         ),
     ] {
         let record = rows
