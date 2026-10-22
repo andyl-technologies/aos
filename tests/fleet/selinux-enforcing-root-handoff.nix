@@ -219,6 +219,14 @@
 
         systemd = {
           sockets.aos-root-handoff-custody = custodySocket;
+          paths.aos-root-handoff-refresh-agent = lib.mkIf (mode == "post-pin") {
+            description = "Observe the completed post-pin reexec attack";
+            wantedBy = ["multi-user.target"];
+            pathConfig = {
+              PathExists = "/run/aos/post-pin-reexec.done";
+              Unit = "aos-root-handoff-refresh-agent.service";
+            };
+          };
           services = {
             aos-root-handoff-custody = custodyService;
             aos-root-handoff-state = stateService;
@@ -226,6 +234,19 @@
             # attack's active state across switch-root and losing this start.
             aos-root-handoff-post-pin-reexec-adversary =
               lib.mkIf (mode == "post-pin") postPinReexecAdversary;
+            aos-root-handoff-refresh-agent = lib.mkIf (mode == "post-pin") {
+              description = "Resume test observations in PID 1's authenticated namespace";
+              # Reexec isolates PID 1 from the attacked parent namespace. The
+              # old test agent remains in that parent with its poisoned loader;
+              # only the restored manager can launch a usable replacement.
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+                # The fleet unit refuses manual stops. Its existing
+                # Restart=on-failure performs the new launch after this kill.
+                ExecStart = "${pkgs.systemd}/bin/systemctl kill --kill-whom=all --signal=KILL aos-test-agent.service";
+              };
+            };
           };
         };
       }
@@ -346,9 +367,13 @@ in {
       postPin.succeed("test ! -s /etc/ld.so.preload")
 
       postPin.wait_for_unit("aos-root-handoff-post-pin-reexec-adversary.service")
+      observer_pid = postPin.succeed("systemctl show aos-test-agent.service --property=MainPID --value").strip()
       postPin.succeed("touch /run/aos/post-pin-reexec.arm")
       postPin.succeed("systemctl daemon-reexec")
+      postPin.wait_for_unit("aos-root-handoff-refresh-agent.service")
       postPin.wait_for_unit("multi-user.target")
+      assert postPin.succeed("systemctl show aos-test-agent.service --property=MainPID --value").strip() != observer_pid
+      assert postPin.succeed("readlink /proc/self/ns/mnt").strip() == postPin.succeed("readlink /proc/1/ns/mnt").strip()
       postPin.succeed("test -s /run/aos/post-pin-reexec.done")
       marker = postPin.succeed("cat /run/aos/selinux-root-handoff")
       assert "phase=reexec" in marker

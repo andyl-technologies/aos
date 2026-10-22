@@ -10726,3 +10726,20 @@ The shared fixture no longer duplicates rootflags=nodev, which the base
 filesystem module already supplies. Complete evaluation passes all existing
 production rejection assertions and the exact-one-parameter assertions; the
 expanded test script compiles. Installed admission remains pending.
+
+### Post-pin observer namespace (installed execution pending)
+
+The five-guest handoff retry reaches both completed parent attacks and physical
+manager handoffs, but fails its observation after daemon-reexec: the existing
+test agent remains in the deliberately poisoned parent mount namespace and
+cannot execute its next Bash command. This is not a completed matrix receipt.
+
+The post-pin fixture now arms a fixed path unit before reexec. Only the restored
+manager can process the completion event and start its one-shot observer refresh
+in the authenticated namespace. The refresh kills the old test-agent cgroup;
+the fleet unit's existing Restart=on-failure launches its replacement without
+changing RefuseManualStop. RemainAfterExit bounds the refresh to one invocation.
+The test requires a changed agent PID and namespace equality with PID 1 before
+continuing its unchanged marker, byte, custody and rejection assertions. The
+actual path/service units evaluate and the expanded test script compiles; the
+installed five-guest rerun remains required.
