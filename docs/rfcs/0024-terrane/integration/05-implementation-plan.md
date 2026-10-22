@@ -13087,3 +13087,16 @@ Native custody, project, ownership and incarnation checks remain in place. This
 reduces descriptor use without raising the limit or reopening those four paths.
 Strict native all-target Clippy and formatting pass; full native and required
 application qualification remain necessary before claiming a failure fix.
+
+The initial signed manifest extension at `0c6fad4740` fails in 652.25 seconds
+with unchanged frozen source: actual recovery and all 128 native library cases
+pass, then scoped preparation refuses absent content. The normal SDK importer
+records BLAKE3, SHA-256, SHA-512 and both registered Git blob hashes, whereas
+the independently seeded primary manifest recorded BLAKE3 alone. Those canonical
+manifests have different identities despite identical plaintext, so substitution
+would be incorrect. The cold whole-file fixture now seeds its primary manifest
+with the SDK's exact five-hash set, retaining the distinct alternate manifest,
+all three independently observed sealed inodes, genuine metadata verification
+and the original refusal controls. Other cold-recovery fixtures are unchanged.
+The failed run is retained; descriptor sharing and the corrected manifest still
+require their own full native and application qualification.

@@ -5,6 +5,7 @@ use crate::{config::Inputs, sealed_consumer::check_backing};
 use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
 use terrane_format::{
     chunking::ChunkProfile,
+    derived::PlaintextHashes,
     identity::{Identity, IdentityKind, TERRANE_V1},
     manifest::Manifest,
 };
@@ -35,12 +36,13 @@ pub(crate) fn seed() -> io::Result<()> {
         ));
     }
     let fixture = Fixture::new()?;
+    let canonical = sdk_manifest(&fixture)?;
     let alternate = alternate(&fixture)?;
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let id = PackId::from_random_bytes(random);
     let mut writer = PackWriter::new(id, PackClass::Meta, false);
-    for canonical in [&fixture.manifest, &alternate] {
+    for canonical in [&canonical, &alternate] {
         writer
             .append_raw(EntryKind::Manifest, canonical)
             .map_err(io::Error::other)?;
@@ -63,7 +65,7 @@ pub(crate) fn seed() -> io::Result<()> {
     for (kind, canonical, plaintext) in [
         (
             IdentityKind::Manifest,
-            fixture.manifest.as_slice(),
+            canonical.as_slice(),
             fixture.plaintext.as_slice(),
         ),
         (
@@ -108,9 +110,10 @@ pub(crate) fn run(
         ));
     }
     let fixture = Fixture::new()?;
+    let canonical = sdk_manifest(&fixture)?;
     let alternate = alternate(&fixture)?;
     let identities = [
-        identity(IdentityKind::Manifest, &fixture.manifest)?,
+        identity(IdentityKind::Manifest, &canonical)?,
         identity(IdentityKind::Manifest, &alternate)?,
         identity(IdentityKind::Chunk, INLINE_BYTES)?,
     ];
@@ -158,11 +161,7 @@ pub(crate) fn run(
             "recovered manifest identities collapsed to one physical file",
         ));
     }
-    for (identity, canonical) in identities
-        .iter()
-        .take(2)
-        .zip([&fixture.manifest, &alternate])
-    {
+    for (identity, canonical) in identities.iter().take(2).zip([&canonical, &alternate]) {
         let metadata = runtime.block_on(owner.pin_resident_metadata(identity.clone(), expires))?;
         if metadata.read_verified()? != *canonical {
             return Err(invalid(
@@ -248,6 +247,32 @@ fn refuse_before_resume(
         ));
     }
     Ok(())
+}
+
+/// Encodes the exact registered hash set produced by normal SDK directory import.
+fn sdk_manifest(fixture: &Fixture) -> io::Result<Vec<u8>> {
+    let mut producer = PlaintextHashes::new(fixture.plaintext.len() as u64);
+    producer
+        .update(&fixture.plaintext)
+        .map_err(io::Error::other)?;
+    let secondary = producer.finish().map_err(io::Error::other)?;
+    Manifest {
+        size: fixture.plaintext.len() as u64,
+        chunks: fixture.chunks.clone(),
+        hashes: BTreeMap::from([
+            (
+                "blake3".into(),
+                blake3::hash(&fixture.plaintext).as_bytes().to_vec(),
+            ),
+            ("sha256".into(), secondary.sha256.to_vec()),
+            ("sha512".into(), secondary.sha512.to_vec()),
+            ("git-blob-sha1".into(), secondary.git_blob_sha1.to_vec()),
+            ("git-blob-sha256".into(), secondary.git_blob_sha256.to_vec()),
+        ]),
+        media_type: None,
+    }
+    .encode(&ChunkProfile::cdc_1m([0; 32]))
+    .map_err(io::Error::other)
 }
 
 fn alternate(fixture: &Fixture) -> io::Result<Vec<u8>> {
