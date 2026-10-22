@@ -703,6 +703,8 @@ pub struct NspawnConfig {
     readiness: BackendReadiness,
     timeout_start: Duration,
     timeout_stop: Duration,
+    #[cfg(all(test, feature = "kernel-tests"))]
+    kernel_guest_fixture: Option<Arc<kernel_tests::GuestDescriptorFixture>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -743,6 +745,8 @@ impl NspawnConfig {
             readiness,
             timeout_start,
             timeout_stop,
+            #[cfg(all(test, feature = "kernel-tests"))]
+            kernel_guest_fixture: None,
         })
     }
 
@@ -777,7 +781,9 @@ impl NspawnConfig {
         let executable_pin = open_executable_pin(executable)?;
 
         let readiness = readiness::backend_readiness_for_tests(executable, executable_pin)?;
-        Self::from_readiness(readiness, timeout_start, timeout_stop)
+        let mut config = Self::from_readiness(readiness, timeout_start, timeout_stop)?;
+        config.kernel_guest_fixture = Some(Arc::new(kernel_tests::GuestDescriptorFixture::new()));
+        Ok(config)
     }
 
     pub(crate) fn revalidate(&self) -> Result<()> {
@@ -821,14 +827,20 @@ impl NspawnConfig {
         resolved: ResolvedLaunchResources,
         root_mount: DetachedMount,
     ) -> Result<PreparedLaunch> {
-        compile_resolved_recipe(
+        let prepared = compile_resolved_recipe(
             LaunchRecipeV1::Ready(self),
             fence,
             plan,
             resolved,
             root_mount,
             None,
-        )
+        )?;
+        #[cfg(all(test, feature = "kernel-tests"))]
+        let prepared = match &self.kernel_guest_fixture {
+            Some(fixture) => fixture.bind(prepared),
+            None => prepared,
+        };
+        Ok(prepared)
     }
 
     pub(crate) fn compile_resolved_receiving_v2(

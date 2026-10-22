@@ -6,7 +6,9 @@
 //! and worker mechanics; it does not satisfy real backend qualification or
 //! establish deployed MAC, profile, filter, or ownership enforcement. The fleet
 //! fixture supplies an inert guardian dependency and prepared root and network
-//! objects. No production feature or constructor bypasses readiness.
+//! objects. Its fixed Guest descriptors carry invalid credentials and are
+//! checked and closed by the fixture init, without authenticating an Agent.
+//! No production feature or constructor bypasses readiness.
 
 #![allow(
     clippy::unwrap_used,
@@ -49,6 +51,72 @@ const WORKSPACE: &str = "/run/aos/sandbox-pins/workspaces/qualification";
 const NETWORK: &str = "/run/aos/sandbox-pins/netns/qualification";
 const ATTACHMENT_ANCHOR: &str =
     "/run/aos/sandbox-pins/workspaces/qualification/var/qualification-attachment-anchor";
+
+/// Supplies inert roles for the worker fixture's first-exec handoff check.
+///
+/// These bytes are deliberately invalid Agent credentials. The fixture init
+/// checks their kernel shape and closes them before starting its payload; they
+/// neither authenticate an Agent nor set `agent_required` in the launch state.
+#[derive(Debug)]
+pub(super) struct GuestDescriptorFixture {
+    channel: OwnedFd,
+    _peer: OwnedFd,
+    provisioning: OwnedFd,
+    attach_trust: OwnedFd,
+}
+
+impl GuestDescriptorFixture {
+    pub(super) fn new() -> Self {
+        let (channel, peer) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )
+        .unwrap();
+
+        Self {
+            channel,
+            _peer: peer,
+            provisioning: sealed_fixture_bytes(258),
+            attach_trust: sealed_fixture_bytes(152),
+        }
+    }
+
+    pub(super) fn bind(&self, mut prepared: PreparedLaunch) -> PreparedLaunch {
+        prepared.spec = prepared
+            .spec
+            .with_guest_agent_descriptors(
+                self.channel.as_fd(),
+                self.provisioning.as_fd(),
+                self.attach_trust.as_fd(),
+            )
+            .unwrap();
+        prepared.snapshot.spec_semantic_digest = prepared.spec.semantic_digest_v1();
+        prepared
+    }
+}
+
+fn sealed_fixture_bytes(length: usize) -> OwnedFd {
+    use std::io::Write as _;
+
+    use rustix::fs::{MemfdFlags, SealFlags, fcntl_add_seals, memfd_create};
+
+    let descriptor = memfd_create(
+        "worker-fixture-invalid-agent-credential",
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING,
+    )
+    .unwrap();
+    let mut file = std::fs::File::from(descriptor);
+    file.write_all(&vec![0; length]).unwrap();
+    fcntl_add_seals(
+        &file,
+        SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE,
+    )
+    .unwrap();
+
+    file.into()
+}
 
 fn directory(path: &str) -> OwnedFd {
     open(

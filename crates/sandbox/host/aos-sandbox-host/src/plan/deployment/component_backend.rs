@@ -83,6 +83,8 @@ impl HostComponentBackendPreparationV2 {
             readiness,
             timeout_start: Duration::from_secs(30),
             timeout_stop: Duration::from_secs(30),
+            #[cfg(all(test, feature = "kernel-tests"))]
+            kernel_guest_fixture: None,
         })
     }
 }

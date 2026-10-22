@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/reboot.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 
@@ -41,9 +43,43 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    /* This fixture requests no payload activation sockets. Check every slot
-     * allowed by its hard limit, including slots above the current soft limit.
-     * No directory enumeration descriptor is opened during this scan. */
+    /* The production directory profile requires all three fixed Guest roles.
+     * This worker-only fixture receives deliberately invalid credential bytes,
+     * checks the actual first-exec handoff, then closes them. It does not run or
+     * authenticate the production Agent. Setup roles must never reach PID 1. */
+    for (int fd = 3; fd <= 5; fd++) {
+        struct stat identity;
+        if (fstat(fd, &identity) < 0) {
+            perror("fixed Guest descriptor");
+            return EXIT_FAILURE;
+        }
+
+        if (fd == 3) {
+            int type;
+            socklen_t length = sizeof(type);
+            if (!S_ISSOCK(identity.st_mode) ||
+                getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) < 0 ||
+                length != sizeof(type) || type != SOCK_SEQPACKET) {
+                fputs("Guest channel is not a sequence-packet socket\n", stderr);
+                return EXIT_FAILURE;
+            }
+        } else {
+            int required = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
+            int seals = fcntl(fd, F_GET_SEALS);
+            if (!S_ISREG(identity.st_mode) || identity.st_size != (fd == 4 ? 258 : 152) ||
+                seals < 0 || (seals & required) != required) {
+                fputs("Guest fixture credential shape or seals differ\n", stderr);
+                return EXIT_FAILURE;
+            }
+        }
+        if (close(fd) < 0) {
+            perror("close Guest fixture descriptor");
+            return EXIT_FAILURE;
+        }
+    }
+
+    /* Check every slot allowed by the hard limit, including those above the
+     * soft limit. This scan opens no directory enumeration descriptor. */
     for (int fd = 3; fd < (int) limit.rlim_max; fd++) {
         errno = 0;
         if (fcntl(fd, F_GETFD) >= 0 || errno != EBADF) {
