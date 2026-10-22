@@ -179,7 +179,7 @@
                   then ''
                     set -eu
                     printf '# invalid substituted guard\n' > /run/aos-substituted-guard
-                    chmod 0555 /run/aos-substituted-guard
+                    ${pkgs.coreutils}/bin/chmod 0555 /run/aos-substituted-guard
                     ${pkgs.util-linux}/bin/mount --bind \
                       /run/aos-substituted-guard \
                       /sysroot/usr/lib/systemd/aos-selinux-root-handoff
@@ -200,7 +200,8 @@
                     printf 'AOS_ATTACKER_LOADER\n' > /run/aos-shadow-loader
                     printf 'AOS_ATTACKER_DSO\n' > /run/aos-shadow-dso
                     printf '/run/aos-attacker-preload.so\n' > /run/aos-shadow-preload
-                    chmod 0555 /run/aos-shadow-systemd /run/aos-shadow-loader /run/aos-shadow-dso
+                    ${pkgs.coreutils}/bin/chmod 0555 \
+                      /run/aos-shadow-systemd /run/aos-shadow-loader /run/aos-shadow-dso
 
                     ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-systemd \
                       /sysroot/nix/store/${systemdBasename}/lib/systemd/systemd

@@ -9920,6 +9920,10 @@ The clean installed rerun stalls before its agent: PID1 reports that
 The fixture now puts it in `[Unit]`, alongside `IgnoreOnIsolate`, as required
 by the selected manager. Installed survival and both attacks still require a
 passing rerun.
+The same transcript shows both pre-pin bind fixtures exiting before their
+attack because `chmod` is absent from the initrd job's PATH. Both now use the
+explicit AOS Coreutils executable; the non-directory runtime-root fixture
+already uses explicit package tools and reaches its intended mutation.
 The Host library check now follows the versioned DSO symlink when comparing
 the actual library inodes, modes and security contexts. Its prior installed run
 passed byte comparison but stopped while reading the symlink's context.
