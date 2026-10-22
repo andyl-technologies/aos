@@ -64,7 +64,7 @@ type QemuRegisterInsnExecCbFn =
 type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
 pub(super) type QemuReadRegisterFn =
     extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> bool;
-type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
+pub(super) type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
 type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
 type QemuWriteMemoryVaddrForVcpuFn = extern "C" fn(c_uint, u64, *const u8, usize) -> bool;
 type QemuFaultReadyMarkerFn = extern "C" fn(*const c_char, usize, u64) -> c_int;

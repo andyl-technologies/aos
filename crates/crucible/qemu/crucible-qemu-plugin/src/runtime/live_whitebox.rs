@@ -18,7 +18,7 @@ use crucible_qemu_shmem::MAX_FRAME_DATA;
 
 use crate::coverage::LiveTbTranslationConsumer;
 use crate::{
-    GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
+    GuestMemoryAddressSpace, GuestMemoryRange,
     PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuPluginId,
     QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
@@ -34,6 +34,7 @@ mod app_random;
 mod diagnostic;
 mod error;
 mod guest_introspection;
+mod guest_memory;
 mod location;
 mod marker;
 mod ready_marker;
@@ -52,6 +53,7 @@ use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_qemu_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 use crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan;
 pub use error::{GuestIntrospectionTransportError, LiveWhiteboxError};
+use guest_memory::LiveGuestMemoryReader;
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
@@ -659,18 +661,15 @@ impl LiveWhiteboxState {
             GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, address, len),
         );
         let mut reader = LiveGuestMemoryReader { apis: self.apis };
-        let payload = reader
-            .read_guest_memory(
-                event.vcpu_index(),
-                event.current_icount(),
-                event.payload_range(),
-            )
+        let buffer = reader
+            .borrow_guest_memory(event.payload_range())
             .map_err(|source| LiveWhiteboxError::GuestMemoryRead { source })?;
-        if guest_introspection::is_exchange(&payload) {
-            self.handle_guest_introspection(&mut reader, event, &payload)
-        } else if app_random::is_request(&payload) {
+        let payload = buffer.bytes();
+        if guest_introspection::is_exchange(payload) {
+            self.handle_guest_introspection(&mut reader, event, payload)
+        } else if app_random::is_request(payload) {
             self.handle_app_random(&mut reader, event, raw_icount, trap_tick_ps, vcpu_index)
-        } else if selectable::is_message(&payload) {
+        } else if selectable::is_message(payload) {
             let selectable = self
                 .selectable
                 .as_mut()
@@ -699,7 +698,7 @@ impl LiveWhiteboxState {
             }
             Ok(())
         } else {
-            if is_setup_complete_marker(&payload)
+            if is_setup_complete_marker(payload)
                 && let Some(selectable) = self.selectable.as_mut()
             {
                 // Reconcile required declarations before the readiness marker
@@ -770,47 +769,6 @@ fn is_setup_complete_marker(payload: &[u8]) -> bool {
         == Some(WhiteboxMarkerPayload::Lifecycle(
             crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
         ))
-}
-
-struct LiveGuestMemoryReader {
-    apis: LiveWhiteboxApis,
-}
-
-impl GuestMemoryReader for LiveGuestMemoryReader {
-    fn read_guest_memory(
-        &mut self,
-        _vcpu_index: u32,
-        _current_icount: u64,
-        range: GuestMemoryRange,
-    ) -> Result<Vec<u8>, GuestMemoryReadError> {
-        if !matches!(range.address_space(), GuestMemoryAddressSpace::Virtual) {
-            return Err(GuestMemoryReadError::new(
-                "live white-box adapter requires a virtual payload range",
-            ));
-        }
-        let array = (self.apis.g_byte_array_new)();
-        let Some(array) = NonNull::new(array) else {
-            return Err(GuestMemoryReadError::new(
-                "GLib byte-array allocation failed",
-            ));
-        };
-        let read =
-            (self.apis.read_memory_vaddr)(range.guest_address(), array.as_ptr(), range.len());
-        if !read {
-            (self.apis.g_byte_array_free)(array.as_ptr(), true);
-            return Err(GuestMemoryReadError::new(
-                "qemu_plugin_read_memory_vaddr failed",
-            ));
-        }
-        let bytes = {
-            // The returned bytes are copied before the GLib array is freed.
-            // SAFETY: QEMU sets `data` and `len` to the initialized memory result.
-            unsafe { std::slice::from_raw_parts(array.as_ref().data, array.as_ref().len as usize) }
-        }
-        .to_vec();
-        (self.apis.g_byte_array_free)(array.as_ptr(), true);
-        Ok(bytes)
-    }
 }
 
 extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(

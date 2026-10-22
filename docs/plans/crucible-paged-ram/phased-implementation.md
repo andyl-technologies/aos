@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 439 committed bindings: 420 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 442 committed bindings: 423 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Retained RR parent and wrapper-retirement composition
 
@@ -529,6 +529,32 @@ immutable source `a557f0sfpnj1h8qv3382gsvnn4l457r5`; the comparison record has
 SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
+
+#### Borrowed initial native trap reads
+
+The live trap dispatcher now retains the original GLib read array and borrows
+its bytes through routing, replacing its initial native-to-Vec copy. A focused
+owner returns the native array exactly once on scope exit or read/shape refusal.
+Explicit owned reader APIs still copy when their callers require owned bytes.
+Buffer construction checks exact requested length, a representable slice extent
+and nonnull data for nonempty reads before exposing any slice; an empty native
+array returns an ordinary empty slice. Static native read failures retain
+borrowed diagnostics, while the existing owned error constructor remains.
+
+Three controls exercise the actual read/borrow/Drop adapter with instrumented
+native entry points: 4,096-byte payload pointer identity and scoped release;
+prebirth allocation/range refusal versus born read failure; and malformed or
+empty native buffer handling. The first focused run compiled successfully and
+passed ten controls; its one failed assertion incorrectly required duplicate
+literal expressions in separate modules to share an address. The corrected
+control compares the actual error and its clone: a retained borrowed diagnostic
+preserves its address, while an owned String clone would allocate separately.
+All eleven focused guest-memory controls, 129 white-box controls and every
+plugin test target's compilation pass. Content-bound engineering hygiene
+passes. Mandatory application compilation, ABI/license checking and the exact
+325-case supervision run are being collected. The retained GLib allocation, explicit owned reads, other
+service parsing, callback stacks and complete operation funding remain open.
+This introduces no Source activation, Module permission or residency claim.
 
 #### Typed live guest-introspection refusals
 

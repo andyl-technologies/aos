@@ -1811,7 +1811,7 @@ pub trait GuestMemoryReader {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[error("guest-memory read failed: {message}")]
 pub struct GuestMemoryReadError {
-    message: String,
+    message: std::borrow::Cow<'static, str>,
 }
 
 impl GuestMemoryReadError {
@@ -1819,7 +1819,15 @@ impl GuestMemoryReadError {
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: std::borrow::Cow::Owned(message.into()),
+        }
+    }
+
+    /// Retains a static backend diagnostic without allocating a string.
+    #[must_use]
+    pub const fn from_static(message: &'static str) -> Self {
+        Self {
+            message: std::borrow::Cow::Borrowed(message),
         }
     }
 
