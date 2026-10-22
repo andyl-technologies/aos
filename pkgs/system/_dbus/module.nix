@@ -136,18 +136,19 @@
         optional = false;
       }
     ];
-    storage.mounts = [
-      {
-        name = "runtime";
-        source = "/run/dbus";
-        access = "read-write";
-      }
-      {
+    storage.mounts =
+      [
+        {
+          name = "runtime";
+          source = "/run/dbus";
+          access = "read-write";
+        }
+      ]
+      ++ lib.optional hostStage {
         name = "state";
         source = "/var/lib/dbus";
         access = "read-write";
-      }
-    ];
+      };
     socket_activation.sockets = [
       {
         name = "system-bus";

@@ -206,7 +206,9 @@ in {
     earlyServiceUsesDeclaredPrincipal = row "messagebus" hostAccounts.passwd.text == ["messagebus:x:81:81:D-Bus Message Bus:/var/run/dbus:${shells.nologin}"] && row "messagebus" hostAccounts.group.text == ["messagebus:x:81:"];
     initrdEarlyServiceUsesDeclaredPrincipal = row "messagebus" initrdDbusSeed.passwd == row "messagebus" hostAccounts.passwd.text && row "messagebus" initrdDbusSeed.group == row "messagebus" hostAccounts.group.text && row "messagebus" initrdDbusSeed.shadow == row "messagebus" hostAccounts.shadow.text;
     initrdDbusNeedsOnlyRuntimeDirectory = map (directory: directory.purpose) initrdDbusService.directories.managed == ["runtime"] && initrdDbusService.dependencies.prerequisites == ["/run/dbus"];
+    initrdDbusMountsOnlyRuntimeState = map (mount: mount.source) initrdDbusService.storage.mounts == ["/run/dbus"];
     hostDbusRetainsPersistentDirectory = map (directory: directory.purpose) hostBaseline.aos.services.dbus.directories.managed == ["runtime" "state"] && hostBaseline.aos.services.dbus.dependencies.prerequisites == ["/run/dbus" "/var/lib/dbus"];
+    hostDbusRetainsPersistentMount = map (mount: mount.source) hostBaseline.aos.services.dbus.storage.mounts == ["/run/dbus" "/var/lib/dbus"];
     disabledInitrdServiceHasNoSeed = row "messagebus" initrdDbusDisabledSeed.passwd == [] && row "messagebus" initrdDbusDisabledSeed.group == [];
     runtimeOnlyInitrdServiceHasNoSeed = row "messagebus" initrdDbusRuntimeOnlySeed.passwd == [] && row "messagebus" initrdDbusRuntimeOnlySeed.group == [];
     disabledEarlyServiceHasNoSeed = row "messagebus" hostDbusDisabled.passwd.text == [] && row "messagebus" hostDbusDisabled.group.text == [];
