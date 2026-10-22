@@ -12,6 +12,22 @@ Crate names and paths use the current ownership mapping in
 [`unmerged-crates.md`](../../../architecture/unmerged-crates.md). The RFC-0021
 sources remain on that workline; these paths do not claim they are merged here.
 
+An implementation audit on 2026-10-22 pins PR #232 at
+`a487ff5c6eb59c5da6a6641c8964eb9f9ff9ddd3`. That separate workline contains
+the mount broker in `crates/sandbox/controller/aos-sandbox-services`, native
+mount custody in `crates/sandbox/host/aos-sandbox-mount-native`, and filesystem
+view and FUSE components in `crates/sandbox/filesystem/`. They are not
+dependencies in this Terrane checkout. References below to an existing broker
+describe that owning workline, not an installed service supplied by this PR.
+
+The audited FUSE crate provides a protected metadata runner and dormant data
+and broker-completion seams. Its installed profile disables file data and
+extended attributes. Its presence therefore does not qualify a Terrane worker,
+backing channel, passthrough registration or mounted exposure. T5 must join the
+actual protected broker and worker factories and qualify their combined native
+effects; public identifiers, raw descriptors or a second privileged Terrane
+daemon cannot replace those factories.
+
 Requirement IDs in this file use the prefix `SBX`. Gates are AOS checks named
 in [`03-packaging.md`](03-packaging.md) §checks.
 
@@ -27,7 +43,9 @@ fs-verity. It specifies per-view FUSE workers with no network that request
 backing handles from the view service and passthrough registration from the
 mount broker. Its crate plan (`14-implementation-plan.md` §Rust ownership)
 names a future `aos-sandbox-view` crate for "portable-tree compiler, isolated
-publisher, FUSE worker, view/cache client". None of those exist as code.
+publisher, FUSE worker, view/cache client". Implementations now exist on that
+separate workline under the ownership mapping above; this checkout does not
+incorporate them.
 
 RFC-0021's former `aos-filesystem-view-core` maps to
 `crates/sandbox/filesystem/aos-sandbox-filesystem-format`. It carries two
@@ -234,8 +252,8 @@ its executions have leased, never the host store, and never the daemon socket.
 
 Terrane does not replace the sandbox controller, `aos-sandboxd`, the host,
 network, and storage brokers, the broker session protocol, lease guards,
-policy compilation, or the guest agent. It replaces the unwritten view
-service, publisher, worker, compiler, and cache, and it changes the
+policy compilation, or the guest agent. It supplies the view service,
+publisher, worker, compiler, and cache roles, and it changes the
 identity profile from a single SHA-256 domain to a registered pair of
 profiles.
 

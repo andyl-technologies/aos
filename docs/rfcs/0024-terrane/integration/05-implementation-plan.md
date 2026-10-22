@@ -14241,3 +14241,26 @@ seconds. Independent review matches all 8,033 source files, 184 application
 records across 59 packages, 5,328 native inputs and four installed Cargo ELFs.
 These passes preserve that checkpoint's failed owning surface qualification
 and do not qualify later worker-client or publisher-descriptor changes.
+
+
+At `975435c568`, expanded worker transport qualification passes in 216.59
+seconds from unchanged frozen source. Independent review matches all 8,042
+immutable source files, 5,319 bound inputs, the actual Cargo artifact and
+installed ELF digest
+`3444e6f5bf7dcb835b124082691b182c1199ba95eece6f390f9db2e6b9e46b16`.
+All 15 positive/request/refusal witnesses occur exactly once. The public client
+acknowledges two consecutive original-inode grants, rejects repeated reply
+completion and refuses every malformed response with its expected error class,
+unchanged descriptor count and a faulted channel. This is transport-only native
+qualification; scoped owner Send, production launch, confinement and mounted
+FUSE remain unqualified. Mandatory application compilation is still running.
+
+The sandbox integration now records an audit of the actual separate PR #232
+head `a487ff5c6eb59c5da6a6641c8964eb9f9ff9ddd3`. Its protected mount broker,
+native mount custody and metadata FUSE runner exist on that workline, but are
+not incorporated in this checkout. Its installed FUSE profile does not supply
+file data or extended attributes. The audit corrects the obsolete assertion
+that none of those components exist; it neither imports that dependency nor
+claims Terrane sandbox integration. T5 still requires the actual protected
+factory joins and combined native qualification, with no privileged Terrane
+role or raw-descriptor authority substitute.
