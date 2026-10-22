@@ -2,6 +2,10 @@
 
 use thiserror::Error;
 
+mod guest_introspection;
+
+pub use guest_introspection::GuestIntrospectionTransportError;
+
 /// Reports a failure at the live QEMU white-box ABI boundary.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveWhiteboxError {
@@ -199,6 +203,25 @@ pub enum LiveWhiteboxError {
         name: String,
         /// Original QEMU refusal status.
         status: i32,
+    },
+    /// The guest-introspection frame failed validation before routing.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionFrame {
+        /// Original fixed-frame or embedded record failure.
+        source:
+            crucible_qemu_protocol::guest_introspection_doorbell::GuestIntrospectionDoorbellError,
+    },
+    /// The guest-introspection transport rejected routing or request commit.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionTransport {
+        /// Original typed transport refusal.
+        source: GuestIntrospectionTransportError,
+    },
+    /// Delivery of the fixed guest-introspection reply failed.
+    #[error("safe white-box callback failed: {source}")]
+    GuestIntrospectionInput {
+        /// Original capability, range, coordinate or guest-write failure.
+        source: crate::WhiteboxDoorbellError,
     },
     /// A remaining safe doorbell service rejected the live event.
     #[error("safe white-box callback failed: {message}")]

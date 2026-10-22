@@ -51,7 +51,7 @@ use app_random::LiveAppRandomState;
 use crucible_qemu_protocol::app_random_branch_plan::AppRandomBranchPlan;
 use crucible_qemu_protocol::app_random_transport::app_random_stream_name_belongs_to_node;
 use crucible_qemu_protocol::selectable_catalog_plan::SelectableCatalogPlan;
-pub use error::LiveWhiteboxError;
+pub use error::{GuestIntrospectionTransportError, LiveWhiteboxError};
 use location::{LiveWhiteboxInstructionLocation, LiveWhiteboxTbEntry};
 use marker::LiveMarkerSink;
 pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;

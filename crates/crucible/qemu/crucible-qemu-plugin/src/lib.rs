@@ -264,7 +264,8 @@ pub use round_robin::{
 };
 #[cfg(unix)]
 pub use runtime::{
-    LiveDeviceCallbackError, LiveWhiteboxError, OwnedCallbackRegistrationError,
+    GuestIntrospectionTransportError, LiveDeviceCallbackError, LiveWhiteboxError,
+    OwnedCallbackRegistrationError,
     PluginRuntimeInstallError, PluginRuntimeOwner, REQUIRED_OWNED_CALLBACK_FAMILIES,
     RequiredOwnedCallbacksRegistered, active_runtime_is_published,
 };

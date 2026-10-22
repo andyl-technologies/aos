@@ -6,7 +6,7 @@ use crucible_qemu_protocol::guest_introspection_doorbell::{
 };
 use crucible_qemu_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_qemu_shmem::{DetachedPluginGuestIntrospectionRings, GuestIntrospectionEntry};
-use thiserror::Error;
+use super::GuestIntrospectionTransportError as PluginIoError;
 
 use super::app_random::LiveGuestMemoryWriter;
 use super::*;
@@ -43,36 +43,20 @@ trait PluginGuestIntrospectionIo {
     fn enqueue_response(&mut self, entry: GuestIntrospectionEntry) -> Result<(), PluginIoError>;
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
-enum PluginIoError {
-    #[error("guest introspection response ring is full")]
-    Full,
-    #[error("guest introspection transport failed: {message}")]
-    Fatal { message: String },
-}
-
-impl PluginIoError {
-    fn fatal(error: impl ToString) -> Self {
-        Self::Fatal {
-            message: error.to_string(),
-        }
-    }
-}
-
 impl PluginGuestIntrospectionIo for DetachedPluginGuestIntrospectionRings {
     fn peek_request(&mut self) -> Result<Option<GuestIntrospectionEntry>, PluginIoError> {
-        self.peek_request().map_err(PluginIoError::fatal)
+        self.peek_request().map_err(PluginIoError::from)
     }
 
     fn commit_request(&mut self, expected_sequence: u64) -> Result<(), PluginIoError> {
         self.commit_request(expected_sequence)
-            .map_err(PluginIoError::fatal)
+            .map_err(PluginIoError::from)
     }
 
     fn enqueue_response(&mut self, entry: GuestIntrospectionEntry) -> Result<(), PluginIoError> {
         self.enqueue_response(entry).map_err(|error| match error {
             crucible_qemu_shmem::SpscRingError::QueueFull { .. } => PluginIoError::Full,
-            error => PluginIoError::fatal(error),
+            error => PluginIoError::from(error),
         })
     }
 }
@@ -84,7 +68,8 @@ impl LiveWhiteboxState {
         event: WhiteboxDoorbellTrapEvent,
         payload: &[u8],
     ) -> Result<(), LiveWhiteboxError> {
-        let exchange = GuestIntrospectionDoorbellView::decode(payload).map_err(callback_error)?;
+        let exchange = GuestIntrospectionDoorbellView::decode(payload)
+            .map_err(|source| LiveWhiteboxError::GuestIntrospectionFrame { source })?;
         let routed = route_exchange(
             &mut self.guest_introspection.rings,
             &mut self.guest_introspection.next_response_sequence,
@@ -103,7 +88,7 @@ impl LiveWhiteboxState {
                 event.payload_range(),
                 &reply,
             )
-            .map_err(callback_error)?;
+            .map_err(|source| LiveWhiteboxError::GuestIntrospectionInput { source })?;
         if let Some(sequence) = routed.delivered_request_sequence {
             self.guest_introspection.next_request_sequence =
                 commit_delivered_request(&mut self.guest_introspection.rings, sequence)
@@ -120,7 +105,7 @@ fn commit_delivered_request(
     rings.commit_request(sequence)?;
     sequence
         .checked_add(1)
-        .ok_or_else(|| PluginIoError::fatal("request sequence overflow"))
+        .ok_or(PluginIoError::RequestSequenceOverflow)
 }
 
 struct RoutedExchange {
@@ -137,16 +122,16 @@ fn route_exchange(
     match exchange.kind() {
         GuestIntrospectionDoorbellKind::Poll => {}
         GuestIntrospectionDoorbellKind::Response => {
-            let record = exchange.record().ok_or_else(|| {
-                PluginIoError::fatal("response exchange omitted its validated record")
+            let record = exchange.record().ok_or_else(|| PluginIoError::Invariant {
+                message: "response exchange omitted its validated record",
             })?;
             GuestIntrospectionRecord::validate_encoded_guest_response(record)
-                .map_err(PluginIoError::fatal)?;
+                .map_err(PluginIoError::from)?;
             let following_sequence = next_response_sequence
                 .checked_add(1)
-                .ok_or_else(|| PluginIoError::fatal("response sequence overflow"))?;
+                .ok_or(PluginIoError::ResponseSequenceOverflow)?;
             let entry = GuestIntrospectionEntry::new(*next_response_sequence, record)
-                .map_err(PluginIoError::fatal)?;
+                .map_err(PluginIoError::from)?;
             match rings.enqueue_response(entry) {
                 Ok(()) => {}
                 Err(PluginIoError::Full) => {
@@ -155,36 +140,36 @@ fn route_exchange(
                         delivered_request_sequence: None,
                     });
                 }
-                Err(error @ PluginIoError::Fatal { .. }) => return Err(error),
+                Err(error) => return Err(error),
             }
             *next_response_sequence = following_sequence;
         }
         GuestIntrospectionDoorbellKind::Idle
         | GuestIntrospectionDoorbellKind::Request
         | GuestIntrospectionDoorbellKind::Retry => {
-            return Err(PluginIoError::fatal(
-                "guest supplied a plugin-to-guest exchange kind",
-            ));
+            return Err(PluginIoError::GuestReplyKind {
+                kind: exchange.kind(),
+            });
         }
     }
 
     match rings.peek_request()? {
         Some(entry) => {
             if entry.sequence() != next_request_sequence {
-                return Err(PluginIoError::fatal(format!(
-                    "request sequence mismatch: expected {next_request_sequence}, actual {}",
-                    entry.sequence()
-                )));
+                return Err(PluginIoError::RequestSequenceMismatch {
+                    expected: next_request_sequence,
+                    actual: entry.sequence(),
+                });
             }
-            let record = entry.record().map_err(PluginIoError::fatal)?;
+            let record = entry.record().map_err(PluginIoError::from)?;
             GuestIntrospectionRecord::validate_encoded_host_request(record)
-                .map_err(PluginIoError::fatal)?;
+                .map_err(PluginIoError::from)?;
             Ok(RoutedExchange {
                 reply: GuestIntrospectionDoorbellView::new(
                     GuestIntrospectionDoorbellKind::Request,
                     Some(record),
                 )
-                .map_err(PluginIoError::fatal)?
+                .map_err(PluginIoError::from)?
                 .encode(),
                 delivered_request_sequence: Some(entry.sequence()),
             })
@@ -201,13 +186,11 @@ fn empty_reply(
 ) -> Result<[u8; GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES], PluginIoError> {
     GuestIntrospectionDoorbellView::new(kind, None)
         .map(|reply| reply.encode())
-        .map_err(PluginIoError::fatal)
+        .map_err(PluginIoError::from)
 }
 
-fn callback_error(source: impl ToString) -> LiveWhiteboxError {
-    LiveWhiteboxError::Callback {
-        message: source.to_string(),
-    }
+fn callback_error(source: PluginIoError) -> LiveWhiteboxError {
+    LiveWhiteboxError::GuestIntrospectionTransport { source }
 }
 
 #[cfg(test)]
@@ -245,6 +228,7 @@ mod tests {
         requests: VecDeque<GuestIntrospectionEntry>,
         responses: Vec<GuestIntrospectionEntry>,
         response_full: bool,
+        response_error: Option<crucible_qemu_shmem::SpscRingError>,
     }
 
     impl PluginGuestIntrospectionIo for FakeRings {
@@ -256,9 +240,13 @@ mod tests {
             let entry = self
                 .requests
                 .front()
-                .ok_or_else(|| PluginIoError::fatal("commit found no request"))?;
+                .ok_or_else(|| PluginIoError::Invariant {
+                    message: "commit found no request",
+                })?;
             if entry.sequence() != expected_sequence {
-                return Err(PluginIoError::fatal("commit sequence mismatch"));
+                return Err(PluginIoError::Invariant {
+                    message: "commit sequence mismatch",
+                });
             }
             self.requests.pop_front();
             Ok(())
@@ -268,6 +256,9 @@ mod tests {
             &mut self,
             entry: GuestIntrospectionEntry,
         ) -> Result<(), PluginIoError> {
+            if let Some(source) = self.response_error.clone() {
+                return Err(PluginIoError::Ring { source });
+            }
             if self.response_full {
                 return Err(PluginIoError::Full);
             }
@@ -473,5 +464,134 @@ mod tests {
         assert_eq!(rings.requests.len(), 1);
         assert_eq!(commit_delivered_request(&mut rings, 1), Ok(2));
         assert!(rings.requests.is_empty());
+    }
+
+    #[test]
+    fn transport_refusals_preserve_direction_and_sequence_precedence() {
+        let mut rings = FakeRings::default();
+        let mut sequence = u64::MAX;
+
+        let direction = exchange(
+            &mut rings,
+            &mut sequence,
+            1,
+            GuestIntrospectionDoorbellFrame::response(close_record(8)),
+        )
+        .err()
+        .unwrap();
+        let overflow = exchange(
+            &mut rings,
+            &mut sequence,
+            1,
+            GuestIntrospectionDoorbellFrame::response(output_record(8)),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(direction, PluginIoError::Record {
+            source: crucible_qemu_protocol::guest_introspection::GuestIntrospectionError::WrongDirection,
+        });
+        assert_eq!(overflow, PluginIoError::ResponseSequenceOverflow);
+        assert_eq!(sequence, u64::MAX);
+        assert!(rings.responses.is_empty());
+
+        rings.requests.push_back(entry(9, &close_record(10)));
+        let mismatch = exchange(
+            &mut rings,
+            &mut sequence,
+            8,
+            GuestIntrospectionDoorbellFrame::poll(),
+        )
+        .err()
+        .unwrap();
+
+        assert_eq!(
+            mismatch,
+            PluginIoError::RequestSequenceMismatch {
+                expected: 8,
+                actual: 9
+            }
+        );
+        assert_eq!(rings.requests.len(), 1);
+        let outer = callback_error(mismatch);
+        assert!(matches!(
+            outer,
+            LiveWhiteboxError::GuestIntrospectionTransport {
+                source: PluginIoError::RequestSequenceMismatch {
+                    expected: 8,
+                    actual: 9
+                }
+            }
+        ));
+        assert_eq!(
+            outer.to_string(),
+            "safe white-box callback failed: guest introspection transport failed: request sequence mismatch: expected 8, actual 9"
+        );
+    }
+
+    #[test]
+    fn response_ring_failure_retains_typed_source_and_unpublished_coordinates() {
+        use std::error::Error;
+
+        let source = crucible_qemu_shmem::SpscRingError::CorruptIndices {
+            read_idx: 11,
+            write_idx: 3,
+            capacity: 2,
+        };
+        let mut rings = FakeRings {
+            response_error: Some(source.clone()),
+            ..FakeRings::default()
+        };
+        rings.requests.push_back(entry(1, &close_record(10)));
+        let mut sequence = 4;
+
+        let failure = exchange(
+            &mut rings,
+            &mut sequence,
+            1,
+            GuestIntrospectionDoorbellFrame::response(output_record(8)),
+        )
+        .err()
+        .unwrap();
+        let outer = callback_error(failure);
+
+        let transport = outer
+            .source()
+            .unwrap()
+            .downcast_ref::<PluginIoError>()
+            .unwrap();
+        assert_eq!(
+            transport,
+            &PluginIoError::Ring {
+                source: source.clone()
+            }
+        );
+        assert_eq!(
+            transport
+                .source()
+                .unwrap()
+                .downcast_ref::<crucible_qemu_shmem::SpscRingError>(),
+            Some(&source)
+        );
+        assert_eq!(sequence, 4);
+        assert!(rings.responses.is_empty());
+        assert_eq!(rings.requests.len(), 1);
+    }
+
+    #[test]
+    fn delivered_request_overflow_preserves_completed_consumption_and_typed_refusal() {
+        let mut rings = FakeRings::default();
+        rings.requests.push_back(entry(u64::MAX, &close_record(10)));
+
+        let failure = commit_delivered_request(&mut rings, u64::MAX);
+
+        assert_eq!(failure, Err(PluginIoError::RequestSequenceOverflow));
+        assert!(rings.requests.is_empty());
+        assert_eq!(
+            commit_delivered_request(&mut rings, u64::MAX),
+            Err(PluginIoError::Invariant {
+                message: "commit found no request",
+            })
+        );
     }
 }

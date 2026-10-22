@@ -34,7 +34,7 @@ mod device_workspace;
 mod hot_fork;
 pub(crate) mod live_callbacks;
 mod live_whitebox;
-pub use live_whitebox::LiveWhiteboxError;
+pub use live_whitebox::{GuestIntrospectionTransportError, LiveWhiteboxError};
 pub(crate) mod required_workers;
 pub use required_workers::{
     CleanupError as RequiredWorkerCleanupError, Error as RequiredWorkerError,
