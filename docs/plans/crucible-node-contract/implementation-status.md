@@ -2786,6 +2786,44 @@ request/proof handling, genuine enclosing Source/Birth funding, opaque
 Initial/Recipe, bootstrap dispatch/publication and full RFC acceptance remain
 unfinished.
 
+## Original post-Hello strict JSON custody
+
+Commit `44ab824c31` retains the strict parser's actual Value or fixed failure
+coordinates under the same original Hello capsule, Host plan, native SDK and
+nonrenewing cut. Admission precedes parsing. Both occurrences are spent before
+guards; every surviving output is counted and observed on success and refusal.
+Later Value loans recheck the literal hash, original launch association, full
+Host plan and actual SDK around either callback outcome.
+
+A closed prospective bootstrap field population bounds the parser row, including
+all keys, seven maximum-width IDs, four quoted unsigned integers, three encoded
+digests and sixfold escaped spelling. Allocation-free lexical census checks the
+actual parser storage against each admitted component. These bounds do not
+validate the typed bootstrap request or authenticate its proof.
+
+The Source/native calculation includes the new owner and parser controls. Its
+retained maximum follows actual lifetimes: failed normalization retains its
+Value while later attempts remain empty; completed normalization clears that
+Value before literal receipt and parsing. The completed-hash loan enforces this
+ordering. Sequential scratch remains a maximum. Neither the 256 MiB policy nor
+the operational deadline or later phase partitions increases.
+
+Twenty-one physical flights cover both program families, escaped and padded
+input, duplicate fields, invalid UTF-8, malformed and excessive graphs,
+admission/census refusal, changed cut, missing originals, actual SDK revocation,
+callback refusal and expiry. Earlier physical controls remain. Both complete
+Transport configurations pass 1,968 tests each, with zero failures, no filtering
+and sixteen existing ignores. Affected all-feature/all-target checking,
+formatting and all six architecture gates pass. The application gate compiles
+180 test executables across 58 package identities, including 71 integration
+targets. Its 322 owned Rust/Cargo inputs match the commit and exact captured
+source. That gate runs no tests; no new VM or configured Engine/Daemon runtime
+result is claimed.
+
+These admissions remain models. Typed request decoding, actual assigned request
+and proof handling, genuine enclosing Source/Birth funding, opaque Initial/Recipe,
+bootstrap dispatch/publication and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
