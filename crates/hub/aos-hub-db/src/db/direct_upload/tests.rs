@@ -437,6 +437,54 @@ async fn target_mutation_and_terminal_receipt_roll_back_together_on_failed_cas()
         .unwrap()
         .unwrap();
     assert_eq!(ticket.state, "completed");
+
+    for column in [
+        "resulting_resource_version",
+        "committed_at",
+        "final_guards_json",
+    ] {
+        let valid = db
+            .backend
+            .query_opt(
+                &format!(
+                    "SELECT {column} FROM direct_upload_completion_receipts WHERE session_id = ?1"
+                ),
+                &vals![committed.admission.session_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .value(0)
+            .unwrap()
+            .clone();
+        let invalid = match &valid {
+            crate::value::Value::Int(value) => crate::value::Value::Int(value + 1),
+            crate::value::Value::Text(_) => crate::value::Value::Text("[]".into()),
+            _ => panic!("unexpected fixture receipt value"),
+        };
+        let sql = format!(
+            "UPDATE direct_upload_completion_receipts SET {column} = ?1 WHERE session_id = ?2"
+        );
+        db.backend
+            .execute(&sql, &vals![invalid, committed.admission.session_id])
+            .await
+            .unwrap();
+        assert!(db
+            .direct_upload_session("deployment", &committed.admission.session_id)
+            .await
+            .is_err());
+
+        db.backend
+            .execute(&sql, &vals![valid, committed.admission.session_id])
+            .await
+            .unwrap();
+        assert_eq!(
+            db.direct_upload_session("deployment", &committed.admission.session_id)
+                .await
+                .unwrap(),
+            Some(committed.clone())
+        );
+    }
 }
 
 #[tokio::test]

@@ -3,48 +3,6 @@
 use super::*;
 
 impl Database {
-    pub(super) async fn load_direct_abort(
-        &self,
-        deployment: &str,
-        admission: &DirectUploadAdmission,
-    ) -> Result<Option<DirectAbortRequest>> {
-        let Some(row) = self.backend.query_opt(
-            "SELECT abort.operation_id, abort.expected_resource_version, abort.intent_digest,
-                abort.intent_json, abort.admitted_at, abort.terminal_receipt_digest,
-                abort.settled_at, session.state
-             FROM direct_upload_abort_intents abort JOIN direct_upload_sessions session
-               ON session.session_id = abort.session_id AND session.deployment_id = abort.deployment_id
-             WHERE abort.deployment_id = ?1 AND abort.session_id = ?2",
-            &vals![deployment, admission.session_id],
-        ).await? else { return Ok(None); };
-        let intent: DirectAbortRequest = document(&row.get::<String>(3)?)?;
-        intent.session.validate()?;
-        ensure!(
-            intent.session.session_id == admission.session_id
-                && intent.session.logical_fingerprint == admission.logical_fingerprint
-                && valid_direct_digest(&intent.operation_id)
-                && integer(intent.expected_resource_version)? > 0
-                && row.get::<String>(0)? == intent.operation_id
-                && row.get::<i64>(1)? == integer(intent.expected_resource_version)?
-                && row.get::<String>(2)? == digest(&intent)?
-                && row.get::<i64>(4)? > 0,
-            "retained direct abort original mismatch"
-        );
-        let receipt: Option<String> = row.get(5)?;
-        let settled: Option<i64> = row.get(6)?;
-        let admitted: i64 = row.get(4)?;
-        ensure!(
-            receipt.is_some() == settled.is_some()
-                && receipt.is_some() == (row.get::<String>(7)? == "aborted")
-                && receipt
-                    .as_ref()
-                    .is_none_or(|digest| valid_direct_digest(digest))
-                && settled.is_none_or(|time| time >= admitted),
-            "retained direct abort terminal receipt changed"
-        );
-        Ok(Some(intent))
-    }
-
     /// Freezes the first Abort operation and original CAS before provider abort.
     ///
     /// Unknown effect progress cannot replace this intent or reopen the session.

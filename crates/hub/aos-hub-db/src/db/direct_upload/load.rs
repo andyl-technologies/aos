@@ -2,6 +2,11 @@
 
 use super::*;
 
+mod documents;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 impl Database {
     /// Loads and cross-checks all original documents and duplicated SQL pins.
     ///
@@ -20,14 +25,31 @@ impl Database {
         let Some(row) = self
             .backend
             .query_opt(
-                "SELECT session_id, deployment_id, principal_id, client_operation_id,
-               target_kind, cache_id, cache_identifier, publication_id,
-               surface_object_id, oci_upload_id, object_path, owner_scope_key,
-               intent_json, admission_json, logical_fingerprint, source_sha256,
-               declared_size, part_size, declared_dependency_phase,
-               final_dependency_phase, cache_ticket_id, state, expires_at,
-               created_at, updated_at, resource_version, completed_at
-             FROM direct_upload_sessions WHERE deployment_id = ?1 AND session_id = ?2",
+                "SELECT session.session_id, session.deployment_id, session.principal_id, session.client_operation_id,
+               session.target_kind, session.cache_id, session.cache_identifier, session.publication_id,
+               session.surface_object_id, session.oci_upload_id, session.object_path, session.owner_scope_key,
+               session.intent_json, session.admission_json, session.logical_fingerprint, session.source_sha256,
+               session.declared_size, session.part_size, session.declared_dependency_phase,
+               session.final_dependency_phase, session.cache_ticket_id, session.state, session.expires_at,
+               session.created_at, session.updated_at, session.resource_version, session.completed_at,
+               complete.operation_id, complete.expected_resource_version, complete.intent_digest,
+               complete.intent_json, complete.admitted_at,
+               abort.operation_id, abort.expected_resource_version, abort.intent_digest,
+               abort.intent_json, abort.admitted_at, abort.terminal_receipt_digest, abort.settled_at, session.state,
+               stage.operation_id, stage.logical_fingerprint, stage.evidence_digest, stage.evidence_json, stage.verified_at,
+               receipt.operation_id, receipt.logical_fingerprint, receipt.evidence_digest, receipt.evidence_json,
+               receipt.committed_at, receipt.resulting_resource_version, receipt.final_guards_json,
+               complete.session_id, abort.session_id, stage.session_id, receipt.session_id
+             FROM direct_upload_sessions session
+             LEFT JOIN direct_upload_completion_intents complete
+               ON complete.deployment_id = session.deployment_id AND complete.session_id = session.session_id
+             LEFT JOIN direct_upload_abort_intents abort
+               ON abort.deployment_id = session.deployment_id AND abort.session_id = session.session_id
+             LEFT JOIN direct_upload_stage_receipts stage
+               ON stage.deployment_id = session.deployment_id AND stage.session_id = session.session_id
+             LEFT JOIN direct_upload_completion_receipts receipt
+               ON receipt.deployment_id = session.deployment_id AND receipt.session_id = session.session_id
+             WHERE session.deployment_id = ?1 AND session.session_id = ?2",
                 &vals![deployment, session_id],
             )
             .await?
@@ -116,21 +138,26 @@ impl Database {
             }
         }
 
-        let complete_intent = self.load_direct_complete(deployment, &admission).await?;
-        let abort_intent = self.load_direct_abort(deployment, &admission).await?;
+        // Single-row originals share the selected session snapshot. Required
+        // placement and baseline sets keep their independent complete readers.
+        let retained = documents::RetainedDocuments::from_joined(&row)?;
+        let complete_intent =
+            documents::complete(retained.complete.as_ref(), deployment, &admission)?;
+        let abort_intent = documents::abort(retained.abort.as_ref(), &admission)?;
         let baselines = self
             .load_direct_baselines(deployment, &admission, complete_intent.as_ref())
             .await?;
-        let stage_evidence = self.load_direct_stage(deployment, &admission).await?;
-        let completion_evidence = self.load_direct_completion(deployment, &admission).await?;
-        let final_guards = self
-            .load_direct_final_guards(
-                deployment,
-                &admission,
-                complete_intent.as_ref(),
-                completion_evidence.as_ref(),
-            )
-            .await?;
+        let stage_evidence = documents::stage(retained.stage.as_ref(), deployment, &admission)?;
+        let completion_evidence =
+            documents::completion(retained.completion.as_ref(), deployment, &admission)?;
+        let final_guards = documents::final_guards(
+            retained.completion.as_ref(),
+            &row,
+            deployment,
+            &admission,
+            complete_intent.as_ref(),
+            completion_evidence.as_ref(),
+        )?;
         for operation in stage_evidence
             .iter()
             .map(|proof| &proof.operation_id)
@@ -184,118 +211,5 @@ impl Database {
             completion_evidence,
             final_guards,
         }))
-    }
-
-    pub(super) async fn load_direct_final_guards(
-        &self,
-        deployment: &str,
-        admission: &DirectUploadAdmission,
-        complete: Option<&DirectCompleteRequest>,
-        evidence: Option<&DirectCompletionEvidence>,
-    ) -> Result<Vec<DirectFinalGuardRecord>> {
-        let Some(evidence) = evidence else {
-            return Ok(Vec::new());
-        };
-        let complete = complete.context("direct final receipt Complete original absent")?;
-        let row = self
-            .backend
-            .query_opt(
-                "SELECT final_guards_json, committed_at, resulting_resource_version
-             FROM direct_upload_completion_receipts WHERE deployment_id = ?1 AND session_id = ?2",
-                &vals![deployment, admission.session_id],
-            )
-            .await?
-            .context("direct final receipts absent")?;
-        let guards: Vec<DirectFinalGuardRecord> = document(&row.get::<String>(0)?)?;
-        validate_final_guards(admission, complete, evidence, &guards, deployment)?;
-        let progress = self
-            .backend
-            .query_opt(
-                "SELECT completed_at, resource_version FROM direct_upload_sessions
-             WHERE deployment_id = ?1 AND session_id = ?2 AND state = 'committed'",
-                &vals![deployment, admission.session_id],
-            )
-            .await?
-            .context("direct terminal receipt session progress absent")?;
-        ensure!(
-            progress.get::<i64>(0)? == row.get::<i64>(1)?
-                && progress.get::<i64>(1)? == row.get::<i64>(2)?,
-            "direct terminal receipt resulting progress changed"
-        );
-        Ok(guards)
-    }
-
-    pub(super) async fn load_direct_complete(
-        &self,
-        deployment: &str,
-        admission: &DirectUploadAdmission,
-    ) -> Result<Option<DirectCompleteRequest>> {
-        let Some(row) = self.backend.query_opt(
-            "SELECT operation_id, expected_resource_version, intent_digest, intent_json, admitted_at
-             FROM direct_upload_completion_intents WHERE deployment_id = ?1 AND session_id = ?2",
-            &vals![deployment, admission.session_id],
-        ).await? else { return Ok(None); };
-        let intent: DirectCompleteRequest = document(&row.get::<String>(3)?)?;
-        validate_complete(admission, &intent, deployment)?;
-        ensure!(
-            row.get::<String>(0)? == intent.operation_id
-                && row.get::<i64>(1)? == integer(intent.expected_resource_version)?
-                && row.get::<String>(2)? == intent.fingerprint()?
-                && row.get::<i64>(4)? > 0,
-            "retained direct complete scalar mismatch"
-        );
-        Ok(Some(intent))
-    }
-
-    pub(super) async fn load_direct_stage(
-        &self,
-        deployment: &str,
-        admission: &DirectUploadAdmission,
-    ) -> Result<Option<DirectVerifiedStageEvidence>> {
-        let Some(row) = self.backend.query_opt(
-            "SELECT operation_id, logical_fingerprint, evidence_digest, evidence_json, verified_at
-             FROM direct_upload_stage_receipts WHERE deployment_id = ?1 AND session_id = ?2",
-            &vals![deployment, admission.session_id],
-        ).await? else { return Ok(None); };
-        let evidence: DirectVerifiedStageEvidence = document(&row.get::<String>(3)?)?;
-        evidence.validate_against(admission, deployment)?;
-        ensure!(
-            row.get::<String>(0)? == evidence.operation_id
-                && row.get::<String>(1)? == evidence.logical_fingerprint
-                && row.get::<String>(2)? == digest(&evidence)?
-                && row.get::<i64>(4)? > 0,
-            "retained direct stage scalar mismatch"
-        );
-        Ok(Some(evidence))
-    }
-
-    pub(super) async fn load_direct_completion(
-        &self,
-        deployment: &str,
-        admission: &DirectUploadAdmission,
-    ) -> Result<Option<DirectCompletionEvidence>> {
-        let Some(row) = self
-            .backend
-            .query_opt(
-                "SELECT operation_id, logical_fingerprint, evidence_digest, evidence_json,
-               committed_at, resulting_resource_version
-             FROM direct_upload_completion_receipts WHERE deployment_id = ?1 AND session_id = ?2",
-                &vals![deployment, admission.session_id],
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let evidence: DirectCompletionEvidence = document(&row.get::<String>(3)?)?;
-        evidence.validate_against(admission, deployment)?;
-        ensure!(
-            row.get::<String>(0)? == evidence.operation_id
-                && row.get::<String>(1)? == evidence.logical_fingerprint
-                && row.get::<String>(2)? == digest(&evidence)?
-                && row.get::<i64>(4)? > 0
-                && row.get::<i64>(5)? > 1,
-            "retained direct completion scalar mismatch"
-        );
-        Ok(Some(evidence))
     }
 }
