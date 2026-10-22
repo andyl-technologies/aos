@@ -26,8 +26,8 @@ in
             -D_GNU_SOURCE -std=c11 -O2 -Wall -Wextra -Werror \
             -I${pkgs.glib.dev}/include/glib-2.0 \
             -I${pkgs.glib.dev}/lib/glib-2.0/include \
-            "$out/consumer.c" -L${pkgs.glib}/lib \
-            -Wl,-rpath,${pkgs.glib}/lib -lglib-2.0 -ldl \
+            "$out/consumer.c" ${pkgs.glib}/lib/libglib-2.0.so.0 \
+            -Wl,-rpath,${pkgs.glib}/lib -ldl \
             -o "$out/consumer" > "$out/compile.log" 2>&1 || compile_status=$?
           cat "$out/compile.log"
           printf '%s\n' "$compile_status" > "$out/compile.status"

@@ -572,7 +572,7 @@ public headers, actual GLib DSO and matching libc/loader. Its real forked contro
 distinguish fail-stop exit 127 from GLib logging at 126 and an unexpected return
 at 125. Compilation and execution have independent finite limits. A nonzero
 complete ABI status refuses before compiling the consumer. Fresh hermetic
-provider, ABI and installed GLib consumer results for this revision are pending.
+provider, ABI and installed GLib consumer results are recorded below.
 
 Independent qualification of the corrected signed provider now passes its full
 build, both bounded suites, eleven ordinary regressions, unchanged complete ABI
@@ -584,8 +584,17 @@ The first repository hermetic build compiled the provider but failed while
 retaining the GLib source: its out-of-tree build directory made the relative
 source path incorrect. That failure precedes runtime and ABI checks and remains
 unqualified. The package now copies from the builder's explicit unpacked source
-directory; a fresh hermetic build is pending. Independent component success
-does not qualify that pending package or any complete launched runtime profile.
+directory. The corrected hermetic runtime now builds at
+`3xpzlqvjjh3gp3vdmcq69b3bry6zvs7j`: all thirteen retained runtime checks and the
+original complete ABI check pass. Its independent installed ABI gate passes at
+`z7m32c2wijyxcaa9583b3sn6ii474zj0`. The first installed GLib gate then failed
+at linking because the runtime output has only the versioned DSO; its unversioned
+linker symlink belongs to the development output. The corrected gate selects the
+actual versioned runtime DSO directly and passes at
+`hc9bhpkz5lz1m1y3lcw37mx1hdmv93gp`, including the actual GLib and hidden formatter
+controls with the matching loader and libc. Both original failures remain
+unqualified. These results qualify the installed package component; complete
+launched-profile funding and admission remain incomplete.
 
 #### Installed bounded-pthread QEMU consumer
 
