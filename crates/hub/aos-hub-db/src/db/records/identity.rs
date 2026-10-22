@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// One direct membership row and the identity of that specific incarnation.
+///
+/// The row identity remains stable across role replacements. Revoking and
+/// recreating a membership produces a different identity, allowing reviewed
+/// mutations to reject an intervening delete-and-recreate cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MembershipSnapshot {
+    /// Database identity of this membership incarnation.
+    pub id: i64,
+    /// Random identity retained across role changes and replaced on recreation.
+    pub incarnation_id: Option<String>,
+    /// Role currently assigned by the direct membership.
+    pub role: String,
+}
+
 /// An organization-owned non-human principal.
 #[derive(Debug, Clone)]
 pub struct ServiceAccountRecord {

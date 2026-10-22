@@ -14,8 +14,8 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
         MIGRATIONS.len(),
-        13,
-        "released migrations include passkey-registration session bindings"
+        14,
+        "released migrations include membership incarnation identities"
     );
     let connection = Connection::open_in_memory().unwrap();
     connection

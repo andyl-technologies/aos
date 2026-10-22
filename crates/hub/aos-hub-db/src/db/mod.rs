@@ -542,6 +542,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 11 | `migration-0011-controller-leases.sql` | Durable controller lease ownership and generations. |
 /// | 12 | `migration-0012-session-authentication.sql` | Browser-session authentication evidence. |
 /// | 13 | `migration-0013-passkey-reauthentication.sql` | Passkey-registration session bindings. |
+/// | 14 | `migration-0014-membership-incarnations.sql` | Stable membership incarnation identities. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -556,6 +557,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0011-controller-leases.sql"),
     include_str!("migration-0012-session-authentication.sql"),
     include_str!("migration-0013-passkey-reauthentication.sql"),
+    include_str!("migration-0014-membership-incarnations.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -629,6 +631,16 @@ fn mysql_migration_index_identity(sql: &str) -> Option<(&str, &str)> {
 pub fn is_last_owner_error(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.downcast_ref::<LastOwnerError>().is_some())
+}
+
+/// Whether any error in `err`'s chain is a [`MembershipMutationConflictError`].
+#[must_use]
+pub fn is_membership_mutation_conflict(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<MembershipMutationConflictError>()
+            .is_some()
+    })
 }
 
 const BINDING_READ_DETAIL_SQL: &str =

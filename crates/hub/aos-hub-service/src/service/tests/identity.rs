@@ -3,6 +3,65 @@
 use super::*;
 
 #[tokio::test]
+async fn membership_apply_rejects_a_changed_reviewed_baseline() {
+    let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
+    let org_id = db
+        .create_org("membership-review", "Membership review")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let target_id = db
+        .create_user("reviewed-member@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let plan = service
+        .plan_set_membership(
+            Some(&admin_auth),
+            pb::PlanSetMembershipRequest {
+                principal_kind: "user".into(),
+                principal_ref: "reviewed-member@example.test".into(),
+                scope: scope.clone(),
+                role: String::new(),
+                expected_resource_version: "viewer".into(),
+                idempotency_key: "plan-reviewed-membership".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+
+    db.set_membership_role_owner_safe("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let error = service
+        .apply_set_membership(
+            Some(&admin_auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: plan.plan_id,
+                idempotency_key: "apply-reviewed-membership".into(),
+                confirmation_hash: plan.confirmation_hash,
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        "owner"
+    );
+}
+
+#[tokio::test]
 async fn bearer_permissions_follow_parent_lifecycle_and_provenance() {
     let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
     let owner_id = db
@@ -298,6 +357,7 @@ async fn access_tokens_use_native_permissions_and_stable_scopes() {
                     Permission::TokensManage,
                     Permission::TokensSelf,
                 ],
+                expires_at: None,
             },
             3600,
         )
@@ -382,6 +442,7 @@ async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
                 owner: Principal::user(administrator_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::TokensManage, Permission::MembersManage],
+                expires_at: None,
             },
             3600,
         )
@@ -447,6 +508,7 @@ async fn service_account_token_delegation_is_bounded_and_rechecked() {
                 owner: Principal::user(administrator_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::Read, Permission::TokensManage],
+                expires_at: None,
             },
             3600,
         )
