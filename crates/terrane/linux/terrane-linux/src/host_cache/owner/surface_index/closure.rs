@@ -5,6 +5,9 @@
 //! drops and deadline expiry cannot establish closure. No backing descriptor is
 //! retained by this reconciliation request.
 
+mod cold;
+pub(in crate::host_cache::owner) use cold::capture as cold_policy;
+
 use super::{NativeMetadataOwner, invalid};
 use crate::{
     host_cache::owner::{
@@ -148,11 +151,10 @@ fn prepare(
             inode: backing.inode,
         })
         .collect();
-    let observed = owner.preparation.project_census(&excluded)?;
-    if !observed.all_excluded_closed() {
+    if !owner.preparation.exposure_inodes_closed(&excluded)? {
         return Ok(None);
     }
-    // Counted inodes were held through the helper's quota query. Equality
+    // Named inodes and the original probe were held through the query. Equality
     // proves every excluded original inode is gone, independently of names
     // and holders. A closed inode cannot acquire a new original reference.
     let mut next = owner.state.clone();

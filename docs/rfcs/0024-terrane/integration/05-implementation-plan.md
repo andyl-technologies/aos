@@ -14023,3 +14023,57 @@ fixture output-order correction is pushed as `52a1a6113f`; its clean frozen
 checkout is unused while qualification advances to the combined increment.
 Cold exposure recovery, production worker and backing transport integration
 remain unfinished. No trunk task is closed by these component changes.
+
+The completed `fc36f370bc` surface artifact review matches all 8,026 immutable
+source files, 5,321 base inputs, 5,305 surface inputs and five actual installed
+Cargo ELFs. The surface ELF SHA-256 is
+`26c2eac0d097df58719bb498a8f8654c23f1facd626ece48d4e141999f5d4a54`.
+This validates actual backing-record and helper refusal witnesses, not the later
+retirement implementation. Combined retirement qualification at `d297b9c086`
+is running from clean frozen source: 9,356 tracked files, fingerprint
+`8afdd08ec7d7143e19e1fd413c297280bd3f0a1a09974ab852a454e85865e0c6`.
+
+Source review identifies an important conservative gap in that retirement
+checkpoint: the native owner deliberately retains an empty unlinked seal probe.
+The helper's namespace scan cannot count that already unlinked inode, so its
+comparison alone would keep refusing release even after every exposed inode
+closed. The correction combines the authenticated helper's retained inodes
+with this actual original probe held through the same quota query. It verifies
+zero links, empty regular-file identity, device, project, private seal capability
+and distinctness from every exclusion before and after observation. The native
+publisher creates this probe with a private exclusive name, seals it and unlinks
+it before issuing the opaque receipt. It cannot enter the later namespace walk.
+No caller-provided count, descriptor or replacement probe supplies evidence.
+Other unobserved allocations still conservatively prevent equality. Existing
+wire schemas, helper bounds and original success/refusal assertions are retained.
+The earlier running checkpoint is preserved; no release runtime pass is claimed.
+
+Cold recovery now also handles the specific window after actual retirement but
+before exposure discharge synchronized. It validates all bounded original
+records, requires draining context and matching filesystem/project, deduplicates
+at most 512 original identities and obtains authenticated closure while retaining
+the actual probe. Any active or legacy record, foreign partition, surviving
+kernel reference, disabled helper or incomplete census refuses before snapshot
+or recovery effects. Proven closure removes only those exposure promises from
+the candidates entering the ordinary funded recovery bootstrap. Remaining cold
+pins and residences still require independent native verification and actual
+publisher Drain and Resume. This does not reconstruct serving authority from a
+record or retire unresolved cold names.
+
+The additional actual restart actor retires an original index while retaining
+its mapped descriptor, drops the original owner and starts a new confined owner.
+It requires recovery refusal with byte-identical policy and readable old metadata.
+After final unmap, a bounded retry may proceed only while refusals leave policy
+unchanged; successful recovery must fund, synchronize and discharge the exact
+retired exposure before acknowledged Resume. This remains a native restart
+control, not a power-loss or crash-matrix qualification. It retains the normal
+30-second actor bound and existing 180-second VM bound.
+
+Formatting, strict Linux all-target Clippy in all-feature and ordinary Tokio
+profiles, native source inventory and supervisor syntax pass for the correction.
+An initial unused bootstrap wrapper was removed after strict compilation caught
+it; the private bootstrap now accepts the already validated cold candidates.
+Native closure/restart execution and required application compilation remain
+pending frozen qualification. Active/legacy cold exposure reconciliation and
+production worker/backing transport integration remain unfinished. No trunk task
+is closed by this increment.

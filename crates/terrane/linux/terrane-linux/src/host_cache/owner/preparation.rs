@@ -2,13 +2,15 @@
 
 use super::NativeCacheOwnerConfig;
 #[cfg(feature = "surface-fuse")]
-use crate::host_quota::{ProjectInode, VerifiedProjectCensus};
+use crate::host_quota::{NativeProject, ProjectInode};
 use crate::{
     host_cache::{NativeHostLayout, NativeSealCapability},
     host_quota::{HostQuotaClient, QuotaObservation, ROOT_LABELS, VerifiedQuotaObservation},
     publisher_local::client::Client,
     quota_confinement::Installed,
 };
+#[cfg(feature = "surface-fuse")]
+use std::os::unix::fs::MetadataExt;
 use std::{collections::BTreeSet, fmt, io, sync::Arc};
 use terrane_sdk::host::cache::HostDomainLocation;
 
@@ -160,24 +162,67 @@ impl NativeCachePreparation {
         Ok(())
     }
 
-    /// Authenticates exact closure against this owner's original partition.
+    /// Combines authenticated namespace custody with the actual unlinked probe.
     ///
-    /// Failure never replaces the ordinary quota observation or releases policy.
+    /// The original probe is retained through the helper's quota query. It was
+    /// created under a private exclusive name and unlinked before receipt, so
+    /// the subsequent namespace walk cannot count it. No bare count or caller
+    /// descriptor substitutes for this privately minted original probe.
     #[cfg(feature = "surface-fuse")]
-    pub(super) fn project_census(
-        &mut self,
-        excluded: &[ProjectInode],
-    ) -> io::Result<VerifiedProjectCensus> {
+    pub(super) fn exposure_inodes_closed(&mut self, excluded: &[ProjectInode]) -> io::Result<bool> {
         self.confinement.check_current()?;
         self.seal.recheck()?;
         check_content_custody(&self.config, &self.layout)?;
+        let probe = self.seal.probe_handle();
+        let before = probe.metadata()?;
+        let identity = ProjectInode {
+            device: before.dev(),
+            inode: before.ino(),
+        };
+        if before.nlink() != 0
+            || !before.is_file()
+            || before.len() != 0
+            || NativeProject::inspect(probe)?.project_id != self.config.project_id
+            || identity.device != self.layout.directory_binding("objects")?.0
+            || excluded.contains(&identity)
+        {
+            return Err(invalid(
+                "closure lost its original non-excluded probe custody",
+            ));
+        }
         let observed = self.quota_client.query_project_census(
             &self.config.quota_owner,
             self.config.location.domain(),
             excluded,
         )?;
         check_quota_value(&self.config, &self.layout, observed.quota())?;
-        Ok(observed)
+        self.seal.recheck()?;
+        let after = probe.metadata()?;
+        if after.dev() != before.dev()
+            || after.ino() != before.ino()
+            || after.nlink() != 0
+            || after.len() != 0
+            || NativeProject::inspect(probe)?.project_id != self.config.project_id
+        {
+            return Err(invalid(
+                "closure probe changed through authenticated observation",
+            ));
+        }
+        // The helper holds every counted named inode. This owner simultaneously
+        // holds one distinct, already unlinked inode. Together they establish a
+        // lower bound on the same actual project charge; missing other inodes
+        // can delay equality but cannot create a successful closure proof.
+        let retained = observed
+            .observation()
+            .retained_inodes
+            .checked_add(1)
+            .ok_or_else(|| invalid("closure retained inode count overflows"))?;
+        if retained > observed.quota().charged_inodes {
+            return Err(invalid(
+                "closure custody exceeds actual kernel inode charge",
+            ));
+        }
+        Ok(retained == observed.quota().charged_inodes)
     }
 
     /// Borrows the latest authenticated kernel charged-and-reserved observation.

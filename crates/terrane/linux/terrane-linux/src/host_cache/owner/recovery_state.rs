@@ -21,16 +21,15 @@ pub(super) struct BootstrapState {
     pub(super) cold: ColdPolicy,
 }
 
-/// Prepares actual bootstrap funding without dropping any cold policy records.
+/// Funds validated cold candidates after any authenticated closure reconciliation.
 ///
 /// # Errors
-/// Refuses invalid ownership, unavailable randomness, identifier collisions and
+/// Refuses unavailable randomness, identifier collisions and
 /// snapshots exceeding configured limits. No cold record is acknowledged here.
 pub(super) fn bootstrap(
     config: &NativeCacheOwnerConfig,
-    current: &CacheState,
+    cold: ColdPolicy,
 ) -> io::Result<BootstrapState> {
-    let cold = ColdPolicy::capture(config, current)?;
     let mut id = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut id)?;
     let snapshot = cold.bootstrap(config, &id)?;

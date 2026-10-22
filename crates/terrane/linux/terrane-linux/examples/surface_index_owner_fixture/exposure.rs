@@ -31,6 +31,9 @@ mod census;
 #[path = "exposure/closure.rs"]
 mod closure;
 
+#[path = "exposure/cold_closure.rs"]
+pub(super) mod cold_closure;
+
 #[path = "exposure/file_closure.rs"]
 pub(super) mod file_closure;
 

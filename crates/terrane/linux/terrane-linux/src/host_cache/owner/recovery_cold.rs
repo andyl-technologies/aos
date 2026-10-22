@@ -1,7 +1,7 @@
 //! Preserves cold policy candidates until verified native backing reconciles them.
 //!
 //! This snapshot contains policy data, not adoption or serving authority. Every
-//! old pin and lease survives unchanged; old residence rows must agree with
+//! unresolved pin and lease survives unchanged; old residence rows must agree with
 //! independently reconstructed ranges before recovery can complete. Only actual
 //! native retirement can release disposable derived-index copy allowances.
 
@@ -16,6 +16,11 @@ pub(super) struct ColdPolicy {
 }
 
 impl ColdPolicy {
+    /// Reports remaining promises needing independent native backing recovery.
+    pub(super) fn requires_backing(&self) -> bool {
+        !self.state.pins.is_empty() || !self.state.residences.is_empty()
+    }
+
     /// Removes only disposable surface-copy holds after native namespace retirement.
     ///
     /// The caller must first retire every recognized derived index and inspect a

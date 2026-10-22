@@ -325,7 +325,7 @@ impl NativeMetadataOwner {
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
 pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<CompletedRecovery> {
     let custody = Arc::clone(executor.custody());
-    let (session, inspector, mut shared, state_parent, requires_cold_backing) = {
+    let (session, inspector, mut shared, state_parent, requires_cold_backing, cold) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -345,9 +345,12 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         // Validate original lease and charge ownership before any durable change.
         // The captured records are candidates; actual adoption still follows the
         // new synchronized bootstrap and original publisher Drain context.
-        super::recovery_cold::ColdPolicy::capture(&owner.preparation.config, &owner.state)?;
-        let requires_cold_backing =
-            !owner.state.pins.is_empty() || !owner.state.residences.is_empty();
+        #[cfg(feature = "surface-fuse")]
+        let cold = super::surface_index::closure::cold_policy(&mut owner)?;
+        #[cfg(not(feature = "surface-fuse"))]
+        let cold =
+            super::recovery_cold::ColdPolicy::capture(&owner.preparation.config, &owner.state)?;
+        let requires_cold_backing = cold.requires_backing();
         let state_parent = StateParentObservation::inspect(&owner.preparation)?;
         let shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
         (
@@ -356,6 +359,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             shared,
             state_parent,
             requires_cold_backing,
+            cold,
         )
     };
     shared.inspect_quarantine(&inspector)?;
@@ -393,7 +397,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         shared.check_current()?;
         state_parent.check_current()?;
         owner.preparation.recheck()?;
-        let bootstrap = recovery_state::bootstrap(&owner.preparation.config, &owner.state)?;
+        let bootstrap = recovery_state::bootstrap(&owner.preparation.config, cold)?;
         check_charge(&owner, owner.preparation.config.metadata_sync_hold_bytes)?;
         owner.begin_mutation()?;
         owner.recovery_cold = Some(bootstrap.cold);
