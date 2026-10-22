@@ -13184,3 +13184,30 @@ witness against the installed probe, source-built ELF, kernel and rootfs. The
 committed check reuses the exact earlier passing VM output in 1.34 seconds;
 this is source-bound cache reuse, not a second execution. Retained project
 charges remain 3,330,048 bytes and one inode, and final charges are both zero.
+
+Full native host-cache qualification at `599148dcc3` passes in 1,465.49
+seconds with all 9,313 tracked files unchanged. All 128 native library cases,
+92 fixture selectors, signed scoped inline and manifest reads, and both
+independent original-inode observers pass. The complete later regression set
+also passes, including `manifest-pending-metadata-cold`, source cleanup,
+cache handoff, encoded recovery, quarantine and final measured charge release.
+Independent review matches all 7,987 immutable source files, 5,287 bound
+inputs and all four installed ELF artifacts to their actual Cargo records.
+The publisher resource observation records 3,331 descriptors against the same
+4,096 limit, compared with 3,739 before directory sharing. This passing run
+qualifies the corrected component; it does not establish the native cause of
+the retained earlier `Unavailable` failures.
+
+Required application-target compilation on that checkpoint passes in 741.72
+seconds. Independent review matches all 7,987 immutable source files and 184
+compiler records across 59 packages. Registry and plan-coverage checks also
+pass: 292 unique gates, all 69 T0/T1 floor gates, and 1,082 mandatory
+requirements assigned across 97 tasks. These counts establish ownership, not
+implementation acceptance. The FUSE kernel-contract check and independent
+source review pass through reuse of the exact earlier VM artifact, including
+the mapping-only retained charge and zero final project charge; no repeated
+kernel execution is claimed. Configured native SDK-cache qualification and
+the four owning host-tier gates are running on the same frozen checkpoint.
+All five T2 task checkboxes remain open pending their complete requirements
+and owning qualification; no deployable four-role or mounted exposure
+conformance is inferred from the component pass.
