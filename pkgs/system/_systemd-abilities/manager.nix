@@ -76,9 +76,16 @@
       '';
   in
     runCommand "systemd-manager-configuration" {} ''
-      mkdir -p "$out"
+      mkdir -p "$out/systemd-vendor-units"
       ln -s ${units} "$out/systemd-units"
       ln -s ${presets} "$out/systemd-presets"
+
+      # PID 1 already searches this exact package's vendor directory. Publish
+      # its unchanged inodes under the conventional policy paths as well, so
+      # image labeling assigns unit types instead of generic store-data types.
+      for unit in ${systemdPackage}/lib/systemd/system/*; do
+        ln -s "$unit" "$out/systemd-vendor-units/$(basename "$unit")"
+      done
     '';
   buildInitrd = import ./platform/build-initrd.nix {
     inherit config initrdAbilityEvaluation lib;
@@ -104,6 +111,11 @@
         # identical command for subsequent launches without replacing PID 1.
         initExecutable = config.aos.abilities.initSystem.operations.install.effects.default.input.executable;
         trees = [
+          {
+            collision = "reject";
+            destination = "/usr/lib/systemd/system";
+            source = "systemd-vendor-units";
+          }
           {
             collision = "reject";
             destination = "/usr/lib/systemd/system-preset";

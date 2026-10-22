@@ -9614,6 +9614,21 @@ image. Upstream 261.2's actual managed-allocation client connects directly to
 This dependency activates the unchanged packaged socket and service for the
 existing shifted-userns probe; it creates no replacement namespace allocator.
 
+Both following signed Host and offline-preparation boots reach their actual
+test agent, then PID 1 rejects status of the packaged `multi-user.target`:
+its store inode has `usr_t`, rather than a unit-file type. The selected manager
+now projects its unchanged vendor-unit tree through immutable symlinks under
+`/usr/lib/systemd/system`. The existing image label planner propagates the
+conventional policy labels to those exact store inodes, including specific
+unit types. No `usr_t` service-control permission is added. The EROFS check
+now compares the physical `multi-user.target` and `reboot.target` inode labels
+and their conventional symlinks, retaining the latter's `power_unit_t` type.
+Core evaluation passes, and the EROFS check passes at
+`/nix/store/byz1iv9cmr6yhqixlikmzps2jzdyq44c-selinux-erofs-labels-check-0`.
+Installed reruns remain pending. These boots did not reach candidate creation
+or Host phase-0 qualification. The older Root, lifecycle and handoff runs were
+interrupted before qualification and require images containing this repair.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

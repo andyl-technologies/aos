@@ -126,6 +126,15 @@ in
           assert document["version"] == 1, document
           assert entries[systemd]["kind"] == "regular", entries[systemd]
           assert entries[systemd]["context"].split(":", 3)[2] == "init_exec_t", entries[systemd]
+          for name, unit_type in (
+              ("multi-user.target", "systemd_unit_t"),
+              ("reboot.target", "power_unit_t"),
+          ):
+              vendor = systemd.rsplit("/", 1)[0] + "/system/" + name
+              assert entries[vendor]["kind"] == "regular", entries[vendor]
+              assert entries[vendor]["context"].split(":", 3)[2] == unit_type, entries[vendor]
+              alias = "/usr/lib/systemd/system/" + name
+              assert entries[alias]["kind"] == "symlink", entries[alias]
           assert entries[loader]["kind"] == "regular", entries[loader]
           assert entries[loader]["context"].split(":", 3)[2] == "ld_so_t", entries[loader]
           assert entries[libc]["kind"] == "regular", entries[libc]
