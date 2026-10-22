@@ -8699,6 +8699,30 @@ module gate at `5e815dc29f` (102 checks, complete source/report review).
 The four other T2 tasks, deployed runtime composition and milestone exit
 remain open. This scoped packaging acceptance does not accept a role runtime.
 
+Current qualification (2026-10-22): 27 of 64 trunk tasks are accepted. The
+`f82429a92d` runtime checkpoint passes all four cold inline/manifest pressure
+and no-pressure native scenarios, with complete source/artifact and runtime
+reviews. At `2e34a1d9fe`, the maintained SDK VM, refusal SDK VM and mandatory
+two-VM aggregate all pass. Each VM's review matches all 8,074 immutable source
+files, its four actual Cargo executables, all fifteen enrollment/root controls,
+and its complete assigned lifecycle, namespace, publication and lower-failure
+controls. The aggregate retains exactly both reviewed VM outputs. Required
+application compilation at `230375f940` also passes with 185 test targets across
+59 packages and complete 8,073-file source review; this is compilation only.
+
+The broader `2e34a1d9fe` requests expose two harness failures before the full
+cache VM runs: the shared-directory importer omits a required proof argument,
+and the cache image misclassifies one pure policy test as an administrative
+creator. Both corrections are pushed through `8dc8dd6311`; the actual compiled
+129-case inventory now validates as 124 ordinary-user and five creator cases,
+with every original case retained. Eleven owning gates are running from a
+fresh frozen checkout of that corrected source. No current-source full gate or
+feature-matrix success is claimed. Complete production role composition,
+unresolved cold kernel custody and later trunk milestones remain open.
+
+The dated entries below preserve earlier checkpoints and provisional results;
+the current status and task checkboxes govern acceptance.
+
 Resume expiry ordering correction (2026-10-21): the native publication run
 at a00aa499a1 passed both public/private metadata deduplication controls, then
 failed reopening the populated 64-record owner before object serving with
@@ -10689,11 +10713,12 @@ Resumed qualification:
   There are no Rust, dependency,
   specification or frozen-interface changes relative to the accepted trunk.
 
-All five T2 task checkboxes remain open. The transport and cache results above
-accept components only. Complete manifest reuse and retirement, full host
-isolation, NativeReady, BKT-15 and actual four-role deployment remain unqualified.
-The zero-wipe conflict is resolved by D-128's mandatory sealed-tier refusal;
-its implementation requires qualification. T3 and branch work stay deferred.
+At this historical checkpoint all five T2 task checkboxes remained open. The
+transport and cache results above qualified components only; complete manifest
+reuse and retirement, full host isolation, NativeReady, BKT-15 and actual
+four-role deployment were unqualified. Later corrections, component results and
+scoped packaging acceptance are recorded in the current T2 status and ledger.
+T3 and branch work were deferred.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
