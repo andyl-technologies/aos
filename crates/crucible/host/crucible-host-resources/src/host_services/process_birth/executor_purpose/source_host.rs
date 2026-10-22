@@ -112,10 +112,6 @@ impl AuthenticatedNativeSubdivision {
     /// # Errors
     /// Refuses changed Main custody, an occupied Source window, an invalid peak
     /// or exhausted existing metadata/descriptor capacity.
-    #[expect(
-        clippy::result_large_err,
-        reason = "The refusal retains actual inline custody without allocation."
-    )]
     pub fn reserve_source_host_purpose(
         &self,
         control_peak: u64,
@@ -141,6 +137,7 @@ impl AuthenticatedNativeSubdivision {
                 .and_then(|bytes| bytes.checked_add(2 * HostServiceLease::metadata_bytes()))
                 .filter(|_| control_peak != 0 && descriptor_peak != 0)
                 .ok_or_else(|| ServiceBirthError::policy("Source host control peak is invalid"))?;
+            let prepared = native_pool::PreparedRefusal::reserve(&self.owner)?;
             // The containing counters and table window pay before Arc/body birth.
             let metadata = self
                 .owner
@@ -162,14 +159,15 @@ impl AuthenticatedNativeSubdivision {
                 .as_ref()
                 .ok_or_else(|| ServiceBirthError::policy("Source host table payer is absent"))?
                 .retain_pool_remainder()?;
-            Ok(construct_source_host(
+            let source = construct_source_host(
                 Arc::clone(&self.owner),
                 window,
                 control_peak,
                 assigned_descriptors,
                 descriptors,
                 metadata,
-            ))
+            );
+            Ok((source, prepared))
         })();
         let after = self.verify_native_preparation(original).err();
         native_pool::finish_source(result, after)

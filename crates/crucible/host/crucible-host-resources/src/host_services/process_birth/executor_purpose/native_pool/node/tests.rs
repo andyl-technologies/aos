@@ -26,7 +26,7 @@ fn absent_raw_source_preserves_both_slots_and_the_independent_original_refusal()
     assert!(
         matches!(report.after.as_ref(), Some(ServiceBirthError::Supervision(actual)) if *actual == refused)
     );
-    assert!(report._retained.is_none());
+    assert!(report._retained.is_empty());
     assert!(!report.world_assignment_was_refused());
     assert_eq!(original.status().unwrap().operation_id, operation);
 }
@@ -48,7 +48,7 @@ fn running_preparation_without_an_actual_node_cannot_create_a_subdivision() {
     assert!(matches!(&report.cause, ServiceBirthError::Policy(message)
         if message == "native node custody is absent"));
     assert!(report.after.is_none());
-    assert!(report._retained.is_none());
+    assert!(report._retained.is_empty());
     assert!(!report.world_assignment_was_refused());
     let after = original.status().unwrap();
     assert_eq!(after.operation_id, before.operation_id);

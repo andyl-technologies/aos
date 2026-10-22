@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 516 bindings: 497 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 521 bindings: 502 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -796,6 +796,34 @@ This corrects one stale assertion from the earlier full-library failure report;
 it creates no Source owner and does not qualify the separate helper execution
 cases that need genuine retained Main/Source custody. Mandatory application
 compilation for this test correction is running.
+
+The actual hot-fork worker-disposition quarantine regression also passes on
+recheck with its original timeout and resource bounds. This is one exact case,
+not a new full-library qualification.
+
+Native pool, Source, dispatcher, World and node-window issuers now prepay their
+private refusal carrier from the same actual Main before child publication or
+kernel effects. A failed cut moves its genuine owner into that existing
+allocation. First, independent post, delivery and receiving-stage causes remain
+separate; later diagnostic recording allocates nothing. The unique carrier
+exposes no shared or weak aliases and closes its allocation before destroying
+its retained owner and original paired charges. Clean postcut and actual
+unassigned-World refusal share an explicit state representation; a negative
+postcut cannot acquire the unassigned classification. The complete report fits
+below the fixed 128-byte inline threshold, removing five prior large-error
+exceptions without suppressing a lint. All 222 host-resource unit controls and
+strict all-target resource Clippy pass. Allocation controls observe all three
+real allocator requests and both original charges immediately before and after
+the carrier's actual free. These component checks issue no authenticated Main
+or Source and do not qualify complete error-payload funding or native launch.
+Inventory `1ydgg9pg14zh56wqz9ih748ay50mlfk8` verifies 521 canonical bindings:
+489 model, thirteen format and nineteen native; 148 requirements remain
+uncovered and none fully qualified. The required application-target compilation
+remains in progress. The same private-feature strict Host-library lint command
+now reports 734 findings, down from the earlier 988; remaining large enclosing
+errors and other findings still prevent a passing host/license gate.
+Engineering hygiene passes after review and correction of the preceding spawn
+adapter/test source digests; no threshold or waiver changes.
 
 #### Initial loader storage component
 

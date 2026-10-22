@@ -13,9 +13,8 @@ pub(super) fn admit_worker_controls(
 ) -> Result<(), NativePoolRefusal> {
     check().map_err(|cause| NativePoolRefusal {
         cause,
-        after: None,
-        _retained: None,
-        world_assignment_refused: false,
+        after: None.into(),
+        _retained: RetainedClaim::empty(),
     })?;
 
     let result = ledger
@@ -27,15 +26,13 @@ pub(super) fn admit_worker_controls(
         (Ok(()), None) => Ok(()),
         (Err(cause), after) => Err(NativePoolRefusal {
             cause,
-            after,
-            _retained: None,
-            world_assignment_refused: false,
+            after: after.into(),
+            _retained: RetainedClaim::empty(),
         }),
         (Ok(()), Some(after)) => Err(NativePoolRefusal {
             cause: ServiceBirthError::policy("Main worker control postcut refused"),
-            after: Some(after),
-            _retained: None,
-            world_assignment_refused: false,
+            after: Some(after).into(),
+            _retained: RetainedClaim::empty(),
         }),
     }
 }
@@ -93,7 +90,7 @@ mod tests {
         assert!(matches!(&report.cause, ServiceBirthError::Policy(message)
             if message == "Main worker control ledger is busy or uncertain"));
         assert!(
-            matches!(&report.after, Some(ServiceBirthError::Supervision(actual))
+            matches!(report.after.as_ref(), Some(ServiceBirthError::Supervision(actual))
             if *actual == original.wait_slice().unwrap_err())
         );
         assert_eq!(held.charged_resources(), initial);

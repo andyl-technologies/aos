@@ -7,11 +7,6 @@
 
 // SPDX-License-Identifier: Apache-2.0
 
-#![expect(
-    clippy::result_large_err,
-    reason = "Native refusals retain actual inline custody without allocating on failure."
-)]
-
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -27,7 +22,8 @@ mod world_return;
 mod worker_admission;
 use super::world_admission::{borrow_world_control, observe_world_attempt};
 use ledger::{NodeSlot, PoolLedger, WorldSlot};
-use refusal::RetainedClaim;
+use refusal::{RefusalPostcut, RetainedClaim};
+pub(super) use refusal::PreparedRefusal;
 
 pub use world_return::NativePoolReturnError;
 
@@ -183,91 +179,81 @@ pub(super) enum WindowRole {
 
 /// Preserves the first refusal, independent postcut and any issued custody.
 ///
-/// Custody remains inline so exhaustion never requires another allocation to
-/// deliver the actual retained owners. Its size is part of caller admission.
+/// Issuers prepay a private carrier before any child publication. Refusal moves
+/// the actual owner into that carrier without allocating after the failed cut.
 #[derive(Debug, thiserror::Error)]
 #[error("native subdivision refused: {cause}; independent original: {after:?}")]
 pub struct NativePoolRefusal {
     #[source]
     cause: ServiceBirthError,
-    after: Option<ServiceBirthError>,
-    _retained: Option<RetainedClaim>,
-    // True only when the World ledger refused before publication and its
-    // independent Original postcut succeeded. Other issuers remain conservative.
-    world_assignment_refused: bool,
+    after: RefusalPostcut,
+    _retained: RetainedClaim,
 }
 
 pub(super) fn missing_node_window(
     after: Option<ServiceBirthError>,
 ) -> Result<(), NativePoolRefusal> {
     Err(NativePoolRefusal {
-        world_assignment_refused: false,
         cause: ServiceBirthError::policy("Target host needs its consumed node claim"),
-        after,
-        _retained: None,
+        after: after.into(),
+        _retained: RetainedClaim::empty(),
     })
 }
 
 pub(super) fn finish_dispatcher(
-    result: Result<super::AuthenticatedTargetDispatcherPurpose, ServiceBirthError>,
+    result: Result<(super::AuthenticatedTargetDispatcherPurpose, PreparedRefusal), ServiceBirthError>,
     after: Option<ServiceBirthError>,
 ) -> Result<super::AuthenticatedTargetDispatcherPurpose, NativePoolRefusal> {
     match (result, after) {
-        (Ok(purpose), None) => Ok(purpose),
+        (Ok((purpose, _prepared)), None) => Ok(purpose),
         (Err(cause), after) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
             cause,
-            after,
-            _retained: None,
+            after: after.into(),
+            _retained: RetainedClaim::empty(),
         }),
-        (Ok(purpose), Some(after)) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
+        (Ok((purpose, prepared)), Some(after)) => Err(NativePoolRefusal {
             cause: ServiceBirthError::policy("Target dispatcher postcut refused"),
-            after: Some(after),
-            _retained: Some(RetainedClaim::dispatcher(purpose)),
+            after: Some(after).into(),
+            _retained: RetainedClaim::dispatcher(purpose, prepared),
         }),
     }
 }
 
 pub(super) fn finish_source(
-    result: Result<AuthenticatedSourceHostPurpose, ServiceBirthError>,
+    result: Result<(AuthenticatedSourceHostPurpose, PreparedRefusal), ServiceBirthError>,
     after: Option<ServiceBirthError>,
 ) -> Result<AuthenticatedSourceHostPurpose, NativePoolRefusal> {
     match (result, after) {
-        (Ok(source), None) => Ok(source),
+        (Ok((source, _prepared)), None) => Ok(source),
         (Err(cause), after) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
             cause,
-            after,
-            _retained: None,
+            after: after.into(),
+            _retained: RetainedClaim::empty(),
         }),
-        (Ok(source), Some(after)) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
+        (Ok((source, prepared)), Some(after)) => Err(NativePoolRefusal {
             cause: ServiceBirthError::policy("Source host postcut refused"),
-            after: Some(after),
-            _retained: Some(RetainedClaim::source(source)),
+            after: Some(after).into(),
+            _retained: RetainedClaim::source(source, prepared),
         }),
     }
 }
 
 /// Keeps an initiating refusal distinct from the unconditional post-observation.
 pub(super) fn finish_root(
-    result: Result<AuthenticatedNativePoolPurpose, ServiceBirthError>,
+    result: Result<(AuthenticatedNativePoolPurpose, PreparedRefusal), ServiceBirthError>,
     after: Option<ServiceBirthError>,
 ) -> Result<AuthenticatedNativePoolPurpose, NativePoolRefusal> {
     match (result, after) {
-        (Ok(pool), None) => Ok(pool),
+        (Ok((pool, _prepared)), None) => Ok(pool),
         (Err(cause), after) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
             cause,
-            after,
-            _retained: None,
+            after: after.into(),
+            _retained: RetainedClaim::empty(),
         }),
-        (Ok(pool), Some(after)) => Err(NativePoolRefusal {
-            world_assignment_refused: false,
+        (Ok((pool, prepared)), Some(after)) => Err(NativePoolRefusal {
             cause: ServiceBirthError::policy("native pool postcut refused"),
-            after: Some(after),
-            _retained: Some(RetainedClaim::pool(pool)),
+            after: Some(after).into(),
+            _retained: RetainedClaim::pool(pool, prepared),
         }),
     }
 }
@@ -505,10 +491,9 @@ impl AuthenticatedNativePoolPurpose {
                 self.claim_world(identity, &rows, consumer_control_bytes, original, entered)
             }
             Err(cause) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause,
-                after: self.held.root.verify_world_preparation(original).err(),
-                _retained: None,
+                after: self.held.root.verify_world_preparation(original).err().into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }
@@ -537,6 +522,7 @@ impl AuthenticatedNativePoolPurpose {
         let (result, after) = observe_world_attempt(
             || self.held.root.verify_world_preparation(original),
             || {
+                let prepared = PreparedRefusal::reserve(&self.held.root.owner)?;
                 let mut ledger = borrow_world_control(
                     &self.held.ledger,
                     "native World assignment ledger is busy or uncertain",
@@ -577,7 +563,7 @@ impl AuthenticatedNativePoolPurpose {
                     }),
                     returned: false,
                 };
-                born = Some(claim);
+                born = Some((claim, prepared));
 
                 let window = borrow_world_control(
                     &self.held.root.owner.host_descriptors,
@@ -592,19 +578,21 @@ impl AuthenticatedNativePoolPurpose {
         );
         let assignment_refused = assignment_refused && after.is_none();
         match (result, after) {
-            (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
-                world_assignment_refused: false,
-                cause: ServiceBirthError::policy("native World publication is absent"),
-                after: None,
-                _retained: None,
-            }),
+            (Ok(()), None) => born
+                .map(|(claim, _prepared)| claim)
+                .ok_or_else(|| NativePoolRefusal {
+                    cause: ServiceBirthError::policy("native World publication is absent"),
+                    after: None.into(),
+                    _retained: RetainedClaim::empty(),
+                }),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: assignment_refused,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native World postcut refused")),
-                after,
-                _retained: born.map(RetainedClaim::world),
+                after: RefusalPostcut::world_attempt(after, assignment_refused),
+                _retained: born.map_or_else(RetainedClaim::empty, |(claim, prepared)| {
+                    RetainedClaim::world(claim, prepared)
+                }),
             }),
         }
     }
@@ -719,12 +707,11 @@ impl AuthenticatedNativeWorldClaim {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native node postcut refused")),
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }

@@ -108,10 +108,6 @@ impl AuthenticatedNativeSubdivision {
     /// # Errors
     /// Refuses changed Main/family ownership, unavailable original capacity,
     /// absent paid descriptor remainder, or an occupied or insufficient window.
-    #[expect(
-        clippy::result_large_err,
-        reason = "The refusal retains actual inline custody without allocation."
-    )]
     pub fn reserve_target_dispatcher_purpose(
         &self,
         control_peak: u64,
@@ -128,6 +124,7 @@ impl AuthenticatedNativeSubdivision {
                 .and_then(|bytes| bytes.checked_add(3 * HostServiceLease::metadata_bytes()))
                 .filter(|bytes| control_peak != 0 && *bytes > STACK_REQUEST_BYTES)
                 .ok_or_else(|| ServiceBirthError::policy("Target dispatcher extent is invalid"))?;
+            let prepared = super::native_pool::PreparedRefusal::reserve(&self.owner)?;
             // Credit exists before lease controls, the descriptor census, eventfds,
             // dispatcher state or the actual thread are constructed.
             let metadata = self
@@ -162,7 +159,7 @@ impl AuthenticatedNativeSubdivision {
                 cleanup: RetainedDispatcherCleanup::default(),
             };
             // Construct the nominal owner before the unconditional postcut.
-            Ok(purpose)
+            Ok((purpose, prepared))
         })();
         let after = self.verify_native_preparation(original).err();
         super::native_pool::finish_dispatcher(result, after)

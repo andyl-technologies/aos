@@ -61,12 +61,11 @@ impl AuthenticatedNativeNodeClaim {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause: result.err().unwrap_or_else(|| {
                     ServiceBirthError::policy("native node issuer postcut refused")
                 }),
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }
@@ -98,12 +97,11 @@ impl AuthenticatedNativeNodeClaim {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("Target landing postcut refused")),
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }
@@ -293,22 +291,22 @@ impl AuthenticatedNativeNodeClaim {
                 .as_ref()
                 .ok_or_else(|| ServiceBirthError::policy("native node custody is absent"))?;
             held.root.verify_native_preparation(original)?;
-            self.occupy_window(role)
+            let prepared = PreparedRefusal::reserve(&held.root.owner)?;
+            let window = self.occupy_window(role)?;
+            Ok((window, prepared))
         })();
         let after = postcut(self.held.as_ref(), original);
         match (result, after) {
-            (Ok(window), None) => Ok(window),
+            (Ok((window, _prepared)), None) => Ok(window),
             (Err(cause), after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause,
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
-            (Ok(window), Some(after)) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
+            (Ok((window, prepared)), Some(after)) => Err(NativePoolRefusal {
                 cause: ServiceBirthError::policy("native window postcut refused"),
-                after: Some(after),
-                _retained: Some(RetainedClaim::window(window)),
+                after: Some(after).into(),
+                _retained: RetainedClaim::window(window, prepared),
             }),
         }
     }

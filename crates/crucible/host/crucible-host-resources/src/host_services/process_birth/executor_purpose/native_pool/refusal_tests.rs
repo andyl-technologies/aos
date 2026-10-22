@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::host_services::HostServiceAllocator;
+use crate::test_support::TestAllocationObserver;
 use crate::host_supervision::{HostOperationBudgets, HostOperationClass, HostOperationSupervisor};
 
 #[test]
@@ -12,9 +13,8 @@ fn refused_report_keeps_first_post_and_independent_delivery_causes() {
     let post = original.wait_slice().unwrap_err();
     let mut report = NativePoolRefusal {
         cause: ServiceBirthError::Policy(String::from("original admission refusal").into()),
-        after: Some(post.into()),
-        _retained: None,
-        world_assignment_refused: false,
+        after: Some(post.into()).into(),
+        _retained: RetainedClaim::empty(),
     };
     let ServiceBirthError::Policy(first) = &report.cause else {
         panic!("actual first");
@@ -28,8 +28,14 @@ fn refused_report_keeps_first_post_and_independent_delivery_causes() {
     };
 
     assert!(report.take_retained_world().is_none());
-    report.retain_world_delivery_error(ServiceBirthError::Resource(delivery));
-    report.retain_world_receiver_refusal("same preborn receiver retained its holders");
+    let (_, events) = TestAllocationObserver::capture_allocation_events(|| {
+        report.retain_world_delivery_error(ServiceBirthError::Resource(delivery));
+        report.retain_world_receiver_refusal("same preborn receiver retained its holders");
+    })
+    .unwrap();
+    assert_eq!(events.count, 0);
+    assert_eq!(events.reallocations, 0);
+    assert!(!events.overflow);
 
     let ServiceBirthError::Policy(first) = &report.cause else {
         panic!("same first");
@@ -51,4 +57,22 @@ fn refused_report_keeps_first_post_and_independent_delivery_causes() {
     assert!(account.reserve_resources(0, 1, 0).is_err());
     drop(held);
     assert!(account.reserve_resources(0, 1, 0).is_ok());
+}
+
+#[test]
+fn negative_postcut_cannot_certify_unassigned_world() {
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let original = supervisor.begin(HostOperationClass::Preparation).unwrap();
+    supervisor.cancel().unwrap();
+    let post = original.wait_slice().unwrap_err();
+    let report = NativePoolRefusal {
+        cause: ServiceBirthError::policy("actual assignment admission refusal"),
+        after: RefusalPostcut::world_attempt(Some(post.into()), true),
+        _retained: RetainedClaim::empty(),
+    };
+
+    assert!(!report.world_assignment_was_refused());
+    assert!(
+        matches!(report.after.as_ref(), Some(ServiceBirthError::Supervision(actual)) if *actual == post)
+    );
 }
