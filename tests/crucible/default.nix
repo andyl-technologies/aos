@@ -927,7 +927,7 @@ in rec {
       envoyNetwork = true;
       # Opens plugin idle-plan and device-wait witnesses just before the
       # post-convergence phase marker hand-off; diagnostic only.
-      idlePlanDiagnosticMinimumPs = 1800000000000;
+      idlePlanDiagnosticMinimumPs = 1832000000000;
     };
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {

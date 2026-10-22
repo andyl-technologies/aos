@@ -889,6 +889,16 @@ pub(super) fn wait_for_public_attempt(
                 }
             }
 
+            // Bounded plugin witnesses name the publication and idle-plan
+            // paths a stalled node took after the diagnostic floor.
+            for prefix in ["CRUCIBLE-DEVICE-WAIT-V1 ", "CRUCIBLE-IDLE-PLAN-V1 "] {
+                if let Ok(rows) = service.stderr_recent_lines_with_prefix(prefix, 8, 768) {
+                    for row in rows {
+                        eprintln!("{row}");
+                    }
+                }
+            }
+
             // Work outside RUN dispatch, such as a checkpoint or capture after
             // a choice, logs no progress row; the newest service lines name it.
             let stderr = service.stderr_tail();

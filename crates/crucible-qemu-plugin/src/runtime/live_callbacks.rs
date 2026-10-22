@@ -1362,15 +1362,27 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })?;
             halted_vcpus.all_halted()
         };
-        if !all_halted
-            || self
-                .all_halted_idle_handled
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_err()
+        if !all_halted {
+            return Ok(());
+        }
+        if self
+            .all_halted_idle_handled
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
         {
+            self.note_zero_length_boundary(
+                zero_length_trace::ZeroLengthBoundary::Idle("edge-held"),
+                "vcpu-idle",
+                raw_icount,
+            );
             return Ok(());
         }
         if self.idle_advance_is_pending() {
+            self.note_zero_length_boundary(
+                zero_length_trace::ZeroLengthBoundary::Idle("advance-pending"),
+                "vcpu-idle",
+                raw_icount,
+            );
             // The accepted advance will wake every halted vCPU after its
             // completion commits. Release this one-shot edge so that wake can
             // recompute the next target without disturbing the winner.
@@ -1383,6 +1395,11 @@ impl LiveVcpuTimeCallbackState {
         // accepting the paused quantum and samples that exact coordinate.
         self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
         if self.preserve_network_output_stop(raw_icount, "vcpu-idle")? {
+            self.note_zero_length_boundary(
+                zero_length_trace::ZeroLengthBoundary::Idle("idle-output-stop"),
+                "vcpu-idle",
+                raw_icount,
+            );
             return Ok(());
         }
         let current_icount = self.last_icount.load(Ordering::Acquire);
@@ -1444,11 +1461,21 @@ impl LiveVcpuTimeCallbackState {
         }
         match disposition? {
             IdleSchedulerWaitDisposition::ReturnToQemu => {
+                self.note_zero_length_boundary(
+                    zero_length_trace::ZeroLengthBoundary::Idle("return-to-qemu"),
+                    "vcpu-idle",
+                    raw_icount,
+                );
                 self.idle_plan_witness
                     .end(observation, idle_plan_witness::Outcome::ReturnToQemu);
                 Ok(())
             }
             IdleSchedulerWaitDisposition::RescanInQemu => {
+                self.note_zero_length_boundary(
+                    zero_length_trace::ZeroLengthBoundary::Idle("rescan-in-qemu"),
+                    "vcpu-idle",
+                    raw_icount,
+                );
                 self.idle_plan_witness
                     .end(observation, idle_plan_witness::Outcome::RescanInQemu);
                 Ok(())
@@ -1459,6 +1486,11 @@ impl LiveVcpuTimeCallbackState {
                     // revisits halted vCPUs. Release the edge for that rescan;
                     // no forward advance or timer witness is needed here.
                     self.all_halted_idle_handled.store(false, Ordering::Release);
+                    self.note_zero_length_boundary(
+                        zero_length_trace::ZeroLengthBoundary::Idle("already-due"),
+                        "vcpu-idle",
+                        raw_icount,
+                    );
                     self.idle_plan_witness.end(
                         observation,
                         idle_plan_witness::Outcome::AlreadyDueReturn(target_icount),
@@ -1481,8 +1513,18 @@ impl LiveVcpuTimeCallbackState {
                     // one-shot edge and let that later all-halted callback
                     // recompute from the then-current ceiling and inbox.
                     self.all_halted_idle_handled.store(false, Ordering::Release);
+                    self.note_zero_length_boundary(
+                        zero_length_trace::ZeroLengthBoundary::Idle("advance-deferred"),
+                        "vcpu-idle",
+                        raw_icount,
+                    );
                     return Ok(());
                 }
+                self.note_zero_length_boundary(
+                    zero_length_trace::ZeroLengthBoundary::Idle("advance-armed"),
+                    "vcpu-idle",
+                    raw_icount,
+                );
                 Ok(())
             }
         }
@@ -1726,6 +1768,33 @@ impl LiveVcpuTimeCallbackState {
             raw,
             self.last_icount.load(Ordering::Acquire),
             None,
+        );
+        self.note_zero_length_boundary(
+            zero_length_trace::ZeroLengthBoundary::Unpublished(kind),
+            boundary,
+            raw,
+        );
+    }
+
+    /// Notes a boundary or idle path that met a zero-length advance, when traced.
+    fn note_zero_length_boundary(
+        &self,
+        path: zero_length_trace::ZeroLengthBoundary,
+        boundary: &'static str,
+        raw: u64,
+    ) {
+        if !zero_length_trace::enabled() {
+            return;
+        }
+        let Ok((ceiling, _stop)) = self.scheduler_advance() else {
+            return;
+        };
+        zero_length_trace::note_boundary(
+            path,
+            boundary,
+            ceiling,
+            self.last_icount.load(Ordering::Acquire),
+            raw,
         );
     }
 

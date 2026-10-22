@@ -102,3 +102,64 @@ pub(super) fn note(reason: ZeroLengthQuery, sequence: u64, ceiling: u64, current
         reason.name(),
     );
 }
+
+/// A boundary or idle callback that met a zero-length advance and left the
+/// slot's publication generation unchanged.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ZeroLengthBoundary {
+    /// The boundary writer returned without publishing, for this reason.
+    Unpublished(&'static str),
+    /// The all-halted idle callback returned on this path.
+    Idle(&'static str),
+}
+
+/// Unpublished-boundary reasons and idle paths, in counter order.
+const BOUNDARY_PATHS: [&str; 12] = [
+    "paused",
+    "output-stop",
+    "superseded",
+    "idle-pending",
+    "edge-held",
+    "advance-pending",
+    "idle-output-stop",
+    "return-to-qemu",
+    "rescan-in-qemu",
+    "already-due",
+    "advance-armed",
+    "advance-deferred",
+];
+
+static BOUNDARY_COUNTS: [AtomicU64; BOUNDARY_PATHS.len()] =
+    [const { AtomicU64::new(0) }; BOUNDARY_PATHS.len()];
+
+/// Records one boundary or idle path at a zero-length advance and prints it
+/// when due, naming the boundary that met it.
+pub(super) fn note_boundary(
+    path: ZeroLengthBoundary,
+    boundary: &'static str,
+    ceiling: u64,
+    current: u64,
+    raw: u64,
+) {
+    if ceiling != current || !enabled() {
+        return;
+    }
+    let (family, name) = match path {
+        ZeroLengthBoundary::Unpublished(name) => ("unpublished", name),
+        ZeroLengthBoundary::Idle(name) => ("idle", name),
+    };
+    let Some(index) = BOUNDARY_PATHS.iter().position(|known| *known == name) else {
+        return;
+    };
+    let count = BOUNDARY_COUNTS[index]
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    if !count.is_power_of_two() {
+        return;
+    }
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-ZERO-LENGTH-QUERY-V1 pid={} reason={family}-{name} boundary={boundary} count={count} ceiling_ps={ceiling} current_ps={current} raw={raw}",
+        std::process::id(),
+    );
+}
