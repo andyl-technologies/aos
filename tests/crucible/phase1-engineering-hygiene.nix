@@ -160,12 +160,11 @@
     then lib.init parts
     else parts;
 
+  # Counts occurrences of a single character natively instead of folding
+  # over every index of the line.
   countCharacter = character: text:
-    builtins.length (
-      builtins.filter
-      (index: builtins.substring index 1 text == character)
-      (builtins.genList (index: index) (builtins.stringLength text))
-    );
+    builtins.stringLength text
+    - builtins.stringLength (builtins.replaceStrings [character] [""] text);
 
   isCfgTestLine = line: let
     normalized = lib.replaceStrings [" " "\t"] ["" ""] line;
@@ -181,7 +180,9 @@
     == "#[cfg(test)]"
     || builtins.elem "test" allPredicates;
 
-  cfgTestLineMaskForScrubbed = scrubbed: let
+  # Counts the lines inside `#[cfg(test)]` items. A per-line mask list would
+  # copy the whole list on every append; only its count is ever used.
+  cfgTestLineCountForScrubbed = scrubbed: let
     step = state: line: let
       cfgTest = isCfgTestLine line;
       active = state.active || cfgTest;
@@ -233,11 +234,23 @@
         brackets = 0;
         braces = 0;
         sawBracedBody = false;
-        mask = state.mask ++ [active];
+        testLines =
+          state.testLines
+          + (
+            if active
+            then 1
+            else 0
+          );
       }
       else {
         inherit active itemStarted attributeBrackets parentheses brackets braces sawBracedBody;
-        mask = state.mask ++ [active];
+        testLines =
+          state.testLines
+          + (
+            if active
+            then 1
+            else 0
+          );
       };
   in
     (builtins.foldl' step {
@@ -248,9 +261,9 @@
       brackets = 0;
       braces = 0;
       sawBracedBody = false;
-      mask = [];
+      testLines = 0;
     } (sourceLines scrubbed))
-    .mask;
+    .testLines;
 
   isTestOnlyPath = relative: let
     components = lib.splitString "/" relative;
@@ -310,11 +323,10 @@
     total = lineCount content;
     scrubbed = scrubCommentsAndStrings content;
     testOnly = isTestOnlyPath relative || isTestSupportOnlyFrom content scrubbed;
-    mask =
+    tests =
       if testOnly
-      then builtins.genList (_: true) total
-      else cfgTestLineMaskForScrubbed scrubbed;
-    tests = builtins.length (builtins.filter (marked: marked) mask);
+      then total
+      else cfgTestLineCountForScrubbed scrubbed;
   in {
     implementation = total - tests;
     inherit tests;

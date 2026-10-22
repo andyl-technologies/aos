@@ -209,10 +209,42 @@
                 );
             }
         else throw "invalid source scrubber state";
+    # In code mode with nothing to skip, only `/`, `"`, and `'` can start a
+    # comment, string, raw string, or character literal, so a chunk without
+    # them is copied unchanged. Most source lines take this path, which
+    # avoids the per-character fold that dominated evaluation time.
+    plainCode =
+      chunkState.mode
+      == "code"
+      && chunkState.skip == 0
+      && builtins.match "[^/\"']*" chunk != null;
+    # Likewise, a code chunk whose first special character starts a `//`
+    # comment keeps its prefix, blanks the comment, and keeps the newline.
+    # This covers documentation and comment lines.
+    lineComment =
+      if chunkState.mode == "code" && chunkState.skip == 0
+      then builtins.match "([^/\"']*)//([^\n]*)(\n?)" chunk
+      else null;
+    commentPrefix = builtins.elemAt lineComment 0;
+    commentBody = builtins.elemAt lineComment 1;
+    commentNewline = builtins.elemAt lineComment 2;
   in
-    # Force the accumulated output flat before the next chunk so thunk
-    # depth stays bounded by the longest line, not the whole file.
-    builtins.seq (builtins.stringLength folded.out) folded;
+    if plainCode
+    then chunkState // {out = chunkState.out + chunk;}
+    else if lineComment != null
+    then
+      chunkState
+      // {
+        out = chunkState.out + commentPrefix + spaces (2 + builtins.stringLength commentBody) + commentNewline;
+        mode =
+          if commentNewline == "\n"
+          then "code"
+          else "line";
+      }
+    else
+      # Force the accumulated output flat before the next chunk so thunk
+      # depth stays bounded by the longest line, not the whole file.
+      builtins.seq (builtins.stringLength folded.out) folded;
   lines = lib.splitString "\n" content;
   lineCount = builtins.length lines;
   chunkAt = index:
