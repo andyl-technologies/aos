@@ -1126,6 +1126,8 @@ mod tests {
     }
 
     fn temporary_root(label: &str) -> PathBuf {
+        // Wall time names a host test directory; it never enters recovery state.
+        #[allow(clippy::disallowed_methods)]
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
