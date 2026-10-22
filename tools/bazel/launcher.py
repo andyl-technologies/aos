@@ -48,6 +48,31 @@ def shadow_workspace(source, output_base, lock):
     return destination
 
 
+def server_usage(output_base):
+    """Samples the private JVM separately from the waited command-line client."""
+    try:
+        pid = int((output_base / "server/server.pid.txt").read_text().strip())
+        process = Path("/proc") / str(pid)
+        fields = (process / "stat").read_text().rsplit(") ", 1)[1].split()
+        status = {}
+        for line in (process / "status").read_text().splitlines():
+            name, _, value = line.partition(":")
+            if name in {"VmRSS", "VmHWM"}:
+                status[name] = int(value.split()[0])
+        ticks = os.sysconf("SC_CLK_TCK")
+        return {
+            "pid": pid,
+            "user_seconds": int(fields[11]) / ticks,
+            "system_seconds": int(fields[12]) / ticks,
+            "children_user_seconds": int(fields[13]) / ticks,
+            "children_system_seconds": int(fields[14]) / ticks,
+            "rss_kib": status.get("VmRSS"),
+            "peak_rss_kib": status.get("VmHWM"),
+        }
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
@@ -68,8 +93,11 @@ def main():
         arguments = arguments[1:]
     if not arguments:
         parser.error("a Bazel command is required")
-    if arguments[0] not in {"build", "test", "run", "query", "cquery", "aquery", "mod", "info", "clean", "version", "help"}:
+    if arguments[0] not in {"build", "test", "run", "query", "cquery", "aquery", "mod", "info", "clean", "version", "help", "shutdown"}:
         parser.error("unsupported offline Bazel command")
+    batch = config.get("batch", True)
+    if arguments[0] == "shutdown" and batch:
+        parser.error("shutdown requires a configuration with batch=false")
 
     forbidden = ("--remote_", "--remote-", "--experimental_remote_", "--override_repository",
                  "--override_module", "--repo_env", "--action_env", "--host_action_env",
@@ -132,6 +160,10 @@ def main():
         policy.append(f"--override_module={name}={path}")
     for name, path in sorted(config["repositories"].items()):
         policy.append(f"--override_repository={name}={path}")
+    if arguments[0] == "shutdown":
+        # Shutdown is a client lifecycle command, with no repository analysis
+        # or compilation options. The output-base lock still serializes it.
+        policy = []
 
     if arguments[0] in {"build", "test", "run", "cquery", "aquery"}:
         if config.get("target_platform"):
@@ -163,7 +195,13 @@ def main():
         arguments += policy
 
     command = [
-        config["bazel"], "--batch", f"--output_base={output_base}",
+        config["bazel"],
+    ] + (["--batch"] if batch else ["--max_idle_secs=60"]) + [
+        # Large builders must not give every small JVM the host's full CPU
+        # count or default heap. Keep startup/JIT/GC within the selected jobs.
+        "--host_jvm_args=-Xmx2g",
+        f"--host_jvm_args=-XX:ActiveProcessorCount={config['jobs']}",
+        f"--output_base={output_base}",
         f"--output_user_root={output_base / 'user'}",
         f"--server_javabase={config['jdk']}",
         "--host_jvm_args=-Dfile.encoding=UTF-8",
@@ -172,6 +210,7 @@ def main():
     started_ns = time.time_ns()
     started = time.monotonic()
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    server_before = server_usage(output_base) if not batch else None
     try:
         status = subprocess.call(command, cwd=workspace, env=environment)
         if status == 0 and options.rust_project_output:
@@ -195,6 +234,10 @@ def main():
                 "user_seconds": after.ru_utime - before.ru_utime,
                 "system_seconds": after.ru_stime - before.ru_stime,
                 "peak_rss_kib": after.ru_maxrss,
+                # The persistent JVM is not a waited child of this launcher.
+                # Its CPU counters and memory must not disappear from reports.
+                "server_before": server_before,
+                "server_after": server_usage(output_base) if not batch else None,
                 "block_inputs": after.ru_inblock - before.ru_inblock,
                 "block_outputs": after.ru_oublock - before.ru_oublock,
                 "uid": os.getuid(),

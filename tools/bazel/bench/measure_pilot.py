@@ -23,7 +23,7 @@ from verify_cache import execution_events
 
 PACKAGE = "crates/aos/boot/aos-boot-identity"
 LABEL = "//" + PACKAGE + ":package"
-MODES = ["cargo-incremental", "bazel", "cargo-nonincremental-accache", "cargo-incremental-debug0"]
+MODES = ["cargo-incremental", "bazel", "cargo-nonincremental-accache", "cargo-incremental-debug0", "bazel-server"]
 
 
 def measure(command, directory, environment, output):
@@ -78,13 +78,41 @@ def check_program(executable, directory):
 
 
 def run_series(configuration, mode, repetition, scratch, output):
+    """Shuts down every private server even when a measurement fails."""
+    servers = []
+    try:
+        return measure_series(configuration, mode, repetition, scratch, output, servers)
+    finally:
+        active_failure = sys.exc_info()[0] is not None
+        failures = []
+        for prefix in servers:
+            try:
+                subprocess.run(prefix + ["--", "shutdown"], check=True, stdout=subprocess.DEVNULL)
+            except (OSError, subprocess.CalledProcessError) as error:
+                failures.append(str(error))
+        if failures:
+            message = "private server shutdown failed: " + "; ".join(failures)
+            if active_failure:
+                print(message, file=sys.stderr)
+            else:
+                raise RuntimeError(message)
+
+
+def measure_series(configuration, mode, repetition, scratch, output, servers):
     """Measures edits and relocation with private mutable state per series."""
     identity = f"{repetition}-{mode}"
     root = scratch / identity
     root.mkdir()
     records = output / identity
     records.mkdir()
-    bazel = mode == "bazel"
+    bazel = mode.startswith("bazel")
+    bazel_config = configuration["bazel_config"]
+    if mode == "bazel-server":
+        policy = json.loads(Path(bazel_config).read_text())
+        policy["batch"] = False
+        bazel_config = root / "server-config.json"
+        bazel_config.write_text(json.dumps(policy))
+    bazel_config = str(bazel_config)
     workspace = root / "first-worktree"
     copy_workspace(configuration["bazel_source" if bazel else "cargo_source"], workspace)
     if bazel:
@@ -131,9 +159,11 @@ def run_series(configuration, mode, repetition, scratch, output):
         directory = records / scenario
         directory.mkdir()
         if bazel:
-            command = [sys.executable, configuration["launcher"], "--config", configuration["bazel_config"],
-                       "--workspace", str(workspace), "--output-base", str(output_base),
-                       "--cache", str(root / "bazel-cache"), "--nix-sandbox",
+            prefix = [sys.executable, configuration["launcher"], "--config", bazel_config,
+                      "--workspace", str(workspace), "--output-base", str(output_base), "--nix-sandbox"]
+            if mode == "bazel-server" and prefix not in servers:
+                servers.append(prefix)
+            command = prefix + ["--cache", str(root / "bazel-cache"),
                        "--metrics", str(directory / "launcher.json"), "--", "build", LABEL,
                        "--execution_log_json_file=" + str(directory / "execution.json"),
                        "--build_event_json_file=" + str(directory / "events.json")]
@@ -146,6 +176,11 @@ def run_series(configuration, mode, repetition, scratch, output):
         sample["compiler_environment"] = {key: value for key, value in environment.items()
                                           if key.startswith(("CARGO_", "ACCACHE_", "RUST"))}
         if bazel:
+            if mode == "bazel-server":
+                metrics = json.loads((directory / "launcher.json").read_text())
+                sample["server_before"] = metrics["server_before"]
+                sample["server_after"] = metrics["server_after"]
+                sample["resource_scope"] = "waited launcher/client descendants; JVM resources recorded separately"
             events = [json.loads(line) for line in (directory / "events.json").read_text().splitlines()]
             manifests = completed_manifests(events)
             if len(manifests) != 1:

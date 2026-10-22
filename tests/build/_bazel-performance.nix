@@ -41,6 +41,7 @@
         cargo-nonincremental-accache = "Cargo dev defaults, nonincremental, local accache";
         cargo-incremental-debug0 = "Cargo dev with debug=0, incremental, no compiler wrapper";
         bazel = "Bazel fastbuild defaults, local disk action cache, private output base";
+        bazel-server = "Bazel fastbuild, private persistent JVM, 2 GiB heap limit, 60-second idle limit, explicit shutdown";
       };
     };
   };

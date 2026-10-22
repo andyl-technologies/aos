@@ -492,3 +492,22 @@ comparison. Filesystem page caches and shared-host contention are uncontrolled.
 Peak RSS is the largest process value among waited descendants. Actual
 cross-derivation correctness is qualified separately; larger workloads,
 end-to-end measurements, and numeric acceptance budgets remain required.
+
+The follow-up `native-linux-boot-analysis-reuse.json` records 90 fresh samples
+with an optional private JVM (`batch=false` in the launcher configuration).
+Both JVM modes limit the heap to two GiB and active processors to the configured
+job count. The private process has a 60-second idle limit. The measurement
+harness explicitly shuts down every process, including after a failed sample;
+it never shares an execution tree between worktrees or derivations.
+
+| Mode | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh build directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cargo incremental | 0.878 | 0.265 | 0.436 | 0.507 | 0.250 | 0.827 |
+| Bazel batch, bounded JVM | 8.087 | 4.000 | 4.134 | 4.733 | 4.490 | 4.677 |
+| Bazel private JVM reuse | 8.338 | 0.328 | 0.615 | 1.124 | 5.235 | 5.315 |
+
+The retained JVM improves repeated commands in one worktree; creating a new
+execution base still pays startup costs. Its `/proc` CPU counters and resident
+memory are recorded separately from the waited launcher/client resource usage,
+since a persistent process does not appear in the latter. These remain initial
+compile-loop measurements, with batch mode still the default launcher policy.

@@ -93,6 +93,34 @@ class LauncherTests(unittest.TestCase):
         arguments = json.loads(self.capture.read_text())["args"]
         self.assertFalse(any(argument.startswith("--platforms=") for argument in arguments))
 
+    def test_private_server_is_opt_in_and_has_bounded_idle_and_heap(self):
+        configuration = json.loads(self.config.read_text())
+        configuration["batch"] = False
+        self.config.write_text(json.dumps(configuration))
+        metrics = self.root / "metrics.json"
+
+        result = self.invoke(["build", "//:example"], ["--metrics", str(metrics)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertNotIn("--batch", arguments)
+        self.assertIn("--max_idle_secs=60", arguments)
+        self.assertIn("--host_jvm_args=-Xmx2g", arguments)
+        self.assertIn("--host_jvm_args=-XX:ActiveProcessorCount=2", arguments)
+        self.assertIsNone(json.loads(metrics.read_text())["server_after"])
+
+        result = self.invoke(["shutdown"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertEqual(arguments[-1], "shutdown")
+        self.assertFalse(any(argument.startswith("--override_") for argument in arguments))
+        self.assertNotIn("--repository_disable_download", arguments)
+
+    def test_batch_configuration_rejects_server_shutdown(self):
+        result = self.invoke(["shutdown"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("batch=false", result.stderr)
+        self.assertFalse(self.capture.exists())
+
     def test_remote_cache_and_toolchain_overrides_are_rejected(self):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",
