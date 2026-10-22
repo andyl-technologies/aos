@@ -67,6 +67,8 @@ async fn capabilities(State(peer): State<Arc<Peer>>, request: Request) -> Respon
         "delete_oci_staging",
         "delete_if_matches",
         "put_metadata",
+        "verify_prepared_git_index_v1",
+        "put_prepared_control_v1",
         "put_probe",
         "delete_probe",
         "create_multipart",
