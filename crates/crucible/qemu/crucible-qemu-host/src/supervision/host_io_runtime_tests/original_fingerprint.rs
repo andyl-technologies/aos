@@ -205,7 +205,12 @@ fn exhausted_control_refuses_capture_before_source_admission_or_sample_mutation(
         .expect_err("exhaustion precedes unavailable Source admission");
 
     assert!(error.operational_supervision_source().is_none());
-    assert!(error.message.contains("boundary action"));
+    assert_eq!(
+        error.boundary_action_source(),
+        Some(&crucible_qemu_protocol::boundary_action::ActionDecodeError),
+    );
+    assert!(error.message.is_empty());
+    assert!(error.to_string().contains("boundary action"));
     assert_eq!(
         plugin.fingerprint_sample(0)?.capture_request_generation(),
         0,
