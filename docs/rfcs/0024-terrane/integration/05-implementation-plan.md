@@ -13232,3 +13232,30 @@ checks all eight roots after dropping capabilities; raw observations remain
 in the supervisor logs. Actor, guest and outer deadlines, funding and quotas
 are unchanged. Runtime qualification of this namespace correction remains
 pending; the fixture does not execute the systemd service manager.
+
+Namespace qualification at `b817a8c503` passes in 849.24 seconds with all
+9,313 tracked files unchanged. Independent review matches all 7,987 immutable
+source files, both proof images and their four actual Cargo ELF artifacts.
+Nine unprivileged observations cover eight real roots each: the single
+inode-replacing control fails native startup before cache or snapshot effects,
+and eight inode-preserving read-only invocations retain directory read denial.
+All original enrollment, signed snapshot, whole-object, offline recovery and
+lower deadline/circuit controls pass within the unchanged bounds. The module
+check passes all 97 assertions on the same frozen checkpoint. These results
+qualify the mount policy component, not actual systemd service-manager startup.
+
+FUSE inode-policy preparation adds deterministic governing-root/path identities
+and connection-local presented numbers allocated lazily from 16 through
+`2^32 - 2`. An explicit touched-entry limit bounds retained rows; the table
+never removes rows or recycles numbers. Repeated canonical link identities
+preserve their supplied exact link count. Reserved or colliding truncated
+kernel identifiers, inconsistent counts and capacity exhaustion fail without
+changing existing entries. This policy does not authenticate paths or resolve
+hard-link sets. The structural proof now requires all 15 codec cases and five
+inode-policy cases against its actual source-bound Cargo ELF, retaining those
+exact executed bytes for independent audit. All five local inode cases, Rust
+formatting and strict native all-target Clippy pass. Worker dispatch,
+complete structural attributes, metadata-derived link resolution, cache pins,
+backing transport and mount-broker custody remain required; no FUSE surface or
+T-FUSE-2 acceptance is claimed. Committed component and application-target
+qualification remain pending.

@@ -1,9 +1,10 @@
-"""Binds the structural codec's hostile-byte tests to actual source and ELF bytes."""
+"""Binds structural metadata and inode policy tests to actual source and ELF bytes."""
 
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -28,6 +29,14 @@ CASES = [
     "trees::raw_node_budget_charges_all_keys_before_decoding_or_expansion",
 ]
 PREFIX = "structural_index::tests::"
+INODE_PREFIX = "inode_policy::tests::"
+INODE_CASES = [
+    "internal_identity_is_independent_of_first_lookup_order",
+    "full_table_preserves_old_numbers_and_canonical_link_counts",
+    "metadata_refusal_consumes_no_number_or_existing_identity",
+    "truncated_collision_cannot_alias_or_replace_a_retained_entry",
+    "invalid_bounds_and_paths_fail_before_table_growth",
+]
 
 
 def require(condition, message):
@@ -37,7 +46,7 @@ def require(condition, message):
 
 
 def main():
-    """Checks one source-bound Linux library artifact and all codec selectors."""
+    """Checks one source-bound Linux artifact and both complete test inventories."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
     workspace = Path.cwd()
@@ -70,11 +79,15 @@ def main():
         require(result.returncode == 0, "structural index selector failed")
         return text.splitlines()
 
-    cases = [PREFIX + case for case in CASES]
-    inventory = captured([PREFIX, "--list", "--format", "terse"], "inventory.log")
-    actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]
-    require(len(actual) == len(set(actual)) == len(cases) and set(actual) == set(cases),
-            "structural index inventory changed")
+    cases = []
+    for prefix, names, label in [(PREFIX, CASES, "structural"),
+                                 (INODE_PREFIX, INODE_CASES, "inode")]:
+        expected = [prefix + name for name in names]
+        inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
+        actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]
+        require(len(actual) == len(set(actual)) == len(expected) and set(actual) == set(expected),
+                label + " inventory changed")
+        cases.extend(expected)
     for case in cases:
         lines = captured([case, "--exact", "--nocapture", "--test-threads=1"], case + ".log")
         require(lines.count("test " + case + " ... ok") == 1
@@ -83,11 +96,20 @@ def main():
                         for line in lines) == 1, "structural index case did not execute once")
     require(hashlib.sha256(executable.read_bytes()).hexdigest() == digest,
             "structural index test ELF changed")
+    # Retain the exact executed bytes for independent audit. This is a test
+    # artifact, not a relocated standalone application with a runtime launcher.
+    retained = output / "artifacts/terrane-structural-tests.elf"
+    retained.parent.mkdir()
+    shutil.copyfile(executable, retained)
+    retained.chmod(0o444)
+    require(hashlib.sha256(retained.read_bytes()).hexdigest() == digest,
+            "retained structural test ELF differs from executed bytes")
     require(source_hashes(workspace, source) == inputs, "structural index source changed")
     (output / "source-review.json").write_text(json.dumps({
         "source": str(source), "input_sha256": inputs, "artifact": artifact,
         "executable_sha256": digest, "executed_cases": cases,
-        "scope": "Structural codec only; no sealed mapping, cache lease or FUSE worker authority",
+        "retained_artifact": str(retained.relative_to(output)),
+        "scope": "Structural codec and bounded inode policy only; no sealed mapping, cache lease or FUSE worker authority",
     }, indent=2) + "\n")
 
 

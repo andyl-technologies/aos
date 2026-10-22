@@ -1,0 +1,217 @@
+//! Assigns bounded, connection-local inode numbers to structural identities.
+//!
+//! Internal identities depend on the governing root and canonical path, not
+//! access order. Presented inode numbers are allocated only when touched and
+//! never recycled, including after a kernel FORGET. Hard-link aliases must use
+//! their validated set's canonical first path. This module does not authenticate
+//! metadata, resolve link sets, operate a FUSE connection or register a surface.
+
+use std::{collections::BTreeMap, fmt};
+
+use terrane_format::{identity::Digest, tree_format::validate_key};
+
+const FIRST_INODE: u32 = 16;
+const LAST_INODE: u32 = u32::MAX - 1;
+
+/// Identifies one canonical entry independently of lookup order.
+///
+/// The path is relative to the complete served namespace. A hard-link alias
+/// supplies its set's canonical first path in that namespace; repeated grafts
+/// retain their distinct prefixes. Neither this value nor its digest proves
+/// that a path is present, reachable or authorized in an exposure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeIdentity {
+    digest: Digest,
+    node_id: u64,
+}
+
+impl NodeIdentity {
+    /// Derives an identity from a governing root and canonical namespace path.
+    ///
+    /// The empty path identifies the root. Other paths obey Terrane's tree key
+    /// grammar. The fixed domain prefix and length framing separate this use
+    /// from content identities and ambiguous concatenations.
+    ///
+    /// # Errors
+    /// Refuses invalid paths and a digest whose truncated kernel identifier
+    /// occupies the reserved zero or root slot. These cases never get remapped
+    /// according to lookup order.
+    pub fn new(governing_root: Digest, canonical_path: &[u8]) -> Result<Self, Error> {
+        if !canonical_path.is_empty() {
+            validate_key(canonical_path).map_err(|_| Error::Path)?;
+        }
+
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"terrane.fuse.node.v1\0");
+        hasher.update(&governing_root);
+        hasher.update(&(canonical_path.len() as u64).to_le_bytes());
+        hasher.update(canonical_path);
+        let digest = *hasher.finalize().as_bytes();
+        let mut prefix = [0; 8];
+        prefix.copy_from_slice(&digest[..8]);
+        let node_id = u64::from_le_bytes(prefix);
+        if node_id < 2 {
+            return Err(Error::Collision);
+        }
+
+        Ok(Self { digest, node_id })
+    }
+
+    /// Returns the full identity used to detect truncated kernel-ID collisions.
+    #[must_use]
+    pub fn digest(&self) -> Digest {
+        self.digest
+    }
+
+    /// Returns the deterministic structural node identifier.
+    ///
+    /// FUSE's connection root is separately fixed at `FUSE_ROOT_ID` (one). Its
+    /// structural identity can still receive a normal presented `st_ino`.
+    #[must_use]
+    pub fn node_id(&self) -> u64 {
+        self.node_id
+    }
+}
+
+/// Preserves one entry's presented number and immutable hard-link count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Inode {
+    number: u32,
+    links: u32,
+}
+
+impl Inode {
+    /// Returns the presented 32-bit `st_ino` in the RFC's permitted range.
+    #[must_use]
+    pub fn number(&self) -> u32 {
+        self.number
+    }
+
+    /// Returns the validated link count supplied for this canonical identity.
+    #[must_use]
+    pub fn links(&self) -> u32 {
+        self.links
+    }
+}
+
+/// Refuses invalid metadata, an exhausted connection or identity aliasing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// A canonical entry path violates the tree key grammar.
+    Path,
+    /// The configured touched-inode limit is zero or exceeds the numeric range.
+    Configuration,
+    /// Another first lookup would exceed the connection's retained-inode limit.
+    Capacity,
+    /// A kernel node identifier is reserved or aliases a distinct full digest.
+    Collision,
+    /// A link count is zero or differs from the same retained immutable entry.
+    Links,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Path => "invalid canonical inode path",
+            Self::Configuration => "invalid connection inode limit",
+            Self::Capacity => "connection inode limit exceeded",
+            Self::Collision => "kernel node identity collision",
+            Self::Links => "inconsistent canonical inode link count",
+        })
+    }
+}
+
+impl std::error::Error for Error {}
+
+/// Retains numbers for the entries touched on exactly one connection.
+///
+/// The explicit limit bounds retained rows independently of total tree size.
+/// Forgetting an inode must not remove its row: a later lookup must return the
+/// original number, and its old number must never name a different entry. A
+/// connection owner discards this entire table only after that connection ends.
+pub struct InodeTable {
+    limit: u32,
+    entries: BTreeMap<u64, (Digest, Inode)>,
+}
+
+impl InodeTable {
+    /// Creates an empty connection table with a finite touched-inode limit.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// use terrane_linux::inode_policy::{InodeTable, NodeIdentity};
+    ///
+    /// let mut table = InodeTable::new(1024)?;
+    /// let identity = NodeIdentity::new([7; 32], b"README")?;
+    /// let inode = table.touch(identity, 1)?;
+    /// assert_eq!(inode.number(), 16);
+    /// assert_eq!(table.touch(identity, 1)?, inode);
+    /// # Ok::<(), terrane_linux::inode_policy::Error>(())
+    /// ```
+    ///
+    /// # Errors
+    /// Refuses zero and limits larger than the available presented-inode range.
+    pub fn new(limit: u32) -> Result<Self, Error> {
+        if limit == 0 || limit > LAST_INODE - FIRST_INODE + 1 {
+            return Err(Error::Configuration);
+        }
+
+        Ok(Self {
+            limit,
+            entries: BTreeMap::new(),
+        })
+    }
+
+    /// Returns or first assigns one canonical entry's connection-local number.
+    ///
+    /// Callers must obtain the identity and exact link count from checked
+    /// structural metadata, including hard-link resolution. Existing lookups
+    /// allocate nothing, including when the table is full. An error changes no
+    /// retained entry and consumes no presented inode number.
+    ///
+    /// # Errors
+    /// Refuses zero or inconsistent link counts, a truncated identity collision
+    /// and a first lookup beyond the configured limit. A worker must fault the
+    /// affected exposure rather than recycle a number or alias a distinct entry.
+    pub fn touch(&mut self, identity: NodeIdentity, links: u32) -> Result<Inode, Error> {
+        if links == 0 {
+            return Err(Error::Links);
+        }
+        if let Some((digest, inode)) = self.entries.get(&identity.node_id) {
+            if *digest != identity.digest {
+                return Err(Error::Collision);
+            }
+            if inode.links != links {
+                return Err(Error::Links);
+            }
+            return Ok(*inode);
+        }
+        let assigned = u32::try_from(self.entries.len()).map_err(|_| Error::Capacity)?;
+        if assigned >= self.limit {
+            return Err(Error::Capacity);
+        }
+
+        let inode = Inode {
+            number: FIRST_INODE.checked_add(assigned).ok_or(Error::Capacity)?,
+            links,
+        };
+        self.entries
+            .insert(identity.node_id, (identity.digest, inode));
+        Ok(inode)
+    }
+
+    /// Returns the number of distinct entries ever touched on this connection.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns whether no entry has been touched on this connection.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests;
