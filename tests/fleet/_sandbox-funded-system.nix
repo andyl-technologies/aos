@@ -5,6 +5,7 @@
   lib,
   pkgs,
   systems,
+  includeLifecycleReservations ? false,
 }:
 systems.server-secureboot-lockdown.extendModules {
   modules = [
@@ -36,6 +37,13 @@ systems.server-secureboot-lockdown.extendModules {
           mounts = pids * 16;
         };
       sharedCredential = name: "qualification-${name}";
+      lifecycleIntake =
+        (envelope (256 * mib) 10000 1 4096)
+        // {
+          metadata-entries = 2 * mib;
+          publication-staging-bytes = 2 * mib;
+          output-bytes = 2 * mib;
+        };
       sessionCredentials = lib.listToAttrs (lib.concatMap (endpoint:
         map (suffix: {
           name = "brokerSession${endpoint}${suffix}";
@@ -181,47 +189,59 @@ systems.server-secureboot-lockdown.extendModules {
         };
         cacheSignerService.credentials.memoryCeiling = sharedCredential "cache-memory-ceiling";
         resourceBank = {
-          policy = {
-            node = "11111111111111111111111111111111";
-            epoch = "22222222222222222222222222222222";
-            capacity = vector (lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (_: 1073741824)
-              // {
-                memory-bytes = 32 * gib;
-                cpu-micros-per-period = 1600000;
-                storage-bytes = 32 * gib;
-                log-bytes = 4 * gib;
-                mapped-index-bytes = 4 * gib;
-              });
-            baseline = envelope gib 200000 128 65536;
-            controller =
-              (envelope (8 * gib) 400000 64 131072)
-              // {
-                metadata-entries = 16 * mib;
-                publication-staging-bytes = 128 * mib;
-                output-bytes = 128 * mib;
-              };
-            components = (envelope (16 * gib) 1000000 512 1048576) // loggingProvision;
-            hostService = envelope (512 * mib) 100000 32 8192;
-            hostControl = envelope (128 * mib) 10000 8 512;
-            firstGlobalPrefix = envelope (256 * mib) 10000 1 4096;
-            nixOriginalStartIntake = envelope (256 * mib) 10000 1 4096;
-            q04OriginalIntake =
-              (envelope (256 * mib) 10000 1 4096)
-              // {
-                metadata-entries = 2 * mib;
-                publication-staging-bytes = 2 * mib;
-                output-bytes = 2 * mib;
-              };
-            rootReceiving = envelope gib 100000 32 8192;
-            createContinuationIntake =
-              (envelope (256 * mib) 10000 1 4096)
-              // {
-                metadata-entries = 2 * mib;
-                publication-staging-bytes = 2 * mib;
-                output-bytes = 2 * mib;
-              };
-            storageReceiving = envelope (2 * gib) 100000 64 8192;
-          };
+          policy =
+            {
+              node = "11111111111111111111111111111111";
+              epoch = "22222222222222222222222222222222";
+              capacity = vector (lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (_: 1073741824)
+                // {
+                  memory-bytes = 32 * gib;
+                  cpu-micros-per-period = 1600000;
+                  storage-bytes = 32 * gib;
+                  log-bytes = 4 * gib;
+                  mapped-index-bytes = 4 * gib;
+                });
+              baseline = envelope gib 200000 128 65536;
+              controller =
+                (envelope (8 * gib) 400000 64 131072)
+                // {
+                  metadata-entries = 16 * mib;
+                  publication-staging-bytes = 128 * mib;
+                  output-bytes = 128 * mib;
+                };
+              components = (envelope (16 * gib) 1000000 512 1048576) // loggingProvision;
+              hostService = envelope (512 * mib) 100000 32 8192;
+              hostControl = envelope (128 * mib) 10000 8 512;
+              firstGlobalPrefix = envelope (256 * mib) 10000 1 4096;
+              nixOriginalStartIntake = envelope (256 * mib) 10000 1 4096;
+              q04OriginalIntake =
+                (envelope (256 * mib) 10000 1 4096)
+                // {
+                  metadata-entries = 2 * mib;
+                  publication-staging-bytes = 2 * mib;
+                  output-bytes = 2 * mib;
+                };
+              rootReceiving = envelope gib 100000 32 8192;
+              createContinuationIntake =
+                (envelope (256 * mib) 10000 1 4096)
+                // {
+                  metadata-entries = 2 * mib;
+                  publication-staging-bytes = 2 * mib;
+                  output-bytes = 2 * mib;
+                };
+              storageReceiving = envelope (2 * gib) 100000 64 8192;
+            }
+            // lib.optionalAttrs includeLifecycleReservations {
+              # These are subdivisions of the existing Controller and Host
+              # totals. The image cannot create authority by reserving capacity.
+              executionOperationIntake = lifecycleIntake;
+              deleteOperationIntake = lifecycleIntake;
+              hostExecutionPrepare = envelope (128 * mib) 20000 8 2048;
+              hostExecutionAccept = envelope (128 * mib) 20000 8 2048;
+              controllerRecovery = envelope (256 * mib) 25000 4 2048;
+              controllerRecoveryInvocation = envelope (64 * mib) 6250 1 512;
+              controllerRecoveryRecipients = 4;
+            };
           parentEnclosure = {
             manager = envelope (4 * gib) 100000 64 65536;
             fixedServices = (envelope (4 * gib) 300000 128 131072) // loggingProvision;
