@@ -1050,6 +1050,7 @@ async fn login_flow_rejects_a_changed_verifier() {
             code: "unused-code".into(),
             state,
         },
+        &redirect.browser_binding,
     )
     .await;
     assert!(result.is_err());
