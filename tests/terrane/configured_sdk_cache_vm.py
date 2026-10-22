@@ -1,16 +1,92 @@
 """Checks actual configured CLI snapshots with separately recovered native caches."""
 
+import contextlib
+import errno
 import fcntl
+import json
 import os
-import struct
+import pathlib
 import select
+import struct
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 
 
 PAYLOAD = b"independent configured SDK snapshot payload\n"
+NAMESPACE_OBSERVATION = b"NATIVE_SDK_NAMESPACE "
+PUBLISHER_PRIVATE_ROOTS = ["sealed", "staging", "pending-delete", "state/publication"]
+
+
+def namespace_actor(driver, image, arguments, policy, stack):
+    """Keeps the publisher outside a fresh client's private mount namespace."""
+    credentials = ["setpriv", "--reuid", "840", "--regid", "840", "--groups", "844,845",
+                   "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
+                   "--no-new-privs"]
+    executable = [str(image / "bin" / arguments[0]), *map(str, arguments[1:])]
+    if policy is None:
+        return credentials + executable
+
+    bindings = []
+    for domain in ["public", "private"]:
+        for suffix in PUBLISHER_PRIVATE_ROOTS:
+            path = driver.ROOT / "positive" / domain / suffix
+            metadata = path.stat()
+            driver.require(metadata.st_uid == 841 and metadata.st_mode & 0o7777 == 0o700,
+                           "namespace input lacks publisher-private custody")
+            bindings.append([str(path), metadata.st_dev, metadata.st_ino])
+    encoded = json.dumps(bindings, separators=(",", ":"))
+    scratch = stack.enter_context(tempfile.TemporaryDirectory(
+        prefix="sdk-namespace-", dir=driver.ROOT / "scratch"))
+    script = str(driver.IMAGE / "share/configured_sdk_cache_vm.py")
+    verify = [sys.executable, script, "--verify-namespace", policy, encoded, *executable]
+    return ["unshare", "--mount", "--propagation", "private", sys.executable, script,
+            "--mount-namespace", policy, scratch, encoded, *credentials, *verify]
+
+
+def mount_namespace(policy, scratch, bindings, command):
+    """Applies the unit's inode-preserving policy or its old masking control."""
+    if os.geteuid() != 0 or policy not in {"readonly", "masked"}:
+        raise RuntimeError("invalid privileged namespace fixture")
+    mask = pathlib.Path(scratch) / "inaccessible"
+    mask.mkdir(mode=0)
+    for path, _, _ in bindings:
+        source = str(mask) if policy == "masked" else path
+        subprocess.run(["mount", "--bind", source, path], check=True, timeout=5)
+        subprocess.run(["mount", "-o", "remount,bind,ro", path], check=True, timeout=5)
+    os.execvp(command[0], command)
+
+
+def verify_namespace(policy, bindings, command):
+    """Checks real mount identities and read denial after dropping all capabilities."""
+    if os.geteuid() != 840 or policy not in {"readonly", "masked"}:
+        raise RuntimeError("invalid unprivileged namespace fixture")
+    for path, device, inode in bindings:
+        descriptor = os.open(path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(descriptor)
+            same = (metadata.st_dev, metadata.st_ino) == (device, inode)
+            if same != (policy == "readonly"):
+                raise RuntimeError("namespace inode policy differs from original roots")
+            if not os.fstatvfs(descriptor).f_flag & os.ST_RDONLY:
+                raise RuntimeError("publisher-private root is writable in client namespace")
+        finally:
+            os.close(descriptor)
+        try:
+            readable = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as error:
+            if error.errno != errno.EACCES:
+                raise
+        else:
+            os.close(readable)
+            raise RuntimeError("unprivileged client can read a publisher-private directory")
+    print(NAMESPACE_OBSERVATION.decode() + json.dumps({
+        "policy": policy, "roots": len(bindings), "read_denied": True,
+        "readonly": True, "original_inodes": policy == "readonly",
+    }, sort_keys=True), flush=True)
+    os.execv(command[0], command)
 
 
 def manifest_payload():
@@ -25,11 +101,15 @@ def manifest_payload():
     return bytes(result)
 
 
-def actor(driver, image, label, arguments, success=True):
+def actor(driver, image, label, arguments, success=True, mount_policy=None):
     """Runs one fresh source-bound actor under the original supervisor's bounds."""
-    command = ["setpriv", "--reuid", "840", "--regid", "840", "--groups", "844,845",
-               "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
-               "--no-new-privs", str(image / "bin" / arguments[0]), *map(str, arguments[1:])]
+    with contextlib.ExitStack() as stack:
+        command = namespace_actor(driver, image, arguments, mount_policy, stack)
+        return run_actor(driver, label, command, success, mount_policy)
+
+
+def run_actor(driver, label, command, success, mount_policy):
+    """Collects bounded actor output and retains every namespace observation."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=True)
     output = [bytearray(), bytearray()]
@@ -59,6 +139,14 @@ def actor(driver, image, label, arguments, success=True):
 
     driver.require(process.returncode == (0 if success else 1),
                    "native SDK actor exit status: " + label)
+    if mount_policy is not None:
+        rows = [json.loads(line[len(NAMESPACE_OBSERVATION):])
+                for line in output[0].splitlines() if line.startswith(NAMESPACE_OBSERVATION)]
+        driver.require(rows == [{"policy": mount_policy, "roots": 8, "read_denied": True,
+                                 "readonly": True, "original_inodes": mount_policy == "readonly"}],
+                       "missing actual unprivileged namespace observation: " + label)
+        output[0] = b"".join(line for line in output[0].splitlines(keepends=True)
+                             if not line.startswith(NAMESPACE_OBSERVATION))
     return tuple(map(bytes, output))
 
 
@@ -205,6 +293,7 @@ def run(driver, image):
 
     large = manifest_payload()
     for name, refused, mode, payload in [
+            ("masked", True, "never", PAYLOAD),
             ("inline", False, "never", PAYLOAD),
             ("never", False, "never", large),
             ("always", False, "always", large),
@@ -222,7 +311,7 @@ def run(driver, image):
         before = cache_states(driver)
         stdout, stderr = actor(driver, image, name + "-cli",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
-              success=not refused)
+              success=not refused, mount_policy="masked" if name == "masked" else "readonly")
         after = cache_states(driver)
         actor(driver, image, name + "-publication",
               ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
@@ -235,6 +324,12 @@ def run(driver, image):
                            and all(not (root / ("snapshot-" + item)).exists()
                                    for item in ["first", "second"]),
                            "unavailable native custody started presentation or changed policy")
+            if name == "masked":
+                driver.require(not stdout and stderr ==
+                               b"terrane: configured SDK native cache recovery failed\n",
+                               "masked roots did not refuse actual native startup")
+                print("PASS actual inaccessible namespace roots refuse native startup before cache or snapshot effects", flush=True)
+                continue
             witness = ("mismatched original profile" if name == "profile" else "an unenrolled native cache")
             print("PASS actual configured SDK refuses " + witness + " before any snapshot or policy effect", flush=True)
             continue
@@ -273,7 +368,8 @@ def run(driver, image):
                            "native SDK whole object lacks actual SHA-256 fs-verity")
             print("PASS actual configured SDK " + mode + " policy reads genuine fs-verity object and completes cache handoff", flush=True)
         offline, _ = actor(driver, image, name + "-offline",
-                           ["configured-sdk-cache-example", "read-cache-offline", root, 840])
+                           ["configured-sdk-cache-example", "read-cache-offline", root, 840],
+                           mount_policy="readonly")
         for witness in [
                 b"PASS: actual native driver bounds an indefinitely pending lower read",
                 b"PASS: actual shared native circuit blocks lower misses while resident content remains readable",
@@ -282,3 +378,12 @@ def run(driver, image):
             driver.require(offline.splitlines().count(witness) == 1,
                            "native SDK actor omitted or repeated a lower failure control")
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 7 and sys.argv[1] == "--mount-namespace":
+        mount_namespace(sys.argv[2], sys.argv[3], json.loads(sys.argv[4]), sys.argv[5:])
+    elif len(sys.argv) >= 6 and sys.argv[1] == "--verify-namespace":
+        verify_namespace(sys.argv[2], json.loads(sys.argv[3]), sys.argv[4:])
+    else:
+        raise SystemExit("expected a privileged mount fixture or unprivileged namespace verifier")

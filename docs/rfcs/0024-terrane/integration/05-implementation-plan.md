@@ -13211,3 +13211,24 @@ the four owning host-tier gates are running on the same frozen checkpoint.
 All five T2 task checkboxes remain open pending their complete requirements
 and owning qualification; no deployable four-role or mounted exposure
 conformance is inferred from the component pass.
+
+Configured native SDK-cache qualification at the same `599148dcc3` checkpoint
+passes in 812.05 seconds with all 9,313 tracked files unchanged. Independent
+review matches all 7,987 immutable source files, both source-bound images and
+their four actual Cargo ELF artifacts. All 15 initial-enrollment controls,
+three signed snapshot cases, whole-object policies, offline recovery and lower
+deadline/circuit controls pass. This component evidence leaves the owning
+host-tier gates and formal T2 acceptance pending.
+
+The host module now preserves publisher-private directory identities through
+read-only binds in non-publisher units. The previous inaccessible mounts
+replace the inodes which native startup must inspect with `O_PATH` and compare
+against the quota helper's physical bindings. Publisher ownership and mode
+0700 continue to deny directory reads. The SDK-cache VM adds a private client
+mount namespace: an inode-replacing negative control must refuse startup
+without cache or snapshot effects, while all existing positive, policy and
+refusal cases run with inode-preserving read-only mounts. Each actual client
+checks all eight roots after dropping capabilities; raw observations remain
+in the supervisor logs. Actor, guest and outer deadlines, funding and quotas
+are unchanged. Runtime qualification of this namespace correction remains
+pending; the fixture does not execute the systemd service manager.

@@ -283,7 +283,11 @@
       ReadWritePaths = writable role;
       # The optional prefix preserves SDK-only startup before host quota
       # provisioning. Existing global project claims are never role data.
-      InaccessiblePaths = ["-/var/lib/terrane-host/project-claims"] ++ lib.optionals (role != "publish") (builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots);
+      InaccessiblePaths = ["-/var/lib/terrane-host/project-claims"];
+      # Native startup compares O_PATH identities with the quota helper's actual
+      # roots. Inaccessible mounts replace those inodes. Preserve them through
+      # read-only binds; publisher-owned mode 0700 still denies directory reads.
+      ReadOnlyPaths = lib.optionals (role != "publish") (builtins.concatMap (root: ["${root}/sealed" "${root}/staging" "${root}/pending-delete" "${root}/state/publication"]) roots);
     };
   };
 in {

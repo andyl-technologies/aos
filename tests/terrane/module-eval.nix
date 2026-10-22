@@ -82,7 +82,11 @@
     }
     {
       name = "publisher-write-custody";
-      pass = builtins.elem "/var/lib/terrane/sealed" (service "publish").ReadWritePaths && builtins.all (role: !(builtins.elem "/var/lib/terrane/sealed" (service role).ReadWritePaths) && builtins.elem "/var/lib/terrane/sealed" (service role).InaccessiblePaths) ["serve" "realize" "gc"] && lib.hasInfix "d /var/lib/terrane 0755 root root" enabled.environment.etc."tmpfiles.d/terrane.conf".text && lib.hasInfix "d /var/lib/terrane/staging 0700 terrane-publish terrane-publish" enabled.environment.etc."tmpfiles.d/terrane.conf".text;
+      pass = builtins.elem "/var/lib/terrane/sealed" (service "publish").ReadWritePaths && builtins.all (role: !(builtins.elem "/var/lib/terrane/sealed" (service role).ReadWritePaths) && builtins.elem "/var/lib/terrane/sealed" (service role).ReadOnlyPaths && !(builtins.elem "/var/lib/terrane/sealed" (service role).InaccessiblePaths)) ["serve" "realize" "gc"] && lib.hasInfix "d /var/lib/terrane 0755 root root" enabled.environment.etc."tmpfiles.d/terrane.conf".text && lib.hasInfix "d /var/lib/terrane/staging 0700 terrane-publish terrane-publish" enabled.environment.etc."tmpfiles.d/terrane.conf".text;
+    }
+    {
+      name = "publisher-private-roots-preserve-native-identities";
+      pass = builtins.all (role: (service role).ReadOnlyPaths == map (suffix: "/var/lib/terrane/${suffix}") ["sealed" "staging" "pending-delete" "state/publication"]) ["serve" "realize" "gc"] && (service "publish").ReadOnlyPaths == [];
     }
     {
       name = "slice-placement";
