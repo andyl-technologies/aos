@@ -708,6 +708,33 @@ class EffectivePolicyTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_offline_entry_requires_both_mount_transition_guards(self) -> None:
+        owner = effective_policy.owner_policy
+        for source, target in (
+            ("init_t", owner.OFFLINE_PREPARE),
+            (owner.OFFLINE_PREPARE, owner.OFFLINE_HELPER),
+        ):
+            for permission in ("nnp_transition", "nosuid_transition"):
+                with self.subTest(source=source, target=target, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(source, target, "process2", permission)
+                    )
+
+    def test_offline_mount_guards_cannot_open_foreign_entry(self) -> None:
+        owner = effective_policy.owner_policy
+        for source, target in (
+            ("init_t", owner.OFFLINE_HELPER),
+            (owner.OFFLINE_HELPER, owner.OFFLINE_HELPER),
+            (owner.OFFLINE_PREPARE, owner.OFFLINE_PREPARE),
+            ("aos_sandbox_controller_t", owner.OFFLINE_PREPARE),
+            ("aos_sandbox_controller_t", owner.OFFLINE_HELPER),
+        ):
+            for permission in ("nnp_transition", "nosuid_transition"):
+                with self.subTest(source=source, target=target, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(source, target, "process2", permission)
+                    )
+
     def test_offline_helper_foreign_execution_cuts_remain_closed(self) -> None:
         owner = effective_policy.owner_policy
         for source in (

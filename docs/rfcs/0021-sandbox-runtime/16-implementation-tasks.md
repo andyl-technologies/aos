@@ -10476,3 +10476,21 @@ The probe has test-only hierarchy authority. This receipt qualifies its physical
 transport and crash behavior, not normal paid Controller startup, either
 installed method-46 journal hook, Nix runtime-floor publication, held Q04 or a
 public sandbox lifecycle. The corresponding production gates remain closed.
+
+### Offline floor entry on the immutable nosuid store (installed retry pending)
+
+The correctly funded offline QEMU/vTPM runs stop at the first fixed preparer
+exec with `EPERM`, before native key or TPM provisioning. An exact-image
+diagnostic confirms the retained store is nosuid and the unit retains
+NoNewPrivileges. The selected Linux 7.2.3 SELinux exec path requires both
+`nnp_transition` and `nosuid_transition` when both restrictions apply.
+
+The production policy now admits nosuid transitions only from PID 1 to the
+fixed offline preparer and from that preparer to its fixed TPM helper, beside
+the existing nnp permissions. The mount restrictions, executable entrypoint
+labels and other role permissions remain in place. The effective checker
+requires both permissions on these edges and rejects either permission on
+foreign entry edges. All 146 checker unit tests pass. Full compiled-policy
+mutation checks and installed approval, hardware provisioning and failed-history
+reruns remain pending; no offline or normal runtime provisioning is qualified
+by this source repair.

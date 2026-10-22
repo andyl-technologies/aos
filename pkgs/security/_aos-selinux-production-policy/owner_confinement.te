@@ -56,7 +56,9 @@ type aos_nix_offline_prepare_state_t;
 
 allow init_t aos_nix_offline_prepare_exec_t:file { execute execute_no_trans getattr map open read };
 allow init_t aos_nix_offline_prepare_t:process transition;
-allow init_t aos_nix_offline_prepare_t:process2 nnp_transition;
+# The immutable /nix overlay remains nosuid. Linux checks both restrictions
+# for this explicit, fixed-label service transition; set-ID bits stay disabled.
+allow init_t aos_nix_offline_prepare_t:process2 { nnp_transition nosuid_transition };
 allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint getattr map open read };
 allow aos_nix_offline_prepare_t self:capability { chown dac_override };
 allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
@@ -134,7 +136,7 @@ type aos_nix_offline_tpm_helper_exec_t;
 type_transition aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:process aos_nix_offline_tpm_helper_t;
 allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:file { execute getattr map open read };
 allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process { transition getattr sigkill signal };
-allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process2 nnp_transition;
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process2 { nnp_transition nosuid_transition };
 allow aos_nix_offline_tpm_helper_t aos_nix_offline_tpm_helper_exec_t:file { entrypoint execute getattr map open read };
 allow aos_nix_offline_tpm_helper_t self:process { getattr getsched setrlimit sigchld signal };
 allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:fd use;

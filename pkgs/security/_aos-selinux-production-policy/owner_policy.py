@@ -443,6 +443,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend((
         Access("init_t", OFFLINE_PREPARE, "process", "transition"),
         Access("init_t", OFFLINE_PREPARE, "process2", "nnp_transition"),
+        Access("init_t", OFFLINE_PREPARE, "process2", "nosuid_transition"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file", "entrypoint"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "dac_override"),
@@ -518,6 +519,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "file", ("append", "link", "rename", "unlink")))
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "dir", ("remove_name", "rename", "rmdir")))
 
+    # Only PID 1 selects the fixed preparation role, and only that role enters
+    # its sealed helper. Neither mount restriction opens another entry edge.
+    for source in all_roles:
+        for target, parent in ((OFFLINE_PREPARE, "init_t"), (OFFLINE_HELPER, OFFLINE_PREPARE)):
+            if source != parent:
+                negative.extend(accesses(source, target, "process2", ("nnp_transition", "nosuid_transition")))
+
     # The sole measured offline entry, not an additional normal owner or
     # hierarchy service. Only the retained parent can enter or nominate loans.
     positive.extend(accesses(OFFLINE_PREPARE, OFFLINE_HELPER_EXECUTABLE, "file",
@@ -525,6 +533,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend((
         Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process", "transition"),
         Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process2", "nnp_transition"),
+        Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process2", "nosuid_transition"),
         Access(OFFLINE_HELPER, OFFLINE_PREPARE, "fd", "use"),
     ))
     # ELF segments are mapped after the new helper credentials are installed.
