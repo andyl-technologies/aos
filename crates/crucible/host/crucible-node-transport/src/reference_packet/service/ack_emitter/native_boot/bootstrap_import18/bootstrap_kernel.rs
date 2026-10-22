@@ -10,8 +10,10 @@ use super::super::{
     original_prepare_executable_measurement_construction_data,
 };
 use super::*;
+use crate::handshake::ConnectionAuthority;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
-    PacketNativeImport18BootstrapKernelView, native_import18_bootstrap_kernel_wire_data,
+    PacketNativeImport18BootstrapKernelView, PacketNativeImport18BootstrapTypedPolicyView,
+    native_import18_bootstrap_kernel_wire_data,
     native_import18_bootstrap_operands_counter_scratch_data,
 };
 use crate::retained_metadata::{
@@ -157,7 +159,26 @@ impl OriginalImport18RawBootstrap {
         &self,
         inspect: impl FnOnce(&PacketNativeImport18BootstrapKernelView<'_>) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
-        self.with_bootstrap_policy_wire_data(|_| {
+        self.with_bootstrap_kernel_policy_wire_data(|kernel, _, _| inspect(kernel))
+    }
+
+    /// Lends both actual kernel and policy views under their same original guards.
+    ///
+    /// Composite normalization uses this existing policy loan directly, avoiding
+    /// repeated full input observations solely to recover the same borrowed view.
+    /// Both terminal guard sets remain active on either callback outcome.
+    ///
+    /// # Errors
+    /// Preserves the kernel loan's incomplete, stale, callback and terminal refusals.
+    pub(super) fn with_bootstrap_kernel_policy_wire_data<R: Copy>(
+        &self,
+        inspect: impl FnOnce(
+            &PacketNativeImport18BootstrapKernelView<'_>,
+            &PacketNativeImport18BootstrapTypedPolicyView<'_>,
+            &ConnectionAuthority,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.with_bootstrap_policy_authority_wire_data(|policy, authority| {
             self.bootstrap_kernel.guard(self.cut)?;
             if !self.bootstrap_kernel.complete {
                 return Err(refused());
@@ -177,7 +198,7 @@ impl OriginalImport18RawBootstrap {
                 U64::new(u64::from(rustix::process::geteuid().as_raw())),
                 executable,
             )?;
-            let outcome = inspect(&view);
+            let outcome = inspect(&view, policy, authority);
             let terminal = self.bootstrap_kernel.guard(self.cut);
             let output = outcome?;
             terminal?;
@@ -195,6 +216,9 @@ impl OriginalImport18RawBootstrap {
     -> Result<usize, ProviderError> {
         [
             counter_scratch_data(),
+            size_of::<&PacketNativeImport18BootstrapTypedPolicyView<'static>>(),
+            size_of::<&ConnectionAuthority>(),
+            size_of::<Result<R, ProviderError>>(),
             size_of::<R>(),
             size_of::<R>(),
             size_of::<Result<R, ProviderError>>(),

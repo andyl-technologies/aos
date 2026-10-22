@@ -5,6 +5,7 @@
 //! no recipe bank and issues no ACK, native phase or Source/Birth permission.
 
 use super::*;
+use crate::handshake::ConnectionAuthority;
 use crate::reference_packet::service::complete_restore::import18::OriginalImport18DecodedBodyLoans;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
     PacketNativeImport18BootstrapTypedPolicyView, native_import18_bootstrap_typed_policy_wire_data,
@@ -27,6 +28,23 @@ impl OriginalImport18RawBootstrap {
             &PacketNativeImport18BootstrapTypedPolicyView<'_>,
         ) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        self.with_bootstrap_policy_authority_wire_data(|policy, _| inspect(policy))
+    }
+
+    /// Lends the policy and its same actual SDK authority inside one original guard.
+    ///
+    /// Composite serializers reuse this existing guarded authority instead of
+    /// reopening the full SDK custody chain for its already borrowed children.
+    ///
+    /// # Errors
+    /// Preserves the policy loan's original, callback and terminal refusals.
+    pub(super) fn with_bootstrap_policy_authority_wire_data<R: Copy>(
+        &self,
+        inspect: impl FnOnce(
+            &PacketNativeImport18BootstrapTypedPolicyView<'_>,
+            &ConnectionAuthority,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         self.with_immutable_policy_data(|policy| {
             self.with_hello_authority_data(|authority| {
                 let bodies = self.typed_bodies_data()?;
@@ -39,7 +57,7 @@ impl OriginalImport18RawBootstrap {
                     record,
                     authority,
                 )?;
-                inspect(&view)
+                inspect(&view, authority)
             })
         })
     }
@@ -61,6 +79,8 @@ impl OriginalImport18RawBootstrap {
             size_of::<[&crucible_node_format::SchemaRef; 3]>(),
             size_of::<Result<[&crucible_node_format::SchemaRef; 3], ProviderError>>(),
             size_of::<Result<R, ProviderError>>(),
+            size_of::<Result<R, ProviderError>>(),
+            size_of::<&ConnectionAuthority>(),
         ]
         .into_iter()
         .try_fold(

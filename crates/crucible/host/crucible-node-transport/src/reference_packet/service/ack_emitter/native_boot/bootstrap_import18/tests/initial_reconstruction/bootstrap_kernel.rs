@@ -108,6 +108,13 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             .with_bootstrap_kernel_wire_data(|_| Ok(()))
             .is_err()
     );
+    if case.contains("_operands_") {
+        assert!(
+            original
+                .with_bootstrap_ack_operands_data(|_| Ok(()))
+                .is_err()
+        );
+    }
     let admission = Admission {
         case,
         before,
@@ -159,7 +166,10 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             })
             .unwrap();
         assert_eq!(admission.calls.get(), 2);
-        if case.ends_with("callback_refused") {
+        if case.contains("_operands_") {
+            super::bootstrap_operands::assert_child(case, original);
+        }
+        if case.ends_with("callback_refused") && !case.ends_with("operands_callback_refused") {
             assert!(
                 original
                     .with_bootstrap_kernel_wire_data::<()>(|_| Err(ProviderError::Conflict(
@@ -171,7 +181,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .with_bootstrap_kernel_wire_data(|_| Ok(()))
                 .unwrap();
         }
-        if case.ends_with("loan_expired") {
+        if case.ends_with("loan_expired") && !case.ends_with("operands_loan_expired") {
             assert!(
                 original
                     .with_bootstrap_kernel_wire_data(|_| {
@@ -196,6 +206,15 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
                 .is_err()
         );
         assert!(original.with_hello_authority_data(|_| Ok(())).is_err());
+    }
+    if case.contains("_operands_")
+        && (!completed || case.ends_with("expired") || case.ends_with("later_contained"))
+    {
+        assert!(
+            original
+                .with_bootstrap_ack_operands_data(|_| Ok(()))
+                .is_err()
+        );
     }
     original.cut = prior_cut;
     let calls = admission.calls.get();

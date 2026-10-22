@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 #[path = "initial_reconstruction/bootstrap_kernel.rs"]
 mod bootstrap_kernel;
 
+#[path = "initial_reconstruction/bootstrap_operands.rs"]
+mod bootstrap_operands;
+
 #[path = "initial_reconstruction/completed_inputs.rs"]
 mod completed_inputs;
 

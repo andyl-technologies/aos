@@ -23,7 +23,9 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
     let mut coordinator: crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation = serde_json::from_slice(bytes.as_slice()).unwrap();
     let member = usize::from(matches!(
         case,
-        "initial_policy_reactive" | "initial_policy_kernel_reactive"
+        "initial_policy_reactive"
+            | "initial_policy_kernel_reactive"
+            | "initial_policy_kernel_operands_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -390,6 +392,12 @@ fn model_absent_policy_keeps_actual_launch_hello_lease_and_every_terminal_owner(
         "initial_policy_kernel_finish_expired",
         "initial_policy_kernel_callback_refused",
         "initial_policy_kernel_loan_expired",
+        "initial_policy_kernel_operands_complete",
+        "initial_policy_kernel_operands_reactive",
+        "initial_policy_kernel_operands_loan_expired",
+        "initial_policy_kernel_operands_error_expired",
+        "initial_policy_kernel_operands_callback_refused",
+        "initial_policy_kernel_operands_changed_loan_cut",
         "initial_policy_kernel_substituted_cut",
         "initial_policy_kernel_later_contained",
         "initial_policy_without_validation",
