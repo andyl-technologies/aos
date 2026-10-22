@@ -13,6 +13,13 @@ use crate::reference_packet::service::complete_restore::import18::{
 use crucible_node_format::{Bytes, Id, canonical};
 use serde_json::{Value, json};
 
+/// Prepares an independent image oracle outside the timed receiver operation.
+pub(super) fn prepare_independent_kernel_image(case: &str) {
+    if case.starts_with("initial_policy_kernel_") && !case.contains("_operands_") {
+        bootstrap_kernel::prepare_independent_image();
+    }
+}
+
 #[path = "initial_reconstruction/bootstrap_kernel.rs"]
 mod bootstrap_kernel;
 

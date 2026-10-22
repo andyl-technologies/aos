@@ -213,6 +213,7 @@ fn inherited_raw_bootstrap_child() {
     if case == "independent_peak" {
         selected_bounds.requested_peak -= 1;
     }
+    initial_reconstruction::prepare_independent_kernel_image(&case);
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
     assert!(owner.inputs.is_empty_data());

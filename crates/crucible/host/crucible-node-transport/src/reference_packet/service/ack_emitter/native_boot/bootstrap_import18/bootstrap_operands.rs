@@ -75,6 +75,9 @@ impl OriginalImport18RawBootstrap {
         &self,
         inspect: impl FnOnce(&BootstrapAckOperands<'_>) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        if !self.bootstrap_kernel.complete {
+            return Err(refused());
+        }
         self.with_bootstrap_kernel_policy_wire_data(|kernel, policy, authority| {
             let bodies = self.typed_bodies_data()?;
             let birth = bodies.boot.bootstrap_birth_wire_data()?;

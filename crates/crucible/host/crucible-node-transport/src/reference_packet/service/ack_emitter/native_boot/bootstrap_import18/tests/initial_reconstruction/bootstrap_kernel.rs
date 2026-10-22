@@ -5,8 +5,21 @@
 
 use super::super::super::bootstrap_kernel::{self, OriginalImport18BootstrapKernelAdmission};
 use super::*;
-use crucible_node_format::U64;
+use crucible_node_format::{ContentRef, U64};
 use std::cell::Cell;
+
+static EXPECTED_NATIVE_IMAGE: std::sync::OnceLock<ContentRef> = std::sync::OnceLock::new();
+
+/// Reads the independent test expectation before creating the timed receiver.
+///
+/// The running executable inode cannot be rewritten while it is mapped. This
+/// oracle belongs to the test harness; actual production measurement still runs
+/// under the receiver's unchanged original cut and construction admission.
+pub(super) fn prepare_independent_image() {
+    EXPECTED_NATIVE_IMAGE
+        .set(measure_original_restore_current_executable().unwrap())
+        .unwrap();
+}
 
 struct Admission<'a> {
     case: &'a str,
@@ -138,33 +151,40 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
     assert_eq!(original.bootstrap_kernel.complete, completed);
 
     if completed {
-        original
-            .with_bootstrap_kernel_wire_data(|view| {
-                let value = serde_json::to_value(view).unwrap();
-                let expected = measure_original_restore_current_executable().unwrap();
-                let launch = original.typed_bodies_data()?.launch.launch_data();
-                assert_eq!(
-                    value["schema"],
-                    json!("source-owned.packet-canonical-ack-kernel-binding/5")
-                );
-                assert_eq!(value["controller"]["pid"], json!(launch.controller_pid));
-                assert_eq!(value["controller"]["uid"], json!(launch.controller_uid));
-                assert_eq!(
-                    value["controller"]["executable"],
-                    json!(launch.controller_executable)
-                );
-                assert_eq!(
-                    value["native"]["pid"],
-                    json!(U64::new(u64::from(std::process::id())))
-                );
-                assert_eq!(
-                    value["native"]["uid"],
-                    json!(U64::new(u64::from(rustix::process::geteuid().as_raw())))
-                );
-                assert_eq!(value["native"]["executable"], json!(expected));
-                Ok(())
-            })
-            .unwrap();
+        if !case.contains("_operands_") {
+            original
+                .with_bootstrap_kernel_wire_data(|view| {
+                    let value = serde_json::to_value(view).unwrap();
+                    let expected = EXPECTED_NATIVE_IMAGE.get().unwrap();
+                    let launch = original.typed_bodies_data()?.launch.launch_data();
+                    assert_eq!(
+                        value["schema"],
+                        json!("source-owned.packet-canonical-ack-kernel-binding/5")
+                    );
+                    assert_eq!(value["controller"]["pid"], json!(launch.controller_pid));
+                    assert_eq!(value["controller"]["uid"], json!(launch.controller_uid));
+                    assert_eq!(
+                        value["controller"]["executable"],
+                        json!(launch.controller_executable)
+                    );
+                    assert_eq!(
+                        value["native"]["pid"],
+                        json!(U64::new(u64::from(std::process::id())))
+                    );
+                    assert_eq!(
+                        value["native"]["uid"],
+                        json!(U64::new(u64::from(rustix::process::geteuid().as_raw())))
+                    );
+                    assert_eq!(value["native"]["executable"], json!(expected));
+                    Ok(())
+                })
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{case}: independent kernel oracle: {error:?}; expired={}",
+                        original.cut.is_expired()
+                    )
+                });
+        }
         assert_eq!(admission.calls.get(), 2);
         if case.contains("_operands_") {
             super::bootstrap_operands::assert_child(case, original);
