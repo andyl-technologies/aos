@@ -451,3 +451,44 @@ negative analysis check rejects a native C++ dependency under the WASM target.
 and action fingerprints. This is a compiler/target separation check; Worker
 runtime behavior, external WASM dependencies, and foreign-target developer
 workflows remain family-specific qualification work.
+
+## Initial boot compile measurements
+
+Run the temporary Cargo/Bazel comparison with a fresh trial identity:
+
+```sh
+nix-build tools/bazel/bench/pilot.nix --argstr trial UNIQUE-TRIAL \
+  --no-out-link --max-jobs 4 --cores 4 --option substitute false
+```
+
+The harness runs the real boot-identity library and binary through four modes,
+rotating their order over three repetitions. Each mode measures cold compiler
+caches, a warm command, an implementation edit, a public-interface edit, a
+second worktree sharing compatible caches, and a fresh build directory. Every
+sample checks that the produced command accepts a valid boot identity and
+rejects an invalid one. Accache gets the ordinary realized-closure manifest;
+the baseline fails if it never admits a compiler action.
+
+Initial median wall times in seconds are retained with every individual sample
+and command in `tests/evidence/native-linux-boot-compile-baseline.json`:
+
+| Mode | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh build directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cargo incremental | 0.753 | 0.236 | 0.370 | 0.490 | 0.265 | 0.796 |
+| Cargo nonincremental + accache | 0.996 | 0.232 | 0.447 | 0.917 | 0.248 | 0.915 |
+| Cargo incremental, debug=0 | 0.706 | 0.260 | 0.437 | 0.481 | 0.231 | 0.695 |
+| Bazel batch + disk cache | 8.311 | 4.311 | 5.185 | 5.452 | 5.461 | 5.854 |
+
+Bazel restores all four Rust actions in the second-worktree and fresh-directory
+cases, but startup dominates this small crate. Cargo already reuses its target
+directory across worktrees in this workload. Accache records three misses and
+ten bypasses per repetition, with no hits. These measurements do not support
+a performance-based cutover of this family yet.
+
+Cargo dev defaults include debug information; the extra Cargo debug=0 mode
+better matches Bazel fastbuild's debug setting. Preparation, Nix evaluation,
+inventory export, and installation are excluded from this compile-command
+comparison. Filesystem page caches and shared-host contention are uncontrolled.
+Peak RSS is the largest process value among waited descendants. Actual
+cross-derivation correctness is qualified separately; larger workloads,
+end-to-end measurements, and numeric acceptance budgets remain required.
