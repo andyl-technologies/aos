@@ -3296,6 +3296,34 @@ Initial/Recipe production, private receipt verification and the remaining full
 RFC obligations remain unfinished. This checkpoint adds no full-library,
 configured runtime or VM qualification.
 
+## Retained Controller Bootstrap SDK registration and publication
+
+Commit `db9d75c9e3` retains separate registration and publication attempts and
+exact component rows in the same Controller owner. The SDK registers an
+independent clone of the unchanged materialized request; publication spends the
+Session sequence before writing the same literal. Terminal guards compare actual
+SDK custody, the exact journal slot, bytes and transferred/completed progress
+under the original Hello cut. Refused attempts keep their saved rows and banks.
+
+The component quote derives nested tree populations from the defining Envelope
+projection and prices the combined SDK/incident census at its actual largest
+entry layout. Actual socket failure retains the SDK original and a separate
+incident clone; the combined census fits the independently derived row. Exact
+and one-byte-short restrictions remain separate from negotiated frame limits.
+
+All 204 affected client, 211 connection and 26 Bootstrap ACK controls pass in
+standard mode. Raw-JSON runs pass eighteen original-cut, two SDK-storage, one
+publication-row and two Envelope-projection controls. Transport/Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including 71
+integration targets. All 392 owned Rust/Cargo inputs match committed `db9d75c9e3`
+and its actual captured source. That gate runs no tests.
+
+These operations do not receive or authenticate a Source receipt or complete the
+Bootstrap transaction. Whole Source funding, genuine Initial/Recipe production,
+private receipt verification and the remaining full RFC obligations remain
+unfinished. No new full-library, configured runtime or VM qualification is claimed.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
