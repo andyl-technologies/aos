@@ -65,7 +65,7 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | Signed reader `8c55fe5743` imports conventional `0137bd538c`, tree `27234c29`. Exact raw reconstruction and the 351-created-file license inventory pass. Independent import verification matches 990 changed-source hashes, 10,908 evidence files and 156 literal links. The fresh 1,918-object cohort and first corrected normal delivery pass under unchanged bounds. | All 187 packaged Source tests and fresh ABI conformance pass. All 26 bounded custody suites pass at `3cb9frb6ydjxcv66qpjszpw98fpirl8v`; canonical license checking stops at strict controller Clippy. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (923 host-library and 977 host-test errors after compacting QMP context); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 417 committed bindings: 398 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
@@ -422,9 +422,13 @@ message. Display now renders those retained fields only when requested, includin
 the independent Original post. An explicitly authored message keeps precedence.
 The error representation, coordinates, ownership and operation behavior are
 unchanged. A fixed stack-output control checks all three diagnostics before and
-after a post refusal without allocating during formatting. Focused compilation,
-application compilation and exact supervision remain pending. All three focused
-runtime-error controls and content-bound engineering hygiene pass.
+after a post refusal without allocating during formatting. All three focused
+runtime-error controls and content-bound engineering hygiene pass. Mandatory
+application compilation passes at `iddpfyqs5iqsn100mjjbjnmsn7vzgfpi`; all 5,300
+committed Rust/TOML inputs at `db25f7eebcef8ee45b3d9e625de7d8eab8f08228`
+match immutable source `z97lx5ybn7qhhyhyl44xwx725fs269w4`. The comparison record
+has SHA-256 `4bbcf3a1026273d291263d73e404f89d048f6efaeb8f5920818f58fd5b78004f`.
+Exact supervision remains pending.
 This does not supply complete stderr or output-buffer funding.
 
 #### Compact typed parent-Park QMP context
@@ -443,7 +447,10 @@ retained. Mandatory application compilation passes at
 `f4bb9a10f6c67f7412f2ef269a34b2d5190f64fb` match immutable source
 `xj9vcv8alwpwvh20im90zp3dyvp798xs`. The comparison record has SHA-256
 `052934c30fdce24d93e6540bc904dda73cf85ada9e9387091f58caeb2bc2a664`.
-Exact-supervision and canonical license checks remain pending. This representation change supplies no new operation or custody.
+Exact supervision remains pending. The fresh canonical license check stops at
+strict controller Clippy with 923 host-library and 977 host-test errors, down
+from 1,184 and 1,255 in the earlier reader checkpoint. Its boundary assertions
+did not run. This representation change supplies no new operation or custody.
 
 #### Borrowed fixed marker refusal diagnostics
 
@@ -481,7 +488,8 @@ engineering hygiene pass. Mandatory application compilation passes at
 `4d04e7b09987a676334ac2f419ddb5d63685e2a3` match immutable source
 `m2gzhlaa26csr49v1yv1xsh6zbf01w63`. The comparison record has SHA-256
 `013705a3d5fe88bc4795b7b7ed6dc8cc283919e5a07a67fd837c874ba98a6749`.
-All 294 exact supervision cases remain in progress. The new controls check the original
+All 294 exact supervision cases pass at `7vnsvvdrhv6afh58frkyfh15fjpyba7l`.
+The new controls check the original
 string address, exact provider status, absence of a TB exit after ready refusal,
 and retention of the actual already-deferred stop after collision. The existing
 safe-decoder control also checks that consuming a marker moves its allocation.
