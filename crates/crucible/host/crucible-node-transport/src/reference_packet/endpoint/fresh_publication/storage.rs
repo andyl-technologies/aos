@@ -154,7 +154,6 @@ pub(super) fn quote(
         declared_counter_scratch_bytes: quantity(scratch)?,
     };
     attempt.startup.authenticate_actual_data(connection, &row)?;
-    drop(view);
     attempt.authenticate_current(connection)?;
     authenticate_current_census(endpoint, current)?;
     Ok(NativeFreshPublicationPlan {

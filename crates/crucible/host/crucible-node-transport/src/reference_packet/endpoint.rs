@@ -785,7 +785,6 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             exchange
                 .publish(&mut |original, received| acknowledgements.validate(original, received))?;
         }
-        drop(birth_publication);
         let Some(Transport::Prepared(exchange, _)) = self.transport.take() else {
             return Err(ProviderError::Conflict(
                 "packet original prefix disappeared",

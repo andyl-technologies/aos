@@ -383,8 +383,6 @@ impl PacketEndpoint<DeadlineStream> {
             &admitted_raw,
             &mut transform,
         )?;
-        drop(transform);
-        drop(admitted_raw);
         let Some(Transport::Prepared(exchange, acknowledgements)) = self.transport.as_mut() else {
             return Err(refused());
         };

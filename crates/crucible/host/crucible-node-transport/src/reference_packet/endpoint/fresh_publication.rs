@@ -332,7 +332,6 @@ impl PacketEndpoint<DeadlineStream> {
             return Err(exhausted());
         }
         attempt.startup.authenticate_current(connection)?;
-        drop(view);
         prefix::prepare_with_projection_storage_data(
             transport,
             next_sequence,

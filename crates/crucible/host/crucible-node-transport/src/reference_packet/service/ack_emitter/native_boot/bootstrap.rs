@@ -291,8 +291,7 @@ impl<S: AsFd> Bootstrap<S> {
                     &startup.private_bootstrap,
                     carry,
                 );
-                let frame = self.reader.read_original_native_preflight(startup.maximum_boot_bytes, &budget)?;
-                frame
+                self.reader.read_original_native_preflight(startup.maximum_boot_bytes, &budget)?
             } else {
                 self.reader.read_retained_with_maximum_bytes(self.startup.as_ref().map_or(512 * 1024, |startup| startup.maximum_boot_bytes))?
             }

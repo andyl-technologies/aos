@@ -399,7 +399,6 @@ impl OriginalNativeObservation17Read {
                     request,
                     destination.production_destination_data(),
                 )?;
-                drop(action);
                 drop(production);
                 child.retain_prepared_reply_data(reply)?;
                 Ok(prefix)
