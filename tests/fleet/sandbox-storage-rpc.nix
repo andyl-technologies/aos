@@ -128,7 +128,7 @@
         maxDownloadMiB = 1152;
       };
       environment.systemPackages =
-        [pkgs.coreutils pkgs.systemd zfs]
+        [pkgs.coreutils pkgs.diffutils pkgs.systemd zfs]
         ++ lib.optional qualifyTpmFloorSeed floorTransportProbe;
 
       # This fixture replaces the Controller unit without enabling its module.
