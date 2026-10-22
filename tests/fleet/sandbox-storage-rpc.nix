@@ -828,6 +828,13 @@ in {
           "| grep -F 'Storage Controller peer is not current'",
           timeout=20,
       )
+      # The fixture has deliberately cold-started the broker repeatedly. Clear
+      # its test-induced failure count before the independent downgrade denial;
+      # the production restart limit remains part of the installed unit.
+      machine.succeed(
+          "systemctl reset-failed aos-storaged.service aos-storaged.socket "
+          "aos-storaged-root-export.socket"
+      )
       machine.succeed("systemctl start aos-storaged.service", timeout=150)
       controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
       assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
