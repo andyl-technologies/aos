@@ -17,6 +17,7 @@
 //! `status == 404` so a fetcher can map "no user-data attached" to `Ok(None)`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -31,6 +32,18 @@ use aos_transfer::types::{HashAlgorithm, TransferRequest};
 /// wedge boot; 5 s is generous for a link-local IMDS yet short enough that the
 /// retry budget plus this deadline stays well inside the initrd time budget.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+/// Maximum bytes accepted across one metadata acquisition transaction.
+pub const MAX_ACQUISITION_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum exact operator configuration bytes.
+pub const MAX_USER_DATA_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum encoded Azure user-data bytes before base64 decoding.
+pub const MAX_ENCODED_USER_DATA_BYTES: u64 = 24 * 1024 * 1024;
+/// Maximum bytes accepted for one platform facts document.
+pub const MAX_FACT_DOCUMENT_BYTES: u64 = 1024 * 1024;
+/// Maximum detached-signature bytes.
+pub const MAX_SIGNATURE_BYTES: u64 = 64 * 1024;
+/// Maximum metadata session-token bytes.
+pub const MAX_TOKEN_BYTES: u64 = 8 * 1024;
 
 /// A buffered HTTP-like response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,10 +85,16 @@ pub trait MetadataHttp: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns `Err` on transport failure or when the per-request deadline
-    /// elapses. A 404/4xx/5xx is *not* an error — it is returned as an
-    /// [`HttpResponse`] with the observed status.
-    async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse>;
+    /// Returns `Err` on transport failure, a per-request or aggregate size
+    /// limit, or when the per-request deadline elapses. A 404/4xx/5xx is *not*
+    /// an error — it is returned as an [`HttpResponse`] with the observed
+    /// status.
+    async fn get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        maximum_bytes: u64,
+    ) -> Result<HttpResponse>;
 
     /// Issue a content-pinned GET: the transfer must hash to `sha256` (lowercase
     /// hex, optionally `sha256:`-prefixed) or it fails.
@@ -89,34 +108,21 @@ pub trait MetadataHttp: Send + Sync {
         url: &str,
         sha256: &str,
         headers: &[(&str, &str)],
+        maximum_bytes: u64,
     ) -> Result<HttpResponse>;
-
-    /// Fetches a pinned bundle with a hard response-size bound.
-    ///
-    /// # Errors
-    ///
-    /// Returns transport, hash, or size-limit failures.
-    async fn get_pinned_limited(
-        &self,
-        url: &str,
-        sha256: &str,
-        maximum: u64,
-    ) -> Result<HttpResponse> {
-        let response = self.get_pinned(url, sha256, &[]).await?;
-        anyhow::ensure!(
-            response.body.len() as u64 <= maximum,
-            "metadata response exceeds size limit"
-        );
-        Ok(response)
-    }
 
     /// Issue a PUT with the given body and request headers.
     ///
     /// # Errors
     ///
     /// As [`get`](MetadataHttp::get).
-    async fn put(&self, url: &str, body: Vec<u8>, headers: &[(&str, &str)])
-    -> Result<HttpResponse>;
+    async fn put(
+        &self,
+        url: &str,
+        body: Vec<u8>,
+        headers: &[(&str, &str)],
+        maximum_bytes: u64,
+    ) -> Result<HttpResponse>;
 }
 
 /// Production [`MetadataHttp`] over a shared `aos_transfer::TransferEngine`.
@@ -127,6 +133,7 @@ pub trait MetadataHttp: Send + Sync {
 pub struct EngineHttp {
     engine: TransferEngine,
     timeout: Duration,
+    received_bytes: AtomicU64,
 }
 
 impl EngineHttp {
@@ -140,6 +147,7 @@ impl EngineHttp {
         Self {
             engine,
             timeout: DEFAULT_REQUEST_TIMEOUT,
+            received_bytes: AtomicU64::new(0),
         }
     }
 
@@ -168,17 +176,24 @@ impl EngineHttp {
                     self.timeout
                 )
             })??;
-        Ok(HttpResponse {
+        let response = HttpResponse {
             status: result.status,
             body: result.body.unwrap_or_default(),
-        })
+        };
+        charge_budget(&self.received_bytes, response.body.len() as u64)?;
+        Ok(response)
     }
 }
 
 #[async_trait::async_trait]
 impl MetadataHttp for EngineHttp {
-    async fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse> {
-        let mut req = TransferRequest::get(url);
+    async fn get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        maximum_bytes: u64,
+    ) -> Result<HttpResponse> {
+        let mut req = TransferRequest::get(url).with_maximum_bytes(maximum_bytes);
         for (k, v) in headers {
             req = req.with_header(k, v);
         }
@@ -190,26 +205,15 @@ impl MetadataHttp for EngineHttp {
         url: &str,
         sha256: &str,
         headers: &[(&str, &str)],
+        maximum_bytes: u64,
     ) -> Result<HttpResponse> {
-        let mut req = TransferRequest::get(url).with_hash(HashAlgorithm::Sha256, sha256);
+        let mut req = TransferRequest::get(url)
+            .with_hash(HashAlgorithm::Sha256, sha256)
+            .with_maximum_bytes(maximum_bytes);
         for (k, v) in headers {
             req = req.with_header(k, v);
         }
         self.run(req).await
-    }
-
-    async fn get_pinned_limited(
-        &self,
-        url: &str,
-        sha256: &str,
-        maximum: u64,
-    ) -> Result<HttpResponse> {
-        self.run(
-            TransferRequest::get(url)
-                .with_hash(HashAlgorithm::Sha256, sha256)
-                .with_maximum_bytes(maximum),
-        )
-        .await
     }
 
     async fn put(
@@ -217,8 +221,9 @@ impl MetadataHttp for EngineHttp {
         url: &str,
         body: Vec<u8>,
         headers: &[(&str, &str)],
+        maximum_bytes: u64,
     ) -> Result<HttpResponse> {
-        let mut req = TransferRequest::put(url, body);
+        let mut req = TransferRequest::put(url, body).with_maximum_bytes(maximum_bytes);
         for (k, v) in headers {
             req = req.with_header(k, v);
         }
@@ -243,6 +248,7 @@ pub enum RecordedMethod {
 #[derive(Default)]
 pub struct RecordedHttp {
     responses: HashMap<(RecordedMethod, String), HttpResponse>,
+    received_bytes: AtomicU64,
 }
 
 impl RecordedHttp {
@@ -263,18 +269,35 @@ impl RecordedHttp {
         self
     }
 
-    fn lookup(&self, method: RecordedMethod, url: &str) -> Result<HttpResponse> {
-        self.responses
+    fn lookup(
+        &self,
+        method: RecordedMethod,
+        url: &str,
+        maximum_bytes: u64,
+    ) -> Result<HttpResponse> {
+        let response = self
+            .responses
             .get(&(method, url.to_string()))
             .cloned()
-            .ok_or_else(|| anyhow!("no recorded {method:?} response for {url}"))
+            .ok_or_else(|| anyhow!("no recorded {method:?} response for {url}"))?;
+        anyhow::ensure!(
+            response.body.len() as u64 <= maximum_bytes,
+            "metadata response exceeds {maximum_bytes} byte limit"
+        );
+        charge_budget(&self.received_bytes, response.body.len() as u64)?;
+        Ok(response)
     }
 }
 
 #[async_trait::async_trait]
 impl MetadataHttp for RecordedHttp {
-    async fn get(&self, url: &str, _headers: &[(&str, &str)]) -> Result<HttpResponse> {
-        self.lookup(RecordedMethod::Get, url)
+    async fn get(
+        &self,
+        url: &str,
+        _headers: &[(&str, &str)],
+        maximum_bytes: u64,
+    ) -> Result<HttpResponse> {
+        self.lookup(RecordedMethod::Get, url, maximum_bytes)
     }
 
     async fn get_pinned(
@@ -282,8 +305,9 @@ impl MetadataHttp for RecordedHttp {
         url: &str,
         _sha256: &str,
         _headers: &[(&str, &str)],
+        maximum_bytes: u64,
     ) -> Result<HttpResponse> {
-        self.lookup(RecordedMethod::Get, url)
+        self.lookup(RecordedMethod::Get, url, maximum_bytes)
     }
 
     async fn put(
@@ -291,7 +315,33 @@ impl MetadataHttp for RecordedHttp {
         url: &str,
         _body: Vec<u8>,
         _headers: &[(&str, &str)],
+        maximum_bytes: u64,
     ) -> Result<HttpResponse> {
-        self.lookup(RecordedMethod::Put, url)
+        self.lookup(RecordedMethod::Put, url, maximum_bytes)
+    }
+}
+
+fn charge_budget(received: &AtomicU64, bytes: u64) -> Result<()> {
+    received
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current
+                .checked_add(bytes)
+                .filter(|next| *next <= MAX_ACQUISITION_BYTES)
+        })
+        .map_err(|_| anyhow!("metadata acquisition exceeds aggregate byte limit"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acquisition_budget_accepts_exact_limit_and_rejects_more() {
+        let received = AtomicU64::new(0);
+
+        charge_budget(&received, MAX_ACQUISITION_BYTES).unwrap();
+
+        assert!(charge_budget(&received, 1).is_err());
     }
 }

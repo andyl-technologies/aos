@@ -25,7 +25,9 @@
 use anyhow::{Context, Result};
 
 use super::fetcher::{Facts, MacIface, PlatformFetcher, PointerDoc, UserData};
-use super::http::MetadataHttp;
+use super::http::{MAX_FACT_DOCUMENT_BYTES, MAX_TOKEN_BYTES, MAX_USER_DATA_BYTES, MetadataHttp};
+
+const MAX_LIST_ENTRIES: usize = 1024;
 
 /// IMDS link-local base URL (plain HTTP).
 pub const IMDS_BASE: &str = "http://169.254.169.254";
@@ -63,7 +65,12 @@ impl AwsImdsFetcher {
     async fn token(&self, http: &dyn MetadataHttp) -> Result<String> {
         let url = format!("{}/latest/api/token", self.base);
         let resp = http
-            .put(&url, Vec::new(), &[(TOKEN_TTL_HEADER, TOKEN_TTL_SECS)])
+            .put(
+                &url,
+                Vec::new(),
+                &[(TOKEN_TTL_HEADER, TOKEN_TTL_SECS)],
+                MAX_TOKEN_BYTES,
+            )
             .await
             .context("IMDSv2 token PUT")?;
         resp.into_ok_string()
@@ -80,7 +87,7 @@ impl AwsImdsFetcher {
     ) -> Result<Option<String>> {
         let url = format!("{}/latest/{path}", self.base);
         let resp = http
-            .get(&url, &[(TOKEN_HEADER, token)])
+            .get(&url, &[(TOKEN_HEADER, token)], MAX_FACT_DOCUMENT_BYTES)
             .await
             .with_context(|| format!("IMDS GET {path}"))?;
         if resp.status == 404 {
@@ -100,7 +107,7 @@ impl PlatformFetcher for AwsImdsFetcher {
         let token = self.token(http).await?;
         let url = format!("{}/latest/user-data", self.base);
         let resp = http
-            .get(&url, &[(TOKEN_HEADER, &token)])
+            .get(&url, &[(TOKEN_HEADER, &token)], MAX_USER_DATA_BYTES)
             .await
             .context("IMDS GET /latest/user-data")?;
         if resp.status == 404 {
@@ -143,6 +150,10 @@ impl PlatformFetcher for AwsImdsFetcher {
             .get_meta(http, &token, "meta-data/public-keys/")
             .await?
         {
+            anyhow::ensure!(
+                listing.lines().count() <= MAX_LIST_ENTRIES,
+                "AWS public-key listing exceeds entry limit"
+            );
             for line in listing.lines() {
                 let idx = line.split('=').next().unwrap_or(line).trim();
                 if idx.is_empty() {
@@ -162,6 +173,10 @@ impl PlatformFetcher for AwsImdsFetcher {
             .get_meta(http, &token, "meta-data/network/interfaces/macs/")
             .await?
         {
+            anyhow::ensure!(
+                listing.lines().count() <= MAX_LIST_ENTRIES,
+                "AWS MAC listing exceeds entry limit"
+            );
             for line in listing.lines() {
                 let mac = line.trim().trim_end_matches('/').to_lowercase();
                 if mac.is_empty() {
