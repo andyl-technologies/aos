@@ -104,6 +104,7 @@ in
             cat > "$out/BUILD.bazel" <<'BUILD'
             ${buildFile}
             BUILD
+            cp ${../../../tools/bazel/toolchains/empty_cc.bzl} "$out/empty_cc.bzl"
             touch "$out/REPO.bazel"
           '';
         }

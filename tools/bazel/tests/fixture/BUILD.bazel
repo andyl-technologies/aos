@@ -71,6 +71,25 @@ rust_binary(
     link_deps = [":cpp_library"],
 )
 
+rust_binary(
+    name = "wasm_app",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    srcs = ["wasm.rs"],
+    deps = [":rust_library"],
+    proc_macro_deps = [":fixture_macro"],
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+    tags = ["manual"],
+)
+
+aos_package(
+    name = "wasm_package",
+    package = RUST_PACKAGE,
+    artifacts = {":wasm_app": "share/fixture.wasm"},
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+    tags = ["manual"],
+)
+
 aos_rust_test(
     name = "rust_test",
     package = RUST_PACKAGE,

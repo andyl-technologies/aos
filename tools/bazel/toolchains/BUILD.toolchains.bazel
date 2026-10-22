@@ -1,4 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load(":empty_cc.bzl", "empty_cc_info")
 load("@rules_cc//cc/private/toolchain:unix_cc_toolchain_config.bzl", "cc_toolchain_config")
 load(
     "@rules_rust//rust:toolchain.bzl",
@@ -58,6 +59,55 @@ rust_stdlib_filegroup(
         "lib/rustlib/@TRIPLE@/lib/*.a",
         "lib/rustlib/@TRIPLE@/lib/self-contained/**",
     ], allow_empty = True),
+)
+
+# The compiler and linker execute on Linux; only these standard libraries and
+# the final artifact target WebAssembly. No native C/C++ toolchain matches it.
+rust_stdlib_filegroup(
+    name = "wasm_std",
+    srcs = glob([
+        "lib/rustlib/wasm32-unknown-unknown/lib/*.rlib",
+        "lib/rustlib/wasm32-unknown-unknown/lib/*.rmeta",
+    ]),
+)
+
+filegroup(
+    name = "rust_lld",
+    srcs = ["lib/rustlib/@TRIPLE@/bin/rust-lld"],
+)
+
+empty_cc_info(name = "wasm_allocator")
+
+rust_toolchain(
+    name = "rust_wasm",
+    rustc = ":rustc",
+    rust_doc = ":rustdoc",
+    cargo = ":cargo",
+    clippy_driver = ":clippy",
+    rustc_lib = ":rustc_lib",
+    rust_std = ":wasm_std",
+    linker = ":rust_lld",
+    linker_preference = "rust",
+    linker_type = "direct",
+    allocator_library = ":wasm_allocator",
+    global_allocator_library = ":wasm_allocator",
+    binary_ext = ".wasm",
+    staticlib_ext = ".a",
+    dylib_ext = ".wasm",
+    stdlib_linkflags = [],
+    default_edition = "2024",
+    exec_triple = "@TRIPLE@",
+    target_triple = "wasm32-unknown-unknown",
+    version = "@RUST_VERSION@",
+    channel = "stable",
+)
+
+toolchain(
+    name = "rust_wasm_registered",
+    toolchain = ":rust_wasm",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
 )
 
 rust_toolchain(

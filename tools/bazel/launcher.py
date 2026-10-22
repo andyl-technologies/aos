@@ -134,6 +134,8 @@ def main():
         policy.append(f"--override_repository={name}={path}")
 
     if arguments[0] in {"build", "test", "run", "cquery", "aquery"}:
+        if config.get("target_platform"):
+            policy.append(f"--platforms={config['target_platform']}")
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
             "--@rules_rust//rust/settings:clippy.toml=//tools/bazel/rules:clippy.toml",

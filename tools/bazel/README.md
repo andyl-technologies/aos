@@ -123,6 +123,12 @@ they do not establish production performance budgets. Foreign-target, CPU,
 linker executable/sysroot, and PGO invalidation and
 family-specific performance baselines remain required before their cutovers.
 
+`tests/evidence/native-linux-toolchain-cache.json` records a fresh native trial
+with the source-built developer tools and WASM adapter present. Cross-derivation
+reuse, overlapping concurrent builds, and all nine existing invalidation cases
+pass against the updated compiler closure. These are correctness experiments;
+their individual timings do not replace repeated family performance baselines.
+
 ## Updating rule dependencies
 
 Updates are explicit network operations with the AOS-built Bazel and Python.
@@ -420,3 +426,28 @@ case inventories, and configuration fingerprints are recorded in
 `tests/evidence/native-linux-shared.json`. This qualifies native Linux
 compilation and developer workflows; production builder changes still require
 the RFC's platform, runtime, and performance acceptance work.
+
+## WebAssembly toolchain qualification
+
+The native Linux compiler repository also exposes a `wasm32-unknown-unknown`
+Rust toolchain. It uses the AOS-built target standard library, its separate
+metadata files, and the native `rust-lld` from the same compiler closure.
+`//tools/bazel/toolchains:wasm32` selects that target; generators and procedural
+macros retain Linux execution toolchains. No target C/C++ compiler is registered
+for WASM. Pure Rust allocator metadata does not require one.
+
+```sh
+aos-dev bazel build //tools/bazel/tests/fixture:wasm_package \
+  --platforms=//tools/bazel/toolchains:wasm32
+aos-dev --release build check build.bazel.wasm.all --no-out-link
+```
+
+The qualification requires a real WASM artifact, target standard-library and
+linker inputs, a native procedural macro, a declared Python generator, and
+sandbox execution for all five first-party compile/generation actions. The
+application and macro contain opposing compile-time platform assertions. A
+negative analysis check rejects a native C++ dependency under the WASM target.
+`tests/evidence/native-linux-wasm-toolchain.json` retains the passing output
+and action fingerprints. This is a compiler/target separation check; Worker
+runtime behavior, external WASM dependencies, and foreign-target developer
+workflows remain family-specific qualification work.

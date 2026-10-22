@@ -75,6 +75,24 @@ class LauncherTests(unittest.TestCase):
         self.assertLess(arguments.index(f"--disk_cache={self.root / 'cache'}"), arguments.index("--"))
         self.assertEqual(arguments[-1], "argument with spaces")
 
+    def test_configured_target_platform_applies_to_analysis_commands(self):
+        configuration = json.loads(self.config.read_text())
+        configuration["target_platform"] = "//tools/bazel/toolchains:wasm32"
+        self.config.write_text(json.dumps(configuration))
+
+        for command in ["build", "test", "cquery", "aquery"]:
+            with self.subTest(command=command):
+                result = self.invoke([command, "//:example", "--platforms=//:ambient"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(self.capture.read_text())["args"]
+                self.assertGreater(arguments.index("--platforms=//tools/bazel/toolchains:wasm32"),
+                                   arguments.index("--platforms=//:ambient"))
+
+        result = self.invoke(["query", "//:example"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = json.loads(self.capture.read_text())["args"]
+        self.assertFalse(any(argument.startswith("--platforms=") for argument in arguments))
+
     def test_remote_cache_and_toolchain_overrides_are_rejected(self):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",

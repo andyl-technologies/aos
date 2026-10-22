@@ -14,6 +14,7 @@
   repositories ? defaultRepositories,
   jobs ? 4,
   analysisTargets ? null,
+  targetPlatform ? null,
 }: let
   rootString = toString root;
   inventory =
@@ -135,6 +136,7 @@
       '');
       rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
       inherit jobs;
+      target_platform = targetPlatform;
       # Bazel's test setup and XML writer use these tools too. Never fall back
       # to the daemon's or developer's PATH when a test starts.
       path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [

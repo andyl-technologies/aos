@@ -18,6 +18,7 @@ aos_tools(name = "aos_tools")
 
 register_toolchains(
     "@aos_tools//:rust_registered",
+    "@aos_tools//:rust_wasm_registered",
     "@aos_tools//:cc_registered",
     "@aos_tools//:rustfmt_registered",
     "@aos_tools//:analyzer_registered",

@@ -1,1 +1,7 @@
 exports_files(["repositories.bzl"])
+
+platform(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+    visibility = ["//visibility:public"],
+)

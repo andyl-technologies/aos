@@ -37,6 +37,7 @@ in
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
     shared = import ./_bazel-shared.nix {inherit pkgs;};
+    wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
     precise = pkgs.mkAosBazelBuild {
@@ -240,7 +241,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all recovery];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all wasm.all recovery];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';
