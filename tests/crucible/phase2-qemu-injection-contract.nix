@@ -151,7 +151,7 @@
       }
       {
         label = "delivery horizon clamping test";
-        needle = "qemu_quantum_caps_horizon_at_next_possible_frame_delivery";
+        needle = "qemu_quantum_caps_a_delivery_between_boundaries_at_the_next_boundary";
       }
       {
         label = "canonical retained past-frame test";
