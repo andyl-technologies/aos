@@ -29,6 +29,8 @@
     analysisTargets = map (name: "${label name}:unit") packages;
   };
 in rec {
+  inherit workspace;
+
   tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-shared-tests";
     inherit workspace;

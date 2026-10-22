@@ -18,6 +18,8 @@
       runtimeDeps = [pkgs.gcc-libs];
     };
 in rec {
+  inherit workspace;
+
   build = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-boot-pilot";
     inherit workspace;

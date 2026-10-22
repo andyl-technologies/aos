@@ -19,8 +19,8 @@ class FamilyEditorTests(unittest.TestCase):
             file.touch()
         self.packages = {"device": "crates/device"}
         self.inventory = {"configured_targets": [
-            {"label": "//crates/device:lib", "kind": "rust_library", "features": ["default"]},
-            {"label": "//crates/device:io_binary", "kind": "rust_test", "features": ["default"]},
+            {"label": "//crates/device:lib", "kind": "rust_library", "features": ["default"], "crate_root": "crates/device/src/lib.rs"},
+            {"label": "//crates/device:io_binary", "kind": "rust_test", "features": ["default"], "crate_root": "crates/device/tests/io.rs"},
         ]}
         self.project = {"sysroot_src": str(self.root), "crates": [
             {"root_module": str(self.root / path), "is_proc_macro": False, "cfg": ['feature="default"']}
@@ -30,6 +30,30 @@ class FamilyEditorTests(unittest.TestCase):
     def test_matching_library_and_integration_views_pass(self):
         report = verify(self.project, self.inventory, self.packages, self.root)
         self.assertEqual(len(report["roots"]), 2)
+
+    def test_binary_and_libtest_share_the_declared_source_root(self):
+        root = "crates/device/src/bin/tool.rs"
+        (self.root / root).parent.mkdir(parents=True)
+        (self.root / root).touch()
+        for name, kind in [("tool", "rust_binary"), ("bin_tool_binary", "rust_test")]:
+            self.inventory["configured_targets"].append({
+                "label": "//crates/device:" + name, "kind": kind,
+                "features": ["default"], "crate_root": root,
+            })
+        self.project["crates"].append({
+            "root_module": str(self.root / root), "is_proc_macro": False, "cfg": ['feature="default"'],
+        })
+
+        report = verify(self.project, self.inventory, self.packages, self.root)
+
+        self.assertEqual(len(report["roots"]), 3)
+
+    def test_invented_or_outside_compiled_root_fails(self):
+        for root in ["crates/device/tests/missing.rs", "core/src/lib.rs"]:
+            with self.subTest(root=root):
+                self.inventory["configured_targets"][0]["crate_root"] = root
+                with self.assertRaisesRegex(ValueError, "compiled crate root"):
+                    verify(self.project, self.inventory, self.packages, self.root)
 
     def test_missing_integration_view_fails(self):
         self.project["crates"].pop()

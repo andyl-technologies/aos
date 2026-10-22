@@ -9,6 +9,21 @@
   mkAosBazelCrossToolchains = arguments: import ./cross-toolchains.nix ({inherit pkgs;} // arguments);
   aosBazelModules = import ./modules.nix {inherit pkgs lib;};
   aosBazelToolchains = mkAosBazelToolchains {};
+  aosBazelStoreLibraries = mkAosBazelNativeLibraries {
+    libraries = {
+      sqlite = {
+        package = pkgs.sqlite;
+        libraryFile = "lib/libsqlite3.so";
+        pkgConfigFiles = ["lib/pkgconfig/sqlite3.pc"];
+      };
+      zstd = {
+        package = pkgs.zstdStaticMultithread;
+        libraryFile = "lib/libzstd.a";
+        linkage = "static";
+        pkgConfigFiles = ["lib/pkgconfig/libzstd.pc"];
+      };
+    };
+  };
   aosBazelRepositories = import ./repositories.nix {
     inherit pkgs lib;
     modules = aosBazelModules;
@@ -29,6 +44,11 @@
       root = ../../..;
       family = "device";
     };
+    store = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "store";
+    };
   };
   mkAosBazelWorkspace = import ./workspace.nix {
     inherit pkgs lib;
@@ -42,7 +62,7 @@
   aosBazelWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates" "native" "tools/bazel" "third_party/rust"];
-    repositories = aosBazelRepositories // aosBazelRustRepositories.core // aosBazelRustRepositories.device;
+    repositories = aosBazelRepositories // aosBazelRustRepositories.core // aosBazelRustRepositories.device // aosBazelRustRepositories.store // {aos_native = aosBazelStoreLibraries;};
   };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;

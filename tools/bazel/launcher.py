@@ -180,6 +180,8 @@ def main():
             # Admit the foreign platform for analysis only; test/run were
             # rejected above. Compiler actions still require native tools.
             policy.append(f"--extra_execution_platforms={config['target_platform']}")
+        if config.get("rustc_flags"):
+            policy.append("--@rules_rust//rust/settings:extra_rustc_flags=" + ",".join(config["rustc_flags"]))
         if config.get("dependency_profile"):
             policy.append(f"--//tools/bazel/rules:dependency_profile={config['dependency_profile']}")
         policy.extend([

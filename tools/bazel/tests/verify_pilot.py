@@ -15,7 +15,7 @@ def cases(binary, ignored=False):
     return sorted(line.removesuffix(": test") for line in result.stdout.splitlines() if line.endswith(": test"))
 
 
-def verify(root, oracles):
+def verify(root, oracles, allow_empty=()):
     results = json.loads((root / "index.json").read_text())["results"]
     records = {}
     for label, binary in oracles.items():
@@ -26,7 +26,7 @@ def verify(root, oracles):
         expected = sorted(set(cases(binary)) - set(ignored))
         xml = ET.parse(root / selected[0]["outputs"]["test.xml"])
         actual = sorted(case.attrib["name"] for case in xml.findall("testcase"))
-        if not expected or actual != expected:
+        if (not expected and label not in allow_empty) or actual != expected:
             raise ValueError(f"pilot test inventory differs: {label}: expected={expected}, actual={actual}")
         records[label] = {"executed": actual, "ignored": ignored}
     return {"schema_version": 1, "targets": records}

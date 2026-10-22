@@ -23,6 +23,8 @@
         "crates/shared/aos-oci-types/Cargo.toml"
         "crates/crucible/engine/crucible-determinism/Cargo.toml"
         "crates/crucible/engine/crucible-device/Cargo.toml"
+        "crates/crucible/engine/crucible-campaign/Cargo.toml"
+        "crates/crucible/storage/crucible-store/Cargo.toml"
         "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml"
         "crates/crucible/protocol/crucible-qemu-shmem/Cargo.toml"
       ];
@@ -55,6 +57,7 @@ in
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
     shared = import ./_bazel-shared.nix {inherit pkgs;};
     device = import ./_bazel-device.nix {inherit pkgs;};
+    store = import ./_bazel-store.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -239,7 +242,7 @@ in
         --root ${metadataOracle} --inventory ${pilot.build}/inventory.json \
         --inventory ${pilot.unit}/inventory.json --inventory ${protocol.tests}/inventory.json \
         --inventory ${dependencies.core}/inventory.json --inventory ${shared.tests}/inventory.json \
-        --inventory ${device.tests}/inventory.json \
+        --inventory ${device.tests}/inventory.json --inventory ${store.tests}/inventory.json \
         --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
@@ -283,7 +286,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor native-libraries precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor native-libraries precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

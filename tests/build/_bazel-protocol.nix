@@ -27,6 +27,8 @@
     analysisTargets = ["${protocol}:unit" "${shmem}:unit"];
   };
 in rec {
+  inherit workspace;
+
   tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-protocol-tests";
     inherit workspace;

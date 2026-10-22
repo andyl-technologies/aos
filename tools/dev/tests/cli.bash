@@ -143,6 +143,8 @@ bash "$root/tools/dev/aos-dev" bazel update-deps core
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/core>"
 bash "$root/tools/dev/aos-dev" bazel update-deps device
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/device>"
+bash "$root/tools/dev/aos-dev" bazel update-deps store
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/store>"
 if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then
   echo 'Bazel dependency update accepted an unknown family' >&2
   exit 1

@@ -24,7 +24,7 @@ in rec {
       };
       packageLabel = "//third_party/rust:${family}_specification_package";
     };
-  }) ["core" "device"]);
+  }) ["core" "device" "store"]);
   core = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {

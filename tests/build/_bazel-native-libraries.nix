@@ -44,12 +44,6 @@ in
     cp -a ${workspace.source}/. workspace/
     chmod -R u+w workspace
     cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
-    # Keep the experimental provider outside production family declarations
-    # until the store family's configured graph is ready to adopt it.
-    cat >> workspace/MODULE.bazel <<'MODULE'
-    aos_native_repository = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tools_repository")
-    aos_native_repository(name = "aos_native")
-    MODULE
     ${pkgs.python3}/bin/python3 - ${workspace.configuration} <<'PYTHON'
     import json
     from pathlib import Path
@@ -63,10 +57,12 @@ in
     ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
       --config "$PWD/configuration.json" --workspace "$PWD/workspace" \
       --output-base "$TMPDIR/bazel" --nix-sandbox --batch --prepare-lock \
-      -- build //tools/bazel/tests/native-libraries:c_app //tools/bazel/tests/native-libraries:rust_app \
+      -- test //tools/bazel/tests/native-libraries:doc //tools/bazel/tests/native-libraries:c_app //tools/bazel/tests/native-libraries:rust_app \
       //tools/bazel/tests/native-libraries:license_closure \
       --build_event_json_file="$out/evidence/events.json" \
       --execution_log_json_file="$out/evidence/execution.json"
+    ${pkgs.python3}/bin/python3 ${../../tools/bazel/metadata/export_tests.py} \
+      --events "$out/evidence/events.json" --output "$out/evidence/tests"
     cp ${../../tools/bazel/tests/verify_cache.py} verify_cache.py
     cp ${../../tools/bazel/tests/family_libtest.py} family_libtest.py
     cp ${../../tools/bazel/tests/verify_native_libraries.py} verify_native_libraries.py

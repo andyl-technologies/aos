@@ -44,7 +44,7 @@ def doctest_cases(log, package_path):
     return dict(sorted(cases.items()))
 
 
-def compare_doctests(tests, cargo_log, package_paths):
+def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
     """Compares actual doctest names, locations, and ignored cases per package."""
     log = cargo_log.read_text()
     sections = re.split(r"^\s*Doc-tests ([a-zA-Z0-9_]+)\s*$", log, flags=re.MULTILINE)
@@ -52,7 +52,7 @@ def compare_doctests(tests, cargo_log, package_paths):
     results = json.loads((tests / "index.json").read_text())["results"]
     compared = {}
     for name, path in package_paths.items():
-        label = "//" + path + ":doc"
+        label = "//" + path + ":doc" + target_suffix
         selected = [result for result in results if result["identity"]["label"] == label]
         if len(selected) != 1 or selected[0]["status"] != "PASSED" or name.replace("-", "_") not in cargo:
             raise ValueError(f"missing successful Cargo/Bazel doctest target: {label}")
@@ -64,9 +64,10 @@ def compare_doctests(tests, cargo_log, package_paths):
     return compared
 
 
-def compare(tests, inventory, messages, package_paths=None, cargo_log=None):
+def compare(tests, inventory, messages, package_paths=None, cargo_log=None, target_suffix=""):
     package_paths = PACKAGE_PATHS if package_paths is None else package_paths
     oracles = {}
+    empty_allowed = set()
     cargo_features = {}
     cargo_first_party_features = {}
     cargo_examples = set()
@@ -84,22 +85,29 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None):
         if name in package_paths and "example" in event["target"]["kind"]:
             cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"])
         if (name in package_paths and event["profile"]["test"] and event.get("executable")
-                and set(event["target"]["kind"]) & {"lib", "test"}):
+                and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
             target = event["target"]
-            suffix = "unit" if "lib" in target["kind"] else target["name"]
-            label = f"//{package_paths[name]}:{suffix}"
+            if "lib" in target["kind"]:
+                suffix = "unit"
+            elif "bin" in target["kind"]:
+                suffix = "bin_" + target["name"]
+            else:
+                suffix = target["name"]
+            label = f"//{package_paths[name]}:{suffix}{target_suffix}"
             if label in oracles:
                 raise ValueError(f"duplicate Cargo test artifact: {label}")
             oracles[label] = Path(event["executable"])
+            if "bin" in target["kind"]:
+                empty_allowed.add(label)
         elif name not in package_paths:
             cargo_features.setdefault((name, version), set()).add(tuple(sorted(event["features"])))
 
     # Listing the Cargo binaries checks ignored cases as well as executed cases.
-    result = verify(tests, oracles)
+    result = verify(tests, oracles, allow_empty=empty_allowed)
     executed_labels = {
         event["identity"]["label"]
         for event in json.loads((tests / "index.json").read_text())["results"]
-        if not event["identity"]["label"].endswith(":doc")
+        if not event["identity"]["label"].endswith(":doc" + target_suffix)
     }
     if not oracles or executed_labels != set(oracles):
         raise ValueError(f"Bazel/Cargo integration target inventories differ: {executed_labels ^ set(oracles)}")
@@ -128,9 +136,15 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None):
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device)_crates__(.+)-(\d[^/]*)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
-            bazel_features.setdefault(match.groups(), set()).add(tuple(sorted(report["features"])))
+            # Repository names normalize SemVer build metadata. Compare the
+            # declared package identity instead of trying to reverse that loss.
+            names = [tag.removeprefix("crate-name=") for tag in report.get("tags", []) if tag.startswith("crate-name=")]
+            version = report.get("version")
+            if len(names) != 1 or not version or match[1] != (names[0] + "-" + version).replace("+", "-"):
+                raise ValueError("external Rust target omitted its exact package identity: " + report["label"])
+            bazel_features.setdefault((names[0], version), set()).add(tuple(sorted(report["features"])))
     if bazel_features != cargo_features:
         differences = {
             f"{name}@{version}": {
@@ -146,7 +160,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None):
         for (name, version), features in sorted(cargo_features.items())
     }
     if cargo_log is not None:
-        result["doctests"] = compare_doctests(tests, cargo_log, package_paths)
+        result["doctests"] = compare_doctests(tests, cargo_log, package_paths, target_suffix)
     return result
 
 
@@ -158,6 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--package-path", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--cargo-log", type=Path)
+    parser.add_argument("--target-suffix", default="")
     options = parser.parse_args()
     package_paths = dict(value.split("=", 1) for value in options.package_path) if options.package_path else None
-    options.output.write_text(json.dumps(compare(options.tests, options.inventory, options.messages, package_paths, options.cargo_log), indent=2, sort_keys=True) + "\n")
+    options.output.write_text(json.dumps(compare(options.tests, options.inventory, options.messages, package_paths, options.cargo_log, options.target_suffix), indent=2, sort_keys=True) + "\n")

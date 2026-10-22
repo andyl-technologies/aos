@@ -47,6 +47,14 @@ def verify(build, libraries, readelf):
         actions[label] = {"mnemonic": mnemonic, "input_count": len(inputs),
                           "selected_libraries": selected_libraries}
 
+    test_root = build / "evidence/tests"
+    results = json.loads((test_root / "index.json").read_text())["results"]
+    if len(results) != 1 or results[0]["identity"]["label"] != prefix + "doc" or results[0]["status"] != "PASSED":
+        raise ValueError("native-library doctest did not pass exactly once")
+    doctest = (test_root / results[0]["outputs"]["test.log"]).read_text()
+    if "test result: ok. 1 passed; 0 failed; 0 ignored;" not in doctest:
+        raise ValueError("native-library doctest did not execute its ABI assertion")
+
     artifacts = {}
     for label, binary in binaries.items():
         result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=30)
@@ -62,7 +70,7 @@ def verify(build, libraries, readelf):
                 raise ValueError(f"runtime dependency omitted selected {name} variant: {label}")
         artifacts[label] = {"sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                             "stdout": result.stdout, "dynamic": dynamic}
-    return {"schema_version": 1, "libraries": identities, "actions": actions, "artifacts": artifacts}
+    return {"schema_version": 1, "libraries": identities, "actions": actions, "artifacts": artifacts, "doctest": doctest}
 
 
 if __name__ == "__main__":

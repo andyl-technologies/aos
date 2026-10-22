@@ -1,5 +1,7 @@
 """Exports source and dependency metadata from configured first-party targets."""
 
+load("@rules_rust//rust:defs.bzl", "rust_common")
+
 AosInventoryInfo = provider(fields = ["reports"])
 
 def _first_party(label):
@@ -35,6 +37,9 @@ def _inventory_impl(target, ctx):
                 else:
                     generated[source.short_path] = _label(source.owner)
     report = ctx.actions.declare_file(ctx.label.name + ".aos-target.json")
+    # The provider also covers inferred roots and libtest crates inherited from
+    # libraries/binaries. The optional crate_root attribute does not cover them.
+    crate_root = target[rust_common.crate_info].root if rust_common.crate_info in target else None
     ctx.actions.write(report, json.encode({
         "schema_version": 1,
         "external": external,
@@ -47,6 +52,7 @@ def _inventory_impl(target, ctx):
         "features": getattr(ctx.rule.attr, "crate_features", []),
         "edition": getattr(ctx.rule.attr, "edition", ""),
         "crate_name": getattr(ctx.rule.attr, "crate_name", ""),
+        "crate_root": crate_root.short_path if crate_root != None else "",
         "version": getattr(ctx.rule.attr, "version", ""),
         "rustc_flags": getattr(ctx.rule.attr, "rustc_flags", []),
         "rustc_env": getattr(ctx.rule.attr, "rustc_env", {}),

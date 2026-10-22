@@ -1,0 +1,175 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-store",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+)
+
+DEPENDENCIES = [
+    "//third_party/rust:core_aes_gcm",
+    "//third_party/rust:core_blake3",
+    "//third_party/rust:core_rusqlite",
+    "//third_party/rust:core_rustix",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_zeroize",
+    "//third_party/rust:core_zstd",
+]
+
+DEVELOPMENT_DEPENDENCIES = [
+    "//third_party/rust:core_tempfile",
+]
+
+# Each nondefault variant selects the same named family configuration in both
+# packages. Default application consumers retain the ordinary feature graph.
+VARIANTS = {
+    "": [],
+    "_test_support": ["test-support"],
+    "_recovery_faults": ["destructive-recovery-faults"],
+    "_all_features": ["test-support", "destructive-recovery-faults"],
+}
+
+[
+    rust_library(
+        name = "lib" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_store",
+        crate_root = "src/lib.rs",
+        srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+        crate_features = features,
+        deps = DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "unit" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate = ":lib" + suffix,
+        crate_features = features,
+        deps = DEVELOPMENT_DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
+        crate_features = features,
+        deps = [":lib" + suffix] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+    for source in glob(["tests/*.rs"])
+    if source != "tests/gate_campaign_store_equivalence.rs" or "test-support" in features
+]
+
+[
+    rust_doc_test(
+        name = "doc" + suffix,
+        crate = ":lib" + suffix,
+    )
+    for suffix in VARIANTS
+]
+
+TEST_ARTIFACTS = [":unit" + suffix + "_binary" for suffix in VARIANTS] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+    for suffix, features in VARIANTS.items()
+    for source in glob(["tests/*.rs"])
+    if source != "tests/gate_campaign_store_equivalence.rs" or "test-support" in features
+] + [":bin_crucible-fleet-store" + suffix + "_binary" for suffix in VARIANTS]
+
+[
+    test_suite(
+        name = "tests" + suffix,
+        tests = [":unit" + suffix, ":doc" + suffix, ":bin_crucible-fleet-store" + suffix] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix
+            for source in glob(["tests/*.rs"])
+            if source != "tests/gate_campaign_store_equivalence.rs" or "test-support" in features
+        ],
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    rust_binary(
+        name = "crucible-fleet-store" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_fleet_store",
+        crate_root = "src/bin/crucible-fleet-store.rs",
+        srcs = ["src/bin/crucible-fleet-store.rs"],
+        crate_features = features,
+        deps = [":lib" + suffix] + DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "bin_crucible-fleet-store" + suffix,
+        # Cargo builds this test artifact even though the binary has no cases.
+        allow_empty = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate = ":crucible-fleet-store" + suffix,
+        crate_features = features,
+        deps = DEVELOPMENT_DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+# The installed component and its Cargo source package have distinct names.
+aos_package(
+    name = "package",
+    package_name = "crucible-fleet-store",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":crucible-fleet-store": "bin/crucible-fleet-store"},
+    executables = ["bin/crucible-fleet-store"],
+)
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib" + suffix for suffix in VARIANTS] + TEST_ARTIFACTS,
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib" + suffix for suffix in VARIANTS] + TEST_ARTIFACTS,
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":lib",
+)
+
+[
+    aos_license_check(
+        name = "license_closure" + suffix,
+        testonly = True,
+        roots = [":lib" + suffix, ":unit" + suffix + "_binary"] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+            for source in glob(["tests/*.rs"])
+            if source != "tests/gate_campaign_store_equivalence.rs" or "test-support" in features
+        ] + [":crucible-fleet-store" + suffix, ":bin_crucible-fleet-store" + suffix + "_binary"],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix, features in VARIANTS.items()
+]

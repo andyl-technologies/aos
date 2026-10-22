@@ -87,6 +87,20 @@ raise SystemExit(case.get('status', 0))
         with self.assertRaisesRegex(ValueError, "zero cases"):
             self.select(filters=["missing"])
 
+    def test_declared_empty_artifact_does_not_allow_empty_filtered_selections(self):
+        self.configure({})
+        with self.assertRaisesRegex(ValueError, "zero cases"):
+            self.select()
+        self.assertEqual(self.select(allow_empty=True), [])
+        with self.assertRaisesRegex(ValueError, "zero cases"):
+            self.select(allow_empty=True, filters=["missing"])
+        with self.assertRaisesRegex(ValueError, "zero cases"):
+            self.select(allow_empty=True, ignored="only")
+
+        self.configure({"ignored": {"ignored": True}})
+        with self.assertRaisesRegex(ValueError, "zero cases"):
+            self.select(allow_empty=True)
+
     def test_distinct_processes_bounded_concurrency_and_exclusive_case(self):
         self.configure({name: {"sleep": 0.08} for name in ["a", "b", "exclusive", "z", "zz"]})
         self.policy["overrides"] = [{"conditions": [{"substring": "exclusive"}], "exclusive": True}]

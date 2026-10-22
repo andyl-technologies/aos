@@ -3,6 +3,7 @@ load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load(":core/aliases.bzl", CORE_CRATES = "CRATES")
 load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
+load(":store/aliases.bzl", STORE_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -10,12 +11,13 @@ load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
-            "//tools/bazel/rules:device_dependencies": DEVICE_CRATES.get(name, CORE_CRATES.get(name)),
-            "//conditions:default": CORE_CRATES.get(name, "//tools/bazel/rules:device_profile_required"),
+            "//tools/bazel/rules:device_dependencies": DEVICE_CRATES.get(name, "//tools/bazel/rules:store_profile_required"),
+            "//tools/bazel/rules:store_dependencies": STORE_CRATES.get(name, "//tools/bazel/rules:device_profile_required"),
+            "//conditions:default": CORE_CRATES.get(name, "//tools/bazel/rules:store_profile_required" if name in STORE_CRATES else "//tools/bazel/rules:device_profile_required"),
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -28,6 +30,76 @@ CORE_PACKAGES = {
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
     "thiserror": crate.spec(version = "=2.0.18"),
     "unicode-normalization": crate.spec(version = "=0.1.25"),
+}
+
+# Resolve the selected storage/campaign roots, without enabling unrelated core
+# consumers' features (for example sha2/compress) in their transitive graph.
+STORE_PACKAGES = {
+    "aes-gcm": crate.spec(version = "=0.10.3", features = ["zeroize"]),
+    "blake3": CORE_PACKAGES["blake3"],
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "num-bigint": crate.spec(version = "=0.4.6"),
+    "num-integer": crate.spec(version = "=0.1.46"),
+    "num-traits": crate.spec(version = "=0.2.19"),
+    "rusqlite": crate.spec(version = "=0.32.1", features = ["blob"]),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs"]),
+    "serde": CORE_PACKAGES["serde"],
+    "serde_json": CORE_PACKAGES["serde_json"],
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": CORE_PACKAGES["thiserror"],
+    "unicode-normalization": CORE_PACKAGES["unicode-normalization"],
+    "zeroize": crate.spec(version = "=1.9.0"),
+    "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
+
+STORE_ANNOTATIONS = {
+    "libsqlite3-sys": crate.annotation(
+        link_deps = ["@aos_native//:sqlite"],
+        build_script_data = ["@aos_native//:sqlite_files"],
+        build_script_tools = ["@aos_native//:sqlite/pkg-config", "@aos_native//:sqlite_pkg_config_tools"],
+        build_script_env = {
+            "LIBSQLITE3_SYS_USE_PKG_CONFIG": "1",
+            "PKG_CONFIG": "$(execpath @aos_native//:sqlite/pkg-config)",
+            "PKG_CONFIG_ALLOW_CROSS": "1",
+        },
+    ),
+    "zstd-sys": crate.annotation(
+        link_deps = ["@aos_native//:zstd"],
+        build_script_data = ["@aos_native//:zstd_files"],
+        build_script_tools = ["@aos_native//:zstd/pkg-config", "@aos_native//:zstd_pkg_config_tools"],
+        build_script_env = {
+            "ZSTD_SYS_USE_PKG_CONFIG": "1",
+            "PKG_CONFIG": "$(execpath @aos_native//:zstd/pkg-config)",
+            "PKG_CONFIG_ALLOW_CROSS": "1",
+        },
+    ),
+}
+
+# crate_universe merges build/target features and includes proc macros from
+# unsupported platform dependencies. Preserve Cargo resolver-v2's actual Linux
+# units. Version and resolved-feature guards require review when the lock moves.
+STORE_FEATURE_VARIANTS = {
+    "libc": json.encode({
+        "version": "0.2.186",
+        "resolved_features": ["default", "std"],
+        "features": [],
+        "variants": {
+            "build": {
+                "features": ["default", "std"],
+                "dependents": {"jobserver": "0.1.34"},
+            },
+        },
+    }),
+    "serde": json.encode({
+        "version": "1.0.228",
+        "resolved_features": ["alloc", "default", "derive", "rc", "serde_derive", "std"],
+        "features": ["default", "derive", "rc", "serde_derive", "std"],
+    }),
+    "serde_core": json.encode({
+        "version": "1.0.228",
+        "resolved_features": ["alloc", "rc", "result", "std"],
+        "features": ["rc", "result", "std"],
+    }),
 }
 
 APPROVED_LICENSES = [
@@ -53,16 +125,19 @@ APPROVED_LICENSES = [
         family = family,
         definition = "BUILD.bazel",
         packages = packages,
+        annotations = annotations,
+        feature_variants = STORE_FEATURE_VARIANTS if family == "store" else {},
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
-        license_domain = "permissive-protocol",
+        license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
         # Ciborium's Apache-only sources serve the host device models. Sharing
         # Serde's canonical instance must not admit those sources into QEMU.
         host_only_licenses = ["Apache-2.0"],
     )
-    for family, packages in [
-        ("core", CORE_PACKAGES),
-        ("device", dict(CORE_PACKAGES, ciborium = crate.spec(version = "=0.2.2"))),
+    for family, packages, annotations, license_domain in [
+        ("core", CORE_PACKAGES, {}, "permissive-protocol"),
+        ("device", dict(CORE_PACKAGES, ciborium = crate.spec(version = "=0.2.2")), {}, "permissive-protocol"),
+        ("store", STORE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -75,5 +150,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device"]
+    for family in ["core", "device", "store"]
 ]

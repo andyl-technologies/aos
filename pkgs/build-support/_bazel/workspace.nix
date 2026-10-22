@@ -18,6 +18,7 @@
   targetPlatform ? null,
   compileOnly ? false,
   dependencyProfile ? null,
+  rustcFlags ? [],
 }: let
   rootString = toString root;
   inventory =
@@ -143,6 +144,7 @@
         compile_only = compileOnly;
         target_platform = targetPlatform;
         dependency_profile = dependencyProfile;
+        rustc_flags = rustcFlags;
         # Bazel's test setup and XML writer use these tools too. Never fall back
         # to the daemon's or developer's PATH when a test starts.
         path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [
@@ -197,6 +199,8 @@
   };
 in
   assert validInventory;
+  assert (builtins.isList rustcFlags && builtins.all (flag: builtins.isString flag && flag != "" && !lib.hasInfix "," flag) rustcFlags)
+  || throw "mkAosBazelWorkspace: rustcFlags must be individual nonempty flags without commas";
   assert !compileOnly || targetPlatform != null; {
     inherit source toolchains configuration preparedLock batch;
     # The initial fixtures deliberately use conservative directory selections.

@@ -9,6 +9,7 @@
   workspace,
   targets,
   command ? "build",
+  inventoryOnly ? false,
   sharedBuildCache ? true,
   cacheNamespace ? null,
   requiredSystemFeatures ? [],
@@ -26,6 +27,7 @@
   };
 in
   assert builtins.elem command ["build" "test"];
+  assert !inventoryOnly || command == "build";
   assert cacheNamespace == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" cacheNamespace != null;
     pkgs.mkDerivation {
       inherit pname version requiredSystemFeatures;
@@ -66,7 +68,11 @@ in
               ${lib.optionalString (cache != null) "--cache ${lib.escapeShellArg cache}"} \
               -- ${command} ${lib.escapeShellArgs targets} \
               --aspects=//tools/bazel/metadata:inventory.bzl%aos_inventory_aspect \
-              --output_groups=default,aos_inventory \
+              --output_groups=${
+              if inventoryOnly
+              then "aos_inventory"
+              else "default,aos_inventory"
+            } \
               --execution_log_json_file="$TMPDIR/execution.json" \
               --build_event_json_file="$TMPDIR/events.json"
 

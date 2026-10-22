@@ -85,9 +85,19 @@ The check inspects sandboxed compiler/link actions for declared headers,
 closure manifests, and the selected library byte hashes. It verifies ELF
 dependencies and runtime paths, checks the license closure, and requires
 analysis to reject a foreign target or an absent Nix repository override.
+A compiled doctest calls the same native probe for both linkage variants. The
+pinned rules receive narrow fixes for empty source roots and shared-library
+flags when converting compiler inputs into doctest commands.
 `tests/evidence/native-linux-native-libraries.json` retains the qualification.
-This qualifies native Linux imports; the store/campaign build-script bindings
-and a fully static guest executable still require their family checks.
+This qualifies native Linux imports; family qualification separately checks
+store/campaign build-script bindings. A fully static guest executable still
+requires its own adapter and checks.
+
+Entries may select `pkgConfigFiles` explicitly. Their source-built pkg-config
+wrapper searches only those files, clears ambient search paths and sysroots,
+and records its native execution-tool closure separately from the target
+library closure. Build scripts receive the wrapper, metadata, headers, and
+libraries as declared inputs. They cannot discover an undeclared host library.
 
 ## Rust package identity
 
@@ -96,7 +106,10 @@ declaration owns the package name, SemVer version, edition, license expression
 and domain, authors, description, and optional project URLs. Its libraries,
 binaries, procedural macros, and tests receive the same `package` value.
 `aos_package` uses that declaration for the installed artifact manifest too.
-Per-target overrides of package identity fail before compilation.
+Per-target overrides of package identity fail before compilation. A separately
+named installed component, such as `crucible-fleet-store` from the
+`crucible-store` Rust package, declares its installation identity explicitly
+while preserving the source package's compiler metadata.
 
 The wrapper supplies the compatible `CARGO_PKG_*` compiler environment directly
 from the declaration, including separate version components and prerelease
@@ -332,8 +345,8 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps core` or `aos-dev bazel update-deps device` to resolve
-the selected third-party dependency profile explicitly.
+`aos-dev bazel update-deps <core|device|store>` to resolve the selected
+third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
 commands retain download denial and immutable repository overrides.
@@ -359,7 +372,12 @@ families. The `device` profile adds Ciborium, Serde's `alloc` feature, and Syn's
 one configuration selects the same resolved profile, preserving Serde's Rust
 type identity across the device and protocol libraries. The existing core
 feature graph remains unchanged. Both profiles retain exact versions and
-archive checksums from the temporary workspace lock.
+archive checksums from the temporary workspace lock. The `store` profile
+resolves the storage/campaign roots separately, including SQLite, threaded zstd,
+and signing dependencies; it does not widen the core or device graph.
+Repository labels normalize SemVer `+` metadata as crate_universe does, while
+source archives, package identities, and parity comparisons retain the exact
+original versions.
 
 ```sh
 aos-dev bazel test //crates/crucible/engine/crucible-device:unit \
@@ -429,6 +447,56 @@ The invalidation matrix also checks C++ link-action digests and a linker-flag
 change that leaves compile actions reusable. The compiler replacement case
 changes a real executable and its realized Nix closure under the same logical
 Bazel label, preserving program behavior.
+
+## Crucible storage and campaign graph
+
+`checks.build.bazel.store.all` connects `crucible-store` and
+`crucible-campaign`. Its explicit configurations cover the default features,
+`test-support`, `destructive-recovery-faults`, and both features together.
+Each configuration selects the same family variant in both packages and
+compares unit, integration, binary-test, doctest, and resolved dependency
+inventories with an offline Cargo oracle. Required-feature integration targets
+appear only in configurations that enable them.
+
+The family imports AOS SQLite as a shared library and AOS threaded zstd as a
+static library. Declared pkg-config tools supply their build-script metadata;
+Rust FFI linkage uses `link_deps`. The test workspace selects `-Copt-level=s`
+and `-Cdebuginfo=0`, matching the current Cargo test profile. Case timeouts and
+exclusive scheduling continue to use the shared nextest policy. The binary's
+empty libtest artifact is explicitly allowed; an unmatched filter still fails.
+
+The dependency specification retains reviewed Cargo feature units that the
+pinned crate_universe resolver otherwise merges. Target libc has no optional
+features; jobserver's build dependency uses a separate `default,std` instance,
+including a separate build script with constant features. Serde and serde_core
+exclude `alloc`, which the generator introduces through unsupported-platform
+proc macros. The updater checks exact crate versions, upstream feature sets,
+and redirected dependency edges before publishing these rules. A lock or graph
+change fails the update until the declaration is reviewed. Cargo parity still
+compares the distinct compiled feature sets without merging them.
+
+The check also builds Clippy, formatting, documentation, and editor parity.
+Its installed `crucible-fleet-store` runs the complete built-in store probe and
+rejects an unsupported command after Nix fixup. The check compares the probe's
+full output, apart from its temporary storage root, and invalid-command output
+against the retained Cargo binary. Production builders remain
+unchanged while platform and performance acceptance work continues.
+The native linkage check hashes both selected libraries against the binary's
+declared Rust action inputs and inspects the installed ELF and runtime closure:
+SQLite remains a shared dependency, zstd is static, and the interpreter belongs
+to the declared AOS runtime closure.
+
+```sh
+aos-dev build check build.bazel.store.all --no-out-link
+nix-build tools/bazel/tests/store.nix -A conservative.inventory --no-out-link
+```
+
+The second command refreshes configured metadata by requesting only the
+inventory aspect's output group. It does not compile or execute the targets;
+qualification does both independently. Validate and publish that output's
+`inventory.json` as `metadata/store-inventory.json`, then rerun the precise
+qualification. The inventory includes all feature variants and developer and
+package roots, so source selection remains a pure Nix evaluation input.
 
 ## Shared Crucible protocol graph
 

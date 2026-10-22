@@ -4,17 +4,21 @@
   pname,
   packages,
   libOnly ? false,
+  nativeLibraries ? [],
+  nativeTools ? [],
+  cargoFlags ? [],
 }: let
   packageFlags = pkgs.lib.escapeShellArgs (
     pkgs.lib.concatMap (name: ["-p" name]) packages
-    ++ pkgs.lib.optionals libOnly ["--lib"]
+    ++ pkgs.lib.optionals libOnly ["--lib"] ++ cargoFlags
   );
 in
   pkgs.mkDerivation {
     inherit pname;
     version = "1";
     src = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;};
-    buildDeps = [pkgs.rust pkgs.python3 pkgs.sed];
+    buildDeps = [pkgs.rust pkgs.python3 pkgs.sed] ++ nativeTools;
+    runtimeDeps = nativeLibraries;
     sharedBuildCache = false;
     dontStrip = true;
     dontPatchELF = true;

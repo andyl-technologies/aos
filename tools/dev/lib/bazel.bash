@@ -5,7 +5,7 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && ( $1 == core || $1 == device ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device>'
+    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)

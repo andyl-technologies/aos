@@ -55,15 +55,16 @@ def verify(project, inventory, packages, workspace):
         for target in inventory["configured_targets"]:
             if not target["label"].startswith(prefix):
                 continue
-            name = target["label"].removeprefix(prefix)
-            if name == "lib":
-                root = f"{directory}/src/lib.rs"
-            elif target["kind"] == "rust_test" and name != "unit_binary":
-                root = f"{directory}/tests/{name.removesuffix('_binary')}.rs"
-            elif target["kind"] == "rust_binary":
-                root = f"{directory}/examples/{name}.rs"
-            else:
+            if target["kind"] not in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro"}:
                 continue
+            root = target["crate_root"]
+            # Unit tests may inherit their library's crate instead of declaring
+            # a root. Names cannot identify roots: binaries and their libtests
+            # both compile src/bin, and examples can use arbitrary rule names.
+            if not root:
+                continue
+            if not root.startswith(directory + "/") or not (workspace / root).is_file():
+                raise ValueError(f"compiled crate root is outside its package or missing: {root}")
             features = sorted(target["features"])
             if root in expected and expected[root] != features:
                 raise ValueError(f"ambiguous compiled features for {root}")

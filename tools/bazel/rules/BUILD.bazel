@@ -1,8 +1,13 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
-load(":profiles.bzl", "dependency_profile", "device_profile_required")
+load(":profiles.bzl", "dependency_profile", "device_profile_required", "store_profile_required")
 
 device_profile_required(
     name = "device_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+store_profile_required(
+    name = "store_profile_required",
     visibility = ["//visibility:public"],
 )
 
@@ -15,6 +20,12 @@ dependency_profile(
 config_setting(
     name = "device_dependencies",
     flag_values = {":dependency_profile": "device"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "store_dependencies",
+    flag_values = {":dependency_profile": "store"},
     visibility = ["//visibility:public"],
 )
 

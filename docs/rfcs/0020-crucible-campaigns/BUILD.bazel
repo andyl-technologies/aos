@@ -1,4 +1,9 @@
 exports_files(
     ["schema-registry.tsv"],
-    visibility = ["//crates/crucible/protocol:__subpackages__"],
+    visibility = ["//crates/crucible/protocol:__subpackages__", "//crates/crucible/engine/crucible-campaign:__pkg__"],
+)
+
+exports_files(
+    ["11-implementation-plan.md"],
+    visibility = ["//crates/crucible/engine/crucible-campaign:__pkg__"],
 )

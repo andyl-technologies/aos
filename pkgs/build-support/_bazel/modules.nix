@@ -87,6 +87,28 @@
                   raise ValueError("rules_rust bootstrap interpreter patch no longer applies")
               bootstrap.write_text("#!" + sys.argv[1] + "\n" + source[len(original):])
 
+              # Source artifacts have an empty root. Treating that as a path
+              # prefix strips every slash from doctest commands whenever a
+              # native dependency exports source files as additional inputs.
+              doctest = Path("rust/private/rustdoc_test.bzl")
+              source = doctest.read_text()
+              original = 'writer_args.add_all(roots, format_each = "--strip_substring=%s/", uniquify = True)'
+              replacement = 'writer_args.add_all([root for root in roots if root], format_each = "--strip_substring=%s/", uniquify = True)'
+              if source.count(original) != 1:
+                  raise ValueError("rules_rust doctest source-root patch no longer applies")
+              doctest.write_text(source.replace(original, replacement))
+
+              # Rustdoc's manual native-library flags must include shared
+              # imports as well as archives. Ordinary Rust linkage already
+              # consumes both through CcInfo; doctests need the same graph.
+              rustdoc = Path("rust/private/rustdoc.bzl")
+              source = rustdoc.read_text()
+              original = "if not (lib.static_library or lib.pic_static_library):"
+              replacement = "if not (lib.static_library or lib.pic_static_library or lib.dynamic_library or lib.interface_library):"
+              if source.count(original) != 1:
+                  raise ValueError("rules_rust doctest shared-library patch no longer applies")
+              rustdoc.write_text(source.replace(original, replacement))
+
               # The pinned analyzer aspect exposes OUT_DIR but omits build
               # script cfgs and rustc environment files. Export their declared
               # action outputs so the editor adapter can read the compiler's

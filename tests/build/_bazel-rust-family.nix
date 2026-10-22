@@ -6,6 +6,13 @@
   sourceInventory ? null,
   extraSourceDirectories ? [],
   dependencyProfile ? null,
+  repositories ? pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device,
+  excludedTests ? [],
+  extraTests ? [],
+  extraEditorTargets ? [],
+  nativeLibraries ? [],
+  nativeTools ? [],
+  rustcFlags ? [],
 }: let
   names = builtins.attrNames packages;
   label = name: "//${packages.${name}}";
@@ -17,10 +24,14 @@
       else {};
   in
     map (file: "${label name}:" + pkgs.lib.removeSuffix ".rs" file)
-    (builtins.filter (file: entries.${file} == "regular" && pkgs.lib.hasSuffix ".rs" file) (builtins.attrNames entries));
+    (builtins.filter (file:
+      entries.${file}
+      == "regular"
+      && pkgs.lib.hasSuffix ".rs" file
+      && !(directoryName == "tests" && builtins.elem (pkgs.lib.removeSuffix ".rs" file) excludedTests)) (builtins.attrNames entries));
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    inherit sourceInventory dependencyProfile;
+    inherit sourceInventory dependencyProfile repositories rustcFlags;
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ([
         "tools/bazel/toolchains"
         "tools/bazel/rules"
@@ -29,7 +40,6 @@
         "third_party/rust"
       ]
       ++ builtins.attrValues packages ++ extraSourceDirectories);
-    repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device;
     analysisTargets = map (name: "${label name}:unit") names;
   };
 in rec {
@@ -37,10 +47,12 @@ in rec {
   tests = pkgs.mkAosBazelCheck {
     pname = "${pname}-tests";
     inherit workspace;
-    targets = pkgs.lib.concatMap (name:
-      ["${label name}:license_closure" "${label name}:unit" "${label name}:doc"]
-      ++ directoryTargets name "tests" ++ directoryTargets name "examples")
-    names;
+    targets =
+      pkgs.lib.concatMap (name:
+        ["${label name}:license_closure" "${label name}:unit" "${label name}:doc"]
+        ++ directoryTargets name "tests" ++ directoryTargets name "examples")
+      names
+      ++ extraTests;
   };
   developer-build = pkgs.mkAosBazelBuild {
     pname = "${pname}-developer-tools";
@@ -53,11 +65,13 @@ in rec {
     targets = map (name: "${label name}:format") names;
   };
   editor = let
-    targets = pkgs.lib.concatMap (name:
-      ["${label name}:lib" "${label name}:unit_binary"]
-      ++ map (target: target + "_binary") (directoryTargets name "tests")
-      ++ directoryTargets name "examples")
-    names;
+    targets =
+      pkgs.lib.concatMap (name:
+        ["${label name}:lib" "${label name}:unit_binary"]
+        ++ map (target: target + "_binary") (directoryTargets name "tests")
+        ++ directoryTargets name "examples")
+      names
+      ++ extraEditorTargets;
   in
     pkgs.runCommand "${pname}-editor" {buildDeps = [pkgs.python3];} ''
       mkdir workspace
@@ -85,49 +99,53 @@ in rec {
         --output "$out/graph.json"
       cp rust-project.json "$out/rust-project.json"
     '';
-  editor-cargo-oracle = pkgs.runCommand "${pname}-editor-cargo-oracle" {buildDeps = [pkgs.rust pkgs.python3];} ''
-    cp -R ${import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;}} source
-    chmod -R u+w source
-    export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
-    mkdir -p "$CARGO_HOME" source/.cargo "$out"
-    ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} <<'PYTHON'
-    import json
-    from pathlib import Path
-    import re
-    import sys
+  editor-cargo-oracle =
+    pkgs.runCommand "${pname}-editor-cargo-oracle" {
+      buildDeps = [pkgs.rust pkgs.python3] ++ nativeTools;
+      runtimeDeps = nativeLibraries;
+    } ''
+      cp -R ${import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;}} source
+      chmod -R u+w source
+      export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
+      mkdir -p "$CARGO_HOME" source/.cargo "$out"
+      ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} <<'PYTHON'
+      import json
+      from pathlib import Path
+      import re
+      import sys
 
-    root, packages, vendor = map(Path, sys.argv[1:])
-    # Select the same connected family, rather than analyzing unrelated workspace
-    # members. Retain package metadata, dependency versions and all lint settings.
-    manifest = root / "crates/Cargo.toml"
-    members = [path.removeprefix("crates/") for path in json.loads(packages.read_text()).values()]
-    source, count = re.subn(r"(?m)^members = \[[\s\S]*?^\]", "members = " + json.dumps(members), manifest.read_text())
-    if count != 1:
-        raise ValueError("Cargo editor oracle workspace selection no longer applies")
-    manifest.write_text(source)
-    configuration = (vendor / ".cargo/config.toml").read_text().replace("@vendor@", str(vendor))
-    (root / ".cargo/config.toml").write_text(configuration)
-    PYTHON
-    cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
-    CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
-      RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
-      ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD/source/crates" --output csv \
-        --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
-        > "$out/diagnostics.csv" 2> "$out/analysis.log"
-    cp ${../../tools/bazel/tests/verify_family_editor.py} verify_family_editor.py
-    ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
-    import json
-    from pathlib import Path
-    import sys
+      root, packages, vendor = map(Path, sys.argv[1:])
+      # Select the same connected family, rather than analyzing unrelated workspace
+      # members. Retain package metadata, dependency versions and all lint settings.
+      manifest = root / "crates/Cargo.toml"
+      members = [path.removeprefix("crates/") for path in json.loads(packages.read_text()).values()]
+      source, count = re.subn(r"(?m)^members = \[[\s\S]*?^\]", "members = " + json.dumps(members), manifest.read_text())
+      if count != 1:
+          raise ValueError("Cargo editor oracle workspace selection no longer applies")
+      manifest.write_text(source)
+      configuration = (vendor / ".cargo/config.toml").read_text().replace("@vendor@", str(vendor))
+      (root / ".cargo/config.toml").write_text(configuration)
+      PYTHON
+      cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
+      CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
+        RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
+        ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD/source/crates" --output csv \
+          --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
+          > "$out/diagnostics.csv" 2> "$out/analysis.log"
+      cp ${../../tools/bazel/tests/verify_family_editor.py} verify_family_editor.py
+      ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
+      import json
+      from pathlib import Path
+      import sys
 
-    from verify_family_editor import analysis_statistics, diagnostics
+      from verify_family_editor import analysis_statistics, diagnostics
 
-    output = Path(sys.argv[1])
-    report = analysis_statistics((output / "analysis.log").read_text())
-    report["diagnostics"] = diagnostics(output / "diagnostics.csv")
-    (output / "analysis.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
-    PYTHON
-  '';
+      output = Path(sys.argv[1])
+      report = analysis_statistics((output / "analysis.log").read_text())
+      report["diagnostics"] = diagnostics(output / "diagnostics.csv")
+      (output / "analysis.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+      PYTHON
+    '';
   editor-parity = pkgs.runCommand "${pname}-editor-parity" {buildDeps = [pkgs.python3];} ''
     mkdir -p "$out"
     ${pkgs.python3}/bin/python3 - ${editor}/graph.json ${editor-cargo-oracle}/analysis.json "$out/parity.json" <<'PYTHON'
@@ -148,7 +166,7 @@ in rec {
     PYTHON
   '';
   cargo = import ./_bazel-cargo-oracle.nix {
-    inherit pkgs;
+    inherit pkgs nativeLibraries nativeTools;
     pname = "${pname}-cargo-oracle";
     packages = names;
   };

@@ -4,6 +4,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_boot_identity",
+      "crate_root": "crates/aos/boot/aos-boot-identity/src/main.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -63,6 +64,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:aos-boot-identity",
@@ -93,6 +95,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -128,6 +131,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -156,6 +160,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:aos-boot-identity",
@@ -194,6 +199,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_boot_identity",
+      "crate_root": "crates/aos/boot/aos-boot-identity/src/lib.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:src/lib.rs",
@@ -250,6 +256,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:aos-boot-identity"
@@ -274,6 +281,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:uki_cli_binary",
@@ -313,6 +321,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "crates/aos/boot/aos-boot-identity/tests/uki_cli.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:aos-boot-identity",
@@ -385,6 +394,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:unit_binary",
@@ -424,6 +434,7 @@
       "build_file": "crates/aos/boot/aos-boot-identity/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "crates/aos/boot/aos-boot-identity/src/lib.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -490,6 +501,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_recovery",
+      "crate_root": "crates/aos/boot/aos-recovery/src/main.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -551,6 +563,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:aos-recovery",
@@ -579,6 +592,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:lib",
@@ -614,6 +628,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:lib",
@@ -642,6 +657,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:aos-recovery",
@@ -678,6 +694,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_recovery",
+      "crate_root": "crates/aos/boot/aos-recovery/src/lib.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-boot-identity:lib",
@@ -747,6 +764,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:aos-recovery"
@@ -771,6 +789,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:unit_binary"
@@ -795,6 +814,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:unit_binary",
@@ -834,6 +854,7 @@
       "build_file": "crates/aos/boot/aos-recovery/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "crates/aos/boot/aos-recovery/src/lib.rs",
       "defines": [],
       "dependencies": [
         "//crates/aos/boot/aos-recovery:lib",
@@ -900,6 +921,7 @@
       "build_file": "BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust++i+rules_rust_tinyjson/src/lib.rs",
       "defines": [],
       "dependencies": [
         "@@rules_rust++i+rules_rust_tinyjson//:src/generator.rs",
@@ -940,6 +962,7 @@
       "build_file": "ffi/rs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -960,6 +983,7 @@
       "build_file": "rust/private/rustdoc/dir_zipper/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/rust/private/rustdoc/dir_zipper/dir_zipper.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -997,6 +1021,7 @@
       "build_file": "rust/private/rustdoc/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/rust/private/rustdoc/rustdoc_compile_wrapper.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1034,6 +1059,7 @@
       "build_file": "rust/private/rustdoc/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/rust/private/rustdoc/rustdoc_test_runner.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1072,6 +1098,7 @@
       "build_file": "rust/private/rustdoc/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/rust/private/rustdoc/rustdoc_test_writer.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1110,6 +1137,7 @@
       "build_file": "rust/runfiles/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/rust/runfiles/runfiles.rs",
       "defines": [],
       "dependencies": [
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
@@ -1145,6 +1173,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1165,6 +1194,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1185,6 +1215,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1205,6 +1236,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1225,6 +1257,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1245,6 +1278,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1265,6 +1299,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1285,6 +1320,7 @@
       "build_file": "rust/settings/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1305,6 +1341,7 @@
       "build_file": "rust/toolchain/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "",
       "defines": [],
       "dependencies": [],
       "edition": "",
@@ -1325,6 +1362,7 @@
       "build_file": "tools/rustfmt/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/tools/rustfmt/src/lib.rs",
       "defines": [],
       "dependencies": [
         "//tools/bazel/rules:rustfmt.toml",
@@ -1368,6 +1406,7 @@
       "build_file": "tools/rustfmt/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/tools/rustfmt/src/bin/test_main.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1407,6 +1446,7 @@
       "build_file": "util/collect_coverage/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/util/collect_coverage/collect_coverage.rs",
       "defines": [],
       "dependencies": [
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1446,6 +1486,7 @@
       "build_file": "util/process_wrapper/BUILD.bazel",
       "copts": [],
       "crate_name": "",
+      "crate_root": "../rules_rust+/util/process_wrapper/main.rs",
       "defines": [],
       "dependencies": [
         "@@rules_rust++i+rules_rust_tinyjson//:tinyjson",
@@ -1488,24 +1529,25 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "f90d983c71f65a938e3b643786a1fb115e23afd776370e0d2c47b977367d1a69",
+    "MODULE.bazel": "1f751e38b5b34cee299aacb5020cea8fd5974bf65802bc8da20b4c9ca863c2d8",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/aos/boot/aos-boot-identity/BUILD.bazel": "9d80558dea7d2e50bf4eed0e61facf9bcb7ef4bce2d2b85aa33cd20b5b0067ca",
     "crates/aos/boot/aos-recovery/BUILD.bazel": "79923ee2243b27a4179be3ceb05b053448d53cffe0dbe9171d3d3f973f7535c4",
-    "third_party/rust/BUILD.bazel": "3733ff7d79c62281bd2541afe86d4cf614fd26b13b9b5e56e74cdec100dd4abf",
+    "third_party/rust/BUILD.bazel": "cbac4a86b4f95cbd61173b40fa8a5bf05ccafdeb9289c82398e6799ba9634f95",
     "third_party/rust/core/repositories.MODULE.bazel": "e6c38e6f3b3f762e2cf9db1d2d38068501a074fe560d33bd57bc97e06a586ec8",
     "third_party/rust/device/repositories.MODULE.bazel": "ae567e5be9e301d8dc99eea3cd8ab2b0c297b0a4644fa1242d5fc96bf0e0e766",
+    "third_party/rust/store/repositories.MODULE.bazel": "5b164db63af173e566c0f9f69ee8cfe5b4783ba67f04ef56ac4208ff3cb53418",
     "tools/bazel/metadata/BUILD.bazel": "b3cec49d66d2a7f94057aa15cc7d0fe39a4862a9f8f6777eb5dbb419ae1b792b",
-    "tools/bazel/metadata/inventory.bzl": "f7c915f770175fc96df55110424285698b49cddb8227273634d22f88b48515e0",
-    "tools/bazel/rules/BUILD.bazel": "7dfdbf07c3b3c5333e0c91e00bb74fece95ca74b2f5ed6c91b9132527ad8d2c4",
+    "tools/bazel/metadata/inventory.bzl": "e1822b862c66d932e2b382ecaa373062ce7ee84d29704f2786bf6a3fd1a0f1b6",
+    "tools/bazel/rules/BUILD.bazel": "02a0d1e632d5fc1145ebd37d36ee832c2a838b207c656ec4472da38a7ae46d5f",
     "tools/bazel/rules/compile.bzl": "6e039728946c19d23b019151a0391a5ca64035796e7d672bfcc3003cb362c300",
-    "tools/bazel/rules/crates.bzl": "56a4723a1a2d92208089075f9afee94f0563d1a5cecfde125a1bf08fabfba6ef",
+    "tools/bazel/rules/crates.bzl": "1085165e9e8f1adbd3b96b007f8de5ae1f1ab31ee45722d166cbafb87ef72968",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/license.bzl": "1d08a716508fa32131599fb3309affb804c3347aaf77591f82dca8577cd9c302",
     "tools/bazel/rules/package.bzl": "8570e95108db7958ff8995206ba477dfa32c5860ba3bf0f9fe1eea809e4180e9",
-    "tools/bazel/rules/profiles.bzl": "d29fd8b5430de6a94f9cb35fc3fd2f5a1e77d44201a578a8450dd5976c7c93f8",
+    "tools/bazel/rules/profiles.bzl": "ad2eb5d758f5b42a8f86130b231819db19f31e0d85831ba5da6f5f5cf32e91cd",
     "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
-    "tools/bazel/rules/test.bzl": "96d07d4d0a44690820128d18c49fc5643bd6b47a6b758d3456bfa90c42f677ce",
+    "tools/bazel/rules/test.bzl": "2cc6171dbc447cf5153dd276c728663014005420cbedf39050707dcb1c7da5cd",
     "tools/bazel/testing/BUILD.bazel": "07d3ea2b5f8d5eb65646d8b6ddd2480dfd88440b2288467be5ba66b2c534e6bc",
     "tools/bazel/toolchains/BUILD.bazel": "53b32d7edbd41d1537c11b068ed9d62f702b0059505b691385e948a4c18fe415",
     "tools/bazel/toolchains/BUILD.cross.bazel": "5617d0599b38dbd4a5355dabf0871903ab27f2fa35f8f0676605eace0905ed71",

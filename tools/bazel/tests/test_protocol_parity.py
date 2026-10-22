@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import verify_pilot
 import verify_protocol
 
 
@@ -35,6 +36,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports = [{
             "label": "@@+aos_tools_repository+aos_core_crates__serde-1.0.228//:serde",
             "kind": "rust_library", "features": ["derive", "default"],
+            "tags": ["crate-name=serde"], "version": "1.0.228",
         }, {
             "label": self.label.removesuffix(":unit") + ":lib",
             "kind": "rust_library", "features": [],
@@ -49,6 +51,19 @@ class ProtocolParityTests(unittest.TestCase):
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         (self.root / "index.json").write_text(json.dumps({"results": self.results}))
         return verify_protocol.compare(self.root, self.inventory, self.messages)
+
+    def test_empty_test_artifacts_require_an_explicit_parity_exception(self):
+        binary = Path("/declared/bin-tests")
+        label = "//fixture:bin_probe"
+        (self.root / "index.json").write_text(json.dumps({"results": [{
+            "identity": {"label": label}, "status": "PASSED", "outputs": {"test.xml": "empty.xml"},
+        }]}))
+        (self.root / "empty.xml").write_text('<testsuite tests="0" failures="0"/>')
+        with patch.object(verify_pilot, "cases", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "test inventory differs"):
+                verify_pilot.verify(self.root, {label: binary})
+            result = verify_pilot.verify(self.root, {label: binary}, allow_empty={label})
+        self.assertEqual(result["targets"][label], {"executed": [], "ignored": []})
 
     def test_cargo_short_path_identifiers_and_unordered_features_match(self):
         self.assertEqual(self.compare()["features"], {"serde@1.0.228": [("default", "derive")]})
@@ -99,9 +114,39 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
 
+    def test_store_dependency_build_metadata_retains_original_version(self):
+        self.events[1]["package_id"] = "registry+https://example.invalid#zstd-sys@2.0.16+zstd.1.5.7"
+        self.reports[0].update(
+            label="@@+aos_tools_repository+aos_store_crates__zstd-sys-2.0.16-zstd.1.5.7//:zstd_sys",
+            tags=["crate-name=zstd-sys"], version="2.0.16+zstd.1.5.7",
+        )
+
+        self.assertEqual(self.compare()["features"], {"zstd-sys@2.0.16+zstd.1.5.7": [("default", "derive")]})
+
+    def test_external_crates_require_unambiguous_declared_package_identity(self):
+        self.reports[0]["tags"] = []
+        with self.assertRaisesRegex(ValueError, "exact package identity"):
+            self.compare()
+
+    def test_binary_libtests_and_feature_variant_suffixes_remain_in_inventory(self):
+        binary = {**self.events[0], "target": {"kind": ["bin"], "name": "probe"}, "executable": "/source/bin-tests"}
+        self.events.append(binary)
+        self.results[0]["identity"]["label"] += "_test_support"
+        binary_label = self.label.replace(":unit", ":bin_probe_test_support")
+        self.results.append({"identity": {"label": binary_label}})
+        self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
+        (self.root / "index.json").write_text(json.dumps({"results": self.results}))
+
+        verify_protocol.compare(self.root, self.inventory, self.messages, target_suffix="_test_support")
+
+        self.assertEqual(self.verify.call_args.args[1], {
+            self.label + "_test_support": Path("/source/unit-tests"), binary_label: Path("/source/bin-tests"),
+        })
+
     def test_unexpected_bazel_dependency_fails(self):
         unknown = self.reports[0]["label"].replace("serde-1.0.228", "unknown-1.0.0")
-        self.reports.append({**self.reports[0], "label": unknown})
+        self.reports.append({**self.reports[0], "label": unknown, "tags": ["crate-name=unknown"], "version": "1.0.0"})
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
 

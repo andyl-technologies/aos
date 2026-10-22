@@ -5,6 +5,7 @@ and inspect third-party sources; the generated compilation rules invoke rustc.
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -23,6 +24,11 @@ def digest(path):
 
 def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def crate_repository(repository, name, version):
+    """Matches the pinned crate_universe renderer's repository-name spelling."""
+    return f"{repository}__{name}-{version}".replace("+", "-")
 
 
 def run(command, environment):
@@ -101,6 +107,98 @@ def validate_license(specification, crate):
     return specification["license_domain"]
 
 
+def rewrite_features(rendered, expected, features, suffix="", repository=""):
+    """Specializes literal generated rules without changing their source inputs.
+
+    Build-script binaries must get constant features: an exec-configured select
+    would otherwise give a target crate's script the build dependency's features.
+    Variants therefore copy the library, script, and script alias together.
+    """
+    lines = rendered.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    def span(node):
+        return offsets[node.lineno - 1] + node.col_offset, offsets[node.end_lineno - 1] + node.end_col_offset
+
+    calls = [node.value for node in ast.parse(rendered).body
+             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+             and isinstance(node.value.func, ast.Name)
+             and node.value.func.id in {"rust_library", "rust_proc_macro", "cargo_build_script", "alias"}]
+    names = {ast.literal_eval(keyword.value) for call in calls for keyword in call.keywords if keyword.arg == "name"}
+    replacements = []
+    variants = []
+    feature_rules = 0
+    for call in calls:
+        start, end = span(call)
+        edits = []
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        if "crate_features" in keywords:
+            value = keywords["crate_features"]
+            if ast.literal_eval(value) != expected:
+                raise ValueError("rendered crate features disagree with reviewed resolution")
+            edits.append((*span(value), json.dumps(features)))
+            feature_rules += 1
+        if suffix:
+            value = keywords["name"]
+            name = ast.literal_eval(value)
+            edits.append((*span(value), json.dumps(name + suffix)))
+            for node in ast.walk(call):
+                if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                    continue
+                for prefix in [":", "@" + repository + "//:"]:
+                    if node.value.startswith(prefix) and node.value[len(prefix):] in names:
+                        edits.append((*span(node), json.dumps(node.value + suffix)))
+            if call.func.id in {"rust_library", "rust_proc_macro"} and "crate_name" not in keywords:
+                # The rule name changes, but rustc's crate identity must not.
+                edits.append((end - 1, end - 1, "    crate_name = " + json.dumps(name) + ",\n"))
+        block = rendered[start:end]
+        for left, right, value in sorted(edits, reverse=True):
+            block = block[:left - start] + value + block[right - start:]
+        if suffix:
+            variants.append(block)
+        else:
+            replacements.append((start, end, block))
+    if not feature_rules:
+        raise ValueError("reviewed crate has no literal feature declarations")
+    if suffix:
+        return "\n\n".join(variants) + "\n"
+    for start, end, block in reversed(replacements):
+        rendered = rendered[:start] + block + rendered[end:]
+    return rendered
+
+
+def specialize_feature_graph(specification, context, builds, repository):
+    """Applies version-checked feature units and redirects explicit consumer edges."""
+    for name, policy in specification.get("feature_variants", {}).items():
+        identifier = (name, policy["version"])
+        crates = [crate for crate in context["crates"].values()
+                  if (crate["name"], crate["version"]) == identifier]
+        if len(crates) != 1 or identifier not in builds:
+            raise ValueError(f"reviewed feature crate version is absent: {identifier}")
+        crate = crates[0]
+        expected = policy["resolved_features"]
+        if crate["common_attrs"]["crate_features"] != {"common": expected, "selects": {}}:
+            raise ValueError(f"reviewed feature resolution changed: {identifier}")
+        original = builds[identifier]
+        own_repository = crate_repository(repository, *identifier)
+        builds[identifier] = rewrite_features(original, expected, policy["features"])
+        for variant, settings in policy.get("variants", {}).items():
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", variant) or not settings["dependents"]:
+                raise ValueError("feature variant requires a safe name and explicit dependents")
+            suffix = "__aos_" + variant
+            builds[identifier] += "\n# Reviewed Cargo feature unit: " + variant + "\n" + rewrite_features(
+                original, expected, settings["features"], suffix, own_repository)
+            label = f"@{own_repository}//:{crate['library_target_name']}"
+            for consumer, version in settings["dependents"].items():
+                key = (consumer, version)
+                if key not in builds or json.dumps(label) not in builds[key]:
+                    raise ValueError(f"reviewed feature dependency edge is absent: {key} -> {identifier}")
+                builds[key] = builds[key].replace(json.dumps(label), json.dumps(label + suffix))
+    return builds
+
+
 def prepare_sources(specification, scratch, repository, staged):
     """Checks registry archive hashes and annotates rendered integration scope."""
     context = json.loads((scratch / "context.json").read_text())
@@ -113,6 +211,7 @@ def prepare_sources(specification, scratch, repository, staged):
         'aos_crate = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tools_repository")',
         "",
     ]
+    builds = {}
     for crate in context["crates"].values():
         if crate["repository"] is None:
             continue
@@ -140,20 +239,25 @@ def prepare_sources(specification, scratch, repository, staged):
         # remains in the source inventory and upstream source files.
         rendered = rendered.replace(marker, marker + '        "aos-license:' + license_domain + '",\n')
         rendered = "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
-        (staged / filename).write_text(rendered)
-        label = f"{repository}__{name}-{version}"
+        builds[name, version] = rendered
+        label = crate_repository(repository, name, version)
+        if label in sources:
+            raise ValueError(f"crate repository name collision: {label}")
         sources[label] = {
             "name": name, "version": version, "url": source["url"], "sha256": checksum,
             "strip_prefix": f"{name}-{version}", "build_file": filename,
             "license": crate["license"], "license_domain": license_domain,
         }
         declarations.append(f'aos_crate(name = "{label}")')
+    builds = specialize_feature_graph(specification, context, builds, repository)
+    for (name, version), rendered in builds.items():
+        (staged / f"BUILD.{name}-{version}.bazel").write_text(rendered)
     (staged / "repositories.MODULE.bazel").write_text("\n".join(declarations) + "\n")
     aliases = {}
     for identifier in context["direct_deps"]:
         crate = context["crates"][identifier]
         name, version = crate["name"], crate["version"]
-        aliases[name] = f"@{repository}__{name}-{version}//:{crate['library_target_name']}"
+        aliases[name] = f"@{crate_repository(repository, name, version)}//:{crate['library_target_name']}"
     (staged / "aliases.bzl").write_text(
         '"""Generated direct dependency labels for this resolved family."""\n\n'
         + "CRATES = " + json.dumps(aliases, indent=4, sort_keys=True) + "\n"

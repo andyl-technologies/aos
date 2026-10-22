@@ -105,36 +105,115 @@ class RustUpdateTests(unittest.TestCase):
 
         self.assertEqual(list(self.staged.iterdir()), [])
 
-    def test_generated_rules_and_source_inventory_retain_host_only_scope(self):
-        archive = self.root / "cargo-home/registry/cache/example/example-1.0.0.crate"
+    def prepare_example(self, version):
+        archive = self.root / f"cargo-home/registry/cache/example/example-{version}.crate"
         archive.parent.mkdir(parents=True)
         archive.write_bytes(b"source archive")
         checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
         (self.root / "spliced").mkdir()
         (self.root / "spliced/Cargo.lock").write_text(
-            'version = 4\n[[package]]\nname = "example"\nversion = "1.0.0"\n'
+            f'version = 4\n[[package]]\nname = "example"\nversion = "{version}"\n'
             'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
             f'checksum = "{checksum}"\n'
         )
         (self.root / "context.json").write_text(json.dumps({
             "crates": {"example": {
-                "name": "example", "version": "1.0.0", "license": "Apache-2.0",
+                "name": "example", "version": version, "license": "Apache-2.0",
                 "library_target_name": "example",
                 "repository": {"Http": {"url": "https://static.crates.io/example.crate", "sha256": checksum}},
             }},
             "direct_deps": ["example"],
         }))
         (self.root / "rendered").mkdir()
-        (self.root / "rendered/BUILD.example-1.0.0.bazel").write_text('rust_library(\n    tags = [\n    ],\n)\n')
+        (self.root / f"rendered/BUILD.example-{version}.bazel").write_text('rust_library(\n    tags = [\n    ],\n)\n')
         (self.root / "config.json").write_text("{}\n")
         specification = {"license_domain": "permissive-protocol", "host_only_licenses": ["Apache-2.0"]}
 
-        sources = updater.prepare_sources(specification, self.root, "example", self.staged)
+        return updater.prepare_sources(specification, self.root, "example", self.staged)
+
+    def test_generated_rules_and_source_inventory_retain_host_only_scope(self):
+        sources = self.prepare_example("1.0.0")
 
         self.assertEqual(sources["example__example-1.0.0"]["license_domain"], "apache-host")
         rendered = (self.staged / "BUILD.example-1.0.0.bazel").read_text()
         self.assertIn('"aos-license:apache-host"', rendered)
         self.assertNotIn('"aos-license:permissive-protocol"', rendered)
+
+    def test_build_metadata_uses_the_rendered_repository_name_everywhere(self):
+        sources = self.prepare_example("1.0.0+vendor.1")
+
+        label = "example__example-1.0.0-vendor.1"
+        self.assertEqual(list(sources), [label])
+        self.assertEqual(sources[label]["strip_prefix"], "example-1.0.0+vendor.1")
+        self.assertTrue((self.staged / "BUILD.example-1.0.0+vendor.1.bazel").is_file())
+        self.assertIn(f'aos_crate(name = "{label}")', (self.staged / "repositories.MODULE.bazel").read_text())
+        self.assertIn(f'@{label}//:example', (self.staged / "aliases.bzl").read_text())
+
+    def feature_graph(self):
+        context = {"crates": {"libc": {
+            "name": "libc", "version": "0.2.186", "library_target_name": "libc",
+            "common_attrs": {"crate_features": {"common": ["default", "std"], "selects": {}}},
+        }}}
+        builds = {
+            ("libc", "0.2.186"): '''package(default_visibility = ["//visibility:public"])
+cargo_toml_env_vars(name = "env", src = "Cargo.toml")
+rust_library(
+    name = "libc",
+    crate_features = ["default", "std"],
+    deps = ["@example__libc-0.2.186//:build_script_build"],
+    rustc_env_files = [":env"],
+)
+cargo_build_script(
+    name = "_bs",
+    crate_name = "build_script_build",
+    crate_features = ["default", "std"],
+)
+alias(name = "build_script_build", actual = ":_bs")
+''',
+            ("jobserver", "0.1.34"): 'rust_library(name = "jobserver", deps = ["@example__libc-0.2.186//:libc"])\n',
+            ("getrandom", "0.4.2"): 'rust_library(name = "getrandom", deps = ["@example__libc-0.2.186//:libc"])\n',
+        }
+        policy = {"feature_variants": {"libc": {
+            "version": "0.2.186", "resolved_features": ["default", "std"], "features": [],
+            "variants": {"build": {"features": ["default", "std"], "dependents": {"jobserver": "0.1.34"}}},
+        }}}
+        return policy, context, builds
+
+    def test_feature_variants_keep_script_features_constant_and_preserve_crate_identity(self):
+        policy, context, builds = self.feature_graph()
+
+        result = updater.specialize_feature_graph(policy, context, builds, "example")
+
+        libc = result["libc", "0.2.186"]
+        base, variant = libc.split("# Reviewed Cargo feature unit: build")
+        self.assertEqual(base.count("crate_features = []"), 2)
+        self.assertEqual(variant.count('crate_features = ["default", "std"]'), 2)
+        self.assertIn('crate_name = "libc"', variant)
+        self.assertIn('"@example__libc-0.2.186//:build_script_build__aos_build"', variant)
+        self.assertIn('actual = ":_bs__aos_build"', variant)
+        self.assertIn('rustc_env_files = [":env"]', variant)
+        self.assertNotIn("cargo_toml_env_vars(", variant)
+        self.assertIn('//:libc__aos_build"', result["jobserver", "0.1.34"])
+        self.assertNotIn("__aos_build", result["getrandom", "0.4.2"])
+
+    def test_feature_policy_rejects_changed_versions_features_and_edges(self):
+        for mutation in ["version", "features", "selects", "rendered", "consumer", "edge"]:
+            with self.subTest(mutation=mutation):
+                policy, context, builds = self.feature_graph()
+                if mutation == "version":
+                    policy["feature_variants"]["libc"]["version"] = "0.2.187"
+                elif mutation == "features":
+                    context["crates"]["libc"]["common_attrs"]["crate_features"]["common"].append("extra")
+                elif mutation == "selects":
+                    context["crates"]["libc"]["common_attrs"]["crate_features"]["selects"] = {"linux": ["std"]}
+                elif mutation == "rendered":
+                    builds["libc", "0.2.186"] = builds["libc", "0.2.186"].replace('["default", "std"]', '["std"]')
+                elif mutation == "consumer":
+                    del builds["jobserver", "0.1.34"]
+                else:
+                    builds["jobserver", "0.1.34"] = 'rust_library(name = "jobserver")'
+                with self.assertRaisesRegex(ValueError, "reviewed"):
+                    updater.specialize_feature_graph(policy, context, builds, "example")
 
 
 if __name__ == "__main__":
