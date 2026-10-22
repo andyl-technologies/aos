@@ -4,7 +4,7 @@
   workspace,
   trial,
 }: let
-  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure" "rust-cpu" "sysroot"];
+  variants = ["header" "cpp-source" "rust-source" "generated-input" "generator-environment" "feature" "rust-flags" "link-flags" "tool-closure" "rust-cpu" "sysroot" "pgo"];
   sysroot = variant:
     pkgs.runCommand "aos-bazel-${variant}-headers" {} ''
       cp -as ${pkgs.glibc.dev}/. "$out/"
@@ -66,6 +66,11 @@
       toolchains = toolchains variant;
     };
   original = configured "baseline";
+  profiles = import ./_bazel-pgo-profiles.nix {
+    inherit pkgs;
+    workspace = original;
+    source = snapshot "pgo-generate";
+  };
   snapshot = variant:
     pkgs.runCommand "aos-bazel-invalidation-source-${variant}" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
@@ -77,11 +82,19 @@
         then "x86_64"
         else "aarch64"
       }
+      ${pkgs.lib.optionalString (builtins.elem variant ["pgo" "pgo-baseline"]) ''
+        cp ${profiles}/${
+          if variant == "pgo"
+          then "changed"
+          else "baseline"
+        }.profdata \
+          "$out/tools/bazel/tests/fixture/cache.profdata"
+      ''}
     '';
   experiment = variant: let
     cacheNamespace = "invalidation-${trial}-${variant}";
     baselineVariant =
-      if builtins.elem variant ["sysroot" "rust-cpu"]
+      if builtins.elem variant ["sysroot" "rust-cpu" "pgo"]
       then "${variant}-baseline"
       else null;
     baseline = pkgs.mkAosBazelBuild {
@@ -114,7 +127,8 @@
       cp ${../../tools/bazel/tests/verify_invalidation.py} verify_invalidation.py
       printf '%s\n' "$selected" > selected.json
       ${pkgs.python3}/bin/python3 verify_invalidation.py \
-        --baseline ${baseline} --variants selected.json --output "$out"
+        --baseline ${baseline} --variants selected.json --output "$out" \
+        ${pkgs.lib.optionalString (variant == "pgo") "--pgo-profiles ${profiles}"}
     '';
 in rec {
   cases = builtins.listToAttrs (map (variant: {

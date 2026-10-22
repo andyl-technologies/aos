@@ -42,6 +42,14 @@ def mutate(root, variant, cpu=None):
     elif variant in {"sysroot", "sysroot-baseline"}:
         replace(root, "library.cc", '#include "library.h"', '#include "library.h"\n#include <aos-cache-probe.h>')
         replace(root, "library.cc", "return AOS_FIXTURE_VALUE", "return AOS_CACHE_SYSROOT_VALUE")
+    elif variant == "pgo-generate":
+        for name in ["rust_library", "rust_app", "native_app"]:
+            replace(root, "BUILD.bazel", 'name = "' + name + '",',
+                    'name = "' + name + '",\n    rustc_flags = ["-Cprofile-generate"],')
+    elif variant in {"pgo", "pgo-baseline"}:
+        replace(root, "BUILD.bazel", 'name = "rust_library",',
+                'name = "rust_library",\n    compile_data = ["cache.profdata"],\n'
+                '    rustc_flags = ["-Copt-level=2", "-Cprofile-use=$(location :cache.profdata)"],')
     elif variant != "tool-closure":
         raise ValueError(f"unsupported cache fixture variant: {variant}")
 

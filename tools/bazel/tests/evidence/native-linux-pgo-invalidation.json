@@ -1,0 +1,169 @@
+{
+  "checks": {
+    "combined_all": "/nix/store/vv903110xwv0d998j0q3rj4jyvwnhiql-aos-bazel-checks",
+    "invalidation_matrix": "/nix/store/k9qg7dkffkm2jlir3z4fycp9xxxck681-aos-bazel-cache-invalidation-matrix"
+  },
+  "configuration_sha256": {
+    "tests/build/_bazel-cache.nix": "da2eef4b63b0be13b77decf77f0889e993d23466bec868a3a43615fa3dea8184",
+    "tests/build/_bazel-invalidation.nix": "2e42845331066228d4db86aed7c159d71ddf7d4143f516a37bbc17d144d62ab2",
+    "tests/build/_bazel-pgo-profiles.nix": "bcf938f53460b0e4777d26fa45e25d167e6b5044413a5c0d6e1f65e80d8b0591",
+    "tools/bazel/tests/mutate_fixture.py": "2f2bc81d012e28bd209cfb5fe61cd5ca1da075df9c47bf1b7805c1990a322107",
+    "tools/bazel/tests/train_pgo.py": "10d0343d5831993024cc6ba5893cf9beb72b45d26acc941ae61c2bfab44c8847",
+    "tools/bazel/tests/verify_invalidation.py": "5cfeaaae993071e167d5d72618365f4b794ce730d648ee7fd72686ad21d2909d"
+  },
+  "limitations": [
+    "Only native x86_64 Linux is qualified by this PGO experiment.",
+    "Different profile weights need not change optimized library bytes; consumers must hit exactly when their semantic fingerprints and action digests are unchanged.",
+    "A separately replaced linker executable remains unqualified.",
+    "Correctness checks do not establish performance budgets or authorize a production cutover."
+  ],
+  "matrix_cases": [
+    "cpp-source",
+    "feature",
+    "generated-input",
+    "generator-environment",
+    "header",
+    "link-flags",
+    "pgo",
+    "rust-cpu",
+    "rust-flags",
+    "rust-source",
+    "sysroot",
+    "tool-closure"
+  ],
+  "pgo": {
+    "baseline": "/nix/store/p503p9g3bp6nap9diymm0zkgqhpy8sdj-aos-bazel-pgo-baseline-1",
+    "pgo_training": {
+      "build": "/nix/store/dgfwd7gh6ify2k96lzdcvymxlcv3ia6a-aos-bazel-pgo-training-1",
+      "llvm_version": "LLVM (http://llvm.org/):\n  LLVM version 22.1.0\n  Optimized build.\n",
+      "profiles": {
+        "baseline": {
+          "block_counts": [
+            1,
+            1,
+            0
+          ],
+          "executions": 1,
+          "sha256": "59fdc7e8a20b3b1a7be8620714c0e5b02c1f25e3b9c871991cca6953fd03b308"
+        },
+        "changed": {
+          "block_counts": [
+            4,
+            4,
+            0
+          ],
+          "executions": 4,
+          "sha256": "fc790066dc2badf4d1dfeeb2d2c3afc61de5217640f4e4386abf64f0f3d29563"
+        }
+      },
+      "rust_version": "rustc 1.98.1 (48a229cea 2026-09-01) (built from a source tarball)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.0\n",
+      "schema_version": 1
+    },
+    "schema_version": 1,
+    "variants": {
+      "pgo": {
+        "actions": {
+          "cpp_app": {
+            "action_digest": {
+              "hash": "b2a81973a83b6f034d30953476294512b9ae1bc9e9e10b0554f4ed9ebe71406f",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "2aabee0e8119496d27ae3d6628961678ccbf50dc961197be8a3562c7c3d0fe40",
+            "runner": "disk cache hit"
+          },
+          "cpp_library": {
+            "action_digest": {
+              "hash": "11e5cebc82861887a79f78fb612be3018cc2949af6de46e1ef36d64b904fa719",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "4245b109c07e925b1127f78c9b7fc57aef0efd34310fb776f6c11d38ed997674",
+            "runner": "disk cache hit"
+          },
+          "cpp_link": {
+            "action_digest": {
+              "hash": "88604bc674c8a5458cb8e74898237578e710ebfdeb89086ac83f494d641bc5d6",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "378ba9ae6884b5d2862f1959cac19a40351e332b5039c56cccbe994e6089222a",
+            "runner": "disk cache hit"
+          },
+          "fixture_macro": {
+            "action_digest": {
+              "hash": "5486f7dcb21206176f03b39d75d8bebb303cce531bd85c5d040a063766102378",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "b4defa10a1666599a598a0b9185dbbc73140ed0ed9a8b4ef0091421aafabce7a",
+            "runner": "disk cache hit"
+          },
+          "generated": {
+            "action_digest": {
+              "hash": "dd427a4305794b06a348b07defae949d1ff3eab4f564247d6321d36c8f821700",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "7f870d1759cf4e28f22a173f8b22f3b2a18eec67322d654a361b21d76cbf1ccc",
+            "runner": "disk cache hit"
+          },
+          "generated_library": {
+            "action_digest": {
+              "hash": "42334cc328b4ef61bad548de6a5dfcf9829d407c1f688b893f1b1bab85920700",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "0c19305a564cc186f4dd852be3d047bbf1f4f330bb41bc14a694bd1fdfb55e9c",
+            "runner": "disk cache hit"
+          },
+          "native_app": {
+            "action_digest": {
+              "hash": "9c028f8847fade59d2565075626a578b8e42767d0f9c70978be179f4d1e6765c",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "1ca689fc18d72228426e83352ff2794618879374e1b305d8b3ec95908542627a",
+            "runner": "disk cache hit"
+          },
+          "rust_app": {
+            "action_digest": {
+              "hash": "9a0bc91dc02d0a832191c0e42de5f35a2596397d40449e163b0ad245196be6d0",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "c96b51661b78acefcc2a6a238847aabfdb8c895d218f680ae667e601ca9c6b86",
+            "runner": "disk cache hit"
+          },
+          "rust_library": {
+            "action_digest": {
+              "hash": "11b49a301d0c204cba16c2de27e67603f12923bdaac04c7867c58b72adebf227",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "c7a77e4bff3e8b0f47691a8ab229ef8db434ab404084fc9594787e1f47917a70",
+            "runner": "linux-sandbox"
+          }
+        },
+        "artifacts": {
+          "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+          "bin/native-fixture": "097f512137df237e85982dfc14ac1a9fd21ad65c48c11e0960b1bc1a1f9b39d3",
+          "bin/rust-fixture": "b91f330af3380de1866cea08b4f57b89dac7bbcdf7a426eaf21235a6d489f00a"
+        },
+        "build": "/nix/store/54pnala569phyd382s08m2hgb2718y89-aos-bazel-invalidation-pgo-1"
+      }
+    }
+  },
+  "schema_version": 1,
+  "scope": "Native x86_64 Linux PGO profile-input cache invalidation using actual instrumented executions",
+  "source_parent_commit": "0231725c12"
+}

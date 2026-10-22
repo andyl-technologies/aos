@@ -9,7 +9,7 @@ import subprocess
 from verify_cache import execution_events, package_files, require_action
 
 
-def verify(baseline, variants):
+def verify(baseline, variants, pgo_profiles=None):
     baseline_events = execution_events(baseline)
     # Expected misses follow dependency edges, including both native and Rust
     # consumers of the generator. Unrelated actions must remain cache hits.
@@ -24,6 +24,7 @@ def verify(baseline, variants):
         "link-flags": {"cpp_link"},
         "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
         "rust-cpu": {"rust_library", "rust_app", "native_app"},
+        "pgo": {"rust_library"},
         "sysroot": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
     }
     actions = {
@@ -39,17 +40,40 @@ def verify(baseline, variants):
         "rust-flags": (42, 42, 84), "tool-closure": (42, 42, 84),
         "link-flags": (42, 42, 84),
         "rust-cpu": (43, 42, 85), "sysroot": (42, 43, 85),
+        "pgo": (42, 42, 84),
     }
     evidence = {"schema_version": 1, "baseline": str(baseline), "variants": {}}
+    if "pgo" in variants:
+        if pgo_profiles is None:
+            raise ValueError("PGO invalidation requires its actual training records")
+        training = json.loads((pgo_profiles / "profiles.json").read_text())
+        evidence["pgo_training"] = training
+        for name, records, key in [("baseline", baseline_events, "baseline"),
+                                   ("changed", execution_events(variants["pgo"]), "changed")]:
+            compiler = next(event for event in records if event["targetLabel"] == "//tools/bazel/tests/fixture:rust_library"
+                            and event["mnemonic"] == "Rustc")
+            inputs = [entry for entry in compiler["inputs"] if entry["path"].endswith("/cache.profdata")]
+            expected = training["profiles"][key]["sha256"]
+            if len(inputs) != 1 or inputs[0]["digest"]["hash"] != expected:
+                raise ValueError(f"PGO {name} compile omitted the declared trained profile input")
     for variant, build in variants.items():
         events = execution_events(build)
         results = {}
         for target, mnemonic in actions.items():
             label = "//tools/bazel/tests/fixture:" + ("cpp_app" if target == "cpp_link" else target)
             original = require_action(baseline_events, label, mnemonic, hit=False)
-            result = require_action(events, label, mnemonic, hit=target not in changed[variant])
+            expected_hit = target not in changed[variant]
+            if variant == "pgo" and target in {"rust_app", "native_app"}:
+                # Different weights can produce the same optimized rlib bytes.
+                # Its consumers then retain their exact inputs and must hit;
+                # changed consumer identities must miss instead.
+                selected = [event for event in events if event["targetLabel"] == label and event["mnemonic"] == mnemonic]
+                if len(selected) != 1:
+                    raise ValueError("PGO experiment omitted a unique consumer action")
+                expected_hit = selected[0]["cacheHit"]
+            result = require_action(events, label, mnemonic, hit=expected_hit)
             same_identity = result["fingerprint"] == original["fingerprint"]
-            if same_identity != (target not in changed[variant]):
+            if same_identity != expected_hit:
                 raise ValueError(f"unexpected semantic identity for {variant}: {target}")
             if original["action_digest"] is None or result["action_digest"] is None:
                 raise ValueError(f"invalidation experiment omitted an action digest: {variant}: {target}")
@@ -78,8 +102,9 @@ if __name__ == "__main__":
     parser.add_argument("--baseline", required=True, type=Path)
     parser.add_argument("--variants", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--pgo-profiles", type=Path)
     options = parser.parse_args()
     variants = {name: Path(path) for name, path in json.loads(options.variants.read_text()).items()}
-    result = verify(options.baseline, variants)
+    result = verify(options.baseline, variants, options.pgo_profiles)
     options.output.mkdir(parents=True, exist_ok=True)
     (options.output / "evidence.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

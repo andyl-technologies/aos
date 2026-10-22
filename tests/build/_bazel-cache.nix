@@ -14,11 +14,13 @@
         ./_bazel-cache.nix
         ./_bazel-invalidation.nix
         ./_bazel-target-invalidation.nix
+        ./_bazel-pgo-profiles.nix
         ../../pkgs/build-support/_bazel/modules.nix
         ../../pkgs/build-support/_bazel/rust-helper.nix
         ../../tools/bazel/tests/mutate_fixture.py
         ../../tools/bazel/tests/verify_invalidation.py
         ../../tools/bazel/tests/verify_target_invalidation.py
+        ../../tools/bazel/tests/train_pgo.py
       ];
       bazel = toString pkgs.bazel;
     }),
