@@ -2160,6 +2160,33 @@ are model funding callbacks; they do not grant genuine Source/Birth credit. The
 genuine enclosing producer, opaque Initial/Recipe, Native18 policy, publication,
 ACK, model adoption and full RFC acceptance remain unfinished.
 
+## Original literal response publication custody
+
+A new byte-only publication primitive retains its original cut, actual shared
+journal edge, outgoing lifetime slot and first failure. It spends before original
+checks, copies the complete independently prepared response into the existing
+reserved journal before any write, and advances only successful write counts.
+Interrupted writes retry under the same cut; partial, zero or failed writes stay
+spent. Expiry after the last write preserves complete physical progress while
+refusing successful completion. Replacing the publication capsule cannot reopen
+the journal. Neither this transition nor its raw frame digests marks an incoming
+literal as parsed or grants SDK, Source, policy, ACK or native readiness.
+
+Seven focused controls pass, including a real Unix socket and actual kernel
+broken pipe, every partial prefix, zero writes, unknown custom I/O ownership,
+expired/substituted cuts, foreign literal/bank custody and final-write expiry.
+The bank keeps the complete original proposal beside actual progress. Non-owning
+kernel/simple I/O failures have no additional retained heap; unknown custom
+errors stay owned and their census refuses without a source layout declaration.
+The byte transition's row excludes independently admitted response preparation,
+stream implementation work/backing and containing-root guards/census. These
+controls do not qualify a whole Native18 publication route or genuine credit.
+
+Full qualification is pending. Original-root response encoding, pre-read physical
+publication custody, complete funding, lease containment on terminal refusal and
+the genuine enclosing producer still need to join this primitive before the
+Native18 route can publish. All full RFC acceptance exits remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

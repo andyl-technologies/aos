@@ -30,6 +30,10 @@ pub(crate) use retained_reservation::OriginalNativeHelloReservation;
 mod retained_exchange;
 pub(crate) use retained_exchange::RetainedOriginalNativeHelloExchange;
 
+#[path = "native_hello/literal_publication.rs"]
+mod literal_publication;
+pub(crate) use literal_publication::OriginalNativeHelloPublication;
+
 const MAXIMUM_HELLO_BYTES: usize = 1024 * 1024;
 
 /// Owns one precharged native Hello attempt, including partial failed traffic.
