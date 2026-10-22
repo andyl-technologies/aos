@@ -13,12 +13,16 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     os::fd::AsFd,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 use terrane_linux::{
     host_cache::{NativeExposureReconciliation, NativeMetadataOwner},
-    maintenance_channel::{self, MaintenanceClient, MaintenanceRoles, MaintenanceServer},
+    maintenance_channel::{
+        self, MaintenanceClient, MaintenanceListener, MaintenanceRoles, MaintenanceServer,
+    },
 };
 
 const ROLES: MaintenanceRoles = MaintenanceRoles {
@@ -28,7 +32,10 @@ const ROLES: MaintenanceRoles = MaintenanceRoles {
 
 pub(super) struct Launched {
     child: Child,
-    server: MaintenanceServer,
+    server: Option<MaintenanceServer>,
+    listener: Option<MaintenanceListener>,
+    listener_path: Option<PathBuf>,
+    listener_inode: Option<(u64, u64)>,
     control: File,
 }
 
@@ -42,13 +49,18 @@ impl Drop for Launched {
     }
 }
 
-pub(super) fn launch() -> Result<Launched> {
+pub(super) fn launch(listener: bool) -> Result<Launched> {
     if rustix::process::geteuid().as_raw() != 0 || fs::read_dir("/proc/self/task")?.count() != 1 {
         return Err("maintenance fixture requires one administrative launch thread".into());
     }
     let setpriv =
         std::env::var_os("TERRANE_WORKER_SETPRIV").ok_or("missing AOS-built fixture launcher")?;
-    let (serve, gc) = maintenance_channel::channel_pair()?;
+    let (serve, gc) = if listener {
+        (None, Stdio::null())
+    } else {
+        let (serve, gc) = maintenance_channel::channel_pair()?;
+        (Some(serve), Stdio::from(gc))
+    };
     let (control, child_control) = maintenance_channel::channel_pair()?;
     let child = Command::new(setpriv)
         .args([
@@ -61,15 +73,37 @@ pub(super) fn launch() -> Result<Launched> {
             "--no-new-privs",
         ])
         .arg(std::env::current_exe()?)
-        .arg("maintenance-child")
-        .stdin(Stdio::from(gc))
+        .arg(if listener {
+            "maintenance-listener-child"
+        } else {
+            "maintenance-child"
+        })
+        .stdin(gc)
         .stderr(Stdio::from(child_control))
         .stdout(Stdio::null())
         .spawn()?;
     scoped_worker::drop_to_serve()?;
+    let (listener, listener_path, listener_inode) = if listener {
+        let path = listener_path()?;
+        let listener = MaintenanceListener::bind(&path, ROLES)?;
+        verify_listener_refusals(&listener, &path)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        (
+            Some(listener),
+            Some(path),
+            Some((metadata.dev(), metadata.ino())),
+        )
+    } else {
+        (None, None, None)
+    };
     Ok(Launched {
         child,
-        server: MaintenanceServer::bind(serve, ROLES)?,
+        server: serve
+            .map(|socket| MaintenanceServer::bind(socket, ROLES))
+            .transpose()?,
+        listener,
+        listener_path,
+        listener_inode,
         control: File::from(control),
     })
 }
@@ -99,6 +133,19 @@ pub(super) fn run(
         println!(
             "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"
         );
+        if let Some(path) = &launched.listener_path {
+            let metadata = fs::symlink_metadata(path)?;
+            if Some((metadata.dev(), metadata.ino())) != launched.listener_inode
+                || metadata.mode() & 0o7777 != 0o660
+                || metadata.uid() != ROLES.serve_uid
+                || metadata.gid() != ROLES.gc_uid
+            {
+                return Err("maintenance listener lost its original socket custody".into());
+            }
+            println!(
+                "PASS protected GC listener preserves its original mode-0660 inode and refuses unsafe ancestors, existing names and wrong-role connections"
+            );
+        }
         Ok(())
     }))
 }
@@ -111,7 +158,16 @@ impl Launched {
         self.control.write_all(&[1])?;
         let report = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(report) = self.server.process_next(owner).await? {
+                if self.server.is_none() {
+                    let listener = self
+                        .listener
+                        .as_ref()
+                        .ok_or_else(|| io::Error::other("GC listener absent"))?;
+                    self.server = listener.accept()?;
+                }
+                if let Some(server) = &mut self.server
+                    && let Some(report) = server.process_next(owner).await?
+                {
                     return Ok::<_, io::Error>(report);
                 }
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -140,7 +196,7 @@ impl Launched {
 
 // This native-only deadline bounds transport waits and never enters policy state.
 #[allow(clippy::disallowed_methods)]
-pub(super) fn child() -> Result<()> {
+pub(super) fn child(listener: bool) -> Result<()> {
     if rustix::process::geteuid().as_raw() != ROLES.gc_uid {
         return Err("maintenance child requires actual GC identity".into());
     }
@@ -153,8 +209,12 @@ pub(super) fn child() -> Result<()> {
             return Err("GC child retains native capabilities".into());
         }
     }
-    let endpoint = io::stdin().as_fd().try_clone_to_owned()?;
-    let mut client = MaintenanceClient::bind(endpoint, ROLES)?;
+    let mut client = if listener {
+        None
+    } else {
+        let endpoint = io::stdin().as_fd().try_clone_to_owned()?;
+        Some(MaintenanceClient::bind(endpoint, ROLES)?)
+    };
     let mut control = File::from(io::stderr().as_fd().try_clone_to_owned()?);
     loop {
         wait_readable(&control, 25)?;
@@ -173,7 +233,13 @@ pub(super) fn child() -> Result<()> {
         {
             return Err("GC could open serve-private cache state".into());
         }
-        let mut pending = client.reconcile_draining()?;
+        if client.is_none() {
+            client = Some(MaintenanceClient::connect(&listener_path()?, ROLES)?);
+        }
+        let mut pending = client
+            .as_mut()
+            .ok_or("GC channel absent")?
+            .reconcile_draining()?;
         let deadline = Instant::now() + Duration::from_secs(5);
         let report = loop {
             if let Some(report) = pending.try_receive()? {
@@ -194,6 +260,49 @@ pub(super) fn child() -> Result<()> {
         }
         control.write_all(&packet)?;
     }
+}
+
+fn listener_path() -> Result<PathBuf> {
+    Ok(std::env::var_os("TERRANE_MAINTENANCE_SOCKET")
+        .ok_or("missing explicit fixture maintenance listener path")?
+        .into())
+}
+
+fn verify_listener_refusals(listener: &MaintenanceListener, path: &std::path::Path) -> Result<()> {
+    if listener.accept()?.is_some() || MaintenanceListener::bind(path, ROLES).is_ok() {
+        return Err(
+            "maintenance listener replaced an existing name or accepted an absent peer".into(),
+        );
+    }
+    let socket = net::socket_with(
+        net::AddressFamily::UNIX,
+        net::SocketType::SEQPACKET,
+        net::SocketFlags::CLOEXEC,
+        None,
+    )?;
+    net::connect(&socket, &net::SocketAddrUnix::new(path)?)?;
+    if !matches!(listener.accept(), Err(error) if error.kind() == io::ErrorKind::PermissionDenied) {
+        return Err("maintenance listener admitted serve as the GC role".into());
+    }
+
+    let parent = path.parent().ok_or("maintenance fixture parent absent")?;
+    let writable = parent.join("unprotected");
+    fs::create_dir(&writable)?;
+    fs::set_permissions(&writable, fs::Permissions::from_mode(0o770))?;
+    let refused = MaintenanceListener::bind(&writable.join("refused.sock"), ROLES).is_err();
+    let untouched = fs::read_dir(&writable)?.next().is_none();
+    fs::remove_dir(&writable)?;
+    if !refused || !untouched {
+        return Err("maintenance listener mutated a group-writable ancestor".into());
+    }
+    let alias = parent.join("alias");
+    std::os::unix::fs::symlink(parent, &alias)?;
+    let refused = MaintenanceListener::bind(&alias.join("refused.sock"), ROLES).is_err();
+    fs::remove_file(alias)?;
+    if !refused {
+        return Err("maintenance listener traversed a symlink ancestor".into());
+    }
+    Ok(())
 }
 
 fn wait_readable(file: impl AsFd, seconds: i64) -> io::Result<()> {

@@ -63,10 +63,13 @@ fn main() -> Result<()> {
         return worker_crash::child();
     }
     if mode == "maintenance-child" {
-        return maintenance::child();
+        return maintenance::child(false);
     }
-    let mut maintenance = if mode == "maintenance" {
-        Some(maintenance::launch()?)
+    if mode == "maintenance-listener-child" {
+        return maintenance::child(true);
+    }
+    let mut maintenance = if matches!(mode.as_str(), "maintenance" | "maintenance-listener") {
+        Some(maintenance::launch(mode == "maintenance-listener")?)
     } else {
         None
     };
@@ -149,6 +152,7 @@ fn main() -> Result<()> {
             | "global-pressure"
             | "host-admission"
             | "maintenance"
+            | "maintenance-listener"
     ) {
         return Err("unknown surface-owner selector".into());
     }

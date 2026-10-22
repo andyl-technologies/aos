@@ -14605,3 +14605,35 @@ declarations also pass; the new tests have an explicitly checked runtime/surface
 feature gate. Cross-identity native VM and mandatory application qualification
 are pending. Production listeners, GC collection, role startup and worker
 confinement remain separate unfinished requirements.
+
+
+Private GC channel candidate `4d4bfc9e65` is pushed. Five checks run on its
+clean 9,381-file frozen source: dedicated GC channel, complete surface owner,
+scoped worker regression, full native cache and required application compilation.
+No runtime result for the private channel is asserted yet. The longer T2 gate
+aggregate still runs against its separate frozen `d5b6d36103` checkpoint.
+
+The next native maintenance boundary adds a protected nonblocking listener and
+client connector for explicitly configured role identities. It reuses the
+publisher transport's existing retained-ancestor and retained-socket-inode mode
+checks through crate-private helpers; no unsafe code or publisher lifecycle
+authority is added. Binding retains all protected ancestors and the original
+mode-0660 socket inode, never replaces an existing name, and enables kernel
+credentials before requests can queue. Accept checks the connected GC UID before
+creating a request endpoint; each packet still checks its sending UID. Connecting
+checks protected ancestry and the actual serving peer UID before any request.
+The caller separately owns finite connection counts and deadlines. This supplies
+no configured daemon startup, collector or production worker claim.
+
+`checks.terrane.integration.gc-maintenance-listener` adds a separate genuine
+native cross-identity actor using the same original cache owner and mapped-inode
+closure scenario. Its protected setgid runtime parent is serve-owned with the
+GC role's group. Before native owner startup, controls require an empty accept
+queue, refusal of an existing socket name, a real wrong-role connection,
+group-writable ancestry and symlink ancestry. Final checks require the same
+original socket inode, ownership, group and exact 0660 mode after authenticated
+GC requests and final-unmap closure. The 30-second actor and 90-second VM bounds
+are unchanged. Both strict Linux all-target feature profiles, all ten existing
+maintenance socket controls, Rust formatting, Python syntax, Nix evaluation and
+formatting, and all 128 base native source declarations pass. Native listener
+runtime and required application qualification remain pending.

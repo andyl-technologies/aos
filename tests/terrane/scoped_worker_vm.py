@@ -164,14 +164,15 @@ def load(name, path):
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
     if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
-            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance"]):
-        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission or --maintenance")
+            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance", "--maintenance-listener"]):
+        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission, --maintenance or --maintenance-listener")
     image, source = map(Path, sys.argv[1:3])
     crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
     pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
     admission = len(sys.argv) == 4 and sys.argv[3] == "--admission"
-    maintenance = len(sys.argv) == 4 and sys.argv[3] == "--maintenance"
-    case = ("gc-maintenance" if maintenance else "host-admission" if admission
+    listener = len(sys.argv) == 4 and sys.argv[3] == "--maintenance-listener"
+    maintenance = listener or (len(sys.argv) == 4 and sys.argv[3] == "--maintenance")
+    case = ("gc-maintenance-listener" if listener else "gc-maintenance" if maintenance else "host-admission" if admission
         else "pressure" if pressure else "worker-crash" if crash else "scoped-worker")
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
@@ -187,6 +188,10 @@ def main():
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
+    maintenance_socket = support.RUNTIME / "maintenance" / "owner.sock"
+    if listener:
+        maintenance_socket.parent.mkdir()
+        support.metadata(maintenance_socket.parent, 840, 843, 0o2750)
     support.administrative_preflight("after")
     quota_config, publisher_config = support.configurations()
     if crash or maintenance:
@@ -215,7 +220,8 @@ def main():
             TERRANE_CACHE_UUID=uuid, TERRANE_CACHE_BUDGET=str(support.BUDGET),
             TERRANE_CACHE_QUOTA_SOCKET=str(support.RUNTIME / "quota.sock"),
             TERRANE_CACHE_PUBLISHER_SOCKET=str(support.PUB_RUNTIME / "publisher.sock"),
-            TERRANE_WORKER_SETPRIV=setpriv)
+            TERRANE_WORKER_SETPRIV=setpriv,
+            TERRANE_MAINTENANCE_SOCKET=str(maintenance_socket))
 
     environment = environment_for(case)
 
@@ -260,7 +266,7 @@ def main():
             return
         if maintenance:
             try:
-                result = subprocess.run([executable, "maintenance"], env=environment,
+                result = subprocess.run([executable, "maintenance-listener" if listener else "maintenance"], env=environment,
                     text=True, capture_output=True, timeout=30)
             except subprocess.TimeoutExpired as error:
                 for stream in [error.stdout, error.stderr]:
@@ -270,15 +276,19 @@ def main():
                 raise
             print(result.stdout, end="", flush=True)
             print(result.stderr, end="", flush=True)
-            support.require(result.returncode == 0 and result.stdout.splitlines() == [
+            expected = [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
                 "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure",
                 "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap",
-                "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"],
+                "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"]
+            if listener:
+                expected.append("PASS protected GC listener preserves its original mode-0660 inode and refuses unsafe ancestors, existing names and wrong-role connections")
+            support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
                 "actual distinct-role GC maintenance failed")
             support.verify_image()
             surface.verify_surface(image, source)
-            print("PASS native GC maintenance channel component; deployed role listeners and production worker remain unqualified", flush=True)
+            print("PASS native GC maintenance listener component; deployed role startup and production worker remain unqualified" if listener else
+                "PASS native GC maintenance channel component; deployed role listeners and production worker remain unqualified", flush=True)
             return
         try:
             # Only fixture launch runs administratively. The same process drops

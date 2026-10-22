@@ -1,16 +1,20 @@
 //! Routes authenticated GC maintenance to the original serving cache owner.
 //!
-//! A trusted launcher supplies private connected Unix sequenced-packet endpoints
-//! and distinct configured role identities. The channel accepts no descriptors,
+//! A trusted launcher supplies private connected Unix sequenced-packet endpoints,
+//! or roles connect beneath a protected operator path using [`MaintenanceListener`].
+//! Distinct configured identities bind peers. The channel accepts no descriptors,
 //! row identifiers or closure evidence. Each request reconciles the original
 //! owner's finite draining inventory through its existing physical queue.
 //! Socket operations are nonblocking; callers supply event loops and deadlines.
-//! This component supplies neither a listener nor deployed role startup.
+//! Configured role startup separately owns connection limits and deadlines.
 
+mod listener;
 mod socket;
 #[cfg(test)]
 mod tests;
 mod wire;
+
+pub use listener::MaintenanceListener;
 
 use crate::host_cache::{NativeExposureReconciliation, NativeMetadataOwner};
 use socket::{Endpoint, Exchange};

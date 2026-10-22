@@ -145,7 +145,14 @@ impl Listener {
 }
 
 /// Changes only the retained bound inode, then verifies its configured name.
-fn set_bound_socket_mode(
+///
+/// This kernel custody check is shared by local role listeners. It grants no
+/// publisher operation or native lifecycle authority.
+///
+/// # Errors
+/// Refuses changed inode, type, ownership, group, links or mode, and native IO
+/// failures. Unsupported retained-inode chmod fails without a pathname fallback.
+pub(crate) fn set_bound_socket_mode(
     parent: &OwnedFd,
     name: &OsStr,
     node: &OwnedFd,
@@ -438,7 +445,12 @@ fn authenticate(descriptor: &OwnedFd, expected_uid: u32) -> Result<(), Error> {
     Ok(())
 }
 
-fn protect_parent(path: &Path, publisher_uid: u32) -> Result<Vec<OwnedFd>, Error> {
+/// Retains real protected ancestors owned only by root or the selected listener UID.
+///
+/// # Errors
+/// Refuses relative or malformed paths, symlinks, writable ancestors, another
+/// owner and native IO failures. The returned descriptors retain every ancestor.
+pub(crate) fn protect_parent(path: &Path, publisher_uid: u32) -> Result<Vec<OwnedFd>, Error> {
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(Error::Invalid("socket path"));
     }
