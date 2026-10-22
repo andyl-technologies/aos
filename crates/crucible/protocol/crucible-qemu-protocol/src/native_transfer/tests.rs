@@ -4,7 +4,7 @@
 use super::*;
 use crate::runtime_artifact::RuntimeArtifactIdentity;
 
-fn runtime() -> RuntimeArtifactPair {
+pub(super) fn runtime() -> RuntimeArtifactPair {
     RuntimeArtifactPair {
         process_generation: 4,
         account_generation: 5,
@@ -20,7 +20,7 @@ fn runtime() -> RuntimeArtifactPair {
     }
 }
 
-fn transfer() -> NativeTransfer {
+pub(super) fn transfer() -> NativeTransfer {
     NativeTransfer {
         coordinates: NativeTransferCoordinates {
             issuer_epoch: 1,

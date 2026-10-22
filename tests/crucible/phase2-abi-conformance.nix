@@ -675,6 +675,17 @@ in
                 -p crucible-qemu-protocol \
                 --lib native_transfer::tests:: \
                 -- --test-threads=1
+              require_test_set 8 protocol-native-profile-manifest \
+                native_transfer::manifest::tests::manifest_borrows_all_rows_exact_launch_bytes_and_matching_transfer \
+                -p crucible-qemu-protocol --lib native_transfer::manifest::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib native_transfer::manifest::tests:: \
+                -- --test-threads=1
               require_test_set 4 protocol-runtime-pair \
                 runtime_artifact::tests::runtime_pair_matches_all_public_vectors_and_exact_accepted_round_trips \
                 -p crucible-qemu-protocol --lib runtime_artifact::tests::runtime_pair

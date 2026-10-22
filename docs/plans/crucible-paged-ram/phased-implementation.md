@@ -539,11 +539,28 @@ iteration with the compiler's fixed-array views. The initial Clippy refusal is
 retained. Counted ABI registration and exact component bindings are added;
 fresh hermetic ABI and application compilation remain pending.
 
-Independent C vectors, the complete manifest/probe readers, negotiated resource
+The borrowed complete manifest reader additionally checks the public clarification
+at signed `86ed25302e7778b2ca24fe18f705645371d54cec`, tree
+`f28d6ca445bf3a36e84362ccc2e0ed14e9a8092c`. Independent review verifies all seven
+payloads against manifest
+`41ec2c5070f82dcf406e32d94c537d1bb2e23e2c9e7aa5fb86e016690e51586c`.
+It borrows at most 23,808 bytes, checks the consecutive artifact roster and its
+unique child identities, all sixteen ordered producer rows, canonical unselected
+rows, required finite request dimensions and exact launch strings. Argument and
+environment totals include their four-byte length prefixes; environment names
+are unique, while argument bytes may be non-UTF-8. Repeated descriptive producer
+coordinates remain representable and confer no shared-custody or payment proof.
+Complete manifest SHA256 and actual libc/loader identity correlation remain
+separate from syntax. Eight additional focused cases pass, including every
+truncation and independently valid foreign correlations; strict all-target
+protocol Clippy passes. Counted ABI registration and component bindings cover
+these cases separately from the nine transfer cases.
+
+Independent C transfer/manifest vectors, the probe reader, negotiated resource
 phase, real prebirth issuer and launcher, retained borrower adoption and matching
 kernel reap remain incomplete. Setup ten and plan thirteen cannot consume this
 material. Parsing it grants no resources or execution/cleanup permission, and
-no profile is activated by this component.
+no profile is activated by these components.
 
 #### Selected allocator fail-stop component
 
