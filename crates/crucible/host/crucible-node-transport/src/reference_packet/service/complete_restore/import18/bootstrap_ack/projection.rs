@@ -196,6 +196,7 @@ pub fn native_import18_bootstrap_ack_counter_scratch_data() -> usize {
         + original_serialization_counter_scratch_data()
         + crate::connection::original_serialized_credit_counter_scratch_data()
         + canonical::canonical_json_counter_scratch_bytes_data()
+        + super::crypto::context_counter_scratch_data()
 }
 
 /// Names concrete typed return/Some installation windows for the three ACK DTOs.

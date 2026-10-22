@@ -4,19 +4,23 @@ use super::*;
 
 const PROOF_DOMAIN: &str = "source-owned.packet-native-import-bootstrap-ack-key/18";
 const RECEIPT_DOMAIN: &str = "source-owned.packet-native-import-bootstrap-ack-receipt-key/18";
-// The closed context has nine base64(32) strings, fixed schema/algorithm, and
-// three independently serialized U64 fields of at most twenty decimal bytes.
-const MAXIMUM_CONTEXT_BYTES: usize = 873;
+
+mod context;
+use context::context_bytes;
+
+pub(super) fn context_counter_scratch_data() -> usize {
+    context::counter_scratch_data()
+}
 
 /// Hashes the complete new context under its exact closed encoded bound.
 ///
 /// # Errors
-/// Refuses invalid context DATA or canonical serialization failure.
+/// Refuses invalid context DATA or an encoding above the closed grammar bound.
 pub fn native_import18_bootstrap_ack_context_digest_data(
     context: &PacketNativeImport18BootstrapAckContext,
 ) -> Result<[u8; 32], ProviderError> {
     let bytes = context_bytes(context)?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    Ok(*blake3::hash(bytes.as_slice()).as_bytes())
 }
 
 /// Computes distinct proof DATA from independently authenticated original operands.
@@ -26,18 +30,18 @@ pub fn native_import18_bootstrap_ack_context_digest_data(
 /// Source occurrence, native bootstrap allowance or ordinary readiness.
 ///
 /// # Errors
-/// Refuses context syntax, its exact encoded bound or serialization failure.
+/// Refuses context syntax or its exact encoded bound.
 pub fn native_import18_bootstrap_ack_proof_data(
     key: &[u8; 32],
     context: &PacketNativeImport18BootstrapAckContext,
 ) -> Result<PacketNativeImport18BootstrapAckProof, ProviderError> {
     let bytes = context_bytes(context)?;
     let derived = blake3::derive_key(PROOF_DOMAIN, key);
-    let mac = blake3::keyed_hash(&derived, &bytes);
+    let mac = blake3::keyed_hash(&derived, bytes.as_slice());
     Ok(PacketNativeImport18BootstrapAckProof {
         schema: NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF.into(),
         algorithm: PACKET_COMPLETE_RESTORE_ALGORITHM.into(),
-        context_digest: Bytes::new(blake3::hash(&bytes).as_bytes().to_vec()),
+        context_digest: Bytes::new(blake3::hash(bytes.as_slice()).as_bytes().to_vec()),
         mac: Bytes::new(mac.as_bytes().to_vec()),
     })
 }
@@ -54,8 +58,8 @@ pub fn verify_native_import18_bootstrap_ack_proof_data(
     proof.validate_data()?;
     let bytes = context_bytes(context)?;
     let derived = blake3::derive_key(PROOF_DOMAIN, key);
-    if blake3::hash(&bytes) != *proof.context_digest.as_slice()
-        || blake3::keyed_hash(&derived, &bytes) != *proof.mac.as_slice()
+    if blake3::hash(bytes.as_slice()) != *proof.context_digest.as_slice()
+        || blake3::keyed_hash(&derived, bytes.as_slice()) != *proof.mac.as_slice()
     {
         return Err(invalid());
     }
@@ -69,7 +73,7 @@ pub fn verify_native_import18_bootstrap_ack_proof_data(
 /// This helper never sets ordinary Control admission or model flags.
 ///
 /// # Errors
-/// Refuses invalid context DATA or canonical serialization failure.
+/// Refuses invalid context DATA or an encoding above the closed grammar bound.
 pub fn native_import18_bootstrap_ack_receipt_data(
     key: &[u8; 32],
     context: &PacketNativeImport18BootstrapAckContext,
@@ -115,11 +119,4 @@ fn receipt_material(context: &[u8; 32], assigned: &[u8; 32]) -> [u8; 64] {
     material[..32].copy_from_slice(context);
     material[32..].copy_from_slice(assigned);
     material
-}
-
-fn context_bytes(
-    context: &PacketNativeImport18BootstrapAckContext,
-) -> Result<Vec<u8>, ProviderError> {
-    context.validate_data()?;
-    bounded(context, MAXIMUM_CONTEXT_BYTES)
 }
