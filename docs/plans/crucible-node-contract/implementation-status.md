@@ -2303,6 +2303,39 @@ counter row before the expected reads. The raw-JSON and affected target runs
 have not run for this checkpoint. Full transition qualification remains open;
 these failures are retained while its positive funding fixture is corrected.
 
+## Completed original Hello evidence and corrected launch qualification
+
+The raw-receipt fixture correction (`ed68d10fba`) derives its positive independent
+budget from the complete current raw row. Its peak negative is exactly one byte
+short. All 45 focused bootstrap controls pass, with one existing ignore. No
+production allowance, read bound or refusal changes.
+
+Commit `435ddbcf98` lends role-normalized hashes from the actual complete literal
+Hello frames. It joins the original publication stage, journal/write progress,
+live SDK lease, input custody and pre-read cut around inspection. Callback
+refusal still runs terminal checks; substituted or expired cuts and every
+terminal publication refusal fail closed. Existing raw-journal parsed flags
+remain unchanged. Returned Copy digests prove correspondence only.
+
+The defining modules name actual borrowed iterator, framing, hash-state and
+loan controls. The complete initial formula includes the fixed inspection
+window; generic callers separately fund their Copy result and inspection work.
+No owner, socket, lease, native policy or ACK moves through this loan.
+
+The expanded inherited-socket control passes all eighteen cases. Both complete
+Transport configurations pass 1,926 tests each, with no failures, no filtering
+and sixteen existing ignores. This includes the corrected raw controls and all
+three shared-launch ownership tests, closing their earlier four-test failure.
+Format passes 67 tests with one existing ignore. Affected all-feature/all-target
+checking, scoped formatting and all six architecture gates pass.
+
+The required application gate passes: 180 test executables across 58 package
+identities, including 71 integration targets. All 269 owned Rust/Cargo inputs
+match the committed tree and exact application source capture. This gate
+compiles tests without running them. No new VM or configured Engine/Daemon
+runtime qualification is claimed; genuine enclosing Source/Birth funding,
+Native18 policy/ACK, opaque Initial/Recipe and full RFC acceptance remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
