@@ -110,6 +110,7 @@ CASES += QUARANTINE_CASES
 CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure"]
 CASES += ["read-through"]
 CASES += ["sealed-consumer"]
+CASES += ["sealed-consumer-cold"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1450,6 +1451,8 @@ def main():
         require(result.stdout.splitlines() == ["SEEDED opaque quarantine candidate; no content or recovery authority"],
                 "missing quarantine seed witness")
     manifest_candidates = seed_manifests(uuid)
+    cold_consumer_helper = runpy.run_path(str(IMAGE / "share/sealed_consumer_cold_vm.py"))
+    cold_consumer_originals = cold_consumer_helper["seed"](sys.modules[__name__], uuid)
     index_candidates = runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
         "seed"](sys.modules[__name__], uuid)
     pending_candidates = runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
@@ -1508,6 +1511,7 @@ def main():
                         for path in sealed_files),
                 "whole-file consumers lack their two actual immutable publisher-owned inodes")
         # This isolated domain has no dependency on the other component cases.
+        cold_consumer_helper["run"](sys.modules[__name__], uuid, cold_consumer_originals)
         # Exercise its new crash-sensitive transfer before the longer FIFO run.
         runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)

@@ -1,10 +1,12 @@
-//! Selects complete sealed files from actual registered native publications.
+//! Selects complete sealed files from original publication and recovery custody.
 //!
 //! This source consumes a whole inline or assembled object. It never interprets
 //! a Manifest metadata grant as permission to expose the assembled file, nor
 //! treats a chunk's range within another object as a standalone backing file.
 
 use super::{PublicationJob, eviction, residence};
+mod recovery;
+
 use crate::{
     host_cache::owner::{
         corruption::{Failure, Signal},
@@ -12,31 +14,38 @@ use crate::{
     },
     publisher_local::client::PeerPublishedObject,
 };
+use recovery::RecoveredOrigin;
 use std::{
     io,
     os::fd::{AsFd, OwnedFd},
     sync::{Arc, Mutex},
 };
-use terrane_format::identity::{Identity, IdentityKind, TERRANE_V1};
+use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::host::cache::HostDomainLocation;
 
 /// Retains an exact whole file without exporting a raw-file constructor.
 pub(in crate::host_cache::owner) struct SealedObjectSource {
     identity: Identity,
     body: Arc<PeerPublishedObject<HostDomainLocation>>,
-    publication: Arc<Mutex<PublicationJob>>,
+    origin: Origin,
     activity: Arc<eviction::ReadActivity>,
     corruption: Arc<Signal>,
     project: u32,
     publisher_uid: u32,
 }
 
+enum Origin {
+    Publication(Arc<Mutex<PublicationJob>>),
+    Recovery(RecoveredOrigin),
+}
+
 impl SealedObjectSource {
     /// Selects original completed publication custody on the physical worker.
     ///
-    /// Cold candidates and encoded bodies cannot substitute for an actual
-    /// registered publication. A selected native failure never falls back to
-    /// another representation or another publication of the same identity.
+    /// Cold files require the actual executor's verified recovery registry and
+    /// acknowledged Resume. Ledger rows and encoded bodies cannot substitute.
+    /// A selected publication failure never falls back to recovered backing or
+    /// another representation of the same identity.
     ///
     /// # Errors
     /// Refuses absent Running custody, unsupported identities, incomplete or
@@ -64,13 +73,7 @@ impl SealedObjectSource {
                 .lock()
                 .map_err(|_| invalid("sealed object publication poisoned"))?;
             let descriptor = job.claim.descriptor();
-            if descriptor.algorithm() == TERRANE_V1.algorithm()
-                && descriptor.domain()
-                    == TERRANE_V1
-                        .domain(identity.kind())
-                        .map_err(io::Error::other)?
-                && descriptor.digest() == identity.digest()
-            {
+            if matches_identity(descriptor, &identity)? {
                 if !Arc::ptr_eq(&job.custody, executor.custody()) {
                     return Err(invalid("sealed object belongs to another physical owner"));
                 }
@@ -78,10 +81,9 @@ impl SealedObjectSource {
                 break;
             }
         }
-        let (publication, descriptor) = selected.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "complete sealed object absent")
-        })?;
-        eviction::restore_publication(executor, &descriptor).await?;
+        if let Some((_, descriptor)) = &selected {
+            eviction::restore_publication(executor, descriptor).await?;
+        }
 
         let source = {
             let owner = executor
@@ -91,11 +93,21 @@ impl SealedObjectSource {
             if owner.faulted || owner.recovery_required {
                 return Err(invalid("sealed object requires writable Running custody"));
             }
-            let body = {
-                let job = publication
-                    .lock()
-                    .map_err(|_| invalid("sealed object publication poisoned"))?;
-                Arc::clone(residence::registered_body(&owner, &job)?)
+            let (body, origin) = match selected {
+                Some((publication, _)) => {
+                    let body = {
+                        let job = publication
+                            .lock()
+                            .map_err(|_| invalid("sealed object publication poisoned"))?;
+                        Arc::clone(residence::registered_body(&owner, &job)?)
+                    };
+                    (body, Origin::Publication(publication))
+                }
+                None => {
+                    let recovered =
+                        RecoveredOrigin::select(executor, &owner, &identity, Arc::clone(&running))?;
+                    (Arc::clone(recovered.body()), Origin::Recovery(recovered))
+                }
             };
             Self {
                 identity,
@@ -104,7 +116,7 @@ impl SealedObjectSource {
                 project: owner.preparation.config.project_id,
                 publisher_uid: owner.preparation.config.publisher.identities.publish_uid,
                 body,
-                publication,
+                origin,
             }
         };
         source.check_native()?;
@@ -117,21 +129,30 @@ impl SealedObjectSource {
         &self.identity
     }
 
-    /// Requires original producer or cache funding before acquiring a consumer pin.
+    /// Checks original publication or recovery custody before the consumer pin.
     ///
     /// # Errors
     /// Refuses poisoned publication state, lost funding or changed backing.
     pub(in crate::host_cache::owner) fn check_protected(&self, owner: &Custody) -> io::Result<()> {
-        let job = self
-            .publication
-            .lock()
-            .map_err(|_| invalid("sealed object publication poisoned"))?;
-        if !Arc::ptr_eq(&self.body, residence::registered_body(owner, &job)?) {
-            return Err(invalid(
-                "sealed object changed original publication backing",
-            ));
+        match &self.origin {
+            Origin::Publication(publication) => {
+                let job = publication
+                    .lock()
+                    .map_err(|_| invalid("sealed object publication poisoned"))?;
+                if !Arc::ptr_eq(&self.body, residence::registered_body(owner, &job)?) {
+                    return Err(invalid(
+                        "sealed object changed original publication backing",
+                    ));
+                }
+                Ok(())
+            }
+            Origin::Recovery(recovered) => {
+                if !Arc::ptr_eq(&self.body, recovered.body()) {
+                    return Err(invalid("sealed object changed original recovery backing"));
+                }
+                recovered.check_registration(owner)
+            }
         }
-        Ok(())
     }
 
     /// Checks immutable backing independently of a former producer's funding.
@@ -186,6 +207,15 @@ impl SealedObjectSource {
         residence::check_native_body(&self.body, self.project, self.publisher_uid)
             .inspect_err(|_| self.corruption.reject(&self.body, Failure::Custody))
     }
+}
+
+fn matches_identity(descriptor: &Descriptor, identity: &Identity) -> io::Result<bool> {
+    Ok(descriptor.algorithm() == TERRANE_V1.algorithm()
+        && descriptor.domain()
+            == TERRANE_V1
+                .domain(identity.kind())
+                .map_err(io::Error::other)?
+        && descriptor.digest() == identity.digest())
 }
 
 fn invalid(message: &'static str) -> io::Error {

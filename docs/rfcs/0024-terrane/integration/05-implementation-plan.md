@@ -12807,3 +12807,38 @@ and 184 compiler artifact records across 59 packages. Those outputs retain
 compilation and execution records rather than ELF bytes. Qualification and
 required application compilation for the new consumer implementation remain
 pending; task acceptance is unchanged.
+
+
+#### Recovered whole-file consumer custody
+
+Whole-file consumer selection now also uses the physical executor's original
+adopted inline bodies and independently verified manifest/body pairs after
+acknowledged Resume. It retains the actual Running context and bootstrap
+funding, checks original manifest metadata registration, and uses the same
+durable consumer-pin, inode synchronization and fresh project-charge path as
+warm publications. It opens no content pathname and manufactures no publication
+job or chunk residence. A failed selected warm publication cannot fall back to
+another recovered representation. Independent consumer backing remains separate
+from the original reconstruction funding after the pin is acknowledged.
+
+A dedicated native fixture seeds one inline file and two distinct canonical
+manifest identities whose assembled files share every chunk. It uses actual
+metadata pack/index bytes, publisher-owned files and permanent kernel seals;
+the seed supplies no policy or recovery authority. The fixture exercises
+pre-Resume refusals with unchanged durable policy, genuine recovery and Resume,
+all three whole-file descriptors, ordinary canonical metadata and chunk reads,
+range-as-whole refusal, and descriptors retained after lease release. A separate
+root observer compares the actual returned inode observations against the
+original seeded files and checks unchanged canonical metadata and sealed bytes.
+Existing rejected-recovery controls also refuse whole-file grants. The two
+additional selectors and their isolated domain preserve all previous controls,
+project assignments and per-case and whole-guest runtime bounds.
+
+Strict feature-enabled Linux all-target Clippy, formatting and Python syntax
+checks pass. Execution of the new cold fixture and required application-target
+compilation remain pending. The prior warm-publication full native component VM
+has completed successfully with both descriptor witnesses and all 128 native
+library cases; its committed-source qualification and application-target build
+remain in progress. Structural-index cache ownership, exposure authorization,
+worker transport, actual kernel backing drain and the FUSE mount remain open.
+This change supplies no task acceptance or BKT-15 readiness.

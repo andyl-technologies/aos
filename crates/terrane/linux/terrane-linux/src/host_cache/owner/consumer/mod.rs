@@ -234,11 +234,12 @@ pub(in crate::host_cache::owner) async fn execute(
 impl NativeMetadataOwner {
     /// Synchronizes a consumer pin over an actual complete sealed publication.
     ///
-    /// The current physical owner must retain the original completed inline or
-    /// manifest publication. A chunk's range in another object, an encoded
-    /// admission, canonical Manifest bytes or an unverified cold record cannot
-    /// substitute for the exact whole sealed file. Accepted work survives waiter
-    /// cancellation. This grants neither exposure scope nor lasting caller Read.
+    /// The current physical owner must retain the original completed publication
+    /// or its actual verified recovery source after acknowledged Resume. A
+    /// chunk's range in another object, encoded admission, canonical Manifest
+    /// bytes or an unverified cold record cannot substitute for the exact whole
+    /// sealed file. Accepted work survives waiter cancellation. This grants
+    /// neither exposure scope nor lasting caller Read.
     ///
     /// # Errors
     /// Refuses another identity kind or profile, an expired deadline, absent

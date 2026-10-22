@@ -22,6 +22,8 @@ pub(super) mod pending_packs;
 pub(super) mod quarantine;
 #[path = "recovery/reuse.rs"]
 mod reuse;
+#[path = "recovery/sealed_objects.rs"]
+pub(super) mod sealed_objects;
 
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use rustix::process::{Gid, Uid};
@@ -678,6 +680,8 @@ fn refuse_resident_source(
     runtime: &tokio::runtime::Runtime,
     inputs: &Inputs,
 ) -> io::Result<()> {
+    use terrane_sdk::store::{Clock, TokioClock};
+
     let fixture = Fixture::new()?;
     let range = ChunkProfile::cdc_1m([0; 32])
         .ranges(&fixture.plaintext)
@@ -687,6 +691,29 @@ fn refuse_resident_source(
         .calculate(IdentityKind::Chunk, &fixture.plaintext[range])
         .map_err(io::Error::other)?;
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    let expires = TokioClock
+        .now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(90)
+        .ok_or_else(|| invalid("recovery refusal deadline overflow"))?;
+    for (kind, bytes) in [
+        (IdentityKind::Manifest, fixture.manifest.as_slice()),
+        (IdentityKind::Chunk, INLINE_BYTES),
+    ] {
+        let whole = TERRANE_V1
+            .calculate(kind, bytes)
+            .map_err(io::Error::other)?;
+        if runtime
+            .block_on(owner.pin_sealed_object(whole, expires))
+            .is_ok()
+        {
+            return Err(invalid(
+                "recovery issued whole-file backing without acknowledged Resume",
+            ));
+        }
+    }
     if runtime
         .block_on(owner.retain_resident_chunk(identity))
         .is_ok()

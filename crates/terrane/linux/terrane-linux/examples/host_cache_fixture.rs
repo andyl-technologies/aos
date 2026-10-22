@@ -84,6 +84,8 @@ fn main() -> std::process::ExitCode {
             "refuse-mixed-manifest",
             "consumer-leases",
             "sealed-consumer",
+            "seed-sealed-consumer-cold",
+            "sealed-consumer-cold",
             "publish-inline",
             "publish-inline-read-failure",
             "publish-inline-prepare-failure",
@@ -139,7 +141,9 @@ fn main() -> std::process::ExitCode {
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if mode == "seed-quarantine" {
+    let result = if mode == "seed-sealed-consumer-cold" {
+        recovery::sealed_objects::seed()
+    } else if mode == "seed-quarantine" {
         recovery::quarantine::seed()
     } else if mode == "seed-encoded" {
         recovery::encoded::seed()

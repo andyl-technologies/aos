@@ -211,7 +211,15 @@ pub(super) fn run(
     )
 }
 
-fn check_backing(backing: &NativeSealedBacking, expected: &[u8], inode: u64) -> io::Result<()> {
+/// Checks the actual whole inode, descriptor flags, kernel seal and plaintext.
+///
+/// # Errors
+/// Refuses a changed inode, writable descriptor, missing seal or different bytes.
+pub(super) fn check_backing(
+    backing: &NativeSealedBacking,
+    expected: &[u8],
+    inode: u64,
+) -> io::Result<()> {
     let file = File::from(backing.as_fd().try_clone_to_owned()?);
     let metadata = file.metadata()?;
     let flags = rustix::fs::fcntl_getfl(&file)?;
