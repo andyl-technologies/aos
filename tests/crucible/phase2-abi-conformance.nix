@@ -548,7 +548,7 @@ in
                 -p crucible-qemu-plugin \
                 --lib io_wire_fuzz \
                 -- --test-threads=1
-              require_test_set 62 plugin-doorbell \
+              require_test_set 64 plugin-doorbell \
                 whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
                 -p crucible-qemu-plugin --lib whitebox_doorbell
               cargo test \

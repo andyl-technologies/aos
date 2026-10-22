@@ -42,6 +42,7 @@ use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
+mod guest_input;
 mod marker_error;
 pub use marker_error::WhiteboxMarkerSinkError;
 
@@ -279,68 +280,6 @@ impl PluginWhiteboxDoorbell {
             });
         }
         Ok(WhiteboxGuestInputCapability { _private: () })
-    }
-
-    /// Delivers one host-to-guest white-box input at its exact delivery icount.
-    ///
-    /// This method is the safe core for marker acknowledgments, control writes,
-    /// and later app-random replies. It does not write early: if the current
-    /// icount is before the input's delivery icount, it returns `NotReady`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WhiteboxDoorbellError`] when white-box mode is disabled, the
-    /// input is late, its target range and payload length disagree, or the
-    /// guest-input writer fails loudly.
-    pub fn inject_guest_input<W>(
-        &self,
-        _capability: &WhiteboxGuestInputCapability,
-        writer: &mut W,
-        current_icount: u64,
-        input: &WhiteboxGuestInput,
-    ) -> Result<WhiteboxGuestInputOutcome, WhiteboxDoorbellError>
-    where
-        W: WhiteboxGuestInputWriter + ?Sized,
-    {
-        if !self.mode.is_on() {
-            return Err(WhiteboxDoorbellError::InputWhileDisabled);
-        }
-        if input.payload_range().len() != input.payload().len() {
-            return Err(WhiteboxDoorbellError::InputPayloadLengthMismatch {
-                range_len: input.payload_range().len(),
-                payload_len: input.payload().len(),
-            });
-        }
-        self.validate_payload_range(input.payload_range())?;
-        if current_icount < input.delivery_icount() {
-            return Ok(WhiteboxGuestInputOutcome::NotReady {
-                delivery_icount: input.delivery_icount(),
-            });
-        }
-        if current_icount > input.delivery_icount() {
-            return Err(WhiteboxDoorbellError::InputDeliveryAlreadyPassed {
-                delivery_icount: input.delivery_icount(),
-                current_icount,
-            });
-        }
-
-        writer
-            .write_whitebox_input(
-                input.delivery_icount(),
-                input.payload_range(),
-                input.payload(),
-            )
-            .map_err(|source| WhiteboxDoorbellError::GuestInputWrite {
-                delivery_icount: input.delivery_icount(),
-                source,
-            })?;
-        Ok(WhiteboxGuestInputOutcome::Delivered(
-            WhiteboxGuestInputInjection {
-                delivery_icount: input.delivery_icount(),
-                payload_range: input.payload_range(),
-                payload_len: input.payload().len(),
-            },
-        ))
     }
 
     fn validate_max_payload_len(&self) -> Result<(), WhiteboxDoorbellError> {

@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use super::app_random::LiveGuestMemoryWriter;
 use super::*;
-use crate::{WhiteboxGuestInput, WhiteboxGuestInputCapability};
+use crate::WhiteboxGuestInputCapability;
 
 pub(super) fn is_exchange(payload: &[u8]) -> bool {
     payload.starts_with(&GUEST_INTROSPECTION_DOORBELL_MAGIC)
@@ -93,17 +93,14 @@ impl LiveWhiteboxState {
         .map_err(callback_error)?;
         let reply = routed.reply.encode().map_err(callback_error)?;
         let mut writer = LiveGuestMemoryWriter::new(self.apis, event.current_icount());
-        let input = WhiteboxGuestInput::new(
-            event.current_icount(),
-            event.payload_range(),
-            reply.to_vec(),
-        );
         self.doorbell
-            .inject_guest_input(
+            .inject_guest_input_slice(
                 &self.guest_introspection.input_capability,
                 &mut writer,
                 event.current_icount(),
-                &input,
+                event.current_icount(),
+                event.payload_range(),
+                &reply,
             )
             .map_err(callback_error)?;
         if let Some(sequence) = routed.delivered_request_sequence {

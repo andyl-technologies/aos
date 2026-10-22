@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 424 committed bindings: 405 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 426 committed bindings: 407 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Reader, deferred return and cleanup composition
 
@@ -478,6 +478,24 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Borrowed live guest-introspection replies
+
+The live guest-introspection callback now passes the original encoded 4,608-byte
+reply directly to its synchronous guest writer. It no longer allocates and
+copies a Vec solely for immediate delivery. A focused guest-input module owns
+the common validation for borrowed replies and existing owned inputs: disabled
+mode, matching range/length, configured capacity and exact delivery icount are
+checked before the writer is entered. This does not fund the remaining decode,
+record or error payloads, nor issue Native execution authority.
+
+The fixed-frame control verifies the writer sees the original slice address,
+bytes, range and delivery icount exactly once. A separate control covers all
+pre-write refusals, early delivery and the original modeled writer error.
+All 122 focused white-box tests and every plugin target's compilation pass.
+The exact doorbell ABI inventory becomes 64. Engineering hygiene, mandatory
+application compilation, ABI conformance and the exact 309-case supervision
+run are in progress.
+
 #### Callback failure reporting
 
 Live white-box failure reporting formats directly into borrowed diagnostic
@@ -513,7 +531,8 @@ compilation passes at `imqiakkd1bcb95lkhz0lc3gsg58y8p3i`; all 5,301 committed
 Rust/TOML files match immutable source `4rgf3chgidfa18842zv878vcc2h3nxh5`.
 The comparison record has SHA-256
 `ebcf1b526e64c3cebfc021842d53e047602a3a5e84a4cfb96785e7ca6c09c7a9`.
-The exact 304-case supervision run is pending; corrected ABI conformance passes
+All 304 exact supervision cases pass at `igh57sscj6m38j8z22hiyp6k2j296kn6`;
+corrected ABI conformance passes
 at `68yqsj468pfjh4v2crw70dgak6454mj1`.
 The initial ABI failure retains its exact 61-versus-60 inventory drift;
 the corrected count is 62 because the new typed-diagnostic control belongs to
