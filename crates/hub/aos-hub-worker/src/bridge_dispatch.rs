@@ -273,7 +273,7 @@ mod tests {
         let token = state
             .auth
             .jwt_keys
-            .mint(
+            .mint_browser_session(
                 &TokenAuth {
                     token_id: "worker-rollout".to_string(),
                     owner: Principal::user(user_id),
@@ -283,6 +283,7 @@ mod tests {
                         Permission::Publish,
                         Permission::RegistryConfigure,
                     ],
+                    expires_at: None,
                 },
                 900,
             )
@@ -603,12 +604,13 @@ mod tests {
         let token = state
             .auth
             .jwt_keys
-            .mint(
+            .mint_browser_session(
                 &TokenAuth {
                     token_id: "branding-test".into(),
                     owner: Principal::user(user_id),
                     scope: Scope::root(),
                     permissions: vec![Permission::IamAdmin],
+                    expires_at: None,
                 },
                 900,
             )

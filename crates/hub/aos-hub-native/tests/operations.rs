@@ -105,12 +105,13 @@ fn machine_service(state: &Arc<AppState>) -> RpcService {
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
 fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
     JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "test-token".into(),
                 owner: principal,
                 scope: Scope::parse(scope),
                 permissions: perms.to_vec(),
+                expires_at: None,
             },
             900,
         )

@@ -81,9 +81,8 @@ pub fn oidc_verifier_id(record: &IdpConfigRecord) -> String {
 /// (hash matches, not expired, not hard-revoked, and — if rotated — still
 /// inside the rotation grace window). The `scope`/`permissions` here are
 /// the token's *own* grants. The RPC plane additionally intersects them
-/// with the owner's current memberships at decision time
-/// (the database grant resolver); the machine plane authorizes from
-/// these grants alone, bounded by the JWT TTL (see `auth::extract`).
+/// with the owner's current memberships at decision time. Bearers derived
+/// from the token also recheck this lifecycle and grant snapshot before use.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TokenAuth {
     /// The token's id (UUID); the JWT `sub` and the revoke/rotate key.
@@ -94,6 +93,9 @@ pub struct TokenAuth {
     pub scope: crate::domain::Scope,
     /// The permission verbs the token grants.
     pub permissions: Vec<crate::domain::Permission>,
+    /// The token's absolute expiry, or `None` when it has no time limit.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 use crate::domain::Role;

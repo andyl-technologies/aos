@@ -60,12 +60,13 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
 fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
     let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    keys.mint(
+    keys.mint_browser_session(
         &TokenAuth {
             token_id: "test-token".into(),
             owner: principal,
             scope: Scope::parse(scope),
             permissions: perms.to_vec(),
+            expires_at: None,
         },
         900,
     )

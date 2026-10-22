@@ -3,6 +3,61 @@
 use super::*;
 
 #[tokio::test]
+async fn bearer_permissions_follow_parent_lifecycle_and_provenance() {
+    let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
+    let owner_id = db
+        .create_user("bearer-parent@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let owner = Principal::user(owner_id);
+    let (token_id, secret) = db
+        .create_token(owner, "instance", &[Permission::Read], None, None)
+        .await
+        .unwrap();
+    let token_auth = db.validate_token(&secret).await.unwrap().unwrap();
+    let bearer = service.jwt_keys.mint(&token_auth, 3_600).unwrap();
+    let claims = service.jwt_keys.verify(&bearer).unwrap();
+
+    service
+        .require_permission(&claims, Permission::Read, &Scope::root())
+        .await
+        .unwrap();
+
+    db.revoke_token(&token_id).await.unwrap();
+    assert!(matches!(
+        service
+            .require_permission(&claims, Permission::Read, &Scope::root())
+            .await,
+        Err(RpcError::Unauthenticated(_))
+    ));
+    assert!(
+        !service
+            .claims_allow(Some(&claims), Permission::Read, &Scope::root())
+            .await
+    );
+
+    let session_auth = TokenAuth {
+        token_id: format!("browser-session-{owner_id}"),
+        owner,
+        scope: Scope::root(),
+        permissions: vec![Permission::Read],
+        expires_at: None,
+    };
+    let session_bearer = service
+        .jwt_keys
+        .mint_browser_session(&session_auth, 300)
+        .unwrap();
+    let session_claims = service.jwt_keys.verify(&session_bearer).unwrap();
+    service
+        .require_permission(&session_claims, Permission::Read, &Scope::root())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn cached_token_resolution_rechecks_retirement_and_expiry() {
     let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
     let kv = Arc::new(crate::kv::InMemoryKv::new());
@@ -1055,12 +1110,13 @@ async fn invitation_acceptance_atomically_creates_membership_for_matching_user()
         .unwrap();
     let token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "invitee-session".into(),
                 owner: Principal::user(invitee),
                 scope: Scope::root(),
                 permissions: Vec::new(),
+                expires_at: None,
             },
             3600,
         )
