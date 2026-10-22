@@ -19,10 +19,23 @@ use terrane_sdk::{
     surface::{Endpoint, EndpointKind, ReaderMode, RealizationHints, View},
 };
 
+mod difference;
 mod history;
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Compare the authorized metadata of two refs or commit views.
+    Diff {
+        #[command(flatten)]
+        repository: LocalArguments,
+        /// Select the original ref or commit:DIGEST, optionally with :/subtree.
+        before: String,
+        /// Select the replacement ref or commit:DIGEST, optionally with :/subtree.
+        after: String,
+        /// Summarize added, removed and modified entries and policy changes.
+        #[arg(long)]
+        stat: bool,
+    },
     /// Show committed reflog entries under current read authorization.
     Log {
         #[command(flatten)]
@@ -208,6 +221,24 @@ impl Command {
     /// registered realization, and local filesystem errors.
     pub(crate) async fn run(self) -> Result<(), Error> {
         let commit = match self {
+            Self::Diff {
+                repository: arguments,
+                before,
+                after,
+                stat,
+            } => {
+                let (repository, authority) = arguments.open().await?;
+                let result = repository
+                    .diff(
+                        &View::parse(&before)?,
+                        &View::parse(&after)?,
+                        authority.token(),
+                        "sdk",
+                    )
+                    .await?;
+                difference::write(&result, stat, &mut std::io::stdout().lock())?;
+                return Ok(());
+            }
             Self::Log {
                 repository: arguments,
                 from_sequence,

@@ -69,6 +69,71 @@ async fn local_log_reports_committed_provenance_and_honors_sequence_filter() -> 
     Ok(())
 }
 
+#[tokio::test]
+async fn local_diff_reports_quoted_changes_stats_and_refuses_unauthorized_output()
+-> Result<(), Error> {
+    let fixture = Fixture::new().await?;
+    fixture.initialize()?;
+    let issuer = fs::read(fixture.authority.join("issuer.seed"))?;
+    let terminal = fs::read(fixture.authority.join("terminal.seed"))?;
+    let token = fs::read(fixture.authority.join("token.cbor"))?;
+    let source = fixture.root.join("source");
+    fs::create_dir(&source)?;
+    fs::write(source.join("modified"), b"before\n")?;
+    fs::write(source.join("removed"), b"removed\n")?;
+    let before = fixture.succeed(
+        "commit",
+        &[&fixture.path_text("source")?, "--message", "Before diff"],
+    )?;
+
+    fs::write(source.join("modified"), b"after\n")?;
+    fs::remove_file(source.join("removed"))?;
+    fs::write(source.join("added\nM\tspoof"), b"added\n")?;
+    let after = fixture.succeed(
+        "commit",
+        &[&fixture.path_text("source")?, "--message", "After diff"],
+    )?;
+    let original = format!("commit:{before}");
+    let current = format!("commit:{after}");
+
+    let changes = fixture.succeed("diff", &[&original, "refs/heads/_/main"])?;
+    let summary = fixture.succeed("diff", &[&original, &current, "--stat"])?;
+
+    assert_eq!(
+        changes,
+        "A\t\"added\\nM\\tspoof\"\nM\t\"modified\"\nD\t\"removed\""
+    );
+    assert_eq!(
+        summary,
+        "added=1 removed=1 modified=1 policies_changed=false"
+    );
+    assert!(fixture.succeed("diff", &[&current, &current])?.is_empty());
+    assert_eq!(
+        fixture.succeed("diff", &[&current, &current, "--stat"])?,
+        "added=0 removed=0 modified=0 policies_changed=false"
+    );
+    assert_eq!(fs::read(fixture.authority.join("issuer.seed"))?, issuer);
+    assert_eq!(fs::read(fixture.authority.join("terminal.seed"))?, terminal);
+    assert_eq!(fs::read(fixture.authority.join("token.cbor"))?, token);
+
+    // Neither a missing view nor refused credentials may disclose partial rows
+    // or counts from the otherwise readable side of a comparison.
+    let missing = fixture.invoke("diff", &[&original, "refs/heads/_/missing"])?;
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+
+    fs::write(fixture.authority.join("token.cbor"), [0x80])?;
+    for options in [
+        vec![original.as_str(), current.as_str()],
+        vec![&original, &current, "--stat"],
+    ] {
+        let refused = fixture.invoke("diff", &options)?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+    }
+    Ok(())
+}
+
 struct Fixture {
     root: PathBuf,
     bucket: String,

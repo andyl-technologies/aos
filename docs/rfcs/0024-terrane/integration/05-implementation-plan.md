@@ -8717,9 +8717,11 @@ cache VM runs: the shared-directory importer omits a required proof argument,
 and the cache image misclassifies one pure policy test as an administrative
 creator. Both corrections are pushed through `8dc8dd6311`; the actual compiled
 129-case inventory now validates as 124 ordinary-user and five creator cases,
-with every original case retained. Eleven owning gates are running from a
-fresh frozen checkout of that corrected source. No current-source full gate or
-feature-matrix success is claimed. Complete production role composition,
+with every original case retained. The fresh full-cache ext4 VM at
+`8dc8dd6311` now passes, with complete source, four-executable and runtime review;
+all 129 unit cases execute, and all 92 fixture selectors remain in its bound
+inventory. Eleven owning gates are running from that frozen checkout. No full
+owning-gate or feature-matrix success is claimed. Complete production role composition,
 unresolved cold kernel custody and later trunk milestones remain open.
 
 The dated entries below preserve earlier checkpoints and provisional results;
@@ -15532,3 +15534,37 @@ cases. The actual ext4 VM subsequently executes both unit groups successfully,
 including their UID/GID and empty-capability witnesses. The VM continues its
 native publication/recovery scenarios; no full VM, owning-gate or feature-matrix
 pass is inferred from those intermediate results. No trunk task is accepted.
+
+#### Guarded CLI metadata diff preparation
+
+The actual `8dc8dd6311` full-cache VM subsequently finishes with PASS and a clean
+Firecracker exit. Independent review matches its actual output and deriver,
+all 8,074 immutable source files, 5,365 bound inputs, all four original Cargo
+executables and installed ELF hashes, every bound supervisor/helper, all 92
+fixture selectors, and the 124 ordinary-user plus five creator unit witnesses.
+The complete review also requires the original publication, quarantine,
+read-failure, metadata recovery, consumer, source-cleanup and funding witnesses.
+It uses the real VM deriver's build log and original pre-request source snapshot;
+no standalone VM request receipt is manufactured. The parent matrix and owning
+requests continue, and no task is accepted by this component result.
+
+The CLI now routes `diff <before> <after>` and `--stat` through the existing
+guarded SDK metadata comparison. It accepts ref and fixed-commit views, retains
+the SDK's scope and current policy checks, and fetches no plaintext objects.
+Default output preserves path order and quotes/escapes every path byte;
+`--stat` counts added, removed and modified entries. Policy declaration changes
+remain separate, including cases without entry changes. Neither side is printed
+until the complete SDK operation succeeds. This advances OBS-7 without accepting
+the full CLI/API status surface or T-OBS-1.
+
+Strict CLI all-target Clippy and Rust formatting pass. Both pure formatter
+regressions execute with zero ignored cases, covering control/non-UTF-8 path
+bytes and output failure. The first lint run caught two test-only unwraps;
+both were replaced before the passing run. All 2,645 Nix formatting checks,
+updated guide Bash syntax and `git diff --check` pass. A new separate-process
+repository case requires actual added/removed/modified output, exact statistics,
+unchanged comparisons and signing credentials, and empty output for missing
+views or refused tokens. The owning CLI gate now requires all five workflow
+cases. Its execution and the mandatory application-target compilation for this
+new Rust source remain pending; older native and package results do not qualify
+the new frontend source.

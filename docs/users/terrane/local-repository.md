@@ -101,7 +101,23 @@ branch. It identifies current policy for fixed historical reads, independently
 of the branch being edited. A conflicting merge or stale writer is refused;
 success is acknowledged only after durable guarded publication.
 
-## Inspect committed history
+## Compare snapshots and inspect committed history
+
+Compare two refs or fixed commit views through current read authorization:
+
+```sh
+terrane diff "${terrane_local[@]}" "commit:$terrane_first" refs/heads/_/main
+terrane diff "${terrane_local[@]}" "commit:$terrane_first" refs/heads/_/main --stat
+```
+
+The default output lists added (`A`), deleted (`D`) and modified (`M`) entries in
+path order. Paths are relative to each selected view, quoted, and byte-escaped;
+embedded tabs, line breaks and non-ASCII bytes cannot create extra output rows.
+Both views may select a subtree with `:/path`. Policy declaration changes are
+reported separately as `policies_changed=true`, including changes that do not
+modify entries. `--stat` reports added, removed and modified entry counts and
+the policy-change flag. These are metadata differences, without plaintext reads
+or text-line statistics. An unchanged comparison has no default output.
 
 ```sh
 terrane log "${terrane_local[@]}"

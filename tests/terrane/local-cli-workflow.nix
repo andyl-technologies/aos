@@ -4,6 +4,7 @@
     "local_commands_refuse_reinitialization_and_unsafe_existing_authority"
     "configured_role_parser_and_unavailable_dispatch_remain_compatible"
     "local_log_reports_committed_provenance_and_honors_sequence_filter"
+    "local_diff_reports_quoted_changes_stats_and_refuses_unauthorized_output"
   ];
 in
   sourceGate "local-cli-workflow" ''
@@ -23,6 +24,6 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$out/$test_name.log" "[\"$test_name\"]"
     done
-    printf 'PASS: public local CLI workflow (4 exact cases); ext4 deployment remains separate\n' \
+    printf 'PASS: public local CLI workflow (5 exact cases); ext4 deployment remains separate\n' \
       > "$out/result"
   ''

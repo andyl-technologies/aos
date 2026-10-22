@@ -2,8 +2,8 @@
 
 Terrane stores immutable content and signed, branchable filesystem snapshots.
 The local CLI initializes a file bucket, commits directories, forks and merges
-branches, reads committed history, and checks out pinned snapshots through the
-SDK surface.
+branches, compares authorized metadata, reads committed history, and checks out
+pinned snapshots through the SDK surface.
 
 - [Use a local repository](local-repository.md)
 - [Initialize host quota partitions and start the quota broker](../../../crates/terrane/integration/aos-terrane-integration/README.md)
