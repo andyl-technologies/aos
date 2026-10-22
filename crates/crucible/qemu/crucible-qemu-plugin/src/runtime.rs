@@ -1226,12 +1226,10 @@ impl OwnedCallbackRuntimeState {
         // SAFETY: assigning an independently heap-owned callback runtime does
         // not move the pinned parent or its setup mapping.
         let state = unsafe { self.get_unchecked_mut() };
-        let live_vcpu_time = state.live_vcpu_time.as_ref().ok_or_else(|| {
-            live_whitebox::LiveWhiteboxError::RegistrationPlan {
-                message: "live selectable handoff requires installed vCPU callback state"
-                    .to_owned(),
-            }
-        })?;
+        let live_vcpu_time = state
+            .live_vcpu_time
+            .as_ref()
+            .ok_or(live_whitebox::LiveWhiteboxError::VcpuCallbackStateMissing)?;
         let selectable_vmstop = live_vcpu_time
             .as_ref()
             .get_ref()

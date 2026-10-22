@@ -72,10 +72,54 @@ pub enum LiveWhiteboxError {
         maximum: usize,
     },
     /// The safe registration plan rejected the live configuration.
-    #[error("live white-box registration plan failed: {message}")]
+    #[error("live white-box registration plan failed: {source}")]
     RegistrationPlan {
-        /// Stable diagnostic.
-        message: String,
+        /// Original doorbell validation failure.
+        source: crate::WhiteboxDoorbellError,
+    },
+    /// The launch-authenticated selectable catalog rejected registration.
+    #[error("live white-box registration plan failed: {source}")]
+    CatalogRegistration {
+        /// Original catalog validation failure.
+        source: crate::SelectableCatalogError,
+    },
+    /// The enabled doorbell plan did not select a trap installation.
+    #[error(
+        "live white-box registration plan failed: enabled live white-box plan did not install a trap"
+    )]
+    TrapInstallationMissing,
+    /// Branch decisions were supplied without their app-random producer.
+    #[error(
+        "live white-box registration plan failed: app-random branch plan requires an enabled app-random producer"
+    )]
+    AppRandomBranchProducerMissing,
+    /// Branch decisions named a different app-random producer node.
+    #[error(
+        "live white-box registration plan failed: app-random branch plan names another producer node"
+    )]
+    AppRandomBranchNodeMismatch,
+    /// The selectable handoff had no installed vCPU callback state.
+    #[error(
+        "live white-box registration plan failed: live selectable handoff requires installed vCPU callback state"
+    )]
+    VcpuCallbackStateMissing,
+    /// Registration could not resolve a required QEMU observation capability.
+    #[error(
+        "live white-box registration plan failed: required QEMU capability {symbol} is unavailable"
+    )]
+    RegistrationCapabilityUnavailable {
+        /// Missing process symbol.
+        symbol: &'static str,
+    },
+    /// QEMU refused registration of the live catalog owner.
+    #[error(
+        "live white-box registration plan failed: {symbol} refused the live catalog owner with status {status}"
+    )]
+    CatalogOwnerRefused {
+        /// Registration entry point.
+        symbol: &'static str,
+        /// Original QEMU refusal status.
+        status: i32,
     },
     /// Another live white-box state was already published.
     #[error("live white-box callback state is already published")]

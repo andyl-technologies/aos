@@ -205,9 +205,7 @@ pub(super) fn register_selectable_reset_owner(
     )?;
     let status = register(plugin_id, Some(callback), userdata);
     if status != 0 {
-        return Err(LiveWhiteboxError::RegistrationPlan {
-            message: format!("{symbol} refused the live catalog owner with status {status}"),
-        });
+        return Err(LiveWhiteboxError::CatalogOwnerRefused { symbol, status });
     }
     Ok(())
 }

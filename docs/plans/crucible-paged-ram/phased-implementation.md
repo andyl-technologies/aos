@@ -63,11 +63,11 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed reader `8c55fe5743` imports conventional `0137bd538c`, tree `27234c29`. Exact raw reconstruction and the 351-created-file license inventory pass. Independent import verification matches 990 changed-source hashes, 10,908 evidence files and 156 literal links. The fresh 1,918-object cohort and first corrected normal delivery pass under unchanged bounds. | All 187 packaged Source tests and fresh ABI conformance pass. The 26 bounded custody suites remain in progress; canonical license checking stops at strict controller Clippy. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
+| Native integration | Signed reader `8c55fe5743` imports conventional `0137bd538c`, tree `27234c29`. Exact raw reconstruction and the 351-created-file license inventory pass. Independent import verification matches 990 changed-source hashes, 10,908 evidence files and 156 literal links. The fresh 1,918-object cohort and first corrected normal delivery pass under unchanged bounds. | All 187 packaged Source tests and fresh ABI conformance pass. All 26 bounded custody suites pass at `3cb9frb6ydjxcv66qpjszpw98fpirl8v`; canonical license checking stops at strict controller Clippy. Full dirty lifecycle still refuses admission; genuine Module/Core Quantum issuance, selected execution and complete return remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,184 host-library and 1,255 host-test errors in the registered-reader snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 407 committed bindings: 388 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 408 committed bindings: 389 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -414,6 +414,23 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 The 289-case exact supervision check remains in progress. Full Source/Module
 physical return remains unqualified.
 
+#### Typed white-box registration refusals
+
+The actual registration path retains its doorbell and selectable-catalog
+validation errors as typed sources. Static plan refusals are enum variants;
+missing observation symbols and catalog-owner refusal retain their original
+static symbol and numeric status. These eleven existing registration paths no
+longer construct owned display strings. Their displayed text stays unchanged.
+The same launch-plan check rejects absent and foreign app-random producers
+before constructing producer state, without consuming branch decisions.
+
+All 111 white-box controls pass, all plugin targets compile and content-bound
+engineering hygiene passes. The new exact component binding exercises both producer
+refusals and the matching-node configuration. Mandatory application compilation
+and all 291 exact supervision cases remain in progress.
+The moved catalog and doorbell causes can themselves own diagnostic payloads;
+this change does not establish their complete funding or Native admission.
+
 #### Typed white-box callback refusals
 
 Seven existing preflight, registration, restore and dispatch boundaries now
@@ -432,8 +449,13 @@ controls and all plugin target compilation pass. Engineering hygiene passes
 after refreshing the stale content digest and line count of that strengthened
 existing test; its first failed check is retained. The coordinator's existing
 responsibility reviews are content-bound, with unrelated formatting restored.
-Mandatory application compilation and all 290 exact supervision cases remain
-in progress. This component control grants no Native Original or activation.
+Mandatory application compilation passes at
+`h5qfmdrrxj98ycnnp2c05bp8fv1fxfg1`. All 5,298 committed Rust/TOML inputs at
+`66bb8fe701b3e681469624c5a1370f873518d0a2` match immutable source
+`s000y3y08k9wxcqha4iy7p5rx5q6lqxm`; the comparison record has SHA-256
+`8a32d76d7bc96ab79005ad5a8e89d0788f8125157270bc11193ce988c150b1c2`.
+All 290 exact supervision cases remain in progress. This component control
+grants no Native Original or activation.
 
 #### Typed network stop refusals
 

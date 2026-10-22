@@ -321,6 +321,23 @@ impl<'a> LiveWhiteboxLaunchPlans<'a> {
             campaign_marker_parking,
         }
     }
+
+    /// Rejects branch decisions that have no matching launch producer.
+    fn validate_app_random_producer(&self) -> Result<(), LiveWhiteboxError> {
+        if self.app_random_config.is_none() && !self.app_random_branch_plan.entries().is_empty() {
+            return Err(LiveWhiteboxError::AppRandomBranchProducerMissing);
+        }
+
+        if self.app_random_config.is_some_and(|config| {
+            self.app_random_branch_plan.entries().iter().any(|entry| {
+                !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
+            })
+        }) {
+            return Err(LiveWhiteboxError::AppRandomBranchNodeMismatch);
+        }
+
+        Ok(())
+    }
 }
 
 impl LiveWhiteboxShmem {
@@ -430,36 +447,12 @@ impl LiveWhiteboxState {
         let capabilities = WhiteboxDoorbellCapabilities::bidirectional();
         let plan = doorbell
             .registration_plan(capabilities, validation)
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         if !matches!(plan, WhiteboxDoorbellRegistrationPlan::Install { .. }) {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "enabled live white-box plan did not install a trap".to_owned(),
-            });
+            return Err(LiveWhiteboxError::TrapInstallationMissing);
         }
 
-        if launch_plans.app_random_config.is_none()
-            && !launch_plans.app_random_branch_plan.entries().is_empty()
-        {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "app-random branch plan requires an enabled app-random producer"
-                    .to_owned(),
-            });
-        }
-        if launch_plans.app_random_config.is_some_and(|config| {
-            launch_plans
-                .app_random_branch_plan
-                .entries()
-                .iter()
-                .any(|entry| {
-                    !app_random_stream_name_belongs_to_node(entry.stream_name(), config.node_name())
-                })
-        }) {
-            return Err(LiveWhiteboxError::RegistrationPlan {
-                message: "app-random branch plan names another producer node".to_owned(),
-            });
-        }
+        launch_plans.validate_app_random_producer()?;
         let app_random = launch_plans
             .app_random_config
             .map(|config| {
@@ -474,14 +467,10 @@ impl LiveWhiteboxState {
                     })
             })
             .transpose()
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         let guest_input_capability = doorbell
             .require_guest_input_capability(capabilities)
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan { source })?;
         let selectable = launch_plans
             .selectable_catalog_plan
             .map(|plan| {
@@ -494,18 +483,13 @@ impl LiveWhiteboxState {
                 )
             })
             .transpose()
-            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
-                message: source.to_string(),
-            })?;
+            .map_err(|source| LiveWhiteboxError::CatalogRegistration { source })?;
 
         #[cfg(not(test))]
         let raw_icount_observed =
             Some(crate::abi::resolve_qemu_icount_raw_symbol().ok_or_else(|| {
-                LiveWhiteboxError::RegistrationPlan {
-                    message: format!(
-                        "required QEMU capability {} is unavailable",
-                        crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL
-                    ),
+                LiveWhiteboxError::RegistrationCapabilityUnavailable {
+                    symbol: crate::abi::QEMU_PLUGIN_ICOUNT_RAW_SYMBOL,
                 }
             })?);
         #[cfg(test)]
@@ -514,11 +498,8 @@ impl LiveWhiteboxState {
         #[cfg(not(test))]
         let sim_tick_observed = Some(
             crate::abi::resolve_qemu_sim_tick_observed_symbol().ok_or_else(|| {
-                LiveWhiteboxError::RegistrationPlan {
-                    message: format!(
-                        "required QEMU capability {} is unavailable",
-                        crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL
-                    ),
+                LiveWhiteboxError::RegistrationCapabilityUnavailable {
+                    symbol: crate::abi::QEMU_PLUGIN_SIM_TICK_OBSERVED_SYMBOL,
                 }
             })?,
         );
