@@ -6,7 +6,6 @@
   crate ? "aos-sandbox-controller-domain",
   features ? [],
 }: let
-  artifactPrefix = builtins.replaceStrings ["-"] ["_"] crate;
   featureFlags = lib.optionalString (features != []) " --features ${lib.concatStringsSep "," features}";
 in
   pkgs.mkCargoPackage {
@@ -33,25 +32,14 @@ in
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ];
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     runtimeDeps = [];
 
-    postBuild = ''
-      mkdir -p native-tests
-      count=0
-      artifact_dir="''${CARGO_TARGET_DIR:-target}/debug/deps"
-      for candidate in "$artifact_dir"/${artifactPrefix}-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" native-tests/sandbox-unit-tests
-          count=$((count + 1))
-        fi
-      done
-      if [ "$count" -ne 1 ]; then
-        echo "expected exactly one ${crate} libtest executable, found $count" >&2
-        exit 1
-      fi
-    '';
+    postBuild = import ./_cargo-libtest-artifact.nix {
+      inherit lib pkgs crate;
+      destination = "native-tests/sandbox-unit-tests";
+    };
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 native-tests/sandbox-unit-tests "$out/bin/"

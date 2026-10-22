@@ -53,33 +53,18 @@
     cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "-p aos-sandbox-host --lib";
     installBins = false;
-    buildDeps = [pkgs.protobuf];
+    buildDeps = [pkgs.protobuf pkgs.jq];
     runtimeDeps = [];
     cargoEnv = {
       PROTOC = "${pkgs.protobuf}/bin/protoc";
       RUST_MIN_STACK = "33554432";
       RUST_TEST_THREADS = "1";
     };
-    postBuild = ''
-      mkdir worker-fixture
-
-      cargo_target_dir="''${CARGO_TARGET_DIR:-target}"
-      if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
-        cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
-      fi
-
-      count=0
-      for candidate in "$cargo_target_dir"/debug/deps/aos_sandbox_host-*; do
-        if [ -f "$candidate" ] && [ -x "$candidate" ]; then
-          install -m 0755 "$candidate" worker-fixture/aos-sandbox-host-worker-tests
-          count=$((count + 1))
-        fi
-      done
-      if [ "$count" -ne 1 ]; then
-        echo "expected exactly one aos_sandbox_host unit-test executable under $cargo_target_dir/debug/deps, found $count" >&2
-        exit 1
-      fi
-    '';
+    postBuild = import ./_cargo-libtest-artifact.nix {
+      inherit lib pkgs;
+      crate = "aos-sandbox-host";
+      destination = "worker-fixture/aos-sandbox-host-worker-tests";
+    };
     postInstall = ''
       mkdir -p "$out/bin"
       install -m 0755 worker-fixture/aos-sandbox-host-worker-tests "$out/bin/"
