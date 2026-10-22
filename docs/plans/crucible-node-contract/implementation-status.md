@@ -3183,6 +3183,30 @@ Source funding, genuine Initial/Recipe production, Controller transaction work
 and the remaining full RFC obligations remain incomplete. This checkpoint adds
 no full-library, configured runtime or VM qualification.
 
+## Closed Source Bootstrap envelope projection
+
+Commit `27badd5b33` derives independent serialization and backing demand for the
+sealed Bootstrap request and completed bootstrap-only response. It counts the
+three bounded ASCII IDs, four explicit null native routes, sequence two, full
+body/funding maps and exact proof/receipt positions. The empty completed-body
+extension map remains an independently owned root. Caller restrictions constrain
+the derived demand without becoming storage demand or protocol authority.
+
+Actual serialized DATA controls cover short and maximum-width IDs, a checked
+maximum-width funding axis, exact field/value populations, separately retained
+backing and actual canonical output. All seventeen Bootstrap ACK namespace tests
+pass in standard and raw-JSON modes; Transport/Engine/Daemon all-feature/all-target
+checking and all six architecture gates pass. The required application compilation
+gate emits 180 test executables across 58 package IDs, including 71 integration
+targets. All 373 owned Rust/Cargo inputs match committed `27badd5b33` and its
+actual captured Nix source. That gate executes no tests.
+
+This projection does not fund the raw parser, typed decoder, SDK custody, private
+Source guards or complete Source holder. Genuine Initial/Recipe production and
+the complete Bootstrap transaction remain unfinished, together with the remaining
+full RFC obligations. No new full-library, configured runtime or VM qualification
+is claimed by this checkpoint.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
