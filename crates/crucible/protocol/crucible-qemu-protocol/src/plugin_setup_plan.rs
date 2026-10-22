@@ -28,6 +28,8 @@ use thiserror::Error;
 mod preexec;
 mod publisher;
 mod quantum;
+mod quantum_stack;
+pub use quantum_stack::QuantumStackPlanParts;
 mod startup_operation;
 
 /// Fixed byte length of the current issued workspace record.

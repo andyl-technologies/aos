@@ -121,7 +121,9 @@ fn publisher_setup_preserves_workspace_binding_and_fixed_role_order()
 mod transport {
     use super::*;
     use crate::publisher_subscription::quantum::{
-        QuantumPublisherSetup, send_quantum_publisher_setup_frame_with_descriptors,
+        QuantumPublisherSetup, QuantumStackPublisherSetup,
+        send_quantum_publisher_setup_frame_with_descriptors,
+        send_quantum_stack_setup_frame_with_descriptors,
     };
     use std::io::{Read, Write};
     use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
@@ -188,12 +190,44 @@ mod transport {
         Ok(descriptors)
     }
 
-    fn exercise_transfer(quantum: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let send = if quantum {
-            send_quantum_publisher_setup_frame_with_descriptors
-        } else {
-            send_publisher_setup_frame_with_descriptors
-        };
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SetupEdition {
+        Publisher,
+        Quantum,
+        Stack,
+    }
+
+    type Sender = fn(
+        std::os::fd::RawFd,
+        &[u8; 125],
+        &[std::os::fd::RawFd],
+    ) -> Result<crate::PreexecSetupHandover, crate::DescriptorHandoverError>;
+
+    impl SetupEdition {
+        fn sender(self) -> Sender {
+            match self {
+                Self::Publisher => send_publisher_setup_frame_with_descriptors,
+                Self::Quantum => send_quantum_publisher_setup_frame_with_descriptors,
+                Self::Stack => send_quantum_stack_setup_frame_with_descriptors,
+            }
+        }
+
+        fn encode(self, value: PublisherSetup) -> Result<[u8; 125], PublisherDecodeError> {
+            let publisher = QuantumPublisherSetup { transport: value };
+            match self {
+                Self::Publisher => value.encode(),
+                Self::Quantum => publisher.encode(),
+                Self::Stack => QuantumStackPublisherSetup {
+                    publisher,
+                    grant_set_generation: 17,
+                }
+                .encode(),
+            }
+        }
+    }
+
+    fn exercise_transfer(edition: SetupEdition) -> Result<(), Box<dyn std::error::Error>> {
+        let send = edition.sender();
         for workspace in [false, true] {
             let (host, peer) = UnixStream::pair()?;
             let mut value = setup();
@@ -205,11 +239,7 @@ mod transport {
                     inode: 0,
                 });
             }
-            let frame = if quantum {
-                QuantumPublisherSetup { transport: value }.encode()?
-            } else {
-                value.encode()?
-            };
+            let frame = edition.encode(value)?;
             let pairs = (0..if workspace { 9 } else { 8 })
                 .map(|_| UnixStream::pair())
                 .collect::<std::io::Result<Vec<_>>>()?;
@@ -242,28 +272,24 @@ mod transport {
     #[test]
     fn publisher_setup_sends_exact_eight_and_nine_actual_aliases()
     -> Result<(), Box<dyn std::error::Error>> {
-        exercise_transfer(false)
+        exercise_transfer(SetupEdition::Publisher)
     }
 
     #[test]
     fn quantum_setup_sends_exact_eight_and_nine_actual_aliases()
     -> Result<(), Box<dyn std::error::Error>> {
-        exercise_transfer(true)
+        exercise_transfer(SetupEdition::Quantum)
     }
 
-    fn exercise_refusal(quantum: bool) -> Result<(), Box<dyn std::error::Error>> {
-        let send = if quantum {
-            send_quantum_publisher_setup_frame_with_descriptors
-        } else {
-            send_publisher_setup_frame_with_descriptors
-        };
-        let encode = |value| {
-            if quantum {
-                QuantumPublisherSetup { transport: value }.encode()
-            } else {
-                value.encode()
-            }
-        };
+    #[test]
+    fn stack_setup_sends_exact_eight_and_nine_actual_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_transfer(SetupEdition::Stack)
+    }
+
+    fn exercise_refusal(edition: SetupEdition) -> Result<(), Box<dyn std::error::Error>> {
+        let send = edition.sender();
+        let encode = |value| edition.encode(value);
         let (host, mut peer) = UnixStream::pair()?;
         let frame = encode(setup())?;
         for count in 0..=10 {
@@ -278,8 +304,14 @@ mod transport {
             descriptors[index] = host.as_raw_fd();
         }
         let mut malformed = frame;
-        malformed[124] = 1;
+        malformed[113] ^= 1;
         assert!(send(host.as_raw_fd(), &malformed, &descriptors).is_err());
+        if edition != SetupEdition::Stack {
+            let mut padding = frame;
+            padding[124] = 1;
+            assert!(send(host.as_raw_fd(), &padding, &descriptors).is_err());
+        }
+
         let mut with_workspace = setup();
         with_workspace.device_digest_workspace = Some(DeviceDigestWorkspaceBinding {
             account_generation: 5,
@@ -288,12 +320,35 @@ mod transport {
             inode: 0,
         });
         assert!(send(host.as_raw_fd(), &encode(with_workspace)?, &descriptors,).is_err());
-        let other = if quantum {
-            setup().encode()?
-        } else {
-            QuantumPublisherSetup { transport: setup() }.encode()?
-        };
-        assert!(send(host.as_raw_fd(), &other, &descriptors).is_err());
+        let workspace_frame = encode(with_workspace)?;
+        for count in 0..=10 {
+            if count != 9 {
+                assert!(
+                    send(
+                        host.as_raw_fd(),
+                        &workspace_frame,
+                        &vec![host.as_raw_fd(); count]
+                    )
+                    .is_err()
+                );
+            }
+        }
+        let mut workspace_descriptors = [host.as_raw_fd(); 9];
+        for index in 0..9 {
+            workspace_descriptors[index] = -1;
+            assert!(send(host.as_raw_fd(), &workspace_frame, &workspace_descriptors).is_err());
+            workspace_descriptors[index] = host.as_raw_fd();
+        }
+
+        for other in [
+            SetupEdition::Publisher,
+            SetupEdition::Quantum,
+            SetupEdition::Stack,
+        ] {
+            if other != edition {
+                assert!(send(host.as_raw_fd(), &other.encode(setup())?, &descriptors).is_err());
+            }
+        }
         peer.set_nonblocking(true)?;
         assert_eq!(
             peer.read(&mut [0; 1]).unwrap_err().kind(),
@@ -306,12 +361,18 @@ mod transport {
     #[test]
     fn publisher_setup_refuses_malformed_or_wrong_roster_before_send()
     -> Result<(), Box<dyn std::error::Error>> {
-        exercise_refusal(false)
+        exercise_refusal(SetupEdition::Publisher)
     }
 
     #[test]
     fn quantum_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
     -> Result<(), Box<dyn std::error::Error>> {
-        exercise_refusal(true)
+        exercise_refusal(SetupEdition::Quantum)
+    }
+
+    #[test]
+    fn stack_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_refusal(SetupEdition::Stack)
     }
 }

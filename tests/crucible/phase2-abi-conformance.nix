@@ -515,27 +515,38 @@ in
                 -p crucible-qemu-protocol \
                 --test golden_vectors \
                 -- --test-threads=1
-              require_test_set 9 protocol-quantum-cleanup \
+              require_test_set 6 protocol-quantum-cleanup \
                 publisher_subscription::quantum::tests::paired_publication_matches_independent_role_bytes_and_refuses_legacy_decoding \
-                -p crucible-qemu-protocol --lib publisher_subscription::quantum::
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::tests::
               cargo test \
                 --frozen \
                 --offline \
                 --target-dir "$TMPDIR/crucible-abi-conformance-target" \
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
-                --lib publisher_subscription::quantum:: \
+                --lib publisher_subscription::quantum::tests:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-negotiation \
+                publisher_subscription::quantum::negotiation::tests::negotiation_literals_preserve_physical_inventory_and_select_distinct_editions \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::negotiation::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum::negotiation::tests:: \
                 -- --test-threads=1
               require_test_set 3 protocol-quantum-plan \
                 plugin_setup_plan::preexec::tests::quantum::quantum_plan_matches_literal_header_and_round_trips_through_public_api \
-                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::quantum_plan
               cargo test \
                 --frozen \
                 --offline \
                 --target-dir "$TMPDIR/crucible-abi-conformance-target" \
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
-                --lib plugin_setup_plan::preexec::tests::quantum:: \
+                --lib plugin_setup_plan::preexec::tests::quantum::quantum_plan \
                 -- --test-threads=1
               require_test_set 2 protocol-quantum-transport \
                 publisher_subscription::tests::setup::transport::quantum_setup_sends_exact_eight_and_nine_actual_aliases \
@@ -547,6 +558,50 @@ in
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::quantum_setup \
+                -- --test-threads=1
+              require_test_set 5 protocol-quantum-stacks \
+                publisher_subscription::quantum::stacks::tests::stack_purpose_matches_independent_literal_header_and_both_role_records \
+                -p crucible-qemu-protocol --lib publisher_subscription::quantum::stacks::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::quantum::stacks::tests:: \
+                -- --test-threads=1
+              require_test_set 3 protocol-quantum-stack-plan \
+                plugin_setup_plan::preexec::tests::quantum::stacks::stack_plan_matches_literal_header_body_order_and_mutual_edition_refusal \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::quantum::stacks::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::quantum::stacks:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-quantum-stack-cap \
+                plugin_setup_plan::quantum_stack::tests::stack_extent_keeps_the_same_aggregate_cap_and_refuses_widened_overflow \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::quantum_stack::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::quantum_stack::tests:: \
+                -- --test-threads=1
+              require_test_set 2 protocol-quantum-stack-transport \
+                publisher_subscription::tests::setup::transport::stack_setup_sends_exact_eight_and_nine_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::stack_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::stack_setup \
                 -- --test-threads=1
               require_test_set 8 host-quantum-role \
                 host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \

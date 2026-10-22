@@ -29,6 +29,14 @@ pub use negotiation::{QuantumPublisherPurpose, QuantumPublisherSetup};
 #[cfg(unix)]
 pub use negotiation::send_quantum_publisher_setup_frame_with_descriptors;
 
+mod stacks;
+#[cfg(unix)]
+pub use stacks::send_quantum_stack_setup_frame_with_descriptors;
+pub use stacks::{
+    QUANTUM_STACK_PURPOSE_BYTES, QuantumStackPublisherSetup, QuantumStackPurpose,
+    QuantumStackReservation,
+};
+
 /// Describes an explicitly negotiated schema-two Quantum region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct QuantumPublisherHeader {

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use super::*;
+
+mod stacks;
 use crate::publisher_subscription::{PublisherPurpose, quantum::QuantumPublisherPurpose};
 
 fn selected_quantum() -> Vec<u8> {

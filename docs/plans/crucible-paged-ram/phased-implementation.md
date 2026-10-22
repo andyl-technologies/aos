@@ -69,6 +69,41 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Explicit Main/RR stack carrier codecs
+
+The separate pure stack namespace now encodes Setup8 (tag `0x18` with a
+nonexhausted grant-set incarnation at full-frame offset 117), plan eleven
+(`CRUCSU11`, 56-byte header), and the 576-byte `CRUCSTK1` section. Two fixed
+256-byte Main/RR records retain original parent coordinates, distinct role
+inventories, profile and cleanup observations. Checked page rounding, two real
+RR guards, equal finite Main limits, zero RR limit fields, reserved bytes and
+per-role/aggregate arithmetic must match exactly. The process, publisher,
+setup and stack observations must agree; no earlier edition is a fallback.
+The existing file cap remains 37,748,764 bytes, including the new header/tail.
+Encoding allocates its final carrier once after exact extent validation; the
+existing nested app/selectable allocations still require the caller's funding.
+
+All fourteen protocol targets pass 294 cases and strict all-target/all-feature
+Clippy passes. Eleven new controls cover independent literal bytes, every short
+record/carrier, changed fixed and repeated coordinates, valid-but-foreign
+parents, overflow, three page geometries, optional workspace, edition refusal
+and real eight/nine-alias SCM_RIGHTS transfer with ordered kernel identities
+and independent data flow. Refusal controls check malformed and other editions,
+wrong roster counts and negative descriptors before peer bytes are available.
+The ABI registration names and counts each focused group; the older nine
+Quantum controls remain registered separately from the new stack child.
+The initial strict check refused an unused import and the manual divisibility
+predicate; both were corrected without lint suppression. Final expanded
+transport controls and required package checks are running.
+
+These are syntax and transport controls only. Unknown concrete profiles still
+require refusal at actual adoption. No decoded inventory, profile digest,
+RLIMIT value or copied account identity creates a nominal resource grant,
+Main/RR thread, Cleanup operation or Source permission. The real once-only
+native-prefix partition and authenticated recipient-specific transfer remain
+open. Existing finite Cleanup does not cover otherwise unbounded Work; its
+separately versioned deferred-entry producer also remains required.
+
 #### Explicit physical exec Main stack control
 
 The process contract now retains one optional finite Main stack selection in
@@ -96,8 +131,9 @@ All four focused controls pass. Running the child assertion directly without
 the guarded installation refuses at the intended inherited-limit mismatch
 (exit 101), so an unconfigured exec cannot satisfy the positive control.
 The ABI gate registers the exact count and canonical child-probe name.
-Hygiene passes; mandatory application compilation, all-target QEMU Host
-compilation, ABI and strict boundary checks are running.
+Hygiene passes; all-target, all-feature QEMU Host compilation also passes for
+the signed `19d2851e02` checkpoint. Mandatory application compilation, ABI
+and strict boundary checks are running.
 
 #### Sticky terminal decisions from actual lender collection
 
@@ -123,7 +159,7 @@ passes at `d9jbf03n9xb1acxmnnyfr3vm61nzsl3p`; all 5,323 committed Rust/TOML file
 match its frozen source (proof SHA-256
 `2171e990070c398ab14d59108c7ae87f48ad4ae1b498d560d39fcf76af199f95`).
 ABI passes at `pvrpl4w09kqz4gnlswm9yp24gc4lz91x`, and hygiene passes.
-Exact supervision is still running. The strict license-boundary gate again
+Exact supervision passes at `nhic2kysj720rn4qbchwsnyd47al4zsz`. The strict license-boundary gate again
 refuses at 909 Host library and 963 test Clippy errors; its boundary assertions
 did not run.
 
