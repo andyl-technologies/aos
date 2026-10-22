@@ -325,3 +325,39 @@ fn transfer_retains_compulsory_reserves_and_outside_creator_history() {
     no_outside.memory.gross_bytes = no_outside.memory.native_bytes;
     assert!(no_outside.encode().is_err());
 }
+
+#[test]
+fn transfer_matches_all_public_vectors_and_exact_accepted_round_trips() {
+    let vectors = include_str!("../../tests/fixtures/native-transfer-v1.tsv");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(vectors.as_bytes())),
+        "a86272013c8055505cf370196e8d81833ff658590ddea59702c79eb2a6d88df9"
+    );
+    let mut names = std::collections::BTreeSet::new();
+    let mut accepted = 0;
+    for line in vectors.lines() {
+        let fields = line.split('\t').collect::<Vec<_>>();
+        assert_eq!(fields.len(), 3);
+        assert!(!fields[0].is_empty() && fields[0].is_ascii());
+        assert!(names.insert(fields[0]), "duplicate {}", fields[0]);
+        assert!(matches!(fields[1], "0" | "1"));
+        let (words, remainder) = fields[2].as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
+        let bytes = words
+            .iter()
+            .map(|word| u8::from_str_radix(std::str::from_utf8(word).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let decoded = NativeTransfer::decode(&bytes);
+        assert_eq!(decoded.is_ok(), fields[1] == "1", "{}", fields[0]);
+        if let Ok(transfer) = decoded {
+            assert_eq!(
+                transfer.encode().unwrap().as_slice(),
+                bytes,
+                "{}",
+                fields[0]
+            );
+            accepted += 1;
+        }
+    }
+    assert_eq!((names.len(), accepted), (1750, 9));
+}

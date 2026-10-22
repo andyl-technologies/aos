@@ -588,6 +588,20 @@ probe-child identities may differ from future recipient children. Seven cases
 and strict all-target protocol Clippy pass; counted ABI registration and exact
 component bindings are added. Real paid probe issuance and launch remain absent.
 
+Independent public NativeTransfer1 vectors are now shared under their explicit
+MIT data license, without importing GPL implementation code. Signed source
+`6ad9e2910c043d2fce01ccd616d143f6ab744294`, tree
+`dc377e6e52839b134d5aa2b6f5cac4064c0d7b2e`, supplies 1,750 cases including every
+truncation and nine accepted descriptive forms. Independent review verifies all
+fifteen source-packet payloads against manifest
+`6b1729939cfd94299dcebcc29f4d896dab46e6238f776dcc2a5264920698415b`.
+The Rust decoder agrees with every case and reproduces all nine accepted byte
+strings exactly; the TSV SHA256 is pinned separately. The full 269-test protocol
+suite and strict all-target Clippy pass after replacing the test's randomized
+name set with an ordered set. The initial Clippy refusal remains retained.
+This adds a tenth root-transfer case to the counted ABI group; C compilation
+and execution remain unqualified at this source checkpoint.
+
 #### Selected allocator fail-stop component
 
 The package subsequently imports signed provider

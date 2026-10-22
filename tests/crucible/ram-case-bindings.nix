@@ -151,6 +151,7 @@
         (case "owned_decode::tests::canonical_display_hash_admits_scratch_before_formatting" "adversarial" ["RAM-12"] "The real decode budget refuses hashing scratch before the formatter runs and retains/releases its actual finite credits; component authority supplies no selected native payer.")
       ])
       (group "protocol/crucible-qemu-protocol" "lib" [] [
+        (case "native_transfer::tests::transfer_matches_all_public_vectors_and_exact_accepted_round_trips" "positive" ["PLAN-2"] "All 1750 shared permissive public vectors match Rust syntax, including nine exact accepted round trips; independent C execution and resource ownership remain unqualified.")
         (case "native_transfer::tests::transfer_preserves_exact_fixed_layout_and_runtime_correlation" "positive" ["PLAN-2"] "Exact transfer bytes and separately encoded runtime correlation describe a proposed subloan; no resources, issuer or launched profile are admitted.")
         (case "native_transfer::tests::transfer_refuses_every_truncation_trailing_bytes_and_reserved_octet" "adversarial" ["PLAN-2"] "Every truncation, trailing byte and reserved octet refuses in the proposed fixed transfer reader.")
         (case "native_transfer::tests::transfer_refuses_absent_identities_and_exhausted_coordinates" "adversarial" ["PLAN-2"] "Absent parent/recipient/digest coordinates and exhausted actual incarnation descriptions refuse before any transfer effect.")

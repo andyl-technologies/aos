@@ -664,7 +664,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib plugin_setup_plan::deferred_cleanup::tests:: \
                 -- --test-threads=1
-              ABI_TEST_SKIP=plugin_setup_plan:: require_test_set 9 protocol-native-transfer \
+              ABI_TEST_SKIP=plugin_setup_plan:: require_test_set 10 protocol-native-transfer \
                 native_transfer::tests::transfer_retains_compulsory_reserves_and_outside_creator_history \
                 -p crucible-qemu-protocol --lib native_transfer::tests::
               cargo test \
