@@ -198,6 +198,11 @@ int main(int argc, char **argv)
         fail("PID1 did not isolate its mount namespace");
     }
 
+    /* Switch-root clones /run into the new root and detaches its old mount.
+     * The retained old descriptor still reads the same files, but a detached
+     * source cannot be bind-mounted. Resolve the attached parent view anew. */
+    retain_directory(7, "self/fd/6/run");
+
     bind_and_verify("self/fd/7/aos/post-pin-systemd", "self/fd/3/lib/systemd/systemd",
                     "AOS_POST_PIN_ATTACKER_SYSTEMD\n");
     bind_and_verify("self/fd/7/aos/post-pin-loader", loader_target,

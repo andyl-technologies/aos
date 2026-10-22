@@ -377,9 +377,10 @@ in {
 
       failure = await_serial(
           substitutedGuard,
-          "Authenticated AOS root-handoff guard is unavailable",
+          "AOS root-handoff guard has untrusted ownership, mode, or filesystem identity.",
       )
       assert "AOS root-handoff adversary: substituted guard" in failure
+      assert "Freezing execution." in failure
       assert "AOS SELinux stage0: runtime closure pinned" not in failure
       assert "trying fallback" not in failure
       assert "fallback shell" not in failure

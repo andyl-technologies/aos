@@ -9924,6 +9924,13 @@ The same transcript shows both pre-pin bind fixtures exiting before their
 attack because `chmod` is absent from the initrd job's PATH. Both now use the
 explicit AOS Coreutils executable; the non-directory runtime-root fixture
 already uses explicit package tools and reaches its intended mutation.
+The corrected installed run confirms that guard substitution reaches the
+manager's exact filesystem-identity rejection and freezes. Its negative test
+now requires that diagnostic and the freeze marker. The post-pin helper
+survives switch-root but cannot bind from its retained, detached initrd `/run`
+mount. It now reopens the attached `/run` through the retained new root after
+the pin gate; the same files remain on the transferred filesystem. Both actual
+post-pin mutations and the complete handoff test remain unqualified.
 The installed Host test passes byte, distinct-inode, mode/ownership and raw
 SELinux-label comparisons for the Host and copied Guest DSOs. Both metadata
 tools follow the versioned DSO symlinks; AOS-built `getfattr` supplies raw
