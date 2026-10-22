@@ -823,6 +823,11 @@ in {
       )
       before_downgrade = machine.succeed(f"{COREUTILS}/sha256sum {session_journals}")
       machine.succeed("systemctl start aos-storage-rpc-decoy.service", timeout=20)
+      machine.wait_until_succeeds(
+          "journalctl -u aos-storaged.service --no-pager -o cat "
+          "| grep -F 'Storage Controller peer is not current'",
+          timeout=20,
+      )
       machine.succeed("systemctl start aos-storaged.service", timeout=150)
       controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
       assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
