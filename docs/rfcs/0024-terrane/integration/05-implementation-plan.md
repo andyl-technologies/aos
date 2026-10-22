@@ -12618,3 +12618,29 @@ The older full feature matrix at `aa150620b5` finishes unsuccessfully: 1,228
 SDK cases pass and one post-Done foreign-view cold fork fails with `Expired`.
 That failed baseline is retained; focused newer results do not replace complete
 current aggregate qualification or change the original operation deadlines.
+
+#### Structural index child runs
+
+D-132 resolves the incompatible requirements for globally sorted paths and
+contiguous direct-child records by adding a child-index array. The feature-gated
+Linux codec compiles resolved metadata without any content-fetching interface,
+preserves inline versus manifest references, logical sizes, exact symlink bytes
+and explicit graft governing roots, and synthesizes the root directory.
+Its reader validates the complete byte layout, sorted paths, parent relations
+and child-run partition before exposing borrowed lookup and directory scans.
+
+All seven local codec cases pass, including nested directories, exact compiler
+bounds, every truncation of the fixture, forged relationships and single-byte
+mutations. Strict Linux all-target Clippy with `surface-fuse`, Rust/Nix formatting
+and evaluation pass. The independent structural-index integration check and
+required application compilation remain pending. The codec does not establish
+authenticated tree resolution, a sealed mapping, cache pinning, worker custody
+or a mount, and no FUSE task or gate is accepted from this component alone.
+
+Frozen ref-inventory forwarding at `578961f905` passes all thirteen routing
+cases in 152.11 seconds, five native listing cases in 186.66 seconds and seventeen
+owning surface-interface cases in 264.74 seconds. Independent review matches
+7,958 immutable source files and 5,251 bound crate inputs, including the actual
+retained five-target surface test image. Routing and listing outputs retain
+compiler and execution records rather than executable bytes. Required
+application compilation remains pending; no task acceptance changes.

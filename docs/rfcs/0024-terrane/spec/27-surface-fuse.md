@@ -75,8 +75,9 @@ Index file layout (little-endian):
   header      magic "TRIX", u16 version, u16 flags, u32 entry_count,
               u64 root_hash_offset, u64 path_arena_offset,
               u64 target_arena_offset, u64 hash_arena_offset,
-              u64 entries_offset, u64 file_length
-  path arena  concatenated path bytes (no separators)
+              u64 entries_offset, u64 children_offset, u64 file_length
+  root        32-byte root hash
+  path arena  concatenated full relative paths (no record delimiters)
   target      concatenated symlink targets
   hash arena  32-byte content hashes, deduplicated
   entries     fixed-width records sorted by path bytes:
@@ -84,7 +85,38 @@ Index file layout (little-endian):
               u16 reserved, u64 size, u64 content_off_or_hash_idx,
               u32 target_off, u32 target_len, u32 parent_idx,
               u32 first_child_idx, u32 child_count
+  children    u32 entry-table indices, grouped by parent entry-table order
 ```
+
+Version 1 has a 68-byte header, zero header flags and 52-byte entry records.
+All offsets in the header are absolute byte offsets. Arenas and tables occur
+in the order shown, with no padding or trailing bytes. Path and target offsets
+in entries are relative to their respective arenas. Hash references are indices
+into a strictly byte-sorted, deduplicated hash arena. The first entry is the
+root directory with an empty path and parent index `0xffffffff`; every other
+path obeys the tree key grammar and names an explicitly recorded directory
+parent. Path bytes and symlink targets are concatenated in entry-table order.
+
+Entry kinds are 1 (directory), 2 (file), and 3 (symlink). Reserved fields are
+zero. A directory has size zero; flag bit 0 marks a graft and its hash slot
+names the governing root. Other directories inherit their parent's governing
+root, starting with the header's root hash. For files, flag bit 0 distinguishes
+manifest references (set) from inline chunk references (clear), and the hash
+slot names that content. Symlinks have zero flags, their size equals their
+target length, and their target bytes are preserved without normalization.
+Unused target fields are zero; an unused hash slot is `0xffffffffffffffff`.
+All other flag bits are reserved and rejected.
+
+`first_child_idx` is an index into the **children array**, not the entry table.
+Each directory's run contains its immediate children's entry-table indices
+in increasing order. Runs partition the array in parent entry-table order;
+non-directories have empty runs. The array contains exactly `entry_count - 1`
+indices, and each non-root entry occurs exactly once in its encoded parent's
+run. Readers MUST reject inconsistent relationships, unsupported versions or
+flags, invalid paths and arena references, arithmetic overflow, overlapping
+runs, and truncated or trailing bytes before exposing entries. This permits
+globally sorted paths and contiguous direct-child iteration for nested trees
+without moving descendants into their parent's run (D-132).
 
 - **[FUSE-7]** The serve process MUST compile a structural index from the
   tree's nodes for every distinct root hash it serves and MUST store it in
@@ -92,7 +124,8 @@ Index file layout (little-endian):
   MUST NOT fetch object content. *Gate:* `gate:fuse-index-roundtrip`.
 - **[FUSE-8]** Path lookup in the index MUST be a binary search over the
   sorted entry table, and directory listing MUST be a contiguous scan from
-  `first_child_idx` over `child_count` entries. Neither MAY require
+  `first_child_idx` over `child_count` child indices, dereferencing each into
+  the entry table. Neither MAY require
   per-entry heap allocation.
 - **[FUSE-9]** The worker MUST map the index read-only. The serve process
   MUST seal an index file (immutable, verified) before passing it to a

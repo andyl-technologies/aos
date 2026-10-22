@@ -18,4 +18,6 @@ pub mod host_quota;
 pub mod publisher_io;
 pub mod publisher_local;
 pub mod quota_confinement;
+#[cfg(feature = "surface-fuse")]
+pub mod structural_index;
 pub mod verity;

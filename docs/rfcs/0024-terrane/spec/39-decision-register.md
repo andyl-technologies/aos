@@ -2857,6 +2857,21 @@ is added rather than editing history.
   - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1. Native read
     reporting, refetch and recovery reconciliation remain separate obligations.
 
+- **[D-132] Separate sorted entries from direct-child runs.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Keep the structural index entry table in global full-path
+    byte order and add a contiguous array of u32 entry-table indices. Each
+    directory records its run in that array. Validate the complete partition,
+    parent relationships and byte ranges before exposing borrowed entries.
+  - **Rationale:** Nested descendants interleave direct children in a globally
+    sorted table. A separate child array preserves binary search and
+    allocation-free directory scans without duplicating entry records.
+  - **Compatibility:** Clarifies the not-yet-deployed structural index version
+    1 layout by adding `children_offset` to its header. No Terrane identity,
+    tree encoding, wire field, requirement ID or gate name changes. This does
+    not establish sealing, cache pinning or worker conformance.
+  - **Affects:** FUSE-7, FUSE-8 and FUSE-12.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
