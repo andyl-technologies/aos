@@ -345,6 +345,8 @@ in
   assert !(hostEvaluation.config.systemd.services ? aos-sandbox-host-phase0-inspector);
   assert builtins.elem "systemd-nsresourced.socket" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.requires;
   assert builtins.elem "systemd-nsresourced.socket" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.after;
+  assert builtins.elem "systemd-mountfsd.socket" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.requires;
+  assert builtins.elem "systemd-mountfsd.socket" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.after;
   assert hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.serviceConfig.PrivateUsers == "managed";
   assert !(hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.serviceConfig ? User);
   assert !(hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.serviceConfig ? Group);

@@ -781,9 +781,10 @@ in {
 
     systemd.services.aos-sandbox-host-phase0-target = lib.mkIf phase0ProbeActive {
       description = "AOS fixed shifted-userns phase-0 target";
-      # Managed UID allocation connects to this selected-manager varlink socket.
-      requires = ["systemd-nsresourced.socket"];
-      after = ["local-fs.target" "systemd-nsresourced.socket"];
+      # Managed namespaces need both UID allocation and mount translation from
+      # the selected manager before the confined target can execute.
+      requires = ["systemd-nsresourced.socket" "systemd-mountfsd.socket"];
+      after = ["local-fs.target" "systemd-nsresourced.socket" "systemd-mountfsd.socket"];
       serviceConfig = {
         Type = "exec";
         ExecStart = "${cfg.package}/bin/aos-sandbox-host-phase0-probe target";

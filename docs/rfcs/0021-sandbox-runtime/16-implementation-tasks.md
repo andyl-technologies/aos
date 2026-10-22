@@ -10431,6 +10431,19 @@ This is a startup composition check, not an installed Required-mode or public
 Create proof.
 The installed method-46 and public Create qualification gates remain closed.
 
+### Installed managed-userns probe mount service (execution pending)
+
+The first correctly funded 16-vCPU Host readiness run passes physical capacity
+and sealed image checks, then fails before the target executes because PID 1
+cannot connect to `mountfsd`. The selected systemd 261.2 source uses this service
+for managed-namespace mount translation. The fixed probe now requires and orders
+both `systemd-nsresourced.socket` and `systemd-mountfsd.socket`; its namespace,
+capability and confinement settings remain unchanged. The expanded Controller
+service contract passes at
+`/nix/store/nq27sp7d5gabypknglj9bp6kh7gjry6x-sandbox-controller-service-source-contract-0`.
+An installed rerun is still required; the failed run supplies no phase-0 or
+backend readiness receipt.
+
 ### QEMU/vTPM journal-floor transport (component qualified)
 
 `fleet.sandbox-method46-tpm-transport` passes at
