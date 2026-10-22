@@ -200,6 +200,16 @@ impl Queue {
             .eviction_candidates_to_reclaim(required, Duration::ZERO)
     }
 
+    /// Records a private lifetime plan without treating it as native authority.
+    ///
+    /// # Errors
+    /// Refuses absent scheduling entries or remaining policy protection.
+    pub(super) fn plan_private_retirement(&mut self, key: &str) -> io::Result<()> {
+        self.policy
+            .plan_retirement(key, Duration::ZERO)
+            .map_err(io::Error::other)
+    }
+
     /// Restores queue membership only after the actual pending name is restored.
     pub(super) fn restored(&mut self, key: &str) {
         self.policy.touch(key);

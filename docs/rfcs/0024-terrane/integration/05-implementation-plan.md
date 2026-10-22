@@ -15181,3 +15181,39 @@ fixture compiles in 83 seconds. Python syntax, the complete 129-case native
 source inventory and Nix formatting pass. Native execution on this increment
 remains required. Cold adopted private-body retirement and crash/retained-reference
 qualification remain separate open obligations; no trunk task is accepted.
+
+
+#### Private retirement scheduling and cold-release regression
+
+The `20036ecf3c` native private-release proof fails in 280.856 seconds: both
+independent-consumer controls and public retention pass, and the private inode
+is actually unlinked, but its original allocation remains charged after backing
+closure. This is a failed qualification, not accepted DOM-15 evidence. Review
+found a missing scheduling transition: pressure-independent private selection
+never marked its FIFO entry retiring, so ordinary final acknowledgment cleanup
+could refuse it. Private selection now records that reconstructible plan before
+the original native RPC. The original permit, pin and shared-source checks and
+actual quota reconciliation remain mandatory. The existing policy regression
+also checks pressure-independent planning below the low watermark, pin/grace
+refusal, read and pin cancellation, and charge retention through final cleanup.
+Native release now checks owner health and reports actual quota values on failure;
+its original deadline and required charge decrease remain unchanged. A new run
+is required to establish whether this fixes the observed physical lifetime.
+
+Native reassembly passes in 261.622 seconds. Independent review matches all
+8,070 immutable source files, 5,350 bound inputs, the actual installed Cargo ELF
+and all original enrollment controls and six public/private inode observations.
+The maintained SDK regression fails in 684.914 seconds after all three genuine
+cache-lock/SIGTERM controls pass. Its timing records show the final refused
+publication probe receives only 0.935 seconds of the overall VM budget and is
+terminated at that deadline. The failed receipt remains retained; no bounds
+are increased and no complete maintained-regression pass is claimed.
+
+A separate cold-release scenario now seeds genuine original sealed bodies and
+finite acknowledged consumer promises in one process, recovers those original
+inodes in a second process, and repeats independent-lease, retained-backing and
+actual-project-quota checks without replacement publication. Root supervision
+requires the exact original public inode to survive and the private inode to
+disappear. This is an unqualified regression for the still-open cold retirement
+implementation; it is not yet an owning-gate prerequisite or acceptance claim.
+No additional trunk task is accepted by this increment.

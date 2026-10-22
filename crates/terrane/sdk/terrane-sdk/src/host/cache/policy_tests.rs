@@ -119,6 +119,55 @@ fn host_cache_pin_grace_and_read_cancellation_restore_queue_membership() {
     );
     cache.finish_retirement("pinned").unwrap();
     assert_eq!(cache.charged_bytes(), 0);
+
+    // Private lifetime expiry also applies below the FIFO low watermark. It
+    // must preserve the same pin, grace, read cancellation and charge rules.
+    insert(&mut cache, "private", 30);
+    assert!(
+        cache
+            .eviction_candidates(Duration::from_secs(40))
+            .is_empty()
+    );
+    assert!(
+        cache
+            .plan_retirement("absent", Duration::from_secs(40))
+            .is_err()
+    );
+    cache.pin("private").unwrap();
+    assert!(
+        cache
+            .plan_retirement("private", Duration::from_secs(40))
+            .is_err()
+    );
+    cache.release("private", Duration::from_secs(40)).unwrap();
+    assert!(
+        cache
+            .plan_retirement("private", Duration::from_secs(44))
+            .is_err()
+    );
+
+    cache
+        .plan_retirement("private", Duration::from_secs(45))
+        .unwrap();
+    assert_eq!(cache.charged_bytes(), 30);
+    cache.touch("private");
+    assert!(cache.finish_retirement("private").is_err());
+    cache
+        .plan_retirement("private", Duration::from_secs(45))
+        .unwrap();
+    cache.pin("private").unwrap();
+    assert!(cache.finish_retirement("private").is_err());
+    cache.release("private", Duration::from_secs(45)).unwrap();
+    assert!(
+        cache
+            .plan_retirement("private", Duration::from_secs(49))
+            .is_err()
+    );
+    cache
+        .plan_retirement("private", Duration::from_secs(50))
+        .unwrap();
+    cache.finish_retirement("private").unwrap();
+    assert_eq!(cache.charged_bytes(), 0);
 }
 
 #[test]

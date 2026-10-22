@@ -315,6 +315,26 @@ impl CachePolicy {
         victims
     }
 
+    /// Plans retirement of a specific unprotected allocation without FIFO pressure.
+    ///
+    /// This supports lifetimes such as private sealed content, which must end
+    /// after final consumer release even when capacity remains. It changes only
+    /// scheduling state; callers still require original native retirement and
+    /// actual physical accounting. Subsequent reads or pins cancel this plan.
+    ///
+    /// # Errors
+    /// Refuses unknown allocations, live pins and unelapsed release grace.
+    pub fn plan_retirement(&mut self, key: &str, now: Duration) -> Result<(), StoreFailure> {
+        let entry = self.entries.get_mut(key).ok_or_else(capacity)?;
+        if entry.pins != 0 || now < entry.protected_until {
+            return Err(capacity());
+        }
+        entry.retiring = true;
+        self.probation.retain(|candidate| candidate != key);
+        self.main.retain(|candidate| candidate != key);
+        Ok(())
+    }
+
     /// Removes charge only after durable retirement has completed.
     ///
     /// # Errors

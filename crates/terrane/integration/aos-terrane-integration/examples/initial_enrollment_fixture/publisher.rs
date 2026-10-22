@@ -113,12 +113,22 @@ pub(super) fn prepare_release() -> io::Result<()> {
     prepare_with(Preparation::Release)
 }
 
+pub(super) fn seed_release() -> io::Result<()> {
+    prepare_with(Preparation::SeedRelease)
+}
+
+pub(super) fn recovered_release() -> io::Result<()> {
+    prepare_with(Preparation::RecoveredRelease)
+}
+
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
     Objects,
     Reassembly,
     Release,
+    SeedRelease,
+    RecoveredRelease,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -129,20 +139,36 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     let case = Case::existing("positive")?;
     // The separate reassembly scenario exercises an explicit one-second
     // retirement policy. Original enrollment keeps its thirty-second policy.
-    let retirement_grace_ms =
-        if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
-            1_000
-        } else {
-            30_000
-        };
-    let consumer_release_grace_seconds =
-        if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
-            1
-        } else {
-            30
-        };
+    let retirement_grace_ms = if matches!(
+        preparation,
+        Preparation::Reassembly
+            | Preparation::Release
+            | Preparation::SeedRelease
+            | Preparation::RecoveredRelease
+    ) {
+        1_000
+    } else {
+        30_000
+    };
+    let consumer_release_grace_seconds = if matches!(
+        preparation,
+        Preparation::Reassembly
+            | Preparation::Release
+            | Preparation::SeedRelease
+            | Preparation::RecoveredRelease
+    ) {
+        1
+    } else {
+        30
+    };
     let mut host = configuration(&case, retirement_grace_ms, consumer_release_grace_seconds);
-    if matches!(preparation, Preparation::Reassembly | Preparation::Release) {
+    if matches!(
+        preparation,
+        Preparation::Reassembly
+            | Preparation::Release
+            | Preparation::SeedRelease
+            | Preparation::RecoveredRelease
+    ) {
         host.reassembly = Reassembly::Always;
     }
     let plan = NativeCachePlan::from_host(&host, terrane_format::refs::Locality::default())?;
@@ -181,6 +207,12 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             }
             Preparation::Release => {
                 runtime.block_on(content::exercise_release(store, &profile, domain))?
+            }
+            Preparation::SeedRelease => {
+                runtime.block_on(content::seed_release(store, &profile, domain))?
+            }
+            Preparation::RecoveredRelease => {
+                runtime.block_on(content::recovered_release(store, domain))?
             }
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.

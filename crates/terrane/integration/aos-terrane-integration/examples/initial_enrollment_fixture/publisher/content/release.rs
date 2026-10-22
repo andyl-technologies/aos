@@ -19,7 +19,9 @@ use terrane_format::{
     identity::{IdentityKind, TERRANE_V1},
 };
 use terrane_linux::{
-    host_cache::{NativeContentStore, NativePreparedObject},
+    host_cache::{
+        NativeContentStore, NativePreparedObject, NativeSealedBacking, NativeSealedObjectLease,
+    },
     host_quota::HostQuotaClient,
 };
 use terrane_sdk::store::{
@@ -31,12 +33,6 @@ pub(super) async fn exercise(
     profile: &ChunkProfile,
     domain: &str,
 ) -> io::Result<()> {
-    let index = DOMAINS
-        .iter()
-        .position(|candidate| *candidate == domain)
-        .ok_or_else(|| io::Error::other("unknown actual release domain"))?;
-    let case = Case::existing("positive")?;
-    let mut quota = HostQuotaClient::connect(&case.socket(), 0, 1u128.to_be_bytes())?;
     let plaintext = vec![61; 1337];
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &plaintext)
@@ -88,6 +84,157 @@ pub(super) async fn exercise(
     terrane_linux::verity::measure(&descriptor)?;
     object.into_cache().await.map_err(io::Error::other)?;
 
+    release_grants(
+        store,
+        domain,
+        Retained {
+            first,
+            second,
+            backing,
+            descriptor,
+            inode,
+            plaintext,
+            allocated,
+        },
+    )
+    .await
+}
+
+/// Reopens genuine adopted backing without constructing a new publication job.
+pub(super) async fn recovered(store: &NativeContentStore, domain: &str) -> io::Result<()> {
+    let plaintext = vec![61; 1337];
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &plaintext)
+        .map_err(io::Error::other)?;
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(25)
+        .ok_or_else(|| io::Error::other("recovered release expiry overflows"))?;
+    let first = store
+        .ready()
+        .owner()
+        .pin_sealed_object(identity.clone(), expires)
+        .await?;
+    let second = store
+        .ready()
+        .owner()
+        .pin_sealed_object(identity, expires)
+        .await?;
+    assert_ne!(first.owner(), second.owner());
+    let allocated = first.initial_accounting().synchronized_sealed_inode_bytes;
+    assert!(allocated > 0);
+    let backing = first.backing()?;
+    let descriptor = File::from(backing.as_fd().try_clone_to_owned()?);
+    let metadata = descriptor.metadata()?;
+    let inode = (metadata.dev(), metadata.ino());
+    check_original(&descriptor, inode, &plaintext)?;
+    terrane_linux::verity::measure(&descriptor)?;
+    release_grants(
+        store,
+        domain,
+        Retained {
+            first,
+            second,
+            backing,
+            descriptor,
+            inode,
+            plaintext,
+            allocated,
+        },
+    )
+    .await?;
+    println!(
+        "PASS actual cold {domain} adopted sealed backing completes final-consumer release without a replacement publication"
+    );
+    Ok(())
+}
+
+/// Seeds original cold backing and a finite durable consumer promise in a separate actor.
+pub(super) async fn seed(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    let plaintext = vec![61; 1337];
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &plaintext)
+        .map_err(io::Error::other)?;
+    let mut encoded = vec![0];
+    encoded.extend_from_slice(&plaintext);
+    store
+        .put(ContentUpload::Chunk(ChunkUpload {
+            encoded: &encoded,
+            identity: &identity,
+            declared_plaintext_len: plaintext.len(),
+            position: ChunkPosition::Final,
+            profile,
+        }))
+        .await
+        .map_err(io::Error::other)?;
+    let NativePreparedObject::Sealed(object) = store
+        .prepare_object(&identity, terrane_sdk::host::cache::ReassemblyMode::Never)
+        .await
+        .map_err(io::Error::other)?
+    else {
+        return Err(io::Error::other("cold release seed escaped sealing"));
+    };
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(15)
+        .ok_or_else(|| io::Error::other("cold seed expiry overflows"))?;
+    let lease = object
+        .pin_consumer(expires)
+        .await
+        .map_err(io::Error::other)?;
+    assert_eq!(lease.expires_at()?, expires);
+    object.into_cache().await.map_err(io::Error::other)?;
+    store.ready().validate_portable().await?;
+    // Drop preserves this actual durable promise. The next actor must recover
+    // the original body and honor expiry; it cannot manufacture a release handle.
+    drop(lease);
+    println!(
+        "PASS actual cold {domain} seed retains original sealed inode and acknowledged finite consumer expiry {expires}"
+    );
+    Ok(())
+}
+
+/// Keeps each independent grant and every delegated descriptor in one ownership scope.
+struct Retained {
+    first: NativeSealedObjectLease,
+    second: NativeSealedObjectLease,
+    backing: NativeSealedBacking,
+    descriptor: File,
+    inode: (u64, u64),
+    plaintext: Vec<u8>,
+    allocated: u64,
+}
+
+async fn release_grants(
+    store: &NativeContentStore,
+    domain: &str,
+    retained: Retained,
+) -> io::Result<()> {
+    let Retained {
+        first,
+        second,
+        backing,
+        descriptor,
+        inode,
+        plaintext,
+        allocated,
+    } = retained;
+    let index = DOMAINS
+        .iter()
+        .position(|candidate| *candidate == domain)
+        .ok_or_else(|| io::Error::other("unknown actual release domain"))?;
+    let case = Case::existing("positive")?;
+    let mut quota = HostQuotaClient::connect(&case.socket(), 0, 1u128.to_be_bytes())?;
     let owner = store.ready().owner();
     owner.release_sealed_object_lease(&first).await?;
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -137,6 +284,7 @@ pub(super) async fn exercise(
     drop(backing);
     drop(first);
     drop(second);
+    owner.check_running().await?;
 
     if domain.starts_with("private:") {
         let deadline = TokioClock.monotonic() + Duration::from_secs(8);
@@ -152,9 +300,9 @@ pub(super) async fn exercise(
                 break;
             }
             if TokioClock.monotonic() >= deadline {
-                return Err(io::Error::other(
-                    "private sealed allocation remained charged after actual backing closure",
-                ));
+                return Err(io::Error::other(format!(
+                    "private sealed allocation remained charged after actual backing closure: retained={retained} actual={actual} allocated={allocated}"
+                )));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

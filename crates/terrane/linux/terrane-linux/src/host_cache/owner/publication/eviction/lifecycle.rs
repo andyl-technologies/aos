@@ -293,6 +293,17 @@ pub(in crate::host_cache::owner) async fn run(
                 .into_iter()
                 .find(|unit| unit.key == key)
                 .ok_or_else(|| invalid("FIFO candidate lost original sealed allocation"))?;
+            if private {
+                // A lifetime-triggered transition has no pressure-selected FIFO
+                // victim. Record its reconstructible plan before the native RPC
+                // so final acknowledgment can complete ordinary queue cleanup.
+                executor
+                    .cache
+                    .queue
+                    .as_mut()
+                    .ok_or_else(|| invalid("native FIFO absent"))?
+                    .plan_private_retirement(&key)?;
+            }
             retire(executor, Arc::new(unit)).await?;
         } else if let Some(unit) = surface_units.remove(&key) {
             surface::retire(executor, unit).await?;

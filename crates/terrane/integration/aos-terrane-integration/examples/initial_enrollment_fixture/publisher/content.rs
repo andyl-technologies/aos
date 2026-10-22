@@ -323,3 +323,17 @@ pub(super) async fn exercise_release(
 ) -> io::Result<()> {
     release::exercise(store, profile, domain).await
 }
+
+/// Seeds actual durable private/public grants for an independent cold actor.
+pub(super) async fn seed_release(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+    domain: &str,
+) -> io::Result<()> {
+    release::seed(store, profile, domain).await
+}
+
+/// Releases independently recovered native backing without publishing a replacement.
+pub(super) async fn recovered_release(store: &NativeContentStore, domain: &str) -> io::Result<()> {
+    release::recovered(store, domain).await
+}
