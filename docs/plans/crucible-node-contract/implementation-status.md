@@ -2616,6 +2616,35 @@ No new VM or configured Engine/Daemon runtime result is claimed. Genuine
 Source/Birth funding, live ACK publication, complete phase construction and
 full RFC acceptance remain unfinished.
 
+## Original native bootstrap registration
+
+Commit `9d400659e4` borrows all nine native registration fields from the
+original live SDK authority under the existing immutable policy and original
+input/Hello guards. The caller cannot supply a controller connection ID through
+this loan. The public registration serializer retains its existing wire grammar.
+The native projection requires the original native connection and empty typed
+extension roster, and exhaustively names every registration and limit field.
+
+Projection runs without allocating a normalization DOM or a Bytes formatter.
+The existing twenty-byte scalar reserve remains present. Checked loan controls
+include the concrete Copy result; callback construction is independently funded.
+The loan creates no connection, Source/Birth funding, native ACK or phase grant.
+
+All twenty-seven physical cases pass. An independent nine-field SDK oracle and
+actual serializer agree with the normalized view and projected storage. Exact
+and larger restrictions pass; one byte less refuses. Changed cut, SDK containment,
+callback refusal and both callback outcomes during expiry remain closed. Both
+complete Transport configurations pass 1,957 tests each with no failures, no
+filtering and sixteen existing ignores. Affected all-feature/all-target checking,
+changed-file formatting and all six architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 308 owned Rust/Cargo inputs
+match the commit and its exact captured source. This gate executes no tests.
+No new VM or configured Engine/Daemon runtime result is claimed. Genuine
+Source/Birth funding, live ACK publication, complete phase construction and
+full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
