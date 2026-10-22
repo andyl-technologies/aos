@@ -65,6 +65,1121 @@ index 8351feadf0aa692e1243bdb90c41f5fde4a07260..fe60f5382163772543341147d21bccd5
    if (__libc_dlerror_result != NULL)
      {
        if (__libc_dlerror_result != dl_action_result_malloc_failed)
+diff --git a/elf/Makefile b/elf/Makefile
+index 5d78b659ce813ff973e499043154e5b1fc8a639b..d8ef5476f8ff6bf4b5f8551b5618ef4c34ff6b9a 100644
+--- a/elf/Makefile
++++ b/elf/Makefile
+@@ -127,6 +127,7 @@ shared-only-routines = \
+ rtld-routines = \
+   $(all-dl-routines) \
+   dl-audit \
++  dl-bounded-initial \
+   dl-compat \
+   dl-diagnostics \
+   dl-diagnostics-cpu \
+@@ -524,10 +525,26 @@ tests-container += \
+   # tests-container
+ 
+ test-srcs = \
++  tst-bounded-initial-mod \
+   tst-pathopt \
+   tst-sprof-basic \
+   # tests-srcs
+ 
++ifeq ($(config-machine):$(config-os):$(cross-compiling),x86_64:linux-gnu:no)
++test-srcs += tst-bounded-initial-launch
++tests-special += $(objpfx)tst-bounded-initial.out
++
++$(objpfx)tst-bounded-initial.out: tst-bounded-initial.py \
++  $(objpfx)tst-bounded-initial-mod $(objpfx)tst-bounded-initial-launch \
++  $(objpfx)ld.so
++	$(PYTHON) $< --loader $(objpfx)ld.so \
++	  --program $(objpfx)tst-bounded-initial-mod \
++	  --launcher $(objpfx)tst-bounded-initial-launch \
++	  --library-path '$(rpath-link)' \
++	  --directory $(objpfx)tst-bounded-initial-data > $@ 2>&1; \
++	$(evaluate-test)
++endif
++
+ ifeq (yes,$(have-fpie))
+ tests-pie += tst-align3
+ endif
+diff --git a/elf/README.bounded-initial b/elf/README.bounded-initial
+new file mode 100644
+index 0000000000000000000000000000000000000000..312527756ccd60dc553bb001c7bad4cc4e018cb5
+--- /dev/null
++++ b/elf/README.bounded-initial
+@@ -0,0 +1,297 @@
++Copyright (C) 2026 Dylan Plecki.
++SPDX-License-Identifier: LGPL-2.1-or-later
++
++Bounded initial loader storage component, version 2
++==================================================
++
++This source adds a real finite dynamic-loader allocation producer and a
++compiled layout query.  It does not implement a complete initial-process
++admission, a runnable bounded application profile, or a complete paid-probe
++issuer.  The probe always refuses before normal relocation and program
++entry.  No query result, measured request, PID, nonce or copied receipt
++creates a containing owner, budget, operation permission or backing return.
++
++The prior bounded pthread/application interfaces retain their ordinary and
++strict routing.  Their five metadata kinds do not fund this initial process.
++No existing exported object or symbol version changes.  A new installed
++header, malloc-bounded-initial.h, describes the additive loader command and
++LE64 descriptor protocol.  Version 2 selects Linux x86-64 LP64 only.
++
++Actual activation and descriptor custody
++---------------------------------------
++
++The selected direct invocation is:
++
++  LOADER --bounded-initial-probe-fd FD --inhibit-cache [OPTIONS] PROGRAM ...
++
++The new option must be first.  FD is a decimal inherited descriptor >= 3,
++not a new implicit descriptor role in an existing launcher protocol.  A
++launcher must separately authenticate that actual role, exact retained
++backing/configuration/nonce and genuine resource parent before any map or
++process birth.  Descriptor/stat/geometry checks corroborate the nominated
++input; they do not establish the parent.  There is no launcher reciprocal
++or containing-process issuer in this component.
++
++The caller supplies a regular O_RDWR file without O_APPEND.  Its exact
++positive extent, at offset zero, must be a multiple of the actual page
++size and no larger than 1 GiB.  Actual admitted lower limits always prevail.
++The caller owns its real on-disk backing/quota, VA and descriptor custody
++before effects, and prevents writes, truncation, hole punching and reuse
++until matching actual wait/reap.  A file size alone does not reserve physical
++backing or quota.  A writable arena is not an immutable selected ELF alias;
++requiring F_SEAL_WRITE would contradict its actual writable mapping.
++
++The fixed configuration is 128 bytes, followed by a 512-byte receipt, then
++REQUESTS 64-byte scalar records.  REQUESTS is 1..4096.  The journal prefix is
++rounded up to the actual page size and alone receives a MAP_SHARED mapping.
++The positive remaining suffix receives a separate MAP_PRIVATE mapping at
++that page-aligned file offset.  Neither file pages nor actual VA intervals
++may overlap.  Actual page geometry, table/roundup/end arithmetic, both
++positive extents, per-request and cumulative limits are checked before the
++first attempt.  All reserved words are zero.  Version1 input refuses before
++FD writes or mapping; this is an explicit incompatible probe-wire revision,
++not a silent reinterpretation of the former receipt.
++
++Native allocator, link-map/slotinfo, TCB and DTV objects exist ONLY in the
++process-private mapping.  Shared storage contains only scalar/offset fields
++and padding.  Returned allocation coordinates are logical file offsets;
++allocator pointers are derived from the private mapping base and never
++published.  The parent must never interpret private payload as a protocol.
++
++The 1-GiB cap makes table arithmetic representable on the selected 64-bit
++edition.  Prefix roundup and both returned VA interval ends are checked.
++Every allocation checks alignment, occupied end and cumulative consumption
++inside the private suffix.  Zero-size allocation occupies a distinct byte.
++Realloc pays old+new simultaneously.  Private payload is monotonic, with no
++aliasing to or reuse of the shared journal's pages.
++
++Retained file backing is NOT private COW reservation.  The maximum writable
++private bytes equal the complete page-multiple payload extent, and maximum
++COW pages equal that extent divided by actual page size.  These are explicit
++additional containing-owner liabilities before birth, not observations of
++page faults or a grant from this configuration.  Both VA mappings, source
++file backing/page cache, private COW storage and kernel/page-table/error costs
++need real same-parent custody.  This component supplies no complete payer
++or kernel reservation producer and cannot assert those resources funded.
++
++All fixed sizes, every field offset, LE byte order, LP64 and allocation
++alignment have compile-time assertions.  All protocol fields are LE64;
++no native struct layout is inferred by a receiver.  Status fields are zero
++or positive errno magnitudes, never negative values cast to unsigned.
++NONCE is nonzero and copied once without increment/rearm.  The actual parent
++must allocate/bind it without wrap or reuse; libc cannot authenticate a
++cross-process parent from this scalar.  PID is an actual checked getpid
++observation, not a generation or operation grant.
++
++The actual argument/environment scan and argument-adjustment copy have caps
++of 128 arguments, 64 scanned environment strings, 4096 bytes per string,
++and 16 KiB of string bytes including terminators.  An excess environment
++entry is rejected BEFORE strnlen touches its 65th string (the pointer's
++presence can still be tested).  These bound only those scans/copies,
++not the already-created kernel stack or ELF-dependent helper stack frames.
++Secure execution and duplicate new options refuse.  The actual ordinary
++--inhibit-cache option is required, not forcibly set behind the caller's
++back.  Other selected features are either processed normally by the probe
++or refused at an unsupported producer cut; none is disabled and reported
++as successful application execution.
++
++Real storage routes and partial effects
++-------------------------------------
++
++Activation occurs in _dl_sysdep_start after actual argv/env/auxv parsing,
++before tunables and first minimal allocation.  It does not cover the kernel
++birth, initial stack, auxv, loader self-relocation or bootstrap helpers which
++already occurred.  __minimal_malloc/calloc/realloc/free route exclusively to
++the actual supplied arena while selected.  There is no BSS-tail consumption,
++anonymous allocation mmap, brk growth, ordinary malloc fallback, cache reuse
++or free-list spin in that route.  Ordinary unselected allocation is intact.
++The normal direct-loader brk-page growth is unnecessary and excluded for
++the arena route; the ordinary brk query remains outside this producer.
++
++Records and payload are monotonic and never reused.  The table is actual
++allocator-owned storage under exclusive child custody; journal snapshots
++cannot be imported as allocation authority.  Allocation zeroes actual private
++COW bytes; calloc does not assume clean file-backed pages.  Real reservation
++extent/offset is published before zeroing, so an interrupted/failed zeroing
++keeps attempted storage debt without a returned allocation.
++
++For the DTV allocation only, a finite volatile child-side byte scan verifies
++the actual zeroed producer result before allocate_dtv writes its generation
++word.  Its compiled maximum is (32 + DTV_SURPLUS + 2) * sizeof(dtv_t).
++Attempted/returned/status/inspected-byte facts are scalar journal fields.
++An observed nonzero byte records EIO and a failed DTV record, then refuses127;
++it does not return that allocation or discard its reserved extent.  No
++parent reads DTV bytes or any other process-private native object.  Realloc authenticates
++the exact returned allocation through the finite table before dereferencing
++payload, reserves old+new simultaneously, copies min(old,new), then logically
++releases the old record.  Exhaustion leaves the old allocation live.  Invalid,
++foreign or duplicate release is a fatal uncertainty, never an ordinary free.
++Logical release does not rewind, unmap or return any backing.
++
++Actual init_tls slotinfo allocation, _dl_allocate_tls_storage and allocate_dtv
++have distinct record kinds.  Module IDs stop at 32 before increment; slotinfo
++and DTV additions/products are checked.  The selected TLS surplus and static
++layout perform checked addition/roundup with the ordinary gap-placement
++algorithm before writing allocation sizes.  The aligned TCB/static layout,
++surplus, original-allocation pointer and slop are contained in one TLS storage
++record; the DTV is another record.  TCB and static-layout coordinates are
++subextents, not extra arena charges.  Loader and TLS records share one actual
++containing arena: producer categories are not a second additive partition.
++
++Each mmap has separate attempted/returned/status/mapped-byte facts.  The
++journal-map attempt is published using one internal pwrite64 before that
++syscall.  If it fails, its actual errno is recorded by one further pwrite64;
++there is no payload-map attempt.  After journal mapping, the receipt is
++written directly in that shared prefix.  Payload-map attempt is published
++before its MAP_PRIVATE syscall.  Its refusal retains the successful shared
++mapping and its distinct failure; neither map is rolled back or claimed
++returned.  Successful but unusable mapping geometry preserves the actual
++mapped extent and a later operation failure.  No fallback or retry occurs.
++
++Independent map success is never erased by later allocation/zeroing failure.  Request attempts are published before payload zeroing.  Backing
++faults, partial copies, asynchronous death, short/EINTR writes or denied
++termination remain unknown retained debt; no successful return is invented.
++Before complete input validation the provider writes nothing to the FD, so
++early refusal can leave no child receipt at all.  The parent must already
++retain its own prebirth attempt/loan history and actual terminal reserve.
++
++Parents read journal/records after actual reap, never concurrently mutate
++the allocator's backing.  The complete shared region contains only offsets,
++scalars and padding.  All native allocator payload is actually MAP_PRIVATE,
++not merely labeled opaque inside shared storage.  After real reap the
++retained source-file payload must still have its original dirty pattern;
++only shared scalar journal bytes can change.  This source-file byte check
++is not inspection of process-private payload.
++The probe never claims backing returned: all mappings, records, payload and
++descriptor custody remain in the containing process until matching reap.
++FD I/O, page faults and mapping are not claimed nonwaiting.  This component
++does not broaden pthread creation or terminal nonwaiting guarantees.
++
++Exhaustion, overflow and unsupported cuts use one internal exit_group(127),
++then a trap if it returns.  They allocate nothing, log nothing, acquire no
++allocator lock and do not retry.  A denied exit syscall, signal, timeout or
++trap is not an intended status127.  The first positive failure is sticky;
++later independent factual completion is not erased by it.  Loader signal
++errors refuse before longjmp/error callbacks; selected error/fatal diagnostic
++paths refuse before formatting.  Bootstrap diagnostics remain usable with
++the flag zero; the selected hidden predicate uses RIP-relative fixed state,
++which must be authenticated in the actual newly linked loader.
++
++_dl_sysdep_read_whole_file refuses before helper/cache/preload-file open or
++mmap.  load_audit_module refuses before audit loading/callbacks.  Non-normal
++loader modes and static chain-exec refuse.  A cut before the first normal
++relocation refuses unknown IFUNC, early-libc, constructor and entry producers;
++the real-allocator switch is separately guarded.  TLS_STORAGE_READY denotes
++allocated storage, not completion of TLS data initialization, kernel TP/rseq
++effects, callbacks or normal execution.  TLS_DATA_INITIALIZED stays zero.
++
++What can be known before birth
++-----------------------------
++
++Authentic selected ELF files can establish class/machine, complete bytes and
++hashes, PT_LOAD intervals/permissions, PT_TLS file/memory sizes and alignment,
++headers, dependency names and compiled object locations.  The actual query
++
++  LOADER --bounded-initial-layout-fd FD
++
++writes exactly 256 bytes to a distinct regular O_RDWR file of that exact
++size and exits zero.  It reports actual compiled TCB/DTV/slotinfo constants,
++limits, separate map flags, fixed journal sizes and DTV-validation maximum,
++and the complete fixed loader-state object as an offset/extent/alignment
++inside the actual loader image.  That object and the prior libc inventory are
++contained subextents of whole images; charging both again as separate pages
++would double count.  The query itself needs an independently paid/reaped
++process, not the future containing loan.
++
++An exact initial TLS calculation additionally needs the actual complete
++selected module closure and order, TLS first-byte constraints, compiled
++TCB/alignment rules, static-surplus tunables and supported namespaces/audits.
++The checked runtime producer bounds actual storage effects.  This edition
++does not authenticate prebirth ELF closure/order or derive a complete initial
++TLS admission from copied program headers.  Its enforced arena maxima can
++be bound to an independently owned child; measured returned requests cannot
++be converted to resource credit.
++
++Concrete remaining unsupported producers
++----------------------------------------
++
++* Kernel task/VMA/page-table/file/COW/accounting and initial argv/env/auxv/
++  signal-stack construction: neither PT_TLS nor this arena bounds them.
++* Actual ELF image reservation, alignment overmapping, file mapping, BSS and
++  protection/trim/error paths in dl-load.c and dl-map-segments.h: these still
++  need an authenticated finite image/kernel producer.  The probe's arena
++  does not capture or price their syscalls.
++* ELF-dependent alloca/VLA/helper stack and path/directory/descriptor/error
++  liabilities in dl-load.c, dl-deps.c, dl-object.c and related helpers: argument
++  string caps do not establish their complete maxima or physical return.
++* Loader self-relocation/bootstrap and TP/rseq/helper kernel effects before
++  the normal relocation cut: no complete provider/failure-path contract here.
++* IFUNC, audit, preinit/init/constructor, GLib/other DSO process state, signal,
++  error/unwind and application entry producers: rejected or still outside
++  this storage component, never covered by the five pthread metadata kinds.
++* Static-executable csu/libc-tls.c -> _dl_early_allocate -> brk/mmap: separate
++  unchanged producer.  Dynamic __tunables_init in this exact source retains
++  input string references and does not call _dl_early_allocate.
++* A real launcher/issuer reciprocal, bounded complete probe reservation,
++  artifact/descriptor role authentication and actual terminal/reap protocol.
++
++Consequently COMPLETE_PROFILE is always zero.  There is no complete paid
++probe edition, whole-process floor, runtime admission, local arena reuse or
++terminal settlement from this source.  A later complete producer must enforce
++all reachable success/error paths before an issuer may bind its maxima.
++Unknown dimensions refuse; observed peaks and RLIMIT observations cannot
++issue resources.  Running these component controls is ordinary qualification,
++not proof that a containing-process loan can currently be admitted.
++
++Finite source controls and qualification
++---------------------------------------
++
++tst-bounded-initial.py uses the actual newly built loader and a newly built
++TLS/IFUNC/constructor/entry fixture.  Its ordinary control must emit ICM and
++return zero; every probe must emit nothing and return exactly127.  It checks
++the actual compiled query, both mapping/nonce/PID facts, child DTV-zero
++readback, retained original dirty backing after actual reap, TCB containment,
++monotonic extents, request/single/cumulative exhaustion,
++wrong-version/reserved/extent/table inputs before FD writes, excess
++environment entries before string scan, unsupported modes,
++audit refusal and a genuine malformed-ELF diagnostic.  A deep relative origin
++forces the real dl-object realloc path; request exhaustion must leave its old
++allocation live.  A copied genuine fixture with overflowing PT_TLS memory
++size must hit the intended checked geometry assertion.  Each first command,
++wait status, marker, stderr, input and resulting arena is retained separately.
++
++The genuine tst-bounded-initial-launch helper installs a seccomp filter for
++x86-64 mmap with the exact inherited arena FD and exact MAP_SHARED or
++MAP_PRIVATE flag arguments, then execs the real loader.  It independently
++forces EACCES at each actual syscall.  First-map refusal must leave no second
++attempt; second-map refusal retains successful journal geometry and zero
++allocations.  Permission/unsupported/filter/exec failures return124 and FAIL
++the control; they are never skips or provider status127.
++
++A separate literal causal omission variant is required: copy the exact source
++and configured build as private regular files, omit only DTV zeroing in the
++initial allocator, rebuild the real loader under the same one-worker/2GiB
++limits, and invoke the unchanged script with --expect-dtv-zero-failure.
++It must reach the actual volatile validator and return127/EIO/cut10 with a
++failed unreturned DTV record and retained reserved extent.  Ordinary ICM0
++still runs.  Never ship the mutated loader, add a production fault hook or
++replace allocator/validator bodies with a fake success/failure receipt.
++
++These v2 controls are authored but uncompiled/unrun at this source stage.
++Required later controls include page/write/interruption faults, module-limit
++enforcement and exact boundary/alignment transitions,
++helper refusal and compiled bootstrap instruction authentication.  Full new
++library build, static support/test-run-command link, existing application/
++pthread/ordinary controls, complete unchanged ABI, installed headers/loader/
++libc and real GLib/hidden formatter must pass on this exact source.  Earlier
++9ec and signed1bf qualification are preserved and do not qualify v2.
++
++Historical boundary failure
++---------------------------
++
++Signed1bf's v1 full build, component controls, ABI20/20, install and real GLib
++consumer passed, but v1 placed actual TCB/DTV native objects in MAP_SHARED
++payload.  Calling it opaque did not make that a scalar public protocol.
++The exact source/evidence stays immutable; v1 is not a usable cross-process
++boundary or a completed process probe.  Version2 corrects physical separation
++without claiming its additional COW, kernel or complete containing floor paid.
+diff --git a/elf/dl-bounded-initial.c b/elf/dl-bounded-initial.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..592ba205293a14bc87909366ba7ac76f54287ba8
+--- /dev/null
++++ b/elf/dl-bounded-initial.c
+@@ -0,0 +1,673 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <dl-bounded-initial.h>
++#include <entry.h>
++#include <errno.h>
++#include <endian.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <ldsodefs.h>
++#include <malloc/malloc-internal.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <sysdep.h>
++#include <tls.h>
++#include <unistd.h>
++
++#if defined __linux__ && defined __x86_64__ && !defined __ILP32__
++
++extern char **_environ attribute_hidden;
++
++/* One actual loader-image object.  Its full extent, including padding,
++   is reported as an image subextent.  No malloc registry or application
++   child supplies this initial process's storage.  The selected early
++   probe is single-threaded and installs no signal handlers/callbacks.  */
++static struct
++{
++  struct malloc_bounded_initial_config config;
++  struct malloc_bounded_initial_receipt receipt;
++  unsigned char *journal_mapping;
++  unsigned char *payload_mapping;
++  size_t payload_start;
++  size_t next;
++  int fd;
++  bool selected;
++} initial;
++
++_Static_assert (sizeof (struct malloc_bounded_initial_config) == 128,
++                "initial configuration protocol size");
++_Static_assert (sizeof (struct malloc_bounded_initial_receipt) == 512,
++                "initial receipt protocol size");
++_Static_assert (sizeof (struct malloc_bounded_initial_record) == 64,
++                "initial allocation protocol size");
++_Static_assert (sizeof (struct malloc_bounded_initial_layout) == 256,
++                "initial layout protocol size");
++_Static_assert (MALLOC_ALIGNMENT == MALLOC_BOUNDED_INITIAL_ALIGNMENT,
++                "selected allocator alignment");
++_Static_assert (sizeof (size_t) == 8 && sizeof (uintptr_t) == 8,
++                "selected 64-bit address and size geometry");
++_Static_assert (__BYTE_ORDER == __LITTLE_ENDIAN, "selected LE64 protocol");
++
++#define CHECK_OFFSET(type, member, index) \
++  _Static_assert (offsetof (struct malloc_bounded_initial_##type, member) \
++                  == (index) * 8, "initial " #type " " #member " offset")
++CHECK_OFFSET (config, magic, 0);
++CHECK_OFFSET (config, version, 1);
++CHECK_OFFSET (config, size, 2);
++CHECK_OFFSET (config, nonce, 3);
++CHECK_OFFSET (config, extent, 4);
++CHECK_OFFSET (config, requests, 5);
++CHECK_OFFSET (config, single_bytes, 6);
++CHECK_OFFSET (config, cumulative_bytes, 7);
++CHECK_OFFSET (config, reserved, 8);
++CHECK_OFFSET (receipt, version, 0);
++CHECK_OFFSET (receipt, size, 1);
++CHECK_OFFSET (receipt, nonce, 2);
++CHECK_OFFSET (receipt, process, 3);
++CHECK_OFFSET (receipt, journal_map_attempted, 4);
++CHECK_OFFSET (receipt, journal_map_returned, 5);
++CHECK_OFFSET (receipt, journal_map_status, 6);
++CHECK_OFFSET (receipt, journal_mapped_bytes, 7);
++CHECK_OFFSET (receipt, requests_attempted, 8);
++CHECK_OFFSET (receipt, requests_returned, 9);
++CHECK_OFFSET (receipt, live_records, 10);
++CHECK_OFFSET (receipt, used_bytes, 11);
++CHECK_OFFSET (receipt, first_status, 12);
++CHECK_OFFSET (receipt, cut, 13);
++CHECK_OFFSET (receipt, refused, 14);
++CHECK_OFFSET (receipt, uncertain_release, 15);
++CHECK_OFFSET (receipt, slotinfo_offset, 16);
++CHECK_OFFSET (receipt, slotinfo_bytes, 17);
++CHECK_OFFSET (receipt, tls_offset, 18);
++CHECK_OFFSET (receipt, tls_bytes, 19);
++CHECK_OFFSET (receipt, dtv_offset, 20);
++CHECK_OFFSET (receipt, dtv_bytes, 21);
++CHECK_OFFSET (receipt, tcb_offset, 22);
++CHECK_OFFSET (receipt, tcb_bytes, 23);
++CHECK_OFFSET (receipt, static_layout_bytes, 24);
++CHECK_OFFSET (receipt, static_tls_alignment, 25);
++CHECK_OFFSET (receipt, tls_storage_ready, 26);
++CHECK_OFFSET (receipt, tls_data_initialized, 27);
++CHECK_OFFSET (receipt, journal_file_offset, 28);
++CHECK_OFFSET (receipt, journal_extent, 29);
++CHECK_OFFSET (receipt, payload_file_offset, 30);
++CHECK_OFFSET (receipt, payload_extent, 31);
++CHECK_OFFSET (receipt, payload_map_attempted, 32);
++CHECK_OFFSET (receipt, payload_map_returned, 33);
++CHECK_OFFSET (receipt, payload_map_status, 34);
++CHECK_OFFSET (receipt, payload_mapped_bytes, 35);
++CHECK_OFFSET (receipt, private_cow_pages_max, 36);
++CHECK_OFFSET (receipt, private_cow_bytes_max, 37);
++CHECK_OFFSET (receipt, dtv_zero_attempted, 38);
++CHECK_OFFSET (receipt, dtv_zero_returned, 39);
++CHECK_OFFSET (receipt, dtv_zero_status, 40);
++CHECK_OFFSET (receipt, dtv_zero_bytes, 41);
++CHECK_OFFSET (receipt, journal_shared, 42);
++CHECK_OFFSET (receipt, payload_private, 43);
++CHECK_OFFSET (receipt, reserved, 44);
++CHECK_OFFSET (record, serial, 0);
++CHECK_OFFSET (record, kind, 1);
++CHECK_OFFSET (record, bytes, 2);
++CHECK_OFFSET (record, offset, 3);
++CHECK_OFFSET (record, returned, 4);
++CHECK_OFFSET (record, status, 5);
++CHECK_OFFSET (record, release_attempted, 6);
++CHECK_OFFSET (record, released, 7);
++CHECK_OFFSET (layout, version, 0);
++CHECK_OFFSET (layout, size, 1);
++CHECK_OFFSET (layout, machine, 2);
++CHECK_OFFSET (layout, word_bytes, 3);
++CHECK_OFFSET (layout, config_bytes, 4);
++CHECK_OFFSET (layout, receipt_bytes, 5);
++CHECK_OFFSET (layout, record_bytes, 6);
++CHECK_OFFSET (layout, alignment, 7);
++CHECK_OFFSET (layout, maximum_extent, 8);
++CHECK_OFFSET (layout, maximum_requests, 9);
++CHECK_OFFSET (layout, page_bytes, 10);
++CHECK_OFFSET (layout, tcb_bytes, 11);
++CHECK_OFFSET (layout, dtv_element_bytes, 12);
++CHECK_OFFSET (layout, dtv_surplus, 13);
++CHECK_OFFSET (layout, slotinfo_surplus, 14);
++CHECK_OFFSET (layout, slotinfo_bytes, 15);
++CHECK_OFFSET (layout, slotinfo_list_bytes, 16);
++CHECK_OFFSET (layout, state_image_offset, 17);
++CHECK_OFFSET (layout, state_bytes, 18);
++CHECK_OFFSET (layout, state_alignment, 19);
++CHECK_OFFSET (layout, process, 20);
++CHECK_OFFSET (layout, complete_profile, 21);
++CHECK_OFFSET (layout, maximum_tls_modules, 22);
++CHECK_OFFSET (layout, journal_map_flags, 23);
++CHECK_OFFSET (layout, payload_map_flags, 24);
++CHECK_OFFSET (layout, private_cow_separate, 25);
++CHECK_OFFSET (layout, journal_fixed_bytes, 26);
++CHECK_OFFSET (layout, maximum_dtv_validation_bytes, 27);
++CHECK_OFFSET (layout, reserved, 28);
++#undef CHECK_OFFSET
++
++static void __attribute__ ((noreturn))
++stop (int status)
++{
++  INTERNAL_SYSCALL_CALL (exit_group, status);
++  __builtin_trap ();
++}
++
++static uint64_t
++current_process (void)
++{
++  long int process = INTERNAL_SYSCALL_CALL (getpid);
++  if (process <= 0)
++    stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++  return process;
++}
++
++bool
++_dl_bounded_initial_active (void)
++{
++  return initial.selected;
++}
++
++static void
++publish (void)
++{
++  if (initial.journal_mapping != NULL)
++    {
++      memcpy (initial.journal_mapping + sizeof (initial.config), &initial.receipt,
++              sizeof (initial.receipt));
++      __atomic_thread_fence (__ATOMIC_RELEASE);
++    }
++  else if (initial.fd >= 0)
++    {
++      /* Exactly one write attempt.  EINTR/short write remains unknown to
++         the parent, which must keep the complete loan through real reap.
++         No errno/TLS access, logging, allocation, retry or fallback.  */
++      long int result = INTERNAL_SYSCALL_CALL
++        (pwrite64, initial.fd, &initial.receipt, sizeof (initial.receipt),
++         sizeof (initial.config));
++      if (result != sizeof (initial.receipt))
++        stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++    }
++}
++
++void
++_dl_bounded_initial_fail (unsigned int status, unsigned int cut)
++{
++  if (status == 0 || status > 4095)
++    status = EPROTO;
++  if (initial.receipt.first_status == 0)
++    initial.receipt.first_status = status;
++  initial.receipt.cut = cut;
++  initial.receipt.refused = 1;
++  publish ();
++  stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++}
++
++static int
++descriptor (const char *text)
++{
++  unsigned int value = 0;
++  if (*text == '\0')
++    stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++  for (size_t i = 0; text[i] != '\0'; ++i)
++    {
++      unsigned int digit = (unsigned char) text[i] - '0';
++      if (i >= 10 || digit > 9 || value > (INT_MAX - digit) / 10)
++        stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++      value = value * 10 + digit;
++    }
++  /* Standard streams are not an inherited arena/query descriptor role.  */
++  if (value < 3)
++    stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++  return value;
++}
++
++static struct malloc_bounded_initial_record *
++records (void)
++{
++  return (void *) (initial.journal_mapping + sizeof (initial.config)
++                  + sizeof (initial.receipt));
++}
++
++static struct malloc_bounded_initial_record *
++record_for (void *pointer)
++{
++  uintptr_t base = (uintptr_t) initial.payload_mapping;
++  uintptr_t address = (uintptr_t) pointer;
++  if (address < base || address - base >= initial.receipt.payload_extent)
++    _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_RELEASE);
++
++  /* Authenticate exact returned identity before reading nominated data.
++     The finite table is actual retained allocator storage, not a caller
++     receipt.  No block prefix or caller-supplied pointer is dereferenced.  */
++  size_t offset = initial.payload_start + (address - base);
++  for (size_t i = 0; i < initial.receipt.requests_returned; ++i)
++    if (records ()[i].offset == offset && records ()[i].returned)
++      return &records ()[i];
++  _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_RELEASE);
++}
++
++void *
++_dl_bounded_initial_allocate (size_t bytes, unsigned int kind)
++{
++  ++initial.receipt.requests_attempted;
++  if (initial.receipt.requests_returned == initial.config.requests)
++    _dl_bounded_initial_fail (ENOSPC, MALLOC_BOUNDED_INITIAL_ALLOCATION);
++
++  struct malloc_bounded_initial_record *record
++    = &records ()[initial.receipt.requests_returned];
++  record->serial = initial.receipt.requests_attempted;
++  record->kind = kind;
++  record->bytes = bytes;
++  size_t maximum_dtv = (MALLOC_BOUNDED_INITIAL_MAX_TLS_MODULES
++                        + DTV_SURPLUS + 2) * sizeof (dtv_t);
++  if (kind == MALLOC_BOUNDED_INITIAL_DTV && bytes > maximum_dtv)
++    {
++      record->status = EOVERFLOW;
++      _dl_bounded_initial_fail (EOVERFLOW,
++                                MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++    }
++
++  /* A zero-size allocation still gets a distinct, non-reused address.
++     Charge that byte and the real alignment gap, never numeric credit.  */
++  size_t occupied = bytes == 0 ? 1 : bytes;
++  size_t aligned = (initial.next + MALLOC_ALIGNMENT - 1)
++                   & ~(size_t) (MALLOC_ALIGNMENT - 1);
++  if (bytes > initial.config.single_bytes
++      || aligned < initial.next || aligned > initial.config.extent
++      || occupied > initial.config.extent - aligned
++      || aligned + occupied - initial.payload_start
++         > initial.config.cumulative_bytes)
++    {
++      record->status = ENOMEM;
++      _dl_bounded_initial_fail (ENOMEM, MALLOC_BOUNDED_INITIAL_ALLOCATION);
++    }
++
++  void *result = initial.payload_mapping + (aligned - initial.payload_start);
++  /* Preserve the attempted request before touching regular-file pages.
++     A backing fault or asynchronous death can leave a partial zero/copy;
++     no returned allocation or whole-backing return is inferred from it.  */
++  record->offset = aligned;
++  initial.next = aligned + occupied;
++  initial.receipt.used_bytes = initial.next - initial.payload_start;
++  publish ();
++  /* The caller's private-file pages are not presumed zero-filled.  */
++  memset (result, 0, occupied);
++  if (kind == MALLOC_BOUNDED_INITIAL_DTV)
++    {
++      /* This pointer is the just-reserved, range-checked producer result,
++         not a nominated pointer or parent payload interpretation.  Inspect
++         before allocate_dtv writes its generation word.  The volatile
++         reads make the real zeroing causally necessary.  */
++      initial.receipt.dtv_zero_attempted = 1;
++      publish ();
++      volatile unsigned char *observed = result;
++      for (size_t i = 0; i < bytes; ++i)
++        {
++          unsigned char value = observed[i];
++          initial.receipt.dtv_zero_bytes = i + 1;
++          if (value != 0)
++            {
++              record->status = EIO;
++              initial.receipt.dtv_zero_returned = 1;
++              initial.receipt.dtv_zero_status = EIO;
++              _dl_bounded_initial_fail (EIO, MALLOC_BOUNDED_INITIAL_ZEROING);
++            }
++        }
++      initial.receipt.dtv_zero_returned = 1;
++    }
++  record->returned = 1;
++  ++initial.receipt.requests_returned;
++  ++initial.receipt.live_records;
++
++  if (kind == MALLOC_BOUNDED_INITIAL_SLOTINFO)
++    {
++      initial.receipt.slotinfo_offset = aligned;
++      initial.receipt.slotinfo_bytes = bytes;
++    }
++  else if (kind == MALLOC_BOUNDED_INITIAL_TLS_STORAGE)
++    {
++      initial.receipt.tls_offset = aligned;
++      initial.receipt.tls_bytes = bytes;
++    }
++  else if (kind == MALLOC_BOUNDED_INITIAL_DTV)
++    {
++      initial.receipt.dtv_offset = aligned;
++      initial.receipt.dtv_bytes = bytes;
++    }
++  publish ();
++  return result;
++}
++
++void
++_dl_bounded_initial_release (void *pointer)
++{
++  if (pointer == NULL)
++    return;
++  /* Uncertainty is sticky even if the nominated pointer is invalid.  */
++  initial.receipt.uncertain_release = 1;
++  struct malloc_bounded_initial_record *record = record_for (pointer);
++  record->release_attempted = 1;
++  if (record->released)
++    _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_RELEASE);
++  record->released = 1;
++  --initial.receipt.live_records;
++  initial.receipt.uncertain_release = 0;
++  /* Logical release never rewinds, unmaps or returns physical backing.  */
++  publish ();
++}
++
++void *
++_dl_bounded_initial_reallocate (void *pointer, size_t bytes)
++{
++  if (pointer == NULL)
++    return _dl_bounded_initial_allocate (bytes,
++                                         MALLOC_BOUNDED_INITIAL_LOADER);
++  struct malloc_bounded_initial_record *old = record_for (pointer);
++  if (old->released)
++    _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_RELEASE);
++  void *result = _dl_bounded_initial_allocate (bytes, old->kind);
++  memcpy (result, pointer, old->bytes < bytes ? old->bytes : bytes);
++  _dl_bounded_initial_release (pointer);
++  return result;
++}
++
++void
++_dl_bounded_initial_tls (void *tcb, size_t bytes, size_t static_bytes,
++                         size_t alignment)
++{
++  uintptr_t base = (uintptr_t) initial.payload_mapping;
++  uintptr_t address = (uintptr_t) tcb;
++  if (address < base || address - base >= initial.receipt.payload_extent)
++    _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  size_t offset = initial.payload_start + (address - base);
++  if (offset < initial.receipt.tls_offset
++      || offset - initial.receipt.tls_offset > initial.receipt.tls_bytes
++      || bytes > initial.receipt.tls_bytes
++                 - (offset - initial.receipt.tls_offset))
++    _dl_bounded_initial_fail (EPROTO, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  initial.receipt.tcb_offset = offset;
++  initial.receipt.tcb_bytes = bytes;
++  initial.receipt.static_layout_bytes = static_bytes;
++  initial.receipt.static_tls_alignment = alignment;
++  initial.receipt.tls_storage_ready = 1;
++  publish ();
++}
++
++static void __attribute__ ((noreturn))
++layout (int fd)
++{
++  struct malloc_bounded_initial_layout result =
++    {
++      .version = MALLOC_BOUNDED_INITIAL_VERSION,
++      .size = sizeof (result), .machine = EM_X86_64, .word_bytes = 8,
++      .config_bytes = sizeof (initial.config),
++      .receipt_bytes = sizeof (initial.receipt),
++      .record_bytes = sizeof (struct malloc_bounded_initial_record),
++      .alignment = MALLOC_ALIGNMENT,
++      .maximum_extent = MALLOC_BOUNDED_INITIAL_MAX_EXTENT,
++      .maximum_requests = MALLOC_BOUNDED_INITIAL_MAX_REQUESTS,
++      .page_bytes = GLRO (dl_pagesize), .tcb_bytes = TLS_TCB_SIZE,
++      .dtv_element_bytes = sizeof (dtv_t), .dtv_surplus = DTV_SURPLUS,
++      .slotinfo_surplus = TLS_SLOTINFO_SURPLUS,
++      .slotinfo_bytes = sizeof (struct dtv_slotinfo),
++      .slotinfo_list_bytes = sizeof (struct dtv_slotinfo_list),
++      .state_image_offset = ((uintptr_t) &initial
++                             - GL (dl_rtld_map).l_addr),
++      .state_bytes = sizeof (initial),
++      .state_alignment = __alignof__ (initial),
++      .process = current_process (),
++      .maximum_tls_modules = MALLOC_BOUNDED_INITIAL_MAX_TLS_MODULES,
++      .journal_map_flags = MAP_SHARED, .payload_map_flags = MAP_PRIVATE,
++      .private_cow_separate = 1,
++      .journal_fixed_bytes = sizeof (initial.config) + sizeof (initial.receipt),
++      .maximum_dtv_validation_bytes = (MALLOC_BOUNDED_INITIAL_MAX_TLS_MODULES
++                                      + DTV_SURPLUS + 2) * sizeof (dtv_t)
++    };
++  long int written = INTERNAL_SYSCALL_CALL
++    (pwrite64, fd, &result, sizeof (result), 0);
++  stop (written == sizeof (result) ? 0 : MALLOC_BOUNDED_INITIAL_REFUSED);
++}
++
++void
++_dl_bounded_initial_start (uintptr_t entry)
++{
++  if (_dl_argc < 2)
++    return;
++  bool query = strcmp (_dl_argv[1], "--bounded-initial-layout-fd") == 0;
++  bool probe = strcmp (_dl_argv[1], "--bounded-initial-probe-fd") == 0;
++  if (!query && !probe)
++    return;
++  if (entry != (uintptr_t) ENTRY_POINT || __libc_enable_secure
++      || _dl_argc < 3)
++    stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++  int fd = descriptor (_dl_argv[2]);
++  if (query)
++    {
++      if (_dl_argc != 3)
++        stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++      struct __stat64_t64 st;
++      long int status = INTERNAL_SYSCALL_CALL (fstat, fd, &st);
++      if (INTERNAL_SYSCALL_ERROR_P (status) || !S_ISREG (st.st_mode)
++          || st.st_size != sizeof (struct malloc_bounded_initial_layout))
++        stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++      status = INTERNAL_SYSCALL_CALL (fcntl, fd, F_GETFL);
++      if (INTERNAL_SYSCALL_ERROR_P (status)
++          || (status & O_ACCMODE) != O_RDWR || (status & O_APPEND))
++        stop (MALLOC_BOUNDED_INITIAL_REFUSED);
++      layout (fd);
++    }
++
++  initial.fd = -1;
++  initial.selected = true;
++  initial.receipt.version = MALLOC_BOUNDED_INITIAL_VERSION;
++  initial.receipt.size = sizeof (initial.receipt);
++  initial.receipt.process = current_process ();
++
++  /* These actual input caps bound the early argument/environment scans
++     and the ordinary argument-adjustment copy.  They do not bound ELF
++     dependency/helper stacks or the kernel's pre-existing initial stack.  */
++  if (_dl_argc > 128)
++    _dl_bounded_initial_fail (E2BIG, MALLOC_BOUNDED_INITIAL_INPUT);
++  size_t input_bytes = 0;
++  for (size_t i = 0; i < _dl_argc; ++i)
++    {
++      size_t bytes = strnlen (_dl_argv[i], 4097);
++      if (bytes == 0 || bytes > 4096 || bytes + 1 > 16384 - input_bytes)
++        _dl_bounded_initial_fail (E2BIG, MALLOC_BOUNDED_INITIAL_INPUT);
++      input_bytes += bytes + 1;
++      if (i > 1
++          && (strcmp (_dl_argv[i], "--bounded-initial-probe-fd") == 0
++              || strcmp (_dl_argv[i], "--bounded-initial-layout-fd") == 0))
++        _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++    }
++  for (size_t i = 0; _environ[i] != NULL; ++i)
++    {
++      if (i >= 64)
++        _dl_bounded_initial_fail (E2BIG, MALLOC_BOUNDED_INITIAL_INPUT);
++      size_t bytes = strnlen (_environ[i], 4097);
++      if (bytes == 0 || bytes > 4096
++          || bytes + 1 > 16384 - input_bytes)
++        _dl_bounded_initial_fail (E2BIG, MALLOC_BOUNDED_INITIAL_INPUT);
++      input_bytes += bytes + 1;
++    }
++
++  /* The selected probe requires the actual ordinary loader cache-inhibit
++     option in the selected invocation.  It does not force-disable cache
++     support and does not turn an unsupported startup into execution.  */
++  if (_dl_argc < 5 || strcmp (_dl_argv[3], "--inhibit-cache") != 0)
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_INPUT);
++
++  struct __stat64_t64 st;
++  long int status = INTERNAL_SYSCALL_CALL (fstat, fd, &st);
++  if (INTERNAL_SYSCALL_ERROR_P (status)
++      || !S_ISREG (st.st_mode) || st.st_size <= 0
++      || st.st_size > MALLOC_BOUNDED_INITIAL_MAX_EXTENT)
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++  status = INTERNAL_SYSCALL_CALL (fcntl, fd, F_GETFL);
++  if (INTERNAL_SYSCALL_ERROR_P (status)
++      || (status & O_ACCMODE) != O_RDWR || (status & O_APPEND))
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++  status = INTERNAL_SYSCALL_CALL
++    (pread64, fd, &initial.config, sizeof (initial.config), 0);
++  if (status != sizeof (initial.config))
++    _dl_bounded_initial_fail (EIO, MALLOC_BOUNDED_INITIAL_INPUT);
++
++  size_t page = GLRO (dl_pagesize);
++  if (page == 0 || (page & (page - 1)) != 0 || page % MALLOC_ALIGNMENT != 0)
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++  const struct malloc_bounded_initial_config *config = &initial.config;
++  if (config->magic != MALLOC_BOUNDED_INITIAL_MAGIC
++      || config->version != MALLOC_BOUNDED_INITIAL_VERSION
++      || config->size != sizeof (*config) || config->nonce == 0
++      || config->extent != st.st_size
++      || config->extent % page != 0
++      || config->requests == 0
++      || config->requests > MALLOC_BOUNDED_INITIAL_MAX_REQUESTS
++      || config->single_bytes == 0 || config->cumulative_bytes == 0
++      || config->single_bytes > config->cumulative_bytes)
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++  for (size_t i = 0; i < sizeof (config->reserved) / sizeof (uint64_t); ++i)
++    if (config->reserved[i] != 0)
++      _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++
++  size_t prefix = sizeof (*config) + sizeof (initial.receipt)
++    + config->requests * sizeof (struct malloc_bounded_initial_record);
++  if (prefix > SIZE_MAX - (page - 1))
++    _dl_bounded_initial_fail (EOVERFLOW, MALLOC_BOUNDED_INITIAL_INPUT);
++  initial.payload_start = (prefix + page - 1) & ~(page - 1);
++  if (initial.payload_start == 0 || initial.payload_start >= config->extent
++      || (config->extent - initial.payload_start) % page != 0
++      || config->cumulative_bytes > config->extent - initial.payload_start)
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_INPUT);
++  initial.receipt.nonce = config->nonce;
++  initial.fd = fd;
++  initial.receipt.journal_extent = initial.payload_start;
++  initial.receipt.payload_file_offset = initial.payload_start;
++  initial.receipt.payload_extent = config->extent - initial.payload_start;
++  /* COW pages are an additional containing-owner liability, never a file
++     backing credit.  No kernel/page-table or complete floor is inferred.  */
++  initial.receipt.private_cow_bytes_max = initial.receipt.payload_extent;
++  initial.receipt.private_cow_pages_max = initial.receipt.payload_extent / page;
++  initial.receipt.journal_map_attempted = 1;
++  publish ();
++
++  long int mapping = INTERNAL_SYSCALL_CALL
++    (mmap, 0, initial.payload_start, PROT_READ | PROT_WRITE,
++     MAP_SHARED, fd, 0);
++  initial.receipt.journal_map_returned = 1;
++  if (INTERNAL_SYSCALL_ERROR_P (mapping))
++    {
++      initial.receipt.journal_map_status = INTERNAL_SYSCALL_ERRNO (mapping);
++      _dl_bounded_initial_fail (initial.receipt.journal_map_status,
++                                MALLOC_BOUNDED_INITIAL_MAPPING);
++    }
++  initial.journal_mapping = (void *) mapping;
++  initial.receipt.journal_mapped_bytes = initial.payload_start;
++  initial.receipt.journal_shared = 1;
++  if (mapping == 0 || (uintptr_t) mapping % page != 0
++      || (uintptr_t) mapping > UINTPTR_MAX - initial.payload_start)
++    {
++      initial.journal_mapping = NULL;
++      _dl_bounded_initial_fail (EOVERFLOW, MALLOC_BOUNDED_INITIAL_MAPPING);
++    }
++  /* Preserve first-map completion before any later journal-page fault.  */
++  publish ();
++  memset (records (), 0, config->requests
++                        * sizeof (struct malloc_bounded_initial_record));
++  initial.receipt.payload_map_attempted = 1;
++  publish ();
++  /* Only the page-disjoint suffix can contain native loader/TLS objects.
++     MAP_PRIVATE writes must never reach the shared protocol or file.  */
++  mapping = INTERNAL_SYSCALL_CALL
++    (mmap, 0, initial.receipt.payload_extent, PROT_READ | PROT_WRITE,
++     MAP_PRIVATE, fd, initial.payload_start);
++  initial.receipt.payload_map_returned = 1;
++  if (INTERNAL_SYSCALL_ERROR_P (mapping))
++    {
++      initial.receipt.payload_map_status = INTERNAL_SYSCALL_ERRNO (mapping);
++      _dl_bounded_initial_fail (initial.receipt.payload_map_status,
++                                MALLOC_BOUNDED_INITIAL_MAPPING);
++    }
++  initial.receipt.payload_mapped_bytes = initial.receipt.payload_extent;
++  initial.receipt.payload_private = 1;
++  uintptr_t journal = (uintptr_t) initial.journal_mapping;
++  uintptr_t payload = (uintptr_t) mapping;
++  size_t payload_bytes = initial.receipt.payload_extent;
++  if (payload == 0 || payload % page != 0
++      || payload > UINTPTR_MAX - payload_bytes
++      || (payload < journal + initial.payload_start
++          && journal < payload + payload_bytes))
++    _dl_bounded_initial_fail (EOVERFLOW, MALLOC_BOUNDED_INITIAL_MAPPING);
++  initial.payload_mapping = (void *) payload;
++  initial.next = initial.payload_start;
++  publish ();
++
++  /* The ordinary parser removes the option.  Leave the initial argument
++     vector intact here so _dl_start_args_adjust includes these two words
++     in its real kernel-stack/auxv adjustment.  */
++}
++
++#else
++
++bool
++_dl_bounded_initial_active (void)
++{
++  return false;
++}
++
++void
++_dl_bounded_initial_start (uintptr_t entry)
++{
++  if (_dl_argc > 1
++      && (strcmp (_dl_argv[1], "--bounded-initial-layout-fd") == 0
++          || strcmp (_dl_argv[1], "--bounded-initial-probe-fd") == 0))
++    _exit (MALLOC_BOUNDED_INITIAL_REFUSED);
++}
++
++void
++_dl_bounded_initial_fail (unsigned int status, unsigned int cut)
++{
++  _exit (MALLOC_BOUNDED_INITIAL_REFUSED);
++}
++
++void *
++_dl_bounded_initial_allocate (size_t bytes, unsigned int kind)
++{
++  _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_ALLOCATION);
++}
++
++void
++_dl_bounded_initial_release (void *pointer)
++{
++  _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_RELEASE);
++}
++
++void *
++_dl_bounded_initial_reallocate (void *pointer, size_t bytes)
++{
++  _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_ALLOCATION);
++}
++
++void
++_dl_bounded_initial_tls (void *tcb, size_t bytes, size_t static_bytes,
++                         size_t alignment)
++{
++  _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++}
++
++#endif
+diff --git a/elf/dl-bounded-initial.h b/elf/dl-bounded-initial.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..3ec524d058faed386ae30593a2218b4d890a775f
+--- /dev/null
++++ b/elf/dl-bounded-initial.h
+@@ -0,0 +1,25 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++   SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#ifndef _DL_BOUNDED_INITIAL_H
++#define _DL_BOUNDED_INITIAL_H 1
++
++#include <malloc-bounded-initial.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#if IS_IN (rtld)
++extern bool _dl_bounded_initial_active (void) attribute_hidden;
++extern void _dl_bounded_initial_start (uintptr_t) attribute_hidden;
++extern void *_dl_bounded_initial_allocate (size_t, unsigned int)
++  attribute_hidden;
++extern void _dl_bounded_initial_release (void *) attribute_hidden;
++extern void *_dl_bounded_initial_reallocate (void *, size_t) attribute_hidden;
++extern void _dl_bounded_initial_fail (unsigned int, unsigned int)
++  attribute_hidden __attribute__ ((noreturn));
++extern void _dl_bounded_initial_tls (void *, size_t, size_t, size_t)
++  attribute_hidden;
++#endif
++#endif
+diff --git a/elf/dl-catch.c b/elf/dl-catch.c
+index 2109516dbac7dc898c2bb7c490de80fd35c2dcaa..d5d3bb2a6511e5de394b072bd52c6add8de3f219 100644
+--- a/elf/dl-catch.c
++++ b/elf/dl-catch.c
+@@ -17,12 +17,14 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <libintl.h>
++#include <errno.h>
+ #include <setjmp.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+ #include <ldsodefs.h>
++#include <dl-bounded-initial.h>
+ #include <stdio.h>
+ #include <tls.h>
+ 
+@@ -94,6 +96,11 @@ void
+ _dl_signal_exception (int errcode, struct dl_exception *exception,
+ 		      const char *occasion)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (errcode != 0 ? errcode : EINVAL,
++                              MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
++#endif
+   struct rtld_catch *lcatch = get_catch ();
+   if (lcatch != NULL)
+     {
+@@ -112,6 +119,11 @@ void
+ _dl_signal_error (int errcode, const char *objname, const char *occasion,
+ 		  const char *errstring)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (errcode != 0 ? errcode : EINVAL,
++                              MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
++#endif
+   struct rtld_catch *lcatch = get_catch ();
+ 
+   if (! errstring)
+@@ -144,6 +156,9 @@ void
+ _dl_signal_cexception (int errcode, struct dl_exception *exception,
+ 		       const char *occasion)
+ {
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (errcode != 0 ? errcode : EINVAL,
++                              MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
+   if (__builtin_expect (GLRO(dl_debug_mask)
+ 			& ~(DL_DEBUG_STATISTICS), 0))
+     _dl_debug_printf ("%s: error: %s: %s (%s)\n",
+@@ -165,6 +180,9 @@ void
+ _dl_signal_cerror (int errcode, const char *objname, const char *occasion,
+ 		   const char *errstring)
+ {
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (errcode != 0 ? errcode : EINVAL,
++                              MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
+   if (__builtin_expect (GLRO(dl_debug_mask)
+ 			& ~(DL_DEBUG_STATISTICS), 0))
+     _dl_debug_printf ("%s: error: %s: %s (%s)\n", objname, occasion,
 diff --git a/elf/dl-libc.c b/elf/dl-libc.c
 index 3c048cc6c1791a60ae4610269bf0b85d062bea68..bd6351da3cfc5277dca2ff5da1b79145ec5003cb 100644
 --- a/elf/dl-libc.c
@@ -107,19 +1222,307 @@ index 3c048cc6c1791a60ae4610269bf0b85d062bea68..bd6351da3cfc5277dca2ff5da1b79145
    struct do_dlopen_args args;
    args.name = name;
    args.mode = mode;
+diff --git a/elf/dl-minimal-malloc.c b/elf/dl-minimal-malloc.c
+index 25d870728d5eb604e2ac6a91a252435873d3d992..69e34aea559c10f82a5e359a8fca3835a226bcaa 100644
+--- a/elf/dl-minimal-malloc.c
++++ b/elf/dl-minimal-malloc.c
+@@ -23,10 +23,12 @@
+ # pragma GCC visibility push(hidden)
+ #endif
+ #include <assert.h>
++#include <errno.h>
+ #include <string.h>
+ #include <ldsodefs.h>
+ #include <malloc/malloc-internal.h>
+ #include <setvmaname.h>
++#include <dl-bounded-initial.h>
+ 
+ static void *alloc_ptr, *alloc_end, *alloc_last_block;
+ 
+@@ -34,6 +36,10 @@ static void *alloc_ptr, *alloc_end, *alloc_last_block;
+ void *
+ __minimal_malloc (size_t n)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    return _dl_bounded_initial_allocate (n, MALLOC_BOUNDED_INITIAL_LOADER);
++#endif
+   if (alloc_end == 0)
+     {
+       /* Consume any unused space in the last page of our data segment.  */
+@@ -86,7 +92,13 @@ __minimal_calloc (size_t nmemb, size_t size)
+ #define HALF_SIZE_T (((size_t) 1) << (8 * sizeof (size_t) / 2))
+   if (__builtin_expect ((nmemb | size) >= HALF_SIZE_T, 0)
+       && size != 0 && bytes / size != nmemb)
+-    return NULL;
++    {
++#if IS_IN (rtld)
++      if (_dl_bounded_initial_active ())
++        _dl_bounded_initial_fail (ENOMEM, MALLOC_BOUNDED_INITIAL_ALLOCATION);
++#endif
++      return NULL;
++    }
+ 
+   return malloc (bytes);
+ }
+@@ -95,6 +107,13 @@ __minimal_calloc (size_t nmemb, size_t size)
+ void
+ __minimal_free (void *ptr)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    {
++      _dl_bounded_initial_release (ptr);
++      return;
++    }
++#endif
+   /* We can free only the last block allocated.  */
+   if (ptr == alloc_last_block)
+     {
+@@ -109,6 +128,10 @@ __minimal_free (void *ptr)
+ void *
+ __minimal_realloc (void *ptr, size_t n)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    return _dl_bounded_initial_reallocate (ptr, n);
++#endif
+   if (ptr == NULL)
+     return malloc (n);
+   assert (ptr == alloc_last_block);
+diff --git a/elf/dl-minimal.c b/elf/dl-minimal.c
+index dfa0764f58a13e212b0fd5a35efcb819e2110991..48efc0b656a8c4983f5918517f1551b3a973e5d3 100644
+--- a/elf/dl-minimal.c
++++ b/elf/dl-minimal.c
+@@ -23,6 +23,7 @@
+ #include <dl-sym-post.h>
+ #include <_itoa.h>
+ #include <dl-minimal-malloc.h>
++#include <dl-bounded-initial.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <errno.h>
+@@ -74,6 +75,8 @@ lookup_malloc_symbol (struct link_map *main_map, const char *name,
+ void
+ __rtld_malloc_init_real (struct link_map *main_map)
+ {
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_RELOCATION);
+   /* We cannot use relocations and initializers for this because the
+      changes made by __rtld_malloc_init_stubs break REL-style
+      (non-RELA) relocations that depend on the previous pointer
+diff --git a/elf/dl-misc.c b/elf/dl-misc.c
+index 848cef87715de94049884528d0a18bc3ec58091e..d97f938123cd6b1a9422bf7b8c6f9c691b2d3e1e 100644
+--- a/elf/dl-misc.c
++++ b/elf/dl-misc.c
+@@ -18,6 +18,7 @@
+ 
+ #include <_itoa.h>
+ #include <fcntl.h>
++#include <dl-bounded-initial.h>
+ #include <ldsodefs.h>
+ #include <link.h>
+ #include <not-cancel.h>
+@@ -34,6 +35,10 @@
+ void *
+ _dl_sysdep_read_whole_file (const char *file, size_t *sizep, int prot)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_HELPER);
++#endif
+   void *result = MAP_FAILED;
+   struct __stat64_t64 st;
+   int fd = __open64_nocancel (file, O_RDONLY | O_CLOEXEC);
+diff --git a/elf/dl-printf.c b/elf/dl-printf.c
+index 75812aab388f09dad1c2dcf0621b3fd3345b07ea..7935d5a11c74e7331d266cba44686e76e0ff592b 100644
+--- a/elf/dl-printf.c
++++ b/elf/dl-printf.c
+@@ -18,6 +18,8 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <string.h>
++#include <errno.h>
++#include <dl-bounded-initial.h>
+ #if BUILD_PIE_DEFAULT
+ # pragma GCC visibility push(hidden)
+ #endif
+@@ -293,6 +295,10 @@ _dl_printf (const char *fmt, ...)
+ void
+ _dl_error_printf (const char *fmt, ...)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
++#endif
+   va_list arg;
+ 
+   va_start (arg, fmt);
+@@ -303,6 +309,14 @@ _dl_error_printf (const char *fmt, ...)
+ void
+ _dl_fatal_printf (const char *fmt, ...)
+ {
++#if IS_IN (rtld)
++  /* On the selected x86-64 loader this hidden predicate reads only its
++     zero-initialized RIP-relative flag; it needs no relocation, TLS or
++     function pointer.  Other targets' predicate is constant false.  The
++     bootstrap error path must remain usable before self-relocation.  */
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (EINVAL, MALLOC_BOUNDED_INITIAL_DIAGNOSTIC);
++#endif
+   va_list arg;
+ 
+   va_start (arg, fmt);
 diff --git a/elf/dl-tls.c b/elf/dl-tls.c
-index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea5552f9a1 100644
+index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..005d0eb1502256f796b0045f431af4aa87a33b75 100644
 --- a/elf/dl-tls.c
 +++ b/elf/dl-tls.c
-@@ -28,6 +28,7 @@
+@@ -27,7 +27,9 @@
+ 
  #include <tls.h>
  #include <dl-tls.h>
++#include <dl-bounded-initial.h>
  #include <ldsodefs.h>
 +#include <pthread-bounded-internal.h>
  
  #if PTHREAD_IN_LIBC
  # include <list.h>
-@@ -355,6 +356,27 @@ _dl_determine_tlsoffset (void)
+@@ -106,6 +108,22 @@ _dl_tls_static_surplus_init (size_t naudit)
+ 		      (unsigned long) naudit, (unsigned long) (DL_NNS - nns));
+   nns += naudit;
+ 
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    {
++      size_t surplus;
++      if (nns == 0
++          || __builtin_add_overflow ((nns - 1) * LIBC_IE_TLS
++                                     + nns * OTHER_IE_TLS + LEGACY_TLS,
++                                     opt_tls, &surplus))
++        _dl_bounded_initial_fail (EOVERFLOW,
++                                  MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++      GL(dl_tls_static_optional) = opt_tls;
++      GLRO(dl_tls_static_surplus) = surplus;
++      return;
++    }
++#endif
++
+   GL(dl_tls_static_optional) = opt_tls;
+   assert (LEGACY_TLS >= 0);
+   GLRO(dl_tls_static_surplus) = tls_static_surplus (nns, opt_tls) + LEGACY_TLS;
+@@ -123,6 +141,11 @@ oom (void)
+ void
+ _dl_assign_tls_modid (struct link_map *l)
+ {
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ()
++      && GL(dl_tls_max_dtv_idx) >= MALLOC_BOUNDED_INITIAL_MAX_TLS_MODULES)
++    _dl_bounded_initial_fail (E2BIG, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++#endif
+   size_t result;
+ 
+   if (__builtin_expect (GL(dl_tls_dtv_gaps), false))
+@@ -211,9 +234,99 @@ _dl_count_modids (void)
+ 
+ 
+ #ifdef SHARED
++#if IS_IN (rtld) && TLS_TCB_AT_TP
++/* The selected probe uses the same gap placement as the ordinary layout,
++   with checked operations before writing any offset or allocation size.
++   In particular, SUM < FIRST is a genuine alignment gap, not permission
++   for an unchecked unsigned subtraction/roundup.  */
++static size_t
++initial_tls_end (size_t start, size_t bytes, size_t first, size_t alignment)
++{
++  size_t sum, rounded;
++  if (__builtin_add_overflow (start, bytes, &sum))
++    _dl_bounded_initial_fail (EOVERFLOW,
++                              MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  if (sum <= first)
++    return first;
++  if (__builtin_add_overflow (sum - first, alignment - 1, &rounded))
++    _dl_bounded_initial_fail (EOVERFLOW,
++                              MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  rounded &= ~(alignment - 1);
++  if (__builtin_add_overflow (rounded, first, &sum))
++    _dl_bounded_initial_fail (EOVERFLOW,
++                              MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  return sum;
++}
++
++static void
++initial_tls_offsets (void)
++{
++  size_t offset = 0, freetop = 0, freebottom = 0;
++  size_t max_align = TCB_ALIGNMENT;
++  struct dtv_slotinfo_list *list = GL(dl_tls_dtv_slotinfo_list);
++  for (size_t i = 0; i < list->len && list->slotinfo[i].map != NULL; ++i)
++    {
++      struct link_map *map = list->slotinfo[i].map;
++      size_t alignment = map->l_tls_align;
++      if (alignment == 0 || (alignment & (alignment - 1)) != 0
++          || alignment > MALLOC_BOUNDED_INITIAL_MAX_EXTENT)
++        _dl_bounded_initial_fail (EINVAL,
++                                  MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++      max_align = MAX (max_align, alignment);
++      size_t first = -map->l_tls_firstbyte_offset & (alignment - 1);
++      size_t end;
++      if (freebottom - freetop >= map->l_tls_blocksize)
++        {
++          end = initial_tls_end (freetop, map->l_tls_blocksize,
++                                 first, alignment);
++          if (end <= freebottom)
++            {
++              freetop = end;
++              map->l_tls_offset = end;
++              continue;
++            }
++        }
++
++      end = initial_tls_end (offset, map->l_tls_blocksize, first, alignment);
++      size_t occupied, available;
++      if (__builtin_add_overflow (offset, map->l_tls_blocksize, &occupied)
++          || __builtin_add_overflow (occupied, freebottom - freetop,
++                                     &available))
++        _dl_bounded_initial_fail (EOVERFLOW,
++                                  MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++      if (end > available)
++        {
++          freetop = offset;
++          freebottom = end - map->l_tls_blocksize;
++        }
++      offset = end;
++      map->l_tls_offset = end;
++    }
++
++  size_t total;
++  if (__builtin_add_overflow (offset, GLRO (dl_tls_static_surplus), &total))
++    _dl_bounded_initial_fail (EOVERFLOW,
++                              MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  total = initial_tls_end (total, 0, 0, max_align);
++  if (__builtin_add_overflow (total, TLS_TCB_SIZE, &total))
++    _dl_bounded_initial_fail (EOVERFLOW,
++                              MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++  GL(dl_tls_static_used) = offset;
++  GLRO(dl_tls_static_size) = total;
++  GLRO(dl_tls_static_align) = max_align;
++}
++#endif
++
+ void
+ _dl_determine_tlsoffset (void)
+ {
++#if IS_IN (rtld) && TLS_TCB_AT_TP
++  if (_dl_bounded_initial_active ())
++    {
++      initial_tls_offsets ();
++      return;
++    }
++#endif
+   size_t max_align = TCB_ALIGNMENT;
+   size_t freetop = 0;
+   size_t freebottom = 0;
+@@ -355,6 +468,27 @@ _dl_determine_tlsoffset (void)
  }
  #endif /* SHARED */
  
@@ -147,7 +1550,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
  static void *
  allocate_dtv (void *result)
  {
-@@ -367,7 +389,23 @@ allocate_dtv (void *result)
+@@ -367,7 +501,37 @@ allocate_dtv (void *result)
       initial set of modules.  This should avoid in most cases expansions
       of the dtv.  */
    dtv_length = max_modid + DTV_SURPLUS;
@@ -168,11 +1571,49 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
 +        __set_errno (ENOMEM);
 +    }
 +  else
-+    dtv = calloc (dtv_length + 2, sizeof (dtv_t));
++    {
++#if IS_IN (rtld)
++      if (_dl_bounded_initial_active ())
++        {
++          if (max_modid > SIZE_MAX - DTV_SURPLUS - 2
++              || dtv_length + 2 > SIZE_MAX / sizeof (dtv_t))
++            _dl_bounded_initial_fail
++              (EOVERFLOW, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++          dtv = _dl_bounded_initial_allocate
++            ((dtv_length + 2) * sizeof (dtv_t), MALLOC_BOUNDED_INITIAL_DTV);
++        }
++      else
++#endif
++        dtv = calloc (dtv_length + 2, sizeof (dtv_t));
++    }
    if (dtv != NULL)
      {
        /* This is the initial length of the dtv.  */
-@@ -476,14 +514,33 @@ extern dtv_t _dl_static_dtv[];
+@@ -428,7 +592,22 @@ _dl_allocate_tls_storage (void)
+   /* Perform the allocation.  Reserve space for the required alignment
+      and the pointer to the original allocation.  */
+   size_t alignment = GLRO (dl_tls_static_align);
+-  void *allocated = malloc (size + alignment + sizeof (void *));
++  void *allocated;
++#if IS_IN (rtld)
++  if (_dl_bounded_initial_active ())
++    {
++      size_t allocation;
++      if (alignment == 0 || (alignment & (alignment - 1)) != 0
++          || __builtin_add_overflow (size, alignment, &allocation)
++          || __builtin_add_overflow (allocation, sizeof (void *), &allocation))
++        _dl_bounded_initial_fail
++          (EOVERFLOW, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
++      allocated = _dl_bounded_initial_allocate
++        (allocation, MALLOC_BOUNDED_INITIAL_TLS_STORAGE);
++    }
++  else
++#endif
++    allocated = malloc (size + alignment + sizeof (void *));
+   if (__glibc_unlikely (allocated == NULL))
+     return NULL;
+ 
+@@ -476,14 +655,33 @@ extern dtv_t _dl_static_dtv[];
  #endif
  
  static dtv_t *
@@ -208,7 +1649,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
      {
        /* This is the initial dtv that was either statically allocated in
  	 __libc_setup_tls or allocated during rtld startup using the
-@@ -537,7 +594,8 @@ _dl_allocate_tls_init (void *result, bool init_tls)
+@@ -537,7 +735,8 @@ _dl_allocate_tls_init (void *result, bool init_tls)
    if (dtv[-1].counter < GL(dl_tls_max_dtv_idx))
      {
        /* Resize the dtv.  */
@@ -218,7 +1659,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
  
        /* Install this new dtv in the thread data structures.  */
        INSTALL_DTV (result, &dtv[-1]);
-@@ -635,14 +693,15 @@ void
+@@ -635,14 +834,15 @@ void
  _dl_deallocate_tls (void *tcb, bool dealloc_tcb)
  {
    dtv_t *dtv = GET_DTV (tcb);
@@ -236,7 +1677,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
  
    if (dealloc_tcb)
      free (*tcb_to_pointer_to_free_location (tcb));
-@@ -673,6 +732,17 @@ rtld_hidden_def (_dl_deallocate_tls)
+@@ -673,6 +873,17 @@ rtld_hidden_def (_dl_deallocate_tls)
  static struct dtv_pointer
  allocate_dtv_entry (size_t alignment, size_t size)
  {
@@ -254,7 +1695,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
    if (powerof2 (alignment) && alignment <= _Alignof (max_align_t))
      {
        /* The alignment is supported by malloc.  */
-@@ -806,7 +876,7 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+@@ -806,7 +1017,7 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
  		    continue;
  
  		  /* Resizing the dtv aborts on failure: bug 16134.  */
@@ -263,7 +1704,7 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
  
  		  assert (modid <= dtv[-1].counter);
  
-@@ -819,7 +889,8 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
+@@ -819,7 +1030,8 @@ _dl_update_slotinfo (unsigned long int req_modid, size_t new_gen)
  		 dtv entry free it.  Note: this is not AS-safe.  */
  	      /* XXX Ideally we will at some point create a memory
  		 pool.  */
@@ -273,6 +1714,663 @@ index 7b3dd9ab60e89ae91820dfe1d5c5a947ed33682c..1ed5ef0cf3669764b31a93de15328aea
  	      dtv[modid].pointer.val = TLS_DTV_UNALLOCATED;
  	      dtv[modid].pointer.to_free = NULL;
  
+diff --git a/elf/rtld.c b/elf/rtld.c
+index ac4bb236527882db69263b7c8ecf40ee9621d285..8cb9bec44efccebdd55628674b5f512e2c832600 100644
+--- a/elf/rtld.c
++++ b/elf/rtld.c
+@@ -17,6 +17,7 @@
+    <https://www.gnu.org/licenses/>.  */
+ 
+ #include <errno.h>
++#include <dl-bounded-initial.h>
+ #include <dlfcn.h>
+ #include <fcntl.h>
+ #include <stdbool.h>
+@@ -744,11 +745,20 @@ init_tls (size_t naudit)
+      dtv slots.  We allocate a few entries more than needed to
+      avoid the need for reallocation.  */
+   size_t nelem = GL(dl_tls_max_dtv_idx) + 1 + TLS_SLOTINFO_SURPLUS;
++  if (_dl_bounded_initial_active ()
++      && (GL(dl_tls_max_dtv_idx) > SIZE_MAX - 1 - TLS_SLOTINFO_SURPLUS
++          || nelem > (SIZE_MAX - sizeof (struct dtv_slotinfo_list))
++                     / sizeof (struct dtv_slotinfo)))
++    _dl_bounded_initial_fail (EOVERFLOW, MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY);
+ 
+   /* Allocate.  */
+-  GL(dl_tls_dtv_slotinfo_list) = (struct dtv_slotinfo_list *)
+-    calloc (sizeof (struct dtv_slotinfo_list)
+-	    + nelem * sizeof (struct dtv_slotinfo), 1);
++  size_t slotinfo_bytes = sizeof (struct dtv_slotinfo_list)
++                         + nelem * sizeof (struct dtv_slotinfo);
++  if (_dl_bounded_initial_active ())
++    GL(dl_tls_dtv_slotinfo_list) = _dl_bounded_initial_allocate
++      (slotinfo_bytes, MALLOC_BOUNDED_INITIAL_SLOTINFO);
++  else
++    GL(dl_tls_dtv_slotinfo_list) = calloc (slotinfo_bytes, 1);
+   /* No need to check the return value.  If memory allocation failed
+      the program would have been terminated.  */
+ 
+@@ -788,6 +798,10 @@ init_tls (size_t naudit)
+     _dl_fatal_printf ("\
+ cannot allocate TLS data structures for initial thread\n");
+ 
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_tls (tcbp, TLS_TCB_SIZE, GLRO (dl_tls_static_size),
++                             GLRO (dl_tls_static_align));
++
+   /* Store for detection of the special case by __tls_get_addr
+      so it knows not to pass this dtv to the normal realloc.  */
+   GL(dl_initial_dtv) = GET_DTV (tcbp);
+@@ -929,6 +943,8 @@ ERROR: ld.so: object '%s' cannot be loaded as audit interface: %s; ignored.\n",
+ static void
+ load_audit_module (const char *name, struct audit_ifaces **last_audit)
+ {
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_AUDIT);
+   int original_tls_idx = GL(dl_tls_max_dtv_idx);
+ 
+   struct dlmopen_args dlmargs;
+@@ -1093,6 +1109,8 @@ rtld_chain_load (struct link_map *main_map, char *argv0)
+       return;
+ 
+   const char *pathname = _dl_argv[0];
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_INPUT);
+   if (argv0 != NULL)
+     _dl_argv[0] = argv0;
+   int errcode = __rtld_execve (pathname, _dl_argv, _environ);
+@@ -1397,7 +1415,13 @@ dl_main (const ElfW(Phdr) *phdr,
+       GL(dl_rtld_map).l_name = rtld_progname;
+ 
+       while (_dl_argc > 1)
+-	if (! strcmp (_dl_argv[1], "--list"))
++        if (_dl_bounded_initial_active ()
++            && strcmp (_dl_argv[1], "--bounded-initial-probe-fd") == 0)
++          {
++            _dl_argc -= 2;
++            _dl_argv += 2;
++          }
++	else if (! strcmp (_dl_argv[1], "--list"))
+ 	  {
+ 	    if (state.mode != rtld_mode_help)
+ 	      {
+@@ -1495,7 +1519,11 @@ dl_main (const ElfW(Phdr) *phdr,
+ 	    ++_dl_argv;
+ 	  }
+ 	else if (strcmp (_dl_argv[1], "--version") == 0)
+-	  _dl_version ();
++          {
++            if (_dl_bounded_initial_active ())
++              _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_INPUT);
++            _dl_version ();
++          }
+ 	else if (_dl_argv[1][0] == '-' && _dl_argv[1][1] == '-')
+ 	  {
+ 	   if (_dl_argv[1][1] == '\0')
+@@ -1508,6 +1536,9 @@ dl_main (const ElfW(Phdr) *phdr,
+ 	else
+ 	  break;
+ 
++      if (_dl_bounded_initial_active () && state.mode != rtld_mode_normal)
++        _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_INPUT);
++
+       if (__glibc_unlikely (state.mode == rtld_mode_list_tunables))
+ 	{
+ 	  __tunables_print ();
+@@ -2266,6 +2297,12 @@ dl_main (const ElfW(Phdr) *phdr,
+ 
+   _rtld_main_check (main_map, _dl_argv[0]);
+ 
++  /* A bounded heap/TLS storage probe cannot authorize arbitrary IFUNC,
++     libc early-init, audit or constructor producers.  Preserve the real
++     partial inventory and refuse before the first normal relocation.  */
++  if (_dl_bounded_initial_active ())
++    _dl_bounded_initial_fail (ENOTSUP, MALLOC_BOUNDED_INITIAL_RELOCATION);
++
+   /* Now we have all the objects loaded.  Relocate them all except for
+      the dynamic linker itself.  We do this in reverse order so that copy
+      relocs of earlier objects overwrite the data written by later
+diff --git a/elf/tst-bounded-initial-launch.c b/elf/tst-bounded-initial-launch.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..adff6a7116dfd123d6f92f086c1eb9c998036d64
+--- /dev/null
++++ b/elf/tst-bounded-initial-launch.c
+@@ -0,0 +1,103 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++/* Real syscall refusal controls.  Filter only the selected inherited FD
++   and exact mmap mapping kind; execute the genuine selected loader with
++   its ordinary syscall body.  Permission/setup failures are failures,
++   never successful provider refusals or skipped tests.  */
++#include <errno.h>
++#include <limits.h>
++#include <linux/audit.h>
++#include <linux/filter.h>
++#include <linux/seccomp.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++static unsigned int
++number (const char *text)
++{
++  unsigned int value = 0;
++  if (*text == '\0')
++    _exit (124);
++  for (size_t i = 0; text[i] != '\0'; ++i)
++    {
++      unsigned int digit = (unsigned char) text[i] - '0';
++      if (i >= 10 || digit > 9 || value > (INT_MAX - digit) / 10)
++        _exit (124);
++      value = value * 10 + digit;
++    }
++  return value;
++}
++
++int
++main (int argc, char **argv)
++{
++  if (argc < 5)
++    return 124;
++  unsigned int fd = number (argv[2]);
++  unsigned int kind;
++  if (strcmp (argv[1], "shared") == 0)
++    kind = MAP_SHARED;
++  else if (strcmp (argv[1], "private") == 0)
++    kind = MAP_PRIVATE;
++  else
++    return 124;
++  if (fd < 3)
++    return 124;
++
++  /* The filter is x86-64 specific, matching the provider's selected ABI.
++     Test both high words too: numeric aliases/extra flags do not match.  */
++  struct sock_filter instructions[] =
++    {
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, arch)),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
++      BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, nr)),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, __NR_mmap, 0, 9),
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, args[4]) + 4),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 7),
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, args[4])),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, fd, 0, 5),
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, args[3]) + 4),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 3),
++      BPF_STMT (BPF_LD | BPF_W | BPF_ABS,
++                offsetof (struct seccomp_data, args[3])),
++      BPF_JUMP (BPF_JMP | BPF_JEQ | BPF_K, kind, 0, 1),
++      BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EACCES),
++      BPF_STMT (BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
++    };
++  struct sock_fprog filter =
++    {
++      .len = sizeof (instructions) / sizeof (instructions[0]),
++      .filter = instructions
++    };
++  if (prctl (PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
++      || prctl (PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &filter) != 0)
++    return 124;
++  execv (argv[3], argv + 3);
++  return 124;
++}
+diff --git a/elf/tst-bounded-initial-mod.c b/elf/tst-bounded-initial-mod.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f2f9b382630b340ea74b5c46ed6c01e946613e6
+--- /dev/null
++++ b/elf/tst-bounded-initial-mod.c
+@@ -0,0 +1,56 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++   SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <unistd.h>
++
++static __thread volatile unsigned char initial_tls[64]
++  __attribute__ ((aligned (64)));
++
++/* The selected qualification target is Linux x86-64.  The resolver must
++   not call libc before normal relocation has made it usable.  */
++static void
++mark (char value)
++{
++#if defined __x86_64__ && !defined __ILP32__
++  long int result;
++  __asm__ volatile ("syscall"
++                    : "=a" (result)
++                    : "0" (1L), "D" (198L), "S" (&value), "d" (1L)
++                    : "rcx", "r11", "memory");
++#else
++  write (198, &value, 1);
++#endif
++}
++
++static void
++selected (void)
++{
++}
++
++typedef void (*selected_function) (void);
++
++static selected_function
++resolve_selected (void)
++{
++  mark ('I');
++  return selected;
++}
++
++static void selected_ifunc (void) __attribute__ ((ifunc ("resolve_selected")));
++static void (*volatile selected_pointer) (void) = selected_ifunc;
++
++static void __attribute__ ((constructor))
++construct (void)
++{
++  mark ('C');
++}
++
++int
++main (void)
++{
++  selected_pointer ();
++  initial_tls[0] = 42;
++  mark ('M');
++  return initial_tls[0] != 42;
++}
+diff --git a/elf/tst-bounded-initial.py b/elf/tst-bounded-initial.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..7b3d1321076ef94260888a0a09a08b0e9ddd7d93
+--- /dev/null
++++ b/elf/tst-bounded-initial.py
+@@ -0,0 +1,352 @@
++# Copyright (C) 2026 Dylan Plecki.
++# This file is part of the GNU C Library.
++# SPDX-License-Identifier: LGPL-2.1-or-later
++
++"""Finite real-loader controls; run with the configured source-built Python.
++
++All files and first child outcomes remain in DIRECTORY for qualification.
++This ordinary test harness does not issue a containing-process admission.
++It requires a newly built matching loader and tst-bounded-initial-mod.
++"""
++
++import argparse
++import errno
++import json
++import os
++import struct
++import subprocess
++
++
++MAGIC = 0x31494E49424C4747
++EXTENT = 1024 * 1024
++REQUESTS = 4096
++PAGE = 4096
++PREFIX = (128 + 512 + REQUESTS * 64 + PAGE - 1) & ~(PAGE - 1)
++
++
++def require(condition, description):
++    if not condition:
++        raise AssertionError(description)
++
++
++def new_file(directory, name, data):
++    path = os.path.join(directory, name)
++    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
++    with os.fdopen(descriptor, "w+b", buffering=0) as output:
++        require(output.write(data) == len(data), "complete input write")
++    return path
++
++
++def execute(arguments, directory, name, command, inherited, cwd=None,
++            environment=None):
++    marker = new_file(directory, name + ".marker", b"")
++    with open(marker, "r+b", buffering=0) as marker_file:
++        try:
++            os.fstat(198)
++        except OSError as error:
++            require(error.errno == errno.EBADF, "marker descriptor unused")
++        else:
++            raise AssertionError("marker descriptor already occupied")
++
++        os.dup2(marker_file.fileno(), 198, inheritable=True)
++        try:
++            with open(os.path.join(directory, name + ".stderr"), "xb") as log:
++                process = subprocess.Popen(
++                    command, pass_fds=tuple(inherited) + (198,),
++                    env=environment or {"LC_ALL": "C"}, stdin=subprocess.DEVNULL,
++                    stdout=log, stderr=log, cwd=cwd,
++                )
++                timed_out = False
++                try:
++                    status = process.wait(timeout=30)
++                except subprocess.TimeoutExpired:
++                    timed_out = True
++                    process.kill()
++                    status = process.wait()
++        finally:
++            os.close(198)
++
++    outcome = {
++        "command": command, "pid": process.pid, "status": status,
++        "timed_out": timed_out,
++    }
++    new_file(directory, name + ".outcome.json",
++             (json.dumps(outcome, indent=2) + "\n").encode())
++    with open(marker, "rb") as marker_file:
++        effects = marker_file.read()
++    require(not timed_out, name + ": original timeout")
++    return outcome, effects
++
++
++def configuration(nonce, requests=REQUESTS, single=65536, cumulative=None,
++                  extent=EXTENT, reserved=0, version=2):
++    if cumulative is None:
++        cumulative = EXTENT - ((128 + 512 + requests * 64 + PAGE - 1)
++                               & ~(PAGE - 1))
++    words = [MAGIC, version, 128, nonce, extent, requests, single, cumulative]
++    return struct.pack("<16Q", *(words + [reserved] + [0] * 7))
++
++
++def probe(arguments, name, config, extra=(), program=None, inhibit=True, cwd=None,
++          mapping_failure=None, environment=None):
++    directory = arguments.directory
++    # Dirty payload proves zeroing is real, not an anonymous-mmap premise.
++    data = bytearray(b"\xa5" * EXTENT)
++    data[:128] = config
++    data[128:640] = bytes(512)
++    path = new_file(directory, name + ".arena", data)
++    with open(path, "r+b", buffering=0) as arena:
++        command = [arguments.loader, "--bounded-initial-probe-fd",
++                   str(arena.fileno())]
++        if inhibit:
++            command.append("--inhibit-cache")
++        command += ["--library-path", arguments.library_path]
++        command += list(extra)
++        command.append(program or arguments.program)
++        if mapping_failure is not None:
++            command = [arguments.loader, "--inhibit-cache", "--library-path",
++                       arguments.library_path, arguments.launcher,
++                       mapping_failure, str(arena.fileno())] + command
++        outcome, effects = execute(arguments, directory, name, command,
++                                   (arena.fileno(),), cwd=cwd,
++                                   environment=environment)
++        arena.seek(128)
++        receipt = struct.unpack("<64Q", arena.read(512))
++        arena.seek(640)
++        records = [struct.unpack("<8Q", arena.read(64))
++                   for _ in range(min(receipt[9], REQUESTS))]
++    # This is a source-file byte check, not inspection of process-private
++    # allocator/TLS objects.  No private COW write may reach retained backing.
++    request_count = struct.unpack("<16Q", config)[5]
++    private_offset = (128 + 512 + request_count * 64 + PAGE - 1) & ~(PAGE - 1)
++    require(0 < private_offset < EXTENT and private_offset % PAGE == 0,
++            name + ": positive page-disjoint backing suffix")
++    with open(path, "rb") as backing:
++        backing.seek(private_offset)
++        original = backing.read()
++    require(len(original) == EXTENT - private_offset,
++            name + ": exact retained source-file extent")
++    require(original == b"\xa5" * len(original),
++            name + ": retained private-payload file bytes unchanged after reap")
++    require(outcome["status"] == 127, name + ": intended refusal status127")
++    require(effects == b"", name + ": no IFUNC/constructor/entry effect")
++    return path, outcome, receipt, records
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--loader", required=True)
++    parser.add_argument("--program", required=True)
++    parser.add_argument("--launcher", required=True)
++    parser.add_argument("--expect-dtv-zero-failure", action="store_true")
++    parser.add_argument("--library-path", required=True)
++    parser.add_argument("--directory", required=True)
++    arguments = parser.parse_args()
++    require(all(os.path.isabs(path) for path in
++                (arguments.loader, arguments.program, arguments.launcher,
++                 arguments.directory)),
++            "exact absolute selected loader/program/evidence paths")
++    require(all(path and os.path.isabs(path)
++                for path in arguments.library_path.split(":")),
++            "exact absolute selected dependency directories")
++    os.mkdir(arguments.directory)
++
++    old_query = new_file(arguments.directory, "old-query.layout", bytes(192))
++    with open(old_query, "r+b", buffering=0) as output:
++        outcome, effects = execute(
++            arguments, arguments.directory, "old-query",
++            [arguments.loader, "--bounded-initial-layout-fd",
++             str(output.fileno())], (output.fileno(),),
++        )
++        output.seek(0)
++        require(outcome["status"] == 127 and effects == b""
++                and output.read() == bytes(192),
++                "old query edition refuses before output effects")
++
++    query = new_file(arguments.directory, "query.layout", bytes(256))
++    with open(query, "r+b", buffering=0) as output:
++        outcome, effects = execute(
++            arguments, arguments.directory, "query",
++            [arguments.loader, "--bounded-initial-layout-fd",
++             str(output.fileno())], (output.fileno(),),
++        )
++        output.seek(0)
++        layout = struct.unpack("<32Q", output.read(256))
++    require(outcome["status"] == 0 and effects == b"", "actual layout query")
++    require(layout[:10] == (2, 256, 62, 8, 128, 512, 64, 16,
++                            1073741824, 4096), "compiled fixed layout")
++    require(layout[18] > 384 and layout[20] == outcome["pid"]
++            and layout[21:28] == (0, 32, 1, 2, 1, 640, 768)
++            and layout[28:] == (0,) * 4, "contained state; no profile grant")
++    require(layout[10] == PAGE, "selected page geometry")
++
++    outcome, effects = execute(
++        arguments, arguments.directory, "ordinary",
++        [arguments.loader, "--inhibit-cache", "--library-path",
++         arguments.library_path, arguments.program], (),
++    )
++    require(outcome["status"] == 0 and effects == b"ICM",
++            "ordinary IFUNC/constructor/TLS/entry preserved")
++
++    if arguments.expect_dtv_zero_failure:
++        path, _, receipt, _ = probe(arguments, "dtv-zero-failure", configuration(1))
++        require(receipt[12:15] == (errno.EIO, 10, 1)
++                and receipt[38:42] == (1, 1, errno.EIO, 1),
++                "real dirty DTV child-side validation failure")
++        require(receipt[8] == receipt[9] + 1,
++                "failed DTV is not returned")
++        with open(path, "rb") as journal:
++            journal.seek(640 + receipt[9] * 64)
++            failed = struct.unpack("<8Q", journal.read(64))
++        require(failed[1] == 4 and failed[3] >= PREFIX
++                and failed[4:6] == (0, errno.EIO),
++                "failed bounded DTV record retains attempted storage")
++        require(receipt[11] == failed[3] + max(failed[2], 1) - PREFIX,
++                "zeroing failure retains real reserved extent")
++        print("PASS: literal DTV-zeroing omission rejected by real child validator")
++        return
++
++    path, outcome, receipt, records = probe(arguments, "storage", configuration(1))
++    require(receipt[:4] == (2, 512, 1, outcome["pid"]), "actual nonce/PID facts")
++    require(receipt[4:8] == (1, 1, 0, PREFIX), "actual shared prefix mapping")
++    require(receipt[28:38] == (0, PREFIX, PREFIX, EXTENT - PREFIX,
++                               1, 1, 0, EXTENT - PREFIX,
++                               (EXTENT - PREFIX) // PAGE, EXTENT - PREFIX),
++            "disjoint page geometry, private mapping and separate COW maxima")
++    require(receipt[42:44] == (1, 1), "shared journal and private payload facts")
++    require(receipt[12:15] == (errno.ENOTSUP, 7, 1), "prerelocation cut")
++    require(receipt[26:28] == (1, 0), "storage ready; TLS data not initialized")
++    require(receipt[8] == receipt[9] == len(records) and len(records) > 3,
++            "actual finite request history")
++    require(receipt[10] == sum(record[7] == 0 for record in records),
++            "actual logical live records")
++    require(receipt[11] <= EXTENT - PREFIX, "enforced cumulative payload")
++
++    previous_end = PREFIX
++    for index, record in enumerate(records):
++        serial, kind, size, offset, returned, status, attempted, released = record
++        require(serial == index + 1 and kind in (1, 2, 3, 4)
++                and returned == 1 and status == 0, "canonical bounded record")
++        require(offset % 16 == 0 and offset >= previous_end
++                and max(size, 1) <= EXTENT - offset, "no overlap or reuse")
++        require(not released or attempted == 1, "logical release history")
++        previous_end = offset + max(size, 1)
++    require(receipt[11] == previous_end - PREFIX, "exact physical bump extent")
++    require(receipt[22] >= receipt[18]
++            and receipt[22] + receipt[23] <= receipt[18] + receipt[19],
++            "TCB contained in one TLS storage allocation")
++    require(receipt[23] == layout[11] and receipt[25] >= 64,
++            "actual configured TCB and fixture static TLS alignment")
++    require({record[1] for record in records} == {1, 2, 3, 4},
++            "actual loader/slotinfo/TLS/DTV routes")
++    require(receipt[38:42] == (1, 1, 0, receipt[21]),
++            "actual child-side DTV zero readback before generation writes")
++
++    _, _, denied, _ = probe(arguments, "journal-map-refusal", configuration(20),
++                            mapping_failure="shared")
++    require(denied[4:8] == (1, 1, errno.EACCES, 0)
++            and denied[32:36] == (0,) * 4 and denied[42:44] == (0, 0)
++            and denied[12:15] == (errno.EACCES, 2, 1),
++            "actual first mmap refusal preserves no second attempt")
++    _, _, denied, _ = probe(arguments, "payload-map-refusal", configuration(21),
++                            mapping_failure="private")
++    require(denied[4:8] == (1, 1, 0, PREFIX)
++            and denied[32:36] == (1, 1, errno.EACCES, 0)
++            and denied[42:44] == (1, 0)
++            and denied[8:12] == (0,) * 4
++            and denied[12:15] == (errno.EACCES, 2, 1),
++            "actual second mmap refusal retains successful journal map")
++
++    _, _, receipt, _ = probe(arguments, "requests", configuration(2, requests=1))
++    require(receipt[8:10] == (2, 1) and receipt[12:15] == (errno.ENOSPC, 3, 1),
++            "request exhaustion without fallback")
++    _, _, receipt, _ = probe(arguments, "single", configuration(3, single=1))
++    require(receipt[9] == 0 and receipt[12:15] == (errno.ENOMEM, 3, 1),
++            "single-request exhaustion without fallback")
++    # A negative causal control may derive an insufficient limit from the
++    # preceding actual requests.  This is not a peak-derived admission.
++    largest = max(record[2] for record in records)
++    require(largest < previous_end - PREFIX,
++            "fixture has cumulative allocation pressure")
++    path, _, receipt, _ = probe(
++        arguments, "cumulative", configuration(4, single=largest,
++                                               cumulative=largest),
++    )
++    with open(path, "rb") as arena:
++        arena.seek(640 + receipt[9] * 64)
++        failed = struct.unpack("<8Q", arena.read(64))
++    require(receipt[12:15] == (errno.ENOMEM, 3, 1)
++            and failed[2] <= largest and failed[4:6] == (0, errno.ENOMEM),
++            "cumulative exhaustion despite affordable individual request")
++
++    invalid = [
++        ("wrong-version", configuration(19, version=1)),
++        ("reserved", configuration(5, reserved=1)),
++        ("extent", configuration(6, extent=4096)),
++        ("record-overflow", configuration(7, requests=4097)),
++    ]
++    for name, config in invalid:
++        _, _, receipt, _ = probe(arguments, name, config)
++        require(receipt == (0,) * 64, name + ": refuses before journal/map effects")
++
++    _, _, receipt, _ = probe(
++        arguments, "environment-limit", configuration(22),
++        environment={"E" + str(index): "v" for index in range(65)},
++    )
++    require(receipt == (0,) * 64, "excess environment refused before FD effects")
++
++    _, _, receipt, _ = probe(arguments, "mode", configuration(8), extra=("--version",))
++    require(receipt[12:15] == (errno.ENOTSUP, 1, 1), "no false version-mode success")
++    _, _, receipt, _ = probe(arguments, "audit", configuration(9),
++                             extra=("--audit", arguments.program))
++    require(receipt[12:15] == (errno.ENOTSUP, 6, 1), "audit refused before producer")
++
++    bad_program = new_file(arguments.directory, "bad.elf", b"not an ELF file\n")
++    _, _, receipt, _ = probe(arguments, "bad-image", configuration(10),
++                             program=bad_program)
++    require(receipt[13:15] == (8, 1) and receipt[12] != 0,
++            "real loader error keeps first factual diagnostic refusal")
++
++    deep = arguments.directory
++    for index in range(3):
++        deep = os.path.join(deep, str(index) + "d" * 99)
++        os.mkdir(deep)
++    relative_program = os.path.relpath(arguments.program, deep)
++    _, _, receipt, grown = probe(arguments, "relative", configuration(11),
++                                 program=relative_program, cwd=deep)
++    require(receipt[12:15] == (errno.ENOTSUP, 7, 1), "relative origin reaches cut")
++    growth = [(old, new) for old, new in zip(grown, grown[1:])
++              if old[1] == new[1] == 1 and old[6:8] == (1, 1)
++              and old[2] == len(os.fsencode(relative_program)) + 1 + 128
++              and new[2] == old[2] + 128]
++    require(growth, "real dl-object origin realloc growth")
++    old, replacement = growth[0]
++    _, _, receipt, retained = probe(
++        arguments, "realloc-failure", configuration(12, requests=old[0]),
++        program=relative_program, cwd=deep,
++    )
++    require(receipt[12:15] == (errno.ENOSPC, 3, 1)
++            and receipt[9] == old[0] and retained[-1][2] == old[2]
++            and retained[-1][6:8] == (0, 0),
++            "failed real realloc preserves old allocation live")
++
++    with open(arguments.program, "rb") as source:
++        overflowing = bytearray(source.read())
++    require(overflowing[:6] == b"\x7fELF\x02\x01", "genuine ELF64LE fixture")
++    phoff = struct.unpack_from("<Q", overflowing, 32)[0]
++    phsize, phcount = struct.unpack_from("<HH", overflowing, 54)
++    tls_headers = [phoff + index * phsize for index in range(phcount)
++                   if struct.unpack_from("<I", overflowing,
++                                         phoff + index * phsize)[0] == 7]
++    require(len(tls_headers) == 1, "actual fixture PT_TLS")
++    struct.pack_into("<Q", overflowing, tls_headers[0] + 40, (1 << 64) - 1)
++    overflow_program = new_file(arguments.directory, "overflow.elf", overflowing)
++    _, _, receipt, _ = probe(arguments, "tls-overflow", configuration(13),
++                             program=overflow_program)
++    require(receipt[12:15] == (errno.EOVERFLOW, 9, 1),
++            "actual initial TLS geometry overflow before storage allocation")
++    print("PASS: initial loader component controls; complete profile unavailable")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/include/malloc-bounded-initial.h b/include/malloc-bounded-initial.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..b95f254fb39fab5e000b68152eaf81ecc831305b
+--- /dev/null
++++ b/include/malloc-bounded-initial.h
+@@ -0,0 +1,6 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++   SPDX-License-Identifier: LGPL-2.1-or-later
++
++   The installed protocol is shared literally with the loader producer.  */
++#include <malloc/malloc-bounded-initial.h>
 diff --git a/include/malloc-bounded-internal.h b/include/malloc-bounded-internal.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..3db9fc67f9e794641132af5cf0651c17e398cc48
@@ -360,7 +2458,7 @@ index 0000000000000000000000000000000000000000..aee95a1b787f65b259134608e9fd5e97
 @@ -0,0 +1 @@
 +#include <nptl/pthread-bounded.h>
 diff --git a/malloc/Makefile b/malloc/Makefile
-index c83ade5f10063113da2a280ffcdaf75b189c390a..3c56cbbcd40fc56def02d5f4e68ec2472c88badc 100644
+index c83ade5f10063113da2a280ffcdaf75b189c390a..833e1f0cd4ef9c4ec850f5e5880ac2af3db0576a 100644
 --- a/malloc/Makefile
 +++ b/malloc/Makefile
 @@ -23,7 +23,8 @@ subdir	:= malloc
@@ -369,7 +2467,7 @@ index c83ade5f10063113da2a280ffcdaf75b189c390a..3c56cbbcd40fc56def02d5f4e68ec247
  dist-headers := malloc.h
 -headers := $(dist-headers) obstack.h mcheck.h
 +headers := $(dist-headers) obstack.h mcheck.h \
-+           malloc-bounded.h malloc-bounded-process.h
++           malloc-bounded.h malloc-bounded-process.h malloc-bounded-initial.h
  tests := mallocbug tst-malloc tst-valloc tst-calloc tst-obstack \
  	 tst-malloc-check tst-mallocfork tst-trim1 \
  	 tst-malloc-usable tst-realloc tst-reallocarray tst-posix_memalign \
@@ -961,6 +3059,170 @@ index cfb1ff885450aa786bde2830bc8f47237fb038cc..64789e52f72718a41b811057f1e88b69
    /* Shut down the thread cache first.  This could deallocate data for
       the thread arena, so do this before we put the arena on the free
       list.  */
+diff --git a/malloc/malloc-bounded-initial.h b/malloc/malloc-bounded-initial.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f07ebe8ccf0e8d9486265ed6bea20c78494131a
+--- /dev/null
++++ b/malloc/malloc-bounded-initial.h
+@@ -0,0 +1,158 @@
++/* Copyright (C) 2026 Dylan Plecki.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#ifndef _MALLOC_BOUNDED_INITIAL_H
++#define _MALLOC_BOUNDED_INITIAL_H 1
++
++#include <stdint.h>
++
++/* A selected Linux x86-64 loader probe protocol, not a containing-process
++   admission or a normal execution mode.  All fields are little-endian
++   unsigned 64-bit scalars.  References are offsets in the one retained
++   regular file; no field carries native pointer or operation authority.  */
++#define MALLOC_BOUNDED_INITIAL_VERSION UINT64_C (2)
++#define MALLOC_BOUNDED_INITIAL_MAGIC UINT64_C (0x31494e49424c4747)
++#define MALLOC_BOUNDED_INITIAL_MAX_EXTENT UINT64_C (1073741824)
++#define MALLOC_BOUNDED_INITIAL_MAX_REQUESTS UINT64_C (4096)
++#define MALLOC_BOUNDED_INITIAL_MAX_TLS_MODULES UINT64_C (32)
++#define MALLOC_BOUNDED_INITIAL_ALIGNMENT UINT64_C (16)
++#define MALLOC_BOUNDED_INITIAL_REFUSED 127
++
++enum malloc_bounded_initial_kind
++{
++  MALLOC_BOUNDED_INITIAL_LOADER = 1,
++  MALLOC_BOUNDED_INITIAL_SLOTINFO = 2,
++  MALLOC_BOUNDED_INITIAL_TLS_STORAGE = 3,
++  MALLOC_BOUNDED_INITIAL_DTV = 4
++};
++
++enum malloc_bounded_initial_cut
++{
++  MALLOC_BOUNDED_INITIAL_INPUT = 1,
++  MALLOC_BOUNDED_INITIAL_MAPPING = 2,
++  MALLOC_BOUNDED_INITIAL_ALLOCATION = 3,
++  MALLOC_BOUNDED_INITIAL_RELEASE = 4,
++  MALLOC_BOUNDED_INITIAL_HELPER = 5,
++  MALLOC_BOUNDED_INITIAL_AUDIT = 6,
++  MALLOC_BOUNDED_INITIAL_RELOCATION = 7,
++  MALLOC_BOUNDED_INITIAL_DIAGNOSTIC = 8,
++  MALLOC_BOUNDED_INITIAL_TLS_GEOMETRY = 9,
++  MALLOC_BOUNDED_INITIAL_ZEROING = 10
++};
++
++/* Offset zero.  The caller owns the exact nonzero regular-file backing,
++   quota, descriptor and VA reservation before birth, and excludes writes,
++   truncation, hole punching and reuse until matching actual wait/reap.
++   Descriptor identity and this configuration do not establish that owner.
++   NONCE is a nonzero opaque correlation value, copied without increment
++   or reuse by this one process.  The actual parent must allocate and bind
++   it without wrap/reuse to the FD/configuration/loan; a nonce/PID copy does
++   not authenticate that association.  All reserved words must be zero.
++   Cumulative bytes charge private payload plus actual alignment gaps.
++   The journal prefix is page_round(CONFIG + RECEIPT + REQUESTS records).
++   It must leave a positive page-multiple private payload in EXTENT.
++   Parent custody must additionally cover the maximum private COW bytes,
++   both mappings/VA extents and all kernel/page-table liabilities.  File
++   backing does not pay private COW.  No quantity here grants that custody.  */
++struct malloc_bounded_initial_config
++{
++  uint64_t magic, version, size, nonce;
++  uint64_t extent, requests, single_bytes, cumulative_bytes;
++  uint64_t reserved[8];
++};
++
++/* Immediately follows CONFIG.  Single child writer; parent reads only
++   after actual reap.  Lost/short writes or a child killed between cuts
++   leave unknown retained debt.  Status fields are zero or a positive errno
++   magnitude, never a negative value cast to uint64_t.  All boolean fields
++   are zero or one.  None of these facts issues a resource.
++   Each map has independent attempted/returned/status/extent facts.  The
++   first four mapping fields describe only the MAP_SHARED journal prefix.
++   Payload has a distinct MAP_PRIVATE mapping.  The private COW maxima are
++   additional page-multiple writable storage liabilities, not file credit;
++   kernel/page-table costs remain unavailable.  DTV_ZERO_BYTES counts actual
++   child-side volatile readback bytes before DTV generation writes.  A failed
++   scan reports EIO, no returned DTV and retained attempted storage debt.
++   Mapping and TLS storage remain retained: no backing-return field exists.
++   TLS_DATA_INITIALIZED is zero in this probe edition.  STATIC_LAYOUT_BYTES
++   includes the TCB and static surplus/alignment; TCB is a subextent of that
++   layout, itself inside TLS_BYTES (which also includes allocation slop and
++   the original-allocation pointer).  These are not additive charges.  */
++struct malloc_bounded_initial_receipt
++{
++  uint64_t version, size, nonce, process;
++  uint64_t journal_map_attempted, journal_map_returned;
++  uint64_t journal_map_status, journal_mapped_bytes;
++  uint64_t requests_attempted, requests_returned, live_records, used_bytes;
++  uint64_t first_status, cut, refused, uncertain_release;
++  uint64_t slotinfo_offset, slotinfo_bytes, tls_offset, tls_bytes;
++  uint64_t dtv_offset, dtv_bytes, tcb_offset, tcb_bytes;
++  uint64_t static_layout_bytes, static_tls_alignment, tls_storage_ready;
++  uint64_t tls_data_initialized;
++  uint64_t journal_file_offset, journal_extent;
++  uint64_t payload_file_offset, payload_extent;
++  uint64_t payload_map_attempted, payload_map_returned;
++  uint64_t payload_map_status, payload_mapped_bytes;
++  uint64_t private_cow_pages_max, private_cow_bytes_max;
++  uint64_t dtv_zero_attempted, dtv_zero_returned, dtv_zero_status, dtv_zero_bytes;
++  uint64_t journal_shared, payload_private;
++  uint64_t reserved[20];
++};
++
++/* REQUESTS records follow RECEIPT in the shared journal mapping.  Private
++   payload begins in a DISTINCT MAP_PRIVATE mapping at the first PAGE
++   boundary after that table.  No private payload page overlaps the shared
++   prefix.  OFFSET is a logical file offset into that private mapping,
++   never a cross-process pointer.  The parent must not interpret payload;
++   the retained file must preserve its original payload bytes after reap.
++   Records are monotonic and never reused, including after logical release.
++   A nonzero OFFSET may identify attempted storage whose zeroing or readback
++   did not finish; RETURNED distinguishes actual allocation completion.
++   Realloc allocates old+new together, copies only min(old,new), then releases
++   the old record.  */
++struct malloc_bounded_initial_record
++{
++  uint64_t serial, kind, bytes, offset;
++  uint64_t returned, status, release_attempted, released;
++};
++
++/* Actual compiled query output, written by
++     ld.so --bounded-initial-layout-fd FD
++   and followed by exit status zero.  This is a paid query process, not a
++   probe acceptance.  STATE is a contained subextent of the actual loader
++   image, never an additional whole-image/page charge.  No libc ABI symbol
++   or existing rtld-global object is changed by this protocol.  The query
++   FD is a distinct caller-owned O_RDWR regular file of exactly 256 bytes.
++   Query and probe require independent complete paid process lifetimes
++   and matching reap; one does not issue the other's resources.  The 1-GiB
++   and 4096-request parser maxima never enlarge a parent's actual limits.
++   Neither this source protocol nor a copied layout authenticates selected
++   immutable artifacts or a complete containing-process producer.  */
++struct malloc_bounded_initial_layout
++{
++  uint64_t version, size, machine, word_bytes;
++  uint64_t config_bytes, receipt_bytes, record_bytes, alignment;
++  uint64_t maximum_extent, maximum_requests, page_bytes, tcb_bytes;
++  uint64_t dtv_element_bytes, dtv_surplus, slotinfo_surplus, slotinfo_bytes;
++  uint64_t slotinfo_list_bytes, state_image_offset, state_bytes;
++  uint64_t state_alignment, process, complete_profile, maximum_tls_modules;
++  uint64_t journal_map_flags, payload_map_flags, private_cow_separate;
++  uint64_t journal_fixed_bytes, maximum_dtv_validation_bytes;
++  uint64_t reserved[4];
++};
++
++#endif
 diff --git a/malloc/malloc-bounded-internal.h b/malloc/malloc-bounded-internal.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..13ac1b535977153b68429101f8fe9c8b5fbeea11
@@ -6860,6 +9122,36 @@ index a04b7ec47fa4760cac6a635f4373405372aa1a71..da7b62724a1b3c1dcb6c0d5c67770516
  	__libc_once_define (static, once);
  	struct rpc_thread_variables *tvp = thread_rpc_vars;
  
+diff --git a/sysdeps/unix/sysv/linux/dl-sysdep.c b/sysdeps/unix/sysv/linux/dl-sysdep.c
+index ad3692d73839d7a3d9bae2de4783acb3b5d2e385..d49588815425a146b790fa55c2f1b949eb60cb25 100644
+--- a/sysdeps/unix/sysv/linux/dl-sysdep.c
++++ b/sysdeps/unix/sysv/linux/dl-sysdep.c
+@@ -19,6 +19,7 @@
+ #include <_itoa.h>
+ #include <assert.h>
+ #include <dl-auxv.h>
++#include <dl-bounded-initial.h>
+ #include <dl-osinfo.h>
+ #include <dl-parse_auxv.h>
+ #include <dl-procinfo.h>
+@@ -105,6 +106,8 @@ _dl_sysdep_start (void **start_argptr,
+   struct dl_main_arguments dl_main_args;
+   _dl_sysdep_parse_arguments (start_argptr, &dl_main_args);
+ 
++  _dl_bounded_initial_start (dl_main_args.user_entry);
++
+   dl_hwcap_check ();
+ 
+   __tunables_init (_environ);
+@@ -122,7 +125,7 @@ _dl_sysdep_start (void **start_argptr,
+   if (GLRO(dl_platform) != NULL)
+     GLRO(dl_platformlen) = strlen (GLRO(dl_platform));
+ 
+-  if (__sbrk (0) == _end)
++  if (!_dl_bounded_initial_active () && __sbrk (0) == _end)
+     /* The dynamic linker was run as a program, and so the initial break
+        starts just after our bss, at &_end.  The malloc in dl-minimal.c
+        will consume the rest of this page, so tell the kernel to move the
 diff --git a/sysdeps/unix/sysv/linux/tls-internal.c b/sysdeps/unix/sysv/linux/tls-internal.c
 index 81ebcdfbf894c1bc7cf5d4ee7c8d409fce18b6a1..8b9153c6cc44174f8005c33a224d0dd2f62cc197 100644
 --- a/sysdeps/unix/sysv/linux/tls-internal.c

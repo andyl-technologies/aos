@@ -3073,6 +3073,7 @@ in rec {
     };
     glibcBoundedAbi = import ./phase7-glibc-bounded-abi.nix {inherit pkgs;};
     glibcBoundedGlib = import ./phase7-glibc-bounded-glib.nix {inherit pkgs;};
+    glibcBoundedInitial = import ./phase7-glibc-bounded-initial.nix {inherit pkgs;};
     qemuBoundedThreadUnit = import ./phase7-qemu-bounded-thread-unit.nix {
       inherit pkgs;
     };

@@ -40,6 +40,9 @@
       qualification="$out/share/glibc-crucible/qualification"
       mkdir -p "$qualification"
       cp "$TMPDIR/glibc-2.39/malloc/tst-malloc-bounded-glib.c" "$qualification/"
+      cp "$TMPDIR/glibc-2.39/elf/tst-bounded-initial-mod.c" "$qualification/"
+      cp "$TMPDIR/glibc-2.39/elf/tst-bounded-initial-launch.c" "$qualification/"
+      cp "$TMPDIR/glibc-2.39/elf/tst-bounded-initial.py" "$qualification/"
 
       # This configured GCC carries its real unwinder in libgcc.a. Derive the
       # archive from that compiler; no fabricated libgcc_eh alias is needed.
@@ -49,6 +52,7 @@
       sha256sum "$bounded_static_archive" > "$qualification/static-archive.sha256"
 
       for bounded_case in \
+        elf/tst-bounded-initial \
         malloc/tst-malloc-bounded \
         nptl/tst-pthread-bounded \
         nptl/tst-basic1 nptl/tst-join1 nptl/tst-join2 \
@@ -117,9 +121,10 @@ in
         boundedApplicationVersion = 1;
         boundedProcessVersion = 1;
         boundedFailstopVersion = 1;
+        boundedInitialVersion = 2;
         # Private TCB changes require this runtime's matching loader and headers.
         requiresMatchingLoader = true;
-        sourceCommit = "9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a";
+        sourceCommit = "cff34ac416ff0650048fd85d50e156434f5cb9ed";
         evidenceSources =
           runtime.passthru.evidenceSources
           ++ [

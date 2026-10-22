@@ -612,6 +612,29 @@ matches all 5,356 committed Rust/TOML files to immutable source
 `l4dh43sfyz2vmqbbpjxcd6yk9y8n6vg5`, with zero mismatches. Its comparison record
 has SHA256 `479a7d43a32a3d466271d065a08aad941ae2bf570fa2260011a83dc411097428`.
 
+#### Initial loader storage component
+
+The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
+`9253d845b69f5fc16ab322b38d13b08092d4664f`, as a dormant version-two loader
+probe. Independent review verifies all 61 source-packet payloads, all 62 changed
+file identities and the canonical complete upstream patch. Independent bundle
+and patch reconstruction reproduce that exact tree. The public journal contains
+only fixed little-endian scalars and checked file offsets; page-disjoint native
+loader/TLS objects use a separate private mapping. Private copy-on-write maxima
+are additional liabilities, with separate mapping and child DTV-zero readback
+outcomes. Neither file backing nor the receipt grants containing custody.
+
+The earlier `1bf5541` baseline passes its hermetic installed component gate at
+`hdqaw72awqdi2n2ybas8zlwpd655fny4`, but fails the shared-memory boundary because
+its shared payload contains native objects. That result does not qualify the
+corrected version. The new installed-loader gate compiles the original fixture
+and real syscall-refusal helper against matching installed artifacts, checks the
+C++ header layout, and retains the original runner outcomes. Version-two full
+build, unchanged ABI, installed controls and literal zeroing-omission controls
+are pending. Complete process admission, kernel/image/initial-stack funding,
+helper and relocation closure remain unavailable; selected probes refuse before
+normal relocation and program entry, and `complete_profile` remains zero.
+
 #### Selected allocator fail-stop component
 
 The package subsequently imports signed provider

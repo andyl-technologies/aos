@@ -2,8 +2,8 @@
 
 `bounded-pthread-2.39.patch` is the complete glibc 2.39 difference from base
 `128392568abf34075115815f007376f50489fdcf` to signed source
-`9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`, tree
-`22720df186fb6f8e071952753462feb33cedb86e`. Applying the canonical patch
+`cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
+`9253d845b69f5fc16ab322b38d13b08092d4664f`. Applying the canonical patch
 with the index produces that exact tree. The source range contains these
 signed, DCO-certified commits, in order:
 
@@ -16,10 +16,12 @@ signed, DCO-certified commits, in order:
 - `fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`
 - `34af6e6a74edbac870ffb5fa1cbf667d0927e17f`
 - `9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`
+- `1bf55416f45a7cf7f426f445bd84abb5149072e1`
+- `cff34ac416ff0650048fd85d50e156434f5cb9ed`
 
 The complete upstream source and exact patch remain package source evidence.
 Upstream `COPYING`, `COPYING.LIB`, `LICENSES` and existing per-file notices
-remain in that source. This ledger covers all 46 modified or added paths.
+remain in that source. This ledger covers all 62 modified or added paths.
 Internal forwarding headers and build/ABI data retain GNU C Library scope;
 files with explicit notices retain those notices. The unmarked RPC source
 retains the upstream repository notices; no new per-file license is invented.
@@ -29,8 +31,22 @@ Libc implementation remains outside the host protocol.
 | --- | --- | --- |
 | `dlfcn/dlerror.c` | Modified | LGPL-2.1-or-later |
 | `dlfcn/libc_dlerror_result.c` | Modified | LGPL-2.1-or-later |
+| `elf/Makefile` | Modified | LGPL-2.1-or-later |
+| `elf/README.bounded-initial` | Added | LGPL-2.1-or-later |
+| `elf/dl-bounded-initial.c` | Added | LGPL-2.1-or-later |
+| `elf/dl-bounded-initial.h` | Added | LGPL-2.1-or-later |
+| `elf/dl-catch.c` | Modified | LGPL-2.1-or-later |
 | `elf/dl-libc.c` | Modified | LGPL-2.1-or-later |
+| `elf/dl-minimal-malloc.c` | Modified | LGPL-2.1-or-later |
+| `elf/dl-minimal.c` | Modified | LGPL-2.1-or-later |
+| `elf/dl-misc.c` | Modified | LGPL-2.1-or-later |
+| `elf/dl-printf.c` | Modified | LGPL-2.1-or-later |
 | `elf/dl-tls.c` | Modified | LGPL-2.1-or-later |
+| `elf/rtld.c` | Modified | LGPL-2.1-or-later |
+| `elf/tst-bounded-initial-launch.c` | Added | LGPL-2.1-or-later |
+| `elf/tst-bounded-initial-mod.c` | Added | LGPL-2.1-or-later |
+| `elf/tst-bounded-initial.py` | Added | LGPL-2.1-or-later |
+| `include/malloc-bounded-initial.h` | Added | LGPL-2.1-or-later |
 | `include/malloc-bounded-internal.h` | Added | LGPL-2.1-or-later |
 | `include/malloc-bounded-process.h` | Added | LGPL-2.1-or-later |
 | `include/malloc-bounded.h` | Added | LGPL-2.1-or-later |
@@ -40,6 +56,7 @@ Libc implementation remains outside the host protocol.
 | `malloc/README.bounded-application` | Added | LGPL-2.1-or-later |
 | `malloc/Versions` | Modified | GNU C Library; COPYING.LIB and retained notices |
 | `malloc/arena.c` | Modified | LGPL-2.1-or-later |
+| `malloc/malloc-bounded-initial.h` | Added | LGPL-2.1-or-later |
 | `malloc/malloc-bounded-internal.h` | Added | LGPL-2.1-or-later |
 | `malloc/malloc-bounded-process.h` | Added | LGPL-2.1-or-later |
 | `malloc/malloc-bounded.c` | Added | LGPL-2.1-or-later |
@@ -71,7 +88,8 @@ Libc implementation remains outside the host protocol.
 | `string/strerror_l.c` | Modified | LGPL-2.1-or-later |
 | `string/strsignal.c` | Modified | LGPL-2.1-or-later |
 | `sunrpc/rpc_thread.c` | Modified | Retained upstream COPYING, COPYING.LIB and LICENSES |
+| `sysdeps/unix/sysv/linux/dl-sysdep.c` | Modified | LGPL-2.1-or-later |
 | `sysdeps/unix/sysv/linux/tls-internal.c` | Modified | LGPL-2.1-or-later |
 | `sysdeps/unix/sysv/linux/x86_64/64/libc.abilist` | Modified | GNU C Library; COPYING.LIB and retained notices |
 
-Patch SHA-256: `6de14e7dcca0db5910000fad31c1659c878e03c71d6115c5bd3c6a0a6e4e3697`.
+Patch SHA-256: `fdc7fc26a7373e7ac4c2d48ac5508e077699e270300aa4851d2c683386ceaee5`.
