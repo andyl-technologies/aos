@@ -32,5 +32,9 @@ required-features = ["tokio"]
 name = "host_cache_fixture"
 required-features = ["native-test-fixtures"]
 
+[[example]]
+name = "structural_index_fixture"
+required-features = ["surface-fuse"]
+
 [lints]
 workspace = true

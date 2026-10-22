@@ -514,6 +514,8 @@ in {
   integration.ref-history = import ./ref-history.nix {inherit sourceGate;};
   integration.indexed-presence = import ./indexed-presence.nix {inherit sourceGate;};
   integration.structural-index = import ./structural-index.nix {inherit sourceGate;};
+  integration.structural-mapping = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).native;
+  integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;
   integration.range-client = import ./range-client.nix {inherit sourceGate;};
   integration.bundle-client = import ./bundle-client.nix {inherit sourceGate;};
   integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};

@@ -12,8 +12,10 @@
 //! ```
 
 mod compile;
+mod mapping;
 
 pub use compile::compile;
+pub use mapping::{MappedIndex, MappingError};
 
 use std::fmt;
 

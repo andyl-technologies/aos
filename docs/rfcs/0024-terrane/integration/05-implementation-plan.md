@@ -12644,3 +12644,32 @@ owning surface-interface cases in 264.74 seconds. Independent review matches
 retained five-target surface test image. Routing and listing outputs retain
 compiler and execution records rather than executable bytes. Required
 application compilation remains pending; no task acceptance changes.
+
+#### Sealed structural mappings
+
+The structural reader now has a native mapping owner. It consumes a retained
+read-only regular descriptor, bounds its actual size, independently measures
+permanent fs-verity, checks the expected measurement and root, and validates the
+complete index before exposing borrowed readers. It retains the original inode
+and unmaps on drop. Expected values remain caller-supplied context, not a new
+authentication or cache-lease authority.
+
+The pre-commit ext4 VM witness passes as UID 840 with empty groups and all five
+capability sets empty and `no_new_privs` set. It exercises real sealing, writable,
+O_PATH, directory, unsealed, size, measurement, root and malformed-index refusals,
+read-only native mapping, pathname replacement and actual unmap. Independent
+review matches 7,970 immutable source files and 5,256 crate inputs to the retained
+fixture ELF. Strict all-target Linux Clippy, seven codec regressions and Rust/Nix
+formatting pass. The native cache image's supplementary source scan now respects
+the disabled FUSE feature; its exact compiler test inventory remains required.
+Authenticated tree resolution, host-tier index custody and live exposure pinning
+remain open, so T-FUSE-1 is not accepted.
+
+Frozen codec qualification at `3360441f00` passes all seven cases in 81.79 seconds,
+independently matching 7,963 immutable source files and 5,254 crate inputs, without
+retaining executable bytes. The owning index-generation gate at `2cd2940a91`
+passes all fifteen cases in 1,383.78 seconds with the actual retained SDK ELF.
+Required application compilation at `2cd2940a91` and `578961f905` passes in
+1,656.55 and 1,111.27 seconds respectively; each independently matches 7,958
+source files and 184 compiler artifact records across 59 packages. These
+application outputs retain compilation records rather than executable bytes.

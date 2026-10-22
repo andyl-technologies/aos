@@ -193,8 +193,15 @@ def unit_inventory(output):
 def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
     root = workspace / "terrane/linux/terrane-linux/src"
+    # This image enables native-test-fixtures and tokio, not surface-fuse.
+    # The compiler inventory remains authoritative; exclude this separately
+    # gated module from the supplementary source-declaration comparison.
+    shared.require('#[cfg(feature = "surface-fuse")]\npub mod structural_index;'
+                   in (root / "lib.rs").read_text(), "structural codec lost its feature gate")
     declared = []
     for path in sorted(root.rglob("*.rs")):
+        if path.relative_to(root).parts[0] in ("structural_index.rs", "structural_index"):
+            continue
         declared.extend(re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", path.read_text()))
     expected = (*UNIT_TESTS, *ROOT_UNIT_TESTS)
     shared.require(len(declared) == len(expected)
