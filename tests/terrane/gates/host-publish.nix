@@ -273,9 +273,12 @@ in {
           test -s ${wipeConfiguration}/configuration.log
           test "$(cat ${initialEnrollmentProof.sdkWipe}/result)" = PASS
           test "$(cat ${initialEnrollmentProof.privateRelease}/result)" = PASS
+          test "$(cat ${initialEnrollmentProof.coldPrivateRelease}/result)" = PASS
+          test "$(cat ${initialEnrollmentProof.coldManifestRelease}/result)" = PASS
           mkdir -p "$out/nix-support"
           printf '%s\n' ${initialEnrollmentProof.sdkWipe} > "$out/nix-support/signed-wipe-proof"
           printf '%s\n' ${initialEnrollmentProof.privateRelease} > "$out/nix-support/private-release-proof"
+          printf '%s\n' ${initialEnrollmentProof.coldPrivateRelease} ${initialEnrollmentProof.coldManifestRelease} > "$out/nix-support/cold-release-proofs"
           test -s ${moduleEval}/result.json
           test -s ${combined "host-publish-sequence"}/result
           printf '%s\n' 'PASS: sealed tiers refuse unsupported wipe policies before effects; explicit none retains kernel sealing (D-128)' > "$out/result"

@@ -402,7 +402,7 @@ future_hold_bytes = 327680
     print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
 
 
-def run(driver, image, wipe_only=False):
+def run(driver, image, wipe_only=False, refusals=False):
     """Requires real native startup and a closed failure before SDK presentation."""
     driver.require((image / "share/configured_sdk_proof.py").read_bytes()
                    == (driver.SOURCE / "tests/terrane/configured_sdk_proof.py").read_bytes(),
@@ -414,13 +414,20 @@ def run(driver, image, wipe_only=False):
     os.chown(parent, 840, 840)
 
     large = manifest_payload()
-    cases = [("wipe-default", True, "never", PAYLOAD)] if wipe_only else [
-            ("masked", True, "never", PAYLOAD),
-            ("inline", False, "never", PAYLOAD),
-            ("never", False, "never", large),
-            ("always", False, "always", large),
-            ("profile", True, "never", PAYLOAD),
-            ("refused", True, "never", PAYLOAD)]
+    driver.require(not (wipe_only and refusals), "native SDK proof scopes overlap")
+    if wipe_only:
+        cases = [("wipe-default", True, "never", PAYLOAD)]
+    elif refusals:
+        # Keep real populated native backing before testing failed startup. Each
+        # refusal compares unchanged original policy and publication afterward.
+        cases = [("inline", False, "never", PAYLOAD),
+                 ("profile", True, "never", PAYLOAD),
+                 ("refused", True, "never", PAYLOAD)]
+    else:
+        cases = [("masked", True, "never", PAYLOAD),
+                 ("inline", False, "never", PAYLOAD),
+                 ("never", False, "never", large),
+                 ("always", False, "always", large)]
     for name, refused, mode, payload in cases:
         root = parent / name
         setup = ("setup-default-wipe" if name == "wipe-default" else

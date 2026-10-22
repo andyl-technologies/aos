@@ -59,13 +59,15 @@
         then "terrane-native-private-release-ext4"
         else if scenario == "surface"
         then "terrane-native-configured-surface-index-ext4"
+        else if scenario == "sdk-refusals"
+        then "terrane-native-sdk-refusals-ext4"
         else if scenario == "sdk-wipe"
         then "terrane-native-sdk-wipe-ext4"
         else "terrane-native-sdk-cache-ext4";
       memory = 1024;
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
-        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-wipe" "surface"]) configuredSdkProof.image
+        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface"]) configuredSdkProof.image
         ++ lib.optional (scenario == "surface") surfaceImage;
       testScript = ''
         set -eu
@@ -112,7 +114,7 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
-        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-wipe" "surface"]) ''
+        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
         ''}
         ${lib.optionalString (scenario == "surface") ''
@@ -138,8 +140,10 @@
         })
       previous.phases;
     });
+  sdkMaintained = nativeFor "sdk";
+  sdkRefusals = nativeFor "sdk-refusals";
 in {
-  inherit image;
+  inherit image sdkMaintained sdkRefusals;
   native = nativeFor "enrollment";
   reassembly = nativeFor "reassembly";
   privateRelease = nativeFor "private-release";
@@ -147,7 +151,25 @@ in {
   coldManifestRelease = nativeFor "cold-manifest-release";
   coldPublicPressure = nativeFor "cold-public-pressure";
   coldManifestPressure = nativeFor "cold-manifest-pressure";
-  sdk = nativeFor "sdk";
+  # Both independent native lifecycles must finish their complete original root
+  # controls within the unchanged per-actor and per-VM bounds.
+  sdk = pkgs.mkDerivation {
+    pname = "terrane-native-sdk-cache-proof";
+    version = "0.1.0";
+    src = null;
+    phases = [
+      {
+        name = "qualify";
+        script = ''
+          test "$(cat ${sdkMaintained}/result)" = PASS
+          test "$(cat ${sdkRefusals}/result)" = PASS
+          mkdir -p "$out/nix-support"
+          printf '%s\n' ${sdkMaintained} ${sdkRefusals} > "$out/nix-support/native-proofs"
+          printf 'PASS\n' > "$out/result"
+        '';
+      }
+    ];
+  };
   sdkWipe = nativeFor "sdk-wipe";
   surface = nativeFor "surface";
 }

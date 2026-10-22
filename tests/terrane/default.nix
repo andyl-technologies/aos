@@ -475,6 +475,8 @@ in {
   integration.native-cold-public-pressure = initialEnrollmentProof.coldPublicPressure;
   integration.native-cold-manifest-pressure = initialEnrollmentProof.coldManifestPressure;
   integration.native-sdk-cache = initialEnrollmentProof.sdk;
+  integration.native-sdk-maintained = initialEnrollmentProof.sdkMaintained;
+  integration.native-sdk-refusals = initialEnrollmentProof.sdkRefusals;
   integration.native-sdk-wipe = initialEnrollmentProof.sdkWipe;
   integration.native-configured-surface-index = initialEnrollmentProof.surface;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};

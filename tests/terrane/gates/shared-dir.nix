@@ -36,8 +36,11 @@ in {
       "residence_composition::portable_resident_routes_preserve_domain_and_reachability_before_lookup"
     ]}
     test "$(cat ${initialEnrollmentProof.privateRelease}/result)" = PASS
+    test "$(cat ${initialEnrollmentProof.coldPrivateRelease}/result)" = PASS
+    test "$(cat ${initialEnrollmentProof.coldManifestRelease}/result)" = PASS
     mkdir -p "$out/nix-support"
     printf '%s\n' ${initialEnrollmentProof.privateRelease} > "$out/nix-support/private-release-proof"
+    printf '%s\n' ${initialEnrollmentProof.coldPrivateRelease} ${initialEnrollmentProof.coldManifestRelease} > "$out/nix-support/cold-release-proofs"
     printf 'PASS: independent scoped directory routes and private-cache refusal\n' > "$out/result"
   '';
 }

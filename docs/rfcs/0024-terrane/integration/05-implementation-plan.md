@@ -15378,3 +15378,38 @@ correction `b76b94394a` is pushed and exact-source qualification is running. Pub
 recovery and its new pressure scenarios require fresh native and mandatory
 application qualification; neither new scenario is an owning-gate prerequisite
 or task acceptance yet.
+
+
+#### Bounded SDK lifecycle scopes and owning cold-release prerequisites
+
+The corrected `b76b94394a` actual cold-manifest VM passes in 254.598 seconds.
+Independent review matches all 8,073 immutable source files, 5,353 bound inputs,
+the actual installed Cargo ELF and every original enrollment, two-consumer,
+retained-backing, project-charge, independent cold-reopen and exact old/current
+metadata-release witness. Public original inode and metadata retention remain
+controls. The host-cache, private-domain and private-release owning gates now
+require both inline and manifest cold-release proofs alongside the existing
+warm-release proof. These prerequisites must pass again for each owning source.
+
+At `f82429a92d`, the two existing pure memory-envelope and cold-metadata matching
+regressions each pass with one selected, non-ignored case. Native public pressure,
+no-pressure recovery and mandatory application qualification remain running.
+
+The `230375f940` maintained SDK VM fails after 671.062 seconds of build and test.
+Every SDK actor completes: all three original-lock/SIGTERM controls, all nine
+namespace observations, both refusal probes and all publication-preservation
+checks pass. The final `verify-positive` root actor then exhausts the original
+whole-VM deadline. The last SDK publication starts with 3.548 seconds remaining
+and takes 3.068 seconds. This is a failed complete VM, not a qualified SDK pass;
+the original receipt remains retained.
+
+Qualification now separates maintained inline/never/always service lifecycles
+and masked-root refusal from a dedicated refusal VM. The refusal VM first
+populates actual native backing through a complete positive inline lifecycle,
+including the offline/circuit controls, then requires profile and unenrolled
+startup denial with original policy, publication and snapshot checks. Every VM
+runs the complete original enrollment and final root controls. Actor limits,
+240-second guest bounds and 300-second host bounds remain unchanged per VM;
+the aggregate now explicitly requires both completed native lifecycles and
+retains their output paths. No previous assertion or refusal control is removed.
+The split aggregate and final owning gates require exact-source qualification.
