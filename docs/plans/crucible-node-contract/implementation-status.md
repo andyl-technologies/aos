@@ -3546,6 +3546,28 @@ Rust/Cargo inputs match the committed revision and its actual captured source.
 These compilation results execute no new runtime test and do not resolve the
 earlier raw-JSON failures.
 
+## Immutable Bootstrap proof fixture preparation
+
+Commit `8bb1db4375` prepares immutable private-wire fixture bodies and the
+independent Birth/Host digests before starting a deadline-bound child. Actual
+child identity, Hello frames, negotiation, assigned request and proof still
+come from the live exchange. The original production cut remains unchanged.
+
+The complete raw-JSON Transport run passes 2,081 tests and fails one reply
+subprocess test, with 16 ignores and no filtering. Correlation, proof and
+publication pass. The remaining flight is
+`initial_policy_kernel_normalizations_host_reply_reject_literal_measurement`;
+it refuses in shared codec preparation before its intended reply rejection.
+The failure remains unresolved at this checkpoint. The script stops before
+the standard run and all-target check.
+
+The raw-JSON unit-test executable compiles, formatting and all six architecture
+gates pass, and the required application gate compiles 180 test executables
+across 58 packages, including 71 integration targets. All 437 owned Rust/Cargo
+inputs match the committed revision and its actual captured source. The
+application gate executes no tests. These results supply no configured runtime,
+VM, Source/native restoration or full RFC qualification.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
