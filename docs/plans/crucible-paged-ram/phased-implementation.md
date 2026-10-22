@@ -640,7 +640,19 @@ All 5,358 committed Rust/TOML inputs match the latter's immutable source
 `6dzf80a82r1894dj4pdfbx2mhs5sh5xg`; comparison record SHA256 is
 `c965bfe66696331a34445f7e2f228324d1747158fb9bd0e112b60270639541d6`. This codec issues no paid landing,
 receiving alias, containing loan, producer qualification or reap authority;
-Setup twelve and full process admission remain unavailable.
+Setup-twelve receiver admission and full process admission remain unavailable.
+
+The separate Setup-twelve sender now transfers the original eight/nine roles
+followed by libc, loader, transfer, complete manifest and probe: thirteen or
+fourteen actual Unix aliases. Its frame intentionally matches Setup ten;
+selector `12` must be negotiated separately. The exact roster count distinguishes
+transport, and malformed frames, earlier counts, extra roles and every negative
+descriptor refuse before a socket byte is sent. Two real ancillary-transport
+cases join the counted ABI and requirement bindings. All twelve transport cases,
+the full 279-test protocol suite and strict all-target Clippy pass. This sender
+does not authenticate sealed artifact contents, issue receiving custody or
+activate the unavailable profile. The fresh ABI and mandatory application-target
+checks for this transport extension are pending.
 
 #### Initial loader storage component
 

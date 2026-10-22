@@ -796,6 +796,17 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::runtime_artifact_setup \
                 -- --test-threads=1
+              require_test_set 2 protocol-native-profile-transport \
+                publisher_subscription::tests::setup::transport::native_profile_setup_sends_exact_thirteen_and_fourteen_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::native_profile_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::native_profile_setup \
+                -- --test-threads=1
               require_test_set 8 host-quantum-role \
                 host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
                 -p crucible-host-resources --features private-measurement-domain \
