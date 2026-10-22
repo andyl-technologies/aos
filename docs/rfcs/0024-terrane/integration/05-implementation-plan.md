@@ -8694,6 +8694,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+**Status:** In progress. T-PKG-3 is accepted against PKG-8/10 and the owning
+module gate at `5e815dc29f` (102 checks, complete source/report review).
+The four other T2 tasks, deployed runtime composition and milestone exit
+remain open. This scoped packaging acceptance does not accept a role runtime.
+
 Resume expiry ordering correction (2026-10-21): the native publication run
 at a00aa499a1 passed both public/private metadata deduplication controls, then
 failed reopening the populated 64-record owner before object serving with
@@ -10737,7 +10742,7 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
   `checks.terrane.gates.surface-status`.
-- [ ] **T-PKG-3** `modules/terrane/` options, unit rendering for the
+- [x] **T-PKG-3** `modules/terrane/` options, unit rendering for the
   `serve`, `realize`, `publish`, and `gc` roles, and the module evaluation
   check. — satisfies PKG-8, PKG-10; `checks.terrane.module-eval`.
 
@@ -14858,3 +14863,24 @@ all 128 native library cases, 92 selectors and 185 test executables across 59
 packages. The diagnostic `b8ad0c4c42` application build also passes in 680.17
 seconds with complete source review and 185 test executables. Those checkpoint
 results do not qualify this later runtime source or close any T2 task.
+
+
+#### Scoped packaging task acceptance
+
+T-PKG-3 is complete at `5e815dc29f`. Its requirement range is PKG-8 and PKG-10:
+feature-organized options/configuration/checks, the four rendered role units
+and one structured TOML input, with no free-form configuration text. Those
+requirements do not require implementing every role runtime, as the earlier
+packaging review already records. Current module evaluation passes in 22.22
+seconds. Independent review verifies all 9,387 tracked source files before and
+after the actual check, matches all 102 declared cases exactly to the output
+report and its real derivation, and records exact hashes for all five module
+files, the owning check and packaging requirements. The qualified result is
+`/nix/store/csmi6a2mkfzg340bdrb61nrljbrfn5vk-terrane-module-eval-0.1.0`.
+
+This accepts only T-PKG-3, bringing trunk acceptance to 27 of 64 tasks. T2
+remains open with four tasks and its deployable composition and exit gates.
+The longer aggregate and current native runtime checks remain separate.
+Full GC-25 collection is assigned by this plan to optional T-TOPO-2; it is
+not substituted for T2's actual periodic lease-expiry obligation (HOST-24),
+which remains owned by the native physical worker.
