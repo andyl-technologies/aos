@@ -9693,7 +9693,19 @@ The subsequent signed Host boot containing the repaired writer still fails
 native activation while creating the SSH configuration temporary. A diagnostic
 boot confirms that a generated configuration EROFS lower is already mounted
 when this occurs; the earlier component receipts therefore do not establish
-installed copy-up or Host readiness. Direct inode-label diagnosis remains open.
+installed copy-up or Host readiness. Direct xattrs confirm the generated lower's
+SSH directory is `etc_t`, while the higher-priority `/var/etc/ssh` directory is
+`unlabeled_t`. The persistent directory shadows the correctly labeled lower.
+
+Initrd overlay preparation now labels only the persistent configuration tree
+from the signed root's context database before mounting `/etc`. The AOS-built
+`setfiles` resolves `/sysroot/var/etc` under the logical `/etc` namespace, rejects
+conflicting hard-link labels, and fails boot on a labeling error. It does not
+walk other `/var` owners. The offline installed test additionally checks the
+actual persistent and visible SSH directory labels. Core evaluation and the
+boot-preparation package's three unit tests pass; the package is
+`/nix/store/464yprpp8yclg7sva3gmwv80m5caa6la-aos-boot-preparations-0.1.0`.
+Installed qualification of this preparation remains pending.
 
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root

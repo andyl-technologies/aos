@@ -334,6 +334,11 @@
   };
   substrateEnvironment = {
     variables = {
+      AOS_CONFIGURATION_SELINUX_LABELS =
+        if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+        then "true"
+        else "false";
+      AOS_SETFILES = "${dependencies.policycoreutils.path}/sbin/setfiles";
       AOS_PROTECTED_VAR =
         if protectedSandboxRoots
         then "true"

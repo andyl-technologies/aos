@@ -15,6 +15,7 @@
   e2fsprogs,
   erofs-utils,
   jq,
+  policycoreutils,
   sbsigntools,
   tpm2-tools,
   util-linux,
@@ -64,6 +65,7 @@ in
       e2fsprogs
       erofs-utils
       jq
+      policycoreutils
       sbsigntools
       tpm2-tools
       util-linux

@@ -14,6 +14,15 @@ mkdir -p "$sys/metadata" "$sys/content" \
 
 basedir=$(readlink "/sysroot$toplevel/etc-basedir")
 metadata=$(readlink "/sysroot$toplevel/etc-metadata.erofs")
+
+if [ "$AOS_CONFIGURATION_SELINUX_LABELS" = true ]; then
+  # Persistent configuration is the highest-priority /etc lower. Its labels
+  # must use the runtime /etc namespace before it can shadow labeled images
+  # or be copied into the tmpfs upper. Never relabel the other /var owners.
+  "$AOS_SETFILES" -F -E -r /sysroot/var \
+    /sysroot/usr/lib/aos/selinux-file-contexts /sysroot/var/etc
+fi
+
 mount --bind "/sysroot$basedir" "$sys/content"
 mount -t erofs -o ro,nodev,nosuid "/sysroot$metadata" "$sys/metadata"
 mount -t overlay overlay -o \

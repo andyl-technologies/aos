@@ -166,6 +166,15 @@ in {
 
     vm.wait_for_unit("multi-user.target", timeout=300)
     vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
+    configuration_labels = r"""
+    import os
+
+    expected = b'system_u:object_r:etc_t'
+    for path in ('/var/etc', '/var/etc/ssh', '/etc/ssh'):
+        observed = os.getxattr(path, 'security.selinux').rstrip(b'\0')
+        assert observed == expected, (path, observed)
+    """
+    vm.succeed(f"{python} -c {shlex.quote(configuration_labels)}")
     assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
     vm.wait_for_unit("aos-offline-controller-reference.target")
     assert vm.succeed("systemctl show aos-sandboxd.service --property=LoadState --value").strip() == "loaded"
