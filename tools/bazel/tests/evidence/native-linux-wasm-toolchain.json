@@ -31,6 +31,7 @@
       "runner": "linux-sandbox"
     }
   },
+  "all_checks": "/nix/store/pcpnvqvp506lkzirgj88hin3vis0alxq-aos-bazel-checks",
   "artifact_bytes": 28258,
   "artifact_sha256": "b2714df8c572e903dea76d4c72606d38bd03075d2c3d5e9f8dcbfa673388e9d2",
   "bazel_version": "9.2.0",
