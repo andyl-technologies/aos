@@ -22,6 +22,9 @@ pub mod setup;
 #[cfg(test)]
 mod profile_vectors;
 
+#[cfg(test)]
+mod description_vectors;
+
 /// Contains the complete fixed transfer record, including its ten liability rows.
 pub const NATIVE_TRANSFER_BYTES: usize = 1472;
 

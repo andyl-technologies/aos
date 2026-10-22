@@ -699,6 +699,30 @@ thirteen format and nineteen native, with 148 requirements uncovered and no
 execution qualification. Independent C execution, actual receiving custody and
 paid probe issuance remain unavailable.
 
+Complete-description examples now follow signed
+`ae72e557a4f4e83feac04a5186b9783f7d786f90`. Independent review verifies all
+twenty-eight packet payloads, the detached signature and signed commit. Only
+explicitly MIT-licensed wire data is imported. A separate 113,418-byte compact
+TSV reconstructs all 236 original four-record rows exactly and checks every
+complete record SHA256; its own SHA256 is
+`de013fc5ce061357a0715b3cc31ccfa4c79391d3a95b980cdda4d91f6cac60ad`.
+All examples agree with the actual Rust runtime/transfer/manifest/probe
+correlation: seven correlate, including six partial reports and one completed
+description. Probe launcher/child facts stay distinct, and producer request
+epochs remain distinct from transaction sequences. All 284 protocol tests and
+strict all-target Clippy pass. The case joins a counted ABI group and the
+requirement inventory. Inventory `j08b7v8yxvgknh9ankd19qfk2vigf1fj` verifies
+512 canonical bindings: 480 model, thirteen format and nineteen native, with
+148 requirements uncovered and no execution qualification. This data does not
+qualify the unexecuted C reader, immutable receiving custody, a paid probe or
+an actual resource issuer.
+
+The partial-probe correction also passes its hermetic ABI gate at
+`fnm4bxrwcsk9ziz289c03dzmwf2jw3kp`. The following independent-vector revision's
+application inputs match all 5,360 committed Rust/TOML files and all four
+existing public fixture/license files; its application build and ABI gate
+remain pending.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree

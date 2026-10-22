@@ -708,6 +708,17 @@ in
                 -p crucible-qemu-protocol \
                 --lib native_transfer::profile_vectors:: \
                 -- --test-threads=1
+              require_test_set 1 protocol-native-description-public-vectors \
+                native_transfer::description_vectors::complete_description_matches_independent_correlation_and_completion_vectors \
+                -p crucible-qemu-protocol --lib native_transfer::description_vectors::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib native_transfer::description_vectors:: \
+                -- --test-threads=1
               require_test_set 4 protocol-native-transfer-plan \
                 plugin_setup_plan::preexec::tests::native_transfer::native_plan_preserves_prior_sections_and_refuses_all_earlier_editions \
                 -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::native_transfer::
