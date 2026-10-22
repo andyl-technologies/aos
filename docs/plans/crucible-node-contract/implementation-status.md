@@ -3676,6 +3676,33 @@ These results establish no refreshed configured runtime, VM, full signed
 Source/native restoration or complete RFC qualification. Strict Clippy remains
 unqualified; its last measured library checkpoint has 74 errors.
 
+## Borrowed Bootstrap codec predecessors
+
+Commit `be4a28cb84` groups the four actual predecessor references into one
+borrowed codec view. Admission and observation retain their original validation,
+census and error order. The quote adds the local view, its overlapping closure,
+observer and admission borrows, and the expanded counter-array controls. It
+creates no ownership, allocation, renewed cut or production dispatcher.
+
+Standard and raw-JSON test executables compile. Transport/Engine/Daemon
+all-feature/all-target checking, owned formatting and all six architecture
+gates pass. Strict library Clippy reports 72 errors and 1,729 warnings, down
+from 74 errors; it remains failed. The added dead-code warnings expose the
+unconsumed view and observation helper in the unwired production path.
+
+Each JSON mode passes all three focused codec tests, with zero failures,
+zero ignores and 2,096 other tests filtered. The inherited-channel test exercises
+31 flights covering retained typed prefixes, malformed and substituted inputs,
+callback refusal, expiry, revocation and once-only retry refusal. Raw JSON takes
+96.94 seconds; standard JSON takes 96.80 seconds. Sources and test executables
+remain stable after compilation completes. These focused results do not replace
+the preceding revision's separately recorded complete-library passes.
+
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 442 frozen Rust/Cargo inputs match both
+this committed revision and the registered captured source. No configured
+runtime, VM, complete Source/native restoration or full RFC qualification follows.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
