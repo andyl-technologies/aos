@@ -13,6 +13,14 @@ pub const NATIVE_CONSOLE_CLAMP_BYTES: usize = 256;
 /// Current paired-control framing version; older frames are refused.
 pub const NATIVE_CONSOLE_CLAMP_SCHEMA_VERSION: u16 = 2;
 
+/// Largest stop encoding a paired clamp carries: the shared-memory exact event.
+///
+/// The stop byte copies the node slot's advance condition: ceiling (0),
+/// authenticated idle (1) or exact event (2). An exact-event advance is
+/// published when a frame is due at a node's current boundary, so a control
+/// boundary can be requested while one is outstanding.
+const NATIVE_CONSOLE_CLAMP_MAXIMUM_STOP: u8 = 2;
+
 /// Closed control dispositions; neither value grants native execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -38,7 +46,8 @@ pub struct NativeConsoleClamp {
     pub fault_frontier: u64,
     /// Original scheduler ceiling, never a substituted emitted coordinate.
     pub ceiling: u64,
-    /// Original stop encoding: ceiling (0) or authenticated idle (1).
+    /// Original stop encoding: ceiling (0), authenticated idle (1) or exact
+    /// event (2).
     pub stop: u8,
     /// Required disposition, authenticated independently by the native owner.
     pub kind: NativeConsoleControlKind,
@@ -62,7 +71,7 @@ impl NativeConsoleClamp {
             || self.advance & 1 != 0
             || self.request & 1 != 0
             || (self.capture != 0 && self.capture & 1 == 0)
-            || self.stop > 1
+            || self.stop > NATIVE_CONSOLE_CLAMP_MAXIMUM_STOP
             || !matches!(
                 (self.kind, self.last_issued),
                 (NativeConsoleControlKind::Acceptance, Some(_))
@@ -169,6 +178,39 @@ mod tests {
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
+
+    #[test]
+    fn exact_event_stop_round_trips_and_larger_stops_are_refused() -> Result<(), NativeConsoleError>
+    {
+        let exact_event = NativeConsoleClamp {
+            publication: 2,
+            advance: 4,
+            request: 6,
+            capture: 0,
+            fault_frontier: 7,
+            ceiling: 100,
+            stop: NATIVE_CONSOLE_CLAMP_MAXIMUM_STOP,
+            kind: NativeConsoleControlKind::Observation,
+            last_issued: None,
+        };
+
+        let encoded = exact_event.encode()?;
+        assert_eq!(encoded[49], 2);
+        assert_eq!(NativeConsoleClamp::decode(&encoded)?, exact_event);
+
+        let mut corrupt = encoded;
+        corrupt[49] = NATIVE_CONSOLE_CLAMP_MAXIMUM_STOP + 1;
+        assert!(NativeConsoleClamp::decode(&corrupt).is_err());
+        assert!(
+            NativeConsoleClamp {
+                stop: NATIVE_CONSOLE_CLAMP_MAXIMUM_STOP + 1,
+                ..exact_event
+            }
+            .encode()
+            .is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn control_kind_version_and_authorization_presence_are_closed() -> Result<(), NativeConsoleError>

@@ -195,6 +195,46 @@ fn real_reader_refuses_prepared_fields_until_original_request_release() -> Resul
 }
 
 #[test]
+fn exact_event_advance_pairs_its_stop_with_the_original_request() -> Result<(), FixtureError> {
+    let mapped = mapping(1)?;
+    let slot = mapped.node_slot(0)?;
+    // A frame due at the node's current boundary publishes a zero-length
+    // exact-event advance; a control boundary may be requested while it holds.
+    for _ in 0..2 {
+        slot.publish_scheduler_advance(
+            crate::authorize_advance_ceiling(100, 100, None)?,
+            crate::AdvanceStopCondition::ExactEvent,
+        )?;
+    }
+    let paired = NativeConsoleClamp {
+        publication: 2,
+        advance: 4,
+        request: 0,
+        capture: 0,
+        fault_frontier: 7,
+        ceiling: 100,
+        stop: crate::ADVANCE_STOP_CONDITION_EXACT_EVENT,
+        kind: NativeConsoleControlKind::Observation,
+        last_issued: None,
+    };
+
+    let prepared = mapped.native_console_segment(0)?.clamp.prepare(paired)?;
+    let request = slot.request_control_boundary_with_prepared_fields(
+        paired.fault_frontier,
+        None,
+        |request| prepared.commit_before_request(request),
+        |_| {},
+    )?;
+    let visible = mapped.native_console_clamp_for_request(0)?;
+
+    assert_eq!(request, 2);
+    assert_eq!(visible.request, 2);
+    assert_eq!(visible.stop, crate::ADVANCE_STOP_CONDITION_EXACT_EVENT);
+    assert_eq!(visible.stop, slot.snapshot().advance_stop_condition);
+    Ok(())
+}
+
+#[test]
 fn request_publication_claim_releases_on_unwind_before_another_writer() {
     let slot = crate::NodeSlot::new(crate::KIND_VM);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

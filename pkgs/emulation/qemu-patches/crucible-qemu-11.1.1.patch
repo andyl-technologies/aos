@@ -1,6 +1,6 @@
-From 57041eb9e9d2110678652237386d2faec617cfaa Mon Sep 17 00:00:00 2001
+From f29ac248faf8e203611b5d40af2d6537a75dac3c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 21 Oct 2026 20:32:31 -0700
+Date: Thu, 22 Oct 2026 17:35:56 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -23,6 +23,8 @@ A vCPU's synchronous block I/O polls the main loop on the RR thread itself, mid-
 A runnable vCPU also never moves its clock to a QEMU-owned deadline. The RR loop crossed the final partial instruction to a virtual timer or a fault or preemption deadline, so the guest's clock moved without a retirement. Now it fires each one at the vCPU's first instruction boundary at or after its deadline: the timer instruction limit, the boundary-deadline clamp, the fault and preemption budgets round up to that boundary, and the partial-instruction advance only runs a timer that is already due. A boundary whose next retirement would cross the ceiling settles through it with a QEMU deadline still pending in the gap, and the deadline fires at that boundary in the next quantum. The firing boundary depends only on the clock and the deadline, not on where the host split quanta. A fault command whose target lies less than one retirement before the boundary is applied there, and only a later boundary reports PAST_BOUNDARY. A commanded preemption is applied at the first boundary at or after its tick, and one a whole retirement late still aborts. An all-halted node, which cannot retire, still idles exactly to a QEMU-owned event in the gap, and the stalled-node and nested device-wait advances are unchanged. test-crucible-rr-bound-ceiling adds a runnable vCPU with a timer, a fault deadline and a preemption 24 ps ahead, each met at the next boundary with no clock move, a halted node idling to a timer in the gap, and a preemption a whole retirement late that still aborts. Four new negative controls restore the time-only crossing, the floored deadline budget, the floored timer limit and the exact preemption tick, and each fails. test-crucible-tcg-fast-paths applies fault targets 24 ticks ahead of and 999 ticks behind the boundary, and reports one a whole retirement behind as PAST_BOUNDARY.
 
 Shared-memory ABI 33 adds a hostward publication futex word and a count of parked host waiters to each node slot, carved from reserved bytes. The plugin increments the word after every node publication and control acknowledgement and wakes the host only when a waiter is registered, so the host parks until the node publishes instead of sleep-polling. QEMU itself does not read or write the new fields; this tree carries the generated headers so the build compares them byte for byte.
+
+The native console advance reader and its paired-clamp check admitted only the ceiling and authenticated-idle stop encodings. An exact-event advance, which the host publishes when a frame is due at a node's current boundary, therefore read as torn: the reader returned unavailable after its retries, the RR loop took its no-execution retry without reaching the plugin's budget, and the node spun without publishing while the host waited for it. Both checks now admit every current shared-memory stop condition through the exact event, and the plugin's budget keeps each condition's meaning. test-crucible-console-seal adds an exact-event advance that reads as owned with its stop preserved and accepts a sealed operation, while a larger stop stays unavailable.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -17681,10 +17683,10 @@ index 0000000000000000000000000000000000000000..a5b89408ab4b337026ea8f4b4447eb5a
 +}
 diff --git a/chardev/console-node-writer.c b/chardev/console-node-writer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ff06c909e9f90f5191bf2989b1888cddd5153f56
+index 0000000000000000000000000000000000000000..3140eb2e1cbfb8996b99c410320467cd6e163afb
 --- /dev/null
 +++ b/chardev/console-node-writer.c
-@@ -0,0 +1,1540 @@
+@@ -0,0 +1,1547 @@
 +/*
 + * Closed UART record publication and distinct accepted control frontiers.
 + * Copyright (c) 2026 Andyl, Inc.
@@ -17693,6 +17695,7 @@ index 0000000000000000000000000000000000000000..ff06c909e9f90f5191bf2989b1888cdd
 +#include "qemu/osdep.h"
 +#include "qemu/bswap.h"
 +#include "console-node-writer.h"
++#include "aos/crucible/crucible_shmem_abi.h"
 +
 +#define CONSOLE_ADMISSION_HELD (UINT64_C(1) << 63)
 +
@@ -17907,7 +17910,12 @@ index 0000000000000000000000000000000000000000..ff06c909e9f90f5191bf2989b1888cdd
 +            binding->owner.authorization_owned(binding->owner.opaque, bytes);
 +        atomic_thread_fence(memory_order_acquire);
 +        after = atomic_load_explicit(binding->advance, memory_order_acquire);
-+        if (before != after || snapshot.stop > 1 ||
++        /* The stop byte is the shared-memory advance condition: ceiling,
++         * authenticated idle or exact event. A larger value is torn or
++         * foreign; the plugin's budget keeps each condition's meaning.
++         */
++        if (before != after ||
++            snapshot.stop > CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT ||
 +            atomic_load_explicit(&binding->authorization->words[0],
 +                                  memory_order_acquire) !=
 +                (present ? ldq_le_p(bytes) : 0)) {
@@ -18605,7 +18613,8 @@ index 0000000000000000000000000000000000000000..ff06c909e9f90f5191bf2989b1888cdd
 +        ldq_le_p(bytes + 16) != accepted_advance ||
 +        ldl_le_p(bytes + 24) != even_request || ldl_le_p(bytes + 28) != capture ||
 +        ldq_le_p(bytes + 32) != frontier || ldq_le_p(bytes + 40) != ceiling ||
-+        bytes[49] != stop || stop > 1 ||
++        bytes[49] != stop ||
++        stop > CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT ||
 +        (capture && !(capture & 1))) {
 +        return CRUCIBLE_CONSOLE_BODY_REFUSED;
 +    }
@@ -166639,10 +166648,10 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-console-seal-fixture.c b/tests/unit/test-crucible-console-seal-fixture.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1afed38b7869d949be49557a14c3a289511e6e7b
+index 0000000000000000000000000000000000000000..6e696be86deba782d9116c43642f91598b13e0c9
 --- /dev/null
 +++ b/tests/unit/test-crucible-console-seal-fixture.c
-@@ -0,0 +1,894 @@
+@@ -0,0 +1,919 @@
 +/*
 + * Source-extracted UART operation completion controls.
 + * Copyright (c) 2026 Andyl, Inc.
@@ -167253,7 +167262,7 @@ index 0000000000000000000000000000000000000000..1afed38b7869d949be49557a14c3a289
 +    assert(argc == 2);
 +    char *end;
 +    unsigned long selected = strtoul(argv[1], &end, 10);
-+    assert(argv[1][0] && !*end && selected < 18);
++    assert(argv[1][0] && !*end && selected < 19);
 +
 +    if (selected == 0) {
 +        fixture_reset();
@@ -167273,6 +167282,31 @@ index 0000000000000000000000000000000000000000..1afed38b7869d949be49557a14c3a289
 +        assert(atomic_load(&fixture.records[0].words[12]) >> 40 == 'A');
 +        assert(atomic_load(&fixture.records[1].words[12]) >> 40 == 'B');
 +        puts("PASS two real published operations each accept and drain before next grant");
++
++        return finish_case();
++    }
++
++    if (selected == 18) {
++        /* An exact-event advance is a current shared-memory condition. The
++         * reader returned UNAVAILABLE for it, and RR retried without end. */
++        CrucibleConsoleAdvanceRead read;
++
++        fixture_reset();
++        atomic_store(&fixture.slot.advance_stop_condition,
++                     CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT);
++        assert(crucible_console_node_read_advance(fixture.writer, &read) ==
++            CRUCIBLE_CONSOLE_ADVANCE_OWNED);
++        assert(read.stop == CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT);
++        runnable_grant();
++        stage_byte('A');
++        assert(seal_byte());
++        accept_stopped(4, true);
++        assert(crucible_console_node_accepted_and_drained(fixture.writer, 1, 1));
++        atomic_store(&fixture.slot.advance_stop_condition,
++                     CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_EXACT_EVENT + 1);
++        assert(crucible_console_node_read_advance(fixture.writer, &read) ==
++            CRUCIBLE_CONSOLE_ADVANCE_UNAVAILABLE);
++        puts("PASS exact-event advance reads and accepts with its stop preserved");
 +
 +        return finish_case();
 +    }
@@ -167539,10 +167573,10 @@ index 0000000000000000000000000000000000000000..1afed38b7869d949be49557a14c3a289
 +}
 diff --git a/tests/unit/test-crucible-console-seal.py b/tests/unit/test-crucible-console-seal.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e134d2f87529bf0a76c60f777f7bfc6d58fbdd8
+index 0000000000000000000000000000000000000000..bb001ebc8843203c4887f7d91fbe05bc1c52ec91
 --- /dev/null
 +++ b/tests/unit/test-crucible-console-seal.py
-@@ -0,0 +1,265 @@
+@@ -0,0 +1,266 @@
 +# SPDX-License-Identifier: GPL-2.0-only
 +"""Exercise consecutive UART seals and retained output-stop custody.
 +
@@ -167582,6 +167616,7 @@ index 0000000000000000000000000000000000000000..5e134d2f87529bf0a76c60f777f7bfc6
 +    "PASS altered accepted output ring end refuses original stopped retry",
 +    "PASS active next operation prevents old accepted-prefix shortcut",
 +    "PASS original unaccepted stop reaches real retry and releases publication claim",
++    "PASS exact-event advance reads and accepts with its stop preserved",
 +]
 +
 +

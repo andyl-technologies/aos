@@ -171,6 +171,58 @@ fn a_zero_length_advance_publishes_its_boundary_and_takes_a_due_frame() {
 }
 
 #[test]
+fn a_console_dispatch_zero_length_exact_event_publishes_and_takes_a_due_frame() {
+    use crate::runtime::installed_console::{DispatchAdvance, DispatchResult};
+
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
+    let slot = NodeSlot::new(KIND_VM);
+    // A console node reads its advance through the native seam. The stop byte
+    // there is the exact event; the joined budget must keep that meaning and
+    // answer the zero-length advance with a publication at the boundary.
+    publish_ceiling(&slot, 0, BOUNDARY_BELOW, AdvanceStopCondition::ExactEvent);
+    let inbound_header = RingHeader::new();
+    let outbound_header = RingHeader::new();
+    let mut inbound_entries = vec![FrameEntry::default(); 4];
+    let mut outbound_entries = vec![FrameEntry::default(); 4];
+    let state = receiver_with_frame(
+        &slot,
+        BOUNDARY_BELOW,
+        &inbound_header,
+        &mut inbound_entries,
+        &outbound_header,
+        &mut outbound_entries,
+    );
+    TEST_ICOUNT_RAW.set(1);
+    let before = slot.snapshot().publish_gen;
+    let mut result = DispatchResult {
+        raw_ceiling: u64::MAX,
+        raw_start: 1,
+        logical_start: BOUNDARY_BELOW,
+        logical_ceiling: u64::MAX,
+        authorization: [0; 128],
+        publication_unavailable: false,
+    };
+
+    state
+        .console_dispatch_budget(&mut result, || {
+            Ok(DispatchAdvance::Unowned {
+                ceiling: BOUNDARY_BELOW,
+            })
+        })
+        .unwrap_or_else(|error| panic!("the zero-length budget should join: {error}"));
+    TEST_ICOUNT_RAW.set(0);
+
+    let answered = slot.snapshot();
+    assert!(!result.publication_unavailable);
+    assert_eq!(result.raw_ceiling, 1);
+    assert_eq!(result.logical_ceiling, BOUNDARY_BELOW);
+    assert_ne!(answered.publish_gen, before);
+    assert_eq!(answered.current_icount, BOUNDARY_BELOW);
+    assert_eq!(inbound_header.read_index(), 1);
+    assert_eq!(TEST_RX_INJECT_COUNT.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn a_zero_length_answer_keeps_the_idle_boundary_and_its_deadline() {
     let slot = NodeSlot::new(KIND_VM);
     publish_ceiling(

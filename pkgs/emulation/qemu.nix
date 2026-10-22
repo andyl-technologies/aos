@@ -2067,9 +2067,9 @@ in
               grep -Fxq 'PASS device-state console transaction plugin-disabled: 3 controls' \
                 device-load-console.result
               test "$(grep -c '^case=' device-load-console.result)" -eq 22
-              grep -Fxq 'PASS UART completed-operation seal: 18 isolated component controls' \
+              grep -Fxq 'PASS UART completed-operation seal: 19 isolated component controls' \
                 console-seal.result
-              test "$(grep -c '^PASS ' console-seal.result)" -eq 19
+              test "$(grep -c '^PASS ' console-seal.result)" -eq 20
               for case in reader-before-park reader-after-park reader-after-handoff \
                 idle-reader-before-park idle-reader-after-park \
                 sdk-reader-before-arm sdk-reader-arm-gap sdk-reader-after-futex \
