@@ -138,7 +138,7 @@ impl GuestIntrospectionEntry {
                 capacity: GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
             });
         }
-        GuestIntrospectionRecord::decode(record)
+        GuestIntrospectionRecord::validate_encoded(record)
             .map_err(|source| GuestIntrospectionEntryError::MalformedRecord { source })?;
         let len = u16::try_from(record.len()).map_err(|_error| {
             GuestIntrospectionEntryError::RecordTooLarge {
@@ -204,7 +204,7 @@ impl GuestIntrospectionEntry {
         if self._reserved.iter().any(|byte| *byte != 0) {
             return Err(GuestIntrospectionEntryError::NonzeroReservedBytes);
         }
-        GuestIntrospectionRecord::decode(&self.data[..len])
+        GuestIntrospectionRecord::validate_encoded(&self.data[..len])
             .map_err(|source| GuestIntrospectionEntryError::MalformedRecord { source })?;
         Ok(())
     }

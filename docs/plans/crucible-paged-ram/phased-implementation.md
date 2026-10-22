@@ -67,7 +67,55 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 430 committed bindings: 411 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 433 committed bindings: 414 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Retained RR parent and wrapper-retirement composition
+
+The signed union `7dcd9a8912f74d6b51ee97b1dcb4a13c44a2713f` imports
+conventional `218291844a677c428eda57410dfa44846e0a8f07`, exact tree
+`1a82444e99cbdfa32ffc2383be19cee202d812ce`. It composes the corrected
+Main-side RR parent and wrapper-retirement history with the preceding reader,
+deferred-return and cleanup union. Both parent registration post histories
+require actual completed attempts and zero statuses. Retained wrapper history
+precedes borrower consumption and preserves once-only terminal facts without
+querying an ended Original or dead wrapper. Returning-only physical identities
+remain nonrecursive. No Module producer, semantic RR execution or reusable
+borrower is issued; the process-wide one-attempt guard and CPU `ENOTSUP` remain.
+
+Independent import verification matches 1,031 signed changed-source hashes,
+8,313 regular evidence files, 156 literal links and three artifact hashes with
+zero mismatches. The source comparison record has SHA-256
+`c37d3af2197df0941faf6e39a198e7cb0378cd2c592cd25b3adec5bef4a6898b`;
+the evidence comparison record has SHA-256
+`b9678ca9cd055dcb3aa8310d4951f1abbc56c102c908a7b3e052c676924e3fd0`.
+The producer verifies all 78,199 archive blobs/modes and 72 literal source links;
+the import comparison checks the archive hash without independently re-auditing
+its members. Six new files bring the cumulative license ledger to 392 created
+files, with no deletions. The bounded custody runner selects the two actual
+standalone suites with their positional arguments, bringing its total to 34.
+Exact signed patch/bundle reconstruction passes at
+`166a2q7n1my039vm7nnz78qsarl0pr0g`; the complete 392-created-file license ledger
+passes at `2gk9ikpjjw3yl9zw9iyxxy6ay9xmf80i`. Packaged Source, Native custody
+and ABI checks are being collected.
+
+The changed 713-object configured cohort passes in 297.913030706 seconds under
+its unchanged 600-second/6-GiB bound, on actual input `6318dee1de`; all 99 final
+fixture compiler fragments are byte-identical. Both real system links export
+the new SDK APIs. All 27 composed/previous bounded suites, 45 joined span
+controls and 92 independently rebuilt preexec omission classifiers pass; the
+latter take 346.519024266 seconds under the 600-second/6-GiB bound. Genuine
+pending-deferred, physical Main-finish, Core and Core-reference providers pass.
+The first canonical-link and foreign-output-symlink refusals remain preserved;
+the corrected metadata/topology authenticates genuine exact objects.
+
+Actual Source is 248,088 bytes plus 30 genuine external getters totalling
+44,270, yielding fixed floor 292,358. RR registration/parent are 152/352;
+wrapper registration/owner/history are 112/3,096/768. Native 288/10,856 and CPU
+16,992, ARM 97,712 and x86 33,568 extents are unchanged. Neither normal timing
+nor the full 1,918-object cohort was repeated; their preceding actual inputs
+remain separately identified below. The mandatory dirty-lifecycle entry still
+fails for missing genuine launched lifecycle. Selected execution, full return,
+sequential rearm, stack funding and performance qualification remain open.
 
 #### Reader, deferred return and cleanup composition
 
@@ -478,6 +526,27 @@ SHA-256 `2b0a4701cdb050bb1a9b79a968162104e4d3c1abc0d20d6a375577725968c98a`.
 All 289 exact supervision cases pass at `crd0zlsfjkqrdvwc52c6kkiycnvn7z8a`.
 Full Source/Module physical return remains unqualified.
 
+#### Borrowed guest-introspection wire validation
+
+Shared entries now validate complete encoded records through borrowed message
+fields rather than allocating an owned record and immediately discarding it.
+The explicit owned decoder uses those same framing, UTF-8 and semantic checks,
+then constructs owned strings and byte vectors only after complete validation.
+A forged argv count cannot size an allocation before its framing and bounded
+count are checked. Existing error precedence is preserved, including framing
+and UTF-8 before argv count/length, and zero channel before message semantics.
+Both shared-entry construction from bytes and repeated ring-entry validation
+use this path. The wire edition, layout and direction rules are unchanged.
+
+Three controls verify original payload/argv addresses, exact refusals for forged
+argv counts and malformed fields, and every truncation of a canonical argv
+frame. Every existing record variant also exercises borrowed validation. All twelve focused protocol controls, seven shared-memory controls and the
+initial 122 white-box controls pass. Content-bound engineering hygiene passes.
+Final plugin checks, all affected target compilation, mandatory application
+compilation, ABI/license checking and the exact 316-case supervision run are
+being collected. These components establish no operation payer, Native
+issuer, allocation funding for requested owned decoding or full RFC completion.
+
 #### Direct fixed-storage guest-introspection encoding
 
 The canonical record encoder now writes directly into caller-owned slices after
@@ -495,8 +564,14 @@ zeroed padding, and zero-sequence/oversized-record refusals. Every existing
 record variant also compares owned and fixed encodings. The nine focused
 protocol controls, seven shared-memory controls and all 122 white-box controls
 pass. Every protocol, shared-memory and plugin target compiles, and engineering
-hygiene passes. Mandatory application compilation, ABI conformance, canonical
-license checking and the exact 313-case supervision run are being checked.
+hygiene passes. All 5,305 committed Rust/TOML files at
+`8f98f77f18f0c5e1d74f2ae50d34245553a2124b` match immutable application source
+`l0d3xgaxgg7z7yy8jv7va11i4gs5z9gl`. The comparison record has SHA-256
+`b2884edbefbdbc1372951748b7273cf17facb08e98a82feb1cea8e5798ad84c2`.
+Canonical license checking stops at the unchanged strict controller Clippy
+failures: 909 host-library and 963 host-test errors; boundary assertions do not
+run. Mandatory application compilation, ABI conformance and the exact 313-case
+supervision run are being collected.
 
 #### Borrowed live guest-introspection replies
 
@@ -518,7 +593,8 @@ application compilation passes at `w1nhclmwm8fnmj4aicjx4bai8kd12p22`.
 All 5,304 committed Rust/TOML files match immutable source
 `8hmig3n6ir4633klj2w64rg2rx3lb57c`. The comparison record has SHA-256
 `5ce6d28f1fc9674374b88186c29a56109600485bdd91c6086c65087e0c20347b`.
-The exact 309-case supervision run is being collected.
+All 309 exact supervision cases pass in nine groups at
+`r4ans31snsx3mqqk1s774g1zwlb4q6l0`.
 
 #### Callback failure reporting
 
@@ -537,8 +613,9 @@ compilation passes at `1wsyi8v01mvr9dsh98jlayn142l75gw1`; all 5,302 committed
 Rust/TOML files match immutable source `01n6dsspl7vf79qfxhm1bxsgqcr8vw6d`.
 The comparison record has SHA-256
 `d0e344d8b3cb15079f5858f7603be56223f9d2a1e5dd4377a526037e62f2ae01`.
-The exact 307-case supervision run is being collected. These components grant
-no Native Source, executor or cleanup authority.
+All 307 exact supervision cases pass in nine groups at
+`bvlj9bj30lzfx70g8bb70b2syqid9n87`. These components grant no Native Source,
+executor or cleanup authority.
 
 #### Typed marker entry validation
 
