@@ -2261,9 +2261,19 @@ remain unchanged.
 All seventeen inherited-socket publication controls pass, including both
 program families, pre-effect admission refusal/expiry, terminal refusal/expiry,
 actual broken pipe, response frame overflow and guarded body loans. The complete
-Format suite passes 67 tests with one existing ignore. The standard Transport
-library passes 1,923 tests with sixteen existing ignores and no filtering.
-Remaining qualification is in progress. Its test admissions remain model controls: they do not create genuine Source/Birth credit or publication
+Format suite passes 67 tests with one existing ignore.
+
+Commit `4563cc63ee` passes both complete Transport configurations: 1,923 tests
+each, no failures/filtering and sixteen existing ignores. Affected all-feature/
+all-target checking, scoped formatting and all six architecture gates pass. The
+required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets; it executes no tests. All 267 owned Rust/Cargo
+inputs match the committed tree and exact captured application source. Adding
+the already locked libc dependency required refreshing the exact vendor staging
+hash; the initial stale-hash refusal is retained as evidence. No new VM or
+configured Engine/Daemon runtime qualification is claimed.
+
+Its test admissions remain model controls: they do not create genuine Source/Birth credit or publication
 permission. The genuine enclosing producer, model-absent Native18 policy,
 bootstrap ACK, opaque Initial/Recipe, restoration and full RFC acceptance remain
 unfinished.
@@ -2286,8 +2296,12 @@ policy, native model, bootstrap ACK, opaque Initial/Recipe or genuine funding.
 
 All 22 focused startup parser/ownership controls pass, including three new
 ownership cases for both program families. The seventeen-case inherited-socket
-publication control also passes with the same shared launch owner. Full
-transition qualification remains in progress.
+publication control also passes with the same shared launch owner. The first
+complete standard run passes 1,922 tests and fails four raw-receipt controls:
+their fixed 1 MiB independent fixture policy refuses the enlarged complete
+counter row before the expected reads. The raw-JSON and affected target runs
+have not run for this checkpoint. Full transition qualification remains open;
+these failures are retained while its positive funding fixture is corrected.
 
 ## Original launch custody and shared startup geometry
 
