@@ -20,7 +20,10 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
     let bytes: Bytes =
         serde_json::from_value(selected["launch"]["initial_coordinator"]["bytes"].clone()).unwrap();
     let mut coordinator: crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation = serde_json::from_slice(bytes.as_slice()).unwrap();
-    let member = usize::from(case == "initial_policy_reactive");
+    let member = usize::from(matches!(
+        case,
+        "initial_policy_reactive" | "initial_policy_kernel_reactive"
+    ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
         native_import18_schema_data().unwrap(),
@@ -156,6 +159,10 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             .is_err()
     );
     assert!(original.with_bootstrap_birth_wire_data(|_| Ok(())).is_err());
+    if case == "initial_policy_kernel_missing_policy" {
+        super::bootstrap_kernel::assert_missing_policy(original);
+        return;
+    }
     if case == "initial_policy_selection_revoked" {
         original.selection_authenticated = false;
     }
@@ -179,7 +186,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
             | "initial_policy_loan_expired"
             | "initial_policy_substituted_cut"
             | "initial_policy_later_contained"
-    );
+    ) || case.starts_with("initial_policy_kernel_");
     if success {
         outcome.unwrap();
         assert_eq!(admission.calls.get(), 2);
@@ -220,6 +227,9 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
         original
             .with_bootstrap_birth_wire_data(|view| assert_bootstrap_birth_wire(&original, view))
             .unwrap();
+        if case.starts_with("initial_policy_kernel_") {
+            super::bootstrap_kernel::assert_child(case, original);
+        }
         if case == "initial_policy_callback_refused" {
             assert!(
                 original
@@ -277,7 +287,7 @@ pub(super) fn assert_child(case: &str, original: &mut OriginalImport18RawBootstr
     let backing = original.immutable_policy_backing_data().unwrap();
     assert_eq!(
         original.retained_requested_bytes().unwrap(),
-        before + backing
+        before + backing + original.bootstrap_kernel.retained_backing_data().unwrap()
     );
     assert_eq!(
         Rc::strong_count(original.parsed.shared_launch_data().unwrap()),
@@ -306,6 +316,17 @@ fn model_absent_policy_keeps_actual_launch_hello_lease_and_every_terminal_owner(
     for case in [
         "initial_policy_complete",
         "initial_policy_reactive",
+        "initial_policy_kernel_complete",
+        "initial_policy_kernel_reactive",
+        "initial_policy_kernel_missing_policy",
+        "initial_policy_kernel_construct_refused",
+        "initial_policy_kernel_construct_expired",
+        "initial_policy_kernel_finish_refused",
+        "initial_policy_kernel_finish_expired",
+        "initial_policy_kernel_callback_refused",
+        "initial_policy_kernel_loan_expired",
+        "initial_policy_kernel_substituted_cut",
+        "initial_policy_kernel_later_contained",
         "initial_policy_without_validation",
         "initial_policy_without_publication",
         "initial_policy_selection_revoked",

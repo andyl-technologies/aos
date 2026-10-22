@@ -74,6 +74,19 @@ pub(crate) fn original_prepare_executable_measurement_construction_data() -> [us
     [0, transient, scratch]
 }
 
+/// Quotes the actual four retained String banks of a successful measurement.
+///
+/// The reference factory below owns three literal copies and one hexadecimal
+/// digest. Its single digest write grows the empty String directly to the full
+/// fixed output width. Headers belong to the real containing owner; hashing,
+/// partial formatting and the read bank use the separate construction quote.
+pub(crate) const fn original_prepare_executable_reference_retained_backing_data() -> usize {
+    EXECUTABLE_HASH_ALGORITHM.len()
+        + EXECUTABLE_HASH_DOMAIN.len()
+        + EXECUTABLE_MEDIA_TYPE.len()
+        + 2 * blake3::OUT_LEN
+}
+
 // Names the public method's opaque return layout through its function type.
 // No sample digest, formatter or prospective reference is constructed.
 fn hash_hex_output_layout_data<T>(_method: fn(&blake3::Hash) -> T) -> usize {

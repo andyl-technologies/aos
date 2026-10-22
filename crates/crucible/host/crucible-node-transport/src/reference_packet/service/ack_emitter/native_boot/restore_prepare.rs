@@ -28,6 +28,7 @@ pub(crate) use prepare_measurement::{
     original_conformance_executable_measurement_counter_scratch_data,
     original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
+    original_prepare_executable_reference_retained_backing_data,
 };
 pub(in crate::reference_packet::service::ack_emitter::native_boot) use prepare_measurement::{
     measure_controller_executable as measure_original_restore_controller_executable,

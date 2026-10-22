@@ -13,6 +13,9 @@ use crate::reference_packet::service::complete_restore::import18::{
 use crucible_node_format::{Bytes, Id, canonical};
 use serde_json::{Value, json};
 
+#[path = "initial_reconstruction/bootstrap_kernel.rs"]
+mod bootstrap_kernel;
+
 #[path = "initial_reconstruction/completed_inputs.rs"]
 mod completed_inputs;
 

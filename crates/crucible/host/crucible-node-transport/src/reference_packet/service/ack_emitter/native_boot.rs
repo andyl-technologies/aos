@@ -39,6 +39,8 @@ pub(crate) use boot::{
 pub(in crate::reference_packet::service) use bootstrap_import18::controller_measurement_construction_data as original_import18_controller_measurement_construction_data;
 pub(in crate::reference_packet::service) use bootstrap_import18::raw_storage_floor as original_import18_raw_bootstrap_storage_data;
 pub(in crate::reference_packet::service) use bootstrap_import18::{
+    bootstrap_kernel_construction_data as original_import18_bootstrap_kernel_construction_data,
+    bootstrap_kernel_counter_scratch_data as original_import18_bootstrap_kernel_counter_scratch_data,
     hello_admission_construction_data as original_import18_hello_initial_admission_construction_data,
     hello_admission_counter_scratch_data as original_import18_hello_initial_admission_counter_scratch_data,
     hello_envelope_construction_bound_data as original_import18_hello_envelope_construction_bound_data,
@@ -98,6 +100,7 @@ pub(crate) use boot::{
     original_conformance_executable_measurement_counter_scratch_data,
     original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
+    original_prepare_executable_reference_retained_backing_data,
 };
 pub use boot::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,

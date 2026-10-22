@@ -688,6 +688,7 @@ pub(crate) use restore_prepare::{
     original_conformance_executable_measurement_counter_scratch_data,
     original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
+    original_prepare_executable_reference_retained_backing_data,
 };
 pub use restore_prepare::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,

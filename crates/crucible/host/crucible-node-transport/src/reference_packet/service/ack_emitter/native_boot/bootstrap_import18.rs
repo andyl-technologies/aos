@@ -60,6 +60,13 @@ pub(in crate::reference_packet::service) use launch_validation::{
     counter_scratch_data as launch_validation_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/bootstrap_kernel.rs"]
+mod bootstrap_kernel;
+pub(in crate::reference_packet::service) use bootstrap_kernel::{
+    construction_data as bootstrap_kernel_construction_data,
+    counter_scratch_data as bootstrap_kernel_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/bootstrap_birth.rs"]
 mod bootstrap_birth;
 
@@ -214,6 +221,7 @@ pub(super) struct OriginalImport18RawBootstrap {
     parsed: OriginalImport18DecodedBodies,
     launch_validation: launch_validation::Attempt,
     immutable_policy: immutable_policy::Attempt,
+    bootstrap_kernel: bootstrap_kernel::Attempt,
     selection_construction_row: Option<[usize; 3]>,
     selection_started: bool,
     selection_authenticated: bool,
@@ -290,6 +298,7 @@ impl OriginalImport18RawBootstrap {
             parsed: OriginalImport18DecodedBodies::empty(),
             launch_validation: launch_validation::Attempt::empty_data(cut),
             immutable_policy: immutable_policy::Attempt::empty_data(cut),
+            bootstrap_kernel: bootstrap_kernel::Attempt::empty_data(cut),
             selection_construction_row: None,
             selection_started: false,
             selection_authenticated: false,
@@ -454,8 +463,10 @@ impl OriginalImport18RawBootstrap {
         let hello_response_backing = self.hello_response.retained_backing_data()?;
         let hello_publication_backing = self.hello_publication_backing_data()?;
         let policy_backing = self.immutable_policy_backing_data()?;
+        let kernel_backing = self.bootstrap_kernel.retained_backing_data()?;
         retained
-            .checked_add(policy_backing)
+            .checked_add(kernel_backing)
+            .and_then(|n| n.checked_add(policy_backing))
             .and_then(|n| n.checked_add(hello_publication_backing))
             .and_then(|n| n.checked_add(hello_response_backing))
             .and_then(|n| n.checked_add(hello_envelope_backing))
@@ -538,6 +549,7 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<hello_admission::Attempt>()
         + size_of::<hello_publication::Attempt>()
         + size_of::<immutable_policy::Attempt>()
+        + size_of::<bootstrap_kernel::Attempt>()
         + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + channel_custody::counter_scratch_data()
