@@ -29,7 +29,6 @@ UNIT_NAME = "terrane-fs-unit"
 UNIT_PREFIXES = ("configured::", "configured_sdk::", "host_cache::", "host_quota::socket::",
                  "publisher_io::", "publisher_local::", "quota_confinement::")
 ROOT_UNIT_TESTS = (
-    'host_cache::content::presentation::tests::sealed_storage_requires_effective_none_without_weakening_private_defaults',
     'host_quota::initial_enrollment::tests::actual_initial_receipt_refuses_shared_and_other_root_guards_before_effects',
     'host_quota::initial_enrollment::tests::actual_initial_receipt_rejects_unknown_entries_before_scaffold_effects',
     'host_quota::initial_enrollment::tests::actual_scaffold_creation_retains_all_original_inodes_bytes_and_exclusions',
@@ -59,6 +58,7 @@ UNIT_TESTS = (
     'configured_sdk::tests::preflight_rejects_endpoints_overlapping_repository_state',
     'configured_sdk::tests::pure_sdk_profile_matches_the_actual_compiled_registry',
     'configured_sdk::tests::role_selection_and_instance_credentials_fail_before_any_repository_open',
+    'host_cache::content::presentation::tests::sealed_storage_requires_effective_none_without_weakening_private_defaults',
     'host_cache::owner::admission::io::tests::actual_admission_byte_check_is_positioned_and_rejects_modified_inode_bytes',
     'host_cache::owner::admission::memory::tests::simultaneous_active_copies_and_state_headers_are_checked',
     'host_cache::owner::admission::metadata::tests::actual_metadata_pair_rejects_wrong_index_key_class_and_window',

@@ -15451,3 +15451,13 @@ The corrected eleven-gate Nix dry run passes, including shared-directory,
 domain isolation, all four host-cache gates, wipe, publication and the three
 surface gates. All 2,645 Nix formatting checks and `git diff --check` pass.
 This establishes evaluation and formatting only; execution remains required.
+
+The complete `2e34a1d9fe` native host-cache request fails before boot in
+530.845 seconds: its image rejects the FS unit module-prefix inventory. The
+actual retained Cargo ELF lists exactly all 129 expected tests, with no extra
+or missing case. The pure sealed-storage policy regression was mistakenly in
+the administrative creator list even though its `host_cache::` prefix belongs
+to the ordinary-user selection. It now joins the ordinary-user list; all 129
+cases remain mandatory, including all five genuine creator cases. No runtime
+assertion, fixture, process privilege or timeout is changed. Fresh source-bound
+image and VM execution remain required.
