@@ -1050,7 +1050,7 @@ impl<A> CatalogedSelectableService<A> {
         let authority = &mut self.authority;
         self.catalog.resolve_pending_with(
             |pending| authority.decide_selection(pending),
-            catalog_service_error,
+            SelectableDoorbellServiceError::from,
         )
     }
 }
@@ -1063,7 +1063,7 @@ impl<A> SelectableRegistrationService for CatalogedSelectableService<A> {
     ) -> Result<(), SelectableDoorbellServiceError> {
         self.catalog
             .register(registration)
-            .map_err(catalog_service_error)
+            .map_err(SelectableDoorbellServiceError::from)
     }
 }
 
@@ -1079,13 +1079,9 @@ where
     ) -> Result<SelectableReplyDisposition, SelectableDoorbellServiceError> {
         self.catalog
             .begin_request(request, coordinate, reply_range)
-            .map_err(catalog_service_error)?;
+            .map_err(SelectableDoorbellServiceError::from)?;
         self.resolve_pending()
     }
-}
-
-fn catalog_service_error(error: SelectableCatalogError) -> SelectableDoorbellServiceError {
-    SelectableDoorbellServiceError::new(error.to_string())
 }
 
 fn require_increasing_sequence(

@@ -539,6 +539,55 @@ fn combined_service_retains_failed_decision_and_retries_without_readmission()
     assert_eq!(service.catalog().pending_request(), None);
     assert_eq!(service.catalog().total_completed_requests(), 1);
     assert_eq!(service.authority.attempts, 2);
+
+    let error = service
+        .resolve_pending()
+        .expect_err("completion removed the pending request");
+    assert_eq!(
+        error,
+        SelectableDoorbellServiceError::Catalog(SelectableCatalogError::NoPendingRequest)
+    );
+    assert_eq!(
+        std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<SelectableCatalogError>()),
+        Some(&SelectableCatalogError::NoPendingRequest),
+    );
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: selectable completion has no pending request"
+    );
+    assert_eq!(
+        error.message(),
+        "selectable completion has no pending request"
+    );
+
+    let identifier = String::from("network.policy");
+    let identifier_address = identifier.as_ptr();
+    let error =
+        SelectableDoorbellServiceError::from(SelectableCatalogError::UnexpectedDeclaration {
+            selectable_id: identifier,
+        });
+    let SelectableDoorbellServiceError::Catalog(SelectableCatalogError::UnexpectedDeclaration {
+        selectable_id,
+    }) = &error
+    else {
+        panic!("the original catalog cause must remain typed");
+    };
+    assert_eq!(selectable_id.as_ptr(), identifier_address);
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: selectable `network.policy` was not declared by the scenario"
+    );
+
+    let diagnostic = String::from("retained decision authority diagnostic");
+    let diagnostic_address = diagnostic.as_ptr();
+    let error = SelectableDoorbellServiceError::new(diagnostic);
+    assert!(matches!(error.message(), std::borrow::Cow::Borrowed(_)));
+    assert_eq!(error.message().as_ptr(), diagnostic_address);
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: retained decision authority diagnostic"
+    );
     Ok(())
 }
 

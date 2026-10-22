@@ -443,7 +443,9 @@ impl SelectableRegistrationService for LiveSelectableState {
         registration: &crucible_qemu_protocol::SelectableRegister,
         _coordinate: SelectableCallbackCoordinate,
     ) -> Result<(), SelectableDoorbellServiceError> {
-        self.catalog.register(registration).map_err(service_error)
+        self.catalog
+            .register(registration)
+            .map_err(SelectableDoorbellServiceError::from)
     }
 }
 
@@ -463,21 +465,17 @@ impl SelectableReplyService for LiveSelectableState {
             reply_range.guest_address(),
             coordinate.raw_icount(),
         )
-        .map_err(|error| SelectableDoorbellServiceError::new(error.to_string()))?;
+        .map_err(SelectableDoorbellServiceError::from)?;
         self.catalog
             .begin_request(request, coordinate, reply_range)
-            .map_err(service_error)?;
+            .map_err(SelectableDoorbellServiceError::from)?;
         match self.vmstop_handoff.defer(self.force_vcpu_tb_exit) {
             Ok(true) => {}
             Ok(false) => {
-                return Err(SelectableDoorbellServiceError::new(
-                    "another selectable VMStop handoff is already pending".to_owned(),
-                ));
+                return Err(SelectableDoorbellServiceError::HandoffAlreadyPending);
             }
             Err(status) => {
-                return Err(SelectableDoorbellServiceError::new(format!(
-                    "QEMU rejected selectable translated-block exit with status {status}"
-                )));
+                return Err(SelectableDoorbellServiceError::HandoffRejected { status });
             }
         }
         Ok(SelectableReplyDisposition::Pending)
@@ -541,10 +539,6 @@ impl LiveWhiteboxMarkerShmemProducer {
         )
         .map_err(|source| LiveWhiteboxError::SelectablePublication { source })
     }
-}
-
-fn service_error(error: SelectableCatalogError) -> SelectableDoorbellServiceError {
-    SelectableDoorbellServiceError::new(error.to_string())
 }
 
 #[cfg(test)]

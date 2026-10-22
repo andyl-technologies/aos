@@ -69,6 +69,36 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Typed selectable service failures
+
+The live and combined catalog services retain their original catalog and
+pending-transport errors through the standard error-source chain. An occupied
+VMStop handoff and rejected translated-block exit retain fixed variants and
+the original QEMU status. Both eager catalog-formatting adapters are removed.
+The rendered service diagnostics and validation, request-retention and handoff
+ordering are unchanged.
+
+The Rust service error is now a non-exhaustive typed enum. Its `new` constructor
+still retains the authority's original String. The reporting-only `message`
+method returns `Cow<str>`: authority diagnostics remain borrowed, while typed
+causes are formatted only on that explicit call. Normal Display writes directly
+to the caller's formatter. This is a coordinated Rust API change; neither the
+process protocol nor the shared-memory ABI changes.
+
+Existing controls require the concrete original transport error through the
+source chain, exact handoff variants/status and unchanged complete diagnostics.
+The combined-service control requires the original catalog cause after actual
+request completion, unchanged dynamic identifier storage through conversion,
+and the original authority diagnostic buffer through `new` and `message`.
+All 1,177 plugin tests and compilation of every plugin target pass. The expanded
+1,016-line adapter test file has a content-bound responsibility review; the
+production catalog shrinks to 1,311 implementation lines. The first hygiene run
+correctly refused the missing test-file review. Its corrected check and required
+application compilation are pending. The final fifteen adapter controls pass,
+and the actual containing Runtime remains 18,936 bytes, alignment eight, with
+9,552 inline white-box bytes. No case name or binding changes. Original
+backend/catalog dynamic payloads and complete operational funding remain open.
+
 #### Typed selectable callback and publication failures
 
 Trap preparation and service, catalog freeze/rebind, pending projection and all
@@ -86,8 +116,14 @@ queued registration, coordinate and bytes remain intact. Missing-token controls
 require their exact typed refusals. All 1,177 plugin unit tests, every plugin
 target and engineering hygiene pass. The existing actual-layout control measures
 the containing Runtime at 18,936 bytes with alignment eight and its inline
-white-box state at 9,552 bytes. Required packaged compilation is pending. No test
-case name, binding or policy exception is added. Backend/service-created dynamic
+white-box state at 9,552 bytes. Required packaged compilation passes at
+`b60cbfavhxm2krlanlmscaqhd1006ais`. All 5,313 committed Rust/TOML files at
+`7b43dc43ced5b970cb128a2e6e3087623e44f504` match immutable source
+`nch5aq9n42p0xh76xszqxcxhk4px0v9h`, with comparison record SHA-256
+`d3ce65a32dc59c80d37e158f426875375a03d86c499dd757461c3e163bba3335`.
+ABI conformance passes at `77wafcqjalp9mw5v6ccqmfcybkqjmw6y`.
+The fresh exact supervision check is in progress. No test case name, binding or
+policy exception is added. Backend/service-created dynamic
 payloads and full operational funding remain open; this does not admit CPU work.
 
 #### Borrowed pending transport
@@ -111,7 +147,8 @@ at `ypga59sr49h0niaw5ync41mwcv7mx6zq`. All 5,313 committed Rust/TOML files at
 `a960a98b7c9f3246a232e16a990aae3a5030c9b9` match immutable source
 `afp0zxpiiy1bjyjl05bm94p0plg0ld7x`, with comparison record SHA-256
 `c433ca0ce871ffcba86d18b432fca4588d662b416962014a404ff53b7f908047`.
-The fresh ABI check is in progress. No case name or binding is added.
+ABI conformance passes at `q8a0i5mmvs05s6fvl1dma3x70q71z4qr`.
+No case name or binding is added.
 
 #### Typed selectable reply failures
 
@@ -138,9 +175,11 @@ All 5,313 committed Rust/TOML files at
 ABI conformance passes at `h2qgnpc33w5jkm4wz165ir8k4f0ncpmw`.
 The fresh strict license check still stops before its boundary assertions with
 909 host-library and 963 host-test Clippy errors. The fresh exact supervision
-check is in progress. Backend-created dynamic diagnostics, decoded payloads and remaining catalog
-service errors still need complete funding; this is not an allocation-free
-execution or Source-admission qualification.
+check passes at `d6ayhy4r1303czmxjhhswq0cqd7mqwwf`. Independent inspection of
+its actual inventory confirms all nine groups and 327 cases. Backend-created
+dynamic diagnostics, decoded payloads and remaining catalog service errors
+still need complete funding; this is not an allocation-free execution or
+Source-admission qualification.
 
 #### Borrowed selectable resolution
 

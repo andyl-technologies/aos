@@ -13,6 +13,10 @@ use crucible_qemu_protocol::{
     },
 };
 
+use crucible_qemu_protocol::selectable_transport::{
+    SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES, SelectablePendingTransportError,
+};
+
 use super::*;
 use crate::WhiteboxGuestInputWriteError;
 
@@ -588,18 +592,33 @@ fn deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit()
         crucible_qemu_protocol::SELECTABLE_MESSAGE_MAX_BYTES,
     )?;
 
-    assert!(
-        state
-            .serve_selection(
-                &request,
-                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
-                crate::GuestMemoryRange::new(
-                    crate::GuestMemoryAddressSpace::Virtual,
-                    0x4000,
-                    request.reply_capacity(),
-                ),
-            )
-            .is_err()
+    let error = state
+        .serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, (50) * 50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )
+        .expect_err("the service must refuse before delivering a reply");
+    let original = std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<SelectablePendingTransportError>())
+        .unwrap_or_else(|| panic!("the service must retain its original transport refusal"));
+    let expected = SelectablePendingTransportError::RequestTooLarge {
+        len: request.encode()?.len(),
+        maximum: crucible_qemu_protocol::SELECTABLE_MESSAGE_MAX_BYTES
+            - SELECTABLE_PENDING_TRANSPORT_HEADER_BYTES,
+    };
+    assert_eq!(original, &expected);
+    assert_eq!(
+        error,
+        SelectableDoorbellServiceError::PendingTransport(expected)
+    );
+    assert_eq!(
+        error.to_string(),
+        format!("selectable service failed: {original}")
     );
     assert_eq!(FORCE_EXIT_CALLS.get(), 0);
     assert!(state.catalog().pending_request().is_none());
@@ -874,19 +893,27 @@ fn occupied_vmstop_handoff_keeps_the_exact_request_pending()
     state.freeze()?;
     let request = request(2)?;
 
-    assert!(
-        state
-            .serve_selection(
-                &request,
-                SelectableCallbackCoordinate::new(50, (50) * 50, 1),
-                crate::GuestMemoryRange::new(
-                    crate::GuestMemoryAddressSpace::Virtual,
-                    0x4000,
-                    request.reply_capacity(),
-                ),
-            )
-            .is_err()
+    let error = state
+        .serve_selection(
+            &request,
+            SelectableCallbackCoordinate::new(50, (50) * 50, 1),
+            crate::GuestMemoryRange::new(
+                crate::GuestMemoryAddressSpace::Virtual,
+                0x4000,
+                request.reply_capacity(),
+            ),
+        )
+        .expect_err("the service must refuse before delivering a reply");
+    assert_eq!(error, SelectableDoorbellServiceError::HandoffAlreadyPending);
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: another selectable VMStop handoff is already pending",
     );
+    assert_eq!(
+        error.message(),
+        "another selectable VMStop handoff is already pending"
+    );
+    assert!(std::error::Error::source(&error).is_none());
     assert_eq!(FORCE_EXIT_CALLS.get(), 1);
     assert!(vmstop_handoff.is_pending());
     assert_eq!(
@@ -930,7 +957,19 @@ fn rejected_tb_exit_releases_the_vmstop_handoff() -> Result<(), Box<dyn std::err
         panic!("QEMU must reject a selectable outside the native exit context");
     };
 
-    assert!(error.to_string().contains("status -22"));
+    assert_eq!(
+        error,
+        SelectableDoorbellServiceError::HandoffRejected { status: -22 }
+    );
+    assert_eq!(
+        error.to_string(),
+        "selectable service failed: QEMU rejected selectable translated-block exit with status -22",
+    );
+    assert_eq!(
+        error.message(),
+        "QEMU rejected selectable translated-block exit with status -22",
+    );
+    assert!(std::error::Error::source(&error).is_none());
     assert_eq!(FORCE_EXIT_CALLS.get(), 1);
     assert!(!vmstop_handoff.is_pending());
     assert!(state.catalog().pending_request().is_some());

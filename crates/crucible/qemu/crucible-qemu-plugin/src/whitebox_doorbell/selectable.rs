@@ -189,25 +189,69 @@ pub enum SelectableDoorbellOutcome {
 }
 
 /// Stable failure from the catalog or decision authority.
+///
+/// Catalog and transport causes remain typed until reporting. A service may
+/// also retain its own diagnostic through [`Self::new`].
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("selectable service failed: {message}")]
-pub struct SelectableDoorbellServiceError {
-    message: String,
+#[non_exhaustive]
+pub enum SelectableDoorbellServiceError {
+    /// Retains a decision authority's original diagnostic.
+    #[error("selectable service failed: {message}")]
+    Diagnostic {
+        /// Original service diagnostic, without the common error prefix.
+        message: String,
+    },
+    /// Retains the original catalog refusal without formatting it.
+    #[error("selectable service failed: {0}")]
+    Catalog(#[from] SelectableCatalogError),
+    /// Retains the original deferred-transport validation refusal.
+    #[error("selectable service failed: {0}")]
+    PendingTransport(
+        #[from] crucible_qemu_protocol::selectable_transport::SelectablePendingTransportError,
+    ),
+    /// Another request already owns the VMStop handoff.
+    #[error("selectable service failed: another selectable VMStop handoff is already pending")]
+    HandoffAlreadyPending,
+    /// QEMU refused the translated-block exit before deferred delivery.
+    #[error(
+        "selectable service failed: QEMU rejected selectable translated-block exit with status {status}"
+    )]
+    HandoffRejected {
+        /// Original status returned by QEMU's exit API.
+        status: i32,
+    },
 }
 
 impl SelectableDoorbellServiceError {
     /// Builds one service failure without exposing host-private state.
     #[must_use]
     pub fn new(message: impl Into<String>) -> Self {
-        Self {
+        Self::Diagnostic {
             message: message.into(),
         }
     }
 
-    /// Returns the stable service diagnostic.
+    /// Returns the stable service diagnostic without its common error prefix.
+    ///
+    /// An authority-provided diagnostic is borrowed from its original storage.
+    /// Typed causes are formatted into an owned string only when this method
+    /// is called. Formatting the error through [`std::fmt::Display`] writes
+    /// directly to the caller's formatter instead.
     #[must_use]
-    pub fn message(&self) -> &str {
-        &self.message
+    pub fn message(&self) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
+
+        match self {
+            Self::Diagnostic { message } => Cow::Borrowed(message),
+            Self::Catalog(source) => Cow::Owned(source.to_string()),
+            Self::PendingTransport(source) => Cow::Owned(source.to_string()),
+            Self::HandoffAlreadyPending => {
+                Cow::Borrowed("another selectable VMStop handoff is already pending")
+            }
+            Self::HandoffRejected { status } => Cow::Owned(format!(
+                "QEMU rejected selectable translated-block exit with status {status}"
+            )),
+        }
     }
 }
 
