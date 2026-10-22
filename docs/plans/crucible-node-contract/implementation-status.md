@@ -3703,6 +3703,35 @@ including 71 integration targets. All 442 frozen Rust/Cargo inputs match both
 this committed revision and the registered captured source. No configured
 runtime, VM, complete Source/native restoration or full RFC qualification follows.
 
+## Scoped Bootstrap proof and reply operands
+
+Commit `84e2837e32` groups each received-request and constructed-verification
+scope into a borrowed DATA view. The verifier and reply step helpers use the
+same actual SDK, envelopes, DTOs, digests and custody operands. Creating a view
+completes no pending verification, publication, Source credit or native phase.
+MAC checks, separate admissions, surviving-output censuses, SDK sequencing and
+terminal-guard/error order remain unchanged.
+
+The independent scratch quotes add each local view and its overlapping helper
+borrows. Counter-array and iterator headers grow with the extra terms. Existing
+individual argument and digest terms remain conservative. The complete initial
+construction schedule consumes these updated defining quotes.
+
+Standard and raw-JSON Transport executables compile. Transport/Engine/Daemon
+all-feature/all-target checking, owned formatting and all six architecture
+gates pass. Strict library Clippy reports 68 errors and 1,731 warnings, down
+from 72 errors; it remains failed. No lint allowance changes.
+
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 442 frozen Rust/Cargo inputs match both
+the committed revision and its registered captured source.
+
+The complete raw-JSON Transport suite passes all 2,083 tests, with zero failures,
+16 existing ignores and no filtering, in 426.09 seconds. The complete standard
+suite is still running. Sources and executables remain stable after compilation
+finishes. These component results establish no refreshed configured runtime,
+VM, complete Source/native restoration or full RFC qualification.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
