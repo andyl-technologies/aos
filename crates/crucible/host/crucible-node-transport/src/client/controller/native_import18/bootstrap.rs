@@ -3,7 +3,8 @@
 //! A genuine caller keeps this owner and row beside its immutable recipe and
 //! Initial result. Construction moves fixed typed inputs. Separately admitted
 //! unsigned assignment retains each closed Value and Envelope under the original
-//! Hello cut. SDK reservation, signing and receive remain separate prerequisites.
+//! Hello cut. The original reserved slot precedes guarded proof materialization;
+//! SDK registration, signing authority and receive remain separate prerequisites.
 //!
 //! ```text
 //! empty -> retaining (failed until checked) -> retained
@@ -18,7 +19,8 @@ use crate::hello_frames::OriginalHelloFrameDigests;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
     NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF, NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT,
     NATIVE_IMPORT18_BOOTSTRAP_FEATURE, PacketNativeImport18BootstrapAssignmentData,
-    PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapReservationRowData,
+    PacketNativeImport18BootstrapMaterializationRowData, PacketNativeImport18BootstrapRequest,
+    PacketNativeImport18BootstrapReservationRowData, PacketNativeImport18BootstrapSealingData,
 };
 use crate::retained_metadata::{
     aliases::MetadataSharedKind, requested_metadata_backing_storage_data,
@@ -29,6 +31,8 @@ use std::mem::size_of;
 mod assignment;
 #[path = "bootstrap/history.rs"]
 mod history;
+#[path = "bootstrap/materialization.rs"]
+mod materialization;
 #[path = "bootstrap/reservation.rs"]
 mod reservation;
 #[path = "bootstrap/signing.rs"]
@@ -56,6 +60,9 @@ pub struct OriginalNativeImport18Bootstrap {
     reservation_started: bool,
     literal_slot: Option<usize>,
     reserved: bool,
+    materialization_row: Option<PacketNativeImport18BootstrapMaterializationRowData>,
+    materialization_started: bool,
+    sealing: Option<PacketNativeImport18BootstrapSealingData>,
     retained: bool,
     failed: bool,
 }
@@ -96,6 +103,9 @@ impl CnpController {
             reservation_started: false,
             literal_slot: None,
             reserved: false,
+            materialization_row: None,
+            materialization_started: false,
+            sealing: None,
             retained: false,
             failed: true,
         });
@@ -132,7 +142,8 @@ impl OriginalNativeImport18Bootstrap {
     ///
     /// The enclosing Source separately counts the inline owner header and its
     /// Controller/Hello owners. Equal shared payloads receive no alias discount.
-    /// Assignment adds only its closed fixed-depth Value fields, with no raw tree.
+    /// Assignment and materialization add closed fixed-depth Values and a literal
+    /// bank, without admitting a raw receive tree.
     ///
     /// # Errors
     /// Refuses a foreign creator or checked metadata traversal exhaustion.
@@ -147,6 +158,9 @@ impl OriginalNativeImport18Bootstrap {
             reservation_started: _,
             literal_slot: _,
             reserved: _,
+            materialization_row: _,
+            materialization_started: _,
+            sealing,
             retained: _,
             failed: _,
         } = self;
@@ -160,6 +174,9 @@ impl OriginalNativeImport18Bootstrap {
         if let Some(assignment) = assignment {
             assignment.observe_retained_into_data(&mut observer)?;
         }
+        if let Some(sealing) = sealing {
+            sealing.observe_retained_into_data(&mut observer)?;
+        }
         Ok(observer.finish())
     }
 
@@ -169,7 +186,9 @@ impl OriginalNativeImport18Bootstrap {
     /// Refuses a foreign creator process or thread.
     pub fn retained_metadata_counter_scratch_data(&self) -> Result<usize, ProviderError> {
         self.row.controller.ensure_current()?;
-        Ok(if self.reservation_started {
+        Ok(if self.materialization_started {
+            CnpController::original_native_import18_bootstrap_materialization_counter_scratch_data()
+        } else if self.reservation_started {
             CnpController::original_native_import18_bootstrap_reservation_counter_scratch_data()
         } else if self.assignment.is_some() {
             CnpController::original_native_import18_bootstrap_assignment_counter_scratch_data()

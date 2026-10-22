@@ -13,6 +13,33 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
 use crate::transport::RetainedFrame;
 
 impl ClientSession {
+    /// Checks materialization against the same unregistered slot and Hello cut.
+    ///
+    /// # Errors
+    /// Refuses changed cut, endpoint, closed request/proof or literal slot.
+    pub(in crate::client) fn authenticate_original_bootstrap_materialization_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        proof: &PacketNativeImport18BootstrapAckProof,
+        cut: OperationalDeadline,
+        slot: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        let deadline = self.authenticate_original_bootstrap_effect_cut_data(cut, 2);
+        let literal = self
+            .connection
+            .authenticate_original_bootstrap_materialization_data(original, request, proof, slot);
+        deadline?;
+        literal
+    }
+
+    /// Names the closed proof comparison, slot and original deadline controls.
+    pub(in crate::client) fn original_bootstrap_materialization_counter_scratch_data() -> usize {
+        Self::original_bootstrap_unsigned_loan_counter_scratch_data::<()>()
+            + size_of::<&PacketNativeImport18BootstrapAckProof>()
+            + size_of::<[Result<(), ProviderError>; 2]>()
+    }
+
     /// Lends the unchanged reserved unsigned original under its actual SDK cut.
     ///
     /// The caller independently admits this guard and its signing callback,

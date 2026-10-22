@@ -339,6 +339,9 @@ fn retained_materialization_seals_and_publishes_the_same_actual_reserved_assignm
     let proof = history.proof.unwrap();
     let bytes = history.literal.unwrap();
     session
+        .authenticate_original_bootstrap_materialization_data(original, &request, proof, cut, slot)
+        .unwrap();
+    session
         .seal_original_bootstrap_data(original, &request, proof, (bytes, slot), cut)
         .unwrap();
     session
@@ -361,6 +364,111 @@ fn retained_materialization_seals_and_publishes_the_same_actual_reserved_assignm
         .authenticate_original_bootstrap_effect_cut_data(cut, 3)
         .unwrap();
     assert!(session.original_bootstrap_hello_cut_data().is_err());
+}
+
+#[test]
+fn materialization_guard_refusals_keep_actual_banks_before_sdk_registration_or_io() {
+    for fault in 0..5 {
+        let (mut lease, mut session, mut peer) = scope();
+        let (proposal, request, proof) = proposal(&session);
+        let mut assignment = None;
+        native_import18_bootstrap_assignment_into_data(
+            [
+                session.authority.session_id(),
+                session.authority.incarnation_id(),
+                proposal.request_id.0.as_ref().unwrap(),
+            ],
+            &request,
+            &native_import18_bootstrap_assignment_quote_data(usize::MAX).unwrap(),
+            usize::MAX,
+            &mut assignment,
+        )
+        .unwrap();
+        let cut = session.original_bootstrap_hello_cut_data().unwrap();
+        let mut slot = None;
+        session
+            .reserve_original_bootstrap_data(
+                assignment
+                    .as_ref()
+                    .unwrap()
+                    .borrowed_history_data()
+                    .original
+                    .unwrap(),
+                &request,
+                cut,
+                65536,
+                &mut slot,
+            )
+            .unwrap();
+        let row = native_import18_bootstrap_sealing_quote_data(
+            assignment.as_ref().unwrap(),
+            &proof,
+            usize::MAX,
+        )
+        .unwrap();
+        let mut owner = None;
+        native_import18_bootstrap_sealing_into_data(
+            &mut assignment,
+            &mut Some(proof),
+            &row,
+            usize::MAX,
+            &mut owner,
+        )
+        .unwrap();
+        let owner = owner.as_ref().unwrap();
+        let history = owner.borrowed_history_data();
+        let original = history.assignment.unwrap().original.unwrap();
+        let actual_proof = history.proof.unwrap();
+        let literal = history.literal.unwrap();
+        let pointer = literal.as_ptr();
+        let before = session.connection.original_bootstrap_model_storage_data();
+        let changed_proof = PacketNativeImport18BootstrapAckProof {
+            schema: actual_proof.schema.clone(),
+            algorithm: actual_proof.algorithm.clone(),
+            context_digest: Bytes::new(actual_proof.context_digest.as_slice().to_vec()),
+            mac: Bytes::new(vec![41; 32]),
+        };
+        let mut checked_request = request.clone();
+        let mut checked_slot = slot;
+        let mut checked_proof = actual_proof;
+        match fault {
+            0 => session.deadline.reset(Duration::from_secs(60)).unwrap(),
+            1 => lease.contain(),
+            2 => checked_slot = None,
+            3 => checked_proof = &changed_proof,
+            _ => checked_request.initial_funding.retained_requested_bytes = U64::new(4),
+        }
+
+        assert!(
+            session
+                .authenticate_original_bootstrap_materialization_data(
+                    original,
+                    &checked_request,
+                    checked_proof,
+                    cut,
+                    checked_slot,
+                )
+                .is_err(),
+            "fault {fault}"
+        );
+
+        assert_eq!(
+            session.connection.original_bootstrap_model_storage_data(),
+            before
+        );
+        assert_eq!(session.sequence.get(), 2);
+        let history = owner.borrowed_history_data();
+        assert!(history.sealed);
+        assert!(!history.failed);
+        assert_eq!(history.literal.unwrap().as_ptr(), pointer);
+        assert_eq!(history.literal.unwrap(), literal);
+        assert!(owner.retained_requested_bytes_data().unwrap() <= row.requested_storage_data()[0]);
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 }
 
 fn seal(session: &mut ClientSession) -> Sealed {

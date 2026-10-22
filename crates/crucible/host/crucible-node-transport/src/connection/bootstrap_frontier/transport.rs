@@ -23,6 +23,22 @@ mod storage;
 mod wire;
 
 impl<S: ProviderStream> Connection<S> {
+    /// Checks closed materialization against the same still-unregistered slot.
+    ///
+    /// # Errors
+    /// Refuses changed scope, closed request/proof, SDK frontier or literal slot.
+    pub(crate) fn authenticate_original_bootstrap_materialization_data(
+        &self,
+        original: &Envelope,
+        request: &PacketNativeImport18BootstrapRequest,
+        proof: &PacketNativeImport18BootstrapAckProof,
+        slot: Option<usize>,
+    ) -> Result<(), ProviderError> {
+        self.authenticate_original_bootstrap_frontier_data()?;
+        wire::authenticate_data(&self.authority, original, request, Some(proof))?;
+        self.authenticate_pending_native_import18_data(original, &[], slot, false)
+    }
+
     /// Checks the actual reserved unsigned bootstrap without constructing a DTO.
     ///
     /// # Errors

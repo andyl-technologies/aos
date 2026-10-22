@@ -45,6 +45,12 @@ pub struct OriginalNativeImport18BootstrapHistoryData<'a> {
     pub literal_slot: Option<usize>,
     /// Reports successful reservation without claiming publication or completion.
     pub reserved: bool,
+    /// Borrows the exact materialization quote, including after a refused entry.
+    pub materialization_row: Option<&'a PacketNativeImport18BootstrapMaterializationRowData>,
+    /// Reports spent materialization entry independently of its surviving outputs.
+    pub materialization_started: bool,
+    /// Borrows the moved assignment, proof, DOM and literal after either outcome.
+    pub sealing: Option<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapSealingHistoryData<'a>>,
     /// Reports only successful typed-owner retention, never bootstrap completion.
     pub retained: bool,
     /// Preserves a spent/refused constructor independently of retained inputs.
@@ -114,6 +120,12 @@ impl OriginalNativeImport18Bootstrap {
             reservation_started: self.reservation_started,
             literal_slot: self.literal_slot,
             reserved: self.reserved,
+            materialization_row: self.materialization_row.as_ref(),
+            materialization_started: self.materialization_started,
+            sealing: self
+                .sealing
+                .as_ref()
+                .map(PacketNativeImport18BootstrapSealingData::borrowed_history_data),
             retained: self.retained,
             failed: self.failed,
         });

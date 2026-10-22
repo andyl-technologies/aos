@@ -18,6 +18,8 @@ use crate::reference_packet::service::native_startup::PacketNativeStartupAllocat
 mod assignment;
 mod reservation;
 pub use reservation::PacketNativeImport18BootstrapReservationRowData;
+mod materialization;
+pub use materialization::PacketNativeImport18BootstrapMaterializationRowData;
 mod sealing;
 pub use sealing::{
     PacketNativeImport18BootstrapSealingData, PacketNativeImport18BootstrapSealingFailure,

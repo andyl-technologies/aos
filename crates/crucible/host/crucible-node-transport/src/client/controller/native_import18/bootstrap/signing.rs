@@ -27,6 +27,25 @@ impl CnpController {
             &PacketNativeImport18BootstrapRequest,
         ) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
+        if owner.materialization_started {
+            return Err(invalid());
+        }
+        self.with_original_bootstrap_unsigned_preflight_data(hello, owner, inspect)
+    }
+
+    /// Checks the predecessor while its materialization attempt is retained.
+    ///
+    /// # Errors
+    /// Refuses changed predecessor custody, callback or terminal original guards.
+    pub(super) fn with_original_bootstrap_unsigned_preflight_data<R: Copy>(
+        &self,
+        hello: &OriginalHelloJournal,
+        owner: &OriginalNativeImport18Bootstrap,
+        inspect: impl FnOnce(
+            &Envelope,
+            &PacketNativeImport18BootstrapRequest,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
         authenticate_owner(self, hello, owner)?;
         let original = owner
             .assignment
@@ -57,14 +76,14 @@ impl CnpController {
     {
         Self::original_native_import18_bootstrap_counter_scratch_data()
             + ClientSession::original_bootstrap_unsigned_loan_counter_scratch_data::<R>()
-            + size_of::<&Self>()
-            + size_of::<&OriginalHelloJournal>()
-            + size_of::<&OriginalNativeImport18Bootstrap>()
+            + size_of::<&Self>() * 2
+            + size_of::<&OriginalHelloJournal>() * 2
+            + size_of::<&OriginalNativeImport18Bootstrap>() * 2
             + size_of::<&Envelope>()
             + size_of::<&PacketNativeImport18BootstrapRequest>()
             + size_of::<OperationalDeadline>()
-            + size_of::<R>()
-            + size_of::<Result<R, ProviderError>>()
+            + size_of::<R>() * 2
+            + size_of::<Result<R, ProviderError>>() * 2
             + size_of::<[Result<(), ProviderError>; 2]>()
     }
 }
@@ -87,13 +106,35 @@ fn authenticate_identity(
     hello: &OriginalHelloJournal,
     owner: &OriginalNativeImport18Bootstrap,
 ) -> Result<(), ProviderError> {
-    owner.row.controller.ensure_current()?;
     if owner.failed
         || !owner.retained
         || !owner.reservation_started
         || !owner.reserved
         || owner.literal_slot.is_none()
-        || !Rc::ptr_eq(&owner.row.controller, &controller.protocol_owner)
+    {
+        return Err(invalid());
+    }
+    authenticate_original_identity_data(controller, hello, owner)?;
+    let assignment = owner
+        .assignment
+        .as_ref()
+        .ok_or_else(invalid)?
+        .borrowed_history_data();
+    if !assignment.assigned || assignment.failed || assignment.original.is_none() {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+// Construction may have marked the same owner failed before a terminal check;
+// current identity is independent of that retained local construction outcome.
+pub(super) fn authenticate_original_identity_data(
+    controller: &CnpController,
+    hello: &OriginalHelloJournal,
+    owner: &OriginalNativeImport18Bootstrap,
+) -> Result<(), ProviderError> {
+    owner.row.controller.ensure_current()?;
+    if !Rc::ptr_eq(&owner.row.controller, &controller.protocol_owner)
         || owner.row.hello != controller.original_canonical_ack_hello_frame_digests(hello)?
         || owner.row.input_identity
             != storage::input_identity_data(
@@ -101,14 +142,6 @@ fn authenticate_identity(
                 owner.request.as_ref().ok_or_else(invalid)?,
             )?
     {
-        return Err(invalid());
-    }
-    let assignment = owner
-        .assignment
-        .as_ref()
-        .ok_or_else(invalid)?
-        .borrowed_history_data();
-    if !assignment.assigned || assignment.failed || assignment.original.is_none() {
         return Err(invalid());
     }
     Ok(())
