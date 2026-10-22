@@ -10,6 +10,24 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-core-quantum-bank.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-core-quantum-owner-dependencies.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-installing-service.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-nonwaiting-terminal.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-quantum-schema-two-negotiation.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-schema-two-receipt.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-quantum-terminal-loan-proposal.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-quantum-bank.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-quantum-bank.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-quantum-installing-service-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-quantum-schema-two-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-atfork-registry.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-nonwaiting-terminal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-bank.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-installing-service.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-original-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-quantum-setup.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-rr-mask-receipt.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-publisher-rr-observation.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-quantum-rr-actor.rst` | GPL-2.0-or-later | QEMU default |
 | `plugins/crucible-native-quantum-rr.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |

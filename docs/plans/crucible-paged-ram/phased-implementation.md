@@ -63,11 +63,77 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed actor union `5b7be4763f` imports conventional `137ce45cb6`, tree `a152cc6c`. Independent review matches the actor's 27 changed sources, 10,293 evidence files and six literal links, plus every blob and link in the composed archive. The complete Source floor is 297,990 bytes; the cumulative ledger contains 408 created files. The corrected 987-object cohort and complete-provider physical controls pass within declared bounds. | Packaged reconstruction, the 187-case Source suite, license ledger and ABI conformance pass. The fresh Native suite times out in its unchanged `resize-member-limit` omission control; investigation remains open. Strict Clippy still refuses. Genuine Module/Core issuance, nonwaiting semantic RR execution, complete return and rearm remain open. |
+| Native integration | Signed atomic `ec33e02897` imports conventional `45e353b75a`, tree `12361245`. Independent review matches all 78,233 tracked source entries, 26,862 evidence files, twelve literal evidence links and 34 sealed artifacts. The complete Source floor is 298,798 bytes; the cumulative ledger contains 426 created files. | Ordinary-fork quiescence, nonwaiting physical custody, Setup7 parsing, Original registration posts and physical service5 compose with genuine configured links. Packaged reconstruction, Source and Native custody qualification are pending for this committed import. Semantic Module/Core issuance, populated execution, stack/profile admission and full terminal cleanup remain open. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Ordinary-fork and nonwaiting physical composition
+
+The signed atomic native patch now selects `ec33e02897fe424523e1dc755ae0f3f651fdb22c`
+with conventional source `45e353b75af24644b9cefc014cfc75323a8705bd`, tree
+`12361245265446cff084677143e44d3394f6b8c5`. It composes the ordinary-fork RCU
+registry ordering fix, nonwaiting Source/Native terminal metadata, the inline
+Core resource bank, exact Setup7/plan10 parsing, completed Original registration
+posts and the physical installing-service5 view. Old profile restrictions and
+selected preinit refusal remain explicit. A physical bank or service does not
+issue either semantic operation role.
+
+The ordinary fork fix orders thread-registry quiescence after existing RCU
+locks and releases it before child RCU worker recreation. It addresses the
+actual vanished-worker lock implicated by the previous packaged Native custody
+suite's discard resize-member timeout; the retained hot-fork transaction and
+ordinary mutex behavior remain separate. Nonwaiting terminal sections make one
+attempt and retain uncertain debt. Actual born/consumed facts precede independent
+posts. Original registration now requires all independent post attempts and
+returns; default zero statuses cannot establish completed registration.
+
+The complete actual Source is 254,024 bytes. Its 31 separate genuine static
+getters total 44,774 bytes, giving a 298,798-byte floor. The bank (168 bytes),
+Original registration (72) and service (296) are embedded Source terms, not
+extra charges. Preexec remains 212,752 bytes, with nested storage 26,640,
+session 15,936 and RR metadata 232. Eighteen newly created files enter the
+preserved per-file license ledger, bringing its cumulative created-file count
+to 426, with no deletions.
+
+Independent read-only verification matches every signed/working source entry,
+all 26,862 indexed evidence files, twelve literal evidence links, 34 sealed
+artifacts and every blob, mode and literal link in the complete source archive
+(78,161 regular files and 72 links). It also authenticates both commit signatures,
+the exact raw signed atomic object and the detached manifest signature.
+The frozen manifest SHA-256 is
+`7e873a772db0072c4e462f968a40a40a3fff9a82f7aade1fff8505d5d09385c4`;
+the independent proof SHA-256 is
+`6111fecafd64e8ca64ca38b3f2bc69699f5d7790fcb3fb9aad2806a15b6deac5`.
+The checker's initial archive-prefix and artifact-location errors were corrected
+without changing any qualified source or evidence. Raw ambient environment
+captures remain local, digest-indexed only; the public projection contains
+explicit build inputs. The separately authenticated 684 BSD source blobs for
+SoftFloat/TestFloat remain in their corresponding-source artifact.
+
+Qualification compiles 226 changed owning objects and 493 further consumers of
+the changed public SDK, with all 3,163 initialized object outputs audited and
+719 freshly changed outputs. Seventeen genuine configured links pass. Sixteen
+leaf suites, six owning executables, the real service and four independent
+omissions, ordinary keeper/fork/RCU controls and all 97 preexec omission
+classifiers pass within their original bounds. The latter completes in
+410.084/600 seconds. Two compiler lanes remain within the declared six-GiB
+bound; separate PID namespaces are reported explicitly and their conservative
+summed peak is 1,916,301,312 bytes. The final keeper expectation correction is
+qualified separately from the recorded owning production input `d990046b5a`;
+no new whole-build or normal-delivery timing is claimed.
+
+The SDK audit preserves 443 actual previous definitions and adds four real v5
+definitions. It also exposes the preexisting undefined
+`qemu_plugin_crucible_advance_outcome_observe_v1` declaration, which remains an
+actual missing producer rather than a counted export or accepting stub.
+Packaged reconstruction, Source/Native custody, ABI and license qualification
+are pending for this import. Later stack-recipient and matched-member stages
+are excluded from this cohort. Genuine Module/Core issuance, selected
+activation, populated reader/RR execution, sequential borrower rearm and full
+nonwaiting semantic terminal cleanup remain unqualified; CPU admission retains
+`ENOTSUP`.
 
 #### Stack page geometry parity
 
@@ -80,6 +146,12 @@ All fourteen protocol targets pass 295 cases; strict all-target/all-feature
 Clippy passes. The ABI stack group now registers six cases. Actual observed
 page geometry, concrete profiles and nominal owners remain adoption requirements;
 these syntax checks do not grant stack or Cleanup authority.
+Mandatory application compilation passes at
+`vqz1n80zdnm853h9v2jmrx0dfjnpfdq9`; all 5,332 committed Rust/TOML inputs match
+its frozen source (proof SHA-256
+`43e0e05ef23adce19e2f3e9d0df1f35a03e929dcf8fcf4ebb5e2dc3e14f14082`).
+ABI qualification is running. Strict license-boundary qualification stops at
+controller Clippy (909 library and 963 test errors).
 
 #### Reserved Host Cleanup with separate actual entry
 
@@ -111,8 +183,13 @@ between birth and post, and identity exhaustion. All Host resource targets
 pass (333 reported cases), as does strict all-target/all-feature Clippy.
 The first all-feature compile exposed a missing private bootstrap initializer;
 that constructor was corrected before final qualification. The ABI gate
-registers the exact eight controls. Hygiene passes. Mandatory application,
-ABI, exact supervision and strict boundary checks are running.
+registers the exact eight controls. Hygiene and ABI conformance pass
+(ABI output `2g9j17i6c2cbwcisi38kgjahhq6y0159`). Mandatory application
+compilation passes at `hk5f1mkn4l307kxg1g5ngc16p471874w`; all 5,332 committed
+Rust/TOML inputs match its frozen source (proof SHA-256
+`a1eeab5c10df42cb2b9d5420c3551a788382f768a23b835108a09d0579bab79a`).
+Exact supervision qualification is running. Strict license-boundary
+qualification stops at controller Clippy (909 library and 963 test errors).
 
 This is genuine local operation-record custody, not a native deferred-entry
 contract, stack loan or Module/Core authority. Actual Source ownership,
