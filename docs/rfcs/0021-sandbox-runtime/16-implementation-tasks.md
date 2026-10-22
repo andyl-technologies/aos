@@ -10494,3 +10494,15 @@ foreign entry edges. All 146 checker unit tests pass. Full compiled-policy
 mutation checks and installed approval, hardware provisioning and failed-history
 reruns remain pending; no offline or normal runtime provisioning is qualified
 by this source repair.
+
+### One fleet transport agent per guest (installed retry pending)
+
+The signed-image startup diagnostics show both the fleet infrastructure agent
+and the exposed package's native agent service opening the same virtio-serial
+channel. The effective fleet system now disables package activation for every
+agent-enabled boot shape, retaining the selected payload through the existing
+fleet unit. Previously only baked-/var kernel machines suppressed the duplicate.
+The native effects checks pass at
+`/nix/store/9lzhfysj60hwdwyr4s4qn9gbz78lqz5k-aos-effect-module-checks-0`.
+This harness repair still requires installed image execution; it grants no
+Sandbox readiness or public lifecycle qualification.

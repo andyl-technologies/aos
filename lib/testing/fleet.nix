@@ -244,12 +244,11 @@
             bakeAgentUnit = m.expectAgent && !m.bakesAgent;
           })
         ]
-        # A baked-/var kernel machine already carries the fleet control agent
-        # as test infrastructure. Do not also activate the exposed
-        # aos-test-agent package: both own aos-test-agent.service, and starting
-        # the package target while multi-user.target is bringing up the baked
-        # harness creates an unresolvable ordering cycle.
-        ++ lib.optional (m.bakesAgent && m.system.config.aos.packages ? aos-test-agent) {
+        # Every agent-enabled machine already has one fleet-owned transport,
+        # either in its /var seed or in the effective image. Retain the selected
+        # payload through that unit without activating another package service
+        # against the same virtio-serial channel.
+        ++ lib.optional (m.expectAgent && m.system.config.aos.packages ? aos-test-agent) {
           aos.packages.aos-test-agent.bundle = lib.mkForce false;
         }
         ++ m.extraModules;
