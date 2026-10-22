@@ -847,6 +847,17 @@ pub(super) fn wait_for_public_attempt(
                 "CRUCIBLE-ENVOY-WAIT-V1 elapsed_s={} phase={phase} boot={boot}",
                 started.elapsed().as_secs()
             );
+
+            // The service's own progress row carries per-node horizons,
+            // clocks and realized parallelism; forward the latest one so a
+            // slow attempt is diagnosable before it fails.
+            if let Some(attempt_progress) = stderr
+                .lines()
+                .rev()
+                .find(|line| line.starts_with("CRUCIBLE-ATTEMPT-PROGRESS-V1 "))
+            {
+                eprintln!("{}", attempt_progress.chars().take(4096).collect::<String>());
+            }
             next_progress = Instant::now() + Duration::from_secs(30);
         }
         let head = campaign_status(fixture)?;
