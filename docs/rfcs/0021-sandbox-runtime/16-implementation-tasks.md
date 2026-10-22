@@ -9924,16 +9924,11 @@ The same transcript shows both pre-pin bind fixtures exiting before their
 attack because `chmod` is absent from the initrd job's PATH. Both now use the
 explicit AOS Coreutils executable; the non-directory runtime-root fixture
 already uses explicit package tools and reaches its intended mutation.
-The Host library check now follows the versioned DSO symlink when comparing
-the actual library inodes, modes and security contexts. Its prior installed run
-passed byte comparison but stopped while reading the symlink's context.
-The next run passes byte, inode, mode and ownership comparisons, then finds
-that the selected Coreutils `stat` has no libselinux support. The fixture now
-uses the AOS-built `getfattr` to compare the actual raw `security.selinux`
-values, following the DSO links. This label comparison remains unqualified
-until the installed rerun passes.
-The next installed run passes all four DSO comparisons, including both raw
-labels. It then reaches the real phase-zero start, where PID1 refuses the
+The installed Host test passes byte, distinct-inode, mode/ownership and raw
+SELinux-label comparisons for the Host and copied Guest DSOs. Both metadata
+tools follow the versioned DSO symlinks; AOS-built `getfattr` supplies raw
+`security.selinux` values because Coreutils `stat` has no libselinux support.
+That run then reaches the real phase-zero start, where PID1 refuses the
 probe and target because that image has no resource bank. Observation-only
 Host work can now install the same finite base bank without an enabled
 Controller, retaining its unused reservation and rejecting online subdivisions.
@@ -9943,14 +9938,17 @@ free storage before the probe. Its stage0 uses the selected manager package.
 The standalone-bank contract rejects an absent owner and an online subdivision.
 It passes at
 `/nix/store/v550crz3mhhfk94q7fv2hap81vv2s1sg-sandbox-standalone-resource-bank-check`.
-Core evaluation also passes. The installed Host rerun remains pending; the earlier
+The `--release` check produces the same receipt. Core evaluation also passes.
+The installed Host rerun remains pending; the earlier
 DSO comparison is component evidence, not phase-zero or backend readiness.
 
-The prior hardware-profile artifact check also passes at
-`/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.
-That immutable source predates V6 and V7: it qualifies its original hardware
-profile and compiled policy, not the newer import/export purposes or an
-installed TPM operation.
+The clean hardware-profile artifact check passes at
+`/nix/store/jwf6bpg4q8qwwv2xs27c4j4mcl0cr5nz-sandbox-nix-offline-hardware-profile-check`.
+It checks both hardware invocation profiles against the actual rendered units
+and selected policy, including their measured hashes and distinct invocation
+hashes. The configuration rejects missing funding, an absent installation
+owner and online subdivisions. This artifact receipt does not qualify installed
+V6/V7 import/export, a TPM operation or runtime-floor publication.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
