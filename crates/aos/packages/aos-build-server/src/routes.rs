@@ -56,7 +56,7 @@ use aos_nar::cache::nix_cache_info;
 use aos_nix::{StoreHash, aos_nix_env};
 
 use crate::access;
-use crate::auth::{self, AuthClaims, AuthResult};
+use crate::auth::{self, AuthClaims, AuthResult, ViewAccessError};
 use crate::build::BuildManager;
 use crate::compress::{self, Compression};
 use crate::config::ServerConfig;
@@ -204,6 +204,26 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
 // Read-only endpoints (respect anonymous_read)
 // ---------------------------------------------------------------------------
 
+fn require_rest_read_access(
+    auth: &AuthResult,
+    view: &str,
+    allow_anonymous: bool,
+) -> Result<(), Response> {
+    auth::require_view_permission(auth.claims(), view, "read", allow_anonymous).map_err(|error| {
+        match error {
+            ViewAccessError::AuthenticationRequired => {
+                (StatusCode::UNAUTHORIZED, "authentication required").into_response()
+            }
+            ViewAccessError::ViewNotAuthorized => {
+                (StatusCode::FORBIDDEN, "view not authorized").into_response()
+            }
+            ViewAccessError::PermissionRequired => {
+                (StatusCode::FORBIDDEN, "read permission required").into_response()
+            }
+        }
+    })
+}
+
 /// `GET /{view}/nix-cache-info` — Nix binary cache metadata.
 ///
 /// Anonymous when the view has `anonymous_read = true`, otherwise requires
@@ -223,12 +243,9 @@ async fn cache_info_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    // Enforce auth unless anonymous_read is enabled.
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, "auth required for cache-info");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, "cache-info read access denied");
+        return response;
     }
 
     let mut body = nix_cache_info(&state.store_dir, 30);
@@ -257,11 +274,9 @@ async fn narinfo_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, hash = %hash_narinfo, "narinfo read access denied");
+        return response;
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
@@ -351,11 +366,9 @@ async fn nar_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if let Err(response) = require_rest_read_access(&auth, &view, view_config.anonymous_read) {
+        tracing::warn!(view = %view, filename = %filename, "NAR read access denied");
+        return response;
     }
 
     let zstd_level = state.config.compression.level;
@@ -842,20 +855,24 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
 
 /// `HEAD /{view}/store/{hash}` — queries the progress of a partial upload.
 ///
-/// Requires a valid JWT (any views/permissions). Returns the current size
+/// Requires a valid JWT with read access to the view. Returns the current size
 /// of the partial upload file in `Content-Length` so a client can resume a
 /// chunked upload from the right offset, or `404` if no partial upload
 /// exists for the given hash.
 async fn upload_progress_handler(
     Path((view, hash)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
-    AuthClaims(_claims): AuthClaims,
+    auth: AuthResult,
 ) -> Response {
     if let Err(resp) = validate_view_name(&view) {
         return resp;
     }
     if state.views.get_view(&view).is_none() {
         return (StatusCode::NOT_FOUND, "unknown view").into_response();
+    }
+    if let Err(response) = require_rest_read_access(&auth, &view, false) {
+        tracing::warn!(view = %view, hash = %hash, "upload progress read access denied");
+        return response;
     }
     let hash = match parse_store_hash(&hash) {
         Ok(hash) => hash,
