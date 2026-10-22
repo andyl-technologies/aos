@@ -61,12 +61,9 @@ impl AttemptResourceBinding {
 
         // All clones share one once-only choice. Refusing a repeated request
         // preserves the first choice and leaves unrelated refinements available.
-        let result = self.main_stack_bytes.compare_exchange(
-            0,
-            bytes,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let result =
+            self.main_stack_bytes
+                .compare_exchange(0, bytes, Ordering::AcqRel, Ordering::Acquire);
         self.launch_state.store(OPEN, Ordering::Release);
         result
             .map(|_| ())
