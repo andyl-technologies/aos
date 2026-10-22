@@ -3,11 +3,15 @@
   pkgs,
   lib,
   image,
+  crash ? false,
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
-    name = "terrane-scoped-worker-channel-ext4";
+    name =
+      if crash
+      then "terrane-worker-crash-recovery-ext4"
+      else "terrane-scoped-worker-channel-ext4";
     memory = 1024;
     timeout = 90;
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
@@ -23,7 +27,7 @@ in
       trap 'umount "$TERRANE_CACHE_VM_ROOT"; rm -f "$TERRANE_CACHE_VM_IMAGE"; rmdir "$TERRANE_CACHE_VM_ROOT" /var/lib/terrane-cache-proof' EXIT
       (cd ${image} && sha256sum --check share/elf-sha256sum && sha256sum --check surface-elf-sha256sum)
       export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
-      ${pkgs.python3}/bin/python3 ${image}/share/scoped_worker_vm.py ${image} ${pkgs.terrane.src}
+      ${pkgs.python3}/bin/python3 ${image}/share/scoped_worker_vm.py ${image} ${pkgs.terrane.src} ${lib.optionalString crash "--crash"}
       (cd ${image} && sha256sum --check share/elf-sha256sum && sha256sum --check surface-elf-sha256sum)
     '';
   }

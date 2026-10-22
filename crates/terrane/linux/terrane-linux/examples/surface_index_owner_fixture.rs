@@ -22,6 +22,9 @@ mod scoped;
 #[path = "surface_index_owner_fixture/scoped_worker.rs"]
 mod scoped_worker;
 
+#[path = "surface_index_owner_fixture/worker_crash.rs"]
+mod worker_crash;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -50,8 +53,15 @@ fn main() -> Result<()> {
     if mode == "worker-child" {
         return scoped_worker::child();
     }
+    if mode == "worker-crash-child" {
+        return worker_crash::child();
+    }
     let launched = if mode == "worker-send" {
         Some(scoped_worker::launch()?)
+    } else if mode == "worker-crash" {
+        let launched = scoped_worker::launch_crash()?;
+        println!("WORKER_PID {}", launched.child_id());
+        Some(launched)
     } else {
         None
     };
@@ -94,6 +104,9 @@ fn main() -> Result<()> {
             | "cold-closure"
             | "index-closure"
             | "worker-send"
+            | "worker-crash"
+            | "crash-refuse"
+            | "crash-recover"
     ) {
         return Err("unknown surface-owner selector".into());
     }
@@ -104,6 +117,9 @@ fn main() -> Result<()> {
         .build()?;
     if mode == "refuse-cold" {
         return refuse_malformed_cold(&owner, &runtime, &inputs);
+    }
+    if matches!(mode.as_str(), "crash-refuse" | "crash-recover") {
+        return worker_crash::recover(&mode, &runtime, &owner, &inputs);
     }
     let (root, nodes) = tree()?;
     let before = snapshot(&inputs)?;
@@ -121,6 +137,9 @@ fn main() -> Result<()> {
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
     if let Some(launched) = launched {
+        if mode == "worker-crash" {
+            return worker_crash::run(launched, &runtime, &owner, &inputs);
+        }
         return scoped_worker::run(launched, &runtime, &owner, &inputs);
     }
     if mode == "cold-closure" {

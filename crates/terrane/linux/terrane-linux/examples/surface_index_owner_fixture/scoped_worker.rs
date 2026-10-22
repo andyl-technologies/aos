@@ -35,7 +35,7 @@ use terrane_format::{
     tree_format::ContentRef,
 };
 use terrane_linux::{
-    host_cache::NativeMetadataOwner,
+    host_cache::{NativeExposureLease, NativeMetadataOwner},
     structural_index::{Kind, MappedIndex},
     worker_channel::{
         self, ExposureContext, PendingBacking, RequestedBacking, WorkerChannel, WorkerClient,
@@ -86,6 +86,18 @@ impl Drop for Launched {
 /// Refuses a nonadministrative or multithreaded launcher, missing native inputs,
 /// failed original-child binding and incomplete identity or capability drops.
 pub(super) fn launch() -> Result<Launched> {
+    launch_mode("worker-child")
+}
+
+/// Starts the original child used by the administrative crash supervisor.
+///
+/// # Errors
+/// Preserves the same original-child and irrevocable identity checks as launch.
+pub(super) fn launch_crash() -> Result<Launched> {
+    launch_mode("worker-crash-child")
+}
+
+fn launch_mode(mode: &str) -> Result<Launched> {
     if rustix::process::geteuid().as_raw() != 0 || fs::read_dir("/proc/self/task")?.count() != 1 {
         return Err("scoped proof launcher requires one administrative thread".into());
     }
@@ -104,7 +116,7 @@ pub(super) fn launch() -> Result<Launched> {
             "--no-new-privs",
         ])
         .arg(std::env::current_exe()?)
-        .arg("worker-child")
+        .arg(mode)
         .stdin(Stdio::from(worker))
         .stderr(Stdio::from(child_control))
         .stdout(Stdio::piped())
@@ -145,7 +157,7 @@ pub(super) fn launch() -> Result<Launched> {
     Ok(launched)
 }
 
-fn readable(file: impl AsFd) -> io::Result<()> {
+pub(super) fn readable(file: impl AsFd) -> io::Result<()> {
     let mut descriptors = [PollFd::new(&file, PollFlags::IN)];
     if poll(
         &mut descriptors,
@@ -161,6 +173,71 @@ fn readable(file: impl AsFd) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+impl Launched {
+    /// Returns the identifier of the original child, without granting authority.
+    pub(super) fn child_id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Binds the original endpoint and child to an actual native exposure.
+    ///
+    /// # Errors
+    /// Refuses a consumed endpoint or identity, or an invalid native binding.
+    pub(super) fn bind(&mut self, lease: &NativeExposureLease) -> Result<WorkerChannel> {
+        Ok(WorkerChannel::bind(
+            self.channel
+                .take()
+                .ok_or("missing original serve endpoint")?,
+            self.identity
+                .take()
+                .ok_or("missing original child identity")?,
+            lease.clone(),
+        )?)
+    }
+
+    /// Sends public fixture context on the separate private control endpoint.
+    ///
+    /// # Errors
+    /// Preserves control transport errors.
+    pub(super) fn send_context(
+        &mut self,
+        lease: &NativeExposureLease,
+        content: [u8; 32],
+    ) -> Result<()> {
+        let mut bootstrap = lease.id().as_bytes().to_vec();
+        bootstrap.extend_from_slice(&lease.generation().to_le_bytes());
+        bootstrap.extend_from_slice(&lease.key().root());
+        bootstrap.extend_from_slice(&content);
+        self.control.write_all(&bootstrap)?;
+        Ok(())
+    }
+
+    /// Reads one bounded original-child acknowledgment.
+    ///
+    /// # Errors
+    /// Refuses timeout, EOF, non-UTF-8 output or a line exceeding 256 bytes.
+    pub(super) fn acknowledgment(&mut self) -> Result<String> {
+        let output = self
+            .child
+            .stdout
+            .as_mut()
+            .ok_or("missing original child output")?;
+        let mut line = Vec::new();
+        loop {
+            readable(&*output)?;
+            let mut byte = [0];
+            output.read_exact(&mut byte)?;
+            line.push(byte[0]);
+            if byte[0] == b'\n' {
+                return Ok(String::from_utf8(line)?);
+            }
+            if line.len() >= 256 {
+                return Err("original child acknowledgment exceeds bound".into());
+            }
+        }
+    }
 }
 
 /// Runs scoped native grants without enlarging other selectors' async frames.
@@ -330,7 +407,7 @@ async fn verify(
 }
 
 #[allow(clippy::disallowed_methods)]
-fn reply(pending: &mut PendingBacking<'_>) -> io::Result<worker_channel::BackingReply> {
+pub(super) fn reply(pending: &mut PendingBacking<'_>) -> io::Result<worker_channel::BackingReply> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
         match pending.receive() {
@@ -345,12 +422,11 @@ fn reply(pending: &mut PendingBacking<'_>) -> io::Result<worker_channel::Backing
     }
 }
 
-/// Checks actual received backing after the original channel disconnects.
+/// Authenticates the original client using bounded public bootstrap context.
 ///
 /// # Errors
-/// Refuses another identity, invalid context, expired waits, malformed replies,
-/// lost retained mappings or content differing from the independently known body.
-pub(super) fn child() -> Result<()> {
+/// Refuses another identity, invalid context, expired waits or transport failure.
+pub(super) fn child_context() -> Result<(WorkerClient, [u8; 32], ContentRef)> {
     if rustix::process::geteuid().as_raw() != 848 {
         return Err("scoped child requires its distinct worker identity".into());
     }
@@ -375,7 +451,16 @@ pub(super) fn child() -> Result<()> {
         u64::from_le_bytes(bootstrap[32..40].try_into()?),
         root,
     )?;
-    let mut client = WorkerClient::bind(io::stdin().as_fd().try_clone_to_owned()?, context, 840)?;
+    let client = WorkerClient::bind(io::stdin().as_fd().try_clone_to_owned()?, context, 840)?;
+    Ok((client, root, content))
+}
+
+/// Checks original scoped backing after the actual channel disconnects.
+///
+/// # Errors
+/// Refuses invalid native context, replies, retained mappings or file contents.
+pub(super) fn child() -> Result<()> {
+    let (mut client, root, content) = child_context()?;
     let index = reply(&mut client.request(RequestedBacking::Index)?)?.into_file();
     let index_stat = index.metadata()?;
     let seal = terrane_linux::verity::measure(&index)?;

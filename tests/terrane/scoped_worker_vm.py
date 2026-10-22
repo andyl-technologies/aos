@@ -3,11 +3,104 @@
 import importlib.util
 import os
 from pathlib import Path
+import select
 import shutil
 import signal
 import subprocess
 import sys
 import time
+
+
+def crash_actor(support, executable, environment):
+    """Kills the actual owner and original worker through retained incarnations."""
+    support.require(hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal"),
+        "actual Linux pidfd process control unavailable")
+    log_path = support.RUNTIME / "crash-owner.log"
+    worker_pidfd = None
+    actor = None
+    try:
+        with log_path.open("wb") as log:
+            actor = subprocess.Popen([executable, "worker-crash"], env=environment,
+                stdout=subprocess.PIPE, stderr=log)
+            support.require(actor.stdout is not None, "actual owner output unavailable")
+            deadline = time.monotonic() + 30
+            data = b""
+            while len(data.splitlines()) < 3 or not data.endswith(b"\n"):
+                remaining = deadline - time.monotonic()
+                support.require(remaining > 0 and actor.poll() is None,
+                    "actual owner failed bounded crash readiness")
+                ready, _, _ = select.select([actor.stdout], [], [], remaining)
+                support.require(ready, "actual owner crash readiness timed out")
+                chunk = os.read(actor.stdout.fileno(), 4096)
+                support.require(chunk and len(data) + len(chunk) <= 4096,
+                    "actual owner output exceeds bounded crash protocol")
+                data += chunk
+            lines = data.decode().splitlines()
+            support.require(len(lines) == 3 and lines[0].startswith("WORKER_PID ")
+                and lines[1:] == [
+                    "PASS surface admission requires actual recovery and acknowledged Resume",
+                    "PASS original worker holds retired index mapping before forced owner death"],
+                "actual owner crash rendezvous differs from expected protocol")
+            worker_pid = int(lines[0].removeprefix("WORKER_PID "))
+            candidate = os.pidfd_open(worker_pid)
+            try:
+                status = dict(line.split(":", 1) for line in
+                    Path(f"/proc/{worker_pid}/status").read_text().splitlines() if ":" in line)
+                support.require(int(status["PPid"]) == actor.pid
+                    and status["Uid"].split() == ["848"] * 4
+                    and actor.poll() is None,
+                    "worker pidfd does not belong to original distinct owner child")
+            except BaseException:
+                os.close(candidate)
+                raise
+            # Cleanup may signal only the independently checked incarnation.
+            worker_pidfd = candidate
+            support.require(not select.select([worker_pidfd], [], [], 0)[0],
+                "original worker exited before owner SIGKILL")
+            print(data.decode(), end="", flush=True)
+            actor.kill()
+            support.require(actor.wait(timeout=5) == -signal.SIGKILL,
+                "owner did not die by actual SIGKILL")
+            support.require(not select.select([worker_pidfd], [], [], 0)[0],
+                "original worker mapping did not survive owner SIGKILL")
+
+            refused = subprocess.run(support.role_command(840, [executable, "crash-refuse"]),
+                env=environment, text=True, capture_output=True, timeout=15)
+            print(refused.stdout, end="", flush=True)
+            print(refused.stderr, end="", flush=True)
+            support.require(refused.returncode == 0 and refused.stdout.splitlines() == [
+                "PASS forced owner death preserves exact policy while original worker mapping survives"],
+                "cold owner changed policy while original worker mapping survived")
+            support.require(not select.select([worker_pidfd], [], [], 0)[0],
+                "original worker exited during cold refusal")
+            signal.pidfd_send_signal(worker_pidfd, signal.SIGKILL)
+            support.require(select.select([worker_pidfd], [], [], 5)[0],
+                "original worker pidfd did not observe actual process death")
+            recovered = subprocess.run(support.role_command(840, [executable, "crash-recover"]),
+                env=environment, text=True, capture_output=True, timeout=15)
+            print(recovered.stdout, end="", flush=True)
+            print(recovered.stderr, end="", flush=True)
+            support.require(recovered.returncode == 0 and recovered.stdout.splitlines() == [
+                "PASS actual worker death permits authenticated closure and funded recovery before Resume"],
+                "actual worker death did not permit funded cold recovery")
+            print("PASS forced owner SIGKILL and original worker pidfd death preserve physical custody through authenticated closure", flush=True)
+    finally:
+        if worker_pidfd is not None:
+            try:
+                if not select.select([worker_pidfd], [], [], 0)[0]:
+                    signal.pidfd_send_signal(worker_pidfd, signal.SIGKILL)
+                    select.select([worker_pidfd], [], [], 5)
+            finally:
+                os.close(worker_pidfd)
+        if actor is not None:
+            if actor.poll() is None:
+                actor.kill()
+                actor.wait(timeout=5)
+            if actor.stdout is not None:
+                actor.stdout.close()
+        if sys.exc_info()[0] is not None and log_path.exists():
+            print("actual crash owner log:", flush=True)
+            print(log_path.read_text(), flush=True)
 
 
 def load(name, path):
@@ -23,7 +116,11 @@ def load(name, path):
 
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
-    image, source = map(Path, sys.argv[1:])
+    if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4 and sys.argv[3] != "--crash"):
+        raise RuntimeError("expected image, source and optional --crash")
+    image, source = map(Path, sys.argv[1:3])
+    crash = len(sys.argv) == 4
+    case = "worker-crash" if crash else "scoped-worker"
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
     support = load("scoped_native_support", image / "share/host_cache_vm.py")
@@ -33,7 +130,7 @@ def main():
     support.require(Path(__file__).read_bytes()
         == (source / "tests/terrane/scoped_worker_vm.py").read_bytes(),
         "installed scoped supervisor differs from immutable source")
-    support.CASES = ["scoped-worker"]
+    support.CASES = [case]
     support.BUDGET = support.HARD
     support.administrative_preflight("before")
     support.scaffold()
@@ -50,10 +147,10 @@ def main():
     setpriv = shutil.which("setpriv")
     support.require(setpriv is not None, "AOS-built setpriv unavailable")
     environment = dict(os.environ,
-        TERRANE_CACHE_ROOT=str(support.root("scoped-worker")),
-        TERRANE_CACHE_DOMAIN=support.domain("scoped-worker"),
-        TERRANE_CACHE_OWNER=support.owner("scoped-worker"),
-        TERRANE_CACHE_PROJECT=str(support.project("scoped-worker")),
+        TERRANE_CACHE_ROOT=str(support.root(case)),
+        TERRANE_CACHE_DOMAIN=support.domain(case),
+        TERRANE_CACHE_OWNER=support.owner(case),
+        TERRANE_CACHE_PROJECT=str(support.project(case)),
         TERRANE_CACHE_UUID=uuid, TERRANE_CACHE_BUDGET=str(support.BUDGET),
         TERRANE_CACHE_QUOTA_SOCKET=str(support.RUNTIME / "quota.sock"),
         TERRANE_CACHE_PUBLISHER_SOCKET=str(support.PUB_RUNTIME / "publisher.sock"),
@@ -85,6 +182,12 @@ def main():
                 and time.monotonic() < deadline,
                 "actual scoped helper or publisher failed readiness: " + prepared.stderr)
             time.sleep(0.02)
+        if crash:
+            crash_actor(support, executable, environment)
+            support.verify_image()
+            surface.verify_surface(image, source)
+            print("PASS native forced owner crash component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
+            return
         try:
             # Only fixture launch runs administratively. The same process drops
             # every UID/GID/capability before native inspection and confinement.

@@ -14360,3 +14360,39 @@ and runs boxed, keeping its storage out of unrelated selectors. Stack, VM and
 actor limits are unchanged. Strict Linux all-target Clippy passes; actual
 fixture compilation and owning surface/scoped-worker requalification remain
 pending. The narrower scoped pass does not waive the owning surface failure.
+
+
+At `d4b8a52605`, scoped-worker, complete owning surface and application-target
+checks pass in 576.66, 704.18 and 645.91 seconds respectively. Independent
+reviews match all 8,046 immutable source files, 5,337 base inputs, 5,321 surface
+inputs and five actual Cargo ELFs; the surface executable digest is
+`7ce808fa339e27067ba2e5dc1e8310c4a1a199c5c7c61781f5a533bf9b5d9442`.
+Every scoped and owning surface witness has its exact expected count. The
+application proof retains 184 compiler records across 59 packages. Actual
+post-fix disassembly shows a 659,368-byte main frame, near the previously
+passing 659,000 bytes; no stack or test bound changed. The `99352cc2db`
+application check also passes in 1,452.81 seconds with complete source review.
+
+A separate `checks.terrane.integration.worker-crash-recovery` now exercises
+forced owner death with an independently retained original worker mapping.
+The capability-free native owner grants its genuine signed-root index to its
+original distinct child, durably drains and retires the canonical name while
+preserving the original backing record. The administrative guest supervisor
+checks the original parent and worker identity, retains a pidfd, kills the
+actual owner with SIGKILL, and requires cold recovery to refuse without any
+policy-byte mutation while that worker survives. Only after SIGKILL through
+the retained worker pidfd may authenticated closure and funded recovery
+remove that exact exposure's obligations before acknowledged Resume. All
+other typed policy fields must remain unchanged. The child deliberately
+retains its map through socket EOF; a bounded wait ending normally fails.
+The new guest uses the same 90-second VM bound; existing checks retain their
+original limits. Both strict Linux profiles, formatting, Python syntax,
+Nix evaluation and the complete 128-case source inventory pass. Runtime and
+mandatory application-target qualification for this new revision are pending.
+It remains a native component proof, not deployed worker or FUSE acceptance.
+
+The older aggregate T2 owner-gate run at `a4fbca79e1` finishes unsuccessfully
+in 53,886.12 seconds with unchanged frozen source. Its publisher ownership
+proof rejects a complete-source mismatch; dependent gates also fail to build.
+This aggregate is not green and does not close any trunk task. Its original
+receipts and retained build evidence remain available for diagnosis.
