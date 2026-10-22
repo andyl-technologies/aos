@@ -35,9 +35,9 @@ use anyhow::{Context, Result, ensure};
 
 use super::config::ApmConfig;
 use super::download::{
-    DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
-    fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror_chain,
-    resolved_downloads_json, split_mirror_chain,
+    DownloadRequest, ResolvedDownload, default_engine, download_nars,
+    fetch_narinfo_closure_for_trust, fetch_narinfos, order_resolved_downloads,
+    reference_store_path, resolve_mirror_chain, resolved_downloads_json, split_mirror_chain,
 };
 use super::platform::native_platform;
 use super::profile::Profile;
@@ -373,11 +373,12 @@ async fn run_inner(
         ensure_narinfo_references_present(&resolved).await?;
         order_resolved_downloads(&requests, resolved)?
     } else {
-        fetch_narinfo_closure(
+        fetch_narinfo_closure_for_trust(
             std::sync::Arc::clone(&engine),
             &requests,
             config.settings.parallel_downloads,
             printer,
+            &trust_ctx,
         )
         .await?
     };

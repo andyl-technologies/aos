@@ -383,11 +383,12 @@ async fn realize_companions(
         .collect::<Vec<_>>();
     let trust = registries.trust_context_for_roots(&roots);
     trust.enforce_totality()?;
-    let resolved = crate::download::fetch_narinfo_closure(
+    let resolved = crate::download::fetch_narinfo_closure_for_trust(
         std::sync::Arc::new(crate::download::default_engine()),
         &requests,
         config.settings.parallel_downloads,
         printer,
+        &trust,
     )
     .await?;
     let results = crate::download::download_nars(

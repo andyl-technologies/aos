@@ -121,11 +121,12 @@ pub(crate) async fn acquire(
         return Ok(closures);
     }
 
-    let resolved = crate::download::fetch_narinfo_closure(
+    let resolved = crate::download::fetch_narinfo_closure_for_trust(
         Arc::new(crate::download::default_engine()),
         &requests,
         config.settings.parallel_downloads,
         printer,
+        &trust,
     )
     .await?;
     lease.retain(

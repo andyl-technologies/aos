@@ -336,6 +336,14 @@ impl<'a> TrustContext<'a> {
             .any(|maps| maps.iter().any(|m| m.is_present()))
     }
 
+    /// Iterates over every store-path hash attributed to this transaction.
+    ///
+    /// Callers can use this closed set to constrain metadata discovery before
+    /// downloading objects. Legacy registries contribute no hashes.
+    pub fn attributed_hashes(&self) -> impl Iterator<Item = &str> {
+        self.by_hash.keys().map(String::as_str)
+    }
+
     /// The blessed NAR byte-sets for a path, unioned across the attributing
     /// registries that publish a graph. Empty when none maps it.
     pub fn blessed_nars(&self, store_path_hash: &str) -> Vec<NarBytes> {
