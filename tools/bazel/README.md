@@ -543,6 +543,46 @@ and action fingerprints. This is a compiler/target separation check; Worker
 runtime behavior, external WASM dependencies, and foreign-target developer
 workflows remain family-specific qualification work.
 
+## Device-family compile measurements
+
+```sh
+nix-build tools/bazel/bench/device.nix --argstr trial UNIQUE-TRIAL \
+  --no-out-link --max-jobs 4 --cores 4 --option substitute false
+```
+
+The harness compiles the connected determinism/device/protocol/shmem family,
+then discovers and executes all 642 qualified cases from 33 test binaries
+after each sample. Validation is outside the measured interval. Each mode has
+private state and local caches; a fresh Bazel output base can reuse only its
+series' disk action cache. Source snapshots are immutable inputs throughout.
+
+`tests/evidence/native-linux-device-compile-baseline.json` retains all 54
+samples, commands, action counts, resource metrics and repeated distributions.
+The adjacent `-provenance.json` records fingerprints and measurement limits.
+Median compile-loop wall times in seconds:
+
+| Configuration | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh build directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cargo incremental | 66.093 | 0.646 | 3.325 | 3.912 | 0.384 | 64.051 |
+| Cargo nonincremental + accache | 50.351 | 0.339 | 30.295 | 30.574 | 0.418 | 46.120 |
+| Bazel private JVM + disk cache | 90.426 | 0.509 | 10.898 | 11.549 | 10.889 | 9.820 |
+
+These measure current defaults: Cargo dev has debug level 2, while Bazel
+fastbuild has debug level 0; both use optimization level 0. Matching targets
+and runtime behavior does not make those profiles equivalent. Qualification
+jobs also ran concurrently on this shared host; samples retain load averages.
+The recorded immutable configuration predates the editor metadata fixes.
+
+In the first repetition, both fresh-directory scenarios restored all 159 Rust
+compile actions, 18 build scripts and 49 Cargo-environment extraction actions,
+with no compiler execution. Implementation/API edits compiled 5/11 Rust
+actions. Accache admitted misses but recorded no hits, so these results do not
+establish an accache benefit. Bazel's edit loop regresses against Cargo
+incremental even with less debug information. Nix evaluation, preparation,
+installation and timed test execution are excluded. Matched-profile and
+end-to-end measurements, improvements and numeric regression budgets remain
+required before production cutover.
+
 ## Initial boot compile measurements
 
 Run the temporary Cargo/Bazel comparison with a fresh trial identity:

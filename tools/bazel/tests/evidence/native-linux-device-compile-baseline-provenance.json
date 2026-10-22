@@ -1,0 +1,24 @@
+{
+  "check": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance",
+  "configuration_sha256": {
+    "tools/bazel/bench/device.nix": "ddfcd680885398099cd1e7908ae79447aea80b790975f9a35f6fd9a16c389426",
+    "tools/bazel/bench/measure_family.py": "2f96b90741fd257766e807b747482194ad7e66824d8e93a9107afcd4e5b81495",
+    "tools/bazel/bench/measure_pilot.py": "f9ad2a70aae6cf8a93614fd35af7e7ea8b7cb69c7d8e5d6c0e17d0a4669c501d",
+    "tools/bazel/bench/test_measure_family.py": "e2b6f598d1e5ba47c17c945fbcf52c4c3d8271e12b20893e8d36da9d2e578ecd",
+    "tools/bazel/metadata/export_packages.py": "04d5ad773a6478fd4b5b2d9a963e9447e8964c6104f63112082d2757f5bd0d8a",
+    "tools/bazel/tests/verify_cache.py": "8b587c179db90c975044e7a4ecc56c3c2f875b0f528068f9792bcd7fd9987ed4"
+  },
+  "limitations": [
+    "These are compile-loop samples, excluding Nix evaluation, source preparation, test execution and installation.",
+    "The workload matches test targets and runtime behavior, but debug settings differ: Cargo dev uses debug=2, Bazel fastbuild debug=0; both use opt-level=0.",
+    "Other qualification jobs ran concurrently on the shared host; each sample records load average. These are descriptive baselines, not accepted regression budgets.",
+    "The immutable source/configuration paths in the report predate the editor metadata changes committed alongside this harness.",
+    "No accache hits were observed; successful admitted misses do not establish a performance benefit.",
+    "The Bazel edit loop regresses versus Cargo incremental. No production cutover is authorized by these measurements."
+  ],
+  "report_sha256": "93f0a6df4fc28a7a4cdacbdd9aa1397abb58dd5c21f8f0e84729594e6077fcb6",
+  "schema_version": 1,
+  "scope": "Provenance and limits of the device-family compile-loop baseline",
+  "validated_cases_per_sample": 642,
+  "validated_samples": 54
+}
