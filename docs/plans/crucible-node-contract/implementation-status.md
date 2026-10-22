@@ -3379,6 +3379,33 @@ Private Source receipt verification, whole Source funding, genuine Initial/Recip
 production and the remaining full RFC obligations remain unfinished. No new
 full-library, configured runtime or VM qualification is claimed.
 
+## Guarded original Bootstrap receipt loans
+
+Commit `263c6e6095` lends the actual moved SDK request, typed response and
+decoded Bootstrap request/result/receipt without another read, decode or SDK
+move. The Controller and Session authenticate their original owners, raw/typed
+correspondence, actual settled SDK state and unchanged operational cut before
+and after the callback, including callback failure. Expiry or revocation keeps
+the original failure and every initialized output; a later loan refuses before
+its callback.
+
+The defining callback controls are separately declared. This loan supplies no
+private Source MAC, whole Source funding or native completion. The genuine
+Source handler must admit its own complete holder and callback work, retain
+outputs before returning, and authenticate its private Birth independently.
+
+All 212 affected client controls pass in standard mode; all 24 original-cut
+controls pass with raw JSON. Real-socket tests cover pointer identity, callback
+failure, deadline replacement and actual SDK revocation without additional
+transport effects. Transport/Engine/Daemon all-feature/all-target checking,
+owned-file formatting and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including 71
+integration targets. All 404 owned Rust/Cargo inputs match committed
+`263c6e6095` and its actual captured source. That gate runs no tests.
+
+The remaining Source, genuine Initial/Recipe and full RFC obligations remain
+unfinished. No new full-library, configured runtime or VM qualification follows.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
