@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "//crates/aos/boot/aos-boot-identity:uki_cli": {
+      "executed": [
+        "binary_copy_preserves_nuls_optional_empty_and_source_symlink_behavior",
+        "both_efi_architectures_emit_exact_required_text_without_added_newline",
+        "cli_refuses_malformed_ranges_duplicate_sections_and_truncation",
+        "exact_size_limit_is_accepted_and_text_symlinks_are_refused",
+        "original_single_path_normal_boot_validation_is_preserved",
+        "required_text_rejects_missing_empty_invalid_utf8_nul_and_oversized_payloads"
+      ],
+      "ignored": []
+    },
+    "//crates/aos/boot/aos-boot-identity:unit": {
+      "executed": [
+        "pe::tests::both_efi_architectures_preserve_virtual_payload_length",
+        "pe::tests::duplicate_selected_sections_are_rejected",
+        "pe::tests::invalid_signatures_are_rejected",
+        "pe::tests::truncated_headers_and_out_of_file_ranges_are_rejected",
+        "tests::accepts_only_the_canonical_recovery_identity",
+        "tests::accepts_slot_a_and_repeatable_console",
+        "tests::accepts_slot_b",
+        "tests::rejects_every_additional_recovery_token",
+        "tests::rejects_every_duplicate_scalar_field",
+        "tests::rejects_interactive_and_recovery_selectors",
+        "tests::rejects_malformed_root_hash",
+        "tests::rejects_missing_duplicate_and_noncanonical_recovery_fields",
+        "tests::rejects_mixed_slot_tuple",
+        "tests::rejects_noncanonical_uppercase_root_hash",
+        "tests::rejects_nonverity_root_without_verity_fields"
+      ],
+      "ignored": []
+    },
+    "//crates/aos/boot/aos-recovery:unit": {
+      "executed": [
+        "restore::tests::changed_media_is_rejected_before_esp_publication",
+        "restore::tests::native_manifest_projection_matches_recovery_identity_without_module_abi",
+        "restore::tests::native_manifest_projection_preserves_platform_architecture_and_recovery_abi",
+        "restore::tests::native_manifest_projection_requires_exact_header_columns",
+        "restore::tests::recovery_esp_transaction_replays_every_cut_in_both_directions",
+        "restore::tests::recovery_storage_transaction_replays_every_cut_in_both_directions",
+        "status::tests::accepts_only_one_canonical_copy_field",
+        "tests::rejects_commands_paths_and_arguments",
+        "tests::resolves_only_fixed_operations",
+        "trust::tests::accepts_an_ordered_certificate_set",
+        "trust::tests::rejects_trailing_or_unterminated_data",
+        "verify::tests::accepts_one_canonical_signed_release_version",
+        "verify::tests::rejects_missing_duplicate_or_unquoted_release_versions"
+      ],
+      "ignored": [
+        "restore::tests::native_manifest_filter_accepts_current_producer_and_rejects_legacy_or_malformed_abi"
+      ]
+    }
+  }
+}

@@ -28,7 +28,9 @@
       "sources": [
         "tools/bazel/tests/fixture/main.cc"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -57,7 +59,9 @@
         "tools/bazel/tests/fixture/library.cc",
         "tools/bazel/tests/fixture/library.h"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -93,7 +97,9 @@
       "sources": [
         "tools/bazel/tests/fixture/macro.rs"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -156,7 +162,9 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -200,7 +208,9 @@
       "sources": [
         "tools/bazel/tests/fixture/native.rs"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -270,7 +280,9 @@
       "sources": [
         "tools/bazel/tests/fixture/main.rs"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -309,7 +321,9 @@
       "sources": [
         "tools/bazel/tests/fixture/lib.rs"
       ],
-      "tags": [],
+      "tags": [
+        "aos-license:apache-host"
+      ],
       "target_cpu": "x86_64"
     },
     {
@@ -742,11 +756,13 @@
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "tools/bazel/metadata/BUILD.bazel": "f22dc5e44a92bca761a1412cc24b2b5da3adfef38c398c53d18c99fc45aca3f8",
     "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
-    "tools/bazel/rules/BUILD.bazel": "0cf6ea34d85fe6806ed572e608853036339788cd54a9eb0ee0b3ba47d5559396",
+    "tools/bazel/rules/BUILD.bazel": "d625db4b090dbb50b1e9a77c5a30e8acc4ceeced8eeab035c51d37127cd476a9",
+    "tools/bazel/rules/compile.bzl": "fd30a8c87ba7e0c645071241ac576c593ebfd44bf916a575b47ed4a624bff307",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
-    "tools/bazel/rules/package.bzl": "2635f3a3ec6ab3782458fe29193a9779cb294c8f89dd89de1249427be2c827b5",
-    "tools/bazel/rules/test.bzl": "eef2d1fb7dc6c36f949d403781713ed4bd683825635413078b93dbba8540a4d2",
-    "tools/bazel/tests/fixture/BUILD.bazel": "294931e1349be2a4c5272a503f474a466162a72f9056a323ed0d36e42d4dd31c",
+    "tools/bazel/rules/license.bzl": "723ca86bb4c592e90634bc286ac79854df594956f9e577af8e4a3fa3a051bdcc",
+    "tools/bazel/rules/package.bzl": "bfad9728e63c5f5c6adfc08eb320481830558588152cdd1a9f373d9dadb8ef0a",
+    "tools/bazel/rules/test.bzl": "125a4a7be953ed764b0eff31e908397c74f76fd4c6fb8e71a5d39f08d95b8957",
+    "tools/bazel/tests/fixture/BUILD.bazel": "93ad7e318620074c9cb26fe9c7f670ec6934d4e82f33de3455a7f66171115cca",
     "tools/bazel/toolchains/BUILD.bazel": "6ee0fc19651767ca4c64f434f1da544ec4812d40ac8f52b535f25051ef62fb3d",
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "ece5a5a040e571b4aa69f715ba7f413b044c25b392b00def6bbf3779bf89ac7c",
     "tools/bazel/toolchains/repositories.bzl": "276eb076b91a0221f95b3b2b6235e837e50eb5d4577512ec12833731b494f98f"

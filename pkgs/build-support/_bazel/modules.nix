@@ -62,6 +62,21 @@
             cd "$out"
             ${patchScript}
             cp ${moduleFile} MODULE.bazel
+            ${lib.optionalString (name == "rules_rust") ''
+              ${pkgs.python3}/bin/python3 - ${lib.escapeShellArg "${pkgs.bash}/bin/bash"} <<'PY'
+              from pathlib import Path
+              import sys
+
+              # The source-built writer embeds this interpreter in every
+              # doctest runner. It must never discover a host shell at runtime.
+              writer = Path("rust/private/rustdoc/rustdoc_test_writer.rs")
+              source = writer.read_text()
+              original = "#!/usr/bin/env bash"
+              if source.count(original) != 1:
+                  raise ValueError("rules_rust doctest interpreter patch no longer applies")
+              writer.write_text(source.replace(original, "#!" + sys.argv[1]))
+              PY
+            ''}
             ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/source_only.py} "$out"
           '';
         }

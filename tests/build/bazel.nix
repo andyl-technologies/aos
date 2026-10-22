@@ -10,6 +10,8 @@
 in
   rec {
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
+    pilot = import ./_bazel-pilot.nix {inherit pkgs;};
+    license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
     precise = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-precise-fixtures";
       workspace = pkgs.mkAosBazelWorkspace {
@@ -43,6 +45,7 @@ in
     runtime = pkgs.runCommand "aos-bazel-fixture-runtime" {} ''
       test "$(${package}/bin/rust-fixture)" = 'answer=42'
       test "$(${package}/bin/cpp-fixture)" = 'answer=42'
+      test "$(${package}/bin/native-fixture)" = 'answer=84'
       mkdir -p "$out"
       cp ${package}/nix-support/bazel-package.json "$out/manifest.json"
     '';
@@ -89,7 +92,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

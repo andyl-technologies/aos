@@ -2,6 +2,7 @@
 
 load("@aos_tools//:paths.bzl", "AOS_TOOLS")
 load("@rules_rust//rust:defs.bzl", "rust_test")
+load(":license.bzl", "license_tags")
 
 def _runfile(ctx, file):
     path = file.short_path
@@ -55,13 +56,13 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name, jobs = 4, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+def aos_rust_test(name, package_name, jobs = 4, license_domain = "apache-host", tags = [], timeout = "long", size = "medium", args = [], **kwargs):
     """Preserves Rust compilation/runfiles while replacing only test scheduling."""
     if kwargs.get("env_inherit", []):
         fail("declare test environment through env; ambient inheritance is not supported")
     rust_test(
         name = name + "_binary",
-        tags = tags + ["manual", "aos-libtest-artifact"],
+        tags = license_tags(tags, license_domain) + ["manual", "aos-libtest-artifact"],
         **kwargs
     )
     test_attributes = {}

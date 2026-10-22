@@ -177,6 +177,29 @@ share a process, plus an ignored failure that must remain unselected by default.
 Doctests, platform/resource checks, and family-specific integration inventories
 remain separate migration obligations.
 
+## Boot Rust pilot and license analysis
+
+`checks.build.bazel.pilot.all` builds `aos-boot-identity` and `aos-recovery`
+directly with Rust rules. It runs 15 identity unit cases, six UKI CLI integration
+cases, 13 recovery unit cases, both doctest targets, and the ignored recovery
+manifest case with AOS-built jq. A native `rustc` oracle must discover exactly
+the same case names, including the ignored case. The CLI integration suite also
+runs against the existing production package. Production installation scripts,
+qualification, cross builds, and Cargo metadata remain unchanged until the
+remaining family acceptance checks pass.
+
+Shared compile macros declare a license domain. Package analysis follows
+compiled dependency edges and rejects Apache host/GPL QEMU combinations in
+either direction; protocol code can be consumed by either. Compiler plugins
+are checked in their own execution scope. Compiled dependencies without a
+declaration fail closed, apart from an explicit list of pinned rule support
+targets. `checks.build.bazel.license-boundary` proves both prohibited link
+directions fail analysis before any compilation. This supplements the existing
+ABI, source-retention, and publication gates; it does not replace them.
+
+The pinned rules' source-built doctest writer embeds AOS Bash. Ordinary test
+execution never needs a host `/usr/bin/env` interpreter.
+
 ## Migration oracle
 
 `metadata/cargo-inventory.json` records Cargo's discovered targets, declared

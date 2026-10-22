@@ -1,7 +1,10 @@
 # RFC-0028: Bazel builds for the Rust workspace and native code
 
-- **Status:** Proposed; design only. The functions, targets, and commands in
-  this RFC describe the intended interface and are not implemented by this PR.
+- **Status:** Implementation in progress. Common infrastructure and the boot
+  Rust pilot are implemented; production-family cutovers and Cargo removal
+  remain gated by the evidence requirements below. See the
+  [implementation guide](../../../tools/bazel/README.md) for passing checks and
+  current limits.
 - **Date:** 2026-10-21
 - **Scope:** Replace Cargo as the build system and first-party build definition
   for AOS Rust code; build first-party C, C++, and assembly in the same Bazel

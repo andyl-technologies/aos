@@ -1,5 +1,7 @@
 """Declares the complete installed artifact set of a Nix package."""
 
+load(":license.bzl", "AosLicenseInfo", "aos_license_aspect", "check_domains")
+
 AosPackageInfo = provider(fields = ["manifest", "artifacts"])
 
 def _destination(value):
@@ -14,6 +16,7 @@ def _package_impl(ctx):
     outputs = []
     destinations = {}
     for target, destination in ctx.attr.artifacts.items():
+        check_domains(ctx.label, ctx.attr.license_domain, target[AosLicenseInfo].domains.to_list())
         destination = _destination(destination)
         if destination in destinations:
             fail("duplicate package destination: " + destination)
@@ -58,7 +61,7 @@ def _artifact_destination(entry):
 aos_package = rule(
     implementation = _package_impl,
     attrs = {
-        "artifacts": attr.label_keyed_string_dict(mandatory = True, allow_files = True),
+        "artifacts": attr.label_keyed_string_dict(mandatory = True, allow_files = True, aspects = [aos_license_aspect]),
         "executables": attr.string_list(),
         "package_name": attr.string(mandatory = True),
         "version": attr.string(mandatory = True),
