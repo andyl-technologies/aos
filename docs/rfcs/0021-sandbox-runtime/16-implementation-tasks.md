@@ -9667,8 +9667,13 @@ snapshot drift and symlink rejection, immutable-source rejection and legacy
 serialization. The source-built EROFS package passes its generated-inode xattr
 check with SELinux support enabled at
 `/nix/store/jdxzan25pcrqgg7974jlxrs7rvf047q9-erofs-utils-1.9.4`.
-Complete Rust-target and image checks remain pending for this repair. The
-superseded Host, offline, Root, lifecycle and handoff clients were interrupted
+The full EROFS conformance check passes at
+`/nix/store/hpnxrzbpzmli2pa8sj18c97mhkf6q56m-selinux-erofs-labels-check-0`,
+including the direct policy inode and the existing authored/vendor unit labels.
+The final complete Rust-target check passes at
+`/nix/store/crz2x9m9hh6jr2qq3jv4b16djyb2j3l8-aos-test-targets-0.1.0`.
+Core evaluation and formatting pass. The superseded Host,
+offline, Root, lifecycle and handoff clients were interrupted
 after the installed failure was identified; they provide no qualification
 receipt for the repaired writer.
 
@@ -9929,10 +9934,10 @@ assertion, and rejects a wrong Controller package and missing NV auth. Its
 artifact check builds the real startup profile and compares the measured unit
 hash against the independently rendered installed Controller unit. The artifact
 check passes at
-`/nix/store/jhzx4ap3yna7nzjwm73l3f23gz1j301l-sandbox-nix-method46-profile-check`.
+`/nix/store/6gfjbkbsvmjw5x0i7qjwj3pc4gd6yimv-sandbox-nix-method46-profile-check`.
 Core evaluation, the Controller service contract and formatting also pass.
-This rerun includes the repaired native-overlay policy, whose selected compiled
-artifact is
+This rerun includes the vendor-unit projection and canonical `/etc` unit
+metadata repair. Its policy bytes match the repaired native-overlay policy at
 `/nix/store/pd42nzrxn9a9nwivkd6z31bdd90ka11w-aos-selinux-production-policy-1`.
 Installed reruns remain pending.
 This is a startup composition check, not an installed Required-mode or public
