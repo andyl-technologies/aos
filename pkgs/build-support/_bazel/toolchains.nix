@@ -4,6 +4,7 @@
   lib,
 }: {
   rust ? pkgs.rust,
+  rustDeveloperTools ? pkgs.rust.dev,
   cc ? pkgs.cc,
   gcc ? pkgs.gccUnwrapped,
   binutils ? pkgs.binutils,
@@ -54,7 +55,7 @@ in
       sharedBuildCache = false;
       buildDeps = [pkgs.jq];
       outputChecks.out = {};
-      exportReferencesGraph.compilers = [rust cc gcc binutils glibc.dev gccRuntime pkgs.bash pkgs.python3];
+      exportReferencesGraph.compilers = [rust rustDeveloperTools cc gcc binutils glibc.dev gccRuntime pkgs.bash pkgs.python3];
       dontStrip = true;
       dontPatchELF = true;
       dontNukeRefs = true;
@@ -62,7 +63,7 @@ in
         {
           name = "install";
           script = ''
-            mkdir -p "$out/bin"
+            mkdir -p "$out/bin" "$out/developer/bin"
             ln -s ${rust}/bin/rustc.unwrapped "$out/bin/rustc"
             ln -s ${rust}/bin/rustdoc.unwrapped "$out/bin/rustdoc"
             # Third-party build scripts may inspect CARGO, but compilation must
@@ -74,6 +75,14 @@ in
             CARGO
             chmod +x "$out/bin/cargo"
             ln -s ${rust}/lib "$out/lib"
+            ln -s ${rust}/libexec "$out/libexec"
+            # Developer tools come from the same source-built Rust release.
+            # Expose their source/sysroot inputs without invoking Cargo wrappers.
+            ln -s ${rustDeveloperTools}/bin/clippy-driver.unwrapped "$out/developer/bin/clippy-driver"
+            ln -s ${rustDeveloperTools}/bin/rustfmt.unwrapped "$out/developer/bin/rustfmt"
+            ln -s ${rustDeveloperTools}/bin/rust-analyzer.unwrapped "$out/developer/bin/rust-analyzer"
+            ln -s ${rust}/libexec/rust-analyzer-proc-macro-srv "$out/developer/bin/proc-macro-srv"
+            ln -s ${rustDeveloperTools}/lib/rustlib/src/rust "$out/developer/rust-src"
             ln -s ${cc}/bin/cc "$out/bin/cc"
             ln -s ${binutils}/bin/ar "$out/bin/ar"
             ln -s ${pkgs.python3}/bin/python3 "$out/bin/python3"

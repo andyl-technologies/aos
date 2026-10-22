@@ -1,6 +1,44 @@
 {
   "configured_targets": [
     {
+      "build_file": "tools/bazel/rules/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "defines": [],
+      "dependencies": [],
+      "edition": "",
+      "external": false,
+      "features": [],
+      "generated_inputs": {},
+      "kind": "rust_lint_config",
+      "label": "//tools/bazel/rules:workspace_lints",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
+      "build_file": "tools/bazel/rules/BUILD.bazel",
+      "copts": [],
+      "crate_name": "",
+      "defines": [],
+      "dependencies": [],
+      "edition": "",
+      "external": false,
+      "features": [],
+      "generated_inputs": {},
+      "kind": "rust_lint_config",
+      "label": "//tools/bazel/rules:workspace_lints",
+      "rustc_env": {},
+      "rustc_flags": [],
+      "schema_version": 1,
+      "sources": [],
+      "tags": [],
+      "target_cpu": "x86_64"
+    },
+    {
       "build_file": "tools/bazel/tests/fixture/BUILD.bazel",
       "copts": [],
       "crate_name": "",
@@ -70,6 +108,7 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/rules:workspace_lints",
         "//tools/bazel/tests/fixture:macro.rs",
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
         "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
@@ -135,6 +174,7 @@
       "crate_name": "fixture_generated",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/rules:workspace_lints",
         "//tools/bazel/tests/fixture:generated.rs",
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
         "@@rules_rust+//rust/settings:always_enable_metadata_output_groups",
@@ -173,6 +213,7 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/rules:workspace_lints",
         "//tools/bazel/tests/fixture:cpp_library",
         "//tools/bazel/tests/fixture:native.rs",
         "//tools/bazel/tests/fixture:rust_library",
@@ -246,6 +287,7 @@
       "crate_name": "",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/rules:workspace_lints",
         "//tools/bazel/tests/fixture:fixture_macro",
         "//tools/bazel/tests/fixture:main.rs",
         "//tools/bazel/tests/fixture:rust_library",
@@ -291,6 +333,7 @@
       "crate_name": "fixture_library",
       "defines": [],
       "dependencies": [
+        "//tools/bazel/rules:workspace_lints",
         "//tools/bazel/tests/fixture:generated_library",
         "//tools/bazel/tests/fixture:lib.rs",
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
@@ -315,7 +358,9 @@
       },
       "kind": "rust_library",
       "label": "//tools/bazel/tests/fixture:rust_library",
-      "rustc_env": {},
+      "rustc_env": {
+        "CARGO_PKG_NAME": "aos-bazel-fixture"
+      },
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
@@ -752,22 +797,22 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "778eb7b237c32e809724f1558f65c8ac0fdfecdb1d8f6ab176a157f82f7c33ac",
+    "MODULE.bazel": "5cd049baeba287f632f5f91a415223489cbbbb3b960f236f540fd065e1d6f265",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "third_party/rust/BUILD.bazel": "cda5289c878083c432cf61edf5d6a6aa521c38f02c29a04cc65417a2246c11b6",
     "third_party/rust/core/repositories.MODULE.bazel": "f76c41a67c0dec92eb711baaada47a413e7f5b9181533f03a5fa77e2bf3350d2",
     "tools/bazel/metadata/BUILD.bazel": "b3cec49d66d2a7f94057aa15cc7d0fe39a4862a9f8f6777eb5dbb419ae1b792b",
     "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
-    "tools/bazel/rules/BUILD.bazel": "8eabdcc282d2681759c31ae1050cf8bb96b31e82a469a31c1320eafcb5955ffa",
+    "tools/bazel/rules/BUILD.bazel": "6e909fc14afef949132077bf450ce64645f80a0dd58c2d415ea23c31fae5f805",
     "tools/bazel/rules/compile.bzl": "fd30a8c87ba7e0c645071241ac576c593ebfd44bf916a575b47ed4a624bff307",
     "tools/bazel/rules/crates.bzl": "0eff6e5095ca37e5e49dc683fa1c352624ad5994219cd07f2eb9ff4a2b1de5d8",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/license.bzl": "1d08a716508fa32131599fb3309affb804c3347aaf77591f82dca8577cd9c302",
     "tools/bazel/rules/package.bzl": "bfad9728e63c5f5c6adfc08eb320481830558588152cdd1a9f373d9dadb8ef0a",
     "tools/bazel/rules/test.bzl": "125a4a7be953ed764b0eff31e908397c74f76fd4c6fb8e71a5d39f08d95b8957",
-    "tools/bazel/tests/fixture/BUILD.bazel": "93ad7e318620074c9cb26fe9c7f670ec6934d4e82f33de3455a7f66171115cca",
+    "tools/bazel/tests/fixture/BUILD.bazel": "3325960c17702ee8574d6848b70a8c1c7e1f25a7811945f431c3b3553a95261c",
     "tools/bazel/toolchains/BUILD.bazel": "6ee0fc19651767ca4c64f434f1da544ec4812d40ac8f52b535f25051ef62fb3d",
-    "tools/bazel/toolchains/BUILD.toolchains.bazel": "ece5a5a040e571b4aa69f715ba7f413b044c25b392b00def6bbf3779bf89ac7c",
+    "tools/bazel/toolchains/BUILD.toolchains.bazel": "bac3cce83e252e76b4469b843bab156335ab9fcc8039bba656f2b91fed6e3780",
     "tools/bazel/toolchains/repositories.bzl": "276eb076b91a0221f95b3b2b6235e837e50eb5d4577512ec12833731b494f98f"
   },
   "generator_sha256": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",

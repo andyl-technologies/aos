@@ -15,6 +15,15 @@ aos_dev_bazel() (
     return
   fi
 
+  local -a project_options=()
+  if [[ $1 == rust-project ]]; then
+    [[ $aos_dev_mode == development ]] || aos_dev_error 'rust-project requires development mode for persistent editor paths'
+    shift
+    (( $# > 0 )) || aos_dev_error 'usage: aos-dev bazel rust-project <Rust labels>'
+    project_options=(--rust-project-output "$aos_dev_root/rust-project.json")
+    set -- build "$@"
+  fi
+
   local launcher identity output_parent output_base status
   launcher=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelLauncher --no-out-link)
   identity=$(printf '%s\n%s\n' "$aos_dev_root" "$launcher" | sha256sum)
@@ -36,7 +45,7 @@ aos_dev_bazel() (
 
   status=0
   AOS_DEV_ROOT="$aos_dev_root" AOS_BAZEL_OUTPUT_BASE="$output_base" \
-    "$launcher/bin/aos-bazel" "${cache_options[@]}" -- "$@" || status=$?
+    "$launcher/bin/aos-bazel" "${cache_options[@]}" "${project_options[@]}" -- "$@" || status=$?
 
   return "$status"
 )

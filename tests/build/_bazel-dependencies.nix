@@ -25,7 +25,13 @@ in rec {
       repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;
       analysisTargets = ["//crates/crucible/engine/crucible-determinism:unit"];
     };
-    targets = ["//crates/crucible/engine/crucible-determinism:unit" "//crates/crucible/engine/crucible-determinism:doc"];
+    targets = [
+      "//crates/crucible/engine/crucible-determinism:unit"
+      "//crates/crucible/engine/crucible-determinism:doc"
+      "//crates/crucible/engine/crucible-determinism:clippy"
+      "//crates/crucible/engine/crucible-determinism:format"
+      "//crates/crucible/engine/crucible-determinism:documentation"
+    ];
   };
   all = pkgs.runCommand "aos-bazel-external-rust-checks" {buildDeps = [specifications core];} ''
     mkdir -p "$out"

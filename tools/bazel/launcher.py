@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import resource
 import subprocess
+import sys
 import time
 
 
@@ -58,6 +59,7 @@ def main():
     parser.add_argument("--shadow-workspace", action="store_true")
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--metrics", type=Path)
+    parser.add_argument("--rust-project-output", type=Path)
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     config = json.loads(options.config.read_text())
@@ -83,6 +85,14 @@ def main():
 
     output_base = options.output_base.resolve()
     output_base.mkdir(parents=True, exist_ok=True)
+    if options.rust_project_output:
+        if arguments[0] != "build" or options.prepare_lock:
+            parser.error("rust-project export requires an ordinary build command")
+        arguments.extend([
+            "--aspects=@rules_rust//rust:defs.bzl%rust_analyzer_aspect",
+            "--output_groups=default,rust_analyzer_crate_spec,rust_analyzer_proc_macro_dylib,rust_analyzer_src,rust_generated_srcs",
+            f"--build_event_json_file={output_base / 'rust-project-events.json'}",
+        ])
     # Serialize shadow-tree updates as well as Bazel itself. A lock beside the
     # output base survives `clean --expunge`, which removes the output base.
     output_lock = (output_base.parent / ".aos-launcher.lock").open("a")
@@ -126,6 +136,8 @@ def main():
     if arguments[0] in {"build", "test", "run", "cquery", "aquery"}:
         policy.extend([
             "--incompatible_strict_action_env", "--stamp=false", "--spawn_strategy=sandboxed",
+            "--@rules_rust//rust/settings:clippy.toml=//tools/bazel/rules:clippy.toml",
+            "--@rules_rust//rust/settings:rustfmt.toml=//tools/bazel/rules:rustfmt.toml",
             # Nix already isolates the network. Reusing that namespace also
             # avoids Bazel trying to mount sysfs at /sys, absent inside Nix.
             "--sandbox_default_allow_network=true" if options.nix_sandbox
@@ -160,6 +172,16 @@ def main():
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         status = subprocess.call(command, cwd=workspace, env=environment)
+        if status == 0 and options.rust_project_output:
+            status = subprocess.call([
+                sys.executable, config["rust_project_exporter"],
+                "--events", str(output_base / "rust-project-events.json"),
+                "--workspace", str(options.workspace.resolve()),
+                "--execution-root", str(output_base / "execroot/_main"),
+                "--output-base", str(output_base),
+                "--toolchain", config["repositories"]["aos_tools"],
+                "--output", str(options.rust_project_output.resolve()),
+            ], cwd=workspace, env=environment)
     finally:
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         if options.metrics:

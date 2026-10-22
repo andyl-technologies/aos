@@ -64,7 +64,15 @@
       (builtins.attrNames inventory.contracts)
     );
   paths =
-    ["MODULE.bazel" "MODULE.bazel.lock" ".bazelrc"]
+    [
+      "MODULE.bazel"
+      "MODULE.bazel.lock"
+      ".bazelrc"
+      # Label settings are launcher policy, rather than attributes of every
+      # compiled target. Keep their files in even a precise source selection.
+      "tools/bazel/rules/clippy.toml"
+      "tools/bazel/rules/rustfmt.toml"
+    ]
     ++ lib.optionals (inventory == null) ["third_party/rust"]
     ++ inventoryPaths ++ sourceDirectories ++ extraFiles;
   accept = path: type: let
@@ -125,6 +133,7 @@
         mkdir -p "$out"
         printf '{}\n' > "$out/bazel_registry.json"
       '');
+      rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
       inherit jobs;
       # Bazel's test setup and XML writer use these tools too. Never fall back
       # to the daemon's or developer's PATH when a test starts.

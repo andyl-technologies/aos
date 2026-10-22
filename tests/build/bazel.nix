@@ -57,6 +57,110 @@ in
       inherit workspace;
       targets = ["//tools/bazel/tests/fixture:rust_test"];
     };
+    developer-build = pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-developer-tools";
+      inherit workspace;
+      targets = ["//tools/bazel/tests/fixture:clippy" "//tools/bazel/tests/fixture:documentation" "//tools/bazel/tests/fixture:analyzer_toolchain"];
+    };
+    developer-tests = pkgs.mkAosBazelCheck {
+      pname = "aos-bazel-developer-tests";
+      inherit workspace;
+      targets = ["//tools/bazel/tests/fixture:format" "//tools/bazel/tests/fixture:doctest"];
+    };
+    editor = pkgs.runCommand "aos-bazel-editor-check" {buildDeps = [pkgs.python3];} ''
+      mkdir workspace
+      cp -a ${workspace.source}/. workspace/
+      chmod -R u+w workspace
+      cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
+        --config ${workspace.configuration} --workspace "$PWD/workspace" \
+        --output-base "$TMPDIR/editor/bazel" --nix-sandbox \
+        --rust-project-output "$PWD/rust-project.json" \
+        -- build //tools/bazel/tests/fixture:rust_app //tools/bazel/tests/fixture:native_app //tools/bazel/tests/fixture:rust_test_binary
+      ${pkgs.python3}/bin/python3 - "$PWD/rust-project.json" <<'PYTHON'
+      import json
+      from pathlib import Path
+      import sys
+
+      project = json.loads(Path(sys.argv[1]).read_text())
+      crates = {item["display_name"]: item for item in project["crates"]}
+      assert "fixture_generated" in crates and "fixture_macro" in crates, crates.keys()
+      for crate in crates.values():
+          assert Path(crate["root_module"]).is_file(), crate
+          if crate["is_proc_macro"]:
+              assert Path(crate["proc_macro_dylib_path"]).is_file(), crate
+      assert Path(project["sysroot_src"], "core/src/lib.rs").is_file(), project
+      PYTHON
+      # Cargo is a failing stub even for editor qualification. Generated source
+      # and proc macros must come from the Bazel build above.
+      CARGO=${workspace.toolchains}/bin/cargo \
+        RUSTC=${workspace.toolchains}/bin/rustc RAYON_NUM_THREADS=4 \
+        ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD" \
+          --disable-build-scripts \
+          --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
+          > "$out/analysis.log" 2>&1
+      ${pkgs.python3}/bin/python3 - "$out/analysis.log" <<'PYTHON'
+      from pathlib import Path
+      import re
+      import sys
+
+      log = Path(sys.argv[1]).read_text()
+      for category in ["exprs", "pats"]:
+          assert re.search(rf"{category}: [0-9]+, \?\?ty: 0 \(0%\), \?ty: 0 \(0%\)", log), log
+      assert "panics: 0" in log and "proc_macros: 1" in log, log
+      PYTHON
+      cp rust-project.json "$out/rust-project.json"
+    '';
+    developer-evidence = pkgs.runCommand "aos-bazel-developer-evidence" {buildDeps = [pkgs.python3 developer-build];} ''
+      ${pkgs.python3}/bin/python3 - ${developer-tests}/evidence/tests <<'PYTHON'
+      import json
+      from pathlib import Path
+      import sys
+
+      root = Path(sys.argv[1])
+      results = json.loads((root / "index.json").read_text())["results"]
+      assert len(results) == 2 and all(item["status"] == "PASSED" for item in results), results
+      docs = [item for item in results if item["identity"]["label"].endswith(":doctest")]
+      assert len(docs) == 1, results
+      log = (root / docs[0]["outputs"]["test.log"]).read_text()
+      assert "1 passed; 0 failed; 0 ignored" in log, log
+      PYTHON
+      mkdir -p "$out"
+      cp -r ${developer-tests}/evidence/tests "$out/tests"
+    '';
+    developer-policy = pkgs.runCommand "aos-bazel-developer-policy" {buildDeps = [pkgs.python3];} ''
+      cmp ${../../crates/clippy.toml} ${../../tools/bazel/rules/clippy.toml}
+      ${pkgs.python3}/bin/python3 - ${../../crates/Cargo.toml} ${../../tools/bazel/rules/BUILD.bazel} <<'PYTHON'
+      import ast
+      from pathlib import Path
+      import re
+      import sys
+      import tomllib
+
+      cargo = tomllib.loads(Path(sys.argv[1]).read_text())["workspace"]["lints"]["clippy"]
+      declaration = Path(sys.argv[2]).read_text()
+      clippy = ast.literal_eval(re.search(r"clippy = (\{[^}]+\})", declaration).group(1))
+      assert clippy == cargo, (clippy, cargo)
+      PYTHON
+      mkdir workspace
+      cp -a ${workspace.source}/. workspace/
+      chmod -R u+w workspace
+      cp ${workspace.preparedLock}/MODULE.bazel.lock workspace/MODULE.bazel.lock
+      mkdir -p "$out"
+      for target in host_clock unwrap; do
+        if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
+          --config ${workspace.configuration} --workspace "$PWD/workspace" \
+          --output-base "$TMPDIR/$target/bazel" --nix-sandbox \
+          -- build "//tools/bazel/tests/fixture/lint_negative:''${target}_check" \
+          > "$out/$target.log" 2>&1; then
+          echo "workspace Clippy violation was accepted: $target" >&2
+          exit 1
+        fi
+      done
+      grep -F 'host monotonic time must not enter Crucible state paths' "$out/host_clock.log"
+      grep -E 'clippy::unwrap[_-]used' "$out/unwrap.log"
+    '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
       ${pkgs.python3}/bin/python3 - ${unit}/evidence/tests <<'PY'
       import json
@@ -95,7 +199,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner editor developer-evidence developer-policy policy source-selection precision-parity license-boundary pilot.all dependencies.all protocol.all recovery];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

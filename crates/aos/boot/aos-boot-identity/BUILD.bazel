@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_doc_test")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -50,4 +50,20 @@ aos_package(
     license_domain = "apache-host",
     artifacts = {":aos-boot-identity": "bin/aos-boot-identity"},
     executables = ["bin/aos-boot-identity"],
+)
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib", ":unit_binary", ":aos-boot-identity", ":uki_cli_binary"],
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib", ":unit_binary", ":aos-boot-identity", ":uki_cli_binary"],
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":lib",
 )

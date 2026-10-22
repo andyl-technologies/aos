@@ -36,3 +36,7 @@ crates/target/
 # Dev hub state (aos-hub `serve --dev`): local db + seeded bucket.
 /crates/.aos-hub/
 /crates/hub/aos-hub-native/.aos-hub/
+
+# Generated editor metadata belongs to this worktree and configured toolchain.
+/rust-project.json
+/.rust-project.json.*.tmp

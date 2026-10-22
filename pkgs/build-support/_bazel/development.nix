@@ -20,6 +20,7 @@ in {
     name = "aos-bazel-dev";
     buildDeps = [launcher devCommand pkgs.bazel pkgs.python3 pkgs.bash pkgs.nix pkgs.coreutils pkgs.acl];
     shellHook = ''
+      export PATH="${workspace.toolchains}/bin:${workspace.toolchains}/developer/bin:$PATH"
       export AOS_DEV_ROOT="''${AOS_DEV_ROOT:-$PWD}"
     '';
   };

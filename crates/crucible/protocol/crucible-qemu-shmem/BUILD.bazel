@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_doc_test")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
@@ -17,6 +17,7 @@ DEPENDENCIES = [
 
 rust_library(
     name = "lib",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_qemu_shmem",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
@@ -28,6 +29,7 @@ rust_library(
 
 aos_rust_test(
     name = "unit",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     package_name = "crucible-qemu-shmem",
     crate = ":lib",
     compile_data = glob(["tests/fixtures/**"]),
@@ -39,6 +41,7 @@ aos_rust_test(
 [
     aos_rust_test(
         name = source.removeprefix("tests/").removesuffix(".rs"),
+        lint_config = "//tools/bazel/rules:workspace_lints",
         package_name = "crucible-qemu-shmem",
         crate_root = source,
         srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
@@ -57,6 +60,7 @@ rust_doc_test(
 
 rust_binary(
     name = "crucible-shmem-abi-header",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_shmem_abi_header",
     srcs = ["examples/crucible-shmem-abi-header.rs"],
     deps = [":lib"],
@@ -73,4 +77,26 @@ aos_license_check(
         for source in glob(["tests/*.rs"])
     ],
     license_domain = "permissive-protocol",
+)
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib", ":unit_binary"] + [
+        ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+        for source in glob(["tests/*.rs"])
+    ],
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib", ":unit_binary"] + [
+        ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+        for source in glob(["tests/*.rs"])
+    ],
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":lib",
 )

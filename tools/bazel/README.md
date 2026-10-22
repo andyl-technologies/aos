@@ -47,8 +47,7 @@ is shared across independent builds. Release mode uses a temporary output base
 and requests no shared cache.
 
 Production consumers retain their Cargo or direct-rustc recipes. These fixtures do not establish
-production feature parity, cross-platform support, editor integration, or
-completion of the RFC. The remaining platform/invalidation checks and
+production feature parity, cross-platform support, or completion of the RFC. The remaining platform/invalidation checks and
 family-specific performance budgets remain required before production cutover.
 
 ## Local cache evidence
@@ -322,3 +321,55 @@ Copy that output's `inventory.json` to the checked-in inventory and rerun
 retains its discovered binaries separately so comparison changes do not rebuild
 the oracle. These checks qualify the native graph; production consumers and
 foreign-target adapters still need the remaining RFC acceptance work.
+
+
+## Rust developer workflows
+
+The AOS Rust release supplies Clippy, rustfmt, rustdoc, rust-analyzer, its matching
+proc-macro server, and standard-library sources. The compiler closure identity
+includes these source-built tools. The launcher pins the checked-in formatter
+and Clippy configuration; the workspace deny levels remain explicit
+`rust_lint_config` inputs on crates that inherit them from Cargo. During
+coexistence, a check compares both the configuration and lint levels with the
+Cargo oracle. Negative fixtures must reject host-clock access and `unwrap`.
+
+The boot and protocol BUILD packages expose `clippy`, `format`, and
+`documentation` targets alongside their existing tests. Formatting and Clippy
+also cover the declared binaries and integration roots. The small infrastructure
+fixture has a runnable doctest, and its evidence check requires one passing
+case rather than accepting an empty doctest suite.
+
+```sh
+aos-dev bazel build //crates/crucible/protocol/crucible-qemu-protocol:clippy
+aos-dev bazel test //crates/crucible/protocol/crucible-qemu-protocol:format
+aos-dev bazel build //crates/crucible/protocol/crucible-qemu-protocol:documentation
+nix develop --file bazel-shell.nix
+aos-dev bazel rust-project //tools/bazel/tests/fixture:rust_app
+```
+
+`rust-project` consumes the pinned rules_rust aspect's configured graph and only
+current successful build-event outputs. It preserves aliases, features,
+build-script environments, generated roots, and compiled procedural macros.
+Library and libtest views share a root; ambiguous feature/toolchain variants
+fail instead of silently merging. Generate separate projects for incompatible
+configurations. The file is written atomically to the worktree root and ignored
+by Git. Its paths require the development output base to remain available;
+release mode rejects editor export because its output base is temporary.
+
+The Bazel shell puts the AOS developer binaries on PATH. Point the editor at
+that `rust-analyzer` and the generated `rust-project.json`, following the
+[rust-analyzer project format](https://rust-analyzer.github.io/book/non_cargo_based_projects.html).
+Builds and tests continue through `aos-dev`; the exporter does not install
+editor configuration or enable an ambient Cargo check command. The analyzer
+may probe Cargo metadata for the upstream standard library and fall back to its
+source model when the toolchain's Cargo stub rejects that probe. It does not
+use Cargo to discover or compile first-party crates.
+
+`checks.build.bazel.editor` type-checks the fixture's library/test view,
+generated source, and real procedural macro with the source-built analyzer;
+it requires zero unknown expression/pattern types and no analyzer panics.
+`developer-evidence` retains the nonempty doctest and formatter results, and
+`developer-policy` verifies the lint contract and its rejection cases.
+
+Passing native Linux outputs and configuration fingerprints are retained in
+`tests/evidence/native-linux-developer-tools.json`.

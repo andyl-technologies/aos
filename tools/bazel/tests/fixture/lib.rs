@@ -1,6 +1,12 @@
 //! Supplies a deterministic value for cross-derivation cache qualification.
 
 /// Returns the fixture's shared library value.
+///
+/// # Examples
+///
+/// ```rust
+/// assert_eq!(fixture_library::answer(), 42);
+/// ```
 pub fn answer() -> u32 {
     fixture_generated::answer() + u32::from(cfg!(feature = "extra"))
 }

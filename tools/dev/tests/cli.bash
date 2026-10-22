@@ -133,6 +133,12 @@ bash "$root/tools/dev/aos-dev" --release bazel test //example:tests
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><test><//example:tests>'
 qualification_output=$(tail -n 1 "$AOS_DEV_TEST_BAZEL_ENV_LOG")
 test ! -e "${qualification_output%/output}"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel rust-project //example:lib
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--><build><//example:lib>"
+if bash "$root/tools/dev/aos-dev" --release bazel rust-project //example:lib 2>/dev/null; then
+  echo 'editor export accepted a disposable qualification output base' >&2
+  exit 1
+fi
 bash "$root/tools/dev/aos-dev" bazel update-deps core
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/core>"
 if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then

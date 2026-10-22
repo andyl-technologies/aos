@@ -1,3 +1,4 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary", "rust_library", "rust_proc_macro")
 load("//tools/bazel/rules:generated.bzl", "aos_python_generator")
 load("//tools/bazel/rules:package.bzl", "aos_package")
@@ -13,6 +14,7 @@ aos_python_generator(
 
 rust_library(
     name = "generated_library",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "fixture_generated",
     crate_root = "generated.rs",
     srcs = ["generated.rs"],
@@ -21,13 +23,16 @@ rust_library(
 
 rust_proc_macro(
     name = "fixture_macro",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["macro.rs"],
     edition = "2024",
 )
 
 rust_library(
     name = "rust_library",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "fixture_library",
+    rustc_env = {"CARGO_PKG_NAME": "aos-bazel-fixture"},
     srcs = ["lib.rs"],
     deps = [":generated_library"],
     edition = "2024",
@@ -35,6 +40,7 @@ rust_library(
 
 rust_binary(
     name = "rust_app",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["main.rs"],
     edition = "2024",
     deps = [":rust_library"],
@@ -43,6 +49,7 @@ rust_binary(
 
 rust_binary(
     name = "native_app",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     srcs = ["native.rs"],
     edition = "2024",
     deps = [":rust_library"],
@@ -51,6 +58,7 @@ rust_binary(
 
 aos_rust_test(
     name = "rust_test",
+    lint_config = "//tools/bazel/rules:workspace_lints",
     package_name = "aos-bazel-fixture",
     crate = ":rust_library",
 )
@@ -75,4 +83,31 @@ aos_package(
     license_domain = "apache-host",
     artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture", ":native_app": "bin/native-fixture"},
     executables = ["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"],
+)
+
+rust_clippy(
+    name = "clippy",
+    deps = [":rust_library", ":rust_app", ":fixture_macro", ":native_app"],
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":rust_library", ":rust_app", ":fixture_macro", ":native_app"],
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":rust_library",
+)
+
+rust_doc_test(
+    name = "doctest",
+    crate = ":rust_library",
+)
+
+# Keep the configured inventory rooted in this workspace while qualifying the
+# pinned rule's source-built rust-analyzer toolchain adapter.
+filegroup(
+    name = "analyzer_toolchain",
+    srcs = ["@rules_rust//rust/private:rust_analyzer_detect_sysroot"],
 )

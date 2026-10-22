@@ -16,4 +16,9 @@ rust.toolchain(versions = [])
 aos_tools = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tools_repository")
 aos_tools(name = "aos_tools")
 
-register_toolchains("@aos_tools//:rust_registered", "@aos_tools//:cc_registered")
+register_toolchains(
+    "@aos_tools//:rust_registered",
+    "@aos_tools//:cc_registered",
+    "@aos_tools//:rustfmt_registered",
+    "@aos_tools//:analyzer_registered",
+)

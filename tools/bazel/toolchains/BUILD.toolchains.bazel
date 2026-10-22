@@ -1,10 +1,19 @@
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 load("@rules_cc//cc/private/toolchain:unix_cc_toolchain_config.bzl", "cc_toolchain_config")
-load("@rules_rust//rust:toolchain.bzl", "rust_stdlib_filegroup", "rust_toolchain")
+load(
+    "@rules_rust//rust:toolchain.bzl",
+    "rust_analyzer_toolchain",
+    "rust_stdlib_filegroup",
+    "rust_toolchain",
+    "rustfmt_toolchain",
+)
 
 package(default_visibility = ["//visibility:public"])
 
-exports_files(["paths.bzl", "closure.json"])
+exports_files([
+    "paths.bzl", "closure.json", "bin/rustc",
+    "developer/bin/rust-analyzer", "developer/bin/proc-macro-srv",
+])
 
 filegroup(name = "python", srcs = ["bin/python3"])
 filegroup(name = "bash", srcs = ["bin/bash"])
@@ -29,6 +38,9 @@ filegroup(
 filegroup(name = "rustc", srcs = ["bin/rustc"])
 filegroup(name = "rustdoc", srcs = ["bin/rustdoc"])
 filegroup(name = "cargo", srcs = ["bin/cargo"])
+filegroup(name = "clippy", srcs = ["developer/bin/clippy-driver"])
+filegroup(name = "rustfmt", srcs = ["developer/bin/rustfmt"])
+filegroup(name = "rust_sources", srcs = glob(["developer/rust-src/**"]))
 filegroup(
     name = "rustc_lib",
     srcs = ["closure.json"] + glob([
@@ -53,6 +65,7 @@ rust_toolchain(
     rustc = ":rustc",
     rust_doc = ":rustdoc",
     cargo = ":cargo",
+    clippy_driver = ":clippy",
     rustc_lib = ":rustc_lib",
     rust_std = ":rust_std",
     allocator_library = "@rules_rust//ffi/rs:empty",
@@ -113,6 +126,39 @@ toolchain(
     name = "cc_registered",
     toolchain = ":cc",
     toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)
+
+rustfmt_toolchain(
+    name = "rustfmt_tools",
+    rustfmt = ":rustfmt",
+    rustc = ":rustc",
+    rustc_lib = ":rustc_lib",
+)
+
+toolchain(
+    name = "rustfmt_registered",
+    toolchain = ":rustfmt_tools",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)
+
+rust_analyzer_toolchain(
+    name = "analyzer_tools",
+    rust_analyzer = "developer/bin/rust-analyzer",
+    proc_macro_srv = "developer/bin/proc-macro-srv",
+    rustc = "bin/rustc",
+    rustc_srcs = ":rust_sources",
+    rustc_srcs_path = "developer/rust-src/library",
+    version = "@RUST_VERSION@",
+)
+
+toolchain(
+    name = "analyzer_registered",
+    toolchain = ":analyzer_tools",
+    toolchain_type = "@rules_rust//rust/rust_analyzer:toolchain_type",
     exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
     target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
 )

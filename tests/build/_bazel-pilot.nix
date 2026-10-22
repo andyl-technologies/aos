@@ -28,6 +28,16 @@ in rec {
     inherit workspace;
     targets = ["//crates/aos/boot/aos-boot-identity:unit" "//crates/aos/boot/aos-boot-identity:uki_cli" "//crates/aos/boot/aos-boot-identity:doc" "//crates/aos/boot/aos-recovery:unit" "//crates/aos/boot/aos-recovery:doc"];
   };
+  developer-build = pkgs.mkAosBazelBuild {
+    pname = "aos-bazel-boot-developer-tools";
+    inherit workspace;
+    targets = ["//crates/aos/boot/aos-boot-identity:clippy" "//crates/aos/boot/aos-recovery:clippy" "//crates/aos/boot/aos-boot-identity:documentation" "//crates/aos/boot/aos-recovery:documentation"];
+  };
+  developer-tests = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-boot-format";
+    inherit workspace;
+    targets = ["//crates/aos/boot/aos-boot-identity:format" "//crates/aos/boot/aos-recovery:format"];
+  };
   identity = package "aos-boot-identity" build;
   recovery = package "aos-recovery" build;
   test-artifacts = pkgs.mkAosBazelPackage {
@@ -71,7 +81,7 @@ in rec {
     ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_pilot.py} \
       --tests ${unit}/evidence/tests --oracles oracles.json --output "$out/inventory.json"
   '';
-  all = pkgs.runCommand "aos-bazel-boot-pilot-checks" {buildDeps = [identity recovery unit native-manifest parity];} ''
+  all = pkgs.runCommand "aos-bazel-boot-pilot-checks" {buildDeps = [identity recovery unit native-manifest parity developer-build developer-tests];} ''
     mkdir -p "$out"
     cp -r ${unit}/evidence/tests "$out/tests"
     cp ${build}/inventory.json "$out/inventory.json"

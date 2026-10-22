@@ -35,6 +35,16 @@ in rec {
       ++ integrationTargets "crucible-qemu-protocol"
       ++ integrationTargets "crucible-qemu-shmem";
   };
+  developer-build = pkgs.mkAosBazelBuild {
+    pname = "aos-bazel-protocol-developer-tools";
+    inherit workspace;
+    targets = ["${protocol}:clippy" "${shmem}:clippy" "${protocol}:documentation" "${shmem}:documentation"];
+  };
+  developer-tests = pkgs.mkAosBazelCheck {
+    pname = "aos-bazel-protocol-format";
+    inherit workspace;
+    targets = ["${protocol}:format" "${shmem}:format"];
+  };
   cargo = pkgs.mkDerivation {
     pname = "aos-bazel-protocol-cargo-oracle";
     version = "1";
@@ -102,7 +112,7 @@ in rec {
         --tests ${tests}/evidence/tests --inventory ${tests}/inventory.json \
         --messages ${cargo}/cargo-messages.jsonl --output "$out/parity.json"
     '';
-  all = pkgs.runCommand "aos-bazel-protocol-checks" {buildDeps = [tests oracle];} ''
+  all = pkgs.runCommand "aos-bazel-protocol-checks" {buildDeps = [tests oracle developer-build developer-tests];} ''
     mkdir -p "$out"
     cp -r ${tests}/evidence "$out/evidence"
     cp ${tests}/inventory.json "$out/inventory.json"

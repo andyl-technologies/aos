@@ -1,1 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_lint_config")
+
 exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "test.bzl", "generated.bzl"])
+
+exports_files(["clippy.toml", "rustfmt.toml"])
+
+# Mirrors crates/Cargo.toml while Cargo remains the migration oracle.
+rust_lint_config(
+    name = "workspace_lints",
+    visibility = ["//visibility:public"],
+    clippy = {
+        "all": "deny",
+        "disallowed_methods": "deny",
+        "disallowed_types": "deny",
+        "expect_used": "deny",
+        "float_arithmetic": "deny",
+        "unwrap_used": "deny",
+    },
+)
