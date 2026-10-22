@@ -34,6 +34,11 @@ pub use purpose::{
     DeferredCleanupPurpose,
 };
 
+mod setup;
+pub use setup::{DEFERRED_CLEANUP_SETUP_FRAME_BYTES, DeferredCleanupSetup};
+#[cfg(unix)]
+pub use setup::send_deferred_cleanup_setup_frame_with_descriptors;
+
 #[cfg(test)]
 mod tests;
 

@@ -412,6 +412,17 @@ quarantined virtual addresses or permit child reuse. All 179 sealed payloads
 match independent review proof
 `a73f9728cd6028dcfdc9c1cabd75fa155f16f2197b147ff836a3e12c1fbb5d33`.
 
+The separate Setup-nine encoder/decoder now preserves the exact 125-byte
+frame, incarnation-bearing footer, and optional workspace position. Its Unix
+sender accepts exactly eight or nine borrowed descriptors and refuses malformed
+or mixed editions before sending. Four framing controls and two real SCM_RIGHTS
+controls pass; all 227 protocol tests and strict protocol Clippy pass. The ABI
+gate requires those exact groups independently of the existing codec controls.
+These byte and physical-alias checks do not issue a delegation or activate
+Setup nine; the genuine retained-parent installer and complete runtime profile
+remain required.
+
+
 The additive complete-process API in signed source
 `fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`, tree
 `a2876d353f8b886f016ddbf93a1e515da1959c87`, passes a fresh full build,

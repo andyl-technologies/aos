@@ -120,6 +120,9 @@ fn publisher_setup_preserves_workspace_binding_and_fixed_role_order()
 #[cfg(unix)]
 mod transport {
     use super::*;
+    use crate::deferred_cleanup::{
+        DeferredCleanupSetup, send_deferred_cleanup_setup_frame_with_descriptors,
+    };
     use crate::publisher_subscription::quantum::{
         QuantumPublisherSetup, QuantumStackPublisherSetup,
         send_quantum_publisher_setup_frame_with_descriptors,
@@ -195,6 +198,7 @@ mod transport {
         Publisher,
         Quantum,
         Stack,
+        DeferredCleanup,
     }
 
     type Sender = fn(
@@ -209,6 +213,7 @@ mod transport {
                 Self::Publisher => send_publisher_setup_frame_with_descriptors,
                 Self::Quantum => send_quantum_publisher_setup_frame_with_descriptors,
                 Self::Stack => send_quantum_stack_setup_frame_with_descriptors,
+                Self::DeferredCleanup => send_deferred_cleanup_setup_frame_with_descriptors,
             }
         }
 
@@ -216,6 +221,12 @@ mod transport {
             let publisher = QuantumPublisherSetup { transport: value };
             match self {
                 Self::Publisher => value.encode(),
+                Self::DeferredCleanup => DeferredCleanupSetup {
+                    publisher: value,
+                    delegation_incarnation: 17,
+                }
+                .encode()
+                .map_err(|_| PublisherDecodeError),
                 Self::Quantum => publisher.encode(),
                 Self::Stack => QuantumStackPublisherSetup {
                     publisher,
@@ -287,6 +298,12 @@ mod transport {
         exercise_transfer(SetupEdition::Stack)
     }
 
+    #[test]
+    fn deferred_cleanup_setup_sends_exact_eight_and_nine_actual_aliases()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_transfer(SetupEdition::DeferredCleanup)
+    }
+
     fn exercise_refusal(edition: SetupEdition) -> Result<(), Box<dyn std::error::Error>> {
         let send = edition.sender();
         let encode = |value| edition.encode(value);
@@ -306,10 +323,18 @@ mod transport {
         let mut malformed = frame;
         malformed[113] ^= 1;
         assert!(send(host.as_raw_fd(), &malformed, &descriptors).is_err());
-        if edition != SetupEdition::Stack {
+        if matches!(edition, SetupEdition::Publisher | SetupEdition::Quantum) {
             let mut padding = frame;
             padding[124] = 1;
             assert!(send(host.as_raw_fd(), &padding, &descriptors).is_err());
+        }
+
+        if edition == SetupEdition::DeferredCleanup {
+            for invalid in [0, u64::MAX] {
+                let mut malformed = frame;
+                malformed[117..125].copy_from_slice(&invalid.to_be_bytes());
+                assert!(send(host.as_raw_fd(), &malformed, &descriptors).is_err());
+            }
         }
 
         let mut with_workspace = setup();
@@ -344,6 +369,7 @@ mod transport {
             SetupEdition::Publisher,
             SetupEdition::Quantum,
             SetupEdition::Stack,
+            SetupEdition::DeferredCleanup,
         ] {
             if other != edition {
                 assert!(send(host.as_raw_fd(), &other.encode(setup())?, &descriptors).is_err());
@@ -368,6 +394,12 @@ mod transport {
     fn quantum_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
     -> Result<(), Box<dyn std::error::Error>> {
         exercise_refusal(SetupEdition::Quantum)
+    }
+
+    #[test]
+    fn deferred_cleanup_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
+    -> Result<(), Box<dyn std::error::Error>> {
+        exercise_refusal(SetupEdition::DeferredCleanup)
     }
 
     #[test]

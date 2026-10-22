@@ -526,6 +526,28 @@ in
                 -p crucible-qemu-protocol \
                 --lib deferred_cleanup::tests:: \
                 -- --test-threads=1
+              require_test_set 4 protocol-deferred-cleanup-setup \
+                deferred_cleanup::setup::tests::setup_nine_keeps_exact_physical_body_and_incarnation_footer \
+                -p crucible-qemu-protocol --lib deferred_cleanup::setup::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib deferred_cleanup::setup::tests:: \
+                -- --test-threads=1
+              require_test_set 2 protocol-deferred-cleanup-setup-transport \
+                publisher_subscription::tests::setup::transport::deferred_cleanup_setup_sends_exact_eight_and_nine_actual_aliases \
+                -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::deferred_cleanup_setup
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib publisher_subscription::tests::setup::transport::deferred_cleanup_setup \
+                -- --test-threads=1
               require_test_set 6 protocol-quantum-cleanup \
                 publisher_subscription::quantum::tests::paired_publication_matches_independent_role_bytes_and_refuses_legacy_decoding \
                 -p crucible-qemu-protocol --lib publisher_subscription::quantum::tests::
