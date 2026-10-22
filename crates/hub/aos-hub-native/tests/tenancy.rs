@@ -373,6 +373,20 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "private").await;
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    db.create_mirror_source(
+        registry.id,
+        "https://93.184.216.34/",
+        "pullthrough",
+        true,
+        3600,
+    )
+    .await
+    .unwrap();
 
     // A member user with Read on the org.
     let user = db.create_user("dev@acme.com", None).await.unwrap();
@@ -406,8 +420,7 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     assert!(body.contains("Fixture registry"), "{body}");
 
     // A bearer token with Read on the registry scope also sees its browse
-    // surface. Successful private byte delivery after a typed publication is
-    // covered by the signed-image end-to-end suite.
+    // surface and machine objects.
     let token = bearer(
         Principal::user(user),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
@@ -421,6 +434,33 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+
+    for (cookie, bearer) in [(Some(cookie.as_str()), None), (None, Some(token.as_str()))] {
+        for method in ["GET", "HEAD"] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri("/acme/infra/prod/cdn/HEAD")
+                .header(header::HOST, "127.0.0.1:8420");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie);
+            }
+            if let Some(bearer) = bearer {
+                request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "{method} private HEAD");
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
+        }
+    }
 }
 
 #[tokio::test]
