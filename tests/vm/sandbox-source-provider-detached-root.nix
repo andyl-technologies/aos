@@ -26,9 +26,11 @@
     cargoBuildCommands = [
       "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES ${packageFlags}"
     ];
-    # Run every default library test; ignored kernel fixtures stay guest-only.
+    # Native /proc and cgroup cases run in the installed owner-unit VM.
+    # Keep this build phase on the workspace's hermetic sandbox profile.
     doCheck = true;
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "${packageFlags} --lib";
     installBins = false;
     buildDeps = [pkgs.protobuf pkgs.jq];
