@@ -51,12 +51,14 @@
   postPinSwitchAdversary = {
     description = "Attack the parent mount namespace after switch-root pinning";
     requiredBy = ["initrd-switch-root.target"];
-    requires = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
+    # Isolation stops the setup services. Requiring them here restarts their
+    # initrd dependencies inside the switch-root transaction and conflicts.
     after = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
     before = ["initrd-switch-root.target"];
     unitConfig.IgnoreOnIsolate = "yes";
     serviceConfig = {
-      Type = "simple";
+      Type = "notify";
+      NotifyAccess = "all";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
@@ -82,6 +84,8 @@
         /proc/self/fd/7/aos/post-pin-systemd \
         /proc/self/fd/7/aos/post-pin-loader \
         /proc/self/fd/7/aos/post-pin-dso
+
+      ${pkgs.systemd}/bin/systemd-notify --ready
 
       until test -e \
         /proc/self/fd/7/aos/root-handoff-post-pin.switch-root.ready; do
@@ -128,7 +132,8 @@
     description = "Attack the parent mount namespace after daemon-reexec pinning";
     wantedBy = ["multi-user.target"];
     serviceConfig = {
-      Type = "simple";
+      Type = "notify";
+      NotifyAccess = "all";
       StandardOutput = "journal+console";
       StandardError = "journal+console";
     };
@@ -140,6 +145,8 @@
       exec 5< /nix/store/${libcapBasename}
       exec 6< /
       exec 7< /run
+
+      ${pkgs.systemd}/bin/systemd-notify --ready
 
       until test -e /proc/self/fd/7/aos/post-pin-reexec.arm; do
         ${pkgs.coreutils}/bin/sleep 0.1
@@ -244,7 +251,6 @@
               ]) {
                 description = "Install qualification-only overlay shadow fixtures";
                 requiredBy = ["initrd-switch-root.target"];
-                requires = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
                 after = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
                 before = ["initrd-switch-root.target"];
                 serviceConfig = {
@@ -420,6 +426,7 @@ in {
       )
       postPin.succeed("test ! -s /etc/ld.so.preload")
 
+      postPin.wait_for_unit("aos-root-handoff-post-pin-adversary.service")
       postPin.succeed("touch /run/aos/post-pin-reexec.arm")
       postPin.succeed("systemctl daemon-reexec")
       postPin.wait_for_unit("multi-user.target")

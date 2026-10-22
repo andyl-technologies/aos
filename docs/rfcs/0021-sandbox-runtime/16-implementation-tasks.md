@@ -9559,6 +9559,15 @@ build contract passes at
 The shared Secure Boot enrollment VM also passes with this build. Dedicated
 adversarial root-handoff VM qualification remains pending.
 
+The first dedicated run reaches the clean guest's agent. Its adversarial
+fixtures instead stop before handoff because their switch-root dependencies
+pull overlay setup services back into the isolation transaction, conflicting
+with initrd shutdown. The fixtures now retain ordering after those services
+without requiring their restart. Post-pin workers signal readiness only after
+opening their original descriptors; the daemon-reexec attack also waits for
+that active worker before arming the handoff. The signed VM gate still needs
+to run successfully with this fixture repair.
+
 The next enforcing Host phase-0 boot passed that root handoff, then stopped
 in native host activation: PID 1 denied the `init_t` resource provider's
 manager `status` request during subscription. The same boot also recorded a
