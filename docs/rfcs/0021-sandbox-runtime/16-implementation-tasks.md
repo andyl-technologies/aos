@@ -10431,6 +10431,21 @@ This is a startup composition check, not an installed Required-mode or public
 Create proof.
 The installed method-46 and public Create qualification gates remain closed.
 
+### Fixed view-root preparation through authenticated handoff (execution pending)
+
+An exact-image QEMU diagnostic of the installed Root failure shows PID 1 cannot
+locate the direct runtime-roots executable: the policy deliberately denies its
+direct launch. View preparation now uses the same authenticated physical
+launcher as Network. Its two fixed argument gates admit the view-roots phase
+only with `/`, and its existing EROFS, policy, inode, label and private-mount
+checks still precede the two retained-FD domain transitions. The preparer script
+keeps its separate confined role. No direct PID 1 provisioner permission is
+added. Strict AOS C17 compilation with warnings as errors passes at
+`/nix/store/v0hjg2d77m9whkrsl2m8l92clgjbw2jq-aos-rfc21-stage0-view-phase-compile-0`;
+the Root recovery unit contract also passes. The complete handoff artifact and
+installed view execution remain pending. The diagnostic additionally observes
+a separate recovery state-directory failure; it does not qualify Root startup.
+
 ### Installed managed-userns probe mount service (execution pending)
 
 The first correctly funded 16-vCPU Host readiness run passes physical capacity

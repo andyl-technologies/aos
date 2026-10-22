@@ -571,10 +571,10 @@ in {
           Type = "oneshot";
           RemainAfterExit = true;
           SELinuxContext = lib.mkIf preparer.confined "system_u:system_r:aos_sandbox_cache_view_preparer_t";
-          # Keep the script's exact labelled package independent of the policy
-          # and provisioner that label it. Both fixed commands use this unit's
-          # reviewed preparation role; neither accepts a caller-selected path.
-          ExecStartPre = lib.mkIf preparer.confined "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
+          # Use the existing authenticated physical handoff, as Network does.
+          # PID 1 cannot execute the provisioner directly; the launcher opens
+          # its sealed inode and enters its dedicated domain before mutation.
+          ExecStartPre = lib.mkIf preparer.confined "+/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
           ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
           ExecStop = "${stopRootJournalViews}/bin/aos-sandbox-cache-journal-view-stop";
           User = "root";

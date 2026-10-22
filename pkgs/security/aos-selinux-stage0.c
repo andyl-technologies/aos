@@ -1804,7 +1804,8 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
         (strcmp(argv[4], "/") != 0 && strcmp(argv[4], "/sysroot") != 0) ||
         (strcmp(argv[5], "--prepare-var-base") != 0 &&
          strcmp(argv[5], "--prepare-sandbox-network-roots") != 0 &&
-         strcmp(argv[5], "--prepare-sandbox-owner-roots") != 0)) {
+         strcmp(argv[5], "--prepare-sandbox-owner-roots") != 0 &&
+         strcmp(argv[5], "--prepare-sandbox-view-roots") != 0)) {
         fail_closed(
             "runtime-root launch arguments do not match the authenticated contract");
     }
@@ -1889,7 +1890,8 @@ static void run_runtime_roots_handoff(int argc, char **argv) {
         (strcmp(argv[3], "/") != 0 && strcmp(argv[3], "/sysroot") != 0) ||
         (strcmp(argv[4], "--prepare-var-base") != 0 &&
          strcmp(argv[4], "--prepare-sandbox-network-roots") != 0 &&
-         strcmp(argv[4], "--prepare-sandbox-owner-roots") != 0) ||
+         strcmp(argv[4], "--prepare-sandbox-owner-roots") != 0 &&
+         strcmp(argv[4], "--prepare-sandbox-view-roots") != 0) ||
         ((strcmp(argv[3], "/sysroot") == 0) !=
          (strcmp(argv[4], "--prepare-var-base") == 0 ||
           strcmp(argv[4], "--prepare-sandbox-owner-roots") == 0))) {
