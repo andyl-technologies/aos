@@ -51,6 +51,7 @@ pub(super) fn limits() -> RootNodeLimits {
 pub(super) async fn verify_index_closure(
     owner: &NativeMetadataOwner,
     inputs: &config::Inputs,
+    maintenance: Option<&mut super::maintenance::Launched>,
 ) -> Result<()> {
     let body = b"unrelated retained exposure source";
     let fixture = RepositoryFixture::new(&inputs.domain).await?;
@@ -110,7 +111,7 @@ pub(super) async fn verify_index_closure(
 
     // Independent closure must preserve both live and draining obligations,
     // including the original file binding and its non-expiring physical pin.
-    closure::verify(owner, inputs, &fixture).await
+    closure::verify(owner, inputs, &fixture, maintenance).await
 }
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {

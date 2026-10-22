@@ -208,6 +208,14 @@ def source_unit_inventory(workspace):
                        "native inventory lost its explicit feature gate: " + prefix)
         shared.require((root / (prefix + ".rs")).is_file(),
                        "native inventory feature module missing: " + prefix)
+    # The private GC channel requires both runtime and surface custody; its
+    # native socket tests run separately in the matching feature profile.
+    shared.require('#[cfg(all(feature = "surface-fuse", feature = "tokio"))]\n'
+        'pub mod maintenance_channel;' in (root / "lib.rs").read_text(),
+        "maintenance channel lost its explicit runtime/surface feature gate")
+    shared.require((root / "maintenance_channel.rs").is_file(),
+        "maintenance channel feature module missing")
+    gated.append(("maintenance_channel", "lib.rs", "pub mod maintenance_channel;"))
     declared = []
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()

@@ -28,6 +28,9 @@ mod worker_crash;
 #[path = "surface_index_owner_fixture/pressure.rs"]
 mod pressure;
 
+#[path = "surface_index_owner_fixture/maintenance.rs"]
+mod maintenance;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -59,6 +62,14 @@ fn main() -> Result<()> {
     if mode == "worker-crash-child" {
         return worker_crash::child();
     }
+    if mode == "maintenance-child" {
+        return maintenance::child();
+    }
+    let mut maintenance = if mode == "maintenance" {
+        Some(maintenance::launch()?)
+    } else {
+        None
+    };
     let launched = if mode == "worker-send" {
         Some(scoped_worker::launch()?)
     } else if mode == "worker-crash" {
@@ -137,6 +148,7 @@ fn main() -> Result<()> {
             | "pressure"
             | "global-pressure"
             | "host-admission"
+            | "maintenance"
     ) {
         return Err("unknown surface-owner selector".into());
     }
@@ -182,7 +194,12 @@ fn main() -> Result<()> {
         return runtime.block_on(exposure::file_closure::verify(&owner, &inputs));
     }
     if mode == "index-closure" {
-        return runtime.block_on(exposure::verify_index_closure(&owner, &inputs));
+        return runtime.block_on(Box::pin(exposure::verify_index_closure(
+            &owner, &inputs, None,
+        )));
+    }
+    if let Some(launched) = maintenance.as_mut() {
+        return maintenance::run(launched, &runtime, &owner, &inputs);
     }
     if mode == "exposure" {
         runtime.block_on(exposure::verify(&owner, &inputs))?;

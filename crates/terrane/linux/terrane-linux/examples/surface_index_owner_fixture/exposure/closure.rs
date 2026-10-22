@@ -13,6 +13,7 @@ pub(super) async fn verify(
     owner: &NativeMetadataOwner,
     inputs: &config::Inputs,
     fixture: &RepositoryFixture,
+    mut maintenance: Option<&mut crate::maintenance::Launched>,
 ) -> Result<()> {
     eprintln!("EXPOSURE_CLOSURE_STAGE snapshot");
     let preserved = snapshot(inputs).await?;
@@ -61,7 +62,7 @@ pub(super) async fn verify(
     {
         return Err("active exposure reconciliation changed original obligations".into());
     }
-    if owner.reconcile_draining_surface_exposures().await?
+    if reconcile(owner, &mut maintenance).await?
         != (NativeExposureReconciliation {
             checked: 1,
             completed: 0,
@@ -103,7 +104,7 @@ pub(super) async fn verify(
     {
         return Err("live kernel mapping released durable exposure obligations".into());
     }
-    if owner.reconcile_draining_surface_exposures().await?
+    if reconcile(owner, &mut maintenance).await?
         != (NativeExposureReconciliation {
             checked: 2,
             completed: 0,
@@ -118,7 +119,7 @@ pub(super) async fn verify(
     eprintln!("EXPOSURE_CLOSURE_STAGE final-closure");
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let report = owner.reconcile_draining_surface_exposures().await?;
+            let report = reconcile(owner, &mut maintenance).await?;
             if report
                 == (NativeExposureReconciliation {
                     checked: 2,
@@ -165,7 +166,7 @@ pub(super) async fn verify(
         );
     }
     let before = std::fs::read(&policy)?;
-    if owner.reconcile_draining_surface_exposures().await?
+    if reconcile(owner, &mut maintenance).await?
         != (NativeExposureReconciliation {
             checked: 1,
             completed: 0,
@@ -182,4 +183,14 @@ pub(super) async fn verify(
         "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap"
     );
     Ok(())
+}
+
+async fn reconcile(
+    owner: &NativeMetadataOwner,
+    maintenance: &mut Option<&mut crate::maintenance::Launched>,
+) -> Result<NativeExposureReconciliation> {
+    match maintenance {
+        Some(launched) => launched.reconcile(owner).await,
+        None => Ok(owner.reconcile_draining_surface_exposures().await?),
+    }
 }

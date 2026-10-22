@@ -19,6 +19,8 @@ pub mod host_cache;
 pub mod host_quota;
 #[cfg(feature = "surface-fuse")]
 pub mod inode_policy;
+#[cfg(all(feature = "surface-fuse", feature = "tokio"))]
+pub mod maintenance_channel;
 pub mod publisher_io;
 pub mod publisher_local;
 pub mod quota_confinement;

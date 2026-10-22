@@ -164,13 +164,15 @@ def load(name, path):
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
     if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
-            and sys.argv[3] not in ["--crash", "--pressure", "--admission"]):
-        raise RuntimeError("expected image, source and optional --crash, --pressure or --admission")
+            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance"]):
+        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission or --maintenance")
     image, source = map(Path, sys.argv[1:3])
     crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
     pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
     admission = len(sys.argv) == 4 and sys.argv[3] == "--admission"
-    case = "host-admission" if admission else "pressure" if pressure else "worker-crash" if crash else "scoped-worker"
+    maintenance = len(sys.argv) == 4 and sys.argv[3] == "--maintenance"
+    case = ("gc-maintenance" if maintenance else "host-admission" if admission
+        else "pressure" if pressure else "worker-crash" if crash else "scoped-worker")
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
     support = load("scoped_native_support", image / "share/host_cache_vm.py")
@@ -187,7 +189,7 @@ def main():
     support.scaffold()
     support.administrative_preflight("after")
     quota_config, publisher_config = support.configurations()
-    if crash:
+    if crash or maintenance:
         # Cold physical closure uses the same explicitly configured native
         # census as the owning surface proof. A peer cannot enable traversal.
         quota_config.write_text(
@@ -255,6 +257,28 @@ def main():
             support.verify_image()
             surface.verify_surface(image, source)
             print("PASS native forced owner crash component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
+            return
+        if maintenance:
+            try:
+                result = subprocess.run([executable, "maintenance"], env=environment,
+                    text=True, capture_output=True, timeout=30)
+            except subprocess.TimeoutExpired as error:
+                for stream in [error.stdout, error.stderr]:
+                    if stream:
+                        print(stream.decode(errors="replace") if isinstance(stream, bytes)
+                            else stream, end="", flush=True)
+                raise
+            print(result.stdout, end="", flush=True)
+            print(result.stderr, end="", flush=True)
+            support.require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS draining index retirement closes owner descriptors; actual retained mapping prevents exposure release until final unmap and authenticated closure",
+                "PASS original-owner batch reconciliation skips active exposure, preserves blocked custody and closes a later draining mapping only after final unmap",
+                "PASS distinct capability-free GC requests original-owner closure without opening private cache state; retained mappings and unrelated obligations survive until authenticated final unmap"],
+                "actual distinct-role GC maintenance failed")
+            support.verify_image()
+            surface.verify_surface(image, source)
+            print("PASS native GC maintenance channel component; deployed role listeners and production worker remain unqualified", flush=True)
             return
         try:
             # Only fixture launch runs administratively. The same process drops

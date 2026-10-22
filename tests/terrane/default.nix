@@ -540,6 +540,15 @@ in {
         surfaceIndex = true;
       }).image;
   };
+  integration.gc-maintenance-channel = import ./scoped-worker.nix {
+    inherit pkgs lib;
+    maintenance = true;
+    image =
+      (import ./host-cache-proof.nix {
+        inherit pkgs lib sourceGateWithInputs;
+        surfaceIndex = true;
+      }).image;
+  };
   integration.worker-crash-recovery = import ./scoped-worker.nix {
     inherit pkgs lib;
     crash = true;

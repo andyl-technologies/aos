@@ -129,6 +129,12 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         control: File::from(control),
     };
 
+    drop_to_serve()?;
+    Ok(launched)
+}
+
+/// Irreversibly enters the fixture's capability-free serving identity.
+pub(super) fn drop_to_serve() -> Result<()> {
     let last: u32 = fs::read_to_string("/proc/sys/kernel/cap_last_cap")?
         .trim()
         .parse()?;
@@ -154,7 +160,7 @@ fn launch_mode(mode: &str) -> Result<Launched> {
     )?;
     thread::set_no_new_privs(true)?;
     super::require_empty_capabilities()?;
-    Ok(launched)
+    Ok(())
 }
 
 pub(super) fn readable(file: impl AsFd) -> io::Result<()> {

@@ -14560,3 +14560,48 @@ unchanged. Both strict Linux all-target profiles, formatting, Python syntax and
 all 128 native source declarations pass. Native runtime and mandatory application
 qualification for this addition are pending. GC process transport and deployed
 role composition remain unimplemented.
+
+
+At `d5b6d36103` the full native cache also passes in 1,379.81 seconds; complete
+source, all 5,341 bound inputs, four actual Cargo ELFs, all 128 native library
+cases and 92 fixture selectors are reviewed. All seven checks and reviews for
+that checkpoint now pass. The separate longer T2 aggregate remains in progress.
+
+The pushed original-owner batch checkpoint `89a593c99e` passes complete native
+surface ownership in 630.01 seconds and required application compilation in
+562.21 seconds. Review matches all 8,050 immutable source files, 5,341 base
+inputs, 5,325 surface inputs and five actual installed Cargo ELFs, including
+the exact batch witness. Application review matches all source and 184 compiler
+records across 59 packages. No trunk task is accepted by these components.
+
+A separate `maintenance_channel` now connects private launcher-supplied GC and
+serve endpoints using kernel credentials on every Unix sequenced packet.
+Distinct configured identities are checked at binding. The closed version-one
+request carries only an operation and exact sequence; it accepts no public
+record IDs, descriptors, repository credentials or native closure evidence.
+The serving endpoint invokes the original owner's batch reconciliation. Replies
+carry only exact bounded counts or registered errors without private diagnostic
+text. Unexpected rights, truncation, changed sequences and malformed replies
+fault the channel. Cancellation disconnects an incomplete exchange while any
+already queued physical owner work remains retained. Valid remote refusals
+preserve the next sequence. This is a private channel component, without a
+listener or deployed role-startup claim.
+
+`checks.terrane.integration.gc-maintenance-channel` provisions a genuine native
+project and authenticated census. Its fixture launches capability-free UID 843
+GC and permanently drops the parent to capability-free UID 840 before native
+preparation and confinement. GC must fail to open the original private cache
+snapshot, then request actual owner reconciliation over the private channel.
+The existing mapping/closure scenario compares both roles' exact reports and
+preserves unrelated active and blocked obligations until actual final unmap.
+The actor remains bounded at 30 seconds inside a separate 90-second VM. Existing
+worker and surface contracts are unchanged; the shared fixture identity-drop
+routine preserves its existing operations. Both strict Linux all-target feature
+profiles and all ten focused native transport tests pass, covering closed
+framing, registered errors, overflow, exact sequences, kernel UID rejection,
+unexpected rights, truncation, cancellation and connection reuse after a valid
+refusal. Python syntax, Nix formatting/evaluation and all 128 base native source
+declarations also pass; the new tests have an explicitly checked runtime/surface
+feature gate. Cross-identity native VM and mandatory application qualification
+are pending. Production listeners, GC collection, role startup and worker
+confinement remain separate unfinished requirements.

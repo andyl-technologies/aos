@@ -6,13 +6,16 @@
   crash ? false,
   pressure ? false,
   admission ? false,
+  maintenance ? false,
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
-  assert builtins.length (builtins.filter (enabled: enabled) [crash pressure admission]) <= 1;
+  assert builtins.length (builtins.filter (enabled: enabled) [crash pressure admission maintenance]) <= 1;
     testing.mkVMTest {
       name =
-        if admission
+        if maintenance
+        then "terrane-gc-maintenance-channel-ext4"
+        else if admission
         then "terrane-index-admission-pressure-ext4"
         else if pressure
         then "terrane-index-pressure-ext4"
@@ -37,7 +40,7 @@ in
         trap 'umount "$TERRANE_CACHE_VM_ROOT"; rm -f "$TERRANE_CACHE_VM_IMAGE"; rmdir "$TERRANE_CACHE_VM_ROOT" /var/lib/terrane-cache-proof' EXIT
         (cd ${image} && sha256sum --check share/elf-sha256sum && sha256sum --check surface-elf-sha256sum)
         export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
-        ${pkgs.python3}/bin/python3 ${image}/share/scoped_worker_vm.py ${image} ${pkgs.terrane.src} ${lib.optionalString crash "--crash"} ${lib.optionalString pressure "--pressure"} ${lib.optionalString admission "--admission"}
+        ${pkgs.python3}/bin/python3 ${image}/share/scoped_worker_vm.py ${image} ${pkgs.terrane.src} ${lib.optionalString crash "--crash"} ${lib.optionalString pressure "--pressure"} ${lib.optionalString admission "--admission"} ${lib.optionalString maintenance "--maintenance"}
         (cd ${image} && sha256sum --check share/elf-sha256sum && sha256sum --check surface-elf-sha256sum)
       '';
     }
