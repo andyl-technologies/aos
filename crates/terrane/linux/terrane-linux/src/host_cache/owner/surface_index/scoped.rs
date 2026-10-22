@@ -23,9 +23,9 @@ use terrane_sdk::{
 /// current authorization and custody.
 pub struct NativeRootIndex {
     mapping: MappedIndex,
-    admission: NativeSurfaceIndex,
-    commit: Digest,
-    domain: String,
+    pub(super) admission: NativeSurfaceIndex,
+    pub(super) commit: Digest,
+    pub(super) domain: String,
 }
 
 impl NativeRootIndex {

@@ -13598,3 +13598,62 @@ an explicit-path child-module resolution error; a matching `scoped/files.rs`
 module path fixes it. Original runtime bounds and all existing controls remain.
 Frozen native and mandatory application qualification for this increment remain
 pending. Exposure, worker and trunk acceptance are unchanged.
+
+
+The owning complete-root proof at `4eb964fc5b` passes in 2,319.64 seconds
+with all 9,333 tracked files unchanged. Independent review checks all 8,007
+immutable source files, 5,288 bound inputs and all 17 exact nonignored root,
+file-preparation and policy cases. This is SDK authorization evidence, not
+native backing qualification. Required application-target compilation at
+`a219fbd89a` and `e2bf63eb1c` passes in 1,529.23 and 804.27 seconds;
+each review checks all 8,009 immutable source files and 184 compiler records
+across 59 packages, without claiming runtime execution.
+
+The signed-root mapping VM at `e2bf63eb1c` passes in 694.15 seconds with
+all 9,335 tracked files unchanged. Review checks all 8,009 immutable source
+files, 5,306 base and 5,290 surface inputs, four original base Cargo ELF
+artifacts and the actual fifth surface fixture ELF
+`b5cb227f114483a8c9139274fb3a21e3dd7cdd55fbb3a1c35b5b23680d4f6ee3`.
+The new signed-mapping witness and all original admission, cap, malformed,
+cold and warm-retirement witnesses execute. The VM still does not execute
+the base image's 128-case library inventory.
+
+The served-file VM at `8341f85a3e` fails in 680.58 seconds after executing
+all nine expected actor witnesses, including the actual file backing and
+policy-refusal checks. Its supervisor incorrectly requires an empty sealed
+namespace after the newly added fixture deliberately publishes its body.
+The correction checks the single expected canonical sealed body and no
+encoded content, while preserving the earlier metadata-only admission
+control and the cap case's empty-content assertion. The failed receipt and
+VM build directory remain retained; no passing qualification is inferred.
+
+Durable index exposure retention now has an explicit version-2 policy
+snapshot with exposure identity, generation, exact signed commit, canonical
+index key, deadline and active/draining phase. Object pins, when supplied
+by a verified physical transition, use the exposure's distinct ordinary
+pin owner with a non-expiring lease in the same atomic snapshot. Deadline
+expiry drains context without releasing physical pins, including at the
+largest representable clock input. Existing version-1 snapshots remain
+readable; older readers refuse the version upgrade.
+
+The native physical queue retains original-index custody before acknowledging
+an index-only exposure lease, renews only still-live original context and
+records idempotent draining. Receipt drop, cancellation and deadline expiry
+do not release the durable index obligation. Warm eviction checks durable
+context as well as live admission receipts. Until kernel-reference census
+and cold re-verification are implemented, cold exposure recovery refuses
+before changing state. There is deliberately no closure or release API.
+The native fixture adds cancellation, renewal, expiry, receipt-drop and
+cold-refusal controls after all existing controls, under the same actor and
+guest bounds. This increment does not yet attach actual file objects to an
+exposure, authenticate a local worker, run FUSE or complete FUSE-47–50.
+Local and owning qualification for this exposure increment are pending.
+
+
+The three initial SDK exposure cases pass with no ignored cases, covering
+expiry without pin release, version/context validation and atomic capacity
+refusal. Final all-feature Linux all-target Clippy and formatting pass.
+Validation was tightened during the initial unit code generation, so those
+three cases are being rerun against final source before a current-source
+runtime result is claimed. Frozen native and mandatory application checks
+remain required; no exposure or trunk task is closed.

@@ -81,6 +81,8 @@ pub struct NativeMetadataOwner {
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
     #[cfg(feature = "surface-fuse")]
+    SurfaceExposure(super::surface_index::exposure::Request),
+    #[cfg(feature = "surface-fuse")]
     EvictSurfaceIndex {
         key: crate::structural_index::IndexKey,
         response: oneshot::Sender<io::Result<bool>>,
@@ -386,6 +388,12 @@ impl NativeMetadataOwner {
                     };
                     let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        #[cfg(feature = "surface-fuse")]
+                        Command::SurfaceExposure(request) => {
+                            runtime.block_on(super::surface_index::exposure::execute(
+                                &executor, request,
+                            ));
+                        }
                         #[cfg(feature = "surface-fuse")]
                         Command::EvictSurfaceIndex { key, response } => {
                             let result = runtime

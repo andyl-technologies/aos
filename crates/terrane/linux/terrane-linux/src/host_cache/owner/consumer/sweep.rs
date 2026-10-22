@@ -42,7 +42,7 @@ pub(in crate::host_cache::owner) async fn run(
             now,
             owner.preparation.config.policy.release_grace,
         )?;
-        if expired_pins == 0 {
+        if expired_pins == 0 && next.exposures == owner.state.exposures {
             return Ok(0);
         }
         let mut affected = Vec::new();
@@ -180,24 +180,32 @@ pub(in crate::host_cache::owner) async fn background(
         if owner.faulted || owner.recovery_required {
             return Ok(());
         }
-        owner.state.pins.iter().try_fold(false, |needed, pin| {
-            let lease = owner
-                .state
-                .leases
-                .iter()
-                .find(|row| row.owner == pin.owner)
-                .ok_or_else(|| invalid("consumer pin lost its owner lease"))?;
-            Ok::<_, io::Error>(
-                needed
-                    || (pin.expires.min(lease.expires) != super::super::RETAINED_LEASE_DEADLINE
-                        && pin.expires.min(lease.expires) <= now
-                        && protection_end(
-                            pin,
-                            lease,
-                            owner.preparation.config.policy.release_grace,
-                        )? <= now),
-            )
-        })?
+        let exposure_elapsed = owner.state.exposures.iter().any(|row| {
+            row.phase == terrane_sdk::host::cache::ExposurePhase::Active && row.deadline <= now
+        });
+        owner
+            .state
+            .pins
+            .iter()
+            .try_fold(exposure_elapsed, |needed, pin| {
+                let lease = owner
+                    .state
+                    .leases
+                    .iter()
+                    .find(|row| row.owner == pin.owner)
+                    .ok_or_else(|| invalid("consumer pin lost its owner lease"))?;
+                Ok::<_, io::Error>(
+                    needed
+                        || (pin.expires.min(lease.expires)
+                            != super::super::RETAINED_LEASE_DEADLINE
+                            && pin.expires.min(lease.expires) <= now
+                            && protection_end(
+                                pin,
+                                lease,
+                                owner.preparation.config.policy.release_grace,
+                            )? <= now),
+                )
+            })?
     };
     if needed {
         let result = run(executor).await;
@@ -216,6 +224,7 @@ fn expired_policy(
     grace: std::time::Duration,
 ) -> io::Result<(CacheState, BTreeSet<String>, usize)> {
     let mut next = current.clone();
+    next.drain_expired_exposures(now);
     let mut removed = BTreeSet::new();
     let mut pins = Vec::new();
     pins.try_reserve_exact(current.pins.len())

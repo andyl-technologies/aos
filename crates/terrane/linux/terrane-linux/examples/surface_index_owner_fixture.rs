@@ -7,6 +7,9 @@
 #[path = "host_cache_fixture/config.rs"]
 mod config;
 
+#[path = "surface_index_owner_fixture/exposure.rs"]
+mod exposure;
+
 #[path = "surface_index_owner_fixture/eviction.rs"]
 mod eviction;
 
@@ -69,7 +72,7 @@ fn main() -> Result<()> {
         println!("PASS actual surface owner native preparation");
         return Ok(());
     }
-    if !matches!(mode.as_str(), "run" | "cap" | "refuse-cold") {
+    if !matches!(mode.as_str(), "run" | "cap" | "refuse-cold" | "exposure") {
         return Err("unknown surface-owner selector".into());
     }
     let owner = NativeMetadataOwner::start(preparation)?;
@@ -91,6 +94,23 @@ fn main() -> Result<()> {
     let completed = runtime.block_on(owner.recover())?;
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
+    if mode == "exposure" {
+        runtime.block_on(exposure::verify(&owner, &inputs))?;
+        drop(owner);
+        let before = snapshot(&inputs)?;
+        let restarted = restart(&inputs, policy, confinement)?;
+        let error = runtime
+            .block_on(restarted.recover())
+            .err()
+            .ok_or("cold recovery discarded retained exposure custody")?;
+        if error.kind() != io::ErrorKind::WouldBlock || snapshot(&inputs)? != before {
+            return Err("unreconciled cold exposure changed original policy".into());
+        }
+        println!(
+            "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"
+        );
+        return Ok(());
+    }
 
     let original = runtime
         .block_on(CacheState::load(

@@ -80,11 +80,12 @@ pub(in crate::host_cache::owner) fn check_bootstrap(
 ///
 /// # Errors
 /// Refuses unavailable entropy or an occupied reservation/lease name.
-pub(super) fn fresh_token(owner: &Custody) -> io::Result<String> {
+pub(in crate::host_cache::owner) fn fresh_token(owner: &Custody) -> io::Result<String> {
     let mut bytes = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     let token = hex(&bytes);
-    if owner.state.reservations.iter().any(|row| row.id == token)
+    if owner.state.exposures.iter().any(|row| row.id == token)
+        || owner.state.reservations.iter().any(|row| row.id == token)
         || owner.state.leases.iter().any(|row| {
             row.owner == format!("consumer:{token}")
                 || row.owner == format!("consumer-grace:{token}")
@@ -239,6 +240,6 @@ pub(in crate::host_cache::owner) fn synchronize_policy(
 }
 
 /// Encodes policy identifiers without introducing a content identity.
-pub(super) fn hex(bytes: &[u8]) -> String {
+pub(in crate::host_cache::owner) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

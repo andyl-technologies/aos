@@ -73,6 +73,12 @@ pub(in crate::host_cache::owner) async fn retire(
             .lock()
             .map_err(|_| invalid("surface custody poisoned"))?;
         state::check_ready(executor, &owner)?;
+        if retains_index(&owner.state, key) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "durable exposure retains the surface index",
+            ));
+        }
         let Some(job) = owner.surface_indexes.get(&key) else {
             return Ok(false);
         };
@@ -197,4 +203,13 @@ fn unlink_owned(owner: &mut Custody, key: IndexKey) -> io::Result<()> {
     }
     owner.state.reservations.retain(|row| row.id != reservation);
     Ok(())
+}
+
+/// Treats a durable obligation as protection even after every receipt is dropped.
+fn retains_index(state: &terrane_sdk::host::cache::CacheState, key: IndexKey) -> bool {
+    let root = state::hex(&key.root());
+    state
+        .exposures
+        .iter()
+        .any(|row| row.root == root && row.index_version == key.version())
 }

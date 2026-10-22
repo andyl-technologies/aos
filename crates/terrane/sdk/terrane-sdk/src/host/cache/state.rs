@@ -8,12 +8,17 @@
 //! residences = []
 //! ```
 //!
-//! Manifests, indexes, queues and tree nodes never enter this snapshot. Sealed
-//! reads do not access this module. Publication owns its separate verity state.
+//! Version 2 adds exposure context and non-expiring physical obligations. Version
+//! 1 remains the encoding for ordinary state until its first exposure. Manifests,
+//! index bytes, queues and tree nodes never enter this snapshot. Sealed reads do
+//! not access this module. Publication owns its separate verity state.
 
 use crate::store::{ByteRange, LocalFs, StoreErrorKind, StoreFailure};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
+
+mod exposure;
+pub use exposure::{ExposurePhase, ExposureRecord};
 
 /// Bounds untrusted state parsing and accepted durable record counts.
 #[derive(Clone, Copy, Debug)]
@@ -33,6 +38,9 @@ pub struct PinRecord {
     /// Canonical lowercase hexadecimal content digest.
     pub hash: String,
     /// Absolute expiry in Unix seconds, independent of process ticks.
+    ///
+    /// Exposure pins instead retain the maximum TOML integer through draining;
+    /// their physical obligation is independent of the exposure's deadline.
     pub expires: u64,
 }
 
@@ -55,7 +63,7 @@ pub struct ReservationRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LeaseRecord {
-    /// Owner whose pins expire with this lease.
+    /// Owner whose ordinary pins expire with this lease.
     pub owner: String,
     /// Absolute expiry in Unix seconds.
     pub expires: u64,
@@ -80,6 +88,12 @@ pub struct ResidenceRecord {
 #[serde(deny_unknown_fields)]
 pub struct CacheState {
     version: u32,
+    /// Durable exposure context whose pins survive expiry and disconnection.
+    ///
+    /// Nonempty context requires snapshot version 2. Version 1 readers refuse
+    /// the upgrade rather than treating exposure pins as expiring consumers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exposures: Vec<ExposureRecord>,
     /// Consumer promises acknowledged after durable synchronization.
     pub pins: Vec<PinRecord>,
     /// Future-capacity holds retained until recovery reconciles actual custody.
@@ -94,6 +108,7 @@ impl Default for CacheState {
     fn default() -> Self {
         Self {
             version: 1,
+            exposures: Vec::new(),
             pins: Vec::new(),
             reservations: Vec::new(),
             leases: Vec::new(),
@@ -132,8 +147,12 @@ impl CacheState {
             .checked_add(self.reservations.len())
             .and_then(|count| count.checked_add(self.leases.len()))
             .and_then(|count| count.checked_add(self.residences.len()))
+            .and_then(|count| count.checked_add(self.exposures.len()))
             .ok_or_else(capacity)?;
-        if self.version != 1 || count > limits.records {
+        if !matches!(self.version, 1 | 2)
+            || (self.version == 1 && !self.exposures.is_empty())
+            || count > limits.records
+        {
             return Err(capacity());
         }
         let mut pins = BTreeSet::new();
@@ -167,7 +186,7 @@ impl CacheState {
                 return Err(capacity());
             }
         }
-        Ok(())
+        self.validate_exposures()
     }
 
     /// Loads existing policy state without creating or repairing any file.
@@ -256,20 +275,30 @@ impl CacheState {
         Ok(())
     }
 
-    /// Releases expired leases and pins while returning final-release hashes.
+    /// Drains elapsed exposures and releases ordinary expired leases and pins.
     ///
     /// Callers durably persist this result before applying normal grace/wipe
     /// policy. The result contains only hashes whose last remaining pin expired.
+    /// Exposure pins survive every deadline until physical closure is proven.
     pub fn sweep_expired(&mut self, now: u64) -> Vec<String> {
+        self.drain_expired_exposures(now);
         let before: BTreeSet<_> = self.pins.iter().map(|pin| pin.hash.clone()).collect();
-        self.leases.retain(|lease| lease.expires > now);
+        let protected: BTreeSet<_> = self
+            .exposures
+            .iter()
+            .map(ExposureRecord::pin_owner)
+            .collect();
+        self.leases
+            .retain(|lease| protected.contains(&lease.owner) || lease.expires > now);
         let owners: BTreeSet<_> = self
             .leases
             .iter()
             .map(|lease| lease.owner.as_str())
             .collect();
-        self.pins
-            .retain(|pin| pin.expires > now && owners.contains(pin.owner.as_str()));
+        self.pins.retain(|pin| {
+            protected.contains(&pin.owner)
+                || (pin.expires > now && owners.contains(pin.owner.as_str()))
+        });
         let after: BTreeSet<_> = self.pins.iter().map(|pin| pin.hash.clone()).collect();
         before.difference(&after).cloned().collect()
     }

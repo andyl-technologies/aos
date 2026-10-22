@@ -62,6 +62,14 @@ impl ColdPolicy {
     /// Refuses invalid state, foreign charge owners and pins without a lease.
     pub(super) fn capture(config: &NativeCacheOwnerConfig, state: &CacheState) -> io::Result<Self> {
         state.encoded_len(config.state).map_err(io::Error::other)?;
+        // Until a complete kernel-closure census and exposure re-verification
+        // exist, retain every old obligation and refuse before recovery effects.
+        if !state.exposures.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "cold exposure requires retained-kernel-reference reconciliation",
+            ));
+        }
         if state
             .reservations
             .iter()

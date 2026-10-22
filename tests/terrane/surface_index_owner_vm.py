@@ -142,9 +142,19 @@ def main():
             print(result.stderr, end="", flush=True)
             require(result.returncode == 0 and result.stdout.splitlines() == expected[mode],
                     "actual surface-owner actor failed: " + mode)
-            require(not list((support.root(case) / "sealed").iterdir())
-                    and not list((support.root(case) / "chunks").iterdir()),
-                    "metadata-only surface admission fetched object content")
+            require(not list((support.root(case) / "chunks").iterdir()),
+                    "surface fixture unexpectedly admitted encoded content")
+            sealed = support.root(case) / "sealed"
+            if mode == "run":
+                bodies = list(sealed.glob("*/*"))
+                require(len(bodies) == 1 and bodies[0].read_bytes() == b"signed surface source"
+                        and bodies[0].parent.name == bodies[0].name[:2]
+                        and len(bodies[0].name) == 64
+                        and all(char in "0123456789abcdef" for char in bodies[0].name),
+                        "scoped file fixture did not retain its exact deliberately published body")
+            else:
+                require(not list(sealed.iterdir()),
+                        "metadata-only cap fixture admitted sealed content")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")
@@ -167,6 +177,16 @@ def main():
                 and original.read_bytes() == original_bytes
                 and malformed.read_bytes() == b"untrusted malformed cold index name",
                 "cold refusal deleted or changed original candidate inodes")
+        malformed.unlink()
+        result = subprocess.run(support.role_command(840, [executable, "exposure"]),
+            env=environment("empty"), text=True, capture_output=True, timeout=30)
+        print(result.stdout, end="", flush=True)
+        print(result.stderr, end="", flush=True)
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS durable root exposure acknowledges original index context; cancellation retains obligations and renewal and expiry drain without releasing custody after receipt drop",
+            "PASS cold exposure refuses recovery before mutation while kernel closure remains unreconciled"],
+            "durable native root exposure actor failed")
         verify_surface(image, source)
         print("PASS actual native surface-index admission, cold retirement and separate cap; exposure pins and worker remain unqualified", flush=True)
     finally:

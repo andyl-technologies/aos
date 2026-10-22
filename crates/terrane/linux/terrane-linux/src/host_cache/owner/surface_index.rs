@@ -12,9 +12,11 @@
 //! ```
 
 pub(super) mod eviction;
+pub(super) mod exposure;
 pub(super) mod recovery;
 mod scoped;
 
+pub use exposure::NativeExposureLease;
 pub use scoped::NativeRootIndex;
 
 use super::{
