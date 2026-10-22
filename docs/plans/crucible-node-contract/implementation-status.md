@@ -2190,8 +2190,17 @@ The byte transition's row excludes independently admitted response preparation,
 stream implementation work/backing and containing-root guards/census. These
 controls do not qualify a whole Native18 publication route or genuine credit.
 
-Full qualification is pending. Original-root response encoding, pre-read physical
-publication custody, complete funding, lease containment on terminal refusal and
+Commit `66847e70c4` passes both complete Transport configurations: 1,920 tests
+each, zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, scoped formatting, all six architecture checks
+and the required application test-target build pass. The application gate
+compiles 180 test executables across 58 packages, including 71 integration targets;
+it executes no tests. All 259 owned Rust/Cargo inputs match the committed tree and
+exact captured application source. No new VM or configured Engine/Daemon runtime
+run is claimed for this byte component.
+
+Original-root response encoding, pre-read physical publication custody, complete
+funding, lease containment on terminal refusal and
 the genuine enclosing producer still need to join this primitive before the
 Native18 route can publish. All full RFC acceptance exits remain open.
 
