@@ -17,6 +17,7 @@ impl QemuNodeSet {
             retained_observable_events: Vec::new(),
             last_host_parallelism: None,
             run_window: super::run_window::RunWindow::new(),
+            attempt_progress: super::attempt_progress::AttemptProgress::new(),
             #[cfg(test)]
             console_sentinel_probe: None,
         }

@@ -908,7 +908,7 @@ assert !interruptedTransfer
           ${pkgs.coreutils}/bin/timeout -k 5 ${toString (envoyFlightTimeout.knownFinding + 10)} \
             ${pkgs.coreutils}/bin/tail --pid="$finding_test" -n +1 -F "$finding_log" \
             | ${pkgs.grep}/bin/grep --line-buffered \
-              -E '^(CRUCIBLE-ENVOY-WAIT-V1 |CRUCIBLE-ATTEMPT-WAIT-V1 |CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 )' \
+              -E '^(CRUCIBLE-ENVOY-WAIT-V1 |CRUCIBLE-ATTEMPT-WAIT-V1 |CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 |CRUCIBLE-ATTEMPT-PROGRESS-V1 )' \
             || true
           if ! wait "$finding_test"; then
             cat "$finding_log"

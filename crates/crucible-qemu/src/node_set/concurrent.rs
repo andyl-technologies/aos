@@ -234,6 +234,8 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
         }
         self.arm_concurrent_fault_event_staging(&runs)?;
         let started = self.run_window.begin();
+        let progress_started = self.attempt_progress.begin();
+        let mut progress_samples = Vec::with_capacity(runs.len());
 
         #[cfg(test)]
         let console_sentinel_probe = self.console_sentinel_probe.clone();
@@ -269,6 +271,9 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                             let mut one = QemuNodeSet::new();
                             // The owning set accounts for the whole RUN set.
                             one.run_window = super::run_window::RunWindow::disabled();
+                            one.attempt_progress =
+                                super::attempt_progress::AttemptProgress::disabled();
+                            let run_started = super::attempt_progress::progress_clock();
                             one.nodes.insert(run.node().clone(), backend);
                             let operation = catch_unwind(AssertUnwindSafe(|| {
                                 #[cfg(target_os = "linux")]
@@ -315,12 +320,25 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                             let backend = one.nodes.remove(run.node());
                             let pending = one.pending_selectable_requests.remove(run.node());
                             let parked_marker = one.parked_campaign_markers.remove(run.node());
+                            let sample = super::attempt_progress::NodeRunSample {
+                                node: run.node().clone(),
+                                horizon_ticks: run.ceiling().ticks,
+                                reached_ticks: match &operation {
+                                    Ok(Ok(ConcurrentBackendRunResult::Completed(outcome))) => {
+                                        Some(outcome.step.reached.ticks)
+                                    }
+                                    _ => None,
+                                },
+                                wall: super::attempt_progress::progress_clock()
+                                    .saturating_duration_since(run_started),
+                            };
                             (
                                 run.node().clone(),
                                 backend,
                                 pending,
                                 parked_marker,
                                 operation,
+                                sample,
                             )
                         })
                     })
@@ -332,7 +350,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
 
             let mut first_error = None;
             for joined in completed {
-                let (node, backend, pending, parked_marker, operation) = match joined {
+                let (node, backend, pending, parked_marker, operation, sample) = match joined {
                     Ok(completed) => completed,
                     Err(_) => {
                         first_error.get_or_insert_with(|| BackendError::Rejected {
@@ -350,6 +368,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                     continue;
                 };
                 self.nodes.insert(node.clone(), backend);
+                progress_samples.push(sample);
                 if let Some(pending) = pending {
                     self.pending_selectable_requests
                         .insert(node.clone(), pending);
@@ -382,6 +401,8 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
         let realized_parallelism = peak.load(Ordering::SeqCst);
         self.run_window
             .finish_concurrent(started, outcomes.len(), realized_parallelism);
+        self.attempt_progress
+            .finish(progress_started, &progress_samples, realized_parallelism);
         self.last_host_parallelism = Some(QemuHostParallelismEvidence {
             requested_runs: outcomes.len(),
             maximum_workers: max_host_workers,

@@ -165,6 +165,7 @@ impl QemuLiveHostIoRuntime {
                 break;
             }
             self.write_wake_doorbell()?;
+            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
             thread::sleep(self.poll_interval);
         }
         Err(QemuAsyncDriverRuntimeError::new(
@@ -234,6 +235,7 @@ impl QemuLiveHostIoRuntime {
             if !deadline.has_time_remaining() {
                 break;
             }
+            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
             thread::sleep(self.poll_interval);
         }
         Err(QemuAsyncDriverRuntimeError::new(
@@ -320,6 +322,7 @@ impl QemuLiveHostIoRuntime {
             if !deadline.has_time_remaining() {
                 break;
             }
+            crate::supervision::host_wait_counters::record_sleep(self.poll_interval);
             thread::sleep(self.poll_interval);
         }
         Err(QemuAsyncDriverRuntimeError::new(

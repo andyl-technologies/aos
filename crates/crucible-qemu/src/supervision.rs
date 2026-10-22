@@ -12,6 +12,7 @@ mod deadline;
 mod device_host_work;
 mod exact_restore;
 pub(crate) mod host_io_runtime;
+pub(crate) mod host_wait_counters;
 mod ninep_io_servicer;
 mod node_step_gate;
 mod rr_control_boundary_trace;

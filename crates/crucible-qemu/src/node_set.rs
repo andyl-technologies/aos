@@ -57,6 +57,8 @@ mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
 // Host wall-clock accounting lives with the supervision clock boundary.
+#[path = "supervision/attempt_progress.rs"]
+mod attempt_progress;
 #[path = "supervision/run_window.rs"]
 mod run_window;
 
@@ -473,6 +475,7 @@ pub struct QemuNodeSet {
     retained_observable_events: Vec<ObservableEvent>,
     last_host_parallelism: Option<QemuHostParallelismEvidence>,
     run_window: run_window::RunWindow,
+    attempt_progress: attempt_progress::AttemptProgress,
     #[cfg(test)]
     console_sentinel_probe: Option<std::sync::Arc<console_sentinel::ConsoleSentinelProbe>>,
 }
@@ -2057,8 +2060,12 @@ impl QemuNodeSet {
         stop: crucible::RunCeilingStop,
     ) -> Result<StepObservation, BackendError> {
         let started = self.run_window.begin();
+        let progress_started = self.attempt_progress.begin();
         let result = self.step_node_to_untimed(node, ceiling, stop);
         self.run_window.finish_serial(started);
+        let reached = result.as_ref().ok().map(|step| step.reached.ticks);
+        self.attempt_progress
+            .finish_serial(progress_started, node, ceiling.ticks, reached);
         result
     }
 

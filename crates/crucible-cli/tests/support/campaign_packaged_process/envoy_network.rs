@@ -906,7 +906,7 @@ pub(super) fn wait_for_public_attempt(
     })
 }
 
-/// Prints the run's parallel-boot arming and sampled RUN-window records.
+/// Prints the run's parallel-boot arming, RUN-window, and attempt-progress records.
 ///
 /// The service stderr tail keeps only the last minutes of a long discovery;
 /// these bounded records cover the whole run so a timeout can be split into
@@ -915,6 +915,7 @@ fn emit_host_throughput_records(service: &CampaignServiceChild) {
     for (prefix, maximum_lines) in [
         ("CRUCIBLE-ENVOY-BOOT-PROGRESS-V1 armed=", 16),
         ("CRUCIBLE-HOST-RUN-WINDOW-V1 ", 1_100),
+        ("CRUCIBLE-ATTEMPT-PROGRESS-V1 ", 1_100),
     ] {
         match service.stderr_lines_with_prefix(prefix, maximum_lines, 512) {
             Ok(lines) => {

@@ -184,7 +184,9 @@ impl QemuLiveHostIoRuntime {
 
     fn wait_for_poll_interval_capped(&mut self, remaining: Duration, interval: Duration) {
         self.performance.pending_sleep();
-        thread::sleep(interval.min(remaining));
+        let pause = interval.min(remaining);
+        crate::supervision::host_wait_counters::record_sleep(pause);
+        thread::sleep(pause);
     }
 
     /// Maps `shmem_fd`, clones `wake_fd`, and binds the runtime to `vm_slot`.
