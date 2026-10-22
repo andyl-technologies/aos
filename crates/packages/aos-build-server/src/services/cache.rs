@@ -612,7 +612,7 @@ async fn receive_pack_upload(
     }
 
     let data = spool.read_bounded().await?;
-    let entries = pack::parse_pack(&data).map_err(|error| {
+    let entries = pack::parse_pack(&data, limits.max_pack_entries).map_err(|error| {
         ConnectError::new(ErrorCode::InvalidArgument, format!("invalid pack: {error}"))
     })?;
     let count = entries.len();

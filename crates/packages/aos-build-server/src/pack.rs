@@ -30,6 +30,8 @@ const MAGIC: &[u8; 4] = b"AOSP";
 const VERSION: u32 = 1;
 const HEADER_SIZE: usize = 4 + 4 + 4; // magic + version + entry count
 const HASH_HEX_LEN: usize = 32;
+const NAR_SIZE_LEN: usize = 8;
+const MIN_ENTRY_SIZE: usize = HASH_HEX_LEN + NAR_SIZE_LEN;
 const TRAILER_SIZE: usize = 32; // SHA-256 digest
 
 /// A single entry in the pack wire format.
@@ -44,14 +46,17 @@ pub struct PackEntry {
 /// Parses a pack from its wire format into its entries.
 ///
 /// The trailing SHA-256 checksum is verified before any entry is parsed,
-/// so a corrupted upload is rejected wholesale.
+/// so a corrupted upload is rejected wholesale. `maximum_entries` applies the
+/// caller's upload policy before the parser reserves entry storage.
 ///
 /// # Errors
 ///
 /// Returns a descriptive message if the data is too short, the checksum
-/// does not match, the magic or version is wrong, an entry is truncated or
-/// has a non-UTF-8 hash, or unconsumed bytes remain after the last entry.
-pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
+/// does not match, the magic or version is wrong, the declared entry count
+/// exceeds the format policy or available payload, an entry is truncated or
+/// has a non-UTF-8 hash, memory cannot be reserved, or unconsumed bytes remain
+/// after the last entry.
+pub fn parse_pack(data: &[u8], maximum_entries: usize) -> Result<Vec<PackEntry>, String> {
     if data.len() < HEADER_SIZE + TRAILER_SIZE {
         return Err("data too short for pack header and trailer".into());
     }
@@ -64,71 +69,101 @@ pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
         return Err("SHA-256 trailer mismatch".into());
     }
 
-    let mut pos = 0;
-
-    // Magic.
-    if &data[pos..pos + 4] != MAGIC {
+    if &payload[..MAGIC.len()] != MAGIC {
         return Err(format!(
             "bad magic: expected {:?}, got {:?}",
             MAGIC,
-            &data[pos..pos + 4]
+            &payload[..MAGIC.len()]
         ));
     }
-    pos += 4;
 
-    // Version.
     let version = u32::from_be_bytes(
-        data[pos..pos + 4]
+        payload[MAGIC.len()..MAGIC.len() + 4]
             .try_into()
             .map_err(|_| "failed to read version")?,
     );
     if version != VERSION {
         return Err(format!("unsupported pack version: {version}"));
     }
-    pos += 4;
-
-    // Entry count.
-    let count = u32::from_be_bytes(
-        data[pos..pos + 4]
+    let declared_count = u32::from_be_bytes(
+        payload[MAGIC.len() + 4..HEADER_SIZE]
             .try_into()
             .map_err(|_| "failed to read entry count")?,
-    ) as usize;
-    pos += 4;
+    );
+    let count = usize::try_from(declared_count)
+        .map_err(|_| format!("entry count {declared_count} does not fit this platform"))?;
 
-    let mut entries = Vec::with_capacity(count);
+    if count > maximum_entries {
+        return Err(format!(
+            "entry count {count} exceeds limit of {maximum_entries}"
+        ));
+    }
+
+    let minimum_entry_bytes = count
+        .checked_mul(MIN_ENTRY_SIZE)
+        .ok_or_else(|| format!("entry count {count} overflows minimum payload size"))?;
+    let minimum_payload_size = HEADER_SIZE
+        .checked_add(minimum_entry_bytes)
+        .ok_or_else(|| format!("entry count {count} overflows minimum payload size"))?;
+    if payload.len() < minimum_payload_size {
+        return Err(format!(
+            "entry count {count} requires at least {minimum_payload_size} payload bytes, have {}",
+            payload.len()
+        ));
+    }
+
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(count)
+        .map_err(|error| format!("cannot reserve storage for {count} pack entries: {error}"))?;
+
+    let mut pos = HEADER_SIZE;
 
     for i in 0..count {
-        // Store path hash (32 bytes of hex ASCII).
-        if pos + HASH_HEX_LEN > payload.len() {
-            return Err(format!("entry {i}: unexpected end of data reading hash"));
-        }
-        let hash = std::str::from_utf8(&data[pos..pos + HASH_HEX_LEN])
-            .map_err(|_| format!("entry {i}: hash is not valid UTF-8"))?
-            .to_string();
-        pos += HASH_HEX_LEN;
+        let hash_end = pos
+            .checked_add(HASH_HEX_LEN)
+            .ok_or_else(|| format!("entry {i}: hash offset overflow"))?;
+        let hash_text = std::str::from_utf8(
+            payload
+                .get(pos..hash_end)
+                .ok_or_else(|| format!("entry {i}: unexpected end of data reading hash"))?,
+        )
+        .map_err(|_| format!("entry {i}: hash is not valid UTF-8"))?;
+        let mut hash = String::new();
+        hash.try_reserve_exact(HASH_HEX_LEN)
+            .map_err(|error| format!("entry {i}: cannot reserve hash storage: {error}"))?;
+        hash.push_str(hash_text);
+        pos = hash_end;
 
-        // NAR size (u64 BE).
-        if pos + 8 > payload.len() {
-            return Err(format!(
-                "entry {i}: unexpected end of data reading NAR size"
-            ));
-        }
+        let size_end = pos
+            .checked_add(NAR_SIZE_LEN)
+            .ok_or_else(|| format!("entry {i}: NAR size offset overflow"))?;
         let nar_size = u64::from_be_bytes(
-            data[pos..pos + 8]
+            payload
+                .get(pos..size_end)
+                .ok_or_else(|| format!("entry {i}: unexpected end of data reading NAR size"))?
                 .try_into()
                 .map_err(|_| format!("entry {i}: failed to read NAR size"))?,
-        ) as usize;
-        pos += 8;
+        );
+        let nar_size = usize::try_from(nar_size)
+            .map_err(|_| format!("entry {i}: NAR size does not fit this platform"))?;
+        pos = size_end;
 
-        // NAR data.
-        if pos + nar_size > payload.len() {
-            return Err(format!(
+        let nar_end = pos
+            .checked_add(nar_size)
+            .ok_or_else(|| format!("entry {i}: NAR data offset overflow"))?;
+        let nar_bytes = payload.get(pos..nar_end).ok_or_else(|| {
+            format!(
                 "entry {i}: NAR data extends past payload (need {nar_size} bytes at offset {pos}, have {})",
-                payload.len() - pos
-            ));
-        }
-        let nar_data = data[pos..pos + nar_size].to_vec();
-        pos += nar_size;
+                payload.len().saturating_sub(pos)
+            )
+        })?;
+        let mut nar_data = Vec::new();
+        nar_data
+            .try_reserve_exact(nar_size)
+            .map_err(|error| format!("entry {i}: cannot reserve NAR storage: {error}"))?;
+        nar_data.extend_from_slice(nar_bytes);
+        pos = nar_end;
 
         entries.push(PackEntry { hash, nar_data });
     }
@@ -141,6 +176,82 @@ pub fn parse_pack(data: &[u8]) -> Result<Vec<PackEntry>, String> {
     }
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEADER_SIZE, PackEntry, TRAILER_SIZE, create_pack, parse_pack};
+    use sha2::{Digest, Sha256};
+
+    fn replace_trailer(pack: &mut [u8]) {
+        let payload_len = pack.len() - TRAILER_SIZE;
+        let digest = Sha256::digest(&pack[..payload_len]);
+        pack[payload_len..].copy_from_slice(&digest);
+    }
+
+    #[test]
+    fn valid_pack_round_trips() {
+        let entries = vec![
+            PackEntry {
+                hash: "0123456789abcdef0123456789abcdef".into(),
+                nar_data: vec![0xde, 0xad],
+            },
+            PackEntry {
+                hash: "fedcba9876543210fedcba9876543210".into(),
+                nar_data: Vec::new(),
+            },
+        ];
+
+        let parsed = parse_pack(&create_pack(&entries), entries.len()).unwrap();
+
+        assert_eq!(parsed.len(), entries.len());
+        assert_eq!(parsed[0].hash, entries[0].hash);
+        assert_eq!(parsed[0].nar_data, entries[0].nar_data);
+        assert_eq!(parsed[1].hash, entries[1].hash);
+        assert_eq!(parsed[1].nar_data, entries[1].nar_data);
+    }
+
+    #[test]
+    fn tiny_pack_rejects_entry_count_above_policy() {
+        let mut pack = create_pack(&[]);
+        let declared_count = 2u32;
+        pack[8..HEADER_SIZE].copy_from_slice(&declared_count.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 1).unwrap_err();
+
+        assert!(error.contains("entry count"), "{error}");
+        assert!(error.contains("exceeds limit"), "{error}");
+    }
+
+    #[test]
+    fn tiny_pack_rejects_count_that_cannot_fit_payload() {
+        let mut pack = create_pack(&[]);
+        pack[8..HEADER_SIZE].copy_from_slice(&2u32.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 2).unwrap_err();
+
+        assert!(error.contains("requires at least"), "{error}");
+    }
+
+    #[test]
+    fn tiny_pack_rejects_overflowing_nar_length() {
+        let entries = [PackEntry {
+            hash: "0123456789abcdef0123456789abcdef".into(),
+            nar_data: Vec::new(),
+        }];
+        let mut pack = create_pack(&entries);
+        pack[HEADER_SIZE + 32..HEADER_SIZE + 40].copy_from_slice(&u64::MAX.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 1).unwrap_err();
+
+        assert!(
+            error.contains("does not fit this platform") || error.contains("offset overflow"),
+            "{error}"
+        );
+    }
 }
 
 /// Serializes entries into the pack wire format, including the header and

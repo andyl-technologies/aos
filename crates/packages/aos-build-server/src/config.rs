@@ -75,6 +75,10 @@ fn default_max_concurrent_uploads() -> usize {
     4
 }
 
+fn default_max_pack_entries() -> usize {
+    100_000
+}
+
 fn default_upload_timeout_seconds() -> u64 {
     15 * 60
 }
@@ -202,6 +206,10 @@ pub struct UploadConfig {
     #[serde(default = "default_max_concurrent_uploads")]
     pub max_concurrent: usize,
 
+    /// Maximum entries accepted in one AOSP pack.
+    #[serde(default = "default_max_pack_entries")]
+    pub max_pack_entries: usize,
+
     /// Maximum duration of an RPC upload, including import processing.
     #[serde(default = "default_upload_timeout_seconds")]
     pub timeout_seconds: u64,
@@ -213,6 +221,7 @@ impl Default for UploadConfig {
             max_bytes: default_max_upload_bytes(),
             max_chunk_bytes: default_max_upload_chunk_bytes(),
             max_concurrent: default_max_concurrent_uploads(),
+            max_pack_entries: default_max_pack_entries(),
             timeout_seconds: default_upload_timeout_seconds(),
         }
     }

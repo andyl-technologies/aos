@@ -1376,7 +1376,7 @@ async fn upload_pack_handler(
         }
     }
 
-    let entries = match pack::parse_pack(&body) {
+    let entries = match pack::parse_pack(&body, state.config.uploads.max_pack_entries) {
         Ok(e) => e,
         Err(e) => {
             tracing::warn!(view = %view, error = %e, "invalid pack upload");
