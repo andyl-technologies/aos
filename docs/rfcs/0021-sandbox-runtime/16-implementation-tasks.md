@@ -9750,12 +9750,28 @@ Twenty-six selected Core tests and all three selected service tests pass,
 including cross-purpose credential rejection, exact record widths, tampered
 signatures, required actual installation comparisons, separate profile
 formats, interrupted startup refusal, single-link ownership and bounded
-history reads. Core and native-resource evaluation pass. Full Rust target and
-immutable V6 profile checks are running. The added enforcing VM test uses
+history reads. Core and native-resource evaluation pass. Complete Rust target
+compilation passes at
+`/nix/store/vfcpj3xw9p4sypln7p77cjzafrv73g0x-aos-test-targets-0.1.0`.
+The immutable V6 profile checks are running. The added enforcing VM test uses
 host-only independent signing, actual public candidate export, the production
 V6 importer and the existing static inspector; it remains unqualified until
 its installed run passes. No hardware, held-Q04 or public lifecycle completion
 is inferred from these component checks.
+
+The hardware VM fixture now uses those same V6 importers and bounded public
+history exports rather than generic-root access to protected state. Its
+independent operator signs on the host. With QEMU and its backend stopped, the
+host provisions owner authorization through AOS-built tpm2-tools and swtpm
+against the same persistent TPM state, then relaunches the unchanged VM disk
+and firmware. It never clones or clears TPM state or grants guest-root device
+access. A separate host mechanics probe passes authorization persistence over
+a backend restart and rejects wrong authorization. The fixture's Python syntax
+and complete Nix build plan evaluate; installed qualification remains pending.
+The actual test covers initialize, same-boot independently approved recovery,
+repeat refusal, generic-root read denial and old-job refusal after reboot and
+a QEMU/swtpm power cut. These are offline-job checks, not runtime floor or
+normal Controller lifecycle qualification.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
