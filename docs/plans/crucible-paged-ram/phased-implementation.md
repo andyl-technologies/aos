@@ -353,6 +353,36 @@ the exact sixteen-test group. These bytes cannot select a carrier or issue any
 of the retained nominal owners; actual host issuance and native construction
 remain required before installing the proposed profile.
 
+The purpose implementation also matches all 169 independently generated public
+vectors, including 22 byte-exact accepted round trips. The actual C decoder and
+process-purpose owning units compile, link and pass the same vectors, including
+unchanged-output negative controls. All 902 configured inputs and 311 unique
+compiler dependencies match their recorded hashes. This is executed wire
+compatibility, not issuer or runtime admission. The independent review proof is
+`e90b422547725fff192c363175f239ad6e932043e653e1ce56d26446703947e5`.
+
+#### Application allocator component qualification
+
+Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree
+`ba222464fc63818a2d43be830119f0e39226e81f`, passes a fresh complete sequential
+build and installation, application and bounded-pthread controls, eleven
+ordinary regressions, and the real configured GLib/hidden-formatting component.
+The actual installed loader, libc and public headers are retained together.
+The earlier static-link collision and the first missing `libgcc_eh` test-link
+failure remain recorded; the successful test uses the configured compiler's
+actual unwinder archive through the standard static-test override.
+
+The ABI check reports nineteen passes and one failure: the private install
+prefix changes `_nl_default_dirname` from 18 to 64 bytes. It remains a failed
+check. The measured application registry is 6,208 bytes aligned to 64, pthread
+control is 552 bytes, and the separate shared metadata registry is 1,056 bytes.
+The current public application-only process extent cannot pay that shared
+registry. A complete canonical process owner, same-parent payment and complete
+runtime profile remain prerequisites; libc custody return does not release
+quarantined virtual addresses or permit child reuse. All 179 sealed payloads
+match independent review proof
+`a73f9728cd6028dcfdc9c1cabd75fa155f16f2197b147ff836a3e12c1fbb5d33`.
+
 #### Installed bounded-pthread QEMU consumer
 
 The preceding signed atomic patch selects `7a6b57edb01b7a5b6d06b11171ecf3a82bebde55`,
