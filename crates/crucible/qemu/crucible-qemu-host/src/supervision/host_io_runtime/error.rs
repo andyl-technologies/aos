@@ -94,4 +94,82 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn actual_fault_transport_refusal_keeps_runtime_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+            crucible_qemu_shmem::RegionConfig::new(1, 4),
+        )?;
+        let length = allocation.layout().region_size;
+        let mut file = std::fs::File::from(crate::spawn::memfd_region(length)?);
+        file.write_all(&allocation.setup_region_bytes()?)?;
+        let wake = tempfile::tempfile()?;
+        let mut runtime = super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+            file.as_fd(),
+            wake.as_fd(),
+            length,
+            0,
+            std::time::Duration::from_millis(1),
+        )?;
+        runtime.vm_slot = u32::MAX;
+        let expected = runtime
+            .region
+            .as_mut()
+            .ok_or("actual mapped runtime is absent")?
+            .fault_event_transport_mut(runtime.vm_slot)
+            .err()
+            .ok_or("actual mapping unexpectedly contains foreign VM")?;
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        let deadline = super::super::OperationPollBudget::borrow_original(
+            &original,
+            "observe fault transport refusal",
+        )?;
+        supervisor.cancel()?;
+
+        let (errors, counts) = TestAllocationObserver::count(|| {
+            let indices = runtime
+                .fault_event_ring_indices()
+                .expect_err("actual transport mapping refuses the foreign VM");
+            let indices = indices.with_operational_supervision_post(
+                original
+                    .wait_slice()
+                    .expect_err("same Original is canceled"),
+            );
+            let drain = runtime
+                .drain_fault_events_for_operation(
+                    1,
+                    &deadline,
+                    std::time::Duration::from_secs(1),
+                    "observe fault transport refusal",
+                )
+                .expect_err("actual event drain refuses before transport access");
+            let drain = drain.with_operational_supervision_post(
+                original
+                    .wait_slice()
+                    .expect_err("same Original is canceled"),
+            );
+            [indices, drain]
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(runtime.staged_fault_events.is_empty());
+        for error in errors {
+            assert_eq!(error.operation, "map fault-event transport");
+            assert!(error.message.is_empty());
+            assert_eq!(error.mapped_region_access_source(), Some(&expected));
+            assert_eq!(
+                error.operational_supervision_post(),
+                Some(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled")
+                ),
+            );
+        }
+        Ok(())
+    }
 }

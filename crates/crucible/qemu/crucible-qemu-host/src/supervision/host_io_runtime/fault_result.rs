@@ -33,7 +33,10 @@ impl QemuLiveHostIoRuntime {
             .ok_or_else(region_missing)?
             .fault_event_transport_mut(self.vm_slot)
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("map fault-event transport", source.to_string())
+                QemuAsyncDriverRuntimeError::mapped_region_access(
+                    "map fault-event transport",
+                    source,
+                )
             })?;
         Ok((transport.ring.read_index(), transport.ring.write_index()))
     }
@@ -66,9 +69,9 @@ impl QemuLiveHostIoRuntime {
                     .ok_or_else(region_missing)?
                     .fault_event_transport_mut(self.vm_slot)
                     .map_err(|source| {
-                        QemuAsyncDriverRuntimeError::new(
+                        QemuAsyncDriverRuntimeError::mapped_region_access(
                             "map fault-event transport",
-                            source.to_string(),
+                            source,
                         )
                     })?;
                 let pending =
@@ -127,9 +130,9 @@ impl QemuLiveHostIoRuntime {
                 .ok_or_else(region_missing)?
                 .fault_event_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-event transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let event = dequeue_fault_event(
@@ -275,9 +278,9 @@ impl QemuLiveHostIoRuntime {
                 .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-result transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let result = dequeue_fault_result_with_buffer(
@@ -383,9 +386,9 @@ impl QemuLiveHostIoRuntime {
                 .ok_or_else(region_missing)?
                 .fault_result_transport_mut(self.vm_slot)
                 .map_err(|source| {
-                    QemuAsyncDriverRuntimeError::new(
+                    QemuAsyncDriverRuntimeError::mapped_region_access(
                         "map fault-result transport",
-                        source.to_string(),
+                        source,
                     )
                 })?;
             let result = match dequeue_fault_result_with_buffer(
