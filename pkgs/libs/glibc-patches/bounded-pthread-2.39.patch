@@ -409,10 +409,10 @@ index c83ade5f10063113da2a280ffcdaf75b189c390a..3c56cbbcd40fc56def02d5f4e68ec247
 +CFLAGS-tst-malloc-bounded.c += -fno-builtin
 diff --git a/malloc/README.bounded-application b/malloc/README.bounded-application
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f8100f0a63d5
+index 0000000000000000000000000000000000000000..7546158c1c182e79d11f05d6ada5761f481d198b
 --- /dev/null
 +++ b/malloc/README.bounded-application
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,491 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -433,7 +433,12 @@ index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f810
 +Caller-backed application allocation children: source-review stage
 +=================================================================
 +
-+This revision is UNCOMPILED and its controls are UNEXECUTED.  It provides
++This fail-stop revision is UNCOMPILED and its new controls are UNEXECUTED.
++The previous fe88 process-inventory revision has a separately frozen build
++and component qualification packet.  Its overall ABI check FAILED, exit 2
++(19 of 20 checks passed); no compatibility exception was accepted.  Those
++artifacts do not qualify this changed allocation/attachment implementation.
++This revision provides
 +an additive storage component, not an accepting QEMU/Source/RR/application
 +profile.  Previous dae19 pthread results, installed artifacts and ABI results
 +qualify that previous revision only.  They do not qualify this new libc/loader
@@ -481,7 +486,7 @@ index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f810
 +  application receipt           168 bytes, alignment 8
 +  application control           216 bytes, alignment 8
 +  allocation record              48 bytes, alignment 8
-+  attachment record              32 bytes, alignment 8
++  attachment record             112 bytes, alignment 8
 +  process slot                   48 bytes, alignment 8
 +  process object               6208 bytes, alignment 64 (padding included)
 +  pthread owner application field 8 bytes
@@ -497,6 +502,138 @@ index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f810
 +loaded libc/loader footprint must enter the real Source/QEMU process floor
 +before any profile could accept.  No per-role scalar allowance pays these
 +process globals, serials, locks or TLS increments implicitly.
++
++Explicit no-fail invocation boundary
++-----------------------------------
++
++Three additional GLIBC_2.39 symbols, malloc_bounded_failstop_begin_np,
++malloc_bounded_failstop_end_np and malloc_bounded_failstop_query_np, add an
++explicit selected failure scope.  The existing v1 configuration, layout and
++receipt structures do not grow.  The actual attachment record includes a
++new 80-byte scope journal (source-derived LP64 geometry); its larger compiled
++size must be queried before backing admission.  There is no additional TLS
++pointer, process registry, allocator or diagnostic heap.  Fresh ELF/code/page
++and all actual object geometry still require measurement of this revision.
++
++Begin authenticates live child membership before dereference, its expected
++incarnation and the exact CURRENT attachment.  It takes the shared gate once,
++excludes all retained/fixed spans from the output and returns a monotonically
++increasing per-attachment nonce.  UINT64_MAX refuses before wrap.  Scopes do
++not nest.  End requires the same current attachment and exact active nonce;
++a wrong or stale end cannot close a later scope.  An active scope refuses
++attachment detach.  Query is independently canonical and includes successful
++scope identity, active/ended/abandoned facts, first error, most recent begin
++and end statuses, and the nominated end nonce.  Begin/end attempt counters
++saturate as diagnostic lower bounds.  A busy gate returns EBUSY before owner
++authentication, so the caller must retain that actual attempted/returned
++operation separately; it cannot be added to an unauthenticated child journal.
++
++Nonce output follows the full existing external-span rule.  A local variable
++on a registered supplied stack is deliberately ineligible, even in that
++worker.  The containing caller must supply independently retained output
++control outside every registered stack, metadata/application arena and fixed
++container, keeping it alive through the invocation and real terminal tail.
++The worker cannot manufacture that control from application payload credit.
++The terminal fixture uses Main-retained control and a release/acquire ready
++handshake after the actual create operation returns, so a creator's receipt
++publication cannot accidentally become the intended begin-failure cause.
++
++While selected, a raw libc allocation refusal issues one internal Linux
++exit_group(127) process-termination syscall, without logging, stdio, allocation,
++callbacks, exit handlers or allocator locks.  If that syscall returns, an
++explicit compiler trap follows; there is no userspace retry loop.  Unlike
++stock _exit, this boundary does not retry a rejected termination syscall.
++The runtime must permit process termination and must not convert the terminal
++trap into continued application execution.  Kernel scheduling/termination
++latency is not a userspace nonwaiting cleanup guarantee.  This includes
++exhausted bounds, a busy allocation gate,
++libc calloc/pvalloc arithmetic overflow and refused raw realloc.  Hidden libc
++allocation entry points use the same routing.  The checked malloc_bounded
++allocation/reallocation APIs still RETURN their actual status and preserve
++failed outputs/old allocations.  Void-free uncertainty remains independent
++sticky debt; this mode does not invent a successful release or backing post.
++Unattached behavior and allocation-returning behavior outside the explicit
++scope remain unchanged.  Process termination is a FAILED invocation, not
++successful execution, cleanup or any reusable storage/debit return.
++
++The real GLib 2.82.4 g_malloc/g_malloc0/g_realloc functions call libc and enter
++g_error after a NULL allocation result.  Their g_try_* counterparts use the
++same libc symbols and return NULL.  libc cannot infer which contract is in
++effect from attachment, a return address or an allocator symbol.  The caller
++must select the scope only around an audited no-fail invocation; try calls
++must stay outside it.  Its entire synchronous closure, including signals and
++callbacks, observes that selected policy.  A mixed callback/handler that needs
++recoverable NULL makes that proposed invocation ineligible until its actual
++producer supplies a compatible boundary.  No call-site adoption is provided.
++
++GLib g_malloc_n/g_malloc0_n/g_realloc_n perform multiplication diagnostics
++BEFORE libc; g_aligned_alloc also diagnoses alignment and overflow itself.
++Those effects are NOT intercepted by this libc scope.  A complete caller
++needs genuinely checked finite arguments at those producers or a separately
++implemented/reviewed GLib failure producer.  A test of ordinary valid arguments
++cannot establish that closure.  No GLib feature or try behavior is disabled.
++
++If a bound thread exits with a selected invocation still open, only the real
++external pthread terminal cut returns its attachment after kernel join and
++TLS/TSD/allocator tail completion.  It also marks the scope abandoned and the
++application slot uncertain.  Factual terminal_threads/attachment.returned and
++known allocation releases are preserved, but application retirement refuses
++EPROTO, even when attached and live counts are zero.  This cannot be repaired
++by a copied end receipt, a new attachment, or CPU/notifier departure.  The
++caller retains backing and process debt through reap.  No-birth attachments
++cannot have entered a current-thread scope, so ordinary factual no-birth
++retirement remains unaffected.
++
++Finite source controls, not yet executed
++---------------------------------------
++
++The static component now includes actual exhausted malloc, held-gate malloc
++and overflowing calloc subprocesses.  Each must exit 127 without output;
++returning NULL instead reaches a distinct 126 exit.  Additional controls
++exercise nested refusal, peer output exclusion, unchanged failed checked
++allocation output, stale scope end, held-gate end, sticky first error alongside
++known successful end, ordinary NULL behavior after end, and actual bound
++thread TLS/TSD tail with an intentionally abandoned scope.  The latter must
++preserve true pthread join/TLS return and application pin return, then refuse
++application retirement with zero live allocations and sticky uncertainty.
++
++The external configured GLib DSO component adds real g_malloc, g_malloc0,
++g_realloc and g_strdup_printf/__vasprintf_chk failure subprocesses.  The actual
++DSO's default logger and structured writer are installed before attachment;
++entering either exits distinctly with 126.  Returning from the no-fail call
++exits 125.  Only allocation-free exit 127 passes.  g_try_malloc outside the
++scope must still return NULL.  The selected cohort excludes pre-libc GLib
++overflow/argument errors and mixed try callbacks.  None of these new controls
++has run; no old installed runtime can qualify the new symbols or record size.
++
++Remaining real producer and containing-owner closure
++----------------------------------------------------
++
++The concrete caller split remains (a) process/context-retained objects and
++published global cache roots, and (b) translation/callback workspace with its
++own actual final reference.  Each needs separately admitted backing under the
++same retained parent, exact cross-thread origin, and producer memberships saved
++before publication or fallible construction.  Allocation ownership selects a
++physical release target; it does not authorize a callback or close a producer.
++
++A finite native cohort must close new Main/RR/finalizer/callback publication,
++finish every already admitted invocation, drain each admitted RCU producer's
++actual queue epoch, and retain all TCG/context/hot-fork/global cache references
++through their real last use.  A single queue marker cannot close another
++producer, and ordinary kernel join cannot return published context custody.
++Only then can all scoped attachments end, bound attachments complete actual
++TLS/TSD tails, every live allocation release, and all independent negative or
++uncertain posts be assessed.  No external callback runs under a libc gate.
++
++The finite allocator's zero counts provide a necessary storage observation,
++not that containing-owner proof.  The present libc neither creates those
++native producer memberships nor implements their stop/drain adapters.  It
++continues to retain all 128 lifetime slots and admitted VA extents.  Complete
++local reuse would additionally require an exclusive genuine final-lifetime
++owner and a nonwaiting reader reclamation protocol before replacing range
++publication; neither exists here.  Full profile acceptance therefore remains
++unavailable.  Process-reap-only quarantine is still an explicit physical debt,
++never silently settled by this failure scope or a successful libc retirement.
 +
 +Address quarantine is a distinct retained resource
 +-----------------------------------------------
@@ -768,10 +905,10 @@ index 0000000000000000000000000000000000000000..c9d9188de68d34e338d3782b8c09f810
 +not establish this changed global layout or its installed public ABI.  No
 +Source issuance or complete runtime profile is admitted by source review.
 diff --git a/malloc/Versions b/malloc/Versions
-index c763395c6df02a9086fbfeef2af7c4fcc77f7149..b19dc0164ddc6b5ae85d01fcb8c50f42d1140535 100644
+index c763395c6df02a9086fbfeef2af7c4fcc77f7149..1f38c6e385c6c98b51b67839d16c36e7ea86c2d8 100644
 --- a/malloc/Versions
 +++ b/malloc/Versions
-@@ -67,6 +67,22 @@ libc {
+@@ -67,6 +67,25 @@ libc {
    GLIBC_2.33 {
      mallinfo2;
    }
@@ -788,6 +925,9 @@ index c763395c6df02a9086fbfeef2af7c4fcc77f7149..b19dc0164ddc6b5ae85d01fcb8c50f42
 +    malloc_bounded_attach_np;
 +    malloc_bounded_attachment_np;
 +    malloc_bounded_detach_np;
++    malloc_bounded_failstop_begin_np;
++    malloc_bounded_failstop_end_np;
++    malloc_bounded_failstop_query_np;
 +    malloc_bounded_bind_np;
 +    malloc_bounded_tryretire_np;
 +  }
@@ -982,10 +1122,10 @@ index 0000000000000000000000000000000000000000..a6339d9600e9ed822c6ed21c42f8f8ba
 +#endif
 diff --git a/malloc/malloc-bounded.c b/malloc/malloc-bounded.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e474a68512a
+index 0000000000000000000000000000000000000000..3ee25cee2041c2a04491e5874c9ea1d15fee25fb
 --- /dev/null
 +++ b/malloc/malloc-bounded.c
-@@ -0,0 +1,957 @@
+@@ -0,0 +1,1117 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -1010,6 +1150,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +#include <shlib-compat.h>
 +#include <string.h>
 +#include <unistd.h>
++#include <sysdep.h>
 +
 +#define APPLICATION_SLOTS 128
 +
@@ -1030,6 +1171,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +  uint64_t thread_incarnation;
 +  bool bound;
 +  bool returned;
++  struct malloc_bounded_failstop failstop;
 +};
 +
 +struct __malloc_bounded
@@ -1188,6 +1330,22 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +  return current () != NULL;
 +}
 +
++static void
++failstop_if_active (void)
++{
++  struct attachment *pin = current ();
++  if (pin != NULL && atomic_load_acquire (&pin->failstop.active))
++    {
++      /* Stock _exit retries if the syscall returns.  Use one termination
++         attempt, then a trap, with no userspace allocation or retry path.
++         Process death does not return any containing-owner debt.  */
++#if defined __linux__ && defined __x86_64__ && __WORDSIZE == 64
++      INTERNAL_SYSCALL_CALL (exit_group, MALLOC_BOUNDED_FAILSTOP_STATUS);
++#endif
++      __builtin_trap ();
++    }
++}
++
 +void
 +__malloc_bounded_allocation_refused (int status)
 +{
@@ -1201,6 +1359,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +          ungate ();
 +        }
 +    }
++  failstop_if_active ();
 +}
 +
 +static void
@@ -1605,7 +1764,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +        {
 +          struct attachment *pin = attachments (owner)
 +                                    + owner->fact.attachments_used++;
-+          *pin = (struct attachment) { owner, 0, 0, false, false };
++          *pin = (struct attachment) { .owner = owner };
 +          *attachment_out = owner->fact.attachments_used;
 +          ++owner->fact.attached;
 +          THREAD_SELF->application = pin;
@@ -1632,6 +1791,8 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +          || attachment == 0 || attachment > owner->fact.attachments_used
 +          || pin != attachments (owner) + attachment - 1)
 +        status = EPERM;
++      else if (atomic_load_acquire (&pin->failstop.active))
++        status = EBUSY;
 +      else
 +        {
 +          pin->returned = true;
@@ -1670,7 +1831,8 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +          if (status == 0)
 +            {
 +              *pin = (struct attachment)
-+                { owner, (uintptr_t) thread, thread_incarnation, true, false };
++                { .owner = owner, .thread_control = (uintptr_t) thread,
++                  .thread_incarnation = thread_incarnation, .bound = true };
 +              ++owner->fact.attachments_used;
 +              *attachment_out = owner->fact.attachments_used;
 +              ++owner->fact.attached;
@@ -1712,6 +1874,133 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +versioned_symbol (libc, __malloc_bounded_attachment_np,
 +                  malloc_bounded_attachment_np, GLIBC_2_39);
 +
++static struct attachment *
++scope_attachment (struct __malloc_bounded *owner, uint64_t attachment,
++                  int *status)
++{
++  if (attachment == 0 || attachment > owner->fact.attachments_used)
++    {
++      *status = EINVAL;
++      return NULL;
++    }
++  return attachments (owner) + attachment - 1;
++}
++
++static void
++scope_attempt (struct malloc_bounded_failstop *fact, bool begin, int status)
++{
++  uint64_t *attempts = begin ? &fact->begin_attempts : &fact->end_attempts;
++  if (*attempts != UINT64_MAX)
++    ++*attempts;
++  if (begin)
++    fact->begin_status = status;
++  else
++    fact->end_status = status;
++  if (status != 0 && fact->first_error == 0)
++    fact->first_error = status;
++}
++
++int
++__malloc_bounded_failstop_begin_np (malloc_bounded_t *nominated,
++                                    uint64_t incarnation, uint64_t attachment,
++                                    uint64_t *scope_out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  struct attachment *pin = owner == NULL ? NULL
++                            : scope_attachment (owner, attachment, &status);
++  if (pin != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (scope_out,
++                                                    sizeof (*scope_out)))
++        status = EINVAL;
++      else if (pin != current () || pin->returned)
++        status = EPERM;
++      else if (atomic_load_acquire (&pin->failstop.active))
++        status = EALREADY;
++      else if (pin->failstop.scope == UINT64_MAX)
++        status = EOVERFLOW;
++      else
++        {
++          *scope_out = ++pin->failstop.scope;
++          pin->failstop.ended = 0;
++          atomic_store_release (&pin->failstop.active, 1);
++          status = 0;
++        }
++      scope_attempt (&pin->failstop, true, status);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_failstop_begin_np,
++                  malloc_bounded_failstop_begin_np, GLIBC_2_39);
++
++int
++__malloc_bounded_failstop_end_np (malloc_bounded_t *nominated,
++                                  uint64_t incarnation, uint64_t attachment,
++                                  uint64_t scope)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  struct attachment *pin = owner == NULL ? NULL
++                            : scope_attachment (owner, attachment, &status);
++  if (pin != NULL)
++    {
++      pin->failstop.end_scope = scope;
++      if (pin != current () || pin->returned)
++        status = EPERM;
++      else if (scope == 0 || scope != pin->failstop.scope)
++        status = ESTALE;
++      else if (!atomic_load_acquire (&pin->failstop.active))
++        status = EALREADY;
++      else
++        {
++          atomic_store_release (&pin->failstop.active, 0);
++          pin->failstop.ended = 1;
++          status = 0;
++        }
++      scope_attempt (&pin->failstop, false, status);
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_failstop_end_np,
++                  malloc_bounded_failstop_end_np, GLIBC_2_39);
++
++int
++__malloc_bounded_failstop_query_np (malloc_bounded_t *nominated,
++                                    uint64_t incarnation, uint64_t attachment,
++                                    struct malloc_bounded_failstop *out)
++{
++  if (!try_gate ())
++    return EBUSY;
++  int status;
++  struct __malloc_bounded *owner = lookup (nominated, incarnation, &status);
++  struct attachment *pin = owner == NULL ? NULL
++                            : scope_attachment (owner, attachment, &status);
++  if (pin != NULL)
++    {
++      if (!__pthread_bounded_external_span_locked (out, sizeof (*out)))
++        status = EINVAL;
++      else
++        {
++          *out = pin->failstop;
++          out->version = MALLOC_BOUNDED_VERSION;
++          out->size = sizeof (*out);
++          out->incarnation = incarnation;
++          out->attachment = attachment;
++        }
++    }
++  ungate ();
++  return status;
++}
++versioned_symbol (libc, __malloc_bounded_failstop_query_np,
++                  malloc_bounded_failstop_query_np, GLIBC_2_39);
++
 +/* Called only at the successful canonical pthread retirement cut, after
 +   actual no-birth or kernel join, TLS return and stack-list return.  */
 +void
@@ -1720,6 +2009,15 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +  if (attachment != NULL)
 +    {
 +      struct attachment *pin = attachment;
++      if (atomic_load_acquire (&pin->failstop.active))
++        {
++          /* A kernel exit proves producer death, not successful scope
++             completion.  Preserve that independent uncertainty forever.  */
++          pin->failstop.abandoned = 1;
++          if (pin->failstop.first_error == 0)
++            pin->failstop.first_error = EPROTO;
++          atomic_store_release (&registry[pin->owner->slot].uncertain, 1);
++        }
 +      pin->returned = true;
 +      --pin->owner->fact.attached;
 +      ++pin->owner->fact.terminal_threads;
@@ -1816,6 +2114,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +    {
 +      refusal (owner->slot);
 +      __set_errno (status);
++      failstop_if_active ();
 +    }
 +  return true;
 +}
@@ -1912,6 +2211,7 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +    {
 +      refusal (slot);
 +      __set_errno (status);
++      failstop_if_active ();
 +    }
 +  return true;
 +}
@@ -1945,10 +2245,10 @@ index 0000000000000000000000000000000000000000..777dc759152e9f49ffed6c3a19e12e47
 +}
 diff --git a/malloc/malloc-bounded.h b/malloc/malloc-bounded.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..01af6cb60a259ff5303936a2d784619738c9e02a
+index 0000000000000000000000000000000000000000..10d7a4c586d4291bd1e678bdbc7ffedd4633cb0b
 --- /dev/null
 +++ b/malloc/malloc-bounded.h
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,212 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -2040,6 +2340,29 @@ index 0000000000000000000000000000000000000000..01af6cb60a259ff5303936a2d7846197
 +  unsigned int released;
 +};
 +
++/* Explicit failure behavior for one audited no-fail invocation.  Counts are
++   saturating diagnostic lower bounds; SCOPE never wraps or repeats within
++   an attachment.  Historical errors do not clear successful scope facts.  */
++#define MALLOC_BOUNDED_FAILSTOP_STATUS 127
++
++struct malloc_bounded_failstop
++{
++  unsigned int version;
++  unsigned int size;
++  uint64_t incarnation;
++  uint64_t attachment;
++  uint64_t scope;
++  uint64_t end_scope;
++  uint64_t begin_attempts;
++  uint64_t end_attempts;
++  int first_error;
++  int begin_status;
++  int end_status;
++  unsigned int active;
++  unsigned int ended;
++  unsigned int abandoned;
++};
++
 +/* Snapshot only: neither this receipt nor a token creates parent authority.
 +   libc_custody_returned ends libc access; it does not return reusable backing
 +   or perform the caller's independent containing-owner return operation.
@@ -2110,6 +2433,22 @@ index 0000000000000000000000000000000000000000..01af6cb60a259ff5303936a2d7846197
 +extern int malloc_bounded_attachment_np
 +  (malloc_bounded_t *, uint64_t, uint64_t,
 +   struct malloc_bounded_attachment *) __THROW;
++
++/* Select allocation-free process termination before raw libc allocation
++   refusal returns into a no-fail library call.  The exact current attachment
++   must cover the entire synchronous invocation, including signals/callbacks.
++   Nested scopes refuse.  Checked allocation APIs keep their status behavior;
++   try-allocation calls must stay outside this explicitly selected scope.
++   A supplied-stack worker nominates caller-retained nonce output outside
++   every registered stack/arena, including its own stack and application.
++   This does not intercept a library's diagnostics before entering libc.  */
++extern int malloc_bounded_failstop_begin_np
++  (malloc_bounded_t *, uint64_t, uint64_t, uint64_t *) __THROW;
++extern int malloc_bounded_failstop_end_np
++  (malloc_bounded_t *, uint64_t, uint64_t, uint64_t) __THROW;
++extern int malloc_bounded_failstop_query_np
++  (malloc_bounded_t *, uint64_t, uint64_t,
++   struct malloc_bounded_failstop *) __THROW;
 +
 +/* Save a real application pin on a READY canonical pthread owner BEFORE
 +   creation.  It survives no-birth/partial birth and every TLS/TSD tail;
@@ -2414,10 +2753,10 @@ index bcb6e5b83ca9777df3c1ade273d821d5b742b2fb..8d1bdfefdcbf9a77d3b9ecd262c3e36e
      return EINVAL;
 diff --git a/malloc/tst-malloc-bounded-glib.c b/malloc/tst-malloc-bounded-glib.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e106bfe22325004c98634960f4d5d21c61f4a27
+index 0000000000000000000000000000000000000000..ad00fbe2b921c3f31353577eb1928d47e3e1691c
 --- /dev/null
 +++ b/malloc/tst-malloc-bounded-glib.c
-@@ -0,0 +1,145 @@
+@@ -0,0 +1,225 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -2450,6 +2789,8 @@ index 0000000000000000000000000000000000000000..8e106bfe22325004c98634960f4d5d21
 +#include <stdlib.h>
 +#include <string.h>
 +#include <sys/mman.h>
++#include <sys/wait.h>
++#include <unistd.h>
 +
 +#define BACKING_BYTES (16 * 1024 * 1024)
 +
@@ -2470,6 +2811,83 @@ index 0000000000000000000000000000000000000000..8e106bfe22325004c98634960f4d5d21
 +{
 +  assert ((uintptr_t) pointer >= (uintptr_t) backing);
 +  assert ((uintptr_t) pointer - (uintptr_t) backing < BACKING_BYTES);
++}
++
++static void
++forbidden_log (const gchar *domain G_GNUC_UNUSED,
++               GLogLevelFlags level G_GNUC_UNUSED,
++               const gchar *message G_GNUC_UNUSED,
++               gpointer unused G_GNUC_UNUSED)
++{
++  /* A real GLib allocation failure must never enter its recursive logging
++     path in the selected scope.  A different exit makes this causal.  */
++  _exit (126);
++}
++
++static GLogWriterOutput
++forbidden_writer (GLogLevelFlags level G_GNUC_UNUSED,
++                  const GLogField *fields G_GNUC_UNUSED,
++                  gsize count G_GNUC_UNUSED, gpointer unused G_GNUC_UNUSED)
++{
++  _exit (126);
++}
++
++static void *volatile failure_result;
++
++static void
++glib_failstop_controls (void)
++{
++  for (unsigned int mode = 0; mode < 4; ++mode)
++    {
++      pid_t child = fork ();
++      assert (child >= 0);
++      if (child == 0)
++        {
++          /* Install the actual DSO's two logging hooks BEFORE attachment.
++             Neither hook may run; neither allocates if the control fails.  */
++          g_log_set_default_handler (forbidden_log, NULL);
++          g_log_set_writer_func (forbidden_writer, NULL, NULL);
++          void *backing = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
++                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++          assert (backing != MAP_FAILED);
++          struct malloc_bounded_config config =
++            { MALLOC_BOUNDED_VERSION, sizeof (config), mode == 2 ? 1 : 0,
++              64, 16, 1 };
++          malloc_bounded_t *owner;
++          uint64_t incarnation, pin, scope;
++          assert (malloc_bounded_init_np (backing, BACKING_BYTES, &config,
++                                          &owner, &incarnation) == 0);
++          assert (malloc_bounded_attach_np (owner, incarnation, &pin) == 0);
++          void *old = mode == 2 ? g_malloc (16) : NULL;
++
++          /* The same real DSO try-allocation route still returns NULL.
++             Selection is explicit, not inferred from its malloc symbol.  */
++          assert (g_try_malloc (17) == NULL);
++          assert (malloc_bounded_failstop_begin_np
++                  (owner, incarnation, pin, &scope) == 0);
++          switch (mode)
++            {
++            case 0:
++              failure_result = g_malloc (17);
++              break;
++            case 1:
++              failure_result = g_malloc0 (17);
++              break;
++            case 2:
++              failure_result = g_realloc (old, 32);
++              break;
++            case 3:
++              /* The real imported hidden __vasprintf_chk allocator path.  */
++              failure_result = g_strdup_printf ("%010000d", 7);
++              break;
++            }
++          _exit (125);
++        }
++      int status;
++      assert (waitpid (child, &status, 0) == child);
++      assert (WIFEXITED (status));
++      assert (WEXITSTATUS (status) == MALLOC_BOUNDED_FAILSTOP_STATUS);
++    }
 +}
 +
 +int
@@ -2560,15 +2978,16 @@ index 0000000000000000000000000000000000000000..8e106bfe22325004c98634960f4d5d21
 +  assert (fact.libc_custody_returned && fact.registration_removed);
 +  assert (fact.address_quarantined);
 +  assert (mprotect (backing, BACKING_BYTES, PROT_NONE) == 0);
++  glib_failstop_controls ();
 +  puts ("PASS: actual GLib DSO and __vasprintf_chk application storage");
 +  return 0;
 +}
 diff --git a/malloc/tst-malloc-bounded.c b/malloc/tst-malloc-bounded.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e3d4708fc
+index 0000000000000000000000000000000000000000..cb8d88abcc05681a0abf420a7df6b3930b8714eb
 --- /dev/null
 +++ b/malloc/tst-malloc-bounded.c
-@@ -0,0 +1,581 @@
+@@ -0,0 +1,732 @@
 +/* Copyright (C) 2026 Dylan Plecki.
 +   This file is part of the GNU C Library.
 +
@@ -2921,6 +3340,14 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +static unsigned int destructor_entered;
 +static unsigned int destructor_release;
 +
++struct bound_start
++{
++  struct fixture *application;
++  uint64_t pin;
++  uint64_t scope;
++  unsigned int ready;
++};
++
 +static void
 +destructor (void *pointer)
 +{
@@ -2933,7 +3360,24 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +static void *
 +bound_worker (void *unused)
 +{
-+  (void) unused;
++  struct bound_start *start = unused;
++  if (start != NULL)
++    {
++      while (!atomic_load_acquire (&start->ready))
++        sched_yield ();
++      uint64_t rejected = 0x39;
++      TEST_COMPARE (malloc_bounded_failstop_begin_np
++                    (start->application->owner,
++                     start->application->incarnation, start->pin,
++                     &rejected), EINVAL);
++      TEST_COMPARE (rejected, 0x39);
++      TEST_COMPARE (malloc_bounded_failstop_begin_np
++                    (start->application->owner,
++                     start->application->incarnation, start->pin,
++                     &start->scope), 0);
++      /* Deliberately leave the selected invocation unclosed at thread exit.
++         Actual physical tail completion must not erase this separate debt.  */
++    }
 +  void *tls_data = malloc (17);
 +  TEST_VERIFY_EXIT (tls_data != NULL);
 +  TEST_COMPARE (__cxa_thread_atexit_impl (tls_destructor, tls_data,
@@ -2945,8 +3389,10 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +}
 +
 +static void
-+terminal_controls (void)
++terminal_controls (bool abandoned)
 +{
++  atomic_store_relaxed (&destructor_entered, 0);
++  atomic_store_relaxed (&destructor_release, 0);
 +  struct fixture app = fixture (8);
 +  void *metadata = mmap (NULL, BACKING_BYTES, PROT_READ | PROT_WRITE,
 +                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -2983,10 +3429,15 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +  TEST_COMPARE (pthread_attr_setstack (&attributes, (char *) mapping + page,
 +                                       BACKING_BYTES), 0);
 +  pthread_t thread;
++  /* Nonce output is in the retained caller control, outside the supplied
++     worker stack and both arenas.  Stack-local output must refuse.  */
++  struct bound_start start = { .application = &app, .pin = pin };
 +  struct pthread_bounded_receipt thread_fact;
 +  TEST_COMPARE (pthread_bounded_create_np (thread_owner, thread_incarnation,
 +                                          &thread, &attributes, bound_worker,
-+                                          NULL, &thread_fact), 0);
++                                          abandoned ? &start : NULL,
++                                          &thread_fact), 0);
++  atomic_store_release (&start.ready, 1);
 +  while (!atomic_load_acquire (&destructor_entered))
 +    sched_yield ();
 +  struct malloc_bounded_receipt fact;
@@ -3014,7 +3465,26 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +  TEST_COMPARE (malloc_bounded_attachment_np (app.owner, app.incarnation, pin,
 +                                              &attachment), 0);
 +  TEST_COMPARE (attachment.returned, 1);
-+  retire (&app);
++  if (abandoned)
++    {
++      struct malloc_bounded_failstop scope;
++      TEST_COMPARE (malloc_bounded_failstop_query_np
++                    (app.owner, app.incarnation, pin, &scope), 0);
++      TEST_COMPARE (scope.active, 1);
++      TEST_COMPARE (scope.scope, start.scope);
++      TEST_COMPARE (scope.ended, 0);
++      TEST_COMPARE (scope.abandoned, 1);
++      TEST_COMPARE (malloc_bounded_tryretire_np
++                    (app.owner, app.incarnation, &fact), EPROTO);
++      TEST_COMPARE (fact.attached, 0);
++      TEST_COMPARE (fact.live, 0);
++      TEST_COMPARE (fact.terminal_threads, 1);
++      TEST_COMPARE (fact.uncertain_release, 1);
++      TEST_COMPARE (fact.libc_custody_returned, 0);
++      /* Application backing remains in libc custody: retain it to reap.  */
++    }
++  else
++    retire (&app);
 +  for (size_t i = 0; i < 33; ++i)
 +    TEST_COMPARE (pthread_key_delete (keys[i]), 0);
 +  xpthread_attr_destroy (&attributes);
@@ -3128,10 +3598,109 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +  TEST_COMPARE (munmap (backing, page), 0);
 +}
 +
++static void *volatile failstop_result;
++
++static void
++failstop_child (void *argument)
++{
++  uintptr_t mode = (uintptr_t) argument;
++  struct fixture f = fixture (0);
++  uint64_t pin, scope;
++  TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &pin), 0);
++  TEST_COMPARE (malloc_bounded_failstop_begin_np
++                (f.owner, f.incarnation, pin, &scope), 0);
++
++  if (mode == 1)
++    atomic_store_relaxed (&__pthread_bounded_registration_lock, 1);
++  void *result;
++  if (mode == 2)
++    {
++      volatile size_t count = SIZE_MAX;
++      result = calloc (count, 2);
++    }
++  else
++    result = malloc (17);
++  failstop_result = result;
++  /* A NULL return would let a no-fail DSO enter its logging allocator.  */
++  _exit (126);
++}
++
++static void
++failstop_controls (void)
++{
++  for (uintptr_t mode = 0; mode < 3; ++mode)
++    {
++      struct support_capture_subprocess child = support_capture_subprocess
++        (failstop_child, (void *) mode);
++      support_capture_subprocess_check (&child, "allocation-free failstop",
++                                        MALLOC_BOUNDED_FAILSTOP_STATUS,
++                                        sc_allow_none);
++      support_capture_subprocess_free (&child);
++    }
++
++  struct fixture f = fixture (0);
++  struct fixture peer = fixture (0);
++  unsigned char peer_before[16];
++  memcpy (peer_before, peer.backing, sizeof (peer_before));
++  uint64_t pin, first, second, unchanged = 0x39;
++  TEST_COMPARE (malloc_bounded_attach_np (f.owner, f.incarnation, &pin), 0);
++  TEST_COMPARE (malloc_bounded_failstop_begin_np
++                (f.owner, f.incarnation, pin, (void *) peer.backing), EINVAL);
++  TEST_COMPARE (memcmp (peer_before, peer.backing, sizeof (peer_before)), 0);
++  TEST_COMPARE (malloc_bounded_failstop_begin_np
++                (f.owner, f.incarnation, pin, &first), 0);
++  TEST_COMPARE (malloc_bounded_failstop_begin_np
++                (f.owner, f.incarnation, pin, &unchanged), EALREADY);
++  TEST_COMPARE (unchanged, 0x39);
++  TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, pin), EBUSY);
++  struct malloc_bounded_token token = { (void *) 1, 0x39 };
++  TEST_COMPARE (malloc_bounded_allocate_np
++                (f.owner, f.incarnation, 17, 16, &token), ENOMEM);
++  TEST_COMPARE ((uintptr_t) token.pointer, 1);
++  TEST_COMPARE (token.allocation, 0x39);
++  TEST_COMPARE (malloc_bounded_failstop_end_np
++                (f.owner, f.incarnation, pin, first), 0);
++  TEST_COMPARE (malloc_bounded_failstop_begin_np
++                (f.owner, f.incarnation, pin, &second), 0);
++  TEST_VERIFY (second > first);
++  TEST_COMPARE (malloc_bounded_failstop_end_np
++                (f.owner, f.incarnation, pin, first), ESTALE);
++  struct malloc_bounded_failstop fact;
++  TEST_COMPARE (malloc_bounded_failstop_query_np
++                (f.owner, f.incarnation, pin, &fact), 0);
++  TEST_COMPARE (fact.active, 1);
++  TEST_COMPARE (fact.scope, second);
++  TEST_COMPARE (fact.ended, 0);
++  TEST_COMPARE (fact.end_scope, first);
++  TEST_COMPARE (fact.end_status, ESTALE);
++  atomic_store_relaxed (&__pthread_bounded_registration_lock, 1);
++  TEST_COMPARE (malloc_bounded_failstop_end_np
++                (f.owner, f.incarnation, pin, second), EBUSY);
++  atomic_store_relaxed (&__pthread_bounded_registration_lock, 0);
++  TEST_COMPARE (malloc_bounded_failstop_end_np
++                (f.owner, f.incarnation, pin, second), 0);
++  TEST_COMPARE (malloc_bounded_failstop_query_np
++                (f.owner, f.incarnation, pin, &fact), 0);
++  TEST_COMPARE (fact.active, 0);
++  TEST_COMPARE (fact.ended, 1);
++  TEST_COMPARE (fact.begin_attempts, 4);
++  TEST_COMPARE (fact.end_attempts, 3);
++  TEST_COMPARE (fact.first_error, EINVAL);
++  TEST_COMPARE (fact.end_status, 0);
++  errno = 0;
++  void *result = malloc (17);
++  TEST_VERIFY (result == NULL);
++  TEST_COMPARE (errno, ENOMEM);
++  TEST_COMPARE (malloc_bounded_detach_np (f.owner, f.incarnation, pin), 0);
++  retire (&f);
++  retire (&peer);
++}
++
 +static int
 +do_test (void)
 +{
 +  process_controls ();
++  failstop_controls ();
 +  for (uintptr_t i = 0; i < 3; ++i)
 +    {
 +      struct support_capture_subprocess child = support_capture_subprocess
@@ -3142,7 +3711,8 @@ index 0000000000000000000000000000000000000000..2711122c57a187ad7cd0c81b34264f2e
 +  allocation_controls ();
 +  release_controls ();
 +  identity_controls ();
-+  terminal_controls ();
++  terminal_controls (false);
++  terminal_controls (true);
 +  no_birth_controls ();
 +  retired_range_controls ();
 +  registry_exhaustion_controls ();
@@ -6317,10 +6887,10 @@ index 81ebcdfbf894c1bc7cf5d4ee7c8d409fce18b6a1..8b9153c6cc44174f8005c33a224d0dd2
    free (self->tls_state.strsignal_buf);
    free (self->tls_state.strerror_l_buf);
 diff --git a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
-index aea7848ed6833407d4d8bb28a856d94ff5166ea6..8fc3c75a6cf4336d1b47ae3018535687fb01a371 100644
+index aea7848ed6833407d4d8bb28a856d94ff5166ea6..0244a0959cd962a389fe5dcf2403cd96f1d9a91f 100644
 --- a/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
 +++ b/sysdeps/unix/sysv/linux/x86_64/64/libc.abilist
-@@ -2582,11 +2582,29 @@ GLIBC_2.38 strlcat F
+@@ -2582,11 +2582,32 @@ GLIBC_2.38 strlcat F
  GLIBC_2.38 strlcpy F
  GLIBC_2.38 wcslcat F
  GLIBC_2.38 wcslcpy F
@@ -6330,6 +6900,9 @@ index aea7848ed6833407d4d8bb28a856d94ff5166ea6..8fc3c75a6cf4336d1b47ae3018535687
 +GLIBC_2.39 malloc_bounded_attachment_np F
 +GLIBC_2.39 malloc_bounded_bind_np F
 +GLIBC_2.39 malloc_bounded_detach_np F
++GLIBC_2.39 malloc_bounded_failstop_begin_np F
++GLIBC_2.39 malloc_bounded_failstop_end_np F
++GLIBC_2.39 malloc_bounded_failstop_query_np F
 +GLIBC_2.39 malloc_bounded_init_np F
 +GLIBC_2.39 malloc_bounded_layout_np F
 +GLIBC_2.39 malloc_bounded_process_current_np F

@@ -424,8 +424,9 @@ For the subsequent runtime-pair revision, all 5,348 committed Rust/TOML inputs
 match the mandatory application's immutable source, and the separately checked
 public vector fixture matches SHA-256
 `cf11e957a8e305a8de6f3725156c8335c854ec3bb1f084a717832b9f0d58012a`.
-Its ABI and mandatory application builds remain pending; source correspondence
-alone is not a compilation result.
+Mandatory application compilation passes at
+`clw18mqc3ap1f82jnn5hxi3qv458vn8k`. ABI conformance passes at
+`1hhxmh0pa82f61j7397lgg7c35q2wwxh`; core evaluation also passes.
 
 #### Application allocator component qualification
 
@@ -497,6 +498,35 @@ headers in proof
 `c38afd5c5f448572b25400746b38d25ca5fc4e788abd171bce5fcd30c1a7b555`.
 These results qualify this package component, not the subsequent fail-stop
 provider revision, whole-image/TLS payment or launched runtime profile.
+
+#### Selected allocator fail-stop component
+
+The package subsequently imports signed provider
+`9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`, tree
+`22720df186fb6f8e071952753462feb33cedb86e`. Its explicit bounded invocation
+scope makes a real allocation failure terminate directly through the internal
+`exit_group` leaf before GLib can enter recursive logging. Ordinary try-allocation
+outside that scope and the checked allocation APIs retain their status behavior.
+The scope's nonce, attachment, process and terminal-tail facts remain distinct;
+an abandoned scope keeps uncertainty and cannot erase physical pthread debt.
+All nine imported commits are signed and DCO-certified, all 46 file licenses
+remain inventoried, and independent review matches all 37 import payloads and
+the canonical complete upstream-to-target patch exactly.
+
+The initial `34af6e6` full build passed but its application test genuinely failed:
+the worker placed its nonce output in its protected supplied stack. The corrected
+revision retains that exact EINVAL negative control, places the positive output
+in the retained caller's control, and synchronizes entry after actual creation
+publication. The original failed application result and original failed
+prefix-sensitive ABI result remain preserved. Neither is a qualified result.
+
+The new `checks.crucible.phase7.glibcBoundedGlib` compiles the exact upstream
+integration source retained by this runtime's build against the installed
+public headers, actual GLib DSO and matching libc/loader. Its real forked controls
+distinguish fail-stop exit 127 from GLib logging at 126 and an unexpected return
+at 125. Compilation and execution have independent finite limits. A nonzero
+complete ABI status refuses before compiling the consumer. Fresh hermetic
+provider, ABI and installed GLib consumer results for this revision are pending.
 
 #### Installed bounded-pthread QEMU consumer
 

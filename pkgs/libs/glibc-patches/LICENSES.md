@@ -2,8 +2,8 @@
 
 `bounded-pthread-2.39.patch` is the complete glibc 2.39 difference from base
 `128392568abf34075115815f007376f50489fdcf` to signed source
-`fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`, tree
-`a2876d353f8b886f016ddbf93a1e515da1959c87`. Applying the canonical patch
+`9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`, tree
+`22720df186fb6f8e071952753462feb33cedb86e`. Applying the canonical patch
 with the index produces that exact tree. The source range contains these
 signed, DCO-certified commits, in order:
 
@@ -14,6 +14,8 @@ signed, DCO-certified commits, in order:
 - `908402f575492f462e74a39e46384ab12aa023bb`
 - `39425b83aec13492400eccc0ea96d920f236099c`
 - `fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`
+- `34af6e6a74edbac870ffb5fa1cbf667d0927e17f`
+- `9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a`
 
 The complete upstream source and exact patch remain package source evidence.
 Upstream `COPYING`, `COPYING.LIB`, `LICENSES` and existing per-file notices
@@ -72,4 +74,4 @@ Libc implementation remains outside the host protocol.
 | `sysdeps/unix/sysv/linux/tls-internal.c` | Modified | LGPL-2.1-or-later |
 | `sysdeps/unix/sysv/linux/x86_64/64/libc.abilist` | Modified | GNU C Library; COPYING.LIB and retained notices |
 
-Patch SHA-256: `1a3d7eff85e2d57be5f34864593cc3732530760c298e282b820155e38a86d754`.
+Patch SHA-256: `6de14e7dcca0db5910000fad31c1659c878e03c71d6115c5bd3c6a0a6e4e3697`.

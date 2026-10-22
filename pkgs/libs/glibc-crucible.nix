@@ -39,6 +39,7 @@
     postBuild = ''
       qualification="$out/share/glibc-crucible/qualification"
       mkdir -p "$qualification"
+      cp ../malloc/tst-malloc-bounded-glib.c "$qualification/"
 
       # This configured GCC carries its real unwinder in libgcc.a. Derive the
       # archive from that compiler; no fabricated libgcc_eh alias is needed.
@@ -115,9 +116,10 @@ in
         boundedPthreadVersion = 1;
         boundedApplicationVersion = 1;
         boundedProcessVersion = 1;
+        boundedFailstopVersion = 1;
         # Private TCB changes require this runtime's matching loader and headers.
         requiresMatchingLoader = true;
-        sourceCommit = "fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2";
+        sourceCommit = "9ec3dc41fde9abcbd3ce3f1bf91f87fedd63ae3a";
         evidenceSources =
           runtime.passthru.evidenceSources
           ++ [
