@@ -2,7 +2,7 @@
 //!
 //! Spec index: RFC-0010 files 04, 08, 09.
 //!
-//! This L0 crate owns seeded decision streams, ordered collections,
+//! This L0 crate owns keyed decision streams, ordered collections,
 //! deterministic selection, virtual-time arithmetic, and the content-addressing
 //! primitives described by the indexed RFC-0010 files.
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
@@ -19,12 +19,24 @@
 
 pub mod contract_a;
 
-const SPLITMIX64_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+/// The keyed PRNG derivation used by [`DecisionStream`].
+///
+/// Every draw is a pure function of the scenario root, the stream identity and
+/// the draw's own key, so the value never depends on how many other draws ran
+/// before it or in which order hosts completed work ([DET-25], [SCHED-50]).
+pub const DECISION_RNG_ALGORITHM: &str = "keyed-blake3-v2";
 
-/// The fixed PRNG algorithm used by [`DecisionStream`].
-pub const DECISION_RNG_ALGORITHM: &str = "splitmix64-v1";
+/// The superseded sequential derivation, recognized only to refuse it.
+///
+/// Draw values recorded under this algorithm are not reproducible by
+/// [`DecisionStream`]; artifacts carrying them are refused rather than
+/// re-valued.
+pub const DECISION_RNG_LEGACY_ALGORITHM: &str = "splitmix64-v1";
 
-/// The stable hash domain used for decision-stream name forking.
+/// The BLAKE3 key-derivation context that turns a scenario root into a world key.
+pub const DECISION_RNG_WORLD_KEY_CONTEXT: &str = "crucible decision-rng keyed-blake3-v2 world-key";
+
+/// The stable domain used for streams named without an explicit domain.
 pub const DECISION_RNG_NAME_HASH_DOMAIN: &str = "crucible.decision-rng.name-hash.v1";
 
 /// The stable domain used for node-scoped decision streams.
@@ -32,6 +44,15 @@ pub const DECISION_RNG_NODE_STREAM_DOMAIN: &str = "crucible.decision-rng.node-st
 
 /// The stable domain used for link-scoped decision streams.
 pub const DECISION_RNG_LINK_STREAM_DOMAIN: &str = "crucible.decision-rng.link-stream.v1";
+
+/// Label separating a stream-key derivation from every other keyed hash.
+const STREAM_KEY_LABEL: &[u8] = b"stream";
+
+/// Label for draws addressed by a per-stream ordinal.
+const COUNTER_DRAW_LABEL: &[u8] = b"counter";
+
+/// Label for draws addressed by an event identity and role index.
+const EVENT_DRAW_LABEL: &[u8] = b"event";
 
 /// A deterministic 256-bit digest produced by [`StableHasher`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -52,16 +73,35 @@ pub struct StableHasher {
 }
 
 /// The single seeded source for intended nondeterministic choices.
+///
+/// The derivation is `keyed-blake3-v2`:
+///
+/// ```text
+/// world_key        = BLAKE3.derive_key(DECISION_RNG_WORLD_KEY_CONTEXT, u64le(root))
+/// stream_key       = BLAKE3.keyed_hash(world_key,  lp("stream")  || lp(domain) || lp(name))
+/// counter draw n   = BLAKE3.keyed_hash(stream_key, lp("counter") || u64le(n))[0..8]
+/// event draw (e,i) = BLAKE3.keyed_hash(stream_key, lp("event")   || lp(e) || u64le(i))[0..8]
+/// lp(x)            = u64le(len(x)) || x;  draws are read little-endian
+/// ```
+///
+/// A stream owned by one entity, whose draws that entity orders by its own
+/// deterministic execution, addresses draws by ordinal. A stream shared by
+/// several producers addresses each draw by an event identity that names its
+/// producer, so no cross-producer commit order enters a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DecisionRng {
     seed: u64,
+    world_key: [u8; 32],
 }
 
 impl DecisionRng {
     /// Builds a decision RNG from the scenario root seed.
     #[must_use]
     pub fn new(seed: u64) -> Self {
-        Self { seed }
+        Self {
+            seed,
+            world_key: blake3::derive_key(DECISION_RNG_WORLD_KEY_CONTEXT, &seed.to_le_bytes()),
+        }
     }
 
     /// Returns the scenario root seed.
@@ -70,74 +110,103 @@ impl DecisionRng {
         self.seed
     }
 
-    /// Returns the fork seed for `entity_name`.
+    /// Returns the 64-bit stream identifier for `entity_name` in the default domain.
     ///
-    /// The seed is computed as `root_seed XOR stable_name_hash(entity_name)`,
-    /// so constructing unrelated streams never consumes from the root and never
-    /// perturbs any existing stream.
+    /// The identifier is the low eight bytes of the stream key, so it changes
+    /// with the root and the name but is never consumed as a draw.
     #[must_use]
     pub fn stream_seed(&self, entity_name: &str) -> u64 {
-        self.seed ^ stable_name_hash(entity_name)
+        self.stream_seed_in_domain(DECISION_RNG_NAME_HASH_DOMAIN, entity_name)
     }
 
-    /// Returns the fork seed for `entity_name` inside `stream_domain`.
-    ///
-    /// The seed is computed as `root_seed XOR stable_domain_name_hash`, keeping
-    /// node and link streams with the same entity name independent when callers
-    /// use the fixed node/link domains.
+    /// Returns the 64-bit stream identifier for `entity_name` inside `stream_domain`.
     #[must_use]
     pub fn stream_seed_in_domain(&self, stream_domain: &str, entity_name: &str) -> u64 {
-        self.seed ^ stable_domain_name_hash(stream_domain, entity_name)
+        low_u64(&self.stream_key(stream_domain, entity_name))
     }
 
-    /// Forks a deterministic decision stream for `entity_name`.
+    /// Forks an ordinal-addressed stream for `entity_name` in the default domain.
     #[must_use]
     pub fn fork(&self, entity_name: &str) -> DecisionStream {
-        DecisionStream::from_seed(self.stream_seed(entity_name))
+        self.fork_in_domain(DECISION_RNG_NAME_HASH_DOMAIN, entity_name)
     }
 
-    /// Forks a deterministic node-scoped decision stream for `node_name`.
+    /// Forks an ordinal-addressed node-scoped stream for `node_name`.
     #[must_use]
     pub fn fork_for_node(&self, node_name: &str) -> DecisionStream {
         self.fork_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, node_name)
     }
 
-    /// Forks a deterministic link-scoped decision stream for `link_name`.
+    /// Forks an ordinal-addressed link-scoped stream for `link_name`.
     #[must_use]
     pub fn fork_for_link(&self, link_name: &str) -> DecisionStream {
         self.fork_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, link_name)
     }
 
-    /// Forks a deterministic decision stream inside a fixed stream domain.
+    /// Forks an ordinal-addressed stream inside a fixed stream domain.
     #[must_use]
     pub fn fork_in_domain(&self, stream_domain: &str, entity_name: &str) -> DecisionStream {
-        DecisionStream::from_seed(self.stream_seed_in_domain(stream_domain, entity_name))
+        DecisionStream::counter(self.stream_key(stream_domain, entity_name))
+    }
+
+    /// Opens the draws of one event on a shared stream.
+    ///
+    /// `event` is the canonical encoding of an identity that is independent of
+    /// execution order, such as a link direction and producer sequence. The
+    /// returned stream yields the event's role-indexed draws `0, 1, 2, ...`.
+    #[must_use]
+    pub fn event_in_domain(
+        &self,
+        stream_domain: &str,
+        entity_name: &str,
+        event: &[u8],
+    ) -> DecisionStream {
+        DecisionStream::event(self.stream_key(stream_domain, entity_name), event)
+    }
+
+    fn stream_key(&self, stream_domain: &str, entity_name: &str) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new_keyed(&self.world_key);
+        write_length_prefixed(&mut hasher, STREAM_KEY_LABEL);
+        write_length_prefixed(&mut hasher, stream_domain.as_bytes());
+        write_length_prefixed(&mut hasher, entity_name.as_bytes());
+        *hasher.finalize().as_bytes()
     }
 }
 
 /// A named deterministic stream forked from [`DecisionRng`].
+///
+/// [`DecisionStream::draws`] is the position of the next draw: the stream
+/// ordinal for an ordinal-addressed stream, or the role index within one event.
+/// Because each draw is addressed rather than chained, advancing is free and a
+/// value never depends on draws taken by any other stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionStream {
-    seed: u64,
-    state: u64,
+    stream_key: [u8; 32],
+    event: Option<Vec<u8>>,
     draws: u64,
 }
 
 impl DecisionStream {
-    /// Builds a stream from a fixed stream seed.
-    #[must_use]
-    fn from_seed(seed: u64) -> Self {
+    fn counter(stream_key: [u8; 32]) -> Self {
         Self {
-            seed,
-            state: seed,
+            stream_key,
+            event: None,
             draws: 0,
         }
     }
 
-    /// Returns the seed used to initialize this stream.
+    fn event(stream_key: [u8; 32], event: &[u8]) -> Self {
+        Self {
+            stream_key,
+            event: Some(event.to_vec()),
+            draws: 0,
+        }
+    }
+
+    /// Returns the 64-bit identifier of the stream this cursor draws from.
     #[must_use]
     pub fn seed(&self) -> u64 {
-        self.seed
+        low_u64(&self.stream_key)
     }
 
     /// Returns the number of values drawn from this stream.
@@ -148,46 +217,44 @@ impl DecisionStream {
 
     /// Advances the stream by `draws` values without materializing them.
     ///
-    /// This is equivalent to calling [`Self::next_u64`] `draws` times and is
-    /// constant-time, including for checkpoint-supplied cursor positions.
+    /// Draws are addressed by position, so this is exactly equivalent to
+    /// calling [`Self::next_u64`] `draws` times.
     pub fn advance_by(&mut self, draws: u64) {
-        self.state = self
-            .state
-            .wrapping_add(SPLITMIX64_GAMMA.wrapping_mul(draws));
         self.draws = self.draws.wrapping_add(draws);
+    }
+
+    /// Returns the draw at `position` without moving the cursor.
+    #[must_use]
+    pub fn draw_at(&self, position: u64) -> u64 {
+        let mut hasher = blake3::Hasher::new_keyed(&self.stream_key);
+        match &self.event {
+            None => write_length_prefixed(&mut hasher, COUNTER_DRAW_LABEL),
+            Some(event) => {
+                write_length_prefixed(&mut hasher, EVENT_DRAW_LABEL);
+                write_length_prefixed(&mut hasher, event);
+            }
+        }
+        hasher.update(&position.to_le_bytes());
+        low_u64(hasher.finalize().as_bytes())
     }
 
     /// Draws the next deterministic `u64`.
     pub fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(SPLITMIX64_GAMMA);
+        let value = self.draw_at(self.draws);
         self.draws = self.draws.wrapping_add(1);
-        splitmix64(self.state)
+        value
     }
 }
 
-/// Returns a stable cross-platform hash for a decision-stream name.
-#[must_use]
-pub fn stable_name_hash(entity_name: &str) -> u64 {
-    let mut hasher = StableHasher::new();
-    hasher.write_tag(DECISION_RNG_NAME_HASH_DOMAIN);
-    hasher.write_bytes(entity_name.as_bytes());
-    let digest = hasher.finish();
-    let mut seed_bytes = [0; 8];
-    seed_bytes.copy_from_slice(&digest.bytes[..8]);
-    u64::from_le_bytes(seed_bytes)
+fn write_length_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
-/// Returns a stable cross-platform hash for a decision-stream domain and name.
-#[must_use]
-pub fn stable_domain_name_hash(stream_domain: &str, entity_name: &str) -> u64 {
-    let mut hasher = StableHasher::new();
-    hasher.write_tag(DECISION_RNG_NAME_HASH_DOMAIN);
-    hasher.write_tag(stream_domain);
-    hasher.write_bytes(entity_name.as_bytes());
-    let digest = hasher.finish();
-    let mut seed_bytes = [0; 8];
-    seed_bytes.copy_from_slice(&digest.bytes[..8]);
-    u64::from_le_bytes(seed_bytes)
+fn low_u64(bytes: &[u8; 32]) -> u64 {
+    let mut low = [0; 8];
+    low.copy_from_slice(&bytes[..8]);
+    u64::from_le_bytes(low)
 }
 
 impl Default for StableHasher {
@@ -284,12 +351,6 @@ fn finalize_word(mut word: u64) -> u64 {
     word ^ (word >> 31)
 }
 
-fn splitmix64(mut word: u64) -> u64 {
-    word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    word ^ (word >> 31)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,15 +400,20 @@ mod tests {
     }
 
     #[test]
-    fn decision_rng_forks_stream_seed_by_name_hash() {
+    fn decision_rng_stream_ids_change_with_root_name_and_domain() {
         let rng = DecisionRng::new(0x0010_c001);
 
         assert_eq!(rng.root_seed(), 0x0010_c001);
-        assert_eq!(
-            rng.stream_seed("node-a"),
-            0x0010_c001 ^ stable_name_hash("node-a")
-        );
         assert_ne!(rng.stream_seed("node-a"), rng.stream_seed("node-b"));
+        assert_ne!(
+            rng.stream_seed("node-a"),
+            DecisionRng::new(0x0010_c002).stream_seed("node-a")
+        );
+        assert_ne!(
+            rng.stream_seed_in_domain(DECISION_RNG_NODE_STREAM_DOMAIN, "node-a"),
+            rng.stream_seed_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, "node-a")
+        );
+        assert_eq!(rng.fork("node-a").seed(), rng.stream_seed("node-a"));
     }
 
     #[test]
@@ -359,6 +425,34 @@ mod tests {
         assert_eq!(first.next_u64(), second.next_u64());
         assert_eq!(first.draws(), 2);
         assert_eq!(second.draws(), 2);
+    }
+
+    #[test]
+    fn decision_stream_draws_are_addressed_by_position() {
+        let stream = DecisionRng::new(0x0010_c001).fork("fault/node-a");
+        let mut sequential = stream.clone();
+
+        let in_order = [
+            sequential.next_u64(),
+            sequential.next_u64(),
+            sequential.next_u64(),
+        ];
+        let out_of_order = [stream.draw_at(2), stream.draw_at(0), stream.draw_at(1)];
+
+        assert_eq!(
+            in_order,
+            [out_of_order[1], out_of_order[2], out_of_order[0]]
+        );
+    }
+
+    #[test]
+    fn event_draws_are_separate_from_counter_draws() {
+        let rng = DecisionRng::new(0x0010_c001);
+        let counter = rng.fork_for_link("a-b");
+        let event = rng.event_in_domain(DECISION_RNG_LINK_STREAM_DOMAIN, "a-b", b"");
+
+        assert_eq!(counter.seed(), event.seed());
+        assert_ne!(counter.draw_at(0), event.draw_at(0));
     }
 
     #[test]

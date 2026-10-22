@@ -94,7 +94,7 @@ pub use clock::{VirtualClock, ns_to_tick};
 /// Canonical source-delivery key retained by each computed device response.
 pub use crucible_shmem::FrameDeliveryKey;
 pub use error::DeviceError;
-pub use fault::{DeviceRng, Probability};
+pub use fault::{DeviceRng, LinkFrameDrawKey, Probability};
 pub use harness::{
     BUSY_POLL_SPIKE, BlockHarness, BusyPollSpike, DeliveryLog, DeliveryRecord, DivergedField,
     Divergence, HarnessDevice, IdleBusyPoll, LinkRequest, LogComparison, NetLinkHarness,

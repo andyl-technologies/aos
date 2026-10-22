@@ -801,7 +801,7 @@ mod tests {
         );
         assert_eq!(
             subject.opportunity().semantic_id().to_hex(),
-            "d210585ddda10c6bc4256d405e361141fd94ad181831706167bffdf67bbd55c8"
+            "07f31091a0ede00bdfd34693d0da4003260f39491c52a478f0142121bb605337"
         );
 
         validate_app_random_model_selection(

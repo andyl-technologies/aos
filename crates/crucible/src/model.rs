@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crucible_sim::{
-    DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
+    DECISION_RNG_ALGORITHM, DECISION_RNG_LINK_STREAM_DOMAIN, DECISION_RNG_NAME_HASH_DOMAIN,
     DECISION_RNG_NODE_STREAM_DOMAIN, DecisionRng, DecisionStream,
 };
 use serde::de;
@@ -49,7 +49,7 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The stable domain used for device-scoped decision streams ([IO-21]).
 ///
 /// A device (block / 9p / network sub-node) draws its probabilistic effects from a
-/// stream forked by name-hash in this fixed domain, so a device named `"disk"` and
+/// stream keyed by name in this fixed domain, so a device named `"disk"` and
 /// a node named `"disk"` never collide and adding or renaming an unrelated device
 /// never perturbs another device's draws ([DET-25]).
 pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.device-stream.v1";

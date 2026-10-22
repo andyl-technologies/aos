@@ -2,32 +2,34 @@
 
 use super::*;
 
-/// Emits one network-link frame from an explicit canonical RNG stream cursor.
+/// Emits one network-link frame from its event-keyed draws.
 ///
 /// A logical World link uses one stream across both directed runtime edges.
-/// The scheduler therefore owns the shared cursor and supplies it here rather
-/// than allowing either concrete [`NetLink`] to restart from its local cursor.
+/// Each frame's draws are addressed by `draw_key`, the frame's direction and
+/// producer sequence, so a value never depends on how the two directions'
+/// frames were admitted relative to each other ([SCHED-50]). `rng_position` is
+/// the shared logical cursor; it only counts draws taken on the stream.
 ///
 /// # Errors
 ///
 /// Returns [`DeviceError`] when the link cannot emit the frame, including clock
 /// overflow or fail-loud past-delivery guards.
-pub fn emit_link_frame_with_recorded_stream_at_position(
+pub fn emit_link_frame_with_keyed_draws(
     seed: Seed,
     stream: &RngStreamId,
-    _fault_id: &DeviceId,
+    draw_key: LinkFrameDrawKey,
     rng_position: u64,
     link: &mut NetLink,
     frame: &Frame,
     policy: PastDeliveryPolicy,
 ) -> Result<LinkEmitDecisionRecord, DeviceError> {
-    let mut rng = DeviceRng::restore(
+    let mut rng = DeviceRng::for_event(
         seed.decision_rng().root_seed(),
         &stream.domain,
         &stream.name,
-        rng_position,
+        &draw_key.encode(),
     );
-    let (outcome, draws) = link.emit_with_rng_draws(frame, &mut rng, policy)?;
+    let (outcome, draws) = link.emit_with_event_rng_draws(frame, &mut rng, rng_position, policy)?;
     let decisions = link_rng_draw_decisions(stream, &draws);
     Ok(LinkEmitDecisionRecord {
         outcome,
@@ -38,11 +40,10 @@ pub fn emit_link_frame_with_recorded_stream_at_position(
 
 /// Emits one network-link frame from explorer-injected fixed-order draws.
 ///
-/// This is the live-search twin of
-/// [`emit_link_frame_with_recorded_stream_at_position`]. It applies the supplied
-/// draws to the real [`NetLink`] and advances the captured RNG cursor by exactly
-/// the number of draws the current fault table consumes, so a selected branch
-/// has the same continuation semantics as an uninterrupted seeded run.
+/// This is the live-search twin of [`emit_link_frame_with_keyed_draws`]. It
+/// applies the supplied draws to the real [`NetLink`] and advances the shared
+/// cursor by exactly the number of draws the current fault table consumes, so a
+/// selected branch keeps the same draw count as an uninterrupted seeded run.
 ///
 /// # Errors
 ///

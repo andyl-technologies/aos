@@ -304,93 +304,87 @@ impl BackendRngEvidenceSource for LiveBackendRngEvidenceSource {
     }
 }
 
+/// The plugin's own implementation of the `keyed-blake3-v2` decision draw.
+///
+/// The plugin is GPL-side and cannot link the Apache L0 crate, so it carries an
+/// independent implementation of the published derivation (RFC-0010 [DET-25]):
+///
+/// ```text
+/// world_key      = BLAKE3.derive_key(WORLD_KEY_CONTEXT, u64le(root))
+/// stream_key     = BLAKE3.keyed_hash(world_key,  lp("stream")  || lp(domain) || lp(name))
+/// counter draw n = BLAKE3.keyed_hash(stream_key, lp("counter") || u64le(n))[0..8]
+/// ```
+///
+/// App-random streams belong to one node and are addressed by that node's own
+/// request ordinal, so the cursor is the only state the plugin keeps.
 struct PluginDecisionStream {
-    state: u64,
+    stream_key: [u8; 32],
+    draws: u64,
 }
 
 impl PluginDecisionStream {
-    const GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+    const WORLD_KEY_CONTEXT: &str = "crucible decision-rng keyed-blake3-v2 world-key";
     const NAME_HASH_DOMAIN: &str = "crucible.decision-rng.name-hash.v1";
 
     fn new(root_seed: u64, stream_name: &str) -> Self {
+        let world_key = blake3::derive_key(Self::WORLD_KEY_CONTEXT, &root_seed.to_le_bytes());
+        let mut hasher = blake3::Hasher::new_keyed(&world_key);
+        Self::write_length_prefixed(&mut hasher, b"stream");
+        Self::write_length_prefixed(&mut hasher, Self::NAME_HASH_DOMAIN.as_bytes());
+        Self::write_length_prefixed(&mut hasher, stream_name.as_bytes());
         Self {
-            state: root_seed ^ Self::stable_stream_hash(stream_name),
+            stream_key: *hasher.finalize().as_bytes(),
+            draws: 0,
         }
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(Self::GAMMA);
-        let mut word = self.state;
-        word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        word ^ (word >> 31)
+        let mut hasher = blake3::Hasher::new_keyed(&self.stream_key);
+        Self::write_length_prefixed(&mut hasher, b"counter");
+        hasher.update(&self.draws.to_le_bytes());
+        self.draws = self.draws.wrapping_add(1);
+
+        let mut low = [0; 8];
+        low.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+        u64::from_le_bytes(low)
     }
 
     fn advance_by(&mut self, draws: u64) {
-        self.state = self.state.wrapping_add(Self::GAMMA.wrapping_mul(draws));
+        self.draws = self.draws.wrapping_add(draws);
     }
 
-    fn stable_stream_hash(stream_name: &str) -> u64 {
-        let mut hasher = PluginStableHasher::new();
-        hasher.write_bytes(Self::NAME_HASH_DOMAIN.as_bytes());
-        hasher.write_bytes(Self::NAME_HASH_DOMAIN.as_bytes());
-        hasher.write_bytes(stream_name.as_bytes());
-        hasher.finish_first_lane()
+    fn write_length_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
     }
 }
 
-struct PluginStableHasher {
-    lanes: [u64; 4],
-    bytes_written: u64,
-}
+#[cfg(test)]
+mod decision_stream_tests {
+    use super::PluginDecisionStream;
 
-impl PluginStableHasher {
-    fn new() -> Self {
-        Self {
-            lanes: [
-                0x243f_6a88_85a3_08d3,
-                0x1319_8a2e_0370_7344,
-                0xa409_3822_299f_31d0,
-                0x082e_fa98_ec4e_6c89,
-            ],
-            bytes_written: 0,
-        }
+    #[test]
+    fn plugin_decision_stream_matches_the_published_keyed_vectors() {
+        // The same vectors pin crucible-sim's implementation
+        // (`decision_rng_keeps_fixed_cross_platform_vectors`), so the two
+        // independent implementations cannot drift apart.
+        let mut stream = PluginDecisionStream::new(0, "known-vector");
+
+        assert_eq!(stream.next_u64(), 0x1e76_8e32_8b90_978a);
+        assert_eq!(stream.next_u64(), 0x7227_aa57_219e_8e38);
     }
 
-    fn write_bytes(&mut self, bytes: &[u8]) {
-        self.mix_word(bytes.len() as u64);
-        self.bytes_written = self.bytes_written.wrapping_add(8);
-        let (chunks, remainder) = bytes.as_chunks::<8>();
-        for chunk in chunks {
-            self.mix_word(u64::from_le_bytes(*chunk));
-        }
-        if !remainder.is_empty() {
-            let mut word = [0; 8];
-            word[..remainder.len()].copy_from_slice(remainder);
-            self.mix_word(u64::from_le_bytes(word));
-        }
-        self.bytes_written = self.bytes_written.wrapping_add(bytes.len() as u64);
-    }
+    #[test]
+    fn plugin_decision_stream_advance_matches_materialized_draws() {
+        let mut advanced = PluginDecisionStream::new(47, "node-a/stream");
+        let mut materialized = PluginDecisionStream::new(47, "node-a/stream");
 
-    fn mix_word(&mut self, word: u64) {
-        for (index, lane) in self.lanes.iter_mut().enumerate() {
-            let rotation = 13 + (index as u32 * 7);
-            let salt = (index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93);
-            *lane ^= word.wrapping_add(salt);
-            *lane = lane
-                .rotate_left(rotation)
-                .wrapping_mul(0x9e37_79b1_85eb_ca87);
-            *lane ^= *lane >> 33;
+        advanced.advance_by(3);
+        for _ in 0..3 {
+            let _ = materialized.next_u64();
         }
-    }
 
-    fn finish_first_lane(&self) -> u64 {
-        let mut word = self.lanes[0].wrapping_add(self.bytes_written);
-        word ^= word >> 30;
-        word = word.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        word ^= word >> 27;
-        word = word.wrapping_mul(0x94d0_49bb_1331_11eb);
-        word ^ (word >> 31)
+        assert_eq!(advanced.next_u64(), materialized.next_u64());
     }
 }
 

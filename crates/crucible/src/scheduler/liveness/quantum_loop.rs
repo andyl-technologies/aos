@@ -731,18 +731,19 @@ impl SingleScheduler {
                     runtime_key.0.name
                 ),
             })?;
-        // The link direction and logical RNG position identify one causal
-        // emission. Do not include the live guest's raw TX icount: QEMU may
+        // The link direction and the producer's frame sequence identify one
+        // causal emission and key its draws ([SCHED-50]). The shared stream
+        // cursor is left out: it counts both directions' draws, so it would
+        // tie the opportunity to how the two producers' frames interleaved.
+        // Do not include the live guest's raw TX icount either: QEMU may
         // report a slightly different instruction count for the same hostless
-        // probe across fresh process launches, while the scheduler-owned stream
-        // ordinal and frame correlation remain the canonical replay identity.
+        // probe across fresh process launches.
         let point = SchedulingPoint {
             key: format!(
-                "live-world-network/{}/{}/{}/{}",
+                "live-world-network/{}/{}/{}",
                 runtime_key.0.name,
                 network_direction_label(direction),
-                frame.frame_id,
-                rng_position
+                frame.frame_id
             ),
         };
         let preview = {

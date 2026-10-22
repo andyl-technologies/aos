@@ -1,7 +1,7 @@
 schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:29a4c49c0fc066e0d97ab148651e3eaad06a66c650b1fc0ecb7b2f13cb5abc2f"
+id = "blake3:6dd4dc40cb2d6dcbb7061425de857dcf42f3d067c65afe3b9078249b778a0361"
 seed = "0x2e0e000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 0
 selectable_declarations_per_node = 4096

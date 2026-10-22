@@ -9,7 +9,8 @@
 use std::collections::BTreeMap;
 
 use crucible_device::{
-    DeviceError, DeviceRng, Frame, FrameDraws, NetLink, PastDeliveryPolicy, ResolveOutcome,
+    DeviceError, DeviceRng, Frame, FrameDraws, LinkFrameDrawKey, NetLink, PastDeliveryPolicy,
+    ResolveOutcome,
 };
 
 use crate::{
@@ -24,6 +25,20 @@ pub enum NetworkLinkDirection {
     EndpointAToEndpointB,
     /// The link carries frames from endpoint B to endpoint A.
     EndpointBToEndpointA,
+}
+
+impl NetworkLinkDirection {
+    /// Returns the event-key draw identity of frame `producer_sequence` in this direction.
+    #[must_use]
+    pub fn frame_draw_key(self, producer_sequence: u64) -> LinkFrameDrawKey {
+        LinkFrameDrawKey {
+            direction: match self {
+                Self::EndpointAToEndpointB => 0,
+                Self::EndpointBToEndpointA => 1,
+            },
+            producer_sequence,
+        }
+    }
 }
 
 /// The deterministic result of emitting one network frame.

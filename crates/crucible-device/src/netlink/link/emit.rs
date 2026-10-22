@@ -390,13 +390,37 @@ impl NetLink {
         Ok((outcome, draws))
     }
 
+    /// Resolves one frame from its event-keyed draws on a shared link stream.
+    ///
+    /// `rng` was opened for this frame alone ([`DeviceRng::for_event`]), so its
+    /// values do not depend on other frames. The link's cursor still advances
+    /// from `cursor` by the number of draws consumed, keeping
+    /// [`NetLink::rng_position`] a count of draws taken on the logical stream.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`NetLink::emit`].
+    pub fn emit_with_event_rng_draws(
+        &mut self,
+        frame: &Frame,
+        rng: &mut DeviceRng,
+        cursor: u64,
+        policy: PastDeliveryPolicy,
+    ) -> Result<(ResolveOutcome, FrameDraws), DeviceError> {
+        let draws = FrameDraws::from_rng_for_faults(rng, &self.faults);
+        let outcome = self.emit(frame, &draws, policy)?;
+        self.rng_position = cursor.saturating_add(rng.position());
+        Ok((outcome, draws))
+    }
+
     /// Builds a seeded RNG positioned at this link's captured cursor ([IO-23]).
     ///
-    /// Forks the link stream by name-hash from the engine's decision-RNG
-    /// `root_seed` in `domain` for `name` ([DET-25]) and resumes it at the
-    /// captured cursor, so the returned RNG's next draw is byte-identical to the
-    /// uninterrupted run's. The caller supplies the engine root seed and the
-    /// link's stable stream domain and name (the engine owns the name-hash).
+    /// Opens the link's counter-addressed stream from the engine's decision-RNG
+    /// `root_seed` in `domain` for `name` ([DET-25]) at the captured cursor, so
+    /// the returned RNG's next draw is byte-identical to the uninterrupted
+    /// run's. The caller supplies the engine root seed and the link's stable
+    /// stream domain and name. A link shared by two scheduled directions opens
+    /// each frame's draws with [`DeviceRng::for_event`] instead.
     #[must_use]
     pub fn rng(&self, root_seed: u64, domain: &str, name: &str) -> DeviceRng {
         DeviceRng::restore(root_seed, domain, name, self.rng_position)

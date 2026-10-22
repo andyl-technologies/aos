@@ -5,7 +5,7 @@
 use crucible_sim::contract_a::{
     ContractAConfig, ContractADriver, HashingContractAVm, RecordedInput, TimeTrajectorySample,
 };
-use crucible_sim::{DecisionRng, StableDigest, StableHasher, stable_name_hash};
+use crucible_sim::{DecisionRng, StableDigest, StableHasher};
 
 #[test]
 fn gate_layer0_determinism_reduces_fixed_contract_a_twice() {
@@ -79,7 +79,7 @@ fn gate_layer0_determinism_keeps_named_streams_stable_under_entity_addition() {
     assert_ne!(before, added_entity);
     assert_eq!(
         DecisionRng::new(0x0010_c001).stream_seed("node-a"),
-        0x0010_c001 ^ stable_name_hash("node-a")
+        DecisionRng::new(0x0010_c001).fork("node-a").seed()
     );
 }
 
