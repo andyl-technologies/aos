@@ -998,6 +998,51 @@ fn whitebox_app_random_serves_random_request_records_decision_and_replies_at_tra
             vec![0xef, 0xbe],
         )]
     );
+
+    for width_bytes in 1..=WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES {
+        let width_bits = width_bytes * 8;
+        let maximum_value = u64::MAX >> (64 - u32::from(width_bits));
+        let payload = random_request_frame(7, width_bytes, "workload");
+        let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x8000, payload.len());
+        let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 99, range);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let record =
+            BackendRngEvidenceRecord::new("node-a", "workload", 7, width_bits, maximum_value);
+        let mut decisions = RecordingAppRandomSource::with_record(record.clone());
+        let mut writer = RecordingGuestInputWriter::default();
+
+        let outcome = handle_whitebox_app_random_callback(
+            &doorbell,
+            &capability,
+            &mut reader,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+        )
+        .unwrap();
+        let AppRandomDoorbellOutcome::Served(service) = outcome else {
+            panic!("valid {width_bytes}-byte request must be served");
+        };
+
+        assert_eq!(service.decision(), &record);
+        assert_eq!(service.injection.delivery_icount(), 99);
+        assert_eq!(service.injection.payload_len(), usize::from(width_bytes));
+        assert_eq!(decisions.requests.len(), 1);
+        assert_eq!(reader.calls, vec![(1, 99, range)]);
+        assert_eq!(
+            writer.writes,
+            vec![(
+                99,
+                GuestMemoryRange::new(
+                    GuestMemoryAddressSpace::Virtual,
+                    0x8000,
+                    usize::from(width_bytes)
+                ),
+                vec![0xff; usize::from(width_bytes)],
+            )]
+        );
+    }
 }
 
 #[test]

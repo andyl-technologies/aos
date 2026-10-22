@@ -582,6 +582,21 @@ execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
 
+#### Fixed app-random reply storage
+
+App-random delivery now borrows the admitted one-to-eight-byte prefix of the
+selected value's fixed little-endian array. It no longer constructs an owned
+reply vector before the synchronous guest-write gate. Decision recording,
+metadata validation and trap-coordinate delivery retain their ordering.
+The existing service control retains its two-byte mixed-value case and now
+executes every admitted width through actual request decode, decision source
+and reply delivery, including the full-width maximum value.
+
+All 129 white-box tests, compilation of every plugin test target and engineering
+hygiene pass. Mandatory application compilation and the unchanged exact
+325-case supervision run are being collected. Request decoding, decision
+storage, callback errors and complete operation funding remain open.
+
 #### Borrowed static guest-write diagnostics
 
 Native introspection/app-random writes and selectable virtual-range refusals now
@@ -595,6 +610,8 @@ the original diagnostic address and its complete display context.
 All 129 white-box tests, compilation of every plugin test target and engineering
 hygiene pass. Mandatory application compilation and the unchanged exact
 325-case supervision run are being collected.
+Mandatory application compilation subsequently passes at
+`z2wa8m458jrm5vzlnx1yy4fj63fsg364`.
 All 5,310 committed Rust/TOML files at
 `f65958fe11d6007750ab7804f5d21133b31697f6` match immutable application source
 `vdsriw89sy9zgd4cq9dsz5y0x002m2hc`; the comparison record has SHA-256
@@ -654,8 +671,9 @@ plugin test target's compilation pass. Corrected content-bound engineering
 hygiene passes. ABI conformance passes at `ayl6az368908mjim2njpvym8h1jr56hi`.
 Canonical license checking stops at 909 host-library and 963 host-test Clippy
 errors; boundary assertions do not run. Mandatory application compilation passes
-at `9g8b6qm724w9rn9pgbnk5zcyafl78cln`; the exact 322-case supervision run is
-being collected. All 5,308 committed
+at `9g8b6qm724w9rn9pgbnk5zcyafl78cln`. All 322 exact supervision cases
+pass at `js0i8xhkshvs4wzhm7a4insw6mwcazyx`, with nine actual test groups.
+All 5,308 committed
 Rust/TOML files at `0b2dc41ac5e3343dfebb98d1d7ebde8a89983c6c` match immutable
 application source `n48s1b82xdjclagrbz1r7z2yl2pirc77`; the comparison record has
 SHA-256 `fe13ce9c055fc63f6dfe8e1b025ad09455c3dccfa512c5e775d703f5e4fcc22e`.

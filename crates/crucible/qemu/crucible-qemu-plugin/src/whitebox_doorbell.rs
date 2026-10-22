@@ -438,13 +438,17 @@ where
         })?;
     validate_decision_record(&request, &decision)?;
 
-    let reply = WhiteboxGuestInput::new(
-        request.trap_icount(),
-        request.reply_range(),
-        app_random_reply_payload(decision.value(), request.width_bytes()),
-    );
+    let reply = decision.value().to_le_bytes();
+    let reply_payload = &reply[..usize::from(request.width_bytes())];
     let outcome = doorbell
-        .inject_guest_input(capability, writer, request.trap_icount(), &reply)
+        .inject_guest_input_slice(
+            capability,
+            writer,
+            request.trap_icount(),
+            request.trap_icount(),
+            request.reply_range(),
+            reply_payload,
+        )
         .map_err(AppRandomDoorbellError::Doorbell)?;
     match outcome {
         WhiteboxGuestInputOutcome::Delivered(injection) => {
@@ -1076,11 +1080,6 @@ fn value_fits_width(value: u64, width_bits: u8) -> bool {
     } else {
         value <= ((1_u64 << width_bits) - 1)
     }
-}
-
-fn app_random_reply_payload(value: u64, width_bytes: u8) -> Vec<u8> {
-    let bytes = value.to_le_bytes();
-    bytes[..usize::from(width_bytes)].to_vec()
 }
 
 /// QEMU capabilities needed by the optional white-box channel.
