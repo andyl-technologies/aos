@@ -14781,3 +14781,29 @@ failure. Strict lint of both fixture examples and Rust formatting pass.
 Checkpoint `7ecbc490ca` mandatory application compilation succeeds in 1,084.86
 seconds, correcting the earlier missing-field build failure; native runtime
 failures remain independent and unresolved.
+
+
+#### Configured-factory and runtime diagnostic qualification
+
+The corrected configured-factory VM at `3a2376bdd5` passes in 1,085.47 seconds.
+Complete review matches all 8,057 immutable source files and nine actual
+installed Cargo ELFs across three images. Omitted and restrictive policies
+refuse before durable index mutation; funded cold and warm requests retain the
+original sealed inode. The complete diagnostic surface and SDK VMs at
+`b8ad0c4c42` pass in 789.97 and 767.86 seconds, with full source, input, ELF and
+exact-witness review, including all nine SDK namespace observations. Earlier
+timeouts remain retained and their causes remain undetermined. Mandatory
+application compilation for the diagnostic checkpoint is still running.
+
+#### Administrative capability publication after enrollment
+
+The initial-enrollment fixture now invokes the genuine configured SDK Original
+opener for both enrolled domains instead of returning a hard-coded unsupported
+error. Bounded selected-data validation before and after the actual startup
+probes checks the exact predecessor and a single timestamp-only CAPABILITIES
+delta, unchanged complete selected payload/history, root identity and custody,
+project assignment and permanent registration bytes and inodes. Only the
+administrative UID runs this control. No raw rename, copied authority, mode
+change or serving-role publication permission is introduced. The existing
+30-second actor and complete VM bounds remain in force. Native qualification
+is pending; this adds no deployed role, collection or task acceptance.

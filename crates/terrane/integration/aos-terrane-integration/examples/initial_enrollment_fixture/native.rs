@@ -2,6 +2,8 @@
 
 #[path = "admin.rs"]
 mod admin;
+#[path = "capabilities.rs"]
+mod capabilities;
 #[path = "config.rs"]
 mod config;
 #[path = "observations.rs"]
@@ -82,10 +84,12 @@ pub(super) fn run() -> io::Result<()> {
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {
             reader::run(selector)
         }
-        "capabilities-update" => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "no qualified typed Original CAS path after final host custody; raw rename is forbidden",
-        )),
+        "capabilities-update" => {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(capabilities::run())
+        }
         selector if SELECTORS.contains(&selector) => {
             stage("native-root-check before");
             terrane_linux::host_quota::initial_enrollment::require_initial_host_root()?;
