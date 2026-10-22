@@ -26,6 +26,8 @@
   custodySocket = {
     description = "AOS root-handoff descriptor custody socket";
     wantedBy = ["sockets.target"];
+    # The switch-root isolation must preserve the descriptor being qualified.
+    unitConfig.IgnoreOnIsolate = "yes";
     socketConfig = {
       ListenStream = "/run/aos-root-handoff-custody.sock";
       SocketMode = "0600";
@@ -42,6 +44,7 @@
   stateService = {
     description = "AOS root-handoff serialized state proof";
     wantedBy = ["basic.target"];
+    unitConfig.IgnoreOnIsolate = "yes";
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

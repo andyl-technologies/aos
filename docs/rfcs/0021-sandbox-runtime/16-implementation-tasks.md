@@ -9880,6 +9880,16 @@ Fresh installed reruns must establish labeling and Host readiness; no guest
 repair, policy permission or service-comparison relaxation establishes that
 result.
 
+The separate enforcing root-handoff rerun also fails before its test body:
+the post-pin machine never reaches its agent. Its serial transcript shows
+switch-root isolation closing the qualification custody socket and stopping
+the serialized-state proof before the recorder can sample the socket inode.
+Those two test-only units now explicitly survive isolation, preserving the
+actual descriptor and active unit the test is meant to qualify. This changes
+no production unit or handoff admission. The failed run at
+`/nix/store/kq68blagkkkvpnlz4andvh0y9dw41614-aos-fleet-test-selinux-enforcing-root-handoff-0.drv`
+provides no root-handoff qualification; a fresh installed run remains required.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the
