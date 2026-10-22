@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod deferred_cleanup;
 mod family;
 mod publisher;
 mod quantum;

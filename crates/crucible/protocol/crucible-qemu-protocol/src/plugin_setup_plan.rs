@@ -25,6 +25,8 @@
 
 use thiserror::Error;
 
+mod deferred_cleanup;
+pub use deferred_cleanup::DeferredCleanupPlanParts;
 mod preexec;
 mod publisher;
 mod quantum;

@@ -52,6 +52,8 @@ pub(super) enum Edition {
     Publisher,
     /// Requires plan ten and the separate Quantum-only schema-two purpose.
     Quantum,
+    /// Requires plan twelve and its distinct dormant delegation purpose.
+    DeferredCleanup,
 }
 
 /// Parses the exact requested carrier and its corresponding purpose edition.
@@ -67,10 +69,13 @@ pub(super) fn decode_edition(
         Edition::Source => (b"CRUCSUP8", 8, false),
         Edition::Publisher => (b"CRUCSUP9", 9, true),
         Edition::Quantum => (b"CRUCSU10", 10, true),
+        Edition::DeferredCleanup => (b"CRUCSU12", 12, true),
     };
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
     let header = if publisher { 48 } else { HEADER };
-    let tail = if publisher {
+    let tail = if matches!(edition, Edition::DeferredCleanup) {
+        crate::deferred_cleanup::DEFERRED_CLEANUP_PURPOSE_BYTES
+    } else if publisher {
         crate::publisher_subscription::PUBLISHER_PURPOSE_BYTES
     } else {
         0
@@ -128,15 +133,26 @@ pub(super) fn decode_edition(
 
     if publisher {
         let subscription = match edition {
+            Edition::DeferredCleanup => {
+                let purpose =
+                    crate::deferred_cleanup::DeferredCleanupPurpose::decode(&bytes[purpose_end..])
+                        .map_err(|_| invalid("deferred Cleanup purpose"))?;
+                super::deferred_cleanup::validate_source_binding(
+                    &purpose,
+                    &bytes[startup_end..purpose_end],
+                )?;
+                purpose.publisher
+            }
             Edition::Quantum => {
                 crate::publisher_subscription::quantum::QuantumPublisherPurpose::decode(
                     &bytes[purpose_end..],
                 )
-                .map(|purpose| purpose.session)
+                .map_err(|_| invalid("publisher purpose"))?
+                .session
             }
-            _ => crate::publisher_subscription::PublisherPurpose::decode(&bytes[purpose_end..]),
-        }
-        .map_err(|_| invalid("publisher purpose"))?;
+            _ => crate::publisher_subscription::PublisherPurpose::decode(&bytes[purpose_end..])
+                .map_err(|_| invalid("publisher purpose"))?,
+        };
         super::publisher::validate_binding(&subscription, &bytes[startup_end..purpose_end])?;
     }
 

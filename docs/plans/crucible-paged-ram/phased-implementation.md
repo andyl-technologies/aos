@@ -380,6 +380,16 @@ keeps the born issuer with the same admission after startup refuses. No native
 resource child, selected carrier or wire capability is issued by this local
 holder; the authenticated cross-process installation remains required.
 
+The proposed plan-twelve carrier now encodes and decodes its exact 48-byte
+header and 736-byte purpose without changing the active carrier. It preserves
+the existing body order and aggregate cap, refuses every other edition, and
+correlates the delegated Source issuer and local process resource parent with
+the fixed family assignment. Four carrier controls and one overflow/cap control
+pass; the complete protocol suite passes all 221 tests and strict protocol
+Clippy passes. The ABI gate requires
+both exact test groups before executing them. This is transport syntax and
+correspondence, not authenticated installation or native entry authority.
+
 #### Application allocator component qualification
 
 Public libc source `39425b83aec13492400eccc0ea96d920f236099c`, tree
@@ -401,6 +411,21 @@ runtime profile remain prerequisites; libc custody return does not release
 quarantined virtual addresses or permit child reuse. All 179 sealed payloads
 match independent review proof
 `a73f9728cd6028dcfdc9c1cabd75fa155f16f2197b147ff836a3e12c1fbb5d33`.
+
+The additive complete-process API in signed source
+`fe88ebc237bad3b3880a52ab7f2c29082ce6e3f2`, tree
+`a2876d353f8b886f016ddbf93a1e515da1959c87`, passes a fresh full build,
+installation, actual process/application and bounded-pthread controls, eleven
+ordinary regressions and the configured GLib/hidden-formatting component.
+Its canonical Current reports 7,300 bytes: 6,208 application, 1,088 complete
+shared-pthread container including padding, and four readonly identity bytes.
+Actual ELF symbols, mapped addresses and LOAD permissions corroborate all three
+objects. The two new public symbols and installed headers match that source.
+The complete installed archive's 1,434 file/link identities and all 184 sealed
+payloads match independent review. The ABI check remains failed: nineteen
+passes and the private locale-prefix size change from 18 to 62 bytes. Whole
+ELF/page/TLS ownership, one same-parent union payment and complete runtime
+profile admission remain required; the object inventory supplies none of them.
 
 #### Installed bounded-pthread QEMU consumer
 

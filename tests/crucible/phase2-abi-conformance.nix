@@ -614,6 +614,28 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::stack_setup \
                 -- --test-threads=1
+              require_test_set 4 protocol-deferred-cleanup-plan \
+                plugin_setup_plan::preexec::tests::deferred_cleanup::dormant_plan_refuses_independent_source_issuer_and_resource_parent_changes \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::deferred_cleanup::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::deferred_cleanup:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-deferred-cleanup-plan-cap \
+                plugin_setup_plan::deferred_cleanup::tests::delegation_extent_preserves_the_unchanged_aggregate_cap \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::deferred_cleanup::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::deferred_cleanup::tests:: \
+                -- --test-threads=1
               require_test_set 8 host-quantum-role \
                 host_supervision::action_loan::collector::tests::cleanup_collects_its_original_clock_while_terminal_work_is_locked_elsewhere \
                 -p crucible-host-resources --features private-measurement-domain \
