@@ -51,6 +51,99 @@ mod tests {
     use std::os::unix::fs::FileExt;
 
     #[test]
+    fn actual_fault_event_corruption_retains_typed_cause_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_qemu_shmem::{FaultEventError, FaultTransportError};
+
+        for corrupt_indices in [true, false] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut bytes = allocation.setup_region_bytes()?;
+            let capacity = u64::from(layout.fault_event_queue_capacity);
+            let write_index = if corrupt_indices { capacity + 1 } else { 1 };
+            let offset = usize::try_from(layout.fault_event_ring_hdr_off)?
+                + crucible_qemu_shmem::RING_HEADER_WRITE_IDX_OFFSET;
+            // A malformed wire index or zero-filled event header supplies no
+            // issued event. The real consumer must refuse before releasing it.
+            bytes[offset..offset + 8].copy_from_slice(&write_index.to_ne_bytes());
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&bytes)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            runtime.staged_fault_events.try_reserve_exact(1)?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+            let deadline = super::super::OperationPollBudget::borrow_original(
+                &original,
+                "observe fault event corruption",
+            )?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let error = runtime
+                    .drain_fault_events_for_operation(
+                        1,
+                        &deadline,
+                        std::time::Duration::from_secs(1),
+                        "observe fault event corruption",
+                    )
+                    .expect_err("actual mapped consumer refuses malformed event state");
+                supervisor.cancel().unwrap();
+                error.with_operational_supervision_post(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled"),
+                )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert!(runtime.staged_fault_events.is_empty());
+            let cause = std::error::Error::source(&error).ok_or("typed cause is absent")?;
+            if corrupt_indices {
+                let expected = FaultTransportError::CorruptRingIndices {
+                    read: 0,
+                    write: write_index,
+                    capacity,
+                };
+                assert_eq!(error.operation, "inspect fault-event transport");
+                assert_eq!(error.fault_transport_source(), Some(&expected));
+                assert_eq!(cause.downcast_ref(), Some(&expected));
+            } else {
+                assert_eq!(error.operation, "dequeue fault event");
+                assert_eq!(error.fault_event_source(), Some(&FaultEventError::Version));
+                assert_eq!(cause.downcast_ref(), Some(&FaultEventError::Version));
+            }
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "{} failed: {cause}; independent host operation postcheck failed: {post}",
+                    error.operation,
+                ),
+            );
+            let mut after = vec![0; bytes.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, bytes);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn actual_action_preview_refusal_keeps_typed_cause_and_original_post_without_allocation()
     -> Result<(), Box<dyn std::error::Error>> {
         use crucible_qemu_protocol::boundary_action::ActionDecodeError;

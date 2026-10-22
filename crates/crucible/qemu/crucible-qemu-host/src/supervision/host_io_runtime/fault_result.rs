@@ -76,9 +76,9 @@ impl QemuLiveHostIoRuntime {
                     })?;
                 let pending =
                     fault_event_pending(transport.ring, transport.slots).map_err(|source| {
-                        QemuAsyncDriverRuntimeError::new(
+                        QemuAsyncDriverRuntimeError::fault_transport(
                             "inspect fault-event transport",
-                            source.to_string(),
+                            source,
                         )
                     })?;
                 (
@@ -143,7 +143,7 @@ impl QemuLiveHostIoRuntime {
                 transport.arena_region_offset,
             )
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault event", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_event("dequeue fault event", source)
             })?;
             let Some(event) = event else {
                 return Ok(drained);
@@ -292,7 +292,7 @@ impl QemuLiveHostIoRuntime {
                 payload_buffer,
             )
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault result", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_transport("dequeue fault result", source)
             })?;
             match result {
                 BufferedFaultResultPoll::Pending(buffer) => payload_buffer = buffer,
@@ -420,7 +420,7 @@ impl QemuLiveHostIoRuntime {
                 other => other,
             }
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("dequeue fault result", source.to_string())
+                QemuAsyncDriverRuntimeError::fault_transport("dequeue fault result", source)
             })?;
             match result {
                 BufferedFaultResultPoll::Pending(buffer) => payload_buffer = buffer,

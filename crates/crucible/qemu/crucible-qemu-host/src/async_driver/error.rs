@@ -36,6 +36,14 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
             {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
+            QemuAsyncDriverRuntimeErrorDetail::FaultTransport(source)
+                if self.message.is_empty() =>
+            {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) if self.message.is_empty() => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) if self.message.is_empty() => {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
@@ -62,6 +70,8 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::MappedRegionAccess(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::FaultTransport(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source) => Some(source),
             _ => self.supervision_post.as_ref().map(|source| source as _),
@@ -74,6 +84,8 @@ enum QemuAsyncDriverRuntimeErrorDetail {
     HostSupervision(crucible_host_resources::host_supervision::HostSupervisionError),
     MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
     BoundaryAction(crucible_qemu_protocol::boundary_action::ActionDecodeError),
+    FaultTransport(crucible_qemu_shmem::FaultTransportError),
+    FaultEvent(crucible_qemu_shmem::FaultEventError),
     NodeSlot(crucible_qemu_shmem::NodeSlotError),
     FingerprintSample(crucible_qemu_shmem::FingerprintSampleError),
     #[default]
@@ -111,6 +123,54 @@ impl QemuAsyncDriverRuntimeError {
     ) -> Option<&crucible_qemu_protocol::boundary_action::ActionDecodeError> {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains a fault transport refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn fault_transport(
+        operation: &'static str,
+        source: crucible_qemu_shmem::FaultTransportError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::FaultTransport(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the fault transport cause independently of a later Original post.
+    #[must_use]
+    pub const fn fault_transport_source(
+        &self,
+    ) -> Option<&crucible_qemu_shmem::FaultTransportError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::FaultTransport(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains a fault event refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn fault_event(
+        operation: &'static str,
+        source: crucible_qemu_shmem::FaultEventError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the fault event cause independently of a later Original post.
+    #[must_use]
+    pub const fn fault_event_source(&self) -> Option<&crucible_qemu_shmem::FaultEventError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) => Some(source),
             _ => None,
         }
     }
