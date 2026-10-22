@@ -151,6 +151,11 @@ pub(in crate::host_cache::owner) async fn retire(
         .map_err(|_| invalid("surface custody poisoned"))?;
     state::finish(&mut owner, generation)?;
     owner.surface_indexes.remove(&key);
+    owner
+        .surface_queue
+        .as_ref()
+        .ok_or_else(|| invalid("surface FIFO absent"))?
+        .removed(key)?;
     Ok(true)
 }
 

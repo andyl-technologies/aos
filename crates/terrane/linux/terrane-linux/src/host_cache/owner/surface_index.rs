@@ -15,6 +15,7 @@ pub(super) mod bindings;
 pub(super) mod closure;
 pub(super) mod eviction;
 pub(super) mod exposure;
+pub(super) mod pressure;
 pub(super) mod recovery;
 mod scoped;
 
@@ -69,11 +70,18 @@ impl NativeSurfaceIndex {
 
     /// Rechecks the original immutable inode without consulting embedded policy.
     ///
+    /// A successful check records this use in reconstructible S3-FIFO state.
+    ///
     /// # Errors
     /// Refuses changed native identity, ownership, mode, project or kernel seal.
     /// Success grants no serving permission and says nothing about a lease.
     pub fn check_native_backing(&self) -> io::Result<()> {
-        self.backing.check()
+        self.backing.check()?;
+        self.backing
+            .activity
+            .as_ref()
+            .ok_or_else(|| invalid("surface read activity absent"))?
+            .record()
     }
 }
 
@@ -84,6 +92,7 @@ struct Backing {
     binding: VerityBinding,
     project: u32,
     allocated: u64,
+    activity: Option<pressure::Activity>,
 }
 
 impl Backing {
@@ -195,7 +204,7 @@ pub(super) async fn admit(
 ) -> io::Result<NativeSurfaceIndex> {
     let running = executor.admission_context()?;
     let custody = Arc::clone(executor.custody());
-    let (key, generation, write) = {
+    let compiled = {
         let mut owner = custody
             .lock()
             .map_err(|_| invalid("surface custody poisoned"))?;
@@ -224,7 +233,10 @@ pub(super) async fn admit(
         .map_err(io::Error::other)?;
         let key = compiled.key();
         if let Some(job) = owner.surface_indexes.get(&key) {
-            let reused = reuse(&owner, job, &compiled);
+            let reused = reuse(&owner, job, &compiled).and_then(|reused| {
+                reused.check_native_backing()?;
+                Ok(reused)
+            });
             if reused.is_err() {
                 // A failed native check denies further writes while original
                 // inode custody and funding remain available for reconciliation.
@@ -232,6 +244,20 @@ pub(super) async fn admit(
             }
             return reused;
         }
+        compiled
+    };
+    pressure::prepare(executor, compiled.bytes().len()).await?;
+    let key = compiled.key();
+    let (generation, write) = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| invalid("surface custody poisoned"))?;
+        state::check_ready(executor, &owner)?;
+        let policy = owner
+            .preparation
+            .config
+            .surface_index
+            .ok_or_else(|| invalid("surface admission disabled"))?;
         owner.preparation.recheck()?;
         let allocated = allocation_bound(&owner)?;
         if owner.surface_indexes.len() >= owner.preparation.config.state.records
@@ -276,7 +302,7 @@ pub(super) async fn admit(
                 backing: None,
             },
         );
-        (key, owner.generation, write)
+        (owner.generation, write)
     };
     snapshot::persist(executor, write).await?;
     running.check_current().map_err(io::Error::other)?;
@@ -314,6 +340,28 @@ pub(super) async fn admit(
                 "actual surface allocation exceeds separate cap",
             ));
         }
+        let backing = owner
+            .surface_indexes
+            .get(&key)
+            .and_then(|job| job.backing.as_ref())
+            .ok_or_else(|| invalid("surface FIFO backing absent"))?;
+        let activity = owner
+            .surface_queue
+            .as_ref()
+            .ok_or_else(|| invalid("surface FIFO absent"))?
+            .admit(
+                key,
+                backing.metadata.dev(),
+                backing.metadata.ino(),
+                backing.allocated,
+            )?;
+        let backing = owner
+            .surface_indexes
+            .get_mut(&key)
+            .and_then(|job| job.backing.as_mut())
+            .and_then(Arc::get_mut)
+            .ok_or_else(|| invalid("surface FIFO admission gained a premature receipt"))?;
+        backing.activity = Some(activity);
         snapshot::prepare(executor, &mut owner)?
     };
     snapshot::persist(executor, completion).await?;
@@ -506,6 +554,7 @@ fn write_index(
         binding,
         project,
         allocated,
+        activity: None,
     }));
     Ok(())
 }

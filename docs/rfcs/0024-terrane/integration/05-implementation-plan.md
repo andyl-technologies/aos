@@ -14420,3 +14420,34 @@ cold-recovery proof. The crash supervisor now enables that same bounded service
 The actor also preserves unexpected actual recovery errors instead of hiding
 them in a generic assertion. No closure, quota or runtime bound is weakened.
 Python syntax passes; exact-source native and application reruns are pending.
+
+
+Automatic derived-index cap pressure now uses the existing S3-FIFO policy in
+reconstructible scheduling state. Actual sealed allocations register in native
+admission order; successful original-backing checks and verified warm reuse
+record use. The planner protects original admission receipts and every durable
+exposure, including draining rows. Observed final receipt release starts the
+host's actual configured grace. A pressured request can select at most one
+victim within the existing scan bound, then invokes the original funded,
+checked namespace retirement. Only fresh complete-project charge can satisfy
+the low-watermark target before a new admission is funded. A refused candidate
+is restored conservatively; no planned byte count becomes available quota.
+Requests needing more retirement must retry. Cold recovery still refuses warm
+jobs and reconstructs a fresh planner with its new physical owner.
+
+`checks.terrane.integration.surface-index-pressure` supplies a separate native
+control. An independently provisioned calibration project measures actual empty
+snapshot and sealed index allocation, sizing the pressure project's cap before
+startup. The pressure actor creates a genuine signed-root exposure, fills the
+cap, checks retained-receipt refusal and unchanged policy during real release
+grace, then holds the original victim mapping through automatic unlink. New
+admission must still refuse until actual final unmap releases the exact measured
+charge; the retry must preserve the unrelated original exposure. The new guest
+has a finite 120-second contract and its pressure actor 60 seconds, including
+the unchanged 30-second host release grace. Existing VM and actor bounds remain
+unchanged. Formatting, strict Linux all-target Clippy in both feature profiles,
+Python syntax, Nix formatting/evaluation and all 128 native source declarations
+pass. Native pressure, existing owning components and mandatory application
+qualification for this revision remain pending. This implements cap-triggered
+index reclamation; general host-pressure composition and full deployment
+acceptance remain separate work.

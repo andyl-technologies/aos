@@ -218,6 +218,8 @@ pub(super) struct Custody {
     #[cfg(feature = "surface-fuse")]
     pub(super) surface_indexes:
         BTreeMap<crate::structural_index::IndexKey, super::surface_index::Job>,
+    #[cfg(feature = "surface-fuse")]
+    pub(super) surface_queue: Option<super::surface_index::pressure::Queue>,
     pub(super) preparation: NativeCachePreparation,
     pub(super) directory: File,
     pub(super) state: CacheState,
@@ -941,6 +943,14 @@ impl Custody {
         let mut custody = Self {
             #[cfg(feature = "surface-fuse")]
             surface_indexes: BTreeMap::new(),
+            #[cfg(feature = "surface-fuse")]
+            surface_queue: preparation
+                .config
+                .surface_index
+                .map(|surface| {
+                    super::surface_index::pressure::Queue::new(&preparation.config, surface)
+                })
+                .transpose()?,
             preparation,
             directory,
             state: CacheState::default(),

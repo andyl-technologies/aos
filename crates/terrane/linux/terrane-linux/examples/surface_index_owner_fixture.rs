@@ -25,6 +25,9 @@ mod scoped_worker;
 #[path = "surface_index_owner_fixture/worker_crash.rs"]
 mod worker_crash;
 
+#[path = "surface_index_owner_fixture/pressure.rs"]
+mod pressure;
+
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -79,6 +82,20 @@ fn main() -> Result<()> {
     };
     settings.surface_index = Some(policy);
     let mut preparation = NativeCachePreparation::inspect(settings, confinement.clone())?;
+    let pressure_baseline = if matches!(mode.as_str(), "pressure-calibrate" | "pressure") {
+        let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
+        let baseline = quota_sample(&mut quota, &inputs)?.0;
+        if mode == "pressure" {
+            policy = pressure::policy(policy, baseline)?;
+            drop(preparation);
+            let mut settings = inputs.owner_config()?;
+            settings.surface_index = Some(policy);
+            preparation = NativeCachePreparation::inspect(settings, confinement.clone())?;
+        }
+        Some(baseline)
+    } else {
+        None
+    };
     if mode == "cap" {
         let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
         let baseline = quota_sample(&mut quota, &inputs)?.0;
@@ -107,6 +124,8 @@ fn main() -> Result<()> {
             | "worker-crash"
             | "crash-refuse"
             | "crash-recover"
+            | "pressure-calibrate"
+            | "pressure"
     ) {
         return Err("unknown surface-owner selector".into());
     }
@@ -136,6 +155,9 @@ fn main() -> Result<()> {
     eprintln!("SURFACE_STAGE mode={mode} phase=resume");
     runtime.block_on(owner.resume_recovered(completed))?;
     println!("PASS surface admission requires actual recovery and acknowledged Resume");
+    if let Some(baseline) = pressure_baseline {
+        return pressure::run(&mode, &runtime, &owner, &inputs, policy, baseline);
+    }
     if let Some(launched) = launched {
         if mode == "worker-crash" {
             return worker_crash::run(launched, &runtime, &owner, &inputs);
@@ -474,6 +496,10 @@ fn canonical_path(inputs: &config::Inputs, root: Digest) -> std::path::PathBuf {
 }
 
 fn tree() -> Result<(Digest, BTreeMap<Digest, Vec<u8>>)> {
+    tree_with_content([3; 32])
+}
+
+fn tree_with_content(content: Digest) -> Result<(Digest, BTreeMap<Digest, Vec<u8>>)> {
     let tree = Tree::build(
         vec![LeafItem {
             key: b"file".to_vec(),
@@ -481,7 +507,7 @@ fn tree() -> Result<(Digest, BTreeMap<Digest, Vec<u8>>)> {
                 kind: EntryKind::File {
                     mode: 0o444,
                     size: 1,
-                    content: ContentRef::Inline([3; 32]),
+                    content: ContentRef::Inline(content),
                     link_id: None,
                 },
                 attrs: Vec::new(),

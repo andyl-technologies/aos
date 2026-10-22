@@ -103,6 +103,42 @@ def crash_actor(support, executable, environment):
             print(log_path.read_text(), flush=True)
 
 
+def pressure_actors(support, executable, environment_for):
+    """Calibrates a genuine project before exercising actual pressure elsewhere."""
+    calibration = subprocess.run(support.role_command(840, [executable, "pressure-calibrate"]),
+        env=environment_for("pressure-calibration"), text=True, capture_output=True, timeout=30)
+    print(calibration.stdout, end="", flush=True)
+    print(calibration.stderr, end="", flush=True)
+    lines = calibration.stdout.splitlines()
+    support.require(calibration.returncode == 0 and len(lines) == 2
+        and lines[0] == "PASS surface admission requires actual recovery and acknowledged Resume",
+        "actual pressure calibration failed")
+    fields = lines[1].split()
+    support.require(len(fields) == 3 and fields[0] == "CALIBRATION",
+        "actual pressure measurements unavailable")
+    snapshot, allocation = map(int, fields[1:])
+    support.require(0 <= snapshot <= support.HARD and 0 < allocation <= support.HARD,
+        "actual pressure measurements exceed the genuine project budget")
+    environment = dict(environment_for("pressure"),
+        TERRANE_PRESSURE_SNAPSHOT=str(snapshot), TERRANE_PRESSURE_ALLOCATION=str(allocation))
+    try:
+        result = subprocess.run(support.role_command(840, [executable, "pressure"]),
+            env=environment, text=True, capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired as error:
+        for stream in [error.stdout, error.stderr]:
+            if stream:
+                print(stream.decode(errors="replace") if isinstance(stream, bytes)
+                    else stream, end="", flush=True)
+        raise
+    print(result.stdout, end="", flush=True)
+    print(result.stderr, end="", flush=True)
+    support.require(result.returncode == 0 and result.stdout.splitlines() == [
+        "PASS surface admission requires actual recovery and acknowledged Resume",
+        "PASS automatic index pressure preserves retained receipts and release grace; active exposure survives while original unlinked mapping prevents capacity credit",
+        "PASS actual final unmap releases exact original index charge before bounded pressure retry admits a new canonical index with unrelated durable custody unchanged"],
+        "actual automatic index-pressure control failed")
+
+
 def load(name, path):
     """Loads an already verified installed supervisor without running its main."""
     specification = importlib.util.spec_from_file_location(name, path)
@@ -116,11 +152,13 @@ def load(name, path):
 
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
-    if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4 and sys.argv[3] != "--crash"):
-        raise RuntimeError("expected image, source and optional --crash")
+    if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
+            and sys.argv[3] not in ["--crash", "--pressure"]):
+        raise RuntimeError("expected image, source and optional --crash or --pressure")
     image, source = map(Path, sys.argv[1:3])
-    crash = len(sys.argv) == 4
-    case = "worker-crash" if crash else "scoped-worker"
+    crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
+    pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
+    case = "pressure" if pressure else "worker-crash" if crash else "scoped-worker"
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
     support = load("scoped_native_support", image / "share/host_cache_vm.py")
@@ -130,8 +168,8 @@ def main():
     support.require(Path(__file__).read_bytes()
         == (source / "tests/terrane/scoped_worker_vm.py").read_bytes(),
         "installed scoped supervisor differs from immutable source")
-    support.CASES = [case]
-    support.BUDGET = support.HARD
+    support.CASES = ["pressure-calibration", "pressure"] if pressure else [case]
+    support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
     support.administrative_preflight("after")
@@ -152,15 +190,19 @@ def main():
     support.require(len(uuid) == 32, "actual scoped project UUID unavailable")
     setpriv = shutil.which("setpriv")
     support.require(setpriv is not None, "AOS-built setpriv unavailable")
-    environment = dict(os.environ,
-        TERRANE_CACHE_ROOT=str(support.root(case)),
-        TERRANE_CACHE_DOMAIN=support.domain(case),
-        TERRANE_CACHE_OWNER=support.owner(case),
-        TERRANE_CACHE_PROJECT=str(support.project(case)),
-        TERRANE_CACHE_UUID=uuid, TERRANE_CACHE_BUDGET=str(support.BUDGET),
-        TERRANE_CACHE_QUOTA_SOCKET=str(support.RUNTIME / "quota.sock"),
-        TERRANE_CACHE_PUBLISHER_SOCKET=str(support.PUB_RUNTIME / "publisher.sock"),
-        TERRANE_WORKER_SETPRIV=setpriv)
+    def environment_for(selected):
+        """Names one actually provisioned project without supplying authority."""
+        return dict(os.environ,
+            TERRANE_CACHE_ROOT=str(support.root(selected)),
+            TERRANE_CACHE_DOMAIN=support.domain(selected),
+            TERRANE_CACHE_OWNER=support.owner(selected),
+            TERRANE_CACHE_PROJECT=str(support.project(selected)),
+            TERRANE_CACHE_UUID=uuid, TERRANE_CACHE_BUDGET=str(support.BUDGET),
+            TERRANE_CACHE_QUOTA_SOCKET=str(support.RUNTIME / "quota.sock"),
+            TERRANE_CACHE_PUBLISHER_SOCKET=str(support.PUB_RUNTIME / "publisher.sock"),
+            TERRANE_WORKER_SETPRIV=setpriv)
+
+    environment = environment_for(case)
 
     children, logs = [], []
     try:
@@ -188,6 +230,12 @@ def main():
                 and time.monotonic() < deadline,
                 "actual scoped helper or publisher failed readiness: " + prepared.stderr)
             time.sleep(0.02)
+        if pressure:
+            pressure_actors(support, executable, environment_for)
+            support.verify_image()
+            surface.verify_surface(image, source)
+            print("PASS native automatic index pressure component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
+            return
         if crash:
             crash_actor(support, executable, environment)
             support.verify_image()

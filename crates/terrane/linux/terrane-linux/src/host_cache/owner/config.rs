@@ -24,6 +24,8 @@ pub struct SurfaceIndexPolicy {
     /// Admission currently uses full project charge as a conservative upper
     /// bound so unlinked indexes retained by old mappings cannot escape this cap.
     /// Other host-cache content can therefore cause an earlier refusal.
+    /// Under pressure, admission first attempts bounded S3-FIFO retirement of
+    /// an eligible index and rechecks actual project charge before funding.
     pub capacity_bytes: u64,
     /// Distinct future hold retained until native retirement reconciles the job.
     pub future_hold_bytes: u64,

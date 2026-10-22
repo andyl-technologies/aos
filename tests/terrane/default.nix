@@ -549,6 +549,15 @@ in {
         surfaceIndex = true;
       }).image;
   };
+  integration.surface-index-pressure = import ./scoped-worker.nix {
+    inherit pkgs lib;
+    pressure = true;
+    image =
+      (import ./host-cache-proof.nix {
+        inherit pkgs lib sourceGateWithInputs;
+        surfaceIndex = true;
+      }).image;
+  };
   integration.bundle-client = import ./bundle-client.nix {inherit sourceGate;};
   integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};
   integration.ref-head = import ./ref-head.nix {inherit sourceGate;};
