@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 505 bindings: 486 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 513 bindings: 494 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -720,8 +720,22 @@ an actual resource issuer.
 The partial-probe correction also passes its hermetic ABI gate at
 `fnm4bxrwcsk9ziz289c03dzmwf2jw3kp`. The following independent-vector revision's
 application inputs match all 5,360 committed Rust/TOML files and all four
-existing public fixture/license files; its application build and ABI gate
-remain pending.
+existing public fixture/license files. Its hermetic ABI gate passes at
+`8h4g3gnil4q1hr6fbck7ar3sxnyqsn8f`; its application build remains pending.
+The complete-description revision's application inputs also match all 5,361
+committed Rust/TOML files and all six public fixture/license files. Its
+application build and hermetic ABI gate remain pending.
+
+The Setup-twelve sender now refuses repeated descriptor handles before socket
+identity checks or transmission. All 169 pair substitutions across the thirteen
+and fourteen-role rosters return a malformed-roster error and leave the actual
+peer socket empty. Distinct numeric handles still need actual physical alias
+authentication by their retained owners. All thirteen transport tests, the
+complete 285-test protocol suite and strict all-target Clippy pass. The counted
+ABI group and requirement binding include the new case. Inventory
+`2f8hj9dyd2vf1q2p9pngy4v94sl1vjvx` verifies 513 canonical bindings: 481 model,
+thirteen format and nineteen native. The same 148 requirements remain uncovered
+and none fully qualified; no selected receiver or paid landing is admitted.
 
 #### Initial loader storage component
 

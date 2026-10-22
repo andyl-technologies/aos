@@ -26,7 +26,7 @@ use crate::runtime_artifact::RuntimeArtifactSetup;
 /// owners. This transport receipt proves only a completed socket write.
 ///
 /// # Errors
-/// Refuses malformed framing, an incorrect roster, negative descriptors,
+/// Refuses malformed framing, an incorrect roster, negative or repeated descriptors,
 /// non-socket endpoints and ancillary/send failures. Partial delivery is never
 /// retried; the caller retains every owner and delivery uncertainty.
 #[cfg(unix)]
@@ -40,7 +40,12 @@ pub fn send_native_profile_setup_frame_with_descriptors(
     };
     let setup = RuntimeArtifactSetup::decode(frame).map_err(|_| refused())?;
     let count = 13 + usize::from(setup.cleanup.publisher.device_digest_workspace.is_some());
-    if descriptors.len() != count || descriptors.iter().any(|descriptor| *descriptor < 0) {
+    if descriptors.len() != count
+        || descriptors
+            .iter()
+            .enumerate()
+            .any(|(index, descriptor)| *descriptor < 0 || descriptors[..index].contains(descriptor))
+    {
         return Err(refused());
     }
 

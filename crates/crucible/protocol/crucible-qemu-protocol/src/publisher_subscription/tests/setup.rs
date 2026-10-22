@@ -465,6 +465,54 @@ mod transport {
     }
 
     #[test]
+    fn native_profile_setup_refuses_every_repeated_descriptor_pair_before_send()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for workspace in [false, true] {
+            let (host, mut peer) = UnixStream::pair()?;
+            let mut value = setup();
+            if workspace {
+                value.device_digest_workspace = Some(DeviceDigestWorkspaceBinding {
+                    account_generation: 5,
+                    workspace_generation: 17,
+                    device: 0,
+                    inode: 0,
+                });
+            }
+            let frame = SetupEdition::NativeProfile.encode(value)?;
+            let pairs = (0..SetupEdition::NativeProfile.descriptor_count(workspace))
+                .map(|_| UnixStream::pair())
+                .collect::<std::io::Result<Vec<_>>>()?;
+            let descriptors = pairs
+                .iter()
+                .map(|(socket, _)| socket.as_raw_fd())
+                .collect::<Vec<_>>();
+
+            for first in 0..descriptors.len() {
+                for second in first + 1..descriptors.len() {
+                    let mut repeated = descriptors.clone();
+                    repeated[second] = repeated[first];
+                    let result = send_native_profile_setup_frame_with_descriptors(
+                        host.as_raw_fd(),
+                        &frame,
+                        &repeated,
+                    );
+                    assert!(matches!(
+                        result,
+                        Err(crate::DescriptorHandoverError::MalformedAncillary { .. })
+                    ));
+                }
+            }
+
+            peer.set_nonblocking(true)?;
+            assert_eq!(
+                peer.read(&mut [0; 1]).unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn stack_setup_refuses_malformed_mixed_or_wrong_roster_before_send()
     -> Result<(), Box<dyn std::error::Error>> {
         exercise_refusal(SetupEdition::Stack)

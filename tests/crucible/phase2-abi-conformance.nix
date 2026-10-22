@@ -818,7 +818,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib publisher_subscription::tests::setup::transport::runtime_artifact_setup \
                 -- --test-threads=1
-              require_test_set 2 protocol-native-profile-transport \
+              require_test_set 3 protocol-native-profile-transport \
                 publisher_subscription::tests::setup::transport::native_profile_setup_sends_exact_thirteen_and_fourteen_actual_aliases \
                 -p crucible-qemu-protocol --lib publisher_subscription::tests::setup::transport::native_profile_setup
               cargo test \
