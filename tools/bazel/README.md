@@ -219,3 +219,38 @@ python3 tools/bazel/metadata/cargo_inventory.py \
 Pass `--check` to detect drift. Cargo runs with `--locked --offline --no-deps`;
 the exporter does not compile code or fetch dependencies. Inventory files
 must never become global inputs to every compilation action.
+
+## Explicit Rust dependency updates
+
+`third_party/rust/BUILD.bazel` declares crate_universe specifications without a
+first-party Cargo manifest. Build the specification package normally, then run
+`aos-dev bazel update-deps core` to resolve third-party dependencies explicitly.
+This command uses source-built Cargo and cargo-bazel in a private temporary
+Cargo home. It is the network-enabled update boundary; ordinary build and test
+commands retain download denial and immutable repository overrides.
+
+The updater retains Cargo's third-party lock, the crate_universe context,
+rendered Rust rules, source URLs and SHA-256 hashes, original SPDX expressions,
+and the updater/tool closure identity. Downloaded archives must agree with both
+resolved locks. Declaration fingerprints reject stale specification packages;
+publication replaces only previously generated files and preserves unrelated
+files. Subsequent updates seed resolution from the generated third-party lock.
+
+Nix fetches these hashed source archives and supplies the rendered repositories
+to Bazel. The rules' own metadata parser dependencies are likewise pinned source
+archives, using the BUILD files in the pinned rules_rust source. Compilation uses
+Rust rules directly. The first-party toolchain's Cargo entry point fails if a
+build script attempts a nested Cargo invocation; the explicit updater receives
+the actual source-built Cargo separately.
+
+`checks.build.bazel.dependencies.all` exercises this path with Crucible's
+`crucible-determinism` library, unit tests, and doctests. Its `thiserror` dependency
+also exercises procedural macros, Cargo metadata, and third-party build scripts.
+This pilot does not yet replace the production Crucible package or remove its
+Cargo manifest.
+
+Configured inventories retain loaded first-party BUILD and Starlark definitions,
+including module includes. Declaration discovery queries the configured aspect's
+target set rather than traversing an unconfigured dependency closure. Refresh
+combined package/test inventories with `metadata/merge_inventory.py`; it rejects
+stale declaration and exporter fingerprints before merging them.

@@ -1842,6 +1842,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) mkAosBazelWorkspace mkAosBazelBuild;
       inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
       inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;
+      inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater;
+      inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       # Downstream flakes use the same package argument resolution as discovery.

@@ -752,12 +752,15 @@
     }
   ],
   "contracts": {
-    "MODULE.bazel": "5c9261b1f336f4ab1182ed5286586ac928cfda8083299484c372d25e1603d66b",
+    "MODULE.bazel": "778eb7b237c32e809724f1558f65c8ac0fdfecdb1d8f6ab176a157f82f7c33ac",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "tools/bazel/metadata/BUILD.bazel": "f22dc5e44a92bca761a1412cc24b2b5da3adfef38c398c53d18c99fc45aca3f8",
+    "third_party/rust/BUILD.bazel": "1c9b71a7661890ceffc35e18b42d7b7855c0e4786a53609dc6e90c4cb72267e5",
+    "third_party/rust/core/repositories.MODULE.bazel": "5e3d474ff2944ab2608b6693f352e7538a0bec62e752b9aef3ca6fab2a459b7b",
+    "tools/bazel/metadata/BUILD.bazel": "b3cec49d66d2a7f94057aa15cc7d0fe39a4862a9f8f6777eb5dbb419ae1b792b",
     "tools/bazel/metadata/inventory.bzl": "fd0fb31f0b8aae3153c4c51a45712efb821d53e32f05b588769842933b55beb0",
-    "tools/bazel/rules/BUILD.bazel": "d625db4b090dbb50b1e9a77c5a30e8acc4ceeced8eeab035c51d37127cd476a9",
+    "tools/bazel/rules/BUILD.bazel": "8eabdcc282d2681759c31ae1050cf8bb96b31e82a469a31c1320eafcb5955ffa",
     "tools/bazel/rules/compile.bzl": "fd30a8c87ba7e0c645071241ac576c593ebfd44bf916a575b47ed4a624bff307",
+    "tools/bazel/rules/crates.bzl": "af285b1689d6b021e68a61a5729df7cb2ffe7c19c591d3b59fd40b567fd27bb6",
     "tools/bazel/rules/generated.bzl": "79ebc2b440b8a886cd3222b8a731452fe101571bda0b65189dca05b14d885594",
     "tools/bazel/rules/license.bzl": "723ca86bb4c592e90634bc286ac79854df594956f9e577af8e4a3fa3a051bdcc",
     "tools/bazel/rules/package.bzl": "bfad9728e63c5f5c6adfc08eb320481830558588152cdd1a9f373d9dadb8ef0a",
@@ -767,7 +770,7 @@
     "tools/bazel/toolchains/BUILD.toolchains.bazel": "ece5a5a040e571b4aa69f715ba7f413b044c25b392b00def6bbf3779bf89ac7c",
     "tools/bazel/toolchains/repositories.bzl": "276eb076b91a0221f95b3b2b6235e837e50eb5d4577512ec12833731b494f98f"
   },
-  "generator_sha256": "c36403c81cbdbacfe41e98b8ed7ce94de2ea2d75c633ea3198688db43734cd60",
+  "generator_sha256": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",
   "schema_version": 1,
   "source_directories": [],
   "source_files": [

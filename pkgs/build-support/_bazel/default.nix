@@ -11,6 +11,18 @@
     inherit pkgs lib;
     modules = aosBazelModules;
   };
+  aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
+  aosBazelDependencyUpdater = import ./updater.nix {
+    inherit pkgs lib;
+    generator = aosBazelDependencyGenerator;
+  };
+  aosBazelRustRepositories = {
+    core = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "core";
+    };
+  };
   mkAosBazelWorkspace = import ./workspace.nix {
     inherit pkgs lib;
     modules = aosBazelModules;
@@ -22,7 +34,8 @@
   mkAosBazelCheck = arguments: mkAosBazelBuild (arguments // {command = "test";});
   aosBazelWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates" "native" "tools/bazel"];
+    sourceDirectories = ["crates" "native" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.core;
   };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;

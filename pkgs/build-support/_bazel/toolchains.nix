@@ -65,7 +65,14 @@ in
             mkdir -p "$out/bin"
             ln -s ${rust}/bin/rustc.unwrapped "$out/bin/rustc"
             ln -s ${rust}/bin/rustdoc.unwrapped "$out/bin/rustdoc"
-            ln -s ${rust}/bin/cargo "$out/bin/cargo"
+            # Third-party build scripts may inspect CARGO, but compilation must
+            # stay in the Bazel action graph. Only the explicit updater gets Cargo.
+            cat > "$out/bin/cargo" <<'CARGO'
+            #!${pkgs.bash}/bin/bash
+            printf '%s\n' 'Cargo execution is disabled in first-party Bazel builds; declare Rust actions in BUILD.bazel.' >&2
+            exit 1
+            CARGO
+            chmod +x "$out/bin/cargo"
             ln -s ${rust}/lib "$out/lib"
             ln -s ${cc}/bin/cc "$out/bin/cc"
             ln -s ${binutils}/bin/ar "$out/bin/ar"

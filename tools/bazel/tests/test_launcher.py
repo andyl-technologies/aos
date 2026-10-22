@@ -78,7 +78,8 @@ class LauncherTests(unittest.TestCase):
     def test_remote_cache_and_toolchain_overrides_are_rejected(self):
         for option in ["--remote_cache=https://example.invalid", "--action_env=RUSTFLAGS=bad",
                        "--override_module=rules_rust=/unreviewed", "--registry=https://example.invalid",
-                       "--genrule_strategy=standalone", "--bes_backend=grpc://example.invalid"]:
+                       "--genrule_strategy=standalone", "--bes_backend=grpc://example.invalid",
+                       "--flagfile=/unreviewed/flags", "--flag_alias=custom=registry"]:
             with self.subTest(option=option):
                 result = self.invoke(["build", "//:example", option])
                 self.assertNotEqual(result.returncode, 0)

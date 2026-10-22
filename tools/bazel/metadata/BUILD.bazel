@@ -1,1 +1,1 @@
-exports_files(["inventory.bzl"])
+exports_files(["inventory.bzl", "export_specs.py"])

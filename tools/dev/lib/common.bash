@@ -16,6 +16,7 @@ Commands:
   run <aos|apm|apr> [arguments]  Build or fetch an ordinary packaged CLI, then run it
   cargo <arguments>         Run Cargo in the current AOS-built dev shell
   bazel <arguments>         Run offline Bazel with AOS tools and a local disk cache
+  bazel update-deps core    Explicitly resolve and pin third-party Rust sources
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run aos maintain release without shared caches

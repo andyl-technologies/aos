@@ -1,0 +1,28 @@
+load("@rules_rust//crate_universe:defs.bzl", "crate")
+load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":core/aliases.bzl", "CRATES")
+
+alias(
+    name = "core_thiserror",
+    actual = CRATES["thiserror"],
+    visibility = ["//visibility:public"],
+)
+
+# A small external graph exercises the manifest-free update interface first.
+aos_crate_specifications(
+    name = "core_specifications",
+    family = "core",
+    definition = "BUILD.bazel",
+    packages = {"thiserror": crate.spec(version = "=2.0.18")},
+    platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
+)
+
+aos_package(
+    name = "core_specification_package",
+    package_name = "aos-rust-core-specifications",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":core_specifications": "specifications.json"},
+)

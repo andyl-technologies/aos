@@ -11,6 +11,7 @@ in
   rec {
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
     pilot = import ./_bazel-pilot.nix {inherit pkgs;};
+    dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
     precise = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-precise-fixtures";
@@ -92,7 +93,7 @@ in
         mkdir -p "$out"
         printf 'PASS\n' > "$out/result"
       '';
-    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all];} ''
+    all = pkgs.runCommand "aos-bazel-checks" {buildDeps = [runtime runner policy source-selection precision-parity license-boundary pilot.all dependencies.all];} ''
       mkdir -p "$out"
       printf 'PASS\n' > "$out/result"
     '';

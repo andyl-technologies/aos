@@ -74,7 +74,8 @@ def main():
                  "--spawn_strategy", "--strategy", "--modify_execution_info",
                  "--registry", "--inject_repository", "--extra_toolchains",
                  "--crosstool_top", "--host_crosstool_top", "--workspace_status_command",
-                 "--bes_backend", "--genrule_strategy", "--test_strategy",
+                 "--bes_", "--genrule_strategy", "--test_strategy",
+                 "--flagfile", "--flag_alias", "--default_override",
                  "--dynamic_local_strategy", "--dynamic_remote_strategy", "--sandbox_add_mount_pair")
     bazel_arguments = arguments[:arguments.index("--")] if "--" in arguments else arguments
     if any(argument.startswith(forbidden) for argument in bazel_arguments):

@@ -50,6 +50,8 @@ case " $* " in
   *' -A pkgs.aos '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aos.apm '*|*' -A pkgs.aos.apr '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelDependencyUpdater '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A checks.build.bazel.dependencies.specifications '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
 esac
 MOCK
@@ -97,6 +99,12 @@ printf '<%s>' "$@" > "$AOS_DEV_TEST_BAZEL_ARGS_LOG"
 MOCK
 sed -i "s|@BASH@|$BASH|" "$scratch/cli/bin/aos-bazel"
 chmod +x "$scratch/cli/bin/aos-bazel"
+cat > "$scratch/cli/bin/aos-bazel-rust-update" <<'MOCK'
+#!@BASH@
+printf '<%s>' "$@" > "$AOS_DEV_TEST_BAZEL_ARGS_LOG"
+MOCK
+sed -i "s|@BASH@|$BASH|" "$scratch/cli/bin/aos-bazel-rust-update"
+chmod +x "$scratch/cli/bin/aos-bazel-rust-update"
 
 export PATH="$scratch/bin:$PATH"
 # Keep build-command tests independent of the sandbox's placeholder HOME.
@@ -125,6 +133,12 @@ bash "$root/tools/dev/aos-dev" --release bazel test //example:tests
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = '<--><test><//example:tests>'
 qualification_output=$(tail -n 1 "$AOS_DEV_TEST_BAZEL_ENV_LOG")
 test ! -e "${qualification_output%/output}"
+bash "$root/tools/dev/aos-dev" bazel update-deps core
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/core>"
+if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then
+  echo 'Bazel dependency update accepted an unknown family' >&2
+  exit 1
+fi
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'

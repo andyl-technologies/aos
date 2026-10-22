@@ -1,8 +1,12 @@
 ##! Real Rust targets retain Cargo/production recipes as migration oracles.
-{pkgs}: let
+{
+  pkgs,
+  sourceInventory ? ../../tools/bazel/metadata/boot-pilot-inventory.json,
+}: let
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "crates/aos/boot/aos-boot-identity" "crates/aos/boot/aos-recovery"];
+    inherit sourceInventory;
+    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "crates/aos/boot/aos-boot-identity" "crates/aos/boot/aos-recovery"];
     analysisTargets = ["//crates/aos/boot/aos-boot-identity:package" "//crates/aos/boot/aos-recovery:package"];
   };
   package = name: build:

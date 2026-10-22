@@ -63,7 +63,10 @@
         else throw "stale Bazel source inventory for ${name}; regenerate configured metadata")
       (builtins.attrNames inventory.contracts)
     );
-  paths = ["MODULE.bazel" "MODULE.bazel.lock" ".bazelrc"] ++ inventoryPaths ++ sourceDirectories ++ extraFiles;
+  paths =
+    ["MODULE.bazel" "MODULE.bazel.lock" ".bazelrc"]
+    ++ lib.optionals (inventory == null) ["third_party/rust"]
+    ++ inventoryPaths ++ sourceDirectories ++ extraFiles;
   accept = path: type: let
     absolute = toString path;
     relative = lib.removePrefix "${rootString}/" absolute;

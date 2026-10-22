@@ -3,6 +3,18 @@
 # by the AOS launcher before Bazel starts.
 aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
+  if [[ $1 == update-deps ]]; then
+    shift
+    [[ $# == 1 && $1 == core ]] || aos_dev_error 'usage: aos-dev bazel update-deps core'
+    local updater specifications
+    updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
+    specifications=$(aos_dev_nix_build_ordinary -A checks.build.bazel.dependencies.specifications --no-out-link)
+    "$updater/bin/aos-bazel-rust-update" \
+      --root "$aos_dev_root" --specifications "$specifications/specifications.json" \
+      --output "$aos_dev_root/third_party/rust/core"
+    return
+  fi
+
   local launcher identity output_parent output_base status
   launcher=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelLauncher --no-out-link)
   identity=$(printf '%s\n%s\n' "$aos_dev_root" "$launcher" | sha256sum)

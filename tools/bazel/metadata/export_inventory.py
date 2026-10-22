@@ -8,6 +8,7 @@ new Rust/C/C++ implementation files without requiring evaluation-time builds.
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 
@@ -24,8 +25,24 @@ def reports_from_events(events):
     return [json.loads(report.read_text()) for report in sorted(reports)]
 
 
-def inventory(root, targets, reports):
-    contracts = {"MODULE.bazel", "MODULE.bazel.lock"}
+def inventory(root, targets, reports, declarations=()):
+    contracts = {"MODULE.bazel", "MODULE.bazel.lock", *declarations}
+    pending_modules = ["MODULE.bazel"]
+    while pending_modules:
+        filename = pending_modules.pop()
+        for label in re.findall(r'include\("(//[^"\n]+)"\)', (root / filename).read_text()):
+            package, name = label[2:].split(":", 1)
+            included = PurePosixPath(package, name)
+            if included.is_absolute() or ".." in included.parts or not name.endswith(".MODULE.bazel"):
+                raise ValueError(f"invalid module include: {label}")
+            path = included.as_posix()
+            if path not in contracts:
+                contracts.add(path)
+                pending_modules.append(path)
+            for build_name in ["BUILD.bazel", "BUILD"]:
+                build = PurePosixPath(package, build_name).as_posix()
+                if (root / build).is_file():
+                    contracts.add(build)
     sources = set()
     directories = set()
     labels = {report["label"] for report in reports}
@@ -41,6 +58,14 @@ def inventory(root, targets, reports):
             if path.is_absolute() or ".." in path.parts:
                 raise ValueError(f"non-workspace source: {filename}")
             sources.add(filename)
+            # Source-file labels still require their owning BUILD package,
+            # even when that package contains only exports_files declarations.
+            for directory in path.parents:
+                build_files = [directory / name for name in ["BUILD.bazel", "BUILD"]]
+                owned = [candidate.as_posix() for candidate in build_files if (root / candidate).is_file()]
+                if owned:
+                    contracts.update(owned)
+                    break
             # Retain discovery roots rather than freezing a glob's file list.
             # This includes new implementation files in an owned src/tests tree.
             for index, part in enumerate(path.parts[:-1]):
@@ -71,9 +96,22 @@ def main():
     parser.add_argument("--targets", nargs="+", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--source-lock", type=Path)
+    parser.add_argument("--declarations", type=Path)
     options = parser.parse_args()
     events = [json.loads(line) for line in options.events.read_text().splitlines() if line]
-    result = inventory(options.root, options.targets, reports_from_events(events))
+    declarations = set()
+    if options.declarations:
+        for label in options.declarations.read_text().splitlines():
+            if label.startswith("@@//"):
+                label = label[2:]
+            if not label.startswith("//"):
+                continue
+            package, name = label[2:].split(":", 1)
+            path = PurePosixPath(package, name)
+            if path.is_absolute() or ".." in path.parts or not (options.root / path).is_file():
+                raise ValueError(f"invalid first-party declaration label: {label}")
+            declarations.add(path.as_posix())
+    result = inventory(options.root, options.targets, reports_from_events(events), declarations)
     if options.source_lock:
         result["contracts"]["MODULE.bazel.lock"] = hashlib.sha256(options.source_lock.read_bytes()).hexdigest()
     options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

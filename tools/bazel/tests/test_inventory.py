@@ -59,6 +59,27 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "non-workspace"):
             self.inventory()
 
+    def test_exported_file_retains_its_owning_build_package(self):
+        tools = self.root / "tools/example"
+        tools.mkdir(parents=True)
+        (tools / "BUILD.bazel").write_text('exports_files(["runner.py"])\n')
+        (tools / "runner.py").write_text("pass\n")
+        self.reports[0]["sources"].append("tools/example/runner.py")
+        self.assertIn("tools/example/BUILD.bazel", self.inventory()["contracts"])
+
+    def test_module_includes_and_loaded_definitions_are_contracts(self):
+        (self.root / "MODULE.bazel").write_text('include("//crates/example:deps.MODULE.bazel")\n')
+        (self.root / "crates/example/deps.MODULE.bazel").write_text("# immutable repositories\n")
+        (self.root / "crates/example/macros.bzl").write_text("# shared declarations\n")
+
+        result = exporter.inventory(
+            self.root, ["//crates/example:library"], self.reports,
+            declarations=["crates/example/macros.bzl"],
+        )
+
+        self.assertIn("crates/example/deps.MODULE.bazel", result["contracts"])
+        self.assertIn("crates/example/macros.bzl", result["contracts"])
+
 
 if __name__ == "__main__":
     unittest.main()
