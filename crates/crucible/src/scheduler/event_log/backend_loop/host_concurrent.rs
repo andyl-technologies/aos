@@ -3,9 +3,7 @@
 use super::cap_boundary::resolve_cap_boundary;
 use super::dispatch_boundary::resolve_dispatch_boundary;
 use super::held_boundary::{HeldBoundaryRun, hold_run_result};
-use super::held_catchup::{
-    CatchupKind, execute_host_runs, held_emission_floors, require_caught_up,
-};
+use super::held_catchup::{CatchupKind, execute_host_runs, held_peer_evidence, require_caught_up};
 use super::held_lineage::HeldCommitBefore;
 use super::held_stop::{CommittedHostStop, HeldHostStopKind};
 use super::host_run_validation::validate_held_network_lookahead;
@@ -369,9 +367,9 @@ where
                     ),
                 }));
             }
-            let held_floors = held_emission_floors(&staged_scheduler, &held_runs, &boundary_runs)
+            let held_floors = held_peer_evidence(&staged_scheduler, &held_runs, &boundary_runs)
                 .map_err(|error| self.poison_continuation(error))?;
-            staged_scheduler.set_held_emission_floors(held_floors);
+            staged_scheduler.set_held_peer_evidence(held_floors);
             // Physical completion order and registration order are not PICK
             // order. Release equal-time evidence by canonical node identity.
             // A completed RUN publishes at its settled endpoint, the scheduler
@@ -761,7 +759,7 @@ where
         }
 
         // Held evidence stays with the continuation, never with the scheduler.
-        staged_scheduler.set_held_emission_floors(BTreeMap::new());
+        staged_scheduler.set_held_peer_evidence(BTreeMap::new());
         let offer_configuration = staged_scheduler.configuration().clone();
         let offer_log_offset = staged_scheduler.event_log_offset();
         *self.loop_impl.borrow_mut() = staged_scheduler;

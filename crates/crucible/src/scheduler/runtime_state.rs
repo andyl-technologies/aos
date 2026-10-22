@@ -550,11 +550,11 @@ pub struct SingleScheduler {
     pub(super) lock_held: bool,
     pub(super) last_advance: Option<NodeAdvance>,
     pub(super) last_topology_recompute: bool,
-    /// Proven emission floors of host RUNs held outside this staged scheduler.
+    /// Evidence of host RUNs held outside this staged scheduler.
     ///
     /// Only a publishing host-concurrent RUN set fills this, and it is empty
     /// again before the scheduler is published. It is never checkpointed.
-    pub(super) held_emission_floors: BTreeMap<NodeId, SimInstant>,
+    pub(super) held_peer_evidence: BTreeMap<NodeId, HeldPeerEvidence>,
     /// Whether completed RUNs are held and published in canonical key order.
     ///
     /// The backend loop's host-concurrent publisher sets this before it plans:
@@ -565,4 +565,13 @@ pub struct SingleScheduler {
     /// clock plus lookahead) that commits in time order by construction. It is
     /// never checkpointed.
     pub(super) held_run_publication: bool,
+}
+
+/// What a held, not yet published host RUN proves about its node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HeldPeerEvidence {
+    /// The node emits nothing at or before this time.
+    pub(super) emission_floor: SimInstant,
+    /// The physical VM has executed through this time.
+    pub(super) executed_through: SimInstant,
 }

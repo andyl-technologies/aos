@@ -52,59 +52,57 @@ pub(super) struct PlannedCatchup {
     pub(super) kind: CatchupKind,
 }
 
-/// Projects each held RUN to the emission floor its evidence proves.
+/// Projects each held RUN to the evidence it proves about its node.
 ///
 /// A held RUN stops at its first output, so a RUN with outputs emits at its
-/// reached tick and its floor lies one tick before it. A RUN without outputs
-/// emits nothing through its settled endpoint. An unresolved boundary RUN may
-/// still emit at its stop.
-pub(super) fn held_emission_floors(
+/// reached tick and its emission floor lies one tick before it. A RUN without
+/// outputs emits nothing through its settled endpoint. An unresolved boundary
+/// RUN may still emit at its stop. The executed-through point is where the
+/// physical VM stands: the reached tick, the settled endpoint, or the stop.
+pub(super) fn held_peer_evidence(
     scheduler: &SingleScheduler,
     held_runs: &BTreeMap<NodeId, HeldHostRun>,
     boundary_runs: &BTreeMap<NodeId, HeldBoundaryRun>,
-) -> Result<BTreeMap<NodeId, SimInstant>, SchedulerError> {
-    let mut floors = BTreeMap::new();
+) -> Result<BTreeMap<NodeId, HeldPeerEvidence>, SchedulerError> {
+    let time = |node: &NodeId, ticks: u64| {
+        scheduler
+            .backend_network_output_time(node, Icount { retired: ticks })
+            .map(|at| SimInstant { ticks: at.ticks })
+    };
+
+    let mut evidence = BTreeMap::new();
     for (node, held) in held_runs {
         let step = &held.completed.step;
-        let floor = if held.completed.network_outputs.is_empty() {
-            scheduler
-                .backend_network_output_time(
-                    node,
-                    Icount {
-                        retired: step.settled_through.ticks,
-                    },
-                )?
-                .ticks
+        let proven = if held.completed.network_outputs.is_empty() {
+            let settled = time(node, step.settled_through.ticks)?;
+            HeldPeerEvidence {
+                emission_floor: settled,
+                executed_through: settled,
+            }
         } else {
-            scheduler
-                .backend_network_output_time(
-                    node,
-                    Icount {
-                        retired: step.reached.ticks,
-                    },
-                )?
-                .ticks
-                .saturating_sub(1)
+            let reached = time(node, step.reached.ticks)?;
+            HeldPeerEvidence {
+                emission_floor: SimInstant {
+                    ticks: reached.ticks.saturating_sub(1),
+                },
+                executed_through: reached,
+            }
         };
-        floors.insert(node.clone(), SimInstant { ticks: floor });
+        evidence.insert(node.clone(), proven);
     }
     for (node, held) in boundary_runs {
-        let stopped = scheduler
-            .backend_network_output_time(
-                node,
-                Icount {
-                    retired: held.boundary.stopped().ticks,
-                },
-            )?
-            .ticks;
-        floors.insert(
+        let stopped = time(node, held.boundary.stopped().ticks)?;
+        evidence.insert(
             node.clone(),
-            SimInstant {
-                ticks: stopped.saturating_sub(1),
+            HeldPeerEvidence {
+                emission_floor: SimInstant {
+                    ticks: stopped.ticks.saturating_sub(1),
+                },
+                executed_through: stopped,
             },
         );
     }
-    Ok(floors)
+    Ok(evidence)
 }
 
 /// Refuses to publish at `next_time` while an unheld live node lags behind it.

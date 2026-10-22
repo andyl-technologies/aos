@@ -4,7 +4,8 @@
 //! the per-node clock vector, the offered configuration, and the event-log
 //! prefix at the publication break. It must not depend on the host worker
 //! count, and re-executing the same log reaches the same cut and the same
-//! post-settlement history.
+//! post-settlement history. A global evaluation deadline that held RUN
+//! evidence has already passed fails closed.
 
 use super::*;
 
@@ -203,4 +204,47 @@ fn re_executing_the_log_reproduces_the_cut_and_the_settled_history() {
         replay.loop_impl().configuration(),
         original.loop_impl().configuration()
     );
+}
+
+#[test]
+fn a_global_deadline_behind_held_run_evidence_fails_closed() {
+    let scheduler = skewed_adapter().loop_impl().clone();
+    let held = |emission_floor: u64, executed_through: u64| {
+        let mut staged = scheduler.clone();
+        staged.set_held_peer_evidence(BTreeMap::from([(
+            NodeId {
+                name: String::from("z-free"),
+            },
+            HeldPeerEvidence {
+                emission_floor: SimInstant {
+                    ticks: emission_floor,
+                },
+                executed_through: SimInstant {
+                    ticks: executed_through,
+                },
+            },
+        )]));
+        staged
+    };
+
+    // A completed RUN held at exactly 20 has not passed a wakeup at 20.
+    held(20, 20)
+        .set_signal_fault_wakeup(Some(20))
+        .expect("a held RUN settled at the wakeup has not passed it");
+
+    // An output held at 21 proves only an emission floor of 20, but the VM has
+    // executed through 21, so an evaluation at 20 would observe it late.
+    for (what, result) in [
+        ("signal", held(20, 21).set_signal_fault_wakeup(Some(20))),
+        (
+            "trigger",
+            held(20, 21).set_trigger_wakeup(Some(VirtualTime { ticks: 20 }), None),
+        ),
+    ] {
+        let error = result.expect_err("a deadline behind held evidence must fail closed");
+        assert!(
+            error.to_string().contains("behind live node z-free at 21"),
+            "unexpected {what} refusal: {error}"
+        );
+    }
 }

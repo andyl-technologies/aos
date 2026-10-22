@@ -199,7 +199,7 @@ impl SingleScheduler {
             lock_held: false,
             last_advance: None,
             last_topology_recompute: false,
-            held_emission_floors: BTreeMap::new(),
+            held_peer_evidence: BTreeMap::new(),
             held_run_publication: false,
         };
         // Trigger matchers exist before the first console byte, so no
@@ -226,24 +226,36 @@ impl SingleScheduler {
     /// A nanosecond coordinate between representable icounts is rounded upward,
     /// so a modeled delay is never shortened by the machine time scale.
     ///
+    /// Nodes run on their own clocks, so a node may already be ahead of the
+    /// shared frontier. An evaluation must observe every live node at its
+    /// coordinate, so a wakeup that some live node has already passed is
+    /// refused rather than applied late.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when the requested wakeup
-    /// is not strictly after the current shared frontier or upward alignment
-    /// overflows the virtual-time representation.
+    /// is not strictly after the current shared frontier, when a live node's
+    /// settled time or held RUN evidence already lies beyond it, or when upward
+    /// alignment overflows the virtual-time representation.
     pub fn set_signal_fault_wakeup(
         &mut self,
         wakeup_ticks: Option<u64>,
     ) -> Result<(), SchedulerError> {
-        if let Some(wakeup_ticks) = wakeup_ticks
-            && wakeup_ticks <= self.frontier.ticks
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "signal fault wakeup {wakeup_ticks} must be after scheduler frontier {}",
-                    self.frontier.ticks
-                ),
-            });
+        if let Some(wakeup_ticks) = wakeup_ticks {
+            if wakeup_ticks <= self.frontier.ticks {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "signal fault wakeup {wakeup_ticks} must be after scheduler frontier {}",
+                        self.frontier.ticks
+                    ),
+                });
+            }
+            self.require_no_live_node_beyond(
+                SimInstant {
+                    ticks: wakeup_ticks,
+                },
+                "signal fault wakeup",
+            )?;
         }
         self.signal_fault_wakeup = wakeup_ticks.map(|ticks| SimInstant { ticks });
         Ok(())
@@ -291,20 +303,12 @@ impl SingleScheduler {
                     ),
                 });
             }
-            for node in &self.nodes {
-                if !matches!(
-                    self.effective_node_activity(node),
-                    SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
-                ) && self.node_scheduler_time(node)?.ticks > wakeup.ticks
-                {
-                    return Err(SchedulerError::BoundaryViolation {
-                        message: format!(
-                            "trigger deadline {} is behind live node {}",
-                            wakeup.ticks, node.id.node.name
-                        ),
-                    });
-                }
-            }
+            self.require_no_live_node_beyond(
+                SimInstant {
+                    ticks: wakeup.ticks,
+                },
+                "trigger deadline",
+            )?;
         }
         self.trigger_wakeup = wakeup.map(|at| SimInstant { ticks: at.ticks });
         self.trigger_activation = activation.map(|at| SimInstant { ticks: at.ticks });

@@ -27,9 +27,16 @@
 //! # Held evidence
 //!
 //! While a host-concurrent RUN set publishes, completed peer RUNs are held
-//! outside the staged scheduler. [`SingleScheduler::held_emission_floors`]
-//! carries each held peer's proven emission floor so a catch-up RUN of another
+//! outside the staged scheduler. The scheduler's held peer evidence carries
+//! each held peer's proven emission floor so a catch-up RUN of another
 //! node may use that evidence instead of the peer's stale pre-RUN clock.
+//!
+//! # Global deadlines
+//!
+//! Signal-fault and trigger evaluations must observe every live node at their
+//! coordinate. Because nodes run on their own clocks, arming such a deadline
+//! is refused when a live node's settled time, or the point a held VM has
+//! physically executed through, already lies beyond it.
 
 use std::collections::BTreeMap;
 
@@ -86,8 +93,8 @@ impl SingleScheduler {
                     }
                 }
             };
-            if let Some(held) = self.held_emission_floors.get(&node.id.node).copied() {
-                floor = raise_floor(floor, held);
+            if let Some(held) = self.held_peer_evidence.get(&node.id.node) {
+                floor = raise_floor(floor, held.emission_floor);
             }
             floors.insert(node.id.clone(), floor);
         }
@@ -132,9 +139,46 @@ impl SingleScheduler {
         })
     }
 
-    /// Replaces the held peer evidence used by catch-up horizon planning.
-    pub(super) fn set_held_emission_floors(&mut self, floors: BTreeMap<NodeId, SimInstant>) {
-        self.held_emission_floors = floors;
+    /// Replaces the held peer evidence used by catch-up horizon planning and
+    /// by global deadline checks.
+    pub(super) fn set_held_peer_evidence(&mut self, evidence: BTreeMap<NodeId, HeldPeerEvidence>) {
+        self.held_peer_evidence = evidence;
+    }
+
+    /// Refuses a global evaluation deadline that a live node already passed.
+    ///
+    /// A halted or finished node acts only on an input, which the evaluation
+    /// precedes, so only the other nodes are checked. While a host-concurrent
+    /// RUN set publishes, a peer's completed RUN is held outside this
+    /// scheduler; the point its VM has physically executed through counts as
+    /// its clock.
+    pub(super) fn require_no_live_node_beyond(
+        &self,
+        deadline: SimInstant,
+        what: &str,
+    ) -> Result<(), SchedulerError> {
+        for node in &self.nodes {
+            if matches!(
+                self.effective_node_activity(node),
+                SchedulerNodeActivity::Halted | SchedulerNodeActivity::Done
+            ) {
+                continue;
+            }
+            let settled = self.node_scheduler_time(node)?;
+            let clock = self
+                .held_peer_evidence
+                .get(&node.id.node)
+                .map_or(settled, |held| held.executed_through.max(settled));
+            if clock > deadline {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "{what} {} is behind live node {} at {}",
+                        deadline.ticks, node.id.node.name, clock.ticks
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn earliest_pending_event_for(&self, node: &SchedulerNodeId) -> Option<SimInstant> {
