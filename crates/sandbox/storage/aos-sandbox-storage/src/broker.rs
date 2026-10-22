@@ -9631,6 +9631,14 @@ mod tests {
             return;
         }
 
+        if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG {
+            // Exercise method admission with a live signed preparation, rather
+            // than failing the client on the boot-time template's expiry.
+            let packet = storage_rpc_prepare_packet();
+            storage_rpc_session::reject_unavailable_method(method, &packet);
+            return;
+        }
+
         let prefix = match method {
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY => "apply",
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => "prepare",
