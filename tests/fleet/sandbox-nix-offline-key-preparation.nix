@@ -5,6 +5,7 @@
   systems,
   ...
 }: let
+  nodeHex = "41414141414141414141414141414141";
   runtimeSystem = (import ./_sandbox-funded-system.nix {inherit lib pkgs systems;}).extendModules {
     modules = [{systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];}];
   };
@@ -23,7 +24,7 @@
       import sys
 
       output = pathlib.Path(sys.argv[1])
-      output.joinpath("node-id").write_bytes(bytes([0x41]) * 16)
+      output.joinpath("node-id").write_bytes(bytes.fromhex("${nodeHex}"))
       # RFC 8032's first public vector is test data. This image carries no
       # approval signing key and cannot approve the generated candidates.
       public = bytes.fromhex(
@@ -70,7 +71,8 @@
         # bank producer. It has no online Nix owner or recovery recipient; the
         # unused Controller envelope stays reserved, never repurposed as a loan.
         aos.sandbox.resourceBank.policy = {
-          inherit (installationPolicy) node epoch capacity baseline controller components;
+          node = nodeHex;
+          inherit (installationPolicy) epoch capacity baseline controller components;
         };
         # Keep the unchanged genuine target-image Controller in PID1's
         # immutable inventory without activation or runtime private inputs.
@@ -142,7 +144,7 @@ in {
             public = bytes.fromhex(encoded)
             assert len(public) == 268 and public.hex() == encoded
             assert public[:12] == b'AOSNPC03\x03\0\0\0'
-            assert public[28:44] == bytes([0x41]) * 16
+            assert public[28:44] == bytes.fromhex("${nodeHex}")
             exports.append(public)
         return exports
 

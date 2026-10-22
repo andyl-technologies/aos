@@ -9883,7 +9883,8 @@ Offline installation now requires an explicit finite immutable bank policy.
 The base bank may be installed without an enabled Controller only for this
 standalone manual owner; every online subdivision retains its enabled-owner
 requirements. The fixture uses the existing policy producer and the original
-six base policy fields, retaining its unused Controller reservation. Its
+base policy, retaining its unused Controller reservation. The bank uses the
+same node identity as the candidate's independently delivered public input. Its
 unchanged target Controller fragment remains installed and inactive. Missing
 funding, a missing installation owner and online subdivisions without their
 Controller are rejected by the hardware-profile check. Core evaluation passes;
@@ -9893,7 +9894,7 @@ preparation unit before its first start.
 The fixture backs that unchanged policy with 16 virtual CPUs, 36 GiB memory
 and a 64 GiB writable volume, matching the funded image's physical provision.
 Before preparing candidates it checks the guest CPU count, at least 32 GiB
-available physical memory and enough free writable storage for the advertised
+physical memory and enough free writable storage for the advertised
 capacity. Earlier 4 GiB installation boots cannot qualify that bank's fit.
 
 That Root run then fails native host activation while querying `srv.mount`:
