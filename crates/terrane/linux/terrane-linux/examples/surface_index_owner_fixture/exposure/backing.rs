@@ -42,8 +42,9 @@ pub(super) async fn check(
         || row.uid != actual.uid()
         || row.uid != uid
         || row.gid != actual.gid()
-        || row.gid != owner.content_gid
+        || (kind == ExposureBackingKind::Index && row.gid != owner.content_gid)
         || row.mode != (actual.mode() & 0o7777) as u16
+        || row.mode != 0o400
         || row.size != actual.len()
         || row.allocated
             != actual

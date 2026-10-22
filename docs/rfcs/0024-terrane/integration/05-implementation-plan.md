@@ -13915,3 +13915,26 @@ and required application compilation still need frozen qualification.
 This increment introduces no physical release, pending-unlink transition or cold
 exposure reconciliation. The owner must still bind exact durable incarnations
 to serialized retirement before consuming closure evidence. No task is closed.
+
+Frozen native qualification at `0ec93fcd1d` fails in 706.44 seconds after
+all original run/cap, mapped-file and malformed cold-refusal controls pass.
+The exposure actor rejects its actual sealed source with `exposure backing lost
+original native custody`. The new capture incorrectly imposes the cache's
+shared content GID on publisher-owned sealed bodies. Existing native source
+validation requires the publisher UID, exact owner-only `0400` mode, original
+device/project, link count and seal; publisher-private staging does not impose
+the cache content group. Sealed-file creation retains its native group through
+sealing and publication.
+
+Capture now keeps and subsequently compares that original observed GID for
+sealed bodies. Indexes still require the configured content GID. Both classes
+require exact `0400` backing mode, with all original device, UID, project, link,
+measurement and identity checks retained. The native fixture still compares
+every persisted group with its actual granted descriptor. The failed image and
+build directory remain retained. No backing-record or authenticated-census
+runtime pass is claimed until the corrected frozen source executes.
+
+The ownership correction passes formatting and strict Linux all-target Clippy
+in both all-feature and ordinary Tokio-only profiles. The actual descriptor
+comparison remains in the native fixture; no success witness, refusal control,
+capacity or timeout is relaxed.

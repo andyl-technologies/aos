@@ -22,11 +22,14 @@ pub(in crate::host_cache::owner) fn capture(
             config.publisher.identities.publish_uid
         }
     };
+    // Indexes use the cache's shared content group. Sealed bodies originate in
+    // publisher-private staging and are protected by owner-only mode instead;
+    // their actual group is retained below, independently of the content group.
     if !metadata.is_file()
         || metadata.dev() != owner.preparation.layout().directory_binding("objects")?.0
         || metadata.uid() != uid
-        || metadata.gid() != config.content_gid
-        || metadata.mode() & 0o222 != 0
+        || (kind == ExposureBackingKind::Index && metadata.gid() != config.content_gid)
+        || metadata.mode() & 0o7777 != 0o400
         || metadata.nlink() != 1
         || NativeProject::inspect(file)?.project_id != config.project_id
     {
