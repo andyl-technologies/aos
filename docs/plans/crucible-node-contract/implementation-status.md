@@ -2905,6 +2905,47 @@ Qualification of that exact commit completed with:
 
 No new VM or configured engine/daemon runtime qualification is claimed here.
 
+## Original bootstrap proof verification qualification
+
+Commit `245daaf89e` verifies the original correlated bootstrap proof inside the
+same current SDK, Host-plan, literal, strict-Value and typed-input loan. The
+context binds all five normalization hashes, both actual published Hello frame
+digests, the SDK's retained assigned request, Recipe identity and initial row.
+The actual private key remains borrowed inside its owner.
+
+Construction, assignment, context, context digest and verification have separate
+admissions and surviving-state observations. Both attempt occurrences are spent
+before guards. Refusal fences the actual SDK correlation while preserving its
+accepted request and every constructed output; neither a fresh external attempt
+nor a matching MAC supplies opaque Source funding, native permission or an ACK.
+
+The independent Source/native initial formulas include the complete proof row
+and its actual context backing. Assignment quotes include the typed body clone,
+both canonicalization DOMs, canonical output and concrete loan controls. Failed
+normalization and completed decoding retain their separately calculated lifetime
+maxima. The policy cap, original cut and later partitions remain unchanged.
+
+Qualification of that exact commit completed with:
+
+- 1,978 transport unit tests passed in each of the standard and `raw_value`
+  configurations; 16 intentional ignores in each configuration.
+- The proof control covers 46 independent inherited-channel flights: complete
+  and reactive peers; altered context operands, funding, key, MAC and digest;
+  missing correlation, changed cut and loan failures; and admission refusal,
+  expiry and revocation at nine construction/verification boundaries.
+- Independent initial construction, retained-lifetime arithmetic, exact-peak,
+  short-credit and concrete Copy-result checks passed.
+- Transport, engine and daemon all-feature/all-target compilation passed.
+- All six phase-1 architecture checks and owned-source formatting passed.
+- The required application-target gate compiled 180 test executables from 58
+  packages, including 71 integration targets.
+- All 334 tracked Rust/Cargo inputs matched both the committed bytes and the
+  application gate's captured Nix source.
+
+No new VM or configured engine/daemon runtime qualification is claimed here.
+Genuine Source/Birth funding, opaque Initial/Recipe production, actual bootstrap
+reply publication and the remaining full RFC acceptance criteria remain open.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
