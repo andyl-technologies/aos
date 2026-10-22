@@ -3435,6 +3435,29 @@ Private Source verification, genuine Initial/Recipe production and the remaining
 full RFC obligations remain unfinished. No new configured runtime or VM
 qualification follows from these results.
 
+## Canonical Bootstrap digest spelling
+
+Commit `e802d89c5c` corrects three Bootstrap paths that used the standard Base64
+alphabet: unsigned recipe construction, SDK wire correspondence and raw response
+preflight. Each now uses the defining `Bytes` type's unpadded URL-safe alphabet.
+The change preserves fixed buffers, decoder layouts and accounting terms. Valid
+digests containing `-` or `_` now survive construction and receipt scanning;
+standard-alphabet spellings refuse before generic response parsing.
+
+The regressions cover all 256 recipe byte values, all 256 values in each of four
+response digest fields, standard alphabets, padding and noncanonical trailing
+bits. Six actual Unix-socket flights complete assignment, reservation, sealing,
+publication, raw receipt, typed decoding and the actual SDK request move. Their
+negotiation and MAC fixtures remain inert and issue no Source or native grant.
+
+All 212 client, 220 connection and 38 Bootstrap ACK controls pass separately in
+standard and raw-JSON modes. Transport/Engine/Daemon all-feature/all-target
+checking, owned-file formatting and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including 71
+integration targets. All 409 owned Rust/Cargo inputs match the committed revision
+and its actual captured source. That gate runs no tests. No new full-library,
+configured runtime or VM qualification follows from this checkpoint.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
