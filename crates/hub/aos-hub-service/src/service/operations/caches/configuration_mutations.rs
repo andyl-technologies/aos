@@ -222,7 +222,10 @@ impl RpcService {
                 ],
                 body,
             ));
-            return Ok(Some(resp));
+            return Ok(Some(Self::apply_machine_cache_policy(
+                resp,
+                cache.visibility == "public",
+            )));
         }
 
         let requested = parse_byte_range(range_header);
@@ -237,7 +240,11 @@ impl RpcService {
         .map_err(RpcError::surface_read)?
         {
             PlacementReadOutcome::Found(read) => {
-                return Ok(Some(Self::streamed_surface_response(path, read.value)?));
+                return Ok(Some(Self::streamed_surface_response(
+                    path,
+                    read.value,
+                    cache.visibility == "public",
+                )?));
             }
             PlacementReadOutcome::NotFound => return Ok(None),
         }

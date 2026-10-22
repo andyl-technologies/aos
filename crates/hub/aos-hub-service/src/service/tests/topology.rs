@@ -115,9 +115,15 @@ fn streamed_topology_read_does_not_expose_the_placement() {
             strong_etag: None,
             snapshot_lease_id: None,
         },
+        true,
     )
     .unwrap();
     assert!(!response.headers().contains_key("x-aos-placement"));
+    assert_eq!(
+        response.headers()[axum::http::header::CACHE_CONTROL],
+        aos_hub_model::keymap::IMMUTABLE_CACHE_CONTROL
+    );
+    assert!(!response.headers().contains_key(axum::http::header::VARY));
 }
 
 #[test]
