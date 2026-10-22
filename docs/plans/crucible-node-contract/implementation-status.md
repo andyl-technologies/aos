@@ -2268,6 +2268,27 @@ permission. The genuine enclosing producer, model-absent Native18 policy,
 bootstrap ACK, opaque Initial/Recipe, restoration and full RFC acceptance remain
 unfinished.
 
+## Shared original decoded launch custody
+
+The native decoder now moves the actual successful selected9 DTO into one
+immutable Rc before any later boot decoder. Original typed-body borrows still
+refer to that same object. A future model-absent policy can retain its graph
+without cloning the launch, configuration or children. Equal separately decoded
+launches remain distinct owners; future alias discounts must prove pointer
+identity with this original shared edge.
+
+Both independent parser calculations include the defining shared allocation,
+move headers and fixed controls. Whole decoded-body census counts its actual
+out-of-line payload and header beside the existing child allocations. A failed
+later boot decoder preserves the original graph and refuses replacement.
+Existing Source caps remain unchanged. This ownership transition constructs no
+policy, native model, bootstrap ACK, opaque Initial/Recipe or genuine funding.
+
+All 22 focused startup parser/ownership controls pass, including three new
+ownership cases for both program families. The seventeen-case inherited-socket
+publication control also passes with the same shared launch owner. Full
+transition qualification remains in progress.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

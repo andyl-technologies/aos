@@ -164,6 +164,9 @@ fn from_shapes(
             partials[index],
             maximum,
         )?;
+        if index == 1 {
+            row = super::retained::include_shared_launch_data(row, maximum)?;
+        }
         let profile = BootstrapBodyMetadataProfileData::from_populations_data(
             raw.maximum_value_nodes,
             raw.maximum_object_members,

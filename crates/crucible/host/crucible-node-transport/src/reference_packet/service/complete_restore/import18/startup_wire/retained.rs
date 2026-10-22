@@ -2,17 +2,19 @@
 //!
 //! Successful prefixes stay installed before the next fallible decoder. These
 //! slots contain no validated model, opaque recipe, Initial or native grant.
+//! The successful launch enters one immutable shared owner before later decoding.
 
 use super::*;
 use crate::retained_metadata::{
     BootstrapBodyMetadataProfileData, MetadataObserver,
     bootstrap_body_metadata_counter_scratch_data, requested_metadata_backing_storage_data,
 };
+use std::rc::Rc;
 
 /// Owns the three actual DTO slots and their original lexical census profiles.
 pub(in crate::reference_packet) struct OriginalImport18DecodedBodies {
     recipe: Option<PacketNativeImport18PrebirthRecipeWireData>,
-    launch: Option<PacketNativeImport18SelectedLaunchWireData>,
+    launch: Option<Rc<PacketNativeImport18SelectedLaunchWireData>>,
     boot: Option<PacketNativeImport18PrivateBootWireData>,
     profiles: [Option<BootstrapBodyMetadataProfileData>; 3],
 }
@@ -85,6 +87,9 @@ impl OriginalImport18DecodedBodies {
 
     /// Installs the actual selected9 launch before any later boot decoder.
     ///
+    /// The successful DTO moves directly into one immutable shared allocation;
+    /// no model configuration or decoded child is cloned.
+    ///
     /// # Errors
     /// Refuses occupied slots or invalid strict JSON/typed DATA.
     pub(in crate::reference_packet) fn decode_launch(
@@ -94,7 +99,7 @@ impl OriginalImport18DecodedBodies {
         if self.launch.is_some() || self.recipe.is_none() || self.profiles[1].is_none() {
             return Err(invalid());
         }
-        self.launch = Some(decode(raw)?);
+        self.launch = Some(Rc::new(decode(raw)?));
         Ok(())
     }
 
@@ -125,6 +130,20 @@ impl OriginalImport18DecodedBodies {
             launch: self.launch.as_ref().ok_or_else(invalid)?,
             boot: self.boot.as_ref().ok_or_else(invalid)?,
         })
+    }
+
+    /// Borrows the same immutable launch owner for separately admitted policy adoption.
+    ///
+    /// This DATA owner supplies no original Source, funding, policy or native
+    /// permission. The enclosing bootstrap guards its physical custody and cut
+    /// before and after any future adoption.
+    ///
+    /// # Errors
+    /// Refuses an absent original decoded launch.
+    pub(in crate::reference_packet) fn shared_launch_data(
+        &self,
+    ) -> Result<&Rc<PacketNativeImport18SelectedLaunchWireData>, ProviderError> {
+        self.launch.as_ref().ok_or_else(invalid)
     }
 
     #[cfg(test)]
@@ -164,7 +183,13 @@ impl OriginalImport18DecodedBodies {
                 boot.observe_backing_data(observer)
             })?;
         }
-        requested_metadata_backing_storage_data(&observer.finish())
+        let dynamic = requested_metadata_backing_storage_data(&observer.finish())?;
+        let shared = if self.launch.is_some() {
+            shared_launch_construction_data()?[0]
+        } else {
+            0
+        };
+        dynamic.checked_add(shared).ok_or_else(exhausted)
     }
 }
 
@@ -260,6 +285,7 @@ impl PacketNativeImport18PrivateBootWireData {
 /// Names actual output slots, quote views and fallible decode/census controls.
 pub(in crate::reference_packet) fn private_body_owner_counter_scratch_data() -> usize {
     bootstrap_body_metadata_counter_scratch_data()
+        + shared_launch_counter_scratch_data()
         + size_of::<&mut OriginalImport18DecodedBodies>()
         + size_of::<&OriginalImport18DecodedBodies>()
         + size_of::<[&[u8]; 3]>()
@@ -275,6 +301,75 @@ pub(in crate::reference_packet) fn private_body_owner_counter_scratch_data() -> 
         + size_of::<Result<usize, ProviderError>>()
 }
 
+/// Prices the actual immutable launch allocation independently of decoded children.
+///
+/// The defining decoder moves its successful DTO directly into this Rc. The
+/// same original graph can later be retained by a model-absent policy without
+/// cloning strings, maps, byte banks or model configuration. Each additional
+/// shared edge must prove Rc pointer identity before receiving an alias discount.
+///
+/// # Errors
+/// Refuses unsupported shared header geometry or checked layout overflow.
+pub(super) fn shared_launch_construction_data() -> Result<[usize; 3], ProviderError> {
+    let retained = crate::retained_metadata::requested_storage::shared_header_storage_data(
+        1,
+        std::mem::align_of::<PacketNativeImport18SelectedLaunchWireData>(),
+    )?
+    .checked_add(size_of::<PacketNativeImport18SelectedLaunchWireData>())
+    .ok_or_else(exhausted)?;
+    let transient = size_of::<PacketNativeImport18SelectedLaunchWireData>() * 3
+        + size_of::<Rc<PacketNativeImport18SelectedLaunchWireData>>() * 2
+        + size_of::<Option<Rc<PacketNativeImport18SelectedLaunchWireData>>>();
+    Ok([retained, transient, shared_launch_counter_scratch_data()])
+}
+
+/// Adds concrete launch adoption to either independent parser calculation.
+///
+/// # Errors
+/// Refuses checked accumulation or an insufficient complete parser restriction.
+pub(super) fn include_shared_launch_data(
+    parser: [usize; 3],
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
+    let shared = shared_launch_construction_data()?;
+    let mut row = parser;
+    for axis in 0..3 {
+        row[axis] = row[axis].checked_add(shared[axis]).ok_or_else(exhausted)?;
+    }
+    if row
+        .into_iter()
+        .try_fold(0usize, usize::checked_add)
+        .is_none_or(|n| n > maximum)
+    {
+        return Err(exhausted());
+    }
+    Ok(row)
+}
+
+fn shared_launch_counter_scratch_data() -> usize {
+    size_of::<&OriginalImport18DecodedBodies>()
+        + size_of::<&Rc<PacketNativeImport18SelectedLaunchWireData>>() * 2
+        + size_of::<Option<&Rc<PacketNativeImport18SelectedLaunchWireData>>>()
+        + size_of::<Result<&Rc<PacketNativeImport18SelectedLaunchWireData>, ProviderError>>()
+        + size_of::<PacketNativeImport18SelectedLaunchWireData>()
+        + size_of::<Result<PacketNativeImport18SelectedLaunchWireData, ProviderError>>()
+        + size_of::<Rc<PacketNativeImport18SelectedLaunchWireData>>() * 2
+        + size_of::<Option<Rc<PacketNativeImport18SelectedLaunchWireData>>>()
+        + size_of::<std::alloc::Layout>() * 2
+        + size_of::<Result<std::alloc::Layout, std::alloc::LayoutError>>()
+        + size_of::<[usize; 3]>() * 3
+        + size_of::<std::ops::Range<usize>>()
+        + size_of::<std::array::IntoIter<usize, 3>>()
+        + size_of::<usize>() * 4
+        + size_of::<Option<usize>>() * 2
+        + size_of::<Result<usize, ProviderError>>() * 2
+}
+
 fn exhausted() -> ProviderError {
     ProviderError::ResourceExhausted("original import18 typed body storage")
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+#[path = "retained/tests.rs"]
+mod tests;

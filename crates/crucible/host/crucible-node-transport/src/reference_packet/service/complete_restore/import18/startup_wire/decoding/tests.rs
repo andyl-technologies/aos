@@ -39,7 +39,10 @@ fn selected9_quote_covers_actual_producer_and_reactive_launch_backing() {
         let boot_raw = canonical::canonical_json(&boot(32, json!({}))).unwrap();
         let all = private_body_decode_backing_data([&recipe_raw, &raw, &boot_raw], usize::MAX / 4)
             .unwrap();
-        assert_eq!(all[1], row);
+        assert_eq!(
+            all[1],
+            super::super::retained::include_shared_launch_data(row, usize::MAX / 4).unwrap()
+        );
         assert!(!private_body_typed_geometry_data()[0].has_heap_fields);
     }
 }

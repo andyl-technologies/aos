@@ -33,7 +33,12 @@ pub(in crate::reference_packet) fn private_body_decode_backing_data(
     let partials = private_body_typed_partials_data();
     let mut rows = [[0; 3]; 3];
     for index in 0..3 {
-        rows[index] = body(bodies[index], geometry[index], partials[index], maximum)?;
+        let parser = body(bodies[index], geometry[index], partials[index], maximum)?;
+        rows[index] = if index == 1 {
+            super::retained::include_shared_launch_data(parser, maximum)?
+        } else {
+            parser
+        };
     }
     Ok(rows)
 }
