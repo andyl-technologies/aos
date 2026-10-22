@@ -9892,7 +9892,7 @@ the artifact and installed runs remain pending. The test also compares the
 byte-valued manager diagnostic correctly and does not reset a never-loaded
 preparation unit before its first start.
 The fixture backs that unchanged policy with 16 virtual CPUs, 36 GiB memory
-and a 64 GiB writable volume, matching the funded image's physical provision.
+and a 96 GiB disk, matching the funded image's physical provision.
 Before preparing candidates it checks the guest CPU count, at least 32 GiB
 physical memory and enough free writable storage for the advertised
 capacity. Earlier 4 GiB installation boots cannot qualify that bank's fit.
@@ -9905,8 +9905,9 @@ fragment and drop-ins. The invocation's existing private manager connection
 owns the reference until it closes. No lifecycle or definition check is waived.
 All three pinned-manager tests pass through the AOS-built D-Bus broker,
 including a regression that collects unreferenced inactive units and retains
-alias rejection. Full Rust target compilation and installed reruns remain
-required for this repair.
+alias rejection. Full Rust target compilation passes at
+`/nix/store/2m4galhnk2wd5mblb1dnksd958mh4d0p-aos-test-targets-0.1.0`.
+Installed reruns remain required for this repair.
 
 The post-pin handoff adversary now retains its procfs and target descriptors
 in one C process, survives switch-root's final signal broadcast, and publishes
