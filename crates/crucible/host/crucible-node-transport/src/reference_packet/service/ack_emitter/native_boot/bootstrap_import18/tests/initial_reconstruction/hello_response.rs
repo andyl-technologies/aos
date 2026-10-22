@@ -329,3 +329,16 @@ fn original_hello_response_retains_actual_completed_body_and_every_terminal_owne
         flight(case);
     }
 }
+
+/// Constructs the original completed response before isolated verifier controls.
+pub(super) fn construct_for_verifier(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_envelope::construct_for_response(owner);
+    let admission = Admission {
+        case: "initial_hello_response_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_hello_response_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}

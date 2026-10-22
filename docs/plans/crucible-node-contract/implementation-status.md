@@ -1991,6 +1991,36 @@ Complete affected-crate qualification remains pending. This reduces transient
 copies on the SDK path; its complete constructor row, native verifier and original
 root invocation remain unfinished, along with policy/ACK/model authority.
 
+## Original Native18 Hello verifier callbacks
+
+A private initial-only verifier now borrows the actual original process/thread,
+private socket, unchanged cut, completed public exchange, immutable launch,
+selected native roster and original SDK request/result objects. Each callback
+checks the real kernel parent/UID and completed stream before and after its work.
+It remeasures the controller image and compares its full ContentRef. Installation
+identities, private token, complete implementation and launch receipt must match
+the same launch. Contract selection requires the original result/feature objects,
+exact native roster, empty initial schema policy and complete binding guarantees.
+The enclosing root still owes its complete original input guards and funding.
+
+Callback state is spent before fallible work. Authentication precedes contract
+selection; failures, repeats, resumption and replacement fencing refuse. The
+verifier creates no descriptor, deadline, configuration clone or SDK lease.
+
+The actual inherited-process control passes for both program families. It checks
+identity/token/implementation/receipt substitution, copied request/result and
+manifest/feature operands, nonempty schemas, changed guarantees, callback order,
+spent retries, foreign process/thread, a substituted socket, changed/expired cuts
+and a different full controller image reference. Original census is unchanged,
+all banks and response remain retained, and SDK authority stays absent. All 101
+bootstrap controls pass, with zero failures and the existing private child ignored.
+Complete qualification remains pending.
+
+This is a callback component. The original root has not invoked SDK admission
+with it: the complete separately admitted SDK constructor and callback rows are
+still required. Publication, ACK, Native18 policy, model adoption and opaque
+Initial/Recipe production remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

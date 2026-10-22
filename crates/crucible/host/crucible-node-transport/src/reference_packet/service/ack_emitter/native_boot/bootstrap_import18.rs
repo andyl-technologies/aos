@@ -29,6 +29,9 @@ use std::{mem::size_of, os::unix::net::UnixStream, thread::ThreadId, time::Durat
 #[path = "bootstrap_import18/channel_custody.rs"]
 mod channel_custody;
 
+#[path = "bootstrap_import18/hello_verifier.rs"]
+mod hello_verifier;
+
 #[path = "bootstrap_import18/receiving_banks.rs"]
 mod receiving_banks;
 
