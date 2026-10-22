@@ -615,12 +615,6 @@ in {
         "--numeric --numeric-priority list table inet aos_sandbox"
     )
     print(actual_nft_json)
-    assert lifecycle.succeed(
-        f"{NSENTER} --net={managed_pin} {FIXTURE} nft-observe {IP} {NFT} {FIXTURE} "
-        f"{GATE_OBJECT} "
-        f"{managed_sandbox_ifindex} {managed_sandbox_address_1} "
-        f"{managed_sandbox_address_2}"
-    ).strip() == "NFT_OBSERVER_OK"
     # Observe the initial Prepared pair before any link has been raised.
     # Neighbor equality is a plan postcondition of the complete kernel
     # validator. The inventory-only observer above proves stable peer custody.
@@ -749,6 +743,13 @@ in {
         f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
         f"{GATE_OBJECT}"
     ).strip() == "OBSERVER_OK managed"
+
+    assert lifecycle.succeed(
+        f"{NSENTER} --net={managed_pin} {FIXTURE} nft-observe {IP} {NFT} {FIXTURE} "
+        f"{GATE_OBJECT} "
+        f"{managed_sandbox_ifindex} {managed_sandbox_address_1} "
+        f"{managed_sandbox_address_2}"
+    ).strip() == "NFT_OBSERVER_OK"
 
     # Observer-scoped cleanup must not touch the fixed-root pins used by the
     # independent lease-gate proof fixture.

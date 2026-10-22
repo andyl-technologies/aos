@@ -487,6 +487,12 @@ fn veth_flags(up: bool) -> &'static [&'static str] {
     }
 }
 
+fn valid_link_qdisc(qdisc: &str, loopback: bool, up: bool) -> bool {
+    // A new fenced veth has never installed its noqueue discipline. Raising
+    // it installs noqueue, which remains after the pair is lowered again.
+    qdisc == "noqueue" || (!loopback && !up && qdisc == "noop")
+}
+
 const LINK_FIELDS: &[&str] = &[
     "ifindex",
     "link_index",
@@ -526,7 +532,7 @@ fn validate_link_metadata(
     up: bool,
 ) -> Result<ObservedIpv6AddressGenerationV1, NetworkKernelReaderError> {
     let loopback = kind == "loopback";
-    if required_string(object, "qdisc")? != "noqueue"
+    if !valid_link_qdisc(required_string(object, "qdisc")?, loopback, up)
         || required_string(object, "operstate")?
             != if loopback {
                 "UNKNOWN"
@@ -688,7 +694,7 @@ fn validate_address_link_record(
     };
     if required_u32(object, "mtu")? != link.mtu
         || !string_array_equals(required_array(object, "flags")?, expected_flags)
-        || required_string(object, "qdisc")? != "noqueue"
+        || !valid_link_qdisc(required_string(object, "qdisc")?, loopback, link.up)
         || required_string(object, "operstate")?
             != if loopback {
                 "UNKNOWN"
@@ -1420,6 +1426,7 @@ mod tests {
                 if link["ifname"] != "lo" {
                     link["flags"] = serde_json::json!(["BROADCAST", "MULTICAST"]);
                     link["operstate"] = Value::from("DOWN");
+                    link["qdisc"] = Value::from("noop");
                 }
             }
             encode_ip_json(&records)
@@ -1455,6 +1462,10 @@ mod tests {
         inconsistent[veth_index]["operstate"] = Value::from("DOWN");
         inconsistent[veth_index]["flags"] = serde_json::json!(["BROADCAST", "MULTICAST", "PROMISC"]);
         assert!(decode_links(&encode_ip_json(&inconsistent)).is_err());
+
+        let mut raised: Value = serde_json::from_slice(MANAGED_LINKS).unwrap();
+        raised[veth_index]["qdisc"] = Value::from("noop");
+        assert!(decode_links(&encode_ip_json(&raised)).is_err());
     }
 
     #[test]
