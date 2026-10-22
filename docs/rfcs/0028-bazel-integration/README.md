@@ -97,13 +97,12 @@ output contracts below rather than copying those phases into each package.
 
 ## Scope boundaries
 
-The primary migration is the Rust workspace. The proposed Nix evaluator under
-`native/nix-eval/` is an early native consumer of the same infrastructure.
-Standalone first-party tools such as `tools/accache/` join after their
-bootstrap dependencies have been checked.
+The primary migration is the Rust workspace, with shared infrastructure for
+first-party native code. Standalone first-party tools such as `tools/accache/`
+join after their bootstrap dependencies have been checked.
 
 Upstream packages may keep Cargo, Make, CMake, Meson, or their existing Bazel
 definitions. This RFC does not translate the whole distribution into Bazel,
-replace Nix system evaluation, implement a new Nix interpreter, or deploy a
-remote build service. It defines interfaces that can accommodate a remote
-action cache later without making one a prerequisite.
+replace Nix system evaluation, or deploy a remote build service. It defines
+interfaces that can accommodate a remote action cache later without making
+one a prerequisite.

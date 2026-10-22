@@ -3,7 +3,7 @@
 ## Rollout order
 
 The rollout is Rust-first, with native code exercising the same infrastructure.
-It does not wait for the new evaluator or a distributed execution service.
+It does not wait for a distributed execution service.
 
 ### 1. Inventory and baseline
 
@@ -30,7 +30,7 @@ across separate Nix derivations with private output bases, including the
 invalidation tests below. Establish source inventory generation and package
 manifest validation. A fast repeat build in one Bazel server is insufficient.
 
-### 3. Rust pilot and native consumer
+### 3. Rust pilot and native integration
 
 Migrate a small reusable Rust crate and a real binary that uses it. Include
 procedural macros and an integration test; add generated code/native linking
@@ -39,10 +39,8 @@ Keep a temporary Cargo oracle only for unmigrated consumers and comparison.
 Use explicit ownership of each target during coexistence; do not change both
 build definitions independently.
 
-Add `native/nix-eval/` through the same toolchain, package, test, benchmark, and
-cache functions. The evaluator's limited language support and runtime design
-have separate acceptance criteria. This RFC does not require an implementation
-before Rust migration can proceed.
+Exercise the same toolchain, package, test, benchmark, and cache functions with
+the native fixture and a declared Rust/native link test.
 
 ### 4. Migrate compatible Rust families
 
@@ -146,9 +144,9 @@ from the recorded baseline before a family's cutover. Publish any accepted
 tradeoff explicitly; do not invent a speedup target without measurements or
 hide an edit-loop regression behind a clean-build average.
 
-For the evaluator and other hardware-sensitive programs, compile first and
-time only fresh program executions. Pin CPU placement, record NUMA/cache
-topology, and control contention. Measure cycles, allocation, peak RSS,
+For hardware-sensitive programs, compile first and time only fresh program
+executions. Pin CPU placement, record NUMA/cache topology, and control
+contention. Measure cycles, allocation, peak RSS,
 branch/cache/TLB events where available, and workload sizes spanning cache
 capacities. Unavailable hardware counters are reported as unavailable, not
 zero. Compare portable and named CPU builds separately, and never reuse a

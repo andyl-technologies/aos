@@ -51,15 +51,15 @@ recompiling the same graph, but do not group unrelated packages merely for
 convenience. Separate package projections avoid retaining an entire multi-tool
 build tree in each installed runtime closure.
 
-An illustrative package recipe is:
+An illustrative package recipe for a migrated Rust target is:
 
 ```nix
 { mkAosBazelPackage, aosBazelWorkspace }:
 mkAosBazelPackage {
-  pname = "nix-eval";
+  pname = "aos";
   version = "0.1.0";
   workspace = aosBazelWorkspace;
-  target = "//native/nix-eval:package";
+  target = "//crates/aos/cli/aos-cli:package";
 }
 ```
 

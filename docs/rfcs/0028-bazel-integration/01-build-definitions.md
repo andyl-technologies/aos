@@ -22,13 +22,13 @@ crates/<owner>/<area>/<crate>/
     BUILD.bazel
     src/
     tests/
-native/nix-eval/
+native/<component>/
     BUILD.bazel
     src/
     tests/
     bench/
 pkgs/build-support/_bazel/    # Shared Nix implementation
-pkgs/tools/nix-eval.nix      # Package policy and Bazel package-target selection
+pkgs/tools/<component>.nix  # Package policy and Bazel package-target selection
 ```
 
 Pin Bazel and the rules to tested versions; the AOS Bazel derivation owns the
@@ -158,8 +158,8 @@ outputs belong to the action output tree, with explicit consumer edges.
 
 Use `rules_cc` for C/C++, with declared `.S` inputs and assembler toolchains for
 assembly. Represent linked Rust/native components in one graph through the
-standard providers. Keep the evaluator's implementation, semantic fixtures,
-and benchmark sources together under `native/nix-eval/`.
+standard providers. Keep each native component's implementation, test fixtures,
+and benchmark sources together under its directory in `native/`.
 
 Define portable release, debug, sanitizer, and named CPU-specific profiles.
 Explicit CPU/ISA, optimization, LTO, panic, codegen-unit, and PGO inputs form
