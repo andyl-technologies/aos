@@ -1,7 +1,8 @@
-From cbcf3ee95a3d9f15dc1b13bd5479cb9a99d32379 Mon Sep 17 00:00:00 2001
+From 7dcd9a8912f74d6b51ee97b1dcb4a13c44a2713f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] plugins: compose reader and deferred return custody
+Subject: [PATCH] crucible: compose retained RR parent and wrapper retirement
+ custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -1294,6 +1295,43 @@ control floor is 288646 bytes. Independently resolved real getter providers add
 Core frame and 144-byte physical Outcome journal. Complete preexec owner storage
 is 212120 bytes; matching configured CPUState, ARMCPU and X86CPU extents are
 16992, 97712 and 33568 bytes. These physical measurements grant no admission.
+
+Compose the separately signed Main RR-parent registration and completed-post
+eligibility correction with the separately signed wrapper-retirement history.
+Preserve their signed histories and the retained reader implementation. Require
+both independent registration posts to have actually entered and returned before
+RR preparation. Retain uncertain and attempted parents without a return issuer.
+
+Keep the existing callback masks stable, assign distinct RR and wrapper masks,
+and protect every canonical Runtime holder, epoch, result and journal span
+symmetrically. Restrict the wrapper disposition exception to its exact enrolled
+address and extent while retaining all other output exclusions. Block wrapper
+retirement on every unclosed RR parent and preserve independent physical-output
+posts, including withholding bytes when physical output identity is unknown.
+Preserve the sticky one-process borrower attempt and unchanged unsupported CPU
+admission; this composition supplies no Module producer or sequential rearm.
+
+Extract the actual new closure predicates in the RR-parent and member-return
+component fixtures. Preserve every original case, omission classifier, assertion
+and bound. Regenerate SDK exports and authenticated generated inputs from the
+actual composed public declarations; retain the initial configured export-list
+mismatch separately from the corrected genuine system links.
+
+The actual joined Source occupies 248088 bytes. Its complete fixed floor is
+292358 bytes, comprising Source and 44270 bytes from 30 genuine configured
+getter providers, including the external 96-byte Main-finish receipt. RR parent
+registration/owner occupy 152/352 bytes; wrapper registration/owner occupy
+112/3096 bytes. The wrapper history receipt is 768 bytes inside that owner.
+Preexec owner/session/storage/recipient extents remain 212120/15936/26008/3264.
+Native frame/registry remain 288/10856; CPUState/ARMCPU/X86CPU remain
+16992/97712/33568. These are physical extents, not admission or lifecycle proof.
+
+Qualify changed configured dependencies and bounded component closures against
+the composed bytes. Preserve earlier whole-cohort and normal-delivery samples
+under their actual executed identities; do not present them as repeated timing
+qualification of this composition. The mandatory dirty-lifecycle refusal remains
+and genuine paid Module, nominal borrower, semantic RR and selected reader or
+CPU execution remain unexecuted.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -24660,6 +24698,131 @@ index 0000000000000000000000000000000000000000..68ec1052c938d3ad0f91c1f4abf4482e
 +canonical output-span exclusions. Registration, actual borrower birth, Module
 +Current, physical borrower consumption and a later RR actor remain unexecuted.
 +Selected CPU admission and advertised activation remain unavailable.
+diff --git a/docs/devel/crucible-quantum-rr-parent.rst b/docs/devel/crucible-quantum-rr-parent.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..8aa574f5bfbe3b8aabcd227cff8b2d3a06804285
+--- /dev/null
++++ b/docs/devel/crucible-quantum-rr-parent.rst
+@@ -0,0 +1,119 @@
++Retained Main-side Quantum RR parent
++===================================
++
++This process-private prerequisite extends the existing entered Main deferred
++constructor. It does not admit CPU execution. The existing Quantum CPU admission
++continues to return ``ENOTSUP``; no RR Current, Module CPU execution, executor
++cleanup guard, terminal cleanup issuer or persistent Outcome is supplied here.
++The genuine Module/Core counterpart has not been enrolled or executed.
++
++The exact implementation base is signed ``d209c909dd6ee09730e7f7bacc71c5494531f1e6``
++(tree ``f972007f922674d882d9c3211f4de0c6859a992d``), which joins the complete
++signed executor bridge and retained Original borrower histories. Its actual
++Source extent is 243472 bytes and its fixed control floor is 287646 bytes.
++These are this branch's measurements; the separately qualified reader union is
++not included.
++
++Registration and canonical fields
++---------------------------------
++
++``qemu_plugin_crucible_advance_quantum_rr_parent_register_v1`` registers the
++24-byte ``qemu_plugin_crucible_quantum_rr_parent_callbacks_v1`` table beneath the
++actual installing v6 member and paid complete callback Runtime. Both callbacks
++are required. Version is exactly one and the table size must match exactly.
++The existing v2 through v6 declarations retain their signatures.
++
++The actual Runtime must provide five separate, aligned fields, all within its
++complete retained extent and outside its originally enrolled complete
++constructor journal:
++
++* ``SourceQuantumRRParent **``: eight bytes;
++* its canonical epoch: eight bytes;
++* ``ModuleQuantumRRParent **``: eight bytes;
++* its canonical epoch: eight bytes;
++* the registration result: 32 bytes.
++
++All five fields are mutually disjoint. The journal must be the exact already
++registered complete constructor journal, not a replacement extent. The common
++output guard protects every field. The registration result is not a generic
++observation exception. The existing exact 1096-byte constructor observation
++field is reused exclusively during the two new entered Main callbacks; a
++1096-byte stack copy is not introduced. Installation births no owner and calls
++no Module callback. It retains independent installing Original and factual
++identity posts, including a bound registration after negative post.
++
++The complete compiled Source registration is 152 bytes and its inline retained
++parent is 352 bytes. Actual Source is therefore 243976 bytes and its fixed floor
++is 288150 bytes: an exact 504-byte increase over the named signed base. The
++existing fixed-floor getter charges the complete Source layout before birth.
++The 64 Runtime bytes are additional physical requirements on the genuinely paid
++complete callback child; decoded geometry does not pay or issue that child.
++The Module-specific Core loan and cleanup journals must already belong to that
++genuinely charged complete journal; 64 bytes does not price their opaque
++implementation. The absent Module producer still needs its actual complete
++layout and payment. Native and CPU layouts are unchanged by this prerequisite.
++Inline storage is not an executor-stack payer.
++
++Main preparation and independent observations
++--------------------------------------------
++
++The real ``pending_deferred_handoff`` calls ``quantum_rr_parent_prepare`` only
++after its existing Module defer and independent Current cuts establish the same
++retained Original/Advance. Absence of this additive registration preserves the
++older Main behavior and acquires no new parent. An installed registration must
++freshly authenticate the actual member, Runtime fields, existing Source
++Original borrower, exact deferred child and genuine retained terminal-cleanup
++holder before any new callback is attempted.
++
++Source publishes its child and canonical holder/epoch before invoking
++``QemuCrucibleModuleQuantumRRParentPrepareV1``. The callback receives the exact
++existing Module deferred, Original, Advance and terminal-cleanup holders and
++serials. The Module must retain its real nominal cross-thread Core loan under
++the same already-entered operation. It must not create another Original,
++origin, clock, guard or operation from the Source pointer or observation.
++
++Source saves every born Module output immediately on callback return, before
++any independent Current or post. It then runs independent Source, deferred
++recipient, Native, recipient, cohort and final publication cuts, preserving each
++sticky status separately. ``QemuCrucibleModuleQuantumRRParentCurrentV1`` is
++attempted independently even after negative prepare or partial output; its real
++Module journals must authenticate what happened. A positive callback status is
++invalid. Changed holder/epoch, absent output, returned/consumed Original or
++inconsistent receipt continuity retains uncertainty and every parent debt.
++
++``qemu_plugin_crucible_advance_quantum_rr_parent_observe_v1`` is a nonissuing
++Main-only observation of this same child. It authenticates the Source canonical
++holder, same process/creator thread, full retained parents and exact entered
++prepare/current frame serial. The reciprocal Native callback-mask check uses a
++one-way Source identity leaf; it does not call Main Current, a preexec observer
++or a Module callback recursively. Each callback has one bounded observation
++attempt. Output is withheld unless its first and independent post both succeed.
++The copied complete cohort and immutable command corroborate the real retained
++loan; they cannot issue it.
++
++Return and remaining dependencies
++---------------------------------
++
++A held, attempted, observing or uncertain RR parent prevents constructor,
++Original borrower and deferred closure, including known-NoBirth shortcuts.
++There is deliberately no generic return or reset for this new child. A genuine
++Module/Core physical return producer and distinct RR actor are required before
++retirement can be added. Main preparation never stretches Main's interval or
++changes the borrower's creator/thread restrictions.
++
++The next execution join must retain this exact parent across actual physical
++Main return, then separately authenticate a real RR/Core frame, QOM/allocation
++receipt, same producing operation and actual Module execution loan. Independently
++prepared nonwaiting executor cleanup must exist before execution effects. A
++terminal command cleanup holder is not that per-executor guard. Missing any of
++these genuine parents continues to refuse before CPU effects; physical RR,
++cleanup and boundary journals alone issue none of them.
++
++The focused controls compile literal production span, output-protection, debt,
++status-normalization and saved-pointer continuity leaves. Their initialized
++buffers and nominated opaque addresses are physical leaves only: no Runtime,
++Module owner, accepting callback table or semantic issuer is fabricated. Every
++omission is independently compiled and must fail its exact named assertion.
++Real paid installation, Module prepare/current, partial semantic birth, RR
++execution, cleanup and physical semantic return remain unexecuted qualification
++gaps. Production object compilation is distinct from those missing positives.
 diff --git a/docs/devel/crucible-quantum-rr-return-post.rst b/docs/devel/crucible-quantum-rr-return-post.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..b0dcfa65c347524cc8f44909bc73966eafd1f47d
@@ -24793,6 +24956,95 @@ index 0000000000000000000000000000000000000000..b0dcfa65c347524cc8f44909bc73966e
 +These prices do not include a deferred loan, RR semantic actor or new Module
 +owners. Their genuine issuance, complete payer and physical-return joins stay
 +unavailable.
+diff --git a/docs/devel/crucible-quantum-wrapper-retirement.rst b/docs/devel/crucible-quantum-wrapper-retirement.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c6cc8e128d963ffd50f78f705d374d3544e7696
+--- /dev/null
++++ b/docs/devel/crucible-quantum-wrapper-retirement.rst
+@@ -0,0 +1,83 @@
++Quantum wrapper retirement history
++=================================
++
++The Source Quantum borrower still permits one process-wide attempt. This
++retirement boundary does not rearm it, create an Original, or enable CPU
++admission. The retained class-one producing cohort and its containing
++Preparation keep their original identities and clocks.
++
++The actual installer can enroll a wrapper-retirement producer in the same
++paid Runtime and complete constructor journal. Four distinct canonical fields
++hold the Source history owner/epoch and Module retirement owner/epoch. A
++separate 64-byte disposition is the only permitted retirement output. These
++96 bytes are outside the complete Module journal and all other registered
++outputs. Registering their geometry does not fund that journal, allocator
++backing, callback stack, or a cleanup operation.
++
++A successful genuine borrower acquisition first reserves the sole inline
++history slot. Missing or failed registration refuses before borrower birth.
++Source publishes its history holder and all real parent links before the
++borrower's independent post. The slot follows the unchanged one-attempt bound;
++there is no rollover, dynamic fallback, eviction or reuse. Both the registration
++and complete history extent belong to the existing prebirth Source floor.
++
++Dedicated scalar records preserve the borrower, constructor, lender and
++receiver epochs, first/post histories, attempted/consumed facts and uncertainty.
++Birth and constructor-terminal records are distinct. The actual lender-return
++producer saves its late return facts; the actual receiver replacement producer
++saves its final old record before replacement. Each late record is written once
++for the exact old parent epoch. The full immutable producing cohort and decoded
++command are retained. Pointer-sized provenance is never dereferenced as an
++archived owner. No mutex, thread implementation, callback table or mutable
++parent object is copied into a history record.
++
++The retirement call requires the actual still-entered physical Main and exact
++same-process/thread Source owner. Core-local return, Source borrower consumption
++and constructor consumption must already be independently known. Deferred,
++RR, Advance and receiver command children refuse this bounded branch. A real
++Module retirement callback must retain an independently genuine cleanup
++operation and actual terminal child journals; this interface cannot issue them.
++There is no post-Main cleanup actor here.
++
++The Module publishes its actual nominal retirement owner before wrapper
++cleanup. Source retains any born owner before ending the callback mask, even
++when the callback returns a negative status. A distinct ReturnedCurrent call
++must authenticate that same retained Module owner and actual Core/cleanup
++journals after wrapper destruction. It performs no destruction and never
++queries an ended Original. Receipt fields and an empty wrapper holder only
++corroborate that producer; neither supplies physical authority.
++
++Source saves known wrapper consumption separately from both callback results
++and posts. A physical Main post precedes its own canonical history-holder
++consumption. The final independent protocol post can remain negative after
++known consumption. Unknown callback/owner identity or physical return leaves
++the history and all containing parents held, with no retry or second free.
++The Module retirement journal and Runtime are not consumed by Source history
++closure; their own genuine lifetime protocol must retain them through the
++factual consumed observation and eventual independent return.
++
++This is a public-native prerequisite. Actual populated Module registration,
++wrapper construction/destruction, nested cleanup/child closure, deferred/RR
++retirement and subsequent constructor reuse remain unqualified. Literal compiled
++controls exercise factual history, receipt syntax, closure debt and output
++exclusions without issuing a Runtime, Original or populated owner. Selected
++CPU admission and advertised activation remain unavailable.
++
++Output withholding and partial birth
++-----------------------------------
++
++Registration saves the installing Original post, member health post and
++independent physical Runtime/output post separately. A failed health post does
++not invent physical loss; a failed physical association withholds result bytes
++while preserving the born binding and every saved status. The final retirement
++writer likewise rechecks physical output custody after its posts.
++
++ReturnedCurrent requires an actual born Module retirement owner and its valid
++epoch in the enrolled journal. Missing, partial or foreign output cannot be
++passed as a fabricated owner. It leaves uncertainty rather than known absence;
++the independent physical Main and protocol posts still run. A callback that
++never returns retains its entered debt and cannot reach those later posts.
++
++Registration records attempted and returned facts for each installing Original,
++member identity and physical output post. A bound registration whose post never
++returns remains ineligible even when its untouched status field is zero.
 diff --git a/docs/devel/crucible-ram-reader-custody.rst b/docs/devel/crucible-ram-reader-custody.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..13e59cbe0a42e6dba1c6912c27fa7a6fdb150afa
@@ -73601,7 +73853,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2490fa5a0e13038f10c5dac7d7875478f7a2c908 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..d5223b3fc32ad9c3732e4da26eb3154d1504ca96 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -73931,7 +74183,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2490fa5a0e13038f10c5dac7d7875478
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,541 +1147,7262 @@ QEMU_PLUGIN_API
+@@ -827,541 +1147,7416 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -80549,6 +80801,104 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2490fa5a0e13038f10c5dac7d7875478
 +    uint32_t version, size_t bytes,
 +    struct qemu_plugin_crucible_quantum_original_disposition_v1 *out);
 +
++/* One retained wrapper retirement under the actual physical Main. These
++ * callbacks grant no Original, execution, cleanup guard or rearm permission.
++ * The Module must publish its real retirement owner before cleanup and retain
++ * its complete wrapper/Core/cleanup journals through Source consumption. */
++typedef struct QemuCrucibleSourceQuantumWrapperRetirement
++    QemuCrucibleSourceQuantumWrapperRetirement;
++typedef struct QemuCrucibleModuleQuantumWrapperRetirement
++    QemuCrucibleModuleQuantumWrapperRetirement;
++
++struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t wrapper_serial;
++    uint64_t retirement_serial;
++    int32_t first_status;
++    int32_t post_status;
++    uint32_t cleanup_entered;
++    uint32_t cleanup_returned;
++    uint32_t wrapper_return_attempted;
++    uint32_t wrapper_consumed;
++    uint32_t children_terminal;
++    uint32_t uncertain;
++    uint32_t reserved[2];
++};
++
++struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t retirement_serial;
++    uint64_t borrow_serial;
++    uint64_t constructor_serial;
++    int32_t first_status;
++    int32_t post_status;
++    uint32_t attempted;
++    uint32_t held;
++    uint32_t wrapper_consumed;
++    uint32_t source_consumed;
++    uint32_t uncertain;
++    uint32_t reserved;
++};
++
++typedef int (*QemuCrucibleModuleQuantumWrapperRetireV1)(
++    QemuCrucibleModulePendingQuantum **wrapper_holder, uint64_t *wrapper_epoch,
++    QemuCrucibleModuleQuantumWrapperRetirement **retirement_holder,
++    uint64_t *retirement_epoch,
++    QemuCrucibleSourceQuantumWrapperRetirement *source, uint64_t source_epoch,
++    struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 *receipt,
++    void *userdata);
++
++typedef int (*QemuCrucibleModuleQuantumWrapperReturnedCurrentV1)(
++    QemuCrucibleModuleQuantumWrapperRetirement **retirement_holder,
++    uint64_t retirement_epoch,
++    QemuCrucibleSourceQuantumWrapperRetirement *source, uint64_t source_epoch,
++    struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 *receipt,
++    void *userdata);
++
++struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    QemuCrucibleModuleQuantumWrapperRetireV1 retire;
++    QemuCrucibleModuleQuantumWrapperReturnedCurrentV1 returned_current;
++};
++
++/* All five distinct fields are inside the installing member's complete paid
++ * Runtime and outside its originally enrolled complete constructor journal.
++ * The journal includes the genuine Module retirement and cleanup records.
++ * Its extent is not inferred from this table or from the output geometry. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_quantum_wrapper_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1 *table,
++    QemuCrucibleSourceQuantumWrapperRetirement **source_holder,
++    uint64_t *source_epoch,
++    QemuCrucibleModuleQuantumWrapperRetirement **module_holder,
++    uint64_t *module_epoch,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *disposition,
++    void *module_journal, size_t module_journal_bytes,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *out);
++
++/* Exactly one producer attempt under the retained physical Main. It never
++ * retries a cleanup after a negative/unknown return and never rearms a borrow.
++ * ReturnedCurrent independently authenticates the Module's retained physical
++ * owner after wrapper destruction; an empty wrapper field is insufficient. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_quantum_wrapper_retire_v1(
++    QemuCrucibleSourceQuantumWrapperRetirement *source, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out);
++
++/* Factual leaf for the actual entered retirement callbacks or retained Main;
++ * no Original query, callback, destructor or ownership consumption. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_quantum_wrapper_observe_v1(
++    QemuCrucibleSourceQuantumWrapperRetirement *source, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out);
++
 +/* Separate Main-issued lifetime loan. Neither this registration nor a
 + * callback receipt supplies the actual Module/Core cross-thread Original. */
 +typedef struct QemuCrucibleSourceDeferredQuantumConstructor
@@ -80601,6 +80951,62 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..2490fa5a0e13038f10c5dac7d7875478
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_advance_pending_deferred_observe_v1(
 +    QemuCrucibleSourceDeferredQuantumConstructor *deferred, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_observation_v1 *out);
++
++/* Separate Main-issued parent for the same existing Quantum/Advance across
++ * executor threads. This nominal loan is not a replacement Original. Actual
++ * Module/Core code must retain its cross-thread operation loan before output;
++ * copied receipts and Source observations cannot supply that loan. */
++typedef struct QemuCrucibleSourceQuantumRRParent QemuCrucibleSourceQuantumRRParent;
++typedef struct QemuCrucibleModuleQuantumRRParent QemuCrucibleModuleQuantumRRParent;
++
++typedef int (*QemuCrucibleModuleQuantumRRParentPrepareV1)(
++    QemuCrucibleModuleDeferredQuantum **deferred_holder, uint64_t deferred_epoch,
++    QemuCrucibleModuleQuantumOriginal **original_holder, uint64_t original_epoch,
++    QemuCrucibleModuleAdvance **advance_holder, uint64_t advance_epoch,
++    QemuCrucibleModuleAdvanceCleanup **terminal_cleanup_holder, uint64_t terminal_cleanup_epoch,
++    QemuCrucibleSourceQuantumRRParent *source_parent,
++    QemuCrucibleModuleQuantumRRParent **module_holder, uint64_t *module_epoch,
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 *receipt,
++    void *userdata);
++
++typedef int (*QemuCrucibleModuleQuantumRRParentCurrentV1)(
++    QemuCrucibleModuleQuantumRRParent **module_holder, uint64_t module_epoch,
++    QemuCrucibleSourceQuantumRRParent *source_parent,
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 *receipt,
++    void *userdata);
++
++struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    QemuCrucibleModuleQuantumRRParentPrepareV1 prepare;
++    QemuCrucibleModuleQuantumRRParentCurrentV1 current;
++};
++
++/* Canonical Source and Module holder/epoch fields and the exact registration
++ * result32 are distinct fields in the retained paid complete Runtime. The
++ * complete journal is exactly the originally enrolled constructor journal.
++ * Installation creates no parent or semantic permission. A negative post
++ * retains the binding; it cannot be replaced. No callback runs at installation.
++ * The existing exact constructor1096 observation is reused only during the
++ * actual entered prepare/current callback, with exclusive Source custody. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_quantum_rr_parent_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 *table,
++    QemuCrucibleSourceQuantumRRParent **source_holder, uint64_t *source_epoch,
++    QemuCrucibleModuleQuantumRRParent **module_holder, uint64_t *module_epoch,
++    void *module_journal, size_t module_journal_bytes,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *out);
++
++/* Nonrecursive creator-only leaf for the actual registered Main callback.
++ * It checks already retained operation custody and supplies no RR actor,
++ * Module execution, cleanup guard, fresh clock or new Original. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_advance_quantum_rr_parent_observe_v1(
++    QemuCrucibleSourceQuantumRRParent *parent, uint64_t epoch,
 +    uint32_t version, size_t bytes,
 +    struct qemu_plugin_crucible_pending_constructor_observation_v1 *out);
 +
@@ -113024,10 +113430,10 @@ index 0000000000000000000000000000000000000000..2b5716bbb4899deb976ee9e58f597ced
 +#endif
 diff --git a/plugins/crucible-advance-receiver.inc.h b/plugins/crucible-advance-receiver.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b23affe730952b86b51d319c13b49ddf28d34b05
+index 0000000000000000000000000000000000000000..e965d89edaa7d53f33069c82a9b17375a23d17cc
 --- /dev/null
 +++ b/plugins/crucible-advance-receiver.inc.h
-@@ -0,0 +1,1115 @@
+@@ -0,0 +1,1123 @@
 +/*
 + * Separate retained receiver for an asynchronous scheduler command.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -113194,11 +113600,18 @@ index 0000000000000000000000000000000000000000..b23affe730952b86b51d319c13b49ddf
 +        mask != &frame->mask || frame->receiver != receiver ||
 +        !frame->entered || frame->returned ||
 +        frame->kind <= QEMU_CRUCIBLE_ADVANCE_CALLBACK_NONE ||
-+        frame->kind > QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT ||
++        frame->kind > QEMU_CRUCIBLE_ADVANCE_CALLBACK_WRAPPER_RETURNED_CURRENT ||
 +        !frame->serial || frame->serial == UINT64_MAX ||
 +        frame->serial != receiver->next_callback_serial || receiver->main_returned ||
 +        !receiver->recipient) {
 +        return -EPERM;
++    }
++    if (frame->kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE ||
++        frame->kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT) {
++        status = quantum_rr_parent_callback_identity(receiver, frame->kind);
++        if (status) {
++            return status;
++        }
 +    }
 +    status = qemu_plugin_crucible_source_advance_native_holder_current_v1(main, control);
 +    if (!status) {
@@ -113864,6 +114277,7 @@ index 0000000000000000000000000000000000000000..b23affe730952b86b51d319c13b49ddf
 +        first = -EOVERFLOW;
 +    }
 +    if (!first) {
++        quantum_wrapper_receiver_retire_record();
 +        *receiver = (QemuCrucibleSourceAdvanceReceiver) {
 +            .canonical_owner = receiver,
 +            .holder = &startup_source.advance_holder,
@@ -114890,10 +115304,10 @@ index 0000000000000000000000000000000000000000..519afa3957f4cc3aa673d1e343b75ce3
 +}
 diff --git a/plugins/crucible-callback-child.inc.h b/plugins/crucible-callback-child.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..f0e56786682583c33a8f9c2f4b8712ec29a120b4
+index 0000000000000000000000000000000000000000..e7a067f3a188059eecc238ea6d7dc3309caf479b
 --- /dev/null
 +++ b/plugins/crucible-callback-child.inc.h
-@@ -0,0 +1,915 @@
+@@ -0,0 +1,936 @@
 +/*
 + * Source-owned callback-child allocation and physical custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -114918,6 +115332,14 @@ index 0000000000000000000000000000000000000000..f0e56786682583c33a8f9c2f4b8712ec
 +{
 +    QemuCrucibleCommandConsumerRegistry *registry = &startup_source.commands;
 +    const void *fields[] = {
++        startup_source.quantum_rr_parent_registration.holder,
++        startup_source.quantum_rr_parent_registration.epoch,
++        startup_source.quantum_rr_parent_registration.module_holder,
++        startup_source.quantum_rr_parent_registration.module_epoch,
++        startup_source.quantum_wrapper_registration.holder,
++        startup_source.quantum_wrapper_registration.epoch,
++        startup_source.quantum_wrapper_registration.module_holder,
++        startup_source.quantum_wrapper_registration.module_epoch,
 +        startup_source.quantum_original_registration.holder,
 +        startup_source.quantum_original_registration.epoch,
 +        startup_source.pending_defer_registration.holder,
@@ -114986,10 +115408,23 @@ index 0000000000000000000000000000000000000000..f0e56786682583c33a8f9c2f4b8712ec
 +            sizeof(QemuCrucibleNativeInvocationTicket))) {
 +        return true;
 +    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_rr_parent_registration.output,
++            sizeof(*startup_source.quantum_rr_parent_registration.output))) {
++        return true;
++    }
 +    if (callback_child_output_overlap(output, bytes, &startup_source, sizeof(startup_source))) {
 +        return true;
 +    }
 +    if (qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1(output, bytes)) {
++        return true;
++    }
++    if (callback_child_output_overlap(output, bytes,
++            startup_source.quantum_wrapper_registration.disposition,
++            sizeof(*startup_source.quantum_wrapper_registration.disposition)) &&
++        !(output == startup_source.quantum_wrapper_registration.disposition &&
++          observation == startup_source.quantum_wrapper_registration.disposition &&
++          bytes == sizeof(*startup_source.quantum_wrapper_registration.disposition))) {
 +        return true;
 +    }
 +    if (callback_child_output_overlap(output, bytes,
@@ -189215,10 +189650,10 @@ index 0000000000000000000000000000000000000000..56e7923907c8519e4999fb98608e1136
 +}
 diff --git a/plugins/crucible-pending-command.inc.h b/plugins/crucible-pending-command.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..af44da5943b57123ebdb3cf832dab23e762c81ca
+index 0000000000000000000000000000000000000000..67b4fa81766a1f5a9efdbf364f954fecc409ab76
 --- /dev/null
 +++ b/plugins/crucible-pending-command.inc.h
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,450 @@
 +/*
 + * Actual pending-command cohort lender under the registered callback Runtime.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -189662,6 +190097,7 @@ index 0000000000000000000000000000000000000000..af44da5943b57123ebdb3cf832dab23e
 +    post = pending_protocol_cut(lender);
 +    lender->return_first_status = first;
 +    lender->return_post_status = post;
++    quantum_wrapper_lender_return_record();
 +    pending_disposition(lender, out, first, post);
 +    return first ? first : post;
 +#else
@@ -189670,10 +190106,10 @@ index 0000000000000000000000000000000000000000..af44da5943b57123ebdb3cf832dab23e
 +}
 diff --git a/plugins/crucible-pending-constructor.inc.h b/plugins/crucible-pending-constructor.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2b2ba0ed3d0818c4ec2b81a8fd640cd339cd1260
+index 0000000000000000000000000000000000000000..32dbff69b65f9a50b8dd07c42e23144af56ad363
 --- /dev/null
 +++ b/plugins/crucible-pending-constructor.inc.h
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,738 @@
 +/*
 + * Registered lifetime of the actual pending Quantum constructor.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -189688,7 +190124,8 @@ index 0000000000000000000000000000000000000000..2b2ba0ed3d0818c4ec2b81a8fd640cd3
 +        &startup_source.command_member.pending_constructor;
 +    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
 +
-+    return quantum_original_closed() && pending_deferred_closed() &&
++    return quantum_rr_parent_closed() && quantum_original_closed() &&
++        quantum_wrapper_closed() && pending_deferred_closed() &&
 +        !registration->active_child && !lender->constructor &&
 +        !lender->constructor_serial && !child->held && !child->uncertain &&
 +        !child->observing && (!child->attempted ||
@@ -190344,7 +190781,7 @@ index 0000000000000000000000000000000000000000..2b2ba0ed3d0818c4ec2b81a8fd640cd3
 +        pending_constructor_disposition(child, out, child->return_first_status, child->return_post_status);
 +        return child->return_first_status ? child->return_first_status : child->return_post_status;
 +    }
-+    if (child->deferred || child->deferred_serial ||
++    if (!quantum_rr_parent_closed() || child->deferred || child->deferred_serial ||
 +        child->return_attempted || child->observing || child->uncertain ||
 +        (child->receiver->callback.entered && !child->receiver->callback.returned) ||
 +        (child->construct_entered && !child->construct_returned)) {
@@ -190404,6 +190841,7 @@ index 0000000000000000000000000000000000000000..2b2ba0ed3d0818c4ec2b81a8fd640cd3
 +    }
 +    child->return_first_status = first ? first : physical;
 +    child->return_post_status = post;
++    quantum_wrapper_terminal_record();
 +    pending_constructor_disposition(child, out, child->return_first_status, post);
 +    return child->return_first_status ? child->return_first_status : post;
 +#else
@@ -190412,10 +190850,10 @@ index 0000000000000000000000000000000000000000..2b2ba0ed3d0818c4ec2b81a8fd640cd3
 +}
 diff --git a/plugins/crucible-pending-deferred.inc.h b/plugins/crucible-pending-deferred.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..20236d969b11eb95e8670a4e8147cabf506f3bce
+index 0000000000000000000000000000000000000000..160de78a9aa0ff230adfee6f7f42ada518023184
 --- /dev/null
 +++ b/plugins/crucible-pending-deferred.inc.h
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,584 @@
 +/*
 + * Separate Main-published lifetime of the actual pending Quantum constructor.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -190427,7 +190865,8 @@ index 0000000000000000000000000000000000000000..20236d969b11eb95e8670a4e8147cabf
 +{
 +    QemuCrucibleSourceDeferredQuantumConstructor *loan = &startup_source.pending_deferred;
 +
-+    return !loan->attempted && !loan->held && !loan->uncertain &&
++    return quantum_rr_parent_closed() &&
++        !loan->attempted && !loan->held && !loan->uncertain &&
 +        !startup_source.pending_constructor.deferred &&
 +        !startup_source.pending_constructor.deferred_serial &&
 +        !startup_source.pending_command_lender.deferred &&
@@ -190917,6 +191356,10 @@ index 0000000000000000000000000000000000000000..20236d969b11eb95e8670a4e8147cabf
 +    loan->main_prepared = !loan->first_status && !loan->post_status && !loan->uncertain &&
 +        loan->defer_entered && loan->defer_returned &&
 +        loan->current_entered && loan->current_returned && pending_deferred_module_same(loan);
++    if (loan->main_prepared) {
++        post = quantum_rr_parent_prepare(receiver);
++        pending_preserve_status(&loan->post_status, post);
++    }
 +    return loan->first_status ? loan->first_status : loan->post_status;
 +}
 +#else
@@ -197010,10 +197453,10 @@ index 0000000000000000000000000000000000000000..85e0007223fe4cedc5bd88b561174bdc
 +}
 diff --git a/plugins/crucible-quantum-original.inc.h b/plugins/crucible-quantum-original.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebfe3765f15
+index 0000000000000000000000000000000000000000..be8d29ac4024b5574a0e420cf0371cc60ba38185
 --- /dev/null
 +++ b/plugins/crucible-quantum-original.inc.h
-@@ -0,0 +1,416 @@
+@@ -0,0 +1,439 @@
 +/*
 + * Nominal borrower of the actual retained producing Quantum operation.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -197023,7 +197466,7 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +{
 +    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
 +
-+    return !borrow->held && !borrow->observing &&
++    return quantum_rr_parent_closed() && !borrow->held && !borrow->observing &&
 +        !startup_source.pending_constructor.quantum_original &&
 +        !startup_source.pending_constructor.quantum_original_serial &&
 +        (!borrow->attempted || (borrow->return_attempted && borrow->consumed));
@@ -197150,7 +197593,9 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +        (!acquiring && kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_CONSTRUCT &&
 +            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_CURRENT &&
 +            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER &&
-+            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT)) {
++            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT &&
++            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE &&
++            kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT)) {
 +        return -EPERM;
 +    }
 +    status = advance_observation_current(receiver, kind);
@@ -197284,6 +197729,10 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +            sizeof(void *), _Alignof(void *))) {
 +        return -ESTALE;
 +    }
++    first = quantum_wrapper_reserve();
++    if (first) {
++        return first;
++    }
 +    *borrow = (QemuCrucibleSourceQuantumOriginalBorrow) {
 +        .canonical_owner = borrow,
 +        .constructor = constructor,
@@ -197306,6 +197755,7 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +    *borrow->epoch = borrow->serial;
 +    constructor->quantum_original = borrow;
 +    constructor->quantum_original_serial = borrow->serial;
++    quantum_wrapper_publish();
 +    post = pending_constructor_post(constructor);
 +    pending_preserve_status(&borrow->post_status, post);
 +    pending_preserve_status(&constructor->post_status, post);
@@ -197324,6 +197774,7 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
 +    int first = quantum_original_identity(borrow, epoch);
 +    int post;
++    unsigned int kind;
 +
 +    if (first) {
 +        return first;
@@ -197339,8 +197790,14 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +        return first;
 +    }
 +    borrow->observing = true;
-+    if (borrow->constructor->receiver->callback.kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER ||
-+        borrow->constructor->receiver->callback.kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT) {
++    kind = borrow->constructor->receiver->callback.kind;
++    if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE ||
++        kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT) {
++        first = qemu_plugin_crucible_advance_quantum_rr_parent_observe_v1(
++            &startup_source.quantum_rr_parent, startup_source.quantum_rr_parent.serial,
++            version, bytes, out);
++    } else if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER ||
++        kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT) {
 +        first = qemu_plugin_crucible_advance_pending_deferred_observe_v1(
 +            &startup_source.pending_deferred, startup_source.pending_deferred.serial,
 +            version, bytes, out);
@@ -197350,9 +197807,15 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +    }
 +    /* Each real observation leaf already withholds output until its own
 +     * independent post. Do not add a fallible cut after it publishes bytes. */
-+    post = borrow->constructor->receiver->callback.kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER ||
-+        borrow->constructor->receiver->callback.kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT ?
-+        startup_source.pending_deferred.post_status : borrow->constructor->post_status;
++    if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE ||
++        kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT) {
++        post = startup_source.quantum_rr_parent.post_status;
++    } else if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER ||
++               kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT) {
++        post = startup_source.pending_deferred.post_status;
++    } else {
++        post = borrow->constructor->post_status;
++    }
 +    pending_preserve_status(&borrow->first_status, first);
 +    pending_preserve_status(&borrow->post_status, post);
 +    pending_preserve_status(&borrow->constructor->first_status, first);
@@ -197377,6 +197840,9 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +        return !constructor->quantum_original && !constructor->quantum_original_serial ? 0 : -ESTALE;
 +    }
 +    status = quantum_original_identity(borrow, borrow->serial);
++    if (!quantum_rr_parent_closed()) {
++        return -EBUSY;
++    }
 +    if (status || borrow->consumed || borrow->observing || borrow->return_attempted ||
 +        !constructor->return_attempted || !constructor->returned_entered ||
 +        !constructor->returned_returned || !constructor->returned.local_consumed ||
@@ -197426,6 +197892,1310 @@ index 0000000000000000000000000000000000000000..cdee5c7bc26423c5eacb27850a933ebf
 +    quantum_original_disposition(borrow, out);
 +    return borrow->return_attempted ? borrow->return_first_status ?
 +        borrow->return_first_status : borrow->return_post_status : 0;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-quantum-rr-parent.inc.h b/plugins/crucible-quantum-rr-parent.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..4dac51af59792dca56b52addb914e37ec13f2c5d
+--- /dev/null
++++ b/plugins/crucible-quantum-rr-parent.inc.h
+@@ -0,0 +1,504 @@
++/*
++ * Registered Main-side parent of the same retained Quantum operation.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static bool quantum_rr_parent_closed(void)
++{
++    QemuCrucibleSourceQuantumRRParent *parent = &startup_source.quantum_rr_parent;
++
++    /* No generic post-Main cleanup producer is joined by this constructor. */
++    return !parent->attempted && !parent->held && !parent->observing &&
++        !parent->uncertain;
++}
++
++/* One-way reciprocal used by the existing Native callback-mask check.
++ * Never call Main Current or another observer from this physical identity. */
++static int quantum_rr_parent_callback_identity(
++    QemuCrucibleSourceAdvanceReceiver *receiver,
++    QemuCrucibleAdvanceCallbackKind kind)
++{
++    QemuCrucibleSourceQuantumRRParent *parent = &startup_source.quantum_rr_parent;
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    uint64_t serial;
++
++    if (parent->process != getpid() || !qemu_thread_is_self(&parent->creator) ||
++        !registration->registered || parent->canonical_owner != parent ||
++        !parent->held || !parent->attempted || receiver != parent->receiver ||
++        receiver != &startup_source.advance_receiver ||
++        parent->holder != registration->holder || parent->epoch != registration->epoch ||
++        !parent->holder || !parent->epoch ||
++        *parent->holder != parent || *parent->epoch != parent->serial ||
++        !parent->serial || parent->serial == UINT64_MAX) {
++        return -ESTALE;
++    }
++    if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE) {
++        serial = parent->prepare_frame_serial;
++    } else if (kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT) {
++        serial = parent->current_frame_serial;
++    } else {
++        return -EPERM;
++    }
++    return serial && serial != UINT64_MAX && receiver->callback.serial == serial &&
++        receiver->callback.kind == kind ? 0 : -ESTALE;
++}
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static bool quantum_rr_parent_fields_valid(QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleSourceQuantumRRParent **holder, uint64_t *epoch,
++    QemuCrucibleModuleQuantumRRParent **module_holder, uint64_t *module_epoch,
++    void *journal, size_t journal_bytes,
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *output)
++{
++    const QemuCruciblePendingConstructorRegistration *constructor = &member->pending_constructor;
++    const void *fields[] = { holder, epoch, module_holder, module_epoch, output };
++    const size_t sizes[] = {
++        sizeof(*holder), sizeof(*epoch), sizeof(*module_holder),
++        sizeof(*module_epoch), sizeof(*output),
++    };
++
++    if (!constructor->registered || journal != constructor->module_journal ||
++        !journal_bytes || journal_bytes != constructor->module_journal_bytes) {
++        return false;
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(fields); index++) {
++        if (!pending_runtime_field(member->runtime_base, member->runtime_extent,
++                fields[index], sizes[index], _Alignof(uint64_t)) ||
++            callback_child_output_overlap(fields[index], sizes[index], journal, journal_bytes)) {
++            return false;
++        }
++        for (size_t earlier = 0; earlier < index; earlier++) {
++            if (callback_child_output_overlap(fields[index], sizes[index],
++                                              fields[earlier], sizes[earlier])) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static bool quantum_rr_parent_table_valid(
++    const struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 *table)
++{
++    return table->schema_version == 1 && table->struct_size == sizeof(*table) &&
++        table->prepare && table->current;
++}
++
++static int quantum_rr_parent_registration_identity_locked(bool *output_current)
++{
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    QemuCrucibleCommandConsumerMember *member = &startup_source.command_member;
++    int status;
++
++    *output_current = false;
++    if (!registration->registered || registration->process != getpid() ||
++        !qemu_thread_is_self(&registration->creator) || registration->member != member) {
++        return -ESTALE;
++    }
++    status = command_member_identity_locked(member);
++    if (!status) {
++        status = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!status && !quantum_rr_parent_fields_valid(member, registration->holder,
++            registration->epoch, registration->module_holder, registration->module_epoch,
++            registration->module_journal, registration->module_journal_bytes,
++            registration->output)) {
++        status = -ESTALE;
++    }
++    *output_current = !status;
++    return status;
++}
++
++/* This is deliberately a creator-only leaf. A later executor must use a
++ * distinct retained actor; neither this identity nor Main preparation is RR
++ * permission. Known Source addresses precede every nominated parent read. */
++static int quantum_rr_parent_main_identity(QemuCrucibleSourceQuantumRRParent *parent,
++                                          uint64_t epoch)
++{
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    QemuCrucibleSourceDeferredQuantumConstructor *deferred = &startup_source.pending_deferred;
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    bool output_current;
++    int status;
++
++    if (parent != &startup_source.quantum_rr_parent || parent->process != getpid() ||
++        !qemu_thread_is_self(&parent->creator)) {
++        return -EPERM;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = quantum_rr_parent_registration_identity_locked(&output_current);
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (status) {
++        return status;
++    }
++    status = quantum_original_identity(borrow, parent->borrow_serial);
++    if (status) {
++        return status;
++    }
++    if (parent != &startup_source.quantum_rr_parent || parent->canonical_owner != parent ||
++        !parent->attempted || !parent->held || !epoch || epoch == UINT64_MAX ||
++        parent->serial != epoch || parent->process != getpid() ||
++        !qemu_thread_is_self(&parent->creator) || parent->deferred != deferred ||
++        parent->original_borrow != borrow || parent->constructor != constructor ||
++        parent->receiver != receiver || parent->member != &startup_source.command_member ||
++        !registration->registered || parent->registration_serial != registration->result.registration_serial ||
++        parent->holder != registration->holder || parent->epoch != registration->epoch ||
++        parent->module_holder != registration->module_holder ||
++        parent->module_epoch != registration->module_epoch ||
++        *parent->holder != parent || *parent->epoch != epoch ||
++        parent->borrow_serial != borrow->serial || !borrow->held || borrow->consumed ||
++        borrow->return_attempted || *borrow->holder != borrow || *borrow->epoch != borrow->serial ||
++        parent->deferred_serial != deferred->serial ||
++        parent->constructor_serial != constructor->serial ||
++        parent->receiver_serial != receiver->serial || !deferred->main_prepared ||
++        !pending_deferred_module_same(deferred) ||
++        receiver->main_returned || !receiver->module_cleanup ||
++        receiver->module_cleanup != receiver->cleanup_at_acquire ||
++        receiver->module_cleanup_serial != receiver->acquired_cleanup_serial) {
++        return -ESTALE;
++    }
++    return pending_deferred_creator_identity(deferred, deferred->serial);
++}
++
++static bool quantum_rr_parent_module_same(QemuCrucibleSourceQuantumRRParent *parent)
++{
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++
++    return parent->module_at_prepare && parent->module_at_prepare_epoch &&
++        parent->module_at_prepare_epoch != UINT64_MAX &&
++        *parent->module_holder == parent->module_at_prepare &&
++        *parent->module_epoch == parent->module_at_prepare_epoch &&
++        pending_runtime_field((uintptr_t)registration->module_journal,
++            registration->module_journal_bytes, parent->module_at_prepare,
++            sizeof(void *), _Alignof(void *));
++}
++
++/* Every cut runs independently, including after a negative Module status.
++ * No Source/Native/preexec mutex is held across these reciprocal calls. */
++static int quantum_rr_parent_post(QemuCrucibleSourceQuantumRRParent *parent)
++{
++    QemuCrucibleSourcePendingCommandLender *pending = &startup_source.pending_command_lender;
++    QemuCrucibleSourceDeferredQuantumConstructor *deferred = &startup_source.pending_deferred;
++    int source = quantum_rr_parent_main_identity(parent, parent->serial);
++    int recipient = qemu_crucible_preexec_publisher_deferred_creator_current_v1(
++        deferred->recipient_loan, deferred, deferred->serial);
++    int protocol = pending_protocol_cut(pending);
++
++    pending_preserve_status(&parent->source_post_status, source);
++    pending_preserve_status(&parent->deferred_post_status, recipient);
++    pending_preserve_status(&parent->protocol_post_status, protocol);
++    pending_preserve_status(&parent->native_post_status, pending->cut_native_status);
++    pending_preserve_status(&parent->recipient_post_status, pending->cut_recipient_status);
++    pending_preserve_status(&parent->cohort_post_status, pending->cut_cohort_status);
++    pending_preserve_status(&parent->publication_post_status, pending->cut_final_status);
++    return source ? source : recipient ? recipient : protocol;
++}
++#endif
++
++int qemu_plugin_crucible_advance_quantum_rr_parent_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 *table,
++    QemuCrucibleSourceQuantumRRParent **holder, uint64_t *epoch,
++    QemuCrucibleModuleQuantumRRParent **module_holder, uint64_t *module_epoch,
++    void *journal, size_t journal_bytes, uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 copied;
++    const void *fields[] = { holder, epoch, module_holder, module_epoch, out };
++    const size_t sizes[] = {
++        sizeof(*holder), sizeof(*epoch), sizeof(*module_holder),
++        sizeof(*module_epoch), sizeof(*out),
++    };
++    bool output_current;
++    int first;
++    int post;
++    int identity;
++
++    if (!startup_invocation(id) || startup_source.install_returned) {
++        return -EPERM;
++    }
++    first = command_registry_identity(id);
++    if (first) {
++        return first;
++    }
++    if (version != 1 || bytes != sizeof(*out) || !table ||
++        (uintptr_t)table % _Alignof(*table) ||
++        (uintptr_t)table > UINTPTR_MAX - sizeof(*table)) {
++        return -EINVAL;
++    }
++    first = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first) {
++        first = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!first && (member->child_owner != startup_source.publisher_module.runtime_owner ||
++        member->runtime_base != startup_source.publisher_module.runtime_base ||
++        member->runtime_extent != startup_source.publisher_module.runtime_extent)) {
++        first = -ESTALE;
++    }
++    if (!first && (registration->attempted ||
++        !quantum_rr_parent_fields_valid(member, holder, epoch, module_holder, module_epoch,
++                                        journal, journal_bytes, out))) {
++        first = registration->attempted ? -EALREADY : -EINVAL;
++    }
++    if (!first && callback_child_output_conflicts_locked(table, sizeof(*table))) {
++        first = -EINVAL;
++    }
++    for (size_t index = 0; !first && index < G_N_ELEMENTS(fields); index++) {
++        if (callback_child_output_conflicts_locked(fields[index], sizes[index]) ||
++            callback_child_output_overlap(fields[index], sizes[index], table, sizeof(*table))) {
++            first = -EINVAL;
++        }
++    }
++    if (!first && (*holder || *epoch || *module_holder || *module_epoch)) {
++        first = -EBUSY;
++    }
++    if (!first) {
++        copied = *table;
++        if (!quantum_rr_parent_table_valid(&copied)) {
++            first = -EINVAL;
++        }
++    }
++    if (!first) {
++        *registration = (QemuCrucibleQuantumRRParentRegistration) {
++            .table = copied, .member = member,
++            .holder = holder, .epoch = epoch,
++            .module_holder = module_holder, .module_epoch = module_epoch,
++            .module_journal = journal, .module_journal_bytes = journal_bytes,
++            .output = out, .process = getpid(), .attempted = true,
++            .registered = true, .original_post_attempted = true,
++            .result = { .schema_version = 1, .struct_size = sizeof(*out),
++                        .registered = 1, .registration_serial = 1 },
++        };
++        qemu_thread_get_self(&registration->creator);
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    post = startup_runtime_admission(id, &startup_source.runtime_purpose);
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    registration->original_post_status = post;
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = true;
++    identity = quantum_rr_parent_registration_identity_locked(&output_current);
++    registration->identity_post_status = identity;
++    registration->identity_post_returned = true;
++    registration->result.post_status = post ? post : identity;
++    if (output_current) {
++        *registration->output = registration->result;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return post ? post : identity;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++/* Zero status alone does not prove an interrupted registration completed its
++ * two independent installer posts. No child may be born until both returned. */
++static bool quantum_rr_parent_registration_posts_complete(
++    const QemuCrucibleQuantumRRParentRegistration *registration)
++{
++    return registration->original_post_attempted &&
++        registration->original_post_returned &&
++        !registration->original_post_status &&
++        registration->identity_post_attempted &&
++        registration->identity_post_returned &&
++        !registration->identity_post_status;
++}
++
++static int quantum_rr_parent_prepare(QemuCrucibleSourceAdvanceReceiver *receiver)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    QemuCrucibleSourceQuantumRRParent *parent = &startup_source.quantum_rr_parent;
++    QemuCrucibleSourceDeferredQuantumConstructor *deferred = &startup_source.pending_deferred;
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
++    bool output_current;
++    int first;
++    int post;
++
++    /* Older exact registrations retain their existing Main behavior. They
++     * acquire no RR parent, and selected CPU admission remains unavailable. */
++    if (!registration->registered) {
++        return 0;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = quantum_rr_parent_registration_identity_locked(&output_current);
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (!first) {
++        first = pending_deferred_creator_identity(deferred, deferred->serial);
++    }
++    if (!first) {
++        first = quantum_original_identity(borrow, borrow->serial);
++    }
++    if (!first && (!deferred->main_prepared || !quantum_rr_parent_closed() ||
++        parent->serial >= UINT64_MAX - 1 || receiver != deferred->receiver ||
++        !borrow->held || borrow->consumed || borrow->return_attempted ||
++        borrow->first_status || borrow->post_status ||
++        !quantum_rr_parent_registration_posts_complete(registration) ||
++        *registration->holder || *registration->epoch ||
++        *registration->module_holder || *registration->module_epoch ||
++        !receiver->module_cleanup || receiver->module_cleanup != receiver->cleanup_at_acquire ||
++        receiver->module_cleanup_serial != receiver->acquired_cleanup_serial)) {
++        first = -ESTALE;
++    }
++    if (first) {
++        return first;
++    }
++    *parent = (QemuCrucibleSourceQuantumRRParent) {
++        .canonical_owner = parent, .original_borrow = borrow, .deferred = deferred,
++        .constructor = deferred->constructor, .receiver = receiver, .member = deferred->member,
++        .holder = registration->holder, .epoch = registration->epoch,
++        .module_holder = registration->module_holder, .module_epoch = registration->module_epoch,
++        .serial = parent->serial + 1, .registration_serial = registration->result.registration_serial,
++        .borrow_serial = borrow->serial, .deferred_serial = deferred->serial,
++        .constructor_serial = deferred->constructor_serial, .receiver_serial = deferred->receiver_serial,
++        .process = getpid(), .attempted = true, .held = true,
++    };
++    qemu_thread_get_self(&parent->creator);
++    *parent->holder = parent;
++    *parent->epoch = parent->serial;
++    pending_constructor_receipt_init(&parent->preparation);
++    parent->prepare_frame_serial = receiver->next_callback_serial < UINT64_MAX - 1 ?
++        receiver->next_callback_serial + 1 : 0;
++    first = advance_callback_begin(receiver,
++        QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE, registration->table.prepare);
++    if (!first) {
++        parent->prepare_entered = true;
++        first = registration->table.prepare(deferred->module_holder, deferred->module_at_birth_serial,
++            &receiver->module_original, receiver->module_original_serial,
++            &receiver->module_advance, receiver->module_advance_serial,
++            &receiver->module_cleanup, receiver->module_cleanup_serial, parent,
++            parent->module_holder, parent->module_epoch, &parent->preparation,
++            parent->member->component->userdata);
++        /* Save every output before another callback or independent post. */
++        parent->module_at_prepare = *parent->module_holder;
++        parent->module_at_prepare_epoch = *parent->module_epoch;
++        parent->prepare_returned = true;
++        advance_callback_end(receiver);
++    }
++    parent->prepare_status = pending_constructor_callback_status(first);
++    pending_preserve_status(&parent->first_status, parent->prepare_status);
++    pending_preserve_status(&parent->first_status, parent->preparation.first_status);
++    pending_preserve_status(&parent->first_status, parent->preparation.post_status);
++    post = quantum_rr_parent_post(parent);
++    pending_preserve_status(&parent->post_status, post);
++
++    /* Current is independent even after refusal or a partial/null output.
++     * Its real Module journal must authenticate what physically happened. */
++    pending_constructor_receipt_init(&parent->current);
++    parent->current_frame_serial = receiver->next_callback_serial < UINT64_MAX - 1 ?
++        receiver->next_callback_serial + 1 : 0;
++    post = advance_callback_begin(receiver,
++        QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT, registration->table.current);
++    if (!post) {
++        parent->current_entered = true;
++        post = registration->table.current(parent->module_holder,
++            parent->module_at_prepare_epoch, parent, &parent->current,
++            parent->member->component->userdata);
++        parent->current_returned = true;
++        advance_callback_end(receiver);
++    }
++    parent->current_status = pending_constructor_callback_status(post);
++    pending_preserve_status(&parent->post_status, parent->current_status);
++    pending_preserve_status(&parent->post_status, parent->current.first_status);
++    pending_preserve_status(&parent->post_status, parent->current.post_status);
++    if (!quantum_rr_parent_module_same(parent) ||
++        !pending_constructor_receipt_continues(&deferred->post, &parent->preparation) ||
++        !pending_constructor_receipt_continues(&parent->preparation, &parent->current) ||
++        !parent->current.original_entered || !parent->current.original_moved ||
++        parent->current.original_returned || parent->current.local_consumed) {
++        parent->uncertain = true;
++        pending_preserve_status(&parent->post_status, -ESTALE);
++    }
++    post = quantum_rr_parent_post(parent);
++    pending_preserve_status(&parent->post_status, post);
++    parent->uncertain |= parent->first_status || parent->post_status;
++    return parent->first_status ? parent->first_status : parent->post_status;
++#else
++    return 0;
++#endif
++}
++
++int qemu_plugin_crucible_advance_quantum_rr_parent_observe_v1(
++    QemuCrucibleSourceQuantumRRParent *parent, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_observation_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCruciblePendingConstructorRegistration *registration =
++        &startup_source.command_member.pending_constructor;
++    QemuCrucibleSourcePendingCommandLender *pending = &startup_source.pending_command_lender;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    unsigned kind = receiver->callback.kind;
++    uint32_t phase;
++    int first = quantum_rr_parent_main_identity(parent, epoch);
++    int post;
++
++    if (first) {
++        return first;
++    }
++    if (version != 1 || bytes != sizeof(*out) || out != registration->observation ||
++        parent->observing || constructor->observing ||
++        (kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE &&
++         kind != QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT)) {
++        return -EINVAL;
++    }
++    phase = kind == QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE ? 1 : 2;
++    if (parent->observed_phases & phase) {
++        return -EALREADY;
++    }
++    parent->observed_phases |= phase;
++    parent->observing = true;
++    first = advance_observation_current(receiver, kind);
++    if (!first) {
++        first = parent->first_status ? parent->first_status : parent->post_status;
++    }
++    if (!first) {
++        first = pending_copy(pending);
++    }
++    if (!first) {
++        constructor->observation = (struct qemu_plugin_crucible_pending_constructor_observation_v1) {
++            .schema_version = 1, .struct_size = sizeof(*out),
++            .constructor_serial = parent->constructor_serial,
++            .lender_serial = pending->serial, .receiver_serial = parent->receiver_serial,
++            .recipient_serial = pending->scratch.recipient_serial,
++            .publication_sequence = receiver->publication.sequence,
++            .loan_generation = receiver->publication.loan_generation,
++            .ticket_serial = receiver->publication.ticket_serial,
++            .callback_epoch = receiver->callback.serial,
++        };
++        memcpy(constructor->observation.cohort, pending->scratch.cohort,
++               sizeof(constructor->observation.cohort));
++        memcpy(constructor->observation.command, pending->scratch.command,
++               sizeof(constructor->observation.command));
++    }
++    post = quantum_rr_parent_post(parent);
++    pending_preserve_status(&parent->first_status, first);
++    pending_preserve_status(&parent->post_status, post);
++    if (!first && !post) {
++        *out = constructor->observation;
++    }
++    parent->observing = false;
++    return first ? first : post;
++#else
++    return -ENOTSUP;
++#endif
++}
+diff --git a/plugins/crucible-quantum-wrapper.inc.h b/plugins/crucible-quantum-wrapper.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..db27cf358a61096d73f9ab15212dc0c8b832947b
+--- /dev/null
++++ b/plugins/crucible-quantum-wrapper.inc.h
+@@ -0,0 +1,788 @@
++/*
++ * One Source-owned Quantum wrapper retirement and factual history.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static bool quantum_wrapper_closed(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++
++    return !owner->held && !owner->uncertain &&
++        (!owner->attempted || (owner->return_attempted && owner->consumed));
++}
++
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++static void quantum_wrapper_capture(QemuCrucibleQuantumWrapperHistory *history)
++{
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    history->borrow = (QemuCrucibleQuantumBorrowHistory) {
++        .module_pending_serial = borrow->module_pending_serial,
++        .serial = borrow->serial,
++        .constructor_serial = borrow->constructor_serial,
++        .registration_serial = borrow->registration_serial,
++        .callback_serial = borrow->callback_serial,
++        .first_status = borrow->first_status,
++        .post_status = borrow->post_status,
++        .return_first_status = borrow->return_first_status,
++        .return_post_status = borrow->return_post_status,
++        .attempted = borrow->attempted,
++        .held = borrow->held,
++        .observing = borrow->observing,
++        .return_attempted = borrow->return_attempted,
++        .core_consumed = borrow->core_consumed,
++        .consumed = borrow->consumed,
++    };
++    history->constructor = (QemuCrucibleQuantumConstructorHistory) {
++        .serial = constructor->serial,
++        .registration_serial = constructor->registration_serial,
++        .lender_serial = constructor->lender_serial,
++        .receiver_serial = constructor->receiver_serial,
++        .recipient_serial = constructor->recipient_serial,
++        .publication_sequence = constructor->publication_sequence,
++        .loan_generation = constructor->loan_generation,
++        .ticket_serial = constructor->ticket_serial,
++        .main_serial = constructor->main_serial,
++        .control_serial = constructor->control_serial,
++        .module_pending_serial = constructor->module_pending_serial,
++        .module_at_construct_serial = constructor->module_at_construct_serial,
++        .constructor_frame_serial = constructor->constructor_frame_serial,
++        .last_callback_serial = constructor->last_callback_serial,
++        .first_status = constructor->first_status,
++        .post_status = constructor->post_status,
++        .construct_status = constructor->construct_status,
++        .module_post_status = constructor->module_post_status,
++        .module_return_status = constructor->module_return_status,
++        .native_first_status = constructor->native_first_status,
++        .native_post_status = constructor->native_post_status,
++        .source_post_status = constructor->source_post_status,
++        .recipient_post_status = constructor->recipient_post_status,
++        .cohort_post_status = constructor->cohort_post_status,
++        .final_status = constructor->final_status,
++        .physical_status = constructor->physical_status,
++        .return_first_status = constructor->return_first_status,
++        .return_post_status = constructor->return_post_status,
++        .attempted = constructor->attempted,
++        .held = constructor->held,
++        .construct_entered = constructor->construct_entered,
++        .construct_returned = constructor->construct_returned,
++        .post_entered = constructor->post_entered,
++        .post_returned = constructor->post_returned,
++        .returned_entered = constructor->returned_entered,
++        .returned_returned = constructor->returned_returned,
++        .module_owner_seen = constructor->module_owner_seen,
++        .observing = constructor->observing,
++        .return_attempted = constructor->return_attempted,
++        .consumed = constructor->consumed,
++        .uncertain = constructor->uncertain,
++    };
++    history->lender = (QemuCrucibleQuantumLenderHistory) {
++        .deferred_serial = lender->deferred_serial,
++        .constructor_serial = lender->constructor_serial,
++        .serial = lender->serial,
++        .receiver_serial = lender->receiver_serial,
++        .recipient_serial = lender->recipient_serial,
++        .main_serial = lender->main_serial,
++        .control_serial = lender->control_serial,
++        .first_status = lender->first_status,
++        .post_status = lender->post_status,
++        .prepare_first_status = lender->prepare_first_status,
++        .prepare_post_status = lender->prepare_post_status,
++        .prepare_native_post_status = lender->prepare_native_post_status,
++        .prepare_recipient_post_status = lender->prepare_recipient_post_status,
++        .prepare_cohort_post_status = lender->prepare_cohort_post_status,
++        .prepare_publication_final_status = lender->prepare_publication_final_status,
++        .native_post_status = lender->native_post_status,
++        .recipient_post_status = lender->recipient_post_status,
++        .cohort_post_status = lender->cohort_post_status,
++        .publication_final_status = lender->publication_final_status,
++        .cut_native_status = lender->cut_native_status,
++        .cut_recipient_status = lender->cut_recipient_status,
++        .cut_cohort_status = lender->cut_cohort_status,
++        .cut_final_status = lender->cut_final_status,
++        .callback_return_status = lender->callback_return_status,
++        .observe_first_status = lender->observe_first_status,
++        .observe_post_status = lender->observe_post_status,
++        .copy_first_status = lender->copy_first_status,
++        .copy_post_status = lender->copy_post_status,
++        .return_first_status = lender->return_first_status,
++        .return_post_status = lender->return_post_status,
++        .attempted = lender->attempted,
++        .held = lender->held,
++        .producer_returned = lender->producer_returned,
++        .observing = lender->observing,
++        .return_attempted = lender->return_attempted,
++        .consumed = lender->consumed,
++    };
++    history->receiver = (QemuCrucibleQuantumReceiverHistory) {
++        .deferred_serial = receiver->deferred_serial,
++        .serial = receiver->serial,
++        .next_callback_serial = receiver->next_callback_serial,
++        .acquired_command_serial = receiver->acquired_command_serial,
++        .acquired_membership_serial = receiver->acquired_membership_serial,
++        .acquired_cleanup_serial = receiver->acquired_cleanup_serial,
++        .module_command_serial = receiver->module_command_serial,
++        .module_membership_serial = receiver->module_membership_serial,
++        .module_cleanup_serial = receiver->module_cleanup_serial,
++        .module_cleanup_guard_serial = receiver->module_cleanup_guard_serial,
++        .module_original_serial = receiver->module_original_serial,
++        .module_advance_serial = receiver->module_advance_serial,
++        .original_moved_serial = receiver->original_moved_serial,
++        .advance_birth_serial = receiver->advance_birth_serial,
++        .first_status = receiver->first_status,
++        .post_status = receiver->post_status,
++        .acquire_status = receiver->acquire_status,
++        .acquire_post_status = receiver->acquire_post_status,
++        .receive_native_post_status = receiver->receive_native_post_status,
++        .receive_recipient_post_status = receiver->receive_recipient_post_status,
++        .receive_cohort_post_status = receiver->receive_cohort_post_status,
++        .receive_publication_final_status = receiver->receive_publication_final_status,
++        .handoff_native_post_status = receiver->handoff_native_post_status,
++        .handoff_recipient_post_status = receiver->handoff_recipient_post_status,
++        .handoff_cohort_post_status = receiver->handoff_cohort_post_status,
++        .handoff_publication_final_status = receiver->handoff_publication_final_status,
++        .handoff_status = receiver->handoff_status,
++        .acquire_first_absent = receiver->acquire_first_absent,
++        .module_not_entered = receiver->module_not_entered,
++        .recipient_closed = receiver->recipient_closed,
++        .enter_attempted = receiver->enter_attempted,
++        .enter_returned = receiver->enter_returned,
++        .acquire_post_absent = receiver->acquire_post_absent,
++        .handoff_attempted = receiver->handoff_attempted,
++        .identity_status = receiver->identity_status,
++        .physical_status = receiver->physical_status,
++        .physical_first_status = receiver->physical_first_status,
++        .attempted = receiver->attempted,
++        .held = receiver->held,
++        .acquire_entered = receiver->acquire_entered,
++        .acquire_returned = receiver->acquire_returned,
++        .acquire_absent = receiver->acquire_absent,
++        .original_moved = receiver->original_moved,
++        .main_returned = receiver->main_returned,
++        .uncertain = receiver->uncertain,
++    };
++    history->construction = constructor->construction;
++    history->post = constructor->post;
++    history->returned = constructor->returned;
++}
++
++static bool quantum_wrapper_registration_posts_complete(void)
++{
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++
++    return registration->original_post_attempted && registration->original_post_returned &&
++        registration->identity_post_attempted && registration->identity_post_returned &&
++        registration->output_post_attempted && registration->output_post_returned;
++}
++
++static int quantum_wrapper_reserve(void)
++{
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++
++    /* One slot is the complete capacity, justified by the unchanged one-borrow
++     * bound. There is no eviction, heap fallback, rollover or slot reuse. */
++    if (!registration->registered || !quantum_wrapper_registration_posts_complete() ||
++        registration->original_post_status ||
++        registration->identity_post_status || registration->output_post_status) {
++        return -ENOKEY;
++    }
++    if (owner->attempted || owner->serial >= UINT64_MAX - 1 ||
++        *registration->holder || *registration->epoch ||
++        *registration->module_holder || *registration->module_epoch) {
++        return -EBUSY;
++    }
++    return 0;
++}
++
++static void quantum_wrapper_publish(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
++
++    owner->canonical_owner = owner;
++    owner->borrow = borrow;
++    owner->constructor = constructor;
++    owner->process = getpid();
++    qemu_thread_get_self(&owner->thread);
++    owner->serial++;
++    owner->registration_serial = registration->serial;
++    owner->borrow_serial = borrow->serial;
++    owner->constructor_serial = constructor->serial;
++    owner->wrapper_provenance = (uintptr_t)constructor->module_pending;
++    owner->wrapper_serial = constructor->module_pending_serial;
++    owner->member_provenance = (uintptr_t)constructor->member;
++    owner->runtime_provenance = constructor->member->runtime_base;
++    owner->runtime_extent = constructor->member->runtime_extent;
++    owner->module_journal_provenance = (uintptr_t)registration->module_journal;
++    owner->module_journal_extent = registration->module_journal_bytes;
++    owner->account_generation = constructor->member->account_generation;
++    owner->process_generation = constructor->member->process_generation;
++    owner->constructor_registration_serial = constructor->registration_serial;
++    owner->borrower_registration_serial = borrow->registration_serial;
++    owner->cohort = constructor->receiver->publication.cohort;
++    owner->command = constructor->receiver->publication.command;
++    owner->attempted = true;
++    owner->held = true;
++    *registration->holder = owner;
++    *registration->epoch = owner->serial;
++    quantum_wrapper_capture(&owner->birth);
++}
++
++static void quantum_wrapper_terminal_record(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++
++    if (owner->held && !owner->terminal_recorded) {
++        quantum_wrapper_capture(&owner->terminal);
++        owner->terminal_recorded = true;
++    }
++}
++
++static void quantum_wrapper_lender_return_record(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++    QemuCrucibleSourcePendingCommandLender *lender = &startup_source.pending_command_lender;
++
++    if (owner->attempted && !owner->lender_return_recorded &&
++        lender->serial == owner->birth.lender.serial) {
++        owner->lender_return = (QemuCrucibleQuantumLenderHistory) {
++            .deferred_serial = lender->deferred_serial,
++            .constructor_serial = lender->constructor_serial,
++            .serial = lender->serial,
++            .receiver_serial = lender->receiver_serial,
++            .recipient_serial = lender->recipient_serial,
++            .main_serial = lender->main_serial,
++            .control_serial = lender->control_serial,
++            .first_status = lender->first_status,
++            .post_status = lender->post_status,
++            .prepare_first_status = lender->prepare_first_status,
++            .prepare_post_status = lender->prepare_post_status,
++            .prepare_native_post_status = lender->prepare_native_post_status,
++            .prepare_recipient_post_status = lender->prepare_recipient_post_status,
++            .prepare_cohort_post_status = lender->prepare_cohort_post_status,
++            .prepare_publication_final_status = lender->prepare_publication_final_status,
++            .native_post_status = lender->native_post_status,
++            .recipient_post_status = lender->recipient_post_status,
++            .cohort_post_status = lender->cohort_post_status,
++            .publication_final_status = lender->publication_final_status,
++            .cut_native_status = lender->cut_native_status,
++            .cut_recipient_status = lender->cut_recipient_status,
++            .cut_cohort_status = lender->cut_cohort_status,
++            .cut_final_status = lender->cut_final_status,
++            .callback_return_status = lender->callback_return_status,
++            .observe_first_status = lender->observe_first_status,
++            .observe_post_status = lender->observe_post_status,
++            .copy_first_status = lender->copy_first_status,
++            .copy_post_status = lender->copy_post_status,
++            .return_first_status = lender->return_first_status,
++            .return_post_status = lender->return_post_status,
++            .attempted = lender->attempted,
++            .held = lender->held,
++            .producer_returned = lender->producer_returned,
++            .observing = lender->observing,
++            .return_attempted = lender->return_attempted,
++            .consumed = lender->consumed,
++        };
++        owner->lender_return_recorded = true;
++    }
++}
++
++static void quantum_wrapper_receiver_retire_record(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++
++    if (owner->attempted && !owner->receiver_retire_recorded &&
++        receiver->serial == owner->birth.receiver.serial) {
++        owner->receiver_retire = (QemuCrucibleQuantumReceiverHistory) {
++            .deferred_serial = receiver->deferred_serial,
++            .serial = receiver->serial,
++            .next_callback_serial = receiver->next_callback_serial,
++            .acquired_command_serial = receiver->acquired_command_serial,
++            .acquired_membership_serial = receiver->acquired_membership_serial,
++            .acquired_cleanup_serial = receiver->acquired_cleanup_serial,
++            .module_command_serial = receiver->module_command_serial,
++            .module_membership_serial = receiver->module_membership_serial,
++            .module_cleanup_serial = receiver->module_cleanup_serial,
++            .module_cleanup_guard_serial = receiver->module_cleanup_guard_serial,
++            .module_original_serial = receiver->module_original_serial,
++            .module_advance_serial = receiver->module_advance_serial,
++            .original_moved_serial = receiver->original_moved_serial,
++            .advance_birth_serial = receiver->advance_birth_serial,
++            .first_status = receiver->first_status,
++            .post_status = receiver->post_status,
++            .acquire_status = receiver->acquire_status,
++            .acquire_post_status = receiver->acquire_post_status,
++            .receive_native_post_status = receiver->receive_native_post_status,
++            .receive_recipient_post_status = receiver->receive_recipient_post_status,
++            .receive_cohort_post_status = receiver->receive_cohort_post_status,
++            .receive_publication_final_status = receiver->receive_publication_final_status,
++            .handoff_native_post_status = receiver->handoff_native_post_status,
++            .handoff_recipient_post_status = receiver->handoff_recipient_post_status,
++            .handoff_cohort_post_status = receiver->handoff_cohort_post_status,
++            .handoff_publication_final_status = receiver->handoff_publication_final_status,
++            .handoff_status = receiver->handoff_status,
++            .acquire_first_absent = receiver->acquire_first_absent,
++            .module_not_entered = receiver->module_not_entered,
++            .recipient_closed = receiver->recipient_closed,
++            .enter_attempted = receiver->enter_attempted,
++            .enter_returned = receiver->enter_returned,
++            .acquire_post_absent = receiver->acquire_post_absent,
++            .handoff_attempted = receiver->handoff_attempted,
++            .identity_status = receiver->identity_status,
++            .physical_status = receiver->physical_status,
++            .physical_first_status = receiver->physical_first_status,
++            .attempted = receiver->attempted,
++            .held = receiver->held,
++            .acquire_entered = receiver->acquire_entered,
++            .acquire_returned = receiver->acquire_returned,
++            .acquire_absent = receiver->acquire_absent,
++            .original_moved = receiver->original_moved,
++            .main_returned = receiver->main_returned,
++            .uncertain = receiver->uncertain,
++        };
++        owner->receiver_retire_recorded = true;
++    }
++}
++
++static bool quantum_wrapper_storage_valid(QemuCrucibleCommandConsumerMember *member,
++    QemuCrucibleSourceQuantumWrapperRetirement **holder, uint64_t *epoch,
++    QemuCrucibleModuleQuantumWrapperRetirement **module_holder, uint64_t *module_epoch,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *disposition,
++    void *journal, size_t journal_bytes)
++{
++    QemuCruciblePendingConstructorRegistration *constructor = &member->pending_constructor;
++    const void *fields[] = { holder, epoch, module_holder, module_epoch, disposition };
++    const size_t sizes[] = { sizeof(*holder), sizeof(*epoch), sizeof(*module_holder),
++                            sizeof(*module_epoch), sizeof(*disposition) };
++
++    if (!constructor->registered || journal != constructor->module_journal ||
++        journal_bytes != constructor->module_journal_bytes) {
++        return false;
++    }
++    for (size_t i = 0; i < G_N_ELEMENTS(fields); i++) {
++        if (!pending_runtime_field(member->runtime_base, member->runtime_extent,
++                                   fields[i], sizes[i], _Alignof(uint64_t)) ||
++            callback_child_output_overlap(fields[i], sizes[i], journal, journal_bytes)) {
++            return false;
++        }
++        for (size_t j = 0; j < i; j++) {
++            if (callback_child_output_overlap(fields[i], sizes[i], fields[j], sizes[j])) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++static int quantum_wrapper_identity(QemuCrucibleSourceQuantumWrapperRetirement *owner,
++                                    uint64_t epoch)
++{
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    int status;
++
++    /* Authenticate the actual owner and creator before reading nominated live
++     * parents. Archived provenance and copied epochs never enter this path. */
++    if (owner != &startup_source.quantum_wrapper || owner->canonical_owner != owner ||
++        !owner->attempted || !epoch || epoch == UINT64_MAX || owner->serial != epoch ||
++        owner->process != getpid() || !qemu_thread_is_self(&owner->thread) ||
++        owner->borrow != &startup_source.quantum_original ||
++        owner->constructor != &startup_source.pending_constructor ||
++        !registration->registered || owner->registration_serial != registration->serial ||
++        !quantum_wrapper_storage_valid(&startup_source.command_member,
++            registration->holder, registration->epoch, registration->module_holder,
++            registration->module_epoch, registration->disposition,
++            registration->module_journal, registration->module_journal_bytes)) {
++        return -ESTALE;
++    }
++    if (!owner->return_attempted) {
++        status = quantum_original_identity(owner->borrow, owner->borrow_serial);
++    } else {
++        QemuCrucibleSourceQuantumOriginalBorrow *borrow = owner->borrow;
++
++        /* The actual retire edge may already have destroyed and cleared the
++         * Module wrapper. Authenticate the still-retained consumed Source
++         * child directly; never reopen its old Module/Original identity. */
++        status = borrow->canonical_owner == borrow && borrow->attempted &&
++            borrow->serial == owner->borrow_serial && borrow->process == getpid() &&
++            qemu_thread_is_self(&borrow->thread) &&
++            borrow->constructor == owner->constructor &&
++            borrow->constructor_serial == owner->constructor_serial &&
++            borrow->member == &startup_source.command_member &&
++            borrow->return_attempted && borrow->core_consumed &&
++            borrow->consumed && !borrow->held ? 0 : -ESTALE;
++    }
++    if (!status) {
++        status = pending_constructor_identity(owner->constructor,
++            owner->constructor_serial, owner->constructor->consumed);
++    }
++    if (!status) {
++        status = pending_physical_current(owner->constructor->lender);
++    }
++    if (status) {
++        return status;
++    }
++    if (owner->consumed) {
++        return !owner->held && owner->return_attempted && owner->wrapper_consumed &&
++            !*registration->holder && !*registration->epoch ? 0 : -ESTALE;
++    }
++    return owner->held && *registration->holder == owner &&
++        *registration->epoch == epoch ? 0 : -ESTALE;
++}
++
++static int quantum_wrapper_output(uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out)
++{
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    int status;
++
++    if (!registration->registered || version != 1 || bytes != sizeof(*out) ||
++        !out || out != registration->disposition ||
++        (uintptr_t)out % _Alignof(*out) || (uintptr_t)out > UINTPTR_MAX - bytes) {
++        return -EINVAL;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    status = command_member_identity_locked(&startup_source.command_member);
++    if (!status) {
++        status = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!status) {
++        status = callback_child_output_conflicts_except_locked(out, bytes, out) ? -EINVAL : 0;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (!status) {
++        status = qemu_crucible_preexec_publisher_pending_output_v1(
++            startup_source.publisher_lender, out, bytes);
++    }
++    return status;
++}
++
++static void quantum_wrapper_disposition(QemuCrucibleSourceQuantumWrapperRetirement *owner,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out)
++{
++    *out = (struct qemu_plugin_crucible_quantum_wrapper_disposition_v1) {
++        .schema_version = 1,
++        .struct_size = sizeof(*out),
++        .retirement_serial = owner->serial,
++        .borrow_serial = owner->borrow_serial,
++        .constructor_serial = owner->constructor_serial,
++        .first_status = owner->first_status,
++        .post_status = owner->post_status,
++        .attempted = owner->return_attempted,
++        .held = owner->held,
++        .wrapper_consumed = owner->wrapper_consumed,
++        .source_consumed = owner->consumed,
++        .uncertain = owner->uncertain,
++    };
++}
++
++/* The caller holds commands.mutex. Negative health remains reportable when
++ * physical output custody is known; unknown physical custody withholds bytes. */
++static void quantum_wrapper_registration_result(
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *out)
++{
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++
++    if (!registration->output_post_status) {
++        *out = (struct qemu_plugin_crucible_pending_constructor_registration_v1) {
++            .schema_version = 1,
++            .struct_size = sizeof(*out),
++            .registered = 1,
++            .registration_serial = registration->serial,
++            .post_status = registration->original_post_status ? registration->original_post_status :
++                registration->identity_post_status ? registration->identity_post_status :
++                registration->output_post_status,
++        };
++    }
++}
++
++static void quantum_wrapper_return_result(QemuCrucibleSourceQuantumWrapperRetirement *owner,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out)
++{
++    if (!owner->output_post_status) {
++        quantum_wrapper_disposition(owner, out);
++    }
++}
++
++static bool quantum_wrapper_receipt_valid(
++    const struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 *receipt,
++    QemuCrucibleSourceQuantumWrapperRetirement *owner)
++{
++    return receipt->schema_version == 1 && receipt->struct_size == sizeof(*receipt) &&
++        receipt->wrapper_serial == owner->wrapper_serial &&
++        receipt->retirement_serial == owner->module_retirement_serial &&
++        receipt->first_status <= 0 && receipt->post_status <= 0 &&
++        receipt->cleanup_entered <= 1 && receipt->cleanup_returned <= 1 &&
++        receipt->wrapper_return_attempted <= 1 && receipt->wrapper_consumed <= 1 &&
++        receipt->children_terminal <= 1 && receipt->uncertain <= 1 &&
++        !receipt->reserved[0] && !receipt->reserved[1] &&
++        (!receipt->cleanup_returned || receipt->cleanup_entered) &&
++        (!receipt->wrapper_consumed || (receipt->wrapper_return_attempted &&
++            receipt->cleanup_returned && receipt->children_terminal && !receipt->uncertain));
++}
++#endif
++
++int qemu_plugin_crucible_advance_quantum_wrapper_register_v1(
++    qemu_plugin_id_t id, QemuCrucibleCommandConsumerMember *member,
++    const struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1 *table,
++    QemuCrucibleSourceQuantumWrapperRetirement **holder, uint64_t *epoch,
++    QemuCrucibleModuleQuantumWrapperRetirement **module_holder, uint64_t *module_epoch,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *disposition,
++    void *journal, size_t journal_bytes, uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1 saved;
++    int first = command_registry_identity(id);
++    int original_post;
++    int identity_post;
++    int output_post;
++
++    if (first || member != &startup_source.command_member ||
++        !startup_invocation(id) || startup_source.install_returned) {
++        return first ? first : -EPERM;
++    }
++    first = pending_output_geometry(version, bytes, out, sizeof(*out), _Alignof(*out), holder, epoch);
++    if (first || !table || (uintptr_t)table % _Alignof(*table) ||
++        (uintptr_t)table > UINTPTR_MAX - sizeof(*table) ||
++        !quantum_wrapper_storage_valid(member, holder, epoch, module_holder,
++            module_epoch, disposition, journal, journal_bytes) ||
++        callback_child_output_overlap(out, bytes, table, sizeof(*table)) ||
++        callback_child_output_overlap(out, bytes, module_holder, sizeof(*module_holder)) ||
++        callback_child_output_overlap(out, bytes, module_epoch, sizeof(*module_epoch)) ||
++        callback_child_output_overlap(out, bytes, disposition, sizeof(*disposition))) {
++        return first ? first : -EINVAL;
++    }
++    saved = *table;
++    if (saved.schema_version != 1 || saved.struct_size != sizeof(saved) ||
++        !saved.retire || !saved.returned_current) {
++        return -EINVAL;
++    }
++    first = startup_runtime_admission(id, member->runtime);
++    if (first) {
++        return first;
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    first = command_member_live_locked(member);
++    if (!first) {
++        first = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!first && (registration->attempted || startup_source.quantum_original.attempted ||
++        registration->serial >= UINT64_MAX - 1 || *holder || *epoch ||
++        *module_holder || *module_epoch || member->pending_constructor.first_status ||
++        member->pending_constructor.post_status ||
++        callback_child_output_conflicts_locked(holder, sizeof(*holder)) ||
++        callback_child_output_conflicts_locked(epoch, sizeof(*epoch)) ||
++        callback_child_output_conflicts_locked(module_holder, sizeof(*module_holder)) ||
++        callback_child_output_conflicts_locked(module_epoch, sizeof(*module_epoch)) ||
++        callback_child_output_conflicts_locked(disposition, sizeof(*disposition)))) {
++        first = -EBUSY;
++    }
++    if (!first) {
++        registration->callbacks = saved;
++        registration->holder = holder;
++        registration->epoch = epoch;
++        registration->module_holder = module_holder;
++        registration->module_epoch = module_epoch;
++        registration->disposition = disposition;
++        registration->module_journal = journal;
++        registration->module_journal_bytes = journal_bytes;
++        registration->serial++;
++        registration->attempted = true;
++        registration->registered = true;
++        registration->original_post_attempted = true;
++    }
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (first) {
++        return first;
++    }
++    /* Binding remains born even if the same installing Original's independent
++     * post or the independent retained member identity post refuses. */
++    original_post = startup_runtime_admission(id, member->runtime);
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    registration->original_post_status = original_post;
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = true;
++    identity_post = command_member_live_locked(member);
++    registration->identity_post_returned = true;
++    registration->identity_post_status = identity_post;
++    registration->output_post_attempted = true;
++    output_post = command_member_identity_locked(member);
++    if (!output_post) {
++        output_post = publisher_service_runtime_identity_locked(&startup_source.publisher_module);
++    }
++    if (!output_post && !quantum_wrapper_storage_valid(member,
++            registration->holder, registration->epoch, registration->module_holder,
++            registration->module_epoch, registration->disposition,
++            registration->module_journal, registration->module_journal_bytes)) {
++        output_post = -ESTALE;
++    }
++    registration->output_post_status = output_post;
++    registration->output_post_returned = true;
++    quantum_wrapper_registration_result(out);
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return original_post ? original_post : identity_post ? identity_post : output_post;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_advance_quantum_wrapper_observe_v1(
++    QemuCrucibleSourceQuantumWrapperRetirement *owner, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    int status = quantum_wrapper_identity(owner, epoch);
++
++    if (!status) {
++        status = quantum_wrapper_output(version, bytes, out);
++    }
++    if (!status) {
++        quantum_wrapper_disposition(owner, out);
++    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_advance_quantum_wrapper_retire_v1(
++    QemuCrucibleSourceQuantumWrapperRetirement *owner, uint64_t epoch,
++    uint32_t version, size_t bytes,
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *out)
++{
++#if defined(CONFIG_LINUX) && defined(__x86_64__) && !defined(__ILP32__)
++    QemuCrucibleQuantumWrapperRegistration *registration = &startup_source.quantum_wrapper_registration;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourceAdvanceReceiver *receiver = &startup_source.advance_receiver;
++    int first = quantum_wrapper_identity(owner, epoch);
++    int returned = -ESTALE;
++    int physical;
++    int post;
++
++    if (!first) {
++        first = quantum_wrapper_output(version, bytes, out);
++    }
++    if (first) {
++        return first;
++    }
++    if (owner->consumed) {
++        quantum_wrapper_disposition(owner, out);
++        return owner->first_status ? owner->first_status : owner->post_status;
++    }
++    /* This branch owns only a still-entered Main. The separate deferred/RR,
++     * Advance, quiescence and post-Main cleanup producers remain unsupported.
++     * In particular no true born operation is called a no-birth recipient. */
++    if (owner->return_attempted || owner->uncertain || !owner->terminal_recorded ||
++        !constructor->consumed || constructor->held || constructor->uncertain ||
++        !startup_source.quantum_original.core_consumed ||
++        !startup_source.quantum_original.consumed || !quantum_original_closed() ||
++        !quantum_rr_parent_closed() || !pending_deferred_closed() ||
++        constructor->deferred || constructor->deferred_serial ||
++        receiver->deferred || receiver->deferred_serial || receiver->entry.held ||
++        receiver->command_borrow.held || receiver->module_original || receiver->module_advance ||
++        receiver->module_command || receiver->module_membership || receiver->module_cleanup ||
++        receiver->module_cleanup_guard || receiver->module_original_serial ||
++        receiver->module_advance_serial || receiver->module_command_serial ||
++        receiver->module_membership_serial || receiver->module_cleanup_serial ||
++        receiver->module_cleanup_guard_serial ||
++        (receiver->callback.entered && !receiver->callback.returned) ||
++        *registration->module_holder || *registration->module_epoch ||
++        constructor->module_pending_serial != owner->wrapper_serial ||
++        (uintptr_t)constructor->module_pending != owner->wrapper_provenance) {
++        return -EBUSY;
++    }
++    owner->return_attempted = true;
++    first = advance_callback_begin(receiver, QEMU_CRUCIBLE_ADVANCE_CALLBACK_WRAPPER_RETIRE,
++                                    registration->callbacks.retire);
++    if (!first) {
++        owner->retire_entered = true;
++        owner->retire_receipt = (struct qemu_plugin_crucible_quantum_wrapper_receipt_v1) {
++            .schema_version = 1, .struct_size = sizeof(owner->retire_receipt),
++        };
++        first = registration->callbacks.retire(&constructor->module_pending,
++            &constructor->module_pending_serial, registration->module_holder,
++            registration->module_epoch, owner, owner->serial, &owner->retire_receipt,
++            constructor->member->component->userdata);
++        owner->retire_returned = true;
++        /* Save any born nominal owner before ending the mask or later posts.
++         * A negative callback cannot discard this output or permit a retry. */
++        owner->module_retirement = *registration->module_holder;
++        owner->module_retirement_serial = *registration->module_epoch;
++        advance_callback_end(receiver);
++        first = pending_constructor_callback_status(first);
++        /* Missing or partial birth cannot be passed as a fabricated nominal
++         * owner to ReturnedCurrent. Keep uncertainty, never infer no-birth;
++         * the independent physical/protocol posts below still run. */
++        if (owner->module_retirement && owner->module_retirement_serial &&
++            owner->module_retirement_serial != UINT64_MAX &&
++            pending_runtime_field((uintptr_t)registration->module_journal,
++                registration->module_journal_bytes, owner->module_retirement,
++                sizeof(void *), _Alignof(void *))) {
++            returned = advance_callback_begin(receiver,
++                QEMU_CRUCIBLE_ADVANCE_CALLBACK_WRAPPER_RETURNED_CURRENT,
++                registration->callbacks.returned_current);
++            if (!returned) {
++                owner->returned_entered = true;
++                owner->returned_receipt = (struct qemu_plugin_crucible_quantum_wrapper_receipt_v1) {
++                    .schema_version = 1, .struct_size = sizeof(owner->returned_receipt),
++                };
++                returned = registration->callbacks.returned_current(
++                    registration->module_holder, owner->module_retirement_serial,
++                    owner, owner->serial, &owner->returned_receipt,
++                    constructor->member->component->userdata);
++                owner->returned_returned = true;
++                advance_callback_end(receiver);
++                returned = pending_constructor_callback_status(returned);
++            }
++            if (!returned && (*registration->module_holder != owner->module_retirement ||
++                *registration->module_epoch != owner->module_retirement_serial ||
++                !quantum_wrapper_receipt_valid(&owner->retire_receipt, owner) ||
++                !quantum_wrapper_receipt_valid(&owner->returned_receipt, owner) ||
++                !owner->returned_receipt.wrapper_consumed ||
++                (owner->retire_receipt.wrapper_consumed &&
++                    !owner->returned_receipt.wrapper_consumed) ||
++                constructor->module_pending || constructor->module_pending_serial)) {
++                returned = -ESTALE;
++            }
++        }
++    }
++    owner->retire_status = first;
++    owner->returned_status = returned;
++    if (!returned) {
++        owner->wrapper_consumed = true;
++        pending_preserve_status(&owner->first_status, owner->retire_receipt.first_status);
++        pending_preserve_status(&owner->post_status, owner->retire_receipt.post_status);
++        pending_preserve_status(&owner->first_status, owner->returned_receipt.first_status);
++        pending_preserve_status(&owner->post_status, owner->returned_receipt.post_status);
++    }
++    pending_preserve_status(&owner->first_status, first ? first : returned);
++    physical = pending_physical_current(constructor->lender);
++    owner->physical_post_status = physical;
++    if (owner->wrapper_consumed && !physical) {
++        /* The slot stays intact forever. Only its logical Source child closes;
++         * this consumes neither the Module retirement journal nor its Runtime. */
++        *registration->holder = NULL;
++        *registration->epoch = 0;
++        owner->held = false;
++        owner->consumed = true;
++    } else {
++        owner->uncertain = true;
++    }
++    post = pending_constructor_post(constructor);
++    pending_preserve_status(&owner->post_status, physical ? physical : post);
++    owner->output_post_status = quantum_wrapper_output(version, bytes, out);
++    pending_preserve_status(&owner->post_status, owner->output_post_status);
++    quantum_wrapper_return_result(owner, out);
++    return owner->first_status ? owner->first_status : owner->post_status;
 +#else
 +    return -ENOTSUP;
 +#endif
@@ -204226,10 +205996,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..67d1a8e9b1ff00246310d6196a2ffa46973bebb9
+index 0000000000000000000000000000000000000000..bdb52f9658cba3bbfb69535aeebe9e05252c34e9
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8711 @@
+@@ -0,0 +1,8723 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -204303,6 +206073,16 @@ index 0000000000000000000000000000000000000000..67d1a8e9b1ff00246310d6196a2ffa46
 +static int pending_deferred_handoff(QemuCrucibleSourceAdvanceReceiver *receiver);
 +static bool pending_constructor_closed(void);
 +static bool quantum_original_closed(void);
++static bool quantum_rr_parent_closed(void);
++static int quantum_rr_parent_callback_identity(QemuCrucibleSourceAdvanceReceiver *receiver,
++    QemuCrucibleAdvanceCallbackKind kind);
++static int quantum_rr_parent_prepare(QemuCrucibleSourceAdvanceReceiver *receiver);
++static bool quantum_wrapper_closed(void);
++static int quantum_wrapper_reserve(void);
++static void quantum_wrapper_publish(void);
++static void quantum_wrapper_terminal_record(void);
++static void quantum_wrapper_lender_return_record(void);
++static void quantum_wrapper_receiver_retire_record(void);
 +static int quantum_original_return(QemuCrucibleSourcePendingQuantumConstructor *child);
 +static bool pending_constructor_no_birth(void);
 +static int pending_constructor_receive_current(QemuCrucibleSourceAdvanceReceiver *receiver);
@@ -212929,6 +214709,8 @@ index 0000000000000000000000000000000000000000..67d1a8e9b1ff00246310d6196a2ffa46
 +#include "crucible-pending-deferred.inc.h"
 +#include "crucible-quantum-original.inc.h"
 +#include "crucible-executor-cleanup-registration.inc.h"
++#include "crucible-quantum-rr-parent.inc.h"
++#include "crucible-quantum-wrapper.inc.h"
 +
 +#include "crucible-device-workspace.inc.h"
 +
@@ -212943,10 +214725,10 @@ index 0000000000000000000000000000000000000000..67d1a8e9b1ff00246310d6196a2ffa46
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6dce0e4ae62876ac007a2daff4af74bf782b01f8
+index 0000000000000000000000000000000000000000..704397e5e81b1e2fca2ff2d419d7c807bfc4a5be
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,3620 @@
+@@ -0,0 +1,3937 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -213196,6 +214978,10 @@ index 0000000000000000000000000000000000000000..6dce0e4ae62876ac007a2daff4af74bf
 +    QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_RETURNED_CURRENT,
 +    QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER,
 +    QEMU_CRUCIBLE_ADVANCE_CALLBACK_PENDING_DEFER_CURRENT,
++    QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_PREPARE = 19,
++    QEMU_CRUCIBLE_ADVANCE_CALLBACK_RR_PARENT_CURRENT = 20,
++    QEMU_CRUCIBLE_ADVANCE_CALLBACK_WRAPPER_RETIRE = 21,
++    QEMU_CRUCIBLE_ADVANCE_CALLBACK_WRAPPER_RETURNED_CURRENT = 22,
 +} QemuCrucibleAdvanceCallbackKind;
 +
 +typedef struct QemuCrucibleAdvanceCallbackFrame {
@@ -213427,6 +215213,315 @@ index 0000000000000000000000000000000000000000..6dce0e4ae62876ac007a2daff4af74bf
 +    bool return_attempted;
 +    bool core_consumed;
 +    bool consumed;
++};
++
++typedef struct QemuCrucibleQuantumRRParentRegistration {
++    struct qemu_plugin_crucible_quantum_rr_parent_callbacks_v1 table;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleSourceQuantumRRParent **holder;
++    uint64_t *epoch;
++    QemuCrucibleModuleQuantumRRParent **module_holder;
++    uint64_t *module_epoch;
++    void *module_journal;
++    size_t module_journal_bytes;
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *output;
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 result;
++    QemuThread creator;
++    pid_t process;
++    int original_post_status;
++    int identity_post_status;
++    bool attempted;
++    bool registered;
++    bool original_post_attempted;
++    bool original_post_returned;
++    bool identity_post_attempted;
++    bool identity_post_returned;
++} QemuCrucibleQuantumRRParentRegistration;
++
++/* This child retains the same Original/Advance and every construction parent.
++ * No Main preparation receipt can serve as an executor or cleanup issuer. */
++struct QemuCrucibleSourceQuantumRRParent {
++    QemuCrucibleSourceQuantumRRParent *canonical_owner;
++    QemuCrucibleSourceQuantumOriginalBorrow *original_borrow;
++    QemuCrucibleSourceDeferredQuantumConstructor *deferred;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor;
++    QemuCrucibleSourceAdvanceReceiver *receiver;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleSourceQuantumRRParent **holder;
++    uint64_t *epoch;
++    QemuCrucibleModuleQuantumRRParent **module_holder;
++    uint64_t *module_epoch;
++    QemuCrucibleModuleQuantumRRParent *module_at_prepare;
++    uint64_t module_at_prepare_epoch;
++    uint64_t serial;
++    uint64_t registration_serial;
++    uint64_t borrow_serial;
++    uint64_t deferred_serial;
++    uint64_t constructor_serial;
++    uint64_t receiver_serial;
++    uint64_t prepare_frame_serial;
++    uint64_t current_frame_serial;
++    QemuThread creator;
++    pid_t process;
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 preparation;
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 current;
++    int first_status;
++    int post_status;
++    int prepare_status;
++    int current_status;
++    int source_post_status;
++    int deferred_post_status;
++    int protocol_post_status;
++    int native_post_status;
++    int recipient_post_status;
++    int cohort_post_status;
++    int publication_post_status;
++    bool attempted;
++    bool held;
++    bool observing;
++    uint32_t observed_phases;
++    bool prepare_entered;
++    bool prepare_returned;
++    bool current_entered;
++    bool current_returned;
++    bool uncertain;
++};
++
++/* Dedicated value history, never an archived authority. In particular no
++ * QemuThread, mutex, callback table or owner object is copied into a record.
++ * The one slot follows the unchanged process-wide one-borrow attempt bound. */
++typedef struct QemuCrucibleQuantumBorrowHistory {
++    uint64_t module_pending_serial;
++    uint64_t serial;
++    uint64_t constructor_serial;
++    uint64_t registration_serial;
++    uint64_t callback_serial;
++    int first_status;
++    int post_status;
++    int return_first_status;
++    int return_post_status;
++    bool attempted;
++    bool held;
++    bool observing;
++    bool return_attempted;
++    bool core_consumed;
++    bool consumed;
++} QemuCrucibleQuantumBorrowHistory;
++
++typedef struct QemuCrucibleQuantumConstructorHistory {
++    uint64_t serial;
++    uint64_t registration_serial;
++    uint64_t lender_serial;
++    uint64_t receiver_serial;
++    uint64_t recipient_serial;
++    uint64_t publication_sequence;
++    uint64_t loan_generation;
++    uint64_t ticket_serial;
++    uint64_t main_serial;
++    uint64_t control_serial;
++    uint64_t module_pending_serial;
++    uint64_t module_at_construct_serial;
++    uint64_t constructor_frame_serial;
++    uint64_t last_callback_serial;
++    int first_status;
++    int post_status;
++    int construct_status;
++    int module_post_status;
++    int module_return_status;
++    int native_first_status;
++    int native_post_status;
++    int source_post_status;
++    int recipient_post_status;
++    int cohort_post_status;
++    int final_status;
++    int physical_status;
++    int return_first_status;
++    int return_post_status;
++    bool attempted;
++    bool held;
++    bool construct_entered;
++    bool construct_returned;
++    bool post_entered;
++    bool post_returned;
++    bool returned_entered;
++    bool returned_returned;
++    bool module_owner_seen;
++    bool observing;
++    bool return_attempted;
++    bool consumed;
++    bool uncertain;
++} QemuCrucibleQuantumConstructorHistory;
++
++typedef struct QemuCrucibleQuantumLenderHistory {
++    uint64_t deferred_serial;
++    uint64_t constructor_serial;
++    uint64_t serial;
++    uint64_t receiver_serial;
++    uint64_t recipient_serial;
++    uint64_t main_serial;
++    uint64_t control_serial;
++    int first_status;
++    int post_status;
++    int prepare_first_status;
++    int prepare_post_status;
++    int prepare_native_post_status;
++    int prepare_recipient_post_status;
++    int prepare_cohort_post_status;
++    int prepare_publication_final_status;
++    int native_post_status;
++    int recipient_post_status;
++    int cohort_post_status;
++    int publication_final_status;
++    int cut_native_status;
++    int cut_recipient_status;
++    int cut_cohort_status;
++    int cut_final_status;
++    int callback_return_status;
++    int observe_first_status;
++    int observe_post_status;
++    int copy_first_status;
++    int copy_post_status;
++    int return_first_status;
++    int return_post_status;
++    bool attempted;
++    bool held;
++    bool producer_returned;
++    bool observing;
++    bool return_attempted;
++    bool consumed;
++} QemuCrucibleQuantumLenderHistory;
++
++typedef struct QemuCrucibleQuantumReceiverHistory {
++    uint64_t deferred_serial;
++    uint64_t serial;
++    uint64_t next_callback_serial;
++    uint64_t acquired_command_serial;
++    uint64_t acquired_membership_serial;
++    uint64_t acquired_cleanup_serial;
++    uint64_t module_command_serial;
++    uint64_t module_membership_serial;
++    uint64_t module_cleanup_serial;
++    uint64_t module_cleanup_guard_serial;
++    uint64_t module_original_serial;
++    uint64_t module_advance_serial;
++    uint64_t original_moved_serial;
++    uint64_t advance_birth_serial;
++    int first_status;
++    int post_status;
++    int acquire_status;
++    int acquire_post_status;
++    int receive_native_post_status;
++    int receive_recipient_post_status;
++    int receive_cohort_post_status;
++    int receive_publication_final_status;
++    int handoff_native_post_status;
++    int handoff_recipient_post_status;
++    int handoff_cohort_post_status;
++    int handoff_publication_final_status;
++    int handoff_status;
++    bool acquire_first_absent;
++    bool module_not_entered;
++    bool recipient_closed;
++    bool enter_attempted;
++    bool enter_returned;
++    bool acquire_post_absent;
++    bool handoff_attempted;
++    int identity_status;
++    int physical_status;
++    int physical_first_status;
++    bool attempted;
++    bool held;
++    bool acquire_entered;
++    bool acquire_returned;
++    bool acquire_absent;
++    bool original_moved;
++    bool main_returned;
++    bool uncertain;
++} QemuCrucibleQuantumReceiverHistory;
++
++typedef struct QemuCrucibleQuantumWrapperHistory {
++    QemuCrucibleQuantumBorrowHistory borrow;
++    QemuCrucibleQuantumConstructorHistory constructor;
++    QemuCrucibleQuantumLenderHistory lender;
++    QemuCrucibleQuantumReceiverHistory receiver;
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 construction;
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 post;
++    struct qemu_plugin_crucible_pending_constructor_receipt_v1 returned;
++} QemuCrucibleQuantumWrapperHistory;
++
++typedef struct QemuCrucibleQuantumWrapperRegistration {
++    struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1 callbacks;
++    QemuCrucibleSourceQuantumWrapperRetirement **holder;
++    uint64_t *epoch;
++    QemuCrucibleModuleQuantumWrapperRetirement **module_holder;
++    uint64_t *module_epoch;
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 *disposition;
++    void *module_journal;
++    size_t module_journal_bytes;
++    uint64_t serial;
++    int original_post_status;
++    int identity_post_status;
++    int output_post_status;
++    bool attempted;
++    bool registered;
++    bool original_post_attempted;
++    bool original_post_returned;
++    bool identity_post_attempted;
++    bool identity_post_returned;
++    bool output_post_attempted;
++    bool output_post_returned;
++} QemuCrucibleQuantumWrapperRegistration;
++
++struct QemuCrucibleSourceQuantumWrapperRetirement {
++    QemuCrucibleSourceQuantumWrapperRetirement *canonical_owner;
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor;
++    QemuCrucibleModuleQuantumWrapperRetirement *module_retirement;
++    QemuThread thread;
++    pid_t process;
++    uint64_t serial;
++    uint64_t registration_serial;
++    uint64_t borrow_serial;
++    uint64_t constructor_serial;
++    uint64_t module_retirement_serial;
++    uintptr_t wrapper_provenance; /* never dereferenced after destruction */
++    uintptr_t member_provenance;
++    uintptr_t runtime_provenance;
++    uintptr_t module_journal_provenance;
++    uint64_t runtime_extent;
++    uint64_t module_journal_extent;
++    uint64_t account_generation;
++    uint64_t process_generation;
++    uint64_t constructor_registration_serial;
++    uint64_t borrower_registration_serial;
++    uint64_t wrapper_serial;
++    int first_status;
++    int post_status;
++    int retire_status;
++    int returned_status;
++    int physical_post_status;
++    int output_post_status;
++    bool attempted;
++    bool held;
++    bool terminal_recorded;
++    bool lender_return_recorded;
++    bool receiver_retire_recorded;
++    bool return_attempted;
++    bool retire_entered;
++    bool retire_returned;
++    bool returned_entered;
++    bool returned_returned;
++    bool wrapper_consumed;
++    bool consumed;
++    bool uncertain;
++    QemuCrucibleBoundaryActionRecord cohort;
++    QemuCruciblePublisherCommandView command;
++    QemuCrucibleQuantumWrapperHistory birth;
++    QemuCrucibleQuantumWrapperHistory terminal;
++    QemuCrucibleQuantumLenderHistory lender_return;
++    QemuCrucibleQuantumReceiverHistory receiver_retire;
++    struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 retire_receipt;
++    struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 returned_receipt;
 +};
 +
 +typedef struct QemuCruciblePendingConstructorRegistration {
@@ -215890,6 +217985,10 @@ index 0000000000000000000000000000000000000000..6dce0e4ae62876ac007a2daff4af74bf
 +    QemuCruciblePendingDeferRegistration pending_defer_registration;
 +    QemuCrucibleSourceDeferredQuantumConstructor pending_deferred;
 +    QemuCrucibleExecutorCleanupRegistration executor_cleanup_registration;
++    QemuCrucibleQuantumRRParentRegistration quantum_rr_parent_registration;
++    QemuCrucibleSourceQuantumRRParent quantum_rr_parent;
++    QemuCrucibleQuantumWrapperRegistration quantum_wrapper_registration;
++    QemuCrucibleSourceQuantumWrapperRetirement quantum_wrapper;
 +    QemuCrucibleWorkspacePurposeOwner *workspace_role;
 +    QemuCrucibleProcessContractOwner *process_contract_owner;
 +    QemuCrucibleIncarnationPurposeOwner *incarnation_purpose_owner;
@@ -228061,7 +230160,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..effe59330e929f08bfc87da3ca09a7b427fe905c
+index 0000000000000000000000000000000000000000..2b75614a3a462d1b4441699676f62fb8dc5ebda9
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,111 @@
@@ -228093,9 +230192,9 @@ index 0000000000000000000000000000000000000000..effe59330e929f08bfc87da3ca09a7b4
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f52ffb62ccfd18fa6d42c8fb1376f3ad50c7ac5a0aefd81a7c7d746af48f55fd',
++        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '67c1139ed8eb712db747c9787ec97a0e02cd5068449a5fe2fed605bc4d849e4c',
++        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +}
@@ -282149,7 +284248,7 @@ index 0000000000000000000000000000000000000000..25aafdfc06f195785e3c99f5a6847c71
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..85918df8edad42edd12434fbe0602294871a61ed
+index 0000000000000000000000000000000000000000..1fba2470d3cd9dad0840191b141c25d6b6a6ac41
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -282167,7 +284266,7 @@ index 0000000000000000000000000000000000000000..85918df8edad42edd12434fbe0602294
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '67c1139ed8eb712db747c9787ec97a0e02cd5068449a5fe2fed605bc4d849e4c',
++        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
 +}
 +
 +FUNCTIONS = (
@@ -282255,7 +284354,7 @@ index 0000000000000000000000000000000000000000..85918df8edad42edd12434fbe0602294
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f9e833bb9abfb71d8f28f5faa7176577dc6eafd
+index 0000000000000000000000000000000000000000..48a38ce2e1d2ac1e2273ee1f39d435184e8feaf0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -282276,17 +284375,17 @@ index 0000000000000000000000000000000000000000..9f9e833bb9abfb71d8f28f5faa717657
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '6cbe2ded7bed14982d02a73fe286ada58c2e068ccca27e1c8e75c18425d74e23',
++        '0b3a685878779d6f8a62ec9e0e15a519380fba13906dd2cf03e35052bcbc2897',
 +    'plugins/crucible-startup-source.h':
-+        'abe564f8e54e9ff8321a2c4f84e2c5a1aa8879827e9a10aa37777063630e1aa3',
++        '35764afbe4f67a79e11d41d5805a8d22060cace3497db60611d71fa2a82d74fd',
 +    'include/plugins/qemu-plugin.h':
-+        'f52ffb62ccfd18fa6d42c8fb1376f3ad50c7ac5a0aefd81a7c7d746af48f55fd',
++        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '67c1139ed8eb712db747c9787ec97a0e02cd5068449a5fe2fed605bc4d849e4c',
++        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
 +}
 +
 +FUNCTIONS = (
@@ -282502,7 +284601,7 @@ index 0000000000000000000000000000000000000000..9f9e833bb9abfb71d8f28f5faa717657
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..02c586f0ffba1d9cc662503e66d700c981f87f62
+index 0000000000000000000000000000000000000000..9db2321700ac9eaa29a2ffda62b0910497d18736
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -282526,7 +284625,7 @@ index 0000000000000000000000000000000000000000..02c586f0ffba1d9cc662503e66d700c9
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '67c1139ed8eb712db747c9787ec97a0e02cd5068449a5fe2fed605bc4d849e4c',
++        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
 +}
 +
 +FUNCTIONS = (
@@ -282620,7 +284719,7 @@ index 0000000000000000000000000000000000000000..02c586f0ffba1d9cc662503e66d700c9
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..294775727bdc785cb257f6378e372fc9d4dfb75d
+index 0000000000000000000000000000000000000000..903045c51d5a331d49fff3ec008839df92363a9b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,705 @@
@@ -282636,12 +284735,6 @@ index 0000000000000000000000000000000000000000..294775727bdc785cb257f6378e372fc9
 +import sys
 +
 +SOURCE_HASHES = {
-+    'system/crucible-preexec-publisher-access.inc.h':
-+        '8157ce2027e68aa5b221e97ae212182d2a39fc63adc41686eb032c9845e7401b',
-+    'system/crucible-preexec-publisher-entry.inc.h':
-+        'c6540ac5c73de5a19bb7a84e47133e3010abf59a068f8b64e496694a625df357',
-+    'system/crucible-preexec-publisher-deferred.inc.h':
-+        'aaee8e06510e169fe03bbf165154dcbcbf91359c431fc8f203c3ec747a749437',
 +    'system/crucible-preexec-publisher-session.inc.h':
 +        'ab9e4e5e16f8a6d6d1f83867daf5430b41e86a56599adb7ca185bb95dbca259c',
 +    'include/qemu/crucible-publisher-protocol.h':
@@ -282667,25 +284760,31 @@ index 0000000000000000000000000000000000000000..294775727bdc785cb257f6378e372fc9
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f52ffb62ccfd18fa6d42c8fb1376f3ad50c7ac5a0aefd81a7c7d746af48f55fd',
++        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
 +    'plugins/crucible-process-purpose.c':
 +        '71bfd2c2b7817d1bf6563e18eb679a07ac3a5d63149b81a9ccfdc8905ef6f8d1',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '67c1139ed8eb712db747c9787ec97a0e02cd5068449a5fe2fed605bc4d849e4c',
++        '1961980a5d451352491cc273229788ae3f407f47f5cf8e61469bb5016fccdadb',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'ac4799223219946e014d6debcbe890ef88ab578bd2841deb7f23e7e44f09f54a',
++        'a5748137896a41ef29d8536c8b7a170295616f6ccd3ec8028c0708e30bbbdd9c',
 +    'meson.build':
 +        '2dd1cc86257dfcbb7216ac4228b11e00dc0204e26700f8112264320b4a0ee4f5',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '58019f6598264e0a7d4b782196f9f72b3a168c8ee99b7f502c2d2280fa6f3a1c',
 +    'tests/unit/meson.build':
-+        'cc24e658cd9ee9de8cbf4f0ce7de21681e123f32f9c46e977dcac03cf2eb62ae',
++        '912062f90332b45a1d9f7e05ed71601fef54baf7bef4bf0fd6b0b6d3905c29f6',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +    'system/crucible-preexec-publisher-offer.inc.h':
 +        'fe17f7103e92194b39a042214a64e53896f703690ef7708f5fad835f5e36ff96',
++    'system/crucible-preexec-publisher-access.inc.h':
++        '8157ce2027e68aa5b221e97ae212182d2a39fc63adc41686eb032c9845e7401b',
++    'system/crucible-preexec-publisher-entry.inc.h':
++        'c6540ac5c73de5a19bb7a84e47133e3010abf59a068f8b64e496694a625df357',
++    'system/crucible-preexec-publisher-deferred.inc.h':
++        'aaee8e06510e169fe03bbf165154dcbcbf91359c431fc8f203c3ec747a749437',
 +}
 +
 +PRIVATE_INCLUDES = ('publisher-storage', 'publisher-access', 'publisher-entry',
@@ -283331,10 +285430,10 @@ index 0000000000000000000000000000000000000000..294775727bdc785cb257f6378e372fc9
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481c5d23cfd
+index 0000000000000000000000000000000000000000..a7505f72826056c2fd0dba49e3235d4b52d242dc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1570 @@
+@@ -0,0 +1,1579 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -283351,16 +285450,22 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'tests/unit/test-crucible-ram-reader-custody.py':
 +        'a2d63d34c4e5818b684f55f7b5f951544e65d7ce5c7354b3b0a51ffb4fb7f658',
 +
++    'plugins/crucible-quantum-wrapper.inc.h':
++        '036871de84404fb77495c762870e52eee8a373a84fdf2ead06affeb6a23211db',
++    'tests/unit/test-crucible-quantum-wrapper.py':
++        '9ffacfa2d43d00c777b5234ac14be4de94edea69d4e0882c5cb3be0073c748c5',
 +    'tests/unit/test-crucible-quantum-original.py':
-+        '69f3b9eeaa0ffc9da73e757544061d42f4bb077767f9aa479c053df145c5363d',
++        '838455af92be0ba7560667ac92340eb65d0344de26df8fa988e1a1557403634f',
 +    'plugins/crucible-quantum-original.inc.h':
-+        'e8250c0701ff783c865e0a25c18d5b33be9cf0c914d51fd994ecb11b4be888bb',
++        '0fe933e59c7f2831745935b00ea6b18e918e2b0bead1cc931df9d5b6664e8f56',
 +    'plugins/crucible-pending-main-finish.inc.h':
 +        '1d477cdd9c840c9a8ac7f4ea8b2e7e82c2c7f93ea24d4ce2133b17bb0cb08029',
 +    'plugins/crucible-native-deferred-main-finish.inc.h':
 +        '02f6a794d04674e7f43bac714900d18ac01c850ec00beb633ab2532e62fbf19d',
 +    'tests/unit/test-crucible-deferred-main-finish.py':
 +        '044a146178522c78106c17d62fa3ee0983fa5dc9420a4a1af12770b038f3d18e',
++    'plugins/crucible-quantum-rr-parent.inc.h': 'ce376a472fc6f9f80d571113cf654cff1fb3ba0c89ccefd8087cc99e0de8ea5b',
++    'tests/unit/test-crucible-quantum-rr-parent.py': '6716350f25308f8e7089ffd32f348d468de17af8566ec9029c464eda017cb9d2',
 +    'tests/unit/test-crucible-executor-cleanup-bridge.py':
 +        '44c4838ec3d4062465e3155706b6ee0bf6487ddf02279c243eb707f23cb4086b',
 +    'plugins/crucible-executor-cleanup-registration.inc.h':
@@ -283404,7 +285509,7 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'tests/unit/test-crucible-fault-rule-presence.py':
 +        'afa6a787ab74eaa4033dcad4288f55fa6d2265fa4ea5cf4b30d010cec202b905',
 +    'tests/unit/test-crucible-publisher-member-return.py':
-+        'c4db8cad4dabf662ef0265359340d524d4acc793d1eca7f24bc79e131c85498e',
++        'b6aab83ac00e198a40280b1b042b401f6136af66165a864030c599abf8f2eeaa',
 +    'tests/unit/test-crucible-control-deferred.py':
 +        'bb4253097015790598b1878abccb2e21dd534a462d8f81b766fa5b9f48809883',
 +    'tests/unit/test-crucible-provider-metadata.py':
@@ -283510,7 +285615,7 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        'cc24e658cd9ee9de8cbf4f0ce7de21681e123f32f9c46e977dcac03cf2eb62ae',
++        '912062f90332b45a1d9f7e05ed71601fef54baf7bef4bf0fd6b0b6d3905c29f6',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -283718,21 +285823,21 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '6cbe2ded7bed14982d02a73fe286ada58c2e068ccca27e1c8e75c18425d74e23',
++        '0b3a685878779d6f8a62ec9e0e15a519380fba13906dd2cf03e35052bcbc2897',
 +    'plugins/crucible-startup-source.h':
-+        'abe564f8e54e9ff8321a2c4f84e2c5a1aa8879827e9a10aa37777063630e1aa3',
++        '35764afbe4f67a79e11d41d5805a8d22060cace3497db60611d71fa2a82d74fd',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'f52ffb62ccfd18fa6d42c8fb1376f3ad50c7ac5a0aefd81a7c7d746af48f55fd',
++        '79c4097509437648583e5ee707e93ec9ad7472f42ddcfddc9d811a994cbd5030',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
 +        'bcf6c52bccd7660a6f2208ab0a47fa6cf97b19df64adb8c1c203cf02042f3e42',
 +    'plugins/crucible-callback-child.inc.h':
-+        'd9b44b9185859866de6e22bdc91c5572c61d92d7040ab5fa0a12885553815c5d',
++        '7e86b3443dcd8d225f2ff760d37f7e98a3c6fa5c01d43470ea17ce80d29cd51f',
 +    'plugins/crucible-callback-publication.inc.h':
 +        '5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a',
 +    'plugins/crucible-plugin-worker.inc.h':
@@ -283854,7 +285959,7 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '69c790cdb7736a3af2170adfdf9e6324bc114a1a95f6d51a12e71e82b9213d17',
 +    'plugins/crucible-advance-receiver.inc.h':
-+        '342254902c4f73510de647a59c11ac9a36308b8de912820e083cf517964069bb',
++        'a3fda7f86dbad9990a2feea2f76b6d091357cf10d31bd9cdd67eddf890a3a462',
 +    'tests/unit/test-crucible-advance-registration.py':
 +        'e9d9f845bacab68c09314fc37ce2da393a6614b69ffe83f329fc9eb6066a6ff9',
 +    'tests/unit/test-crucible-advance-recipient-leaves.py':
@@ -283864,17 +285969,19 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +    'tests/unit/test-crucible-publisher-initial-state.py':
 +        '7ca3c57da0ae5a116b76e1b268f1a8ae1c1be7aab730ff5fb36f9c9c64ed4f34',
 +    'plugins/crucible-pending-command.inc.h':
-+        'e2de322d5ee9795cc4c8e49184821bfd4cd407d50755c2a10086c8f6c9154377',
++        '2822772ffb5d639cf137e982a71ff36a8680afb236873a7313148b2d389f86b0',
 +    'tests/unit/test-crucible-pending-command.py':
 +        '44eff36c0344a232f543d65184936e74908508af6948285125682390338ca81f',
 +    'tests/unit/test-crucible-pending-offer.py':
 +        '82b92c985482ca4623f0d814dc460db89de5e29de4a02afec83b258d30ddade7',
 +    'plugins/crucible-pending-offer.inc.h':
 +        '86a3bab24544c2584a4ae1e1f3154c99442cb74b2c04ae7b5ee880bf1b982d60',
++    'plugins/crucible-pending-constructor.inc.h':
++        '81972e3d3e0b64b4f557ef91296d8e4ef76fc462cfe9ddfb2713924dfdae3a4c',
++    'tests/unit/test-crucible-pending-constructor.py':
++        '5cfdb2761fd6b8977922a577af7d3d3a2a64476722424b9b4a26840ea6c1b018',
 +    'plugins/crucible-pending-deferred.inc.h':
-+        'f6fe47e8e352ee4d2d495582e00050f202ab2d76c10c99297529274dd67664da',
-+    'plugins/crucible-advance-rr-post.inc.h':
-+        '2dd7a21515e4a1b6137bb0daaaaa954d44536b0c467d669f544af869b157c9ad',
++        '898acf3813900e4228ee930b4f33d84f54d0f67336a5525c2b3c5373311fd3b1',
 +    'tests/unit/test-crucible-pending-deferred.py':
 +        '86f1f75f53bad94a3c59b875b3af6647b2a755c0ffe9b9b0fd83464ec824d6b8',
 +    'system/crucible-preexec-publisher-access.inc.h':
@@ -283885,10 +285992,6 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +        'aaee8e06510e169fe03bbf165154dcbcbf91359c431fc8f203c3ec747a749437',
 +    'tests/unit/test-crucible-publisher-access.py':
 +        'addfed15b53d7bbfa5bc6b2ee382abc69e0856bd8f6a748a0d1e573051fe7782',
-+    'plugins/crucible-pending-constructor.inc.h':
-+        '5c0afe674b51f1a79af322ee6ce1ce28aaca38809507fc3132665cd8ba707c88',
-+    'tests/unit/test-crucible-pending-constructor.py':
-+        'ca27ca945d40ea9efadde93a9b562e2efa6c4dabd7f17a85776c8b3d6fde8a83',
 +}
 +
 +
@@ -283949,6 +286052,11 @@ index 0000000000000000000000000000000000000000..f75a06ef903e0c93088d11f45fa1f481
 +# Keep this inventory explicit: newly added test calls cannot silently broaden
 +# the fixture into an unpriced runtime, CPU or Root provider.
 +SOURCE_ROOTS = {
++    "qemu_plugin_crucible_advance_quantum_rr_parent_register_v1",
++    "qemu_plugin_crucible_advance_quantum_rr_parent_observe_v1",
++    "qemu_plugin_crucible_advance_quantum_wrapper_register_v1",
++    "qemu_plugin_crucible_advance_quantum_wrapper_retire_v1",
++    "qemu_plugin_crucible_advance_quantum_wrapper_observe_v1",
 +    "qemu_plugin_crucible_advance_quantum_original_register_v1",
 +    "qemu_plugin_crucible_advance_quantum_original_acquire_v1",
 +    "qemu_plugin_crucible_advance_quantum_original_current_v1",
@@ -285004,7 +287112,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..67bc656720d612b57d69a0413b7b5119bbf19902 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..18f4cd28c3f685988e29f75eb4a7882055279a99 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -285079,7 +287187,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..67bc656720d612b57d69a0413b7b5119
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1428 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1432 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -285829,6 +287937,10 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..67bc656720d612b57d69a0413b7b5119
 +    depend_files: files(
 +                        '../../plugins/crucible-ram-reader.inc.h',
 +                        'test-crucible-ram-reader-custody.py',
++                        '../../plugins/crucible-quantum-rr-parent.inc.h',
++                        'test-crucible-quantum-rr-parent.py',
++                        '../../plugins/crucible-quantum-wrapper.inc.h',
++                        'test-crucible-quantum-wrapper.py',
 +                        '../../plugins/crucible-quantum-original.inc.h',
 +                        'test-crucible-quantum-original.py',
 +                        '../../plugins/crucible-pending-deferred.inc.h',
@@ -334192,10 +336304,10 @@ index 0000000000000000000000000000000000000000..6ba342c2bd2289c5bc00348ef8452105
 +    main()
 diff --git a/tests/unit/test-crucible-pending-constructor.py b/tests/unit/test-crucible-pending-constructor.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2c3f01edce3cf7ee3a4af1570d8489719231ea33
+index 0000000000000000000000000000000000000000..756736514acec9e954d3c548ffbd86ac3f0620a7
 --- /dev/null
 +++ b/tests/unit/test-crucible-pending-constructor.py
-@@ -0,0 +1,478 @@
+@@ -0,0 +1,483 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check literal constructor-custody leaves without an accepting operation owner.
 +
@@ -334531,8 +336643,13 @@ index 0000000000000000000000000000000000000000..2c3f01edce3cf7ee3a4af1570d848971
 +        "static int pending_constructor_post(",
 +    )
 +    body = extract["function"](
++        (source / "plugins/crucible-quantum-rr-parent.inc.h").read_text(),
++        "static bool quantum_rr_parent_closed(") + "\n\n"
++    body += extract["function"](
 +        (source / "plugins/crucible-quantum-original.inc.h").read_text(),
-+        "static bool quantum_original_closed(") + "\n\n"
++        "static bool quantum_original_closed(") + "\n\n" + extract["function"](
++        (source / "plugins/crucible-quantum-wrapper.inc.h").read_text(),
++        "static bool quantum_wrapper_closed(") + "\n\n"
 +    body += extract["function"](
 +        (source / "plugins/crucible-pending-deferred.inc.h").read_text(),
 +        "static bool pending_deferred_closed(") + "\n\n"
@@ -341933,10 +344050,10 @@ index 0000000000000000000000000000000000000000..74a2182664644d826f76b314399b288e
 +    main()
 diff --git a/tests/unit/test-crucible-publisher-member-return.py b/tests/unit/test-crucible-publisher-member-return.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b567703a1cd299dfd0eff301be5d831d28168d0
+index 0000000000000000000000000000000000000000..d0a167f760c425a86dec20bd4a6e1e137e7af6a2
 --- /dev/null
 +++ b/tests/unit/test-crucible-publisher-member-return.py
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,303 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise literal receiver-child cleanup facts without an accepting provider.
 +
@@ -342099,6 +344216,10 @@ index 0000000000000000000000000000000000000000..1b567703a1cd299dfd0eff301be5d831
 +    literal = '\n\n'.join(extract['function'](
 +        (args.source_root / path).read_text(), signature)
 +        for path, signature in (
++            ('plugins/crucible-quantum-rr-parent.inc.h',
++             'static bool quantum_rr_parent_closed('),
++            ('plugins/crucible-quantum-wrapper.inc.h',
++             'static bool quantum_wrapper_closed('),
 +            ('plugins/crucible-quantum-original.inc.h',
 +             'static bool quantum_original_closed('),
 +            ('plugins/crucible-pending-deferred.inc.h',
@@ -344462,10 +346583,10 @@ index 0000000000000000000000000000000000000000..988b340deafcd7a6855f6c8a96a0a5fb
 +    main()
 diff --git a/tests/unit/test-crucible-quantum-original.py b/tests/unit/test-crucible-quantum-original.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9fab9d9c5862d0b29a7136542ac267b2f3ce4e55
+index 0000000000000000000000000000000000000000..42ad2691dec6766f901acc587c00140ecb403b17
 --- /dev/null
 +++ b/tests/unit/test-crucible-quantum-original.py
-@@ -0,0 +1,173 @@
+@@ -0,0 +1,175 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise literal borrower inventory and span refusals without an issuer.
 +
@@ -344589,6 +346710,8 @@ index 0000000000000000000000000000000000000000..9fab9d9c5862d0b29a7136542ac267b2
 +              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1(') + '\n' +
 +              function(common, 'static bool callback_child_output_overlap('))
 +    body = '\n\n'.join([
++        function((source / 'plugins/crucible-quantum-rr-parent.inc.h').read_text(),
++                 'static bool quantum_rr_parent_closed('),
 +        function(production, 'static bool quantum_original_closed('),
 +        function(production, 'static void quantum_original_disposition('),
 +        function(common, 'static bool callback_child_output_conflicts_except_locked('),
@@ -344617,6 +346740,633 @@ index 0000000000000000000000000000000000000000..9fab9d9c5862d0b29a7136542ac267b2
 +    variants = {'positive': body}
 +    for name, (old, new) in substitutions.items():
 +        assert body.count(old) == 1, (name, body.count(old))
++        variants[name] = body.replace(old, new)
++    results = {}
++    for name, actual in variants.items():
++        path = output / (name + '.c')
++        binary = output / name
++        path.write_text(before + '\n' + actual + '\n' + CHECKS)
++        command = [os.environ.get('CC', 'cc'), *shlex.split(os.environ.get('CFLAGS', '')),
++                   str(path), '-o', str(binary), *shlex.split(os.environ.get('LDFLAGS', ''))]
++        (output / (name + '.command.json')).write_text(json.dumps(command, indent=2) + '\n')
++        compiled = subprocess.run(command, capture_output=True, timeout=180, preexec_fn=limit)
++        (output / (name + '.compile.log')).write_bytes(compiled.stdout + compiled.stderr)
++        compiled.check_returncode()
++        result = subprocess.run([str(binary)], capture_output=True, timeout=30, preexec_fn=limit)
++        (output / (name + '.run.log')).write_bytes(result.stdout + result.stderr)
++        expected = result.returncode == (0 if name == 'positive' else -signal.SIGABRT)
++        assert expected and (name == 'positive' or b'Assertion' in result.stderr), name
++        results[name] = {'returncode': result.returncode, 'intended_assertion': name != 'positive'}
++    (output / 'results.json').write_text(json.dumps(results, indent=2) + '\n')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tests/unit/test-crucible-quantum-rr-parent.py b/tests/unit/test-crucible-quantum-rr-parent.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..5cdf2f48a36f030a0799618a45383aa5d444578f
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-rr-parent.py
+@@ -0,0 +1,289 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check real RR-parent geometry and retained debt without issuing an owner.
++
++The initialized buffer is a physical span, not a Runtime/payer/provider. No
++Module callback is installed or invoked. Each omission is independently rebuilt
++and must fail its named assertion, rather than merely terminate unsuccessfully.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++
++
++CHECKS = r'''
++static void check(bool condition, const char *name)
++{
++    if (!condition) {
++        fprintf(stderr, "rr-parent:%s\n", name);
++        abort();
++    }
++}
++
++int main(void)
++{
++    union { max_align_t alignment; uint8_t data[4096]; } storage = { 0 };
++    QemuCrucibleCommandConsumerMember member = { 0 };
++    QemuCrucibleQuantumRRParentRegistration *registration =
++        &startup_source.quantum_rr_parent_registration;
++    QemuCrucibleSourceQuantumRRParent *parent = &startup_source.quantum_rr_parent;
++    QemuCrucibleSourceQuantumRRParent **holder = (void *)&storage.data[0];
++    uint64_t *epoch = (void *)&storage.data[8];
++    QemuCrucibleModuleQuantumRRParent **module_holder = (void *)&storage.data[16];
++    uint64_t *module_epoch = (void *)&storage.data[24];
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 *output =
++        (void *)&storage.data[32];
++    void *journal = &storage.data[512];
++    size_t journal_bytes = 512;
++    uint64_t unprotected;
++
++    member.runtime_base = (uintptr_t)&storage;
++    member.runtime_extent = sizeof(storage);
++    member.pending_constructor.registered = true;
++    member.pending_constructor.module_journal = journal;
++    member.pending_constructor.module_journal_bytes = journal_bytes;
++    check(sizeof(registration->table) == 24 && sizeof(*output) == 32, "abi");
++    check(quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes, output), "geometry");
++    member.pending_constructor.registered = false;
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes, output), "constructor-registration");
++    member.pending_constructor.registered = true;
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, (char *)journal + 8, journal_bytes, output), "journal-identity");
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes - 8, output), "journal-size");
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes, (void *)module_epoch), "pairwise");
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes, journal), "journal-disjoint");
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch,
++              module_holder, module_epoch, journal, journal_bytes,
++              (void *)&storage.data[129]), "alignment");
++    check(!quantum_rr_parent_fields_valid(&member, holder, epoch, module_holder,
++              module_epoch, journal, journal_bytes, (void *)&storage.data[4080]), "upper");
++    member.runtime_base = UINTPTR_MAX - 4095;
++    member.runtime_extent = 8192;
++    check(!quantum_rr_parent_fields_valid(&member, (void *)member.runtime_base,
++              (void *)(member.runtime_base + 8), (void *)(member.runtime_base + 16),
++              (void *)(member.runtime_base + 24), journal, journal_bytes,
++              (void *)(member.runtime_base + 32)), "overflow");
++
++    /* Factual completion only: this local record registers no owner or callback.
++     * Test each interrupted edge while every saved status remains zero. */
++    check(!quantum_rr_parent_registration_posts_complete(registration), "empty-posts");
++    registration->original_post_attempted = true;
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = true;
++    registration->identity_post_returned = true;
++    check(quantum_rr_parent_registration_posts_complete(registration), "completed-posts");
++    registration->original_post_attempted = false;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "original-post-attempted");
++    registration->original_post_attempted = true;
++    registration->original_post_returned = false;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "original-post-returned");
++    registration->original_post_returned = true;
++    registration->identity_post_attempted = false;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "identity-post-attempted");
++    registration->identity_post_attempted = true;
++    registration->identity_post_returned = false;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "identity-post-returned");
++    registration->identity_post_returned = true;
++    registration->original_post_status = -EIO;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "original-post-status");
++    registration->original_post_status = 0;
++    registration->identity_post_status = -EIO;
++    check(!quantum_rr_parent_registration_posts_complete(registration), "identity-post-status");
++    registration->identity_post_status = 0;
++
++    check(quantum_rr_parent_closed(), "initial-closed");
++    parent->attempted = true;
++    check(!quantum_rr_parent_closed(), "attempted-debt");
++    parent->attempted = false;
++    parent->held = true;
++    check(!quantum_rr_parent_closed(), "held-debt");
++    parent->held = false;
++    parent->observing = true;
++    check(!quantum_rr_parent_closed(), "observation-debt");
++    parent->observing = false;
++    parent->uncertain = true;
++    check(!quantum_rr_parent_closed(), "uncertain-debt");
++    parent->uncertain = false;
++    check(pending_constructor_no_birth(), "initial-no-birth");
++    parent->held = true;
++    check(!pending_constructor_no_birth(), "no-birth-debt");
++    parent->held = false;
++
++    /* Pointer continuity is factual: the opaque address is never entered,
++     * dereferenced or passed to a Module callback. */
++    registration->module_journal = journal;
++    registration->module_journal_bytes = journal_bytes;
++    parent->module_holder = module_holder;
++    parent->module_epoch = module_epoch;
++    parent->module_at_prepare = journal;
++    parent->module_at_prepare_epoch = 7;
++    *module_holder = journal;
++    *module_epoch = 7;
++    check(quantum_rr_parent_module_same(parent), "saved-output");
++    *module_holder = (void *)((char *)journal + 8);
++    check(!quantum_rr_parent_module_same(parent), "changed-holder");
++    *module_holder = journal;
++    *module_epoch = 8;
++    check(!quantum_rr_parent_module_same(parent), "changed-epoch");
++    *module_epoch = 0;
++    parent->module_at_prepare_epoch = 0;
++    check(!quantum_rr_parent_module_same(parent), "zero-epoch");
++    *module_epoch = UINT64_MAX;
++    parent->module_at_prepare_epoch = UINT64_MAX;
++    check(!quantum_rr_parent_module_same(parent), "max-epoch");
++    *module_epoch = 7;
++    parent->module_at_prepare_epoch = 7;
++    *module_holder = (void *)((char *)journal + journal_bytes);
++    parent->module_at_prepare = *module_holder;
++    check(!quantum_rr_parent_module_same(parent), "output-extent");
++    *module_holder = NULL;
++    *module_epoch = 0;
++    memset(parent, 0, sizeof(*parent));
++    check(pending_constructor_callback_status(0) == 0, "zero-status");
++    check(pending_constructor_callback_status(-EIO) == -EIO, "negative-status");
++    check(pending_constructor_callback_status(1) == -EPROTO, "positive-status");
++
++    /* Nominated output addresses exercise only the actual exclusion body.
++     * No registration flag, owner, epoch or callback authority is created. */
++    registration->holder = holder;
++    registration->epoch = epoch;
++    registration->module_holder = module_holder;
++    registration->module_epoch = module_epoch;
++    registration->output = output;
++    check(callback_child_output_conflicts_locked(holder, sizeof(*holder)), "source-holder");
++    check(callback_child_output_conflicts_locked(epoch, sizeof(*epoch)), "source-epoch");
++    check(callback_child_output_conflicts_locked(module_holder, sizeof(*module_holder)), "module-holder");
++    check(callback_child_output_conflicts_locked(module_epoch, sizeof(*module_epoch)), "module-epoch");
++    check(callback_child_output_conflicts_locked(output, sizeof(*output)), "registration-result");
++    check(callback_child_output_conflicts_except_locked(output, sizeof(*output), output),
++          "no-result-exception");
++    check(!callback_child_output_conflicts_locked(&unprotected, sizeof(unprotected)), "unprotected");
++    check(!registration->registered && !parent->attempted && !*holder && !*epoch &&
++          !*module_holder && !*module_epoch, "no-owner-issued");
++    return 0;
++}
++'''
++
++
++def limits():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('source', type=Path)
++    parser.add_argument('output', type=Path)
++    args = parser.parse_args()
++    root = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    extract = runpy.run_path(str(root / 'tests/unit/extract-crucible-startup-source-controls.py'))
++    function = extract['function']
++
++    def selected(path, declarations):
++        text = (root / path).read_text()
++        return '\n'.join(function(text, declaration) for declaration in declarations)
++
++    native = (root / 'plugins/crucible-native-deferred-main-finish.inc.h').read_text()
++    owner = native[native.index('struct QemuCrucibleNativeDeferredMainFinish {'):
++                   native.index('static int native_deferred_main_finish_identity_locked(')]
++    prefix = ('#include "qemu/osdep.h"\n#include "plugins/crucible-startup-source.h"\n'
++              'static QemuCrucibleStartupSourceControl startup_source;\n' + owner + '\n' +
++              selected('plugins/crucible-native-invocation.c', ['static bool group_output_overlaps(']) +
++              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1('))
++    body = '\n'.join([
++        selected('plugins/crucible-callback-child.inc.h', [
++            'static bool callback_child_output_overlap(',
++            'static bool callback_child_output_conflicts_except_locked(',
++            'static bool callback_child_output_conflicts_locked(']),
++        selected('plugins/crucible-pending-command.inc.h', ['static bool pending_runtime_field(']),
++        selected('plugins/crucible-quantum-rr-parent.inc.h', [
++            'static bool quantum_rr_parent_closed(', 'static bool quantum_rr_parent_fields_valid(',
++            'static bool quantum_rr_parent_module_same(',
++            'static bool quantum_rr_parent_registration_posts_complete(']),
++        selected('plugins/crucible-quantum-original.inc.h', ['static bool quantum_original_closed(']),
++        selected('plugins/crucible-quantum-wrapper.inc.h', ['static bool quantum_wrapper_closed(']),
++        selected('plugins/crucible-pending-deferred.inc.h', ['static bool pending_deferred_closed(']),
++        selected('plugins/crucible-pending-constructor.inc.h', [
++            'static bool pending_constructor_closed(', 'static bool pending_constructor_no_birth(',
++            'static int pending_constructor_callback_status(']),
++    ])
++    mutations = {
++        'constructor-registration': ('!constructor->registered || ', ''),
++        'journal-identity': ('journal != constructor->module_journal ||', 'false ||'),
++        'journal-size': ('journal_bytes != constructor->module_journal_bytes', 'false'),
++        'pairwise': ('fields[earlier], sizes[earlier]))', 'NULL, 0))'),
++        'journal-disjoint': ('fields[index], sizes[index], journal, journal_bytes)',
++                             'fields[index], sizes[index], NULL, 0)'),
++        'alignment': ('address % alignment == 0 &&', 'true &&'),
++        'upper': ('address - base <= extent - bytes', 'true'),
++        'overflow': ('extent <= UINTPTR_MAX - base &&', 'true &&'),
++        'no-birth-debt': ('return pending_constructor_closed() && !child->construction.original_entered',
++                          'return true && !child->construction.original_entered'),
++        'attempted-debt': ('!parent->attempted &&', 'true &&'),
++        'held-debt': ('!parent->held &&', 'true &&'),
++        'observation-debt': ('!parent->observing &&', 'true &&'),
++        'uncertain-debt': ('!parent->uncertain;', 'true;'),
++        'changed-holder': ('*parent->module_holder == parent->module_at_prepare &&', 'true &&'),
++        'changed-epoch': ('*parent->module_epoch == parent->module_at_prepare_epoch &&', 'true &&'),
++        'zero-epoch': ('parent->module_at_prepare && parent->module_at_prepare_epoch &&',
++                       'parent->module_at_prepare && true &&'),
++        'max-epoch': ('parent->module_at_prepare_epoch != UINT64_MAX &&', 'true &&'),
++        'positive-status': ('status > 0 ? -EPROTO : status', 'status'),
++        'source-holder': ('        startup_source.quantum_rr_parent_registration.holder,\n', ''),
++        'source-epoch': ('        startup_source.quantum_rr_parent_registration.epoch,\n', ''),
++        'module-holder': ('        startup_source.quantum_rr_parent_registration.module_holder,\n', ''),
++        'module-epoch': ('        startup_source.quantum_rr_parent_registration.module_epoch,\n', ''),
++        'registration-result': ('        startup_source.quantum_rr_parent_registration.output,\n', '        NULL,\n'),
++    }
++    mutations['original-post-attempted'] = ('registration->original_post_attempted &&', 'true &&')
++    mutations['original-post-returned'] = ('registration->original_post_returned &&', 'true &&')
++    mutations['identity-post-attempted'] = ('registration->identity_post_attempted &&', 'true &&')
++    mutations['identity-post-returned'] = ('registration->identity_post_returned &&', 'true &&')
++    mutations['original-post-status'] = ('!registration->original_post_status &&', 'true &&')
++    mutations['identity-post-status'] = ('!registration->identity_post_status;', 'true;')
++    records = []
++    for name, mutation in [('physical-leaves', None), *mutations.items()]:
++        changed = body
++        if mutation:
++            old, new = mutation
++            if changed.count(old) != 1:
++                raise ValueError(f'{name}: expected one actual fragment, got {changed.count(old)}')
++            changed = changed.replace(old, new, 1)
++        source = output / (name + '.c')
++        executable = output / name
++        source.write_text(prefix + '\n' + changed + '\n' + CHECKS)
++        command = (shlex.split(os.environ.get('CC', 'cc')) +
++                   shlex.split(os.environ.get('CFLAGS', '')) +
++                   [str(source), '-o', str(executable)] +
++                   shlex.split(os.environ.get('LDFLAGS', '')))
++        (output / (name + '.command.json')).write_text(json.dumps(command, indent=2) + '\n')
++        built = subprocess.run(command, capture_output=True, timeout=180, preexec_fn=limits)
++        (output / (name + '.compile.log')).write_bytes(built.stdout + built.stderr)
++        built.check_returncode()
++        result = subprocess.run([str(executable)], capture_output=True, timeout=30, preexec_fn=limits)
++        (output / (name + '.run.log')).write_bytes(result.stdout + result.stderr)
++        expected = 0 if mutation is None else -signal.SIGABRT
++        classifier = b'' if mutation is None else ('rr-parent:' + name + '\n').encode()
++        record = dict(case=name, status=result.returncode, expected=expected,
++                      exact_assertion=classifier.decode(), classified=classifier in result.stderr)
++        records.append(record)
++        (output / 'results.json').write_text(json.dumps(records, indent=2) + '\n')
++        if result.returncode != expected or classifier not in result.stderr:
++            raise RuntimeError(f'{name}: wrong status or assertion classifier')
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/tests/unit/test-crucible-quantum-wrapper.py b/tests/unit/test-crucible-quantum-wrapper.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8c524e47bbcf38461333d99cd2b243456da184a3
+--- /dev/null
++++ b/tests/unit/test-crucible-quantum-wrapper.py
+@@ -0,0 +1,326 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise literal wrapper history and span refusals without an issuer.
++
++The Source and Native stores remain unissued. Local inventory mutations test
++closure predicates and factual output formatting only; they do not construct a
++Runtime, a Module owner, an Original, or an accepting parent provider.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import resource
++import runpy
++import shlex
++import signal
++import subprocess
++
++
++CHECKS = r'''
++int main(void)
++{
++    QemuCrucibleSourceQuantumWrapperRetirement *owner = &startup_source.quantum_wrapper;
++    QemuCrucibleSourceQuantumOriginalBorrow *borrow = &startup_source.quantum_original;
++    QemuCrucibleSourcePendingQuantumConstructor *constructor = &startup_source.pending_constructor;
++    QemuCrucibleSourceQuantumWrapperRetirement *holder = NULL;
++    QemuCrucibleModuleQuantumWrapperRetirement *module_holder = NULL;
++    uint64_t epoch = 0;
++    uint64_t module_epoch = 0;
++    struct qemu_plugin_crucible_quantum_wrapper_disposition_v1 disposition;
++    struct qemu_plugin_crucible_pending_constructor_registration_v1 registration_result;
++    struct qemu_plugin_crucible_quantum_wrapper_receipt_v1 receipt = {
++        .schema_version = 1, .struct_size = sizeof(receipt),
++        .wrapper_serial = 9, .retirement_serial = 10,
++    };
++
++    assert(!prctl(PR_SET_DUMPABLE, 0));
++    assert(prctl(PR_GET_DUMPABLE) == 0);
++    assert(sizeof(receipt) == 64 && sizeof(disposition) == 64);
++    assert(sizeof(struct qemu_plugin_crucible_quantum_wrapper_callbacks_v1) == 24);
++    assert(quantum_wrapper_closed());
++    owner->held = true;
++    assert(!quantum_wrapper_closed());
++    owner->held = false;
++    owner->uncertain = true;
++    assert(!quantum_wrapper_closed());
++    owner->uncertain = false;
++    owner->attempted = true;
++    assert(!quantum_wrapper_closed());
++    owner->consumed = true;
++    assert(!quantum_wrapper_closed());
++    owner->return_attempted = true;
++    assert(quantum_wrapper_closed());
++    owner->consumed = false;
++    assert(!quantum_wrapper_closed());
++    memset(owner, 0, sizeof(*owner));
++
++    /* Scalar inventory only: these writes do not issue a populated owner.
++     * Each dedicated record saves facts without retaining an owner copy. */
++    borrow->serial = 3;
++    borrow->first_status = -EINTR;
++    borrow->return_post_status = -EIO;
++    borrow->core_consumed = true;
++    constructor->serial = 7;
++    constructor->uncertain = true;
++    constructor->return_attempted = true;
++    constructor->return_post_status = -ESTALE;
++    startup_source.pending_command_lender.return_first_status = -ECANCELED;
++    startup_source.advance_receiver.handoff_native_post_status = -EPERM;
++    quantum_wrapper_capture(&owner->birth);
++    assert(owner->birth.borrow.serial == 3);
++    assert(owner->birth.borrow.first_status == -EINTR);
++    assert(owner->birth.borrow.return_post_status == -EIO);
++    assert(owner->birth.borrow.core_consumed && !owner->birth.borrow.consumed);
++    assert(owner->birth.constructor.serial == 7 && owner->birth.constructor.uncertain);
++    assert(owner->birth.constructor.return_attempted);
++    assert(owner->birth.constructor.return_post_status == -ESTALE);
++    assert(owner->birth.lender.return_first_status == -ECANCELED);
++    assert(owner->birth.receiver.handoff_native_post_status == -EPERM);
++    /* The actual parent producers own these scalar archives. A later call
++     * cannot overwrite a recorded post or copy a different parent's epoch. */
++    owner->attempted = true;
++    owner->birth.lender.serial = 19;
++    startup_source.pending_command_lender.serial = 18;
++    quantum_wrapper_lender_return_record();
++    assert(!owner->lender_return_recorded);
++    startup_source.pending_command_lender.serial = 19;
++    quantum_wrapper_lender_return_record();
++    assert(owner->lender_return_recorded);
++    assert(owner->lender_return.return_first_status == -ECANCELED);
++    startup_source.pending_command_lender.return_first_status = 0;
++    quantum_wrapper_lender_return_record();
++    assert(owner->lender_return.return_first_status == -ECANCELED);
++    owner->birth.receiver.serial = 21;
++    startup_source.advance_receiver.serial = 20;
++    quantum_wrapper_receiver_retire_record();
++    assert(!owner->receiver_retire_recorded);
++    startup_source.advance_receiver.serial = 21;
++    quantum_wrapper_receiver_retire_record();
++    assert(owner->receiver_retire_recorded);
++    assert(owner->receiver_retire.handoff_native_post_status == -EPERM);
++    startup_source.advance_receiver.handoff_native_post_status = 0;
++    quantum_wrapper_receiver_retire_record();
++    assert(owner->receiver_retire.handoff_native_post_status == -EPERM);
++    memset(borrow, 0, sizeof(*borrow));
++    memset(constructor, 0, sizeof(*constructor));
++
++    /* A negative post does not erase known physical wrapper consumption or
++     * falsely consume the separate Source child. No destructor is called. */
++    owner->serial = 11;
++    owner->borrow_serial = 3;
++    owner->constructor_serial = 7;
++    owner->return_attempted = true;
++    owner->wrapper_consumed = true;
++    owner->first_status = -EINTR;
++    owner->post_status = -EIO;
++    owner->held = true;
++    owner->uncertain = true;
++    quantum_wrapper_disposition(owner, &disposition);
++    assert(disposition.wrapper_consumed && !disposition.source_consumed);
++    assert(disposition.held && disposition.uncertain && disposition.attempted);
++    assert(disposition.first_status == -EINTR && disposition.post_status == -EIO);
++    assert(disposition.retirement_serial == 11 && disposition.borrow_serial == 3);
++    assert(disposition.constructor_serial == 7);
++
++    owner->wrapper_serial = 9;
++    owner->module_retirement_serial = 10;
++    assert(quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.wrapper_consumed = 1;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.wrapper_return_attempted = 1;
++    receipt.cleanup_entered = 1;
++    receipt.cleanup_returned = 1;
++    receipt.children_terminal = 1;
++    assert(quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.children_terminal = 0;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.children_terminal = 1;
++    receipt.uncertain = 1;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.uncertain = 0;
++    receipt.wrapper_serial++;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.wrapper_serial--;
++    receipt.retirement_serial++;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.retirement_serial--;
++    receipt.reserved[1] = 1;
++    assert(!quantum_wrapper_receipt_valid(&receipt, owner));
++    receipt.reserved[1] = 0;
++
++    /* Post facts alone never issue a registration. Interrupted cuts remain
++     * incomplete even while their default signed status is zero. */
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.original_post_attempted = true;
++    startup_source.quantum_wrapper_registration.original_post_returned = true;
++    startup_source.quantum_wrapper_registration.identity_post_attempted = true;
++    startup_source.quantum_wrapper_registration.identity_post_returned = true;
++    startup_source.quantum_wrapper_registration.output_post_attempted = true;
++    startup_source.quantum_wrapper_registration.output_post_returned = true;
++    assert(quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.original_post_attempted = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.original_post_attempted = true;
++    startup_source.quantum_wrapper_registration.original_post_returned = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.original_post_returned = true;
++    startup_source.quantum_wrapper_registration.identity_post_attempted = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.identity_post_attempted = true;
++    startup_source.quantum_wrapper_registration.identity_post_returned = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.identity_post_returned = true;
++    startup_source.quantum_wrapper_registration.output_post_attempted = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.output_post_attempted = true;
++    startup_source.quantum_wrapper_registration.output_post_returned = false;
++    assert(!quantum_wrapper_registration_posts_complete());
++    startup_source.quantum_wrapper_registration.output_post_returned = true;
++
++    /* Actual result writers must withhold bytes after physical identity loss.
++     * No successful registration or populated owner is supplied here. */
++    memset(&registration_result, 0xa5, sizeof(registration_result));
++    startup_source.quantum_wrapper_registration.output_post_status = -ESTALE;
++    startup_source.quantum_wrapper_registration.original_post_status = -EINTR;
++    startup_source.quantum_wrapper_registration.identity_post_status = -ECANCELED;
++    quantum_wrapper_registration_result(&registration_result);
++    assert(registration_result.schema_version == UINT32_C(0xa5a5a5a5));
++    assert(startup_source.quantum_wrapper_registration.original_post_status == -EINTR);
++    assert(startup_source.quantum_wrapper_registration.identity_post_status == -ECANCELED);
++    memset(&disposition, 0xa5, sizeof(disposition));
++    owner->output_post_status = -ESTALE;
++    quantum_wrapper_return_result(owner, &disposition);
++    assert(disposition.schema_version == UINT32_C(0xa5a5a5a5));
++    assert(owner->wrapper_consumed && !owner->consumed && owner->held);
++
++    /* Output nominations exercise only exclusion geometry. No registration,
++     * Runtime, Module owner, physical Main or Original is constructed. */
++    startup_source.quantum_wrapper_registration.holder = &holder;
++    startup_source.quantum_wrapper_registration.epoch = &epoch;
++    startup_source.quantum_wrapper_registration.module_holder = &module_holder;
++    startup_source.quantum_wrapper_registration.module_epoch = &module_epoch;
++    startup_source.quantum_wrapper_registration.disposition = &disposition;
++    assert(callback_child_output_conflicts_locked(&holder, sizeof(holder)));
++    assert(callback_child_output_conflicts_locked(&epoch, sizeof(epoch)));
++    assert(callback_child_output_conflicts_locked(&module_holder, sizeof(module_holder)));
++    assert(callback_child_output_conflicts_locked(&module_epoch, sizeof(module_epoch)));
++    assert(callback_child_output_conflicts_locked(&disposition, sizeof(disposition)));
++    assert(!callback_child_output_conflicts_except_locked(
++        &disposition, sizeof(disposition), &disposition));
++    assert(callback_child_output_conflicts_except_locked(
++        &disposition, 8, &disposition));
++    assert(callback_child_output_conflicts_except_locked(
++        &disposition, sizeof(disposition), &holder));
++    assert(!startup_source.quantum_wrapper_registration.registered);
++    assert(!holder && !epoch && !module_holder && !module_epoch);
++    puts("literal wrapper history and spans passed; no owner issued");
++    return 0;
++}
++'''
++
++
++def limit():
++    resource.setrlimit(resource.RLIMIT_AS, (6 * 1024**3, 6 * 1024**3))
++    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('source', type=Path)
++    parser.add_argument('output', type=Path)
++    args = parser.parse_args()
++    source = args.source.resolve()
++    output = args.output.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    function = runpy.run_path(str(source / 'tests/unit/extract-crucible-startup-source-controls.py'))['function']
++    production = (source / 'plugins/crucible-quantum-wrapper.inc.h').read_text()
++    common = (source / 'plugins/crucible-callback-child.inc.h').read_text()
++    native = (source / 'plugins/crucible-native-deferred-main-finish.inc.h').read_text()
++    native_owner = native[native.index('struct QemuCrucibleNativeDeferredMainFinish {'):
++                          native.index('static int native_deferred_main_finish_identity_locked(')]
++    before = ('#include "qemu/osdep.h"\n#include <sys/prctl.h>\n'
++              '#include "plugins/crucible-startup-source.h"\n'
++              'static QemuCrucibleStartupSourceControl startup_source;\n' + native_owner + '\n' +
++              function((source / 'plugins/crucible-native-invocation.c').read_text(),
++                       'static bool group_output_overlaps(') + '\n' +
++              function(native, 'bool qemu_plugin_crucible_native_deferred_main_finish_output_conflicts_v1(') + '\n' +
++              function(common, 'static bool callback_child_output_overlap('))
++    body = '\n\n'.join([
++        function(production, 'static bool quantum_wrapper_closed('),
++        function(production, 'static void quantum_wrapper_capture('),
++        function(production, 'static void quantum_wrapper_lender_return_record('),
++        function(production, 'static void quantum_wrapper_receiver_retire_record('),
++        function(production, 'static void quantum_wrapper_disposition('),
++        function(production, 'static bool quantum_wrapper_receipt_valid('),
++        function(production, 'static bool quantum_wrapper_registration_posts_complete('),
++        function(production, 'static void quantum_wrapper_registration_result('),
++        function(production, 'static void quantum_wrapper_return_result('),
++        function(common, 'static bool callback_child_output_conflicts_except_locked('),
++        function(common, 'static bool callback_child_output_conflicts_locked('),
++    ])
++    substitutions = {
++        'omit-original-post-attempted': ('registration->original_post_attempted', 'true'),
++        'omit-original-post-returned': ('registration->original_post_returned', 'true'),
++        'omit-identity-post-attempted': ('registration->identity_post_attempted', 'true'),
++        'omit-identity-post-returned': ('registration->identity_post_returned', 'true'),
++        'omit-output-post-attempted': ('registration->output_post_attempted', 'true'),
++        'omit-output-post-returned': ('registration->output_post_returned', 'true'),
++        'omit-registration-output-custody': ('if (!registration->output_post_status)', 'if (true)'),
++        'omit-return-output-custody': ('if (!owner->output_post_status)', 'if (true)'),
++        'overwrite-lender-post': ('!owner->lender_return_recorded &&', 'true &&'),
++        'overwrite-receiver-post': ('!owner->receiver_retire_recorded &&', 'true &&'),
++        'omit-lender-parent-epoch': ('lender->serial == owner->birth.lender.serial', 'true'),
++        'omit-receiver-parent-epoch': ('receiver->serial == owner->birth.receiver.serial', 'true'),
++        'omit-held-debt': ('!owner->held &&', 'true &&'),
++        'omit-uncertain-debt': ('!owner->uncertain &&', 'true &&'),
++        'omit-return-attempt': ('owner->return_attempted && owner->consumed', 'true && owner->consumed'),
++        'omit-source-consumption': ('owner->return_attempted && owner->consumed', 'owner->return_attempted && true'),
++        'omit-borrow-first-history': ('.first_status = borrow->first_status,', '.first_status = 0,'),
++        'omit-borrow-post-history': ('.return_post_status = borrow->return_post_status,', '.return_post_status = 0,'),
++        'omit-core-history': ('.core_consumed = borrow->core_consumed,', '.core_consumed = false,'),
++        'omit-constructor-post-history': ('.return_post_status = constructor->return_post_status,', '.return_post_status = 0,'),
++        'omit-lender-first-history': ('.return_first_status = lender->return_first_status,', '.return_first_status = 0,'),
++        'omit-receiver-post-history': ('.handoff_native_post_status = receiver->handoff_native_post_status,', '.handoff_native_post_status = 0,'),
++        'omit-wrapper-consumption-output': ('.wrapper_consumed = owner->wrapper_consumed,', '.wrapper_consumed = false,'),
++        'omit-independent-post-output': ('.post_status = owner->post_status,', '.post_status = 0,'),
++        'omit-wrapper-epoch': ('receipt->wrapper_serial == owner->wrapper_serial &&', 'true &&'),
++        'omit-retirement-epoch': ('receipt->retirement_serial == owner->module_retirement_serial &&', 'true &&'),
++        'omit-terminal-children': ('receipt->cleanup_returned && receipt->children_terminal && !receipt->uncertain', 'receipt->cleanup_returned && true && !receipt->uncertain'),
++        'omit-uncertain-refusal': ('receipt->children_terminal && !receipt->uncertain', 'receipt->children_terminal && true'),
++        'omit-reserved-refusal': ('!receipt->reserved[0] && !receipt->reserved[1] &&', 'true &&'),
++        'omit-source-holder-exclusion': ('        startup_source.quantum_wrapper_registration.holder,', ''),
++        'omit-source-epoch-exclusion': ('        startup_source.quantum_wrapper_registration.epoch,', ''),
++        'omit-module-holder-exclusion': ('        startup_source.quantum_wrapper_registration.module_holder,', ''),
++        'omit-module-epoch-exclusion': ('        startup_source.quantum_wrapper_registration.module_epoch,', ''),
++        'omit-disposition-exclusion': (
++            'if (callback_child_output_overlap(output, bytes,\n            startup_source.quantum_wrapper_registration.disposition,',
++            'if (false && callback_child_output_overlap(output, bytes,\n            startup_source.quantum_wrapper_registration.disposition,'),
++        'omit-exact-disposition-nominee': ('observation == startup_source.quantum_wrapper_registration.disposition &&', 'true &&'),
++        'omit-exact-disposition-size': ('bytes == sizeof(*startup_source.quantum_wrapper_registration.disposition)', 'true'),
++    }
++    variants = {'positive': body}
++    for name, (old, new) in substitutions.items():
++        assert body.count(old) in (1, 2), (name, body.count(old))
 +        variants[name] = body.replace(old, new)
 +    results = {}
 +    for name, actual in variants.items():
