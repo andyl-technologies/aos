@@ -14,7 +14,12 @@ class RequirementMapTests(unittest.TestCase):
     def setUp(self):
         self.chapters = {
             "00-conventions-and-model.md": "**[CN-MODEL-1]** One requirement.\n",
-            "08-conformance.md": "## 8.4 Suite B: base\n**[CN-TEST-033]** Another.\n",
+            "08-conformance.md": (
+                "## 8.4 Suite B: base\n**[CN-TEST-033]** Another.\n"
+                "| `CN-MODEL-*` | Model | B | Other |\n"
+                "| `CN-TEST-*` | Conformance | Applicable suite and claim inspection | All |\n"
+                "| `CN-IPC-*` | Protocol | B | Other |\n"
+            ),
             "reference/types.md": "- **[CN-IPC-99]** A nested requirement.\n",
         }
         self.plan = "## 2. P0 — Audit\n## 6. G0 and P4 — Feasibility\n**T-CN-01: Audit.**\n"
@@ -126,6 +131,31 @@ class RequirementMapTests(unittest.TestCase):
             with self.subTest(plan=plan, conformance=conformance):
                 with self.assertRaises(ValueError):
                     declared_assignments(plan, conformance)
+
+    def test_every_declared_primary_suite_is_required_without_waiving_additional_coverage(self):
+        self.chapters["08-conformance.md"] += "## 8.10 Suite F: profiles\n"
+        self.chapters["08-conformance.md"] = self.chapters["08-conformance.md"].replace(
+            "| Model | B | Other |", "| Model | B, F | Other |"
+        )
+        with self.assertRaisesRegex(ValueError, "missing primary suite coverage"):
+            self.validate()
+
+        self.rows[0][5] = "B,F"
+        self.assertEqual(self.validate()["requirements"], 3)
+
+    def test_missing_duplicate_unknown_and_undeclared_family_coverage_refuse(self):
+        original = self.chapters["08-conformance.md"]
+        cases = [
+            "## 8.4 Suite B: base\n**[CN-TEST-033]** Another.\n",
+            original + "| `CN-MODEL-*` | Model | B | Other |\n",
+            original.replace("| Model | B | Other |", "| Model | X | Other |"),
+            original.replace("| `CN-MODEL-*` | Model | B | Other |\n", ""),
+        ]
+        for conformance in cases:
+            with self.subTest(conformance=conformance):
+                self.chapters["08-conformance.md"] = conformance
+                with self.assertRaises(ValueError):
+                    self.validate()
 
 
 if __name__ == "__main__":

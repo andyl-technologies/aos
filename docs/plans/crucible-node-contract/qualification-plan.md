@@ -69,7 +69,8 @@ aos-dev --release build check crucible.phase1.nodeContractRequirementMap --no-ou
 ```
 
 It compares the complete map with defining RFC anchors, exact chapter locations
-and declared phase/task/suite names. The gate
+and declared phase/task/suite names, including each family's primary suites from
+the RFC's traceability table. The gate
 also exercises missing, duplicate, stale and foreign-entry controls. Its report
 records planning annotations only; it executes no backend acceptance cases and
 cannot establish a qualified class.

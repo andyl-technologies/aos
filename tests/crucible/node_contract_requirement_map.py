@@ -74,6 +74,29 @@ def declared_assignments(plan: str, conformance: str) -> dict[str, set[str]]:
     return assignments
 
 
+def primary_suites(conformance: str, suites: set[str]) -> dict[str, set[str]]:
+    """Reads mandatory family coverage from the RFC's own traceability table."""
+    coverage = {}
+    pattern = re.compile(r"^\| `(CN-[A-Z]+)-\*` \|[^|]*\| ([^|]+)\|")
+    for line in conformance.splitlines():
+        row = pattern.match(line)
+        if row is None:
+            continue
+        family, primary = row[1], row[2].strip()
+        if family in coverage:
+            raise ValueError(f"duplicate family coverage declaration: {family}")
+        if family == "CN-TEST" and primary == "Applicable suite and claim inspection":
+            coverage[family] = set()
+            continue
+        names = primary.split(", ")
+        if len(names) != len(set(names)) or any(name not in suites for name in names):
+            raise ValueError(f"unknown primary suite declaration: {family}")
+        coverage[family] = set(names)
+    if not coverage:
+        raise ValueError("RFC primary suite coverage table is absent")
+    return coverage
+
+
 def validate_map(
     chapters: dict[str, str], plan: str, mapping: str
 ) -> dict[str, object]:
@@ -85,6 +108,7 @@ def validate_map(
     requirements = requirements_from_chapters(chapters)
     conformance = chapters.get("08-conformance.md", "")
     assignments = declared_assignments(plan, conformance)
+    coverage = primary_suites(conformance, assignments["suites"])
     lines = mapping.splitlines()
     if not lines or tuple(lines[0].split("\t")) != HEADER:
         raise ValueError("requirement map must have the exact seven-column TSV header")
@@ -110,6 +134,11 @@ def validate_map(
             values = row[column].split(",")
             if len(values) != len(set(values)) or any(value not in declared for value in values):
                 raise ValueError(f"unknown, empty or duplicate {column}: {identifier}")
+        family = identifier.rsplit("-", 1)[0]
+        if family not in coverage:
+            raise ValueError(f"requirement family has no primary suite declaration: {family}")
+        if not coverage[family].issubset(row["suites"].split(",")):
+            raise ValueError(f"missing primary suite coverage: {identifier}")
         if row["status"] not in STATUSES:
             raise ValueError(f"unknown planning status: {identifier}")
         statuses[row["status"]] += 1
