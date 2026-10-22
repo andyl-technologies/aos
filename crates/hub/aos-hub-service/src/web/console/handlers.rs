@@ -1452,7 +1452,18 @@ async fn begin_oidc(
         Err(err) => return internal(err),
     };
     match crate::auth::oidc::begin_login(&deps.db, &deps.external_url, org.id, next).await {
-        Ok(redirect) => Redirect::to(&redirect.url).into_response(),
+        Ok(redirect) => {
+            let cookie_name = match crate::auth::oidc::browser_binding_cookie_name(&redirect.state) {
+                Ok(name) => name,
+                Err(err) => return internal(err),
+            };
+            let cookie = oidc_browser_binding_cookie(&cookie_name, &redirect.browser_binding);
+            let mut response = Redirect::to(&redirect.url).into_response();
+            if let Err(err) = append_set_cookie(&mut response, &cookie) {
+                return internal(err);
+            }
+            response
+        }
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
             sso_error(
@@ -1471,24 +1482,53 @@ async fn begin_oidc(
 /// than leaking internals.
 pub(crate) async fn oidc_callback(
     deps: ConsoleDeps,
+    headers: HeaderMap,
     RequestStart(started): RequestStart,
     Query(params): Query<crate::auth::oidc::CallbackParams>,
 ) -> Response {
+    let cookie_name = match crate::auth::oidc::browser_binding_cookie_name(&params.state) {
+        Ok(name) => name,
+        Err(_) => {
+            return sso_error("Sign-in could not be completed. Please try again.", started);
+        }
+    };
+    let clear_binding = clear_oidc_browser_binding_cookie(&cookie_name);
+    let Some(browser_binding) = cookie_value(&headers, &cookie_name) else {
+        return oidc_callback_error(started, &clear_binding);
+    };
     let login = match crate::auth::oidc::complete_login(
         &deps.db,
         deps.sealer.as_ref(),
         deps.http.as_ref(),
         &deps.external_url,
         &params,
+        &browser_binding,
     )
     .await
     {
         Ok(login) => login,
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), "oidc callback failed");
-            return sso_error("Sign-in could not be completed. Please try again.", started);
+            return oidc_callback_error(started, &clear_binding);
         }
     };
+    match resolve_session_from_headers(&deps.db, &headers).await {
+        Ok(Some(session))
+            if !allows_oidc_session_transition(Some(session.auth.user_id), login.user_id) =>
+        {
+            let mut response = sso_error(
+                "Sign out before signing in as a different account.",
+                started,
+            );
+            if let Err(err) = append_set_cookie(&mut response, &clear_binding) {
+                return internal(err);
+            }
+            return response;
+        }
+        Ok(_) => {}
+        Err(err) => return internal(err),
+    }
+
     let email = match deps.db.user_email(login.user_id).await {
         Ok(Some(email)) => email,
         Ok(None) => return sso_error("Sign-in could not be completed. Please try again.", started),
@@ -1498,10 +1538,13 @@ pub(crate) async fn oidc_callback(
         Ok(policy) => policy,
         Err(err) => return internal(err),
     };
-    if let Some(response) = authentication_policy_response(
+    if let Some(mut response) = authentication_policy_response(
         policy.decide(&SessionAuthentication::Oidc(login.issuer.clone())),
         safe_return_path(login.redirect_after.as_deref()),
     ) {
+        if let Err(err) = append_set_cookie(&mut response, &clear_binding) {
+            return internal(err);
+        }
         return response;
     }
     // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
@@ -1522,7 +1565,44 @@ pub(crate) async fn oidc_callback(
     // Honor the staged redirect only for same-origin relative paths (a leading
     // single `/`), so a forged `next` can never bounce the browser off-site.
     let target = safe_return_path(login.redirect_after.as_deref()).unwrap_or("/");
-    ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
+    let mut response = Redirect::to(&target).into_response();
+    if let Err(err) = append_set_cookie(&mut response, &cookie) {
+        return internal(err);
+    }
+    if let Err(err) = append_set_cookie(&mut response, &clear_binding) {
+        return internal(err);
+    }
+    response
+}
+
+fn oidc_browser_binding_cookie(name: &str, binding: &str) -> String {
+    format!(
+        "{name}={binding}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age={}",
+        crate::auth::oidc::FLOW_TTL_SECS
+    )
+}
+
+fn clear_oidc_browser_binding_cookie(name: &str) -> String {
+    format!("{name}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+}
+
+fn append_set_cookie(response: &mut Response, cookie: &str) -> anyhow::Result<()> {
+    response
+        .headers_mut()
+        .append(header::SET_COOKIE, HeaderValue::from_str(cookie)?);
+    Ok(())
+}
+
+fn oidc_callback_error(started: Instant, clear_binding: &str) -> Response {
+    let mut response = sso_error("Sign-in could not be completed. Please try again.", started);
+    if let Err(err) = append_set_cookie(&mut response, clear_binding) {
+        return internal(err);
+    }
+    response
+}
+
+fn allows_oidc_session_transition(current_user_id: Option<i64>, login_user_id: i64) -> bool {
+    current_user_id.is_none_or(|current_user_id| current_user_id == login_user_id)
 }
 
 /// Render a clean SSO error page (no stack traces).
@@ -2453,5 +2533,43 @@ async fn password_login_enabled(deps: &ConsoleDeps) -> bool {
     match deps.db.instance_config_get("password_login").await {
         Ok(Some(value)) => !matches!(value.as_str(), "off" | "false" | "0"),
         _ => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oidc_flow_cookies_are_independent_and_host_only() {
+        let first_state = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        let second_state = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBA";
+        let first_name = crate::auth::oidc::browser_binding_cookie_name(first_state).unwrap();
+        let second_name = crate::auth::oidc::browser_binding_cookie_name(second_state).unwrap();
+        let first = oidc_browser_binding_cookie(&first_name, "first-proof");
+
+        assert_ne!(first_name, second_name);
+        assert!(first.starts_with(&format!("__Host-aos_oidc_{first_state}=first-proof;")));
+        assert!(first.contains(" Secure;"));
+        assert!(first.contains(" HttpOnly;"));
+        assert!(first.contains(" SameSite=Lax;"));
+        assert!(first.contains(" Path=/;"));
+        assert!(!first.contains("Domain="));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("{first_name}=one; {second_name}=two")).unwrap(),
+        );
+        assert_eq!(cookie_value(&headers, &first_name).as_deref(), Some("one"));
+        assert_eq!(cookie_value(&headers, &second_name).as_deref(), Some("two"));
+        assert!(crate::auth::oidc::browser_binding_cookie_name("not a state").is_err());
+    }
+
+    #[test]
+    fn oidc_login_does_not_replace_another_users_session() {
+        assert!(allows_oidc_session_transition(None, 7));
+        assert!(allows_oidc_session_transition(Some(7), 7));
+        assert!(!allows_oidc_session_transition(Some(8), 7));
     }
 }

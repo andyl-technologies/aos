@@ -212,8 +212,16 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         .route(
             "/auth/oidc/callback",
             get(
-                |State(state): State<SharedState>, start: RequestStart, query: Query<_>| {
-                    send_bridge(handlers::oidc_callback(from_state(state), start, query))
+                |State(state): State<SharedState>,
+                 headers,
+                 start: RequestStart,
+                 query: Query<_>| {
+                    send_bridge(handlers::oidc_callback(
+                        from_state(state),
+                        headers,
+                        start,
+                        query,
+                    ))
                 },
             ),
         )
