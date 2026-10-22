@@ -34,12 +34,15 @@
 //! Native publication identities, Journal selection and activation remain upper.
 //! [`policy_data`] owns canonical publisher revisions, provenance and compiler
 //! commitment bytes; typed compilation remains in `aos-sandbox-policy`.
+//! [`nix_online_floor_profile`] shares fixed ONLINE058/059 provisioning profile
+//! DATA; authenticated startup, physical publication and currentness stay upper.
 
 pub mod authenticated_session;
 pub mod authorization_artifact;
 pub mod cache_state;
 pub mod canonical_map;
 pub mod policy_data;
+pub mod nix_online_floor_profile;
 mod capture;
 pub mod domain_ledger;
 pub mod root_settlement;

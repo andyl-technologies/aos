@@ -9811,8 +9811,21 @@ feature build is required in addition to the ordinary application target
 check. The independent operator interoperability test also passes against
 both the original private-candidate verifier and the public-only verifier,
 including tampered candidate, wrong-node and forged-signature rejection.
-Installed execution and the expanded artifact check remain pending. These
-source and component checks grant no public lifecycle readiness.
+The expanded three-purpose artifact check passes at
+`/nix/store/0aq8jpgk3vf9q0px846f4k9mmd6clmfn-sandbox-nix-offline-approval-delivery-profile-check`.
+It checks the actual immutable initialization, recovery and history-export
+profiles, selected unit bytes and compiled production policy. Installed
+execution remains pending. These source and component checks grant no public
+lifecycle readiness.
+
+The canonical ONLINE058/059 profile now has a shared Protocol decoder and
+explicit DATA encoder. Runtime's private purpose wrapper delegates profile
+validation, fixed route, written NV Name and eight journal limits to it.
+Neither decoded DATA nor the encoder creates an original startup, signer,
+physical journal or current floor. Three Protocol tests pass, including
+independent route/TPMS_NV_PUBLIC vectors and canonical rejection cases; both
+existing Security profile/sidecar geometry tests pass. The full Rust target
+compilation check is running. Runtime-floor publication remains required.
 
 The prior hardware-profile artifact check also passes at
 `/nix/store/21hnzkmwgax01mw7hbq08f7dlqn7aaph-sandbox-nix-offline-hardware-profile-check`.

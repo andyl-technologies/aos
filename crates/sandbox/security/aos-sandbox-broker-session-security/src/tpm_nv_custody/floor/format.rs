@@ -790,7 +790,8 @@ impl HostFloorIntentDataV1 {
 }
 
 /// Fixes the distinct independently supplied ONLINE profile width.
-pub(crate) const ONLINE_PROFILE_BYTES: usize = 532;
+pub(crate) const ONLINE_PROFILE_BYTES: usize =
+    aos_sandbox_protocol::nix_online_floor_profile::PROFILE_BYTES_V2;
 
 /// Selects only the two independently provisioned ONLINE purposes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -812,38 +813,28 @@ impl OnlineFloorRoleV1 {
     }
 
     pub(crate) const fn directory(self) -> &'static str {
-        match self {
-            Self::Controller => "/var/lib/aos/sandboxd/broker-session/nix",
-            Self::Owner => "/var/lib/aos/sandbox-nix/broker-session/controller",
-        }
+        self.data_role().directory()
     }
 
     pub(crate) const fn unit(self) -> &'static str {
+        self.data_role().unit()
+    }
+
+    const fn data_role(self) -> aos_sandbox_protocol::nix_online_floor_profile::OnlineFloorRoleV2 {
+        use aos_sandbox_protocol::nix_online_floor_profile::OnlineFloorRoleV2;
+
         match self {
-            Self::Controller => "aos-sandboxd.service",
-            Self::Owner => "aos-sandbox-nixd.service",
+            Self::Controller => OnlineFloorRoleV2::Controller,
+            Self::Owner => OnlineFloorRoleV2::Owner,
         }
     }
 
     fn nv_name(self) -> [u8; 34] {
-        written_nv_name(self.nv_index())
+        self.data_role().written_nv_name()
     }
 
     fn route(self) -> [u8; 32] {
-        use sha2::{Digest as _, Sha256};
-
-        let mut digest = Sha256::new();
-        digest.update(b"aos.sandbox.nix.online-floor.route.v1\0");
-        digest.update([self as u8, aos_sandbox_controller_domain::RecordNamespace::BrokerSessionTraffic as u8]);
-        for name in [
-            "Nix/NodeController", self.directory(), "session.journal", "tpm-floor.journal",
-            "/run/aos/sandbox-nix/control.sock", self.unit(),
-        ] {
-            // All six fixed literals have lengths below u16::MAX.
-            digest.update((name.len() as u16).to_be_bytes());
-            digest.update(name.as_bytes());
-        }
-        digest.finalize().into()
+        self.data_role().route_digest()
     }
 }
 
@@ -859,38 +850,17 @@ pub(crate) struct OnlineFloorProfileV1 {
 
 impl OnlineFloorProfileV1 {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FloorErrorV1> {
-        // Only the undeployed ONLINE purpose changes version. Broker/Host
-        // framing and all shared checkpoint/intent versions remain literal.
-        if bytes.len() != ONLINE_PROFILE_BYTES
-            || &bytes[..8] != b"AOSNXF02"
-            || bytes[8..12] != [0, 2, 0, 0]
-        {
-            return Err(FloorErrorV1::Encoding);
-        }
-        let role = match bytes[12] {
-            58 => OnlineFloorRoleV1::Controller,
-            59 => OnlineFloorRoleV1::Owner,
-            _ => return Err(FloorErrorV1::Encoding),
+        use aos_sandbox_protocol::nix_online_floor_profile::{
+            OnlineFloorProfileV2, OnlineFloorRoleV2,
         };
-        if bytes[13..16] != [0; 3]
-            || [(16, 32), (32, 64), (64, 80), (80, 96), (96, 128),
-                (128, 160), (160, 192), (192, 224), (224, 256), (256, 272),
-                (272, 304), (304, 336), (468, 500), (500, 532)]
-                .iter().any(|&(start, end)| bytes[start..end].iter().all(|byte| *byte == 0))
-            || bytes[336..338] != [0, 0x0b]
-            || bytes[338..370].iter().all(|byte| *byte == 0)
-            || bytes[370..404] != role.nv_name()
-            || bytes[468..500] != role.route()
-        {
-            return Err(FloorErrorV1::Encoding);
-        }
-        let limits = online_main_limit_words_v2();
-        for (index, expected) in limits.into_iter().enumerate() {
-            if u64::from_be_bytes(array(bytes, 404 + index * 8)?) != expected {
-                return Err(FloorErrorV1::Encoding);
-            }
-        }
-        Ok(Self { bytes: array(bytes, 0)?, role })
+
+        let data = OnlineFloorProfileV2::decode(bytes).map_err(|_| FloorErrorV1::Encoding)?;
+        let role = match data.role() {
+            OnlineFloorRoleV2::Controller => OnlineFloorRoleV1::Controller,
+            OnlineFloorRoleV2::Owner => OnlineFloorRoleV1::Owner,
+        };
+
+        Ok(Self { bytes: data.encode(), role })
     }
 
     pub(crate) const fn role(self) -> OnlineFloorRoleV1 {
@@ -991,28 +961,8 @@ impl OnlineFloorProfileV1 {
     }
 }
 
-// An actual RequestPrepared writes traffic + fence + pending effect. Each
-// non-genesis transaction can add at most one fixed24 fence and one fixed24
-// effect key; terminal writes update the effect rather than add another key.
-// These ceilings derive from the existing transaction budget, not a funded
-// job reservation. The native writer still checks the real full transaction,
-// materialized map, all eight limits and remaining sequence space.
 fn online_main_limit_words_v2() -> [u64; 8] {
-    const TRANSACTIONS: u64 = 65_536;
-    const TRAFFIC_AND_SEED_BYTES: u64 = 67_242_902;
-    const FENCE_KEY_AND_VALUE_BYTES: u64 = 24 + 741;
-    const COMPLETE_EFFECT_KEY_AND_VALUE_BYTES: u64 = 24 + 649;
-    [
-        4_294_967_296,
-        67_242_238,
-        24,
-        3,
-        134_485_500,
-        TRANSACTIONS,
-        TRAFFIC_AND_SEED_BYTES + (TRANSACTIONS - 1)
-            * (FENCE_KEY_AND_VALUE_BYTES + COMPLETE_EFFECT_KEY_AND_VALUE_BYTES),
-        2 + (TRANSACTIONS - 1) * 2,
-    ]
+    aos_sandbox_protocol::nix_online_floor_profile::MAIN_LIMIT_WORDS_V2
 }
 
 /// Encodes ONLINE checkpoints over the same checked canonical body.
