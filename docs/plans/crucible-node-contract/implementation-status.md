@@ -2749,6 +2749,43 @@ configured Engine/Daemon runtime result is claimed. These callback admissions
 remain models. Genuine enclosing Source/Birth funding, opaque Initial/Recipe,
 actual bootstrap dispatch/publication and full RFC acceptance remain unfinished.
 
+## Original post-Hello literal custody
+
+Commit `7407b938af` receives the next complete frame through the original
+Hello capsule and socket, under the original nonrenewing cut and actual live
+native SDK. Completed original normalization hashes and full Host-plan
+correspondence precede admission and every public read. No replacement socket,
+reader, journal, registration or deadline is introduced.
+
+The external attempt reserves the negotiated complete header/body bank before
+I/O. It retains every accepted prefix, cursor, length header and complete literal
+hash on either outcome. Both original and external occurrences are spent before
+the first guard. Empty, oversized, partial, timed-out, admission-refused and
+terminally refused input stays observable; retry cannot replace those owners.
+Raw receipt remains unparsed DATA, including arbitrary non-UTF-8 bytes. A later
+loan checks the literal hash and original launch association, Host plan, SDK,
+channel and cut around either callback outcome.
+
+The independently calculated Source/native initial row includes the new full
+bank, external owner and actual read/loan controls. This introduces no larger
+resource policy, operational deadline or numeric-to-allowance conversion.
+Fifteen physical flights cover both program families, malformed/partial framing,
+missing normalizations, admission/census refusal, changed cut, actual SDK
+revocation, callback refusal and expiry. Earlier physical controls remain.
+
+Both complete Transport configurations pass 1,965 tests each, with zero failures,
+no filtering and sixteen existing ignores. Affected all-feature/all-target
+checking, formatting and all six architecture gates pass. The application gate
+compiles 180 test executables across 58 package identities, including 71
+integration targets. Its 319 owned Rust/Cargo inputs match the commit and exact
+captured source. The application gate runs no tests; no new VM or configured
+Engine/Daemon runtime result is claimed.
+
+These admissions remain models. Strict bootstrap decoding, actual assigned
+request/proof handling, genuine enclosing Source/Birth funding, opaque
+Initial/Recipe, bootstrap dispatch/publication and full RFC acceptance remain
+unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
