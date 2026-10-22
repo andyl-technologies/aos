@@ -3458,6 +3458,28 @@ integration targets. All 409 owned Rust/Cargo inputs match the committed revisio
 and its actual captured source. That gate runs no tests. No new full-library,
 configured runtime or VM qualification follows from this checkpoint.
 
+## Named decoder fields and fixed counter layouts
+
+Commit `a28bf4c043` names existing retained decoder result shapes, including
+validation-only versus built output, independent role-group ordinals and borrowed
+input spans. The aliases preserve the exact tuple types, field order, lifetimes
+and storage layouts. Ten counter terms now name arrays of eight native words
+instead of multiplying a word's size by eight; their byte totals are identical.
+
+All fifteen type-complexity and ten manual-bits errors disappear. Production
+Transport library Clippy errors fall from 149 to 124, with 1,727 warnings; strict
+qualification remains failed and no allowance changes. Existing regression runs
+pass 220 connection, 322 snapshot, 27 endpoint, one fresh-query, 53 Hello
+construction and two Bootstrap codec tests. Transport/Engine/Daemon
+all-feature/all-target checking, owned-file formatting and all six architecture
+gates pass.
+
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 419 owned Rust/Cargo inputs match the
+committed revision and its actual captured source. This gate runs no tests.
+No new full-library, configured runtime, VM or full RFC qualification follows
+from the declaration and layout-expression cleanup.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
