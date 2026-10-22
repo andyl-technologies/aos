@@ -405,9 +405,9 @@ in {
         state_root = f"{qualification_root}/{mode}"
         lifecycle.succeed(
             f"mkdir -p {state_root}/preparation {state_root}/operations "
-            f"{state_root}/namespaces; chmod 0700 {state_root} "
+            f"{state_root}/lifecycle {state_root}/namespaces; chmod 0700 {state_root} "
             f"{state_root}/preparation {state_root}/operations "
-            f"{state_root}/namespaces"
+            f"{state_root}/lifecycle {state_root}/namespaces"
         )
         fields = lifecycle.succeed(
             f"{FIXTURE} observer-plan {mode} {state_root} {GATE_OBJECT}"
