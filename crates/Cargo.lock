@@ -748,6 +748,7 @@ dependencies = [
  "lzma-rs",
  "p256",
  "rand 0.9.4",
+ "rcgen",
  "reqwest",
  "rsa",
  "rusqlite",
