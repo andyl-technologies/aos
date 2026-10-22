@@ -73,6 +73,15 @@ pub struct PacketNativeImport18BootstrapAssignmentHistoryData<'a> {
 }
 
 impl PacketNativeImport18BootstrapAssignmentData {
+    // Only the retained DATA materializer can attach the sole proof. Live SDK
+    // and Source authority remain outside this unsigned construction owner.
+    pub(super) fn original_mut_data(&mut self) -> Result<&mut Envelope, ProviderError> {
+        if !self.assigned || self.failed {
+            return Err(invalid());
+        }
+        self.original.as_mut().ok_or_else(invalid)
+    }
+
     /// Borrows every initialized field without cloning or reconstructing authority.
     pub fn borrowed_history_data(&self) -> PacketNativeImport18BootstrapAssignmentHistoryData<'_> {
         PacketNativeImport18BootstrapAssignmentHistoryData {

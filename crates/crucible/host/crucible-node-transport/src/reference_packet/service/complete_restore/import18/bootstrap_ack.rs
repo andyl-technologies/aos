@@ -18,6 +18,14 @@ use crate::reference_packet::service::native_startup::PacketNativeStartupAllocat
 mod assignment;
 mod reservation;
 pub use reservation::PacketNativeImport18BootstrapReservationRowData;
+mod sealing;
+pub use sealing::{
+    PacketNativeImport18BootstrapSealingData, PacketNativeImport18BootstrapSealingFailure,
+    PacketNativeImport18BootstrapSealingHistoryData, PacketNativeImport18BootstrapSealingRowData,
+    PacketNativeImport18BootstrapSealingStep,
+    native_import18_bootstrap_sealing_counter_scratch_data,
+    native_import18_bootstrap_sealing_into_data, native_import18_bootstrap_sealing_quote_data,
+};
 mod envelope_projection;
 pub use assignment::{
     PacketNativeImport18BootstrapAssignmentData,

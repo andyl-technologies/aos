@@ -278,6 +278,91 @@ struct Sealed {
     cut: OperationalDeadline,
 }
 
+#[test]
+fn retained_materialization_seals_and_publishes_the_same_actual_reserved_assignment() {
+    let (_lease, mut session, mut peer) = scope();
+    let (proposal, request, proof) = proposal(&session);
+    let mut assignment = None;
+    native_import18_bootstrap_assignment_into_data(
+        [
+            session.authority.session_id(),
+            session.authority.incarnation_id(),
+            proposal.request_id.0.as_ref().unwrap(),
+        ],
+        &request,
+        &native_import18_bootstrap_assignment_quote_data(usize::MAX).unwrap(),
+        usize::MAX,
+        &mut assignment,
+    )
+    .unwrap();
+    let unsigned = assignment
+        .as_ref()
+        .unwrap()
+        .borrowed_history_data()
+        .original
+        .unwrap();
+    let original_id = unsigned.request_id.0.as_ref().unwrap().as_str().as_ptr();
+    let cut = session.original_bootstrap_hello_cut_data().unwrap();
+    let payload = native_import18_bootstrap_envelope_projection_data(usize::MAX)
+        .unwrap()
+        .maximum_encoded_bytes_data()[0];
+    let mut slot = None;
+    session
+        .reserve_original_bootstrap_data(unsigned, &request, cut, payload, &mut slot)
+        .unwrap();
+    session
+        .with_original_bootstrap_unsigned_data(unsigned, &request, cut, slot, |same| {
+            assert!(std::ptr::eq(same, unsigned));
+            Ok(())
+        })
+        .unwrap();
+
+    let mut proof = Some(proof);
+    let row = native_import18_bootstrap_sealing_quote_data(
+        assignment.as_ref().unwrap(),
+        proof.as_ref().unwrap(),
+        usize::MAX,
+    )
+    .unwrap();
+    let mut materialized = None;
+    native_import18_bootstrap_sealing_into_data(
+        &mut assignment,
+        &mut proof,
+        &row,
+        usize::MAX,
+        &mut materialized,
+    )
+    .unwrap();
+    let owner = materialized.as_ref().unwrap();
+    let history = owner.borrowed_history_data();
+    let original = history.assignment.unwrap().original.unwrap();
+    let proof = history.proof.unwrap();
+    let bytes = history.literal.unwrap();
+    session
+        .seal_original_bootstrap_data(original, &request, proof, (bytes, slot), cut)
+        .unwrap();
+    session
+        .publish_original_bootstrap_data(original, &request, proof, (bytes, slot), cut)
+        .unwrap();
+
+    let mut received = vec![0; bytes.len() + 4];
+    peer.read_exact(&mut received).unwrap();
+    assert_eq!(received[..4], (bytes.len() as u32).to_be_bytes());
+    assert_eq!(&received[4..], bytes.as_slice());
+    assert_eq!(
+        original.request_id.0.as_ref().unwrap().as_str().as_ptr(),
+        original_id
+    );
+    assert!(owner.borrowed_history_data().sealed);
+    assert!(owner.retained_requested_bytes_data().unwrap() <= row.requested_storage_data()[0]);
+    assert_eq!(session.sequence.get(), 3);
+    assert_eq!(session.deadline.original_cut(), cut);
+    session
+        .authenticate_original_bootstrap_effect_cut_data(cut, 3)
+        .unwrap();
+    assert!(session.original_bootstrap_hello_cut_data().is_err());
+}
+
 fn seal(session: &mut ClientSession) -> Sealed {
     let cut = session.original_bootstrap_hello_cut_data().unwrap();
     let (mut original, request, proof) = proposal(session);
