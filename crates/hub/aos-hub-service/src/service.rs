@@ -83,7 +83,7 @@ use crate::topology_probe::TopologyProbeScheduler;
 use aos_hub_db::db::{
     Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget,
 };
-use aos_hub_model::auth::jwt::{Claims, JwtKeys};
+use aos_hub_model::auth::jwt::{BearerProvenance, Claims, JwtKeys};
 use aos_hub_model::clock;
 use aos_hub_model::domain::iam::{self, claims_principal, token_allows};
 use aos_hub_model::domain::{Permission, Principal, PrincipalKind, Role, Scope};

@@ -784,7 +784,7 @@ async fn spawn_registry_with_options(
         .await
         .unwrap();
     let hub_bearer = Some(
-        keys.mint(
+        keys.mint_browser_session(
             &TokenAuth {
                 token_id: "native-oci-hub-token".to_string(),
                 owner: Principal::user(user_id),
@@ -794,6 +794,7 @@ async fn spawn_registry_with_options(
                     Permission::Publish,
                     Permission::RegistryConfigure,
                 ],
+                expires_at: None,
             },
             900,
         )

@@ -139,6 +139,9 @@ impl RpcService {
         let Some(claims) = claims else {
             return false;
         };
+        if !matches!(self.claims_have_live_provenance(claims).await, Ok(true)) {
+            return false;
+        }
         let Ok(Some(context)) = self.db.authorization_context(scope.as_str()).await else {
             return false;
         };

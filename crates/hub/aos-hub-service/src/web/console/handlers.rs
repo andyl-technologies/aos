@@ -153,12 +153,13 @@ impl Session {
             .expires_at
             .saturating_sub(aos_hub_model::clock::now_unix_secs())
             .clamp(1, BROWSER_ACCESS_TOKEN_TTL_SECS);
-        let token = deps.jwt_keys.mint(
+        let token = deps.jwt_keys.mint_browser_session(
             &aos_hub_db::db::TokenAuth {
                 token_id: format!("browser-session-{}", self.auth.user_id),
                 owner: self.principal(),
                 scope: Scope::root(),
                 permissions: iam::role_grants(Role::Owner).to_vec(),
+                expires_at: Some(self.auth.expires_at),
             },
             ttl,
         )?;
@@ -218,8 +219,12 @@ pub(crate) async fn session_token(deps: ConsoleDeps, headers: HeaderMap) -> Resp
         owner: session.principal(),
         scope: Scope::root(),
         permissions: iam::role_grants(Role::Owner).to_vec(),
+        expires_at: Some(session.auth.expires_at),
     };
-    let access_token = match deps.jwt_keys.mint(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS) {
+    let access_token = match deps
+        .jwt_keys
+        .mint_browser_session(&auth, BROWSER_ACCESS_TOKEN_TTL_SECS)
+    {
         Ok(token) => token,
         Err(error) => return internal(error),
     };

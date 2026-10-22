@@ -264,12 +264,13 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let token = state
         .auth
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "image-reader".into(),
                 owner: Principal::user(user),
                 scope: Scope::parse(&org_scope),
                 permissions: vec![Permission::Read, Permission::Publish],
+                expires_at: None,
             },
             900,
         )

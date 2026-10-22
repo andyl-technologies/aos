@@ -46,12 +46,13 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
         .await
         .unwrap();
     let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "other-reporter".into(),
                 owner: Principal::user(other_user),
                 scope: Scope::root(),
                 permissions: Vec::new(),
+                expires_at: None,
             },
             3600,
         )
@@ -324,12 +325,13 @@ async fn signing_usage_enforces_authz_cas_and_apply_replay() {
         .unwrap()
         .unwrap();
     let token = jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "keys-manager".into(),
                 owner: Principal::user(user_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::KeysManage],
+                expires_at: None,
             },
             3600,
         )
