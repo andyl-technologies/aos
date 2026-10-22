@@ -14396,3 +14396,16 @@ in 53,886.12 seconds with unchanged frozen source. Its publisher ownership
 proof rejects a complete-source mismatch; dependent gates also fail to build.
 This aggregate is not green and does not close any trunk task. Its original
 receipts and retained build evidence remain available for diagnosis.
+
+
+The retained `a4fbca79e1` publisher failure is now isolated to its actual
+cache-image inventory: 5,255 recorded inputs match the immutable source, but
+`native_feature_units_vm.py` is absent from the verifier's expected helper
+list. Its transport image's 5,244 inputs match exactly. The current cache image
+also includes the subsequently added `sealed_consumer_cold_vm.py`. The verifier
+now requires both helpers, continuing to compare the entire exact inventory
+and every hash. Failure diagnostics distinguish missing, unexpected and changed
+inputs. A diagnostic against the actual old immutable image accepts its complete
+recorded list and still rejects omission of the original helper with the exact
+unexpected path; Python syntax passes. This does not convert the old aggregate
+to a pass or qualify the current owning gate. Its hermetic rerun remains pending.

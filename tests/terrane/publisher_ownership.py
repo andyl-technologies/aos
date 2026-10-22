@@ -64,9 +64,17 @@ def check_inputs(image, source, helpers):
                 != ".cargo/config.toml"}
     expected.update({"tests/terrane/" + name: sha256(source / "tests/terrane" / name)
                      for name in helpers})
-    require(identity.get("schema_version") == 1 and identity.get("source") == str(source)
-            and identity.get("input_sha256") == expected,
-            "publisher ownership proof differs from the current complete source")
+    require(identity.get("schema_version") == 1 and identity.get("source") == str(source),
+            "publisher ownership proof has another schema or immutable source")
+    actual = identity.get("input_sha256")
+    require(isinstance(actual, dict), "publisher ownership input inventory unavailable")
+    missing = sorted(expected.keys() - actual.keys())
+    unexpected = sorted(actual.keys() - expected.keys())
+    changed = sorted(name for name in expected.keys() & actual.keys()
+                     if expected[name] != actual[name])
+    require(actual == expected,
+            "publisher ownership proof differs from the current complete source: "
+            f"missing={missing}, unexpected={unexpected}, changed={changed}")
     return identity
 
 
@@ -161,7 +169,8 @@ def main():
         "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py",
         "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py",
         "encoded_eviction_vm.py", "host_cache_encoded_recovery_vm.py",
-        "shared_reextract_vm.py", "native_sdk_test_image.py",
+        "shared_reextract_vm.py", "sealed_consumer_cold_vm.py",
+        "native_feature_units_vm.py", "native_sdk_test_image.py",
     ])
     print(json.dumps({
         "requirement": "ARCH-8", "source": str(source),
