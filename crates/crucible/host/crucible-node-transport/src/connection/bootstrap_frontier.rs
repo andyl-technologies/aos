@@ -6,6 +6,9 @@
 use super::*;
 use std::mem::size_of;
 
+#[path = "bootstrap_frontier/transport.rs"]
+mod transport;
+
 impl<S: ProviderStream> Connection<S> {
     /// Checks only the current actor, registration and unused post-Hello guard.
     ///
