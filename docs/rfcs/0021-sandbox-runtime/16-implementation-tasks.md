@@ -10558,3 +10558,35 @@ before the reexec attack is armed. The host reexec adversary now has a distinct
 unit identity. Its executable, physical pin gate, four attack targets and
 verification assertions are unchanged. Formatting passes; the installed matrix
 retry is pending. The preceding failed run is not a complete handoff receipt.
+
+
+### View-root setup as an original fixed-service member (execution pending)
+
+The installed authenticated-view retry stops before launching the provisioner:
+the original Components parent rejects its privileged `+` pre-start flag.
+This first error also closes subsequent parent starts. The rejection is retained.
+A separate fixed `aos-sandbox-view-roots.service` now runs the authenticated
+launcher with ordinary command sandboxing, the existing Components controls and
+a finite NOFILE ceiling. The cache view requires its successful completion.
+The setup unit retains the launcher's two fixed-label transitions and their
+existing capability requirements; the cache view keeps its separate confined
+context. No privileged-flag exception, extra reservation or parent loan is added.
+
+The combined startup artifact contract checks the exact command, dependency,
+controls and actual bounded parent manifest membership. Installed execution is
+still pending. The preceding full handoff artifact check passes at
+`/nix/store/4xz4h3h5vf5vx4bnhff3v23lxk02qva4-selinux-root-handoff-check-0`;
+that receipt does not qualify view execution or Root readiness.
+
+The approved offline nosuid transitions also pass the complete compiled-policy
+and mutation checks at
+`/nix/store/hlmb0rsb54fvmmkzfq2d8g4v0k3fzjlr-aos-selinux-production-policy-1`.
+The installed offline rerun remains pending.
+
+Both source-tree walks now use their complete fixed table extent, including the
+selected fourth Source evidence root; a compile-time assertion keeps its flags
+and specifications aligned. Strict static C17 compilation with all view features
+selected and the existing 14 pure mount-admission cases pass at
+`/nix/store/9ffwv6qbqzg7p7wfgr4ib9gh2f0qp6bd-aos-selinux-runtime-roots-1`.
+This compile check embeds the preceding policy artifact solely for build testing;
+installed profiles still select their exact policy and physical manifest.

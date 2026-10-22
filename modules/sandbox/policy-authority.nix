@@ -559,11 +559,33 @@ in {
         }
       ];
 
+    systemd.services.aos-sandbox-view-roots = lib.mkIf preparer.confined {
+      description = "Prepare fixed AOS sandbox view roots through authenticated handoff";
+      requires = ["local-fs.target"];
+      after = ["local-fs.target"];
+      before = ["aos-sandbox-cache-journal-view.service"];
+      unitConfig.RequiresMountsFor = ["/var/lib"];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
+        # The sealed physical launcher performs two fixed-label transitions.
+        # This separately accounted setup unit never uses the privileged '+'
+        # command flag or changes the confined view script's execution context.
+        NoNewPrivileges = false;
+        CapabilityBoundingSet = ["CAP_CHOWN" "CAP_DAC_READ_SEARCH" "CAP_SYS_ADMIN"];
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
+        UMask = "0077";
+      };
+    };
+
     systemd.services.aos-sandbox-cache-journal-view = {
       description = "AOS fixed readonly Root Controller, Session, Source and Cache views";
       wantedBy = ["multi-user.target"];
       before = ["aos-sandboxd.service" "aos-sandbox-policy-authorityd.service"];
-      after = ["local-fs.target"];
+      requires = lib.optional preparer.confined "aos-sandbox-view-roots.service";
+      after = ["local-fs.target"] ++ lib.optional preparer.confined "aos-sandbox-view-roots.service";
       unitConfig.RequiresMountsFor = ["/var/lib/aos/sandbox"];
       serviceConfig =
         preparer.serviceConfig
@@ -571,10 +593,6 @@ in {
           Type = "oneshot";
           RemainAfterExit = true;
           SELinuxContext = lib.mkIf preparer.confined "system_u:system_r:aos_sandbox_cache_view_preparer_t";
-          # Use the existing authenticated physical handoff, as Network does.
-          # PID 1 cannot execute the provisioner directly; the launcher opens
-          # its sealed inode and enters its dedicated domain before mutation.
-          ExecStartPre = lib.mkIf preparer.confined "+/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
           ExecStart = "${prepareCacheJournalView}/bin/aos-sandbox-cache-journal-view";
           ExecStop = "${stopRootJournalViews}/bin/aos-sandbox-cache-journal-view-stop";
           User = "root";

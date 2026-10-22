@@ -319,6 +319,7 @@ in
       ./patches/0034-resource-enrollment-startup-diagnostics.patch
       ./patches/0035-merged-usr-immutable-image-paths.patch
       ./patches/0036-select-sandbox-resource-unit-families.patch
+      ./patches/0037-account-view-root-preparation.patch
     ];
 
     buildDeps = [

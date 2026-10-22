@@ -146,6 +146,11 @@ static const bool view_source_enabled[] = {
         AOS_CACHE_SIGNER_VIEW_REQUIRED || AOS_CACHE_VIEW_REQUIRED,
         AOS_ENVIRONMENT_EVIDENCE_REQUIRED,
 };
+
+_Static_assert(sizeof(view_source_specs) / sizeof(view_source_specs[0]) ==
+               sizeof(view_source_enabled) / sizeof(view_source_enabled[0]),
+               "fixed view sources and enablement must have the same extent");
+
 static const struct directory_spec view_run_parent_spec = {
         "aos", "/run/aos", "system_u:object_r:var_run_t", 0755, 0, 0,
 };
@@ -352,7 +357,9 @@ static int provision_view_roots(void) {
         if (open_existing_directory(lib_fd, &aos_spec, lib_mount, lib_stat.st_dev, &aos_fd) < 0)
                 goto out;
         if (aos_fd >= 0 && walk_view_tree(aos_fd, &view_parent_spec, view_source_specs,
-                                        view_source_enabled, 3, lib_mount, lib_stat.st_dev, false) < 0)
+                                        view_source_enabled,
+                                        sizeof(view_source_specs) / sizeof(view_source_specs[0]),
+                                        lib_mount, lib_stat.st_dev, false) < 0)
                 goto out;
         if (aos_fd >= 0 && walk_root_private_view_sources(aos_fd, lib_mount, lib_stat.st_dev, false) < 0)
                 goto out;
@@ -367,7 +374,8 @@ static int provision_view_roots(void) {
         aos_fd = open_or_create_directory(lib_fd, &aos_spec, lib_mount, lib_stat.st_dev, &aos_identity);
         if (aos_fd < 0 ||
             walk_view_tree(aos_fd, &view_parent_spec, view_source_specs, view_source_enabled,
-                           3, lib_mount, lib_stat.st_dev, true) < 0 ||
+                           sizeof(view_source_specs) / sizeof(view_source_specs[0]),
+                           lib_mount, lib_stat.st_dev, true) < 0 ||
             walk_root_private_view_sources(aos_fd, lib_mount, lib_stat.st_dev, true) < 0 ||
             walk_view_tree(run_fd, &view_run_parent_spec, view_target_specs, view_target_enabled,
                            sizeof(view_target_specs) / sizeof(view_target_specs[0]),

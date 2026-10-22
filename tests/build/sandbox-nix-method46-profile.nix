@@ -28,6 +28,9 @@
   sandbox = cfg.aos.sandbox;
   controller = cfg.systemd.services.aos-sandboxd.serviceConfig;
   profile = sandbox.nixBroker._controllerProfile;
+  viewRoots = cfg.systemd.services.aos-sandbox-view-roots.serviceConfig;
+  viewService = cfg.systemd.services.aos-sandbox-cache-journal-view;
+  parent = sandbox.resourceBank.parentEnclosure;
   wrongPackage = system.extendModules {
     modules = [
       ({lib, ...}: {
@@ -45,6 +48,16 @@
   rejectedBy = message: selected:
     builtins.any (check: check.message == message && !check.assertion) selected.config.assertions;
   validation = assert builtins.all (check: check.assertion) cfg.assertions;
+  assert viewRoots.ExecStart == "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${cfg.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
+  assert viewRoots.Slice == "aoscomponents.slice";
+  assert viewRoots.LimitNOFILE == parent.fixedOpenFilesPerProcess;
+  assert viewRoots.MemoryMax == parent.fixedServices.memory-bytes;
+  assert viewRoots.TasksMax == parent.fixedServices.pids;
+  assert !(viewRoots.PermissionsStartOnly or false);
+  assert !(viewRoots.NoNewPrivileges);
+  assert (viewService.serviceConfig.ExecStartPre or []) == [];
+  assert builtins.elem "aos-sandbox-view-roots.service" viewService.requires;
+  assert builtins.elem "aos-sandbox-view-roots.service" viewService.after;
   assert sandbox.controllerService.package == sandbox.nixBroker._package;
   assert sandbox.policyAuthority.package == sandbox.nixBroker._package;
   assert builtins.elem "/proc/1/exe:aos-method46-pid1-image:read-only" controller.OpenFile;
@@ -61,10 +74,11 @@ in
     pkgs.runCommand "sandbox-nix-method46-profile-check" {
       buildDeps = [pkgs.python3];
     } ''
-      ${pkgs.python3}/bin/python3 - ${profile}/controller.json ${unit} <<'PY'
+      ${pkgs.python3}/bin/python3 - ${profile}/controller.json ${unit} ${sandbox.resourceBank._parentImage}/enclosure.bin <<'PY'
       import hashlib
       import json
       import pathlib
+      import struct
       import sys
 
       profile_path = pathlib.Path(sys.argv[1])
@@ -86,6 +100,20 @@ in
           f"profile={declared_digest.hex()} installed={installed_digest.hex()}"
       )
       assert profile["role"] == "controller"
+
+      # Inspect the actual finite manifest consumed by the original manager.
+      enclosure = pathlib.Path(sys.argv[3]).read_bytes()
+      assert enclosure[:8] == b"AOSRPE05"
+      assert hashlib.sha256(enclosure[:-32]).digest() == enclosure[-32:]
+      count, = struct.unpack_from(">H", enclosure, 452)
+      assert 1 <= count <= 16
+      assert len(enclosure) == 2774 + count * 1506
+      names = [
+          enclosure[2742 + index * 1506:2806 + index * 1506].split(b"\0", 1)[0]
+          for index in range(count)
+      ]
+      assert names == sorted(set(names))
+      assert names.count(b"aos-sandbox-view-roots.service") == 1
       PY
       mkdir -p "$out"
       printf '%s\n' 'PASS: combined immutable startup contract; no runtime floor authority' > "$out/result"

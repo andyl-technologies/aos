@@ -26,6 +26,10 @@
   bootPreparation =
     config.aos.sandbox.runtimeDeploymentPublisher.enable
     && config.aos.sandbox.runtimeDeploymentPublisher.bootPreparation;
+  confinedViewPreparation =
+    config.aos.sandbox.policyAuthority.enable
+    && config.aos.security.selinux.enable
+    && config.aos.security.selinux.bootMode == "immutable-stage0";
   unsigned = lib.types.addCheck lib.types.int (value: value >= 0);
   positive = lib.types.addCheck lib.types.int (value: value > 0);
   vectorType = lib.types.attrsOf unsigned;
@@ -52,6 +56,7 @@
       "aos-sandbox-cache-journal-view"
       "aos-sandbox-policy-cache-recovery"
     ]
+    ++ lib.optional confinedViewPreparation "aos-sandbox-view-roots"
     ++ lib.optionals config.aos.security.audit.enable ["auditd" "audit-rules"];
   members = builtins.sort builtins.lessThan (
     ["aoscomponents.slice"]
