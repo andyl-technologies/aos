@@ -2155,8 +2155,16 @@ SDK validation refusal. Successful controls now supply a valid ordered fixture;
 a separate negative control keeps the malformed input and its original typed
 reason. Production validators and accepted grammar are unchanged.
 
-Full qualification of this transition is pending. The admissions in these controls
-are model funding callbacks; they do not grant genuine Source/Birth credit. The
+Commit `29010f7389` passes both complete Transport configurations: 1,913 tests
+each, zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, scoped formatting and all six architecture
+checks pass. The required application gate compiles 180 test executables across
+58 packages, including 71 integration targets; it executes no tests. All 257 owned
+Rust/Cargo inputs match the committed tree and exact captured application source.
+No new VM or configured Engine/Daemon runtime run is claimed for this transition.
+
+The admissions in these controls are model funding callbacks; they do not grant
+genuine Source/Birth credit. The
 genuine enclosing producer, opaque Initial/Recipe, Native18 policy, publication,
 ACK, model adoption and full RFC acceptance remain unfinished.
 
