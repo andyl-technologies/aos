@@ -9699,6 +9699,29 @@ SETools differential test; it is not a complete policy-suite pass. Approval
 import and hardware history delivery still require their own protected purpose;
 the public export supplies neither and authorizes no TPM or runtime operation.
 
+Complete Rust target compilation subsequently passes for the candidate export
+at `/nix/store/26pdyhrz6fxpd090y8qfdl0d0lxdr6li-aos-test-targets-0.1.0`.
+The compiled policy/profile and enforcing installed checks remain pending.
+
+The successful hardware coordinator now additionally exposes the exact complete
+public native journal retained by its final semantic replay and physical
+readback. The native owner enables that borrow only after both final TPM
+observations, terminal acknowledgments, exact-child retirement and original
+rechecks succeed. Repeated or failed completion and execution remain fenced.
+The records contain public admissions, HELLO/REQUEST frames and terminal
+results; secret AUTH frames and candidate seeds are never journaled.
+
+The unit emits bounded `AOS_NIX_OFFLINE_HISTORY_V5=` hex chunks with an exact
+total extent and contiguous offsets, followed by an explicit SHA-256 terminal
+record. This uses the same inherited write-only stream permission and opens
+no protected file for generic root. Three selected service tests pass, including
+round trips across chunk boundaries and refusal of empty or oversized history
+before writing. Complete Rust target compilation is running for this follow-up.
+It has no installed hardware receipt yet, and supplies neither approval import
+nor runtime credential/floor publication. Interrupted jobs still require a
+separately admitted read-only history-delivery purpose; this successful-job
+export does not reopen a failed owner or authorize a retry.
+
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
 `unlabeled_t:filesystem associate` denial on the writable tmpfs upper. The

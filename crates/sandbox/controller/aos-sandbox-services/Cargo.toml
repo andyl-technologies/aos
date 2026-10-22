@@ -124,7 +124,11 @@ source-provider = [
 ]
 runtime-publisher = ["dep:aos-sandbox-controller-domain", "dep:aos-sandbox-broker-session-security"]
 runtime-boot-preparation = ["runtime-publisher"]
-nix-provision = ["dep:aos-sandbox-controller-domain", "dep:aos-sandbox-broker-session-security"]
+nix-provision = [
+    "dep:aos-sandbox-controller-domain",
+    "dep:aos-sandbox-broker-session-security",
+    "dep:sha2",
+]
 nix = ["dep:aos-sandbox-broker-session-security", "aos-sandbox-broker-session-security/online-nix"]
 online-nix = [
     "aos-sandbox-broker-session-security?/online-nix",

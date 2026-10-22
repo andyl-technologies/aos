@@ -174,6 +174,24 @@ impl<'startup, 'resources> NixOfflineHardwareAttemptV5<'startup, 'resources> {
         self.terminal_failure.as_ref()
     }
 
+    /// Borrows public native history after successful exact-child retirement.
+    ///
+    /// The underlying native owner has reread and replayed the complete journal
+    /// with its original locks held. No AUTH frame, seed or hierarchy secret is
+    /// present. The export conveys DATA for independent approval, not authority.
+    /// Failed and repeated execution attempts expose no history.
+    #[must_use]
+    pub fn public_completed_history_data(&self) -> Option<&[u8]> {
+        if self.first_failure.is_some()
+            || self.terminal_failure.is_some()
+            || self.exchange_failure.is_some()
+        {
+            return None;
+        }
+
+        self.native.public_completed_history_data()
+    }
+
     fn execute_inner(&mut self) -> Result<(), NixOfflineHardwareErrorV5> {
         use NixOfflineHardwareErrorV5 as Error;
 

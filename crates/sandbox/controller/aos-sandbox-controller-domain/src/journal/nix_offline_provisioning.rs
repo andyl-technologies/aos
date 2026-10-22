@@ -419,6 +419,7 @@ pub struct NixOfflineNativeJobV5<'startup> {
     transition: Option<JournalTransaction>,
     completed_transitions: Vec<JournalTransaction>,
     admission_committed: bool,
+    completed: bool,
     contacts: [NixOfflineContactDataV5; 10],
     active_contact: Option<usize>,
     old_profile: PendingImmutableFileV1,
@@ -470,6 +471,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
             transition: None,
             completed_transitions: Vec::new(),
             admission_committed: false,
+            completed: false,
             contacts: std::array::from_fn(|_| NixOfflineContactDataV5::empty()),
             active_contact: None,
             old_profile: PendingImmutableFileV1::default(),
@@ -991,6 +993,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
     /// approval/history, expired original job cut or mismatched public Names.
     /// Success describes this offline job only, never a runtime Session floor.
     pub fn finish_job(&mut self) -> Result<(), &Error> {
+        self.completed = false;
         if !self.usable || self.active_contact.is_some() || !self.admission_committed {
             self.usable = false;
             return Err(self.first_failure.get_or_insert(Error::Fenced));
@@ -998,9 +1001,28 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         self.usable = false;
         let result = self.finish_job_inner();
         match result {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.completed = true;
+                Ok(())
+            }
             Err(error) => Err(self.first_failure.get_or_insert(error)),
         }
+    }
+
+    /// Borrows the verified public journal after all original contacts retire.
+    ///
+    /// The complete readback contains public admissions, HELLO/REQUEST frames
+    /// and terminal results. Secret AUTH frames and candidate seeds are never
+    /// journaled. These bytes support independent recovery approval; they are
+    /// neither native custody nor a runtime floor or session receipt.
+    /// Failed, interrupted and repeated completion attempts expose no history.
+    #[must_use]
+    pub fn public_completed_history_data(&self) -> Option<&[u8]> {
+        if !self.completed || self.first_failure.is_some() {
+            return None;
+        }
+
+        Some(&self.readback_bytes)
     }
 
     fn finish_job_inner(&mut self) -> Result<(), Error> {

@@ -7,6 +7,8 @@
 use std::io::{self, Write as _};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use sha2::{Digest as _, Sha256};
+
 use aos_sandbox_controller_domain::normal_root::OfflineNixPrepareStartupV3;
 use aos_sandbox_broker_session_security::nix_floor_provisioning::{
     NixApprovedJobInspectionAttemptV3, NixPrepareKeysAttemptV3,
@@ -134,6 +136,46 @@ fn write_public_candidate(public: &[u8; 268]) -> io::Result<()> {
     output.flush()
 }
 
+fn write_public_history(output: &mut impl io::Write, history: &[u8]) -> io::Result<()> {
+    if history.is_empty() || history.len() > 4 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid public history extent",
+        ));
+    }
+
+    // Each record stays below the journal's line limit. The explicit extent,
+    // contiguous offsets and terminal digest let the operator reject partial
+    // delivery without reading the protected journal as generic root.
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = [0; 2048];
+    for (index, chunk) in history.chunks(1024).enumerate() {
+        for (offset, byte) in chunk.iter().copied().enumerate() {
+            encoded[offset * 2] = HEX[usize::from(byte >> 4)];
+            encoded[offset * 2 + 1] = HEX[usize::from(byte & 15)];
+        }
+
+        write!(
+            output,
+            "AOS_NIX_OFFLINE_HISTORY_V5={}:{}:",
+            history.len(),
+            index * 1024,
+        )?;
+        output.write_all(&encoded[..chunk.len() * 2])?;
+        output.write_all(b"\n")?;
+    }
+
+    let digest = Sha256::digest(history);
+    for (index, byte) in digest.iter().copied().enumerate() {
+        encoded[index * 2] = HEX[usize::from(byte >> 4)];
+        encoded[index * 2 + 1] = HEX[usize::from(byte & 15)];
+    }
+    output.write_all(b"AOS_NIX_OFFLINE_HISTORY_V5_END=")?;
+    output.write_all(&encoded[..64])?;
+    output.write_all(b"\n")?;
+    output.flush()
+}
+
 fn hardware_main(selected: Command) -> ! {
     // The same fixed phase reservoirs outlive all borrowing runs, including
     // negative results and caught unwind. No failed owner returns through Drop.
@@ -169,7 +211,16 @@ fn hardware_main(selected: Command) -> ! {
         }
     };
     let mut attempt = NixOfflineHardwareAttemptV5::new(origin, &mut resources);
-    let execution = catch_unwind(AssertUnwindSafe(|| attempt.execute_once().is_ok()));
+    let execution = catch_unwind(AssertUnwindSafe(|| {
+        if attempt.execute_once().is_err() {
+            return false;
+        }
+
+        let Some(history) = attempt.public_completed_history_data() else {
+            return false;
+        };
+        write_public_history(&mut io::stdout().lock(), history).is_ok()
+    }));
     let success = matches!(execution, Ok(true));
     let _original_unwind = execution.err();
     // These owners remain resident through explicit exit. A successful offline
@@ -180,6 +231,58 @@ fn hardware_main(selected: Command) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_output_preserves_exact_bytes_across_bounded_records() {
+        for size in [1, 1024, 1025, 2065] {
+            let history: Vec<_> = (0_u8..=255).cycle().take(size).collect();
+            let mut output = Vec::new();
+            write_public_history(&mut output, &history).unwrap();
+
+            let text = std::str::from_utf8(&output).unwrap();
+            let mut lines: Vec<_> = text.lines().collect();
+            let terminal = lines.pop().unwrap();
+            assert_eq!(
+                terminal,
+                format!(
+                    "AOS_NIX_OFFLINE_HISTORY_V5_END={:x}",
+                    Sha256::digest(&history)
+                ),
+            );
+
+            let mut decoded = Vec::new();
+            for line in lines {
+                assert!(line.len() < 2200);
+                let mut fields = line
+                    .strip_prefix("AOS_NIX_OFFLINE_HISTORY_V5=")
+                    .unwrap()
+                    .split(':');
+                assert_eq!(fields.next().unwrap().parse::<usize>().unwrap(), size);
+                assert_eq!(
+                    fields.next().unwrap().parse::<usize>().unwrap(),
+                    decoded.len()
+                );
+                let payload = fields.next().unwrap();
+                assert!(fields.next().is_none());
+                assert_eq!(payload.len() % 2, 0);
+                for index in (0..payload.len()).step_by(2) {
+                    decoded.push(u8::from_str_radix(&payload[index..index + 2], 16).unwrap());
+                }
+            }
+            assert_eq!(decoded, history);
+        }
+    }
+
+    #[test]
+    fn history_output_rejects_invalid_extents_before_writing() {
+        let mut output = Vec::new();
+        assert!(write_public_history(&mut output, &[]).is_err());
+        assert!(output.is_empty());
+
+        let oversized = vec![0; 4 * 1024 * 1024 + 1];
+        assert!(write_public_history(&mut output, &oversized).is_err());
+        assert!(output.is_empty());
+    }
 
     #[test]
     fn command_parser_accepts_only_the_four_literal_manual_commands() {
