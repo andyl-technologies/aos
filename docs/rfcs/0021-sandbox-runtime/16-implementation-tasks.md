@@ -9629,6 +9629,19 @@ Installed reruns remain pending. These boots did not reach candidate creation
 or Host phase-0 qualification. The older Root, lifecycle and handoff runs were
 interrupted before qualification and require images containing this repair.
 
+The canonical `/etc` metadata image also owns aliases for authored units; those
+entries are absent from the physical root tree. Root-image planning now composes
+that actual metadata inventory with its physical tree through the existing
+context planner. Metadata entries acquire no root-image inode identity, cannot
+hide physical files, and never enter the emitted root-image map. This propagates
+the unit alias's policy to its actual store inode without adding permissions.
+Four focused regressions pass, including inactive-store isolation, physical-file
+collision rejection and canonical-path checks. Core evaluation and the complete
+EROFS conformance check pass; the latter verifies an actual authored-unit store
+inode at
+`/nix/store/j3rc2x11jsa66m6lqbr0yjs4wkxdl1sc-selinux-erofs-labels-check-0`.
+Enforcing installed reruns still determine runtime qualification.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the
@@ -9886,10 +9899,12 @@ assertion, and rejects a wrong Controller package and missing NV auth. Its
 artifact check builds the real startup profile and compares the measured unit
 hash against the independently rendered installed Controller unit. The artifact
 check passes at
-`/nix/store/sd2zlx5130yxyqn7qsw5b60i0f03ksp8-sandbox-nix-method46-profile-check`.
+`/nix/store/jhzx4ap3yna7nzjwm73l3f23gz1j301l-sandbox-nix-method46-profile-check`.
 Core evaluation, the Controller service contract and formatting also pass.
-This receipt uses the previously qualified compiled policy; the subsequent
-native-overlay policy repair has its own pending build and installed reruns.
+This rerun includes the repaired native-overlay policy, whose selected compiled
+artifact is
+`/nix/store/pd42nzrxn9a9nwivkd6z31bdd90ka11w-aos-selinux-production-policy-1`.
+Installed reruns remain pending.
 This is a startup composition check, not an installed Required-mode or public
 Create proof.
 The installed method-46 and public Create qualification gates remain closed.

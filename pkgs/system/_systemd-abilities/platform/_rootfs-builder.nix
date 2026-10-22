@@ -550,7 +550,9 @@ in
                 fi
                 printf '%s\n' "$physical_interpreter" > rootfs-selinux-loader-path
 
-                ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+                ${nativePython}/bin/python3 -B ${./plan-rootfs-contexts.py} \
+                  --planner ${policySupport}/context_plan.py \
+                  --etc-dump ${system.config.system.build.etcDump} \
                   --root rootfs \
                   --file-contexts ${policyRoot}/contexts/files/file_contexts \
                   --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \

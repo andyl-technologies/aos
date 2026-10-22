@@ -11,9 +11,20 @@
   composefsDump = ../../pkgs/system/build-composefs-dump.py;
   composefsDumpTest = ../../pkgs/system/build-composefs-dump_test.py;
   dynamicLinker = pkgs.stdenv.hostPlatform.dynamicLinker;
+  unitFixture = pkgs.writeTextFile {
+    name = "selinux-store-unit-fixture";
+    destination = "/aos-label-fixture.service";
+    text = ''
+      [Service]
+      ExecStart=${pkgs.coreutils}/bin/true
+    '';
+  };
   legacySystem = system.extendModules {
     modules = [
-      {system.build.immutableSelinuxPolicy = lib.mkForce null;}
+      {
+        system.build.immutableSelinuxPolicy = lib.mkForce null;
+        environment.etc."systemd/system/aos-label-fixture.service".source = "${unitFixture}/aos-label-fixture.service";
+      }
     ];
   };
   legacyEtcDump = legacySystem.config.system.build.etcDump;
@@ -71,6 +82,10 @@ in
         name = "check";
         script = ''
           ${pkgs.python3}/bin/python3 -B ${policySupport}/context_plan_test.py
+          ${pkgs.python3}/bin/python3 -B \
+            ${../../pkgs/system/_systemd-abilities/platform/plan-rootfs-contexts_test.py} \
+            ${policySupport}/context_plan.py \
+            ${../../pkgs/system/_systemd-abilities/platform/plan-rootfs-contexts.py}
           ${pkgs.python3}/bin/python3 -B ${policySupport}/verify_context_dump_test.py
           ${pkgs.python3}/bin/python3 -B ${policySupport}/verify_erofs_contexts_test.py
           mkdir -p "$TMPDIR/composefs-test"
@@ -126,6 +141,10 @@ in
           assert document["version"] == 1, document
           assert entries[systemd]["kind"] == "regular", entries[systemd]
           assert entries[systemd]["context"].split(":", 3)[2] == "init_exec_t", entries[systemd]
+          authored = "/usr/lib/aos/nix" + "${unitFixture}/aos-label-fixture.service".removeprefix("/nix")
+          assert entries[authored]["kind"] == "regular", entries[authored]
+          assert entries[authored]["context"].split(":", 3)[2] == "systemd_unit_t", entries[authored]
+          assert "/etc/systemd/system/aos-label-fixture.service" not in entries
           for name, unit_type in (
               ("multi-user.target", "systemd_unit_t"),
               ("reboot.target", "power_unit_t"),
