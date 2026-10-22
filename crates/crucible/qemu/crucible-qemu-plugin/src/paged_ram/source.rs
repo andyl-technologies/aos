@@ -1835,9 +1835,10 @@ mod tests {
         assert_eq!(effects, 0);
         assert!(matches!(
             result,
-            Err(SourceFetchError::Diagnostic(SourceDiagnostic::Unavailable(
-                "RAM observation lacks an active native Original"
-            )))
+            Err(SourceFetchError::Diagnostic(SourceDiagnostic::Operation {
+                kind: io::ErrorKind::Other,
+                message: "RAM observation lacks an active native Original",
+            }))
         ));
     }
 }
