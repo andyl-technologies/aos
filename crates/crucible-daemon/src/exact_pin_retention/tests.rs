@@ -308,7 +308,7 @@ fn selection_authenticates_pin_and_checkpoint_and_survives_restart() {
         // version 5 schedule transport inside its configuration payload.
         // Authenticate the pin and closure above before pinning these
         // recanonicalized selection bytes.
-        "6b20dbe3908f7da9d2cc3fb4416a4125579fc2784a9aae580a25d7936e944ed0"
+        "d46f2065dc71f4eb2dbea520f3be62ffd7a9a96aca52ccbdf45b4d089fe59811"
     );
     drop(store);
 
