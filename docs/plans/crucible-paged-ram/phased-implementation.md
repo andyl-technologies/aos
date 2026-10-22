@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (1,188 host-library and 1,260 host-test errors in the `7dd88492cb` snapshot); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 401 committed bindings: 382 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 404 committed bindings: 385 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Native receiver and Initial-read composition
 
@@ -291,13 +291,57 @@ Corrected-snapshot application compilation also passes at
 `mdqkrrfa1xfb123bsqc54iyhd1yn128r`; all 5,291 Rust/TOML files match
 `gdbfiilk8s0g6mg4gcvflbcnvj2xcmzk`, with comparison SHA-256
 `03a5e7245f638d772447fb1469de999d390c8b72043489a284ba6225e82858ea`.
-Corrected-snapshot exact supervision remains in progress. These four bindings do not establish registered Source read-child
+All 283 corrected-snapshot exact supervision cases pass in nine groups at
+`g815fg39fw3lz7j1w4mp8s0szfi1jk4g`. These four bindings do not establish registered Source read-child
 callbacks, selected Native capture, physical Source return or complete funding.
 
-The next Source contract review exposes a receipt-ordering gap: the next page
-read can replace the Source cell before the Module observes its final consumed
-facts. The proposed registration completion handoff remains under review;
-returned-current alone must not be treated as final Source closure.
+Source contract review exposes a receipt-ordering gap: the next page read can
+replace the Source cell before the Module observes its final consumed facts.
+The registered reader implementation below retains the actual completion
+handoff; returned-current alone is not final Source closure.
+
+#### Registered Module RAM reader
+
+`4ad17a2d6c` retains the actual reader inside the already priced, pinned Runtime.
+Paging enrollment resolves the frozen Source SDK r2 and registers the exact
+canonical owner fields, callback table, 128-byte Module journal and 240-byte
+completion copy. Each actual Source read child retains the same non-cloneable
+Root subloan before any fallible post. Backing exchanges borrow that existing
+loan; they issue no second Original or clock. Physical return retains the same
+loan on nonwaiting refusal and saves known consumption before later posts.
+
+The completed callback authenticates Source's exact argument and copies both
+actual journals before acknowledging them. A later independent 160-byte Source
+completion observation must corroborate callback return, acknowledgment and
+consumption before journal reuse or parent return. No-call birth failures keep
+the prior Module journal intact. Registration closes and returns before its
+containing command member, component, registration owner and callback child.
+Consumed-negative replay retains the first and post failures without another
+destructor. Unknown return keeps physical debt.
+
+All fifteen Original controls, thirty fingerprint controls, seventeen source
+controls, two prebirth controls and five operational read controls pass. The
+three new bindings cover explicit nonwaiting read return, changed-parent debt
+and literal SDK geometry; their opaque fixture addresses issue no Source
+Original. Final plugin test-target compilation and content-bound engineering
+hygiene pass. Mandatory application test-target compilation passes at
+`47z2svj8p852c9w8dfm33lckmck8i4f1`; all 5,298 committed Rust/TOML files match
+immutable source `cdbvbjpnxnl2qr8hn30kvzi3g5bdylry`. The comparison record has
+SHA-256 `da55628b1c34cd6d5fd5230fabe3440078532456c315269654556f654dae5b88`.
+ABI conformance passes at `3wxg0f5v6bvbhhkcjgsdhanxm5q1s4qw`;
+final exact supervision remains in progress. The fresh
+canonical license gate stops before its assertions at strict controller Clippy:
+1,184 host-library and 1,255 host-test errors.
+
+The matching public Source reader is staged, not imported. Review caught an
+ordinary-parent-current cycle in signed `881048e437`: retained reader debt
+incorrectly refused the identity observations needed by that reader. Signed
+`0137bd538c` restricts those five debt checks to actual parent return. The
+original 49 and six paired omission controls pass; its fresh owning build and
+normal delivery remain pending. The earlier 881 first normal pass (48.462 of
+60 seconds) and interrupted subsequent sweep belong to the preserved earlier
+snapshot. Neither layout tests nor that earlier normal pass qualify genuine
+installed Module reads, selected activation or physical Source return.
 
 #### Typed fault consumer refusals
 
@@ -317,7 +361,8 @@ compilation pass. All 5,291 committed Rust/TOML files match immutable source
 `wpswyr9bjhsabp1i6q5m606bp3cjy48d` for application output
 `wifzdjnprlb2aal6v4hnhd3fkgliqnwg`; comparison SHA-256 is
 `a3d08ac6ca4e17d4ed068d232a860686c00e1c6a3c850d5feb08ff7d17f4895e`.
-Exact supervision remains in progress. Complete error payload funding and
+All 284 exact supervision cases pass in nine groups at
+`gzxikpm8axv29vmidcvm93zv4jhpq532`. Complete error payload funding and
 Native admission remain open.
 
 #### Staged Native physical publisher access
@@ -341,6 +386,58 @@ The agent's 78,166-blob/mode reconstruction was not independently rerun by that
 comparison. Initial component stripping failures, noncausal omissions and an
 excluded diagnostic compiler overlap remain retained. These controls do not
 execute genuine populated Module/deferred/RR admission or qualify a whole ELF.
+
+Signed `02d783addb`, tree `77fd0315`, adds the Main-issued deferred lifetime
+prerequisite beneath that same pending constructor. Five Source parent
+reciprocals and the actual gated preexec recipient child precede Module defer
+and its independent current callback; born-negative Module fields remain
+retained. Main preparation supplies neither physical Main return nor RR
+eligibility. All 28 affected configured owning outputs, four complete-provider
+entry/refusal controls and 26 access controls pass; both configured system
+ELFs link with the actual regenerated SDK export list. Source/fixed floor become
+243,032/286,966 and the separate preexec owner becomes 212,120. The real Module
+deferred/Core/cleanup journal and execution stack remain external prerequisites.
+Independent verification matches twenty signed sources, 788 regular evidence
+files and five artifact hashes, including the complete-source archive and
+conventional bundle. Its record has SHA-256
+`2f91636f8e07eda71d29105ebe183953a5022998733680595dd98b1441f3ee2e`;
+the archive's 78,170-blob reconstruction was not independently repeated. Initial
+link/export/fingerprint refusals remain retained. Review identified duplicate
+Meson dependency entries for correction in the subsequent cumulative cut.
+
+#### Staged Native executor and cleanup prerequisites
+
+Signed `1ea154f505` retains separate actual normal, longjmp and atomic executor
+cleanup journals after execution permission is revoked. Signed `43fa571778`
+joins that physical lineage and retains distinct dispatch and settled-idle
+boundaries in their real RR paths. Refused diagnostics do not suppress physical
+unwind or ordinary scheduling. Neither physical markers nor completed callback
+status issue semantic cleanup authority or a work-unit outcome. The executor's
+fifty omission controls and the boundary's 24 controls pass, alongside their
+configured object and extraction cohorts. Independent boundary verification
+matches ten signed source files, 1,237 regular evidence files, 72 literal source
+links and four artifact hashes, with record SHA-256
+`5812d13becaa53d7060dbac834edf0728f66191f56988f5d362670b7c5a8d1ab`.
+
+Signed `28fc4cd700`, tree `c1954a38`, adds only actual installing cleanup-provider
+registration on that exact 43fa base. It authenticates the real member, service
+and paid Runtime before publishing the binding, then retains independent
+Original and physical identity posts. It invokes no Module callback and births
+no cleanup owner. Holder, epoch, 176-byte observation and separate 32-byte result
+require 224 actual Runtime bytes before the complete Module journal. Unproved
+Runtime backing withholds the result write and retains Source debt. The actual
+192-byte Source registration raises that base's fixed floor to 286,598. All 33
+configured production objects, three full extractors, complete floor omission,
+fresh CPU geometry probes and 21 component omissions pass. Independent review
+matches eleven signed sources, 857 evidence files, 72 literal links and four
+artifact hashes, with record SHA-256
+`885db0a44d83ca458d80e9bff80389f61efbabe32f91fe8b40c8e21e2880fe2b`.
+The initial comparison accidentally retained the previous snapshot's literal
+inventory hash; its failed record and corrected comparison remain separate.
+Complete archive contents were not independently re-audited. These staged
+checkpoints are not imported; genuine Module/Core cleanup preparation, actual
+Main/RR/deferred ownership, persistent Outcome and selected execution remain
+unexecuted. Inline storage does not price the execution stack.
 
 #### Independent revocation and return refusals
 
