@@ -9534,18 +9534,30 @@ daemon and its exact direct launcher through `/proc/PID/exe`; it fails before
 claiming the table if either inode lacks a seal. The policy also binds both
 measured inode identities. The packaged Mount unit executes `aos-sandbox-mountd`
 directly from `/nix/store`, and the root image builder copies that closure to
-`/nix.lower/store` before creating an EROFS production root. Its dm-verity tree
+`/usr/lib/aos/nix/store` before creating an EROFS production root. Its dm-verity tree
 protects root-image blocks, not individual executable inodes. The bundled kernel
 enables `CONFIG_FS_VERITY`, but EROFS has no per-file fs-verity implementation.
 Bundled `mkfs.erofs` 1.9.4 can record an inode-digest xattr; that xattr is not
 a kernel fs-verity seal and cannot satisfy `FS_IOC_MEASURE_VERITY`. The stage-2
-systemd root-handoff guard requires the read-only EROFS root and `/nix.lower`,
+systemd root-handoff guard requires the read-only EROFS root and
+`/usr/lib/aos/nix`,
 then executes the exact physical systemd store inode with `execveat`. A sealed
 copy on `/var` would not be this admitted launcher. Neither image assembly nor
 the Mount service enables fs-verity on these executable inodes. The existing
 private-file fs-verity materializer creates mode-0600 publication files under
 its own protected root; it does not deploy executable inodes or change the
 systemd root handoff.
+
+Installed-image qualification found one main-systemd guard still opening the
+pre-migration `/nix.lower` path. The merged-usr systemd patch now selects
+`/usr/lib/aos/nix`, matching stage0 and the image builder, while retaining the
+EROFS, read-only, nodev, root-mapper, ownership, label and inode checks. The AOS
+systemd build passes at
+`/nix/store/nskrxqzqdv7hnq4pdm5hc6p21lig4d8f-systemd-261.2`, and the root-handoff
+build contract passes at
+`/nix/store/g0jz8izdv88mkj8mahigzs5hd3hpwy4v-selinux-root-handoff-check-0`.
+The shared Secure Boot enrollment VM also passes with this build. Dedicated
+adversarial root-handoff VM qualification remains pending.
 
 GNU build identity is a separate admission prerequisite. The previously built
 AOS systemd executable lacks the required GNU build-ID note, and an unflagged
