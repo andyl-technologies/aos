@@ -583,6 +583,24 @@ installation and timed test execution are excluded. Matched-profile and
 end-to-end measurements, improvements and numeric regression budgets remain
 required before production cutover.
 
+Select comparison modes with `--arg modes '[ "cargo-incremental-debug0"
+"bazel-server" ]'`. The additional Cargo mode explicitly sets both dev/test
+debug and optimization levels to 0. Each sample records those levels and
+whether compiler incremental state is enabled; other driver defaults can
+still differ. The repeated 36-sample comparison before the prebuilt helper
+change is retained in `tests/evidence/native-linux-device-debug0-baseline.json`
+with adjacent provenance. Median seconds:
+
+| Configuration | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh build directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cargo incremental, debug 0 | 27.206 | 0.372 | 4.075 | 4.615 | 0.490 | 29.924 |
+| Bazel private JVM + disk cache | 100.918 | 0.490 | 13.243 | 13.877 | 11.789 | 9.923 |
+
+Whole-workspace ABI and license-boundary gates also pass after the device
+declarations; `tests/evidence/native-linux-device-workspace-gates.json` records
+their output identities and source fingerprints. These correctness checks
+do not resolve the performance regressions.
+
 ## Initial boot compile measurements
 
 Run the temporary Cargo/Bazel comparison with a fresh trial identity:

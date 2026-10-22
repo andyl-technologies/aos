@@ -1,7 +1,8 @@
-##! Matched device-family test compilation, independent of production builders.
+##! Device-family test compilation, independent of production builders.
 {
   trial,
   system ? builtins.currentSystem,
+  modes ? ["cargo-incremental" "cargo-nonincremental-accache" "cargo-incremental-debug0" "bazel-server"],
 }: let
   pkgs = (import ../../.. {inherit system;}).pkgs;
   family = import ../../../tests/build/_bazel-device.nix {inherit pkgs;};
@@ -28,7 +29,7 @@
   configuration = pkgs.writeTextFile {
     name = "aos-bazel-device-measurement.json";
     text = builtins.toJSON {
-      inherit trial packages targets;
+      inherit trial packages targets modes;
       jobs = 4;
       bazel_source = toString family.workspace.source;
       bazel_config = toString family.workspace.configuration;
@@ -49,6 +50,7 @@
   };
 in
   assert builtins.isString trial && trial != "";
+  assert builtins.isList modes && modes != [];
     pkgs.runCommand "aos-bazel-device-performance" {
       buildDeps = [pkgs.rust pkgs.accache pkgs.python3];
       measurementTrial = trial;
@@ -60,5 +62,6 @@ in
       cp ${../tests/verify_cache.py} tools/verify_cache.py
       ${pkgs.python3}/bin/python3 tools/measure_family.py \
         --configuration ${configuration} --scratch "$TMPDIR/performance" \
-        --output "$out" --repetitions 3
+        --output "$out" --repetitions 3 \
+        ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (mode: ["--mode" mode]) modes)}
     ''

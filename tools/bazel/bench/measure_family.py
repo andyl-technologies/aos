@@ -21,7 +21,7 @@ from measure_pilot import copy_workspace, measure
 from verify_cache import execution_events
 
 
-MODES = ["cargo-incremental", "cargo-nonincremental-accache", "bazel-server"]
+MODES = ["cargo-incremental", "cargo-nonincremental-accache", "cargo-incremental-debug0", "bazel-server"]
 SCENARIOS = ["cold", "warm", "implementation-edit", "public-api-edit", "second-worktree", "fresh-build-directory"]
 
 
@@ -131,6 +131,13 @@ def series(configuration, mode, repetition, scratch, output):
                    if not key.startswith(("CARGO_", "ACCACHE_", "RUST"))}
     environment.update(CARGO_HOME=str(root / "cargo-home"), CARGO_TARGET_DIR=str(root / "cargo-target"),
                        CARGO_INCREMENTAL="0" if "accache" in mode else "1", RUSTC=configuration["rustc"])
+    if mode == "cargo-incremental-debug0":
+        # Match rules_rust's fastbuild profile without changing the existing
+        # development-profile baseline. Cargo's test profile inherits dev, but
+        # set both explicitly so the recorded comparison is unambiguous.
+        for profile in ["DEV", "TEST"]:
+            environment["CARGO_PROFILE_" + profile + "_DEBUG"] = "0"
+            environment["CARGO_PROFILE_" + profile + "_OPT_LEVEL"] = "0"
     if "accache" in mode:
         environment.update(RUSTC_WRAPPER=configuration["accache"], ACCACHE_DIR=str(root / "accache"),
                            ACCACHE_STATE_DIR=str(root / "accache-state"), ACCACHE_MANIFEST=configuration["accache_manifest"])
@@ -173,7 +180,9 @@ def series(configuration, mode, repetition, scratch, output):
                 for package in sorted(configuration["packages"]):
                     command.extend(["-p", package])
             sample = measure(command, workspace, environment, directory / "command.log")
-            sample.update(mode=mode, repetition=repetition, scenario=scenario)
+            sample.update(mode=mode, repetition=repetition, scenario=scenario,
+                          compilation_profile={"opt_level": 0, "debug": 0 if bazel or mode.endswith("debug0") else 2,
+                                               "incremental": not bazel and "accache" not in mode})
             if bazel:
                 events = [json.loads(line) for line in (directory / "events.json").read_text().splitlines()]
                 binaries = bazel_binaries(events, configuration["targets"])
@@ -218,15 +227,20 @@ def main():
     for name in ["configuration", "scratch", "output"]:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument("--mode", choices=MODES, action="append",
+                        help="Measure only this mode; repeat to compare selected modes.")
     options = parser.parse_args()
     if options.repetitions < 3:
         parser.error("at least three repetitions are required")
+    modes = options.mode or MODES
+    if len(set(modes)) != len(modes):
+        parser.error("measurement modes must not repeat")
     configuration = json.loads(options.configuration.read_text())
     options.scratch.mkdir()
     options.output.mkdir(parents=True, exist_ok=True)
     samples = []
     for repetition in range(options.repetitions):
-        for mode in MODES[repetition % len(MODES):] + MODES[:repetition % len(MODES)]:
+        for mode in modes[repetition % len(modes):] + modes[:repetition % len(modes)]:
             print(f"measuring repetition {repetition + 1}: {mode}", flush=True)
             samples.extend(series(configuration, mode, repetition, options.scratch, options.output))
     groups = defaultdict(list)
