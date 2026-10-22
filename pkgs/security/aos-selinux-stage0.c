@@ -2027,7 +2027,17 @@ static void mount_inner_stage(void) {
         ST_NOSUID | ST_NODEV,
         ST_NOEXEC);
 
-    if (chdir("/newroot") < 0 || chroot(".") < 0 || chdir("/") < 0) {
+    if (chdir("/newroot") < 0) {
+        fail_closed("change to labeled stage-1 root: %s", strerror(errno));
+    }
+    /* Cover the namespace root before changing the process root. A chroot
+     * alone leaves PID 1 and every descendant inside a restricted subtree;
+     * Linux then refuses even the manager's empty user-namespace creation.
+     * Keep the backing initramfs intact: EROFS still reads its image file. */
+    if (mount(".", "/", NULL, MS_MOVE, NULL) < 0) {
+        fail_closed("move labeled stage-1 mount over namespace root: %s", strerror(errno));
+    }
+    if (chroot(".") < 0 || chdir("/") < 0) {
         fail_closed("enter labeled stage-1 root: %s", strerror(errno));
     }
 

@@ -10691,3 +10691,29 @@ and complete Rust test-target compilation at
 That policy receipt precedes the fixed-directory DAC change. The preceding
 combined startup build also stopped on the unresolved native unit references;
 neither failed build reached a VM or qualified a public lifecycle gate.
+
+The completed native effect checks for the retained-resource projection pass at
+`/nix/store/5b0p0ywvmqjy6p3chiq15yz1lqdapm63-aos-effect-module-checks-0`.
+
+### Stage-1 mount namespace root (installed execution pending)
+
+The exact-image Host diagnostics reproduce EPERM with both the managed target
+and plain user-namespace creation. Removing the target's other namespace settings
+does not change the refusal, and PID 1 has no seccomp filter. Stage 0 enters the
+EROFS stage-1 tree with chroot alone, leaving a restricted subtree of the original
+initramfs mount namespace. Linux's create_user_ns rejects current_chrooted before
+consulting its user-namespace security hook; an additional SELinux grant cannot
+resolve that restriction.
+
+Stage 0 now moves the already mounted stage-1 tree over the namespace root before
+changing the process root. It retains the backing initramfs contents because
+EROFS continues reading its image file. Existing loaded-policy, physical executable
+and handoff checks remain in place. The early enforcing-admission VM proof now
+requires actual user-namespace creation before any real-root handoff, alongside
+its existing Secure Boot, domain and no-real-root-access assertions.
+
+Strict static C17 compilation with warnings as errors passes at
+`/nix/store/z6h304zd940vcqqsdmaxnplnlpk9ap09-aos-stage0-root-move-compile`.
+This compile-only artifact embeds the preceding Host manifest and policy; it is
+not an installed boot or authority receipt. Early admission and installed Host
+retries are still required before qualifying the corrected root transition.

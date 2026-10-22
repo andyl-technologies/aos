@@ -118,6 +118,9 @@
           test "$pid_one_context" = "system_u:system_r:init_t"
           test "$secure_boot" -eq 1
           test "$setup_mode" -eq 0
+          # A chroot-only stage-0 handoff boots, but Linux rejects user namespace
+          # creation from that subtree even with PID 1's permitted SELinux role.
+          ${pkgs.util-linux}/bin/unshare --user ${pkgs.coreutils}/bin/true
           test ! -e /dev/mapper/root
           ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot
           ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
