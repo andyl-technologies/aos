@@ -371,9 +371,7 @@ impl From<ObservationOperationError> for SourceFetchError {
 pub(super) fn with_observation_operation<T>(
     exchange: impl FnOnce(&dyn SourceOperation) -> Result<T, SourceFetchError>,
 ) -> Result<T, SourceFetchError> {
-    crate::ram_fingerprint::with_native_original_read(exchange).ok_or_else(|| {
-        SourceFetchError::unavailable("RAM observation lacks an active native Original")
-    })?
+    crate::ram_fingerprint::with_native_original_read(exchange)?
 }
 
 /// Owns one independently namespaced immutable source connection.

@@ -8,6 +8,9 @@
 
 use super::*;
 
+mod read;
+pub(crate) use read::with_read_exchange;
+
 mod publication;
 pub(crate) use publication::synchronize;
 pub(super) use publication::synchronize_root;
@@ -143,6 +146,7 @@ struct State {
     settled: Option<publication::Status>,
     returned_publication: Option<publication::Returned>,
     pending_facts: Option<publication::Identity>,
+    reads: read::Custody,
 }
 
 /// Selects the registered realization without granting capture authority.
@@ -236,6 +240,7 @@ impl Owner {
             || state.capture.is_some()
             || !state.publication.load(Ordering::Acquire).is_null()
             || state.retirement_busy
+            || state.reads.is_retained()
         {
             return Err(RamError::Invariant("Original publication still retained"));
         }
@@ -287,6 +292,7 @@ impl Owner {
     pub(super) fn has_retained_work(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         self.is_active()
+            || state.reads.is_retained()
             || state.staged.is_some()
             || state.capture.is_some()
             || state.retirement.is_some()
@@ -363,6 +369,11 @@ impl Owner {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.selector.load(Ordering::Acquire) as usize != selector {
             return Err(RamError::Invariant("Original return selector changed"));
+        }
+        if state.reads.is_retained() {
+            return Err(RamError::Invariant(
+                "Original backing read is still retained",
+            ));
         }
         // This callback-free identity return mutates the actual saved holder.
         // It queries no Original and invokes no module/State/Slot callbacks.
@@ -535,58 +546,6 @@ impl Call<'_> {
             }
         }
     }
-}
-
-/// Completes a backing exchange without pretending native output is published.
-struct ReadExchange<'a> {
-    owner: &'a Owner,
-    completed: AtomicBool,
-}
-
-impl SourceOperation for ReadExchange<'_> {
-    fn wait_slice(&self) -> std::io::Result<Duration> {
-        self.wait_slice_for_observation()
-            .map_err(ObservationOperationError::into_io)
-    }
-
-    fn wait_slice_for_observation(&self) -> Result<Duration, ObservationOperationError> {
-        if self.completed.load(Ordering::Acquire) {
-            return Err(refusal(
-                "native Original backing exchange already completed",
-            ));
-        }
-        self.owner
-            .sample()
-            .map(|evidence| Duration::from_nanos(evidence.bounded_ns))
-    }
-
-    fn complete(&self) -> std::io::Result<()> {
-        self.complete_observation()
-            .map_err(ObservationOperationError::into_io)
-    }
-
-    fn complete_observation(&self) -> Result<(), ObservationOperationError> {
-        self.wait_slice_for_observation()?;
-        self.completed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| refusal("native Original backing exchange completed twice"))?;
-        // Native mints its witness after operational_read returns and successful
-        // output/range publication. Backing completion happens before that cut.
-        Ok(())
-    }
-}
-
-/// Lends only an active actual native Original, without entering the factory.
-pub(crate) fn with_read_exchange<T>(exchange: impl FnOnce(&dyn SourceOperation) -> T) -> Option<T> {
-    let owner = OBSERVER.get()?.original?.owner();
-    if !owner.is_active() {
-        return None;
-    }
-    let operation = ReadExchange {
-        owner,
-        completed: AtomicBool::new(false),
-    };
-    Some(exchange(&operation))
 }
 
 impl Drop for Call<'_> {

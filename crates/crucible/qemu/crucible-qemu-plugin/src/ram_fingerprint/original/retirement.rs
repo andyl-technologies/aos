@@ -47,6 +47,7 @@ impl Owner {
             return Err(-libc::ESTALE);
         }
         if state.retirement_busy
+            || state.reads.is_retained()
             || !state
                 .retirement
                 .as_ref()
@@ -155,6 +156,7 @@ pub(crate) fn borrow(
     };
     if state.retirement.is_some()
         || state.retirement_busy
+        || state.reads.is_retained()
         || !state.selector.load(Ordering::Acquire).is_null()
     {
         return -libc::EBUSY;
