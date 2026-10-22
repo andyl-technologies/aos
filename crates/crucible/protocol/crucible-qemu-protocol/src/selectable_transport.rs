@@ -94,13 +94,7 @@ impl SelectablePendingTransportRecord {
         guest_virtual_address: u64,
         raw_icount: u64,
     ) -> Result<Self, SelectablePendingTransportError> {
-        let request_len = request.encoded_len()?;
-        if request_len > SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES {
-            return Err(SelectablePendingTransportError::RequestTooLarge {
-                len: request_len,
-                maximum: SELECTABLE_PENDING_TRANSPORT_MAX_REQUEST_BYTES,
-            });
-        }
+        SelectablePendingTransportView::new(&request, guest_virtual_address, raw_icount)?;
         Ok(Self {
             request,
             guest_virtual_address,
@@ -186,6 +180,95 @@ impl SelectablePendingTransportRecord {
         Ok(bytes)
     }
 
+    /// Borrows this record's request and exact reply target without copying them.
+    #[must_use]
+    pub const fn as_view(&self) -> SelectablePendingTransportView<'_> {
+        SelectablePendingTransportView {
+            request: &self.request,
+            guest_virtual_address: self.guest_virtual_address,
+            raw_icount: self.raw_icount,
+        }
+    }
+
+    /// Returns the canonical record length without serializing the request.
+    ///
+    /// # Errors
+    /// Returns the same validation and transport-bound refusals as
+    /// [`SelectablePendingTransportView::encoded_len`].
+    pub fn encoded_len(&self) -> Result<usize, SelectablePendingTransportError> {
+        self.as_view().encoded_len()
+    }
+
+    /// Encodes the record and nested reservation into caller-owned storage.
+    ///
+    /// Returns the written prefix length and preserves the remaining suffix.
+    /// All validation and capacity checks precede writes. This method allocates
+    /// no storage and leaves the destination unchanged on refusal.
+    ///
+    /// # Errors
+    /// Returns the same validation and capacity refusals as
+    /// [`SelectablePendingTransportView::encode_into`].
+    pub fn encode_into(
+        &self,
+        destination: &mut [u8],
+    ) -> Result<usize, SelectablePendingTransportError> {
+        self.as_view().encode_into(destination)
+    }
+
+    /// Returns the complete guest request and zero-filled reply reservation.
+    #[must_use]
+    pub const fn request(&self) -> &SelectionRequest {
+        &self.request
+    }
+
+    /// Returns the exact guest virtual address of the reply reservation.
+    #[must_use]
+    pub const fn guest_virtual_address(&self) -> u64 {
+        self.guest_virtual_address
+    }
+
+    /// Returns the raw retirement count before the guest doorbell instruction.
+    #[must_use]
+    pub const fn raw_icount(&self) -> u64 {
+        self.raw_icount
+    }
+}
+
+/// Borrows one deferred request and its process-neutral reply target.
+///
+/// The request remains owned by its caller, for example the live selectable
+/// catalog. Encoding writes the same canonical bytes as
+/// [`SelectablePendingTransportRecord`] without cloning the request's strings,
+/// domains or tag. The borrow prevents mutation during validation and encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectablePendingTransportView<'request> {
+    request: &'request SelectionRequest,
+    guest_virtual_address: u64,
+    raw_icount: u64,
+}
+
+impl<'request> SelectablePendingTransportView<'request> {
+    /// Borrows one request after checking the deferred transport's bounds.
+    ///
+    /// This constructor neither copies nor serializes the request.
+    ///
+    /// # Errors
+    /// Returns [`SelectablePendingTransportError`] when the nested request is
+    /// invalid or exceeds the marker transport profile.
+    pub fn new(
+        request: &'request SelectionRequest,
+        guest_virtual_address: u64,
+        raw_icount: u64,
+    ) -> Result<Self, SelectablePendingTransportError> {
+        let view = Self {
+            request,
+            guest_virtual_address,
+            raw_icount,
+        };
+        view.encoded_len()?;
+        Ok(view)
+    }
+
     /// Returns the canonical record length without serializing the request.
     ///
     /// # Errors
@@ -244,10 +327,10 @@ impl SelectablePendingTransportRecord {
         Ok(total_len)
     }
 
-    /// Returns the complete guest request and zero-filled reply reservation.
+    /// Returns the caller-owned request and zero-filled reply reservation.
     #[must_use]
-    pub const fn request(&self) -> &SelectionRequest {
-        &self.request
+    pub const fn request(&self) -> &'request SelectionRequest {
+        self.request
     }
 
     /// Returns the exact guest virtual address of the reply reservation.
@@ -372,12 +455,27 @@ mod tests {
         assert_eq!(SelectablePendingTransportRecord::decode(&encoded)?, record);
         assert_eq!(&encoded[..8], &SELECTABLE_PENDING_TRANSPORT_MAGIC);
         assert_eq!(record.encoded_len()?, encoded.len());
+        let view = SelectablePendingTransportView::new(
+            record.request(),
+            record.guest_virtual_address(),
+            record.raw_icount(),
+        )?;
+        assert!(std::ptr::eq(view.request(), record.request()));
+        assert_eq!(view, record.as_view());
+        assert_eq!(view.encoded_len()?, encoded.len());
+        assert_eq!(view.guest_virtual_address(), 0xfeed_2000);
+        assert_eq!(view.raw_icount(), 17);
 
         let mut destination = [0xa5; 320];
         let written = record.encode_into(&mut destination)?;
         assert_eq!(written, encoded.len());
         assert_eq!(&destination[..written], encoded);
         assert!(destination[written..].iter().all(|byte| *byte == 0xa5));
+        destination.fill(0xa5);
+        assert_eq!(view.encode_into(&mut destination)?, written);
+        assert_eq!(&destination[..written], encoded);
+        assert!(destination[written..].iter().all(|byte| *byte == 0xa5));
+
         let mut insufficient = [0xa5; 295];
         assert_eq!(
             record.encode_into(&mut insufficient),
@@ -387,6 +485,11 @@ mod tests {
                     minimum: 296,
                 }
             ))
+        );
+        assert_eq!(insufficient, [0xa5; 295]);
+        assert_eq!(
+            view.encode_into(&mut insufficient),
+            record.encode_into(&mut insufficient)
         );
         assert_eq!(insufficient, [0xa5; 295]);
         assert_eq!(record.guest_virtual_address(), 0xfeed_2000);
@@ -413,6 +516,10 @@ mod tests {
         let mut destination = [0xa5; SELECTABLE_MESSAGE_MAX_BYTES];
         assert_eq!(boundary.encode_into(&mut destination)?, destination.len());
         assert_eq!(destination.as_slice(), boundary.encode()?);
+        let view = SelectablePendingTransportView::new(boundary.request(), 0x1000, 17)?;
+        destination.fill(0xa5);
+        assert_eq!(view.encode_into(&mut destination)?, destination.len());
+        assert_eq!(destination.as_slice(), boundary.encode()?);
 
         let oversized = SelectablePendingTransportRecord {
             request: request(SELECTABLE_MESSAGE_MAX_BYTES)?,
@@ -429,6 +536,18 @@ mod tests {
             oversized.encoded_len().unwrap_err()
         );
         assert_eq!(destination, before);
+        assert_eq!(
+            oversized
+                .as_view()
+                .encode_into(&mut destination)
+                .unwrap_err(),
+            oversized.encoded_len().unwrap_err()
+        );
+        assert_eq!(destination, before);
+        assert_eq!(
+            SelectablePendingTransportView::new(oversized.request(), 0x1000, 17).unwrap_err(),
+            oversized.encoded_len().unwrap_err()
+        );
 
         let request = request(SELECTABLE_MESSAGE_MAX_BYTES)?;
         assert_eq!(request.encode()?.len(), SELECTABLE_MESSAGE_MAX_BYTES);

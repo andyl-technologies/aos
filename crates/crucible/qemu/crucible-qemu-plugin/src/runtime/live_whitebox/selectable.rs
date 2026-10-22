@@ -13,7 +13,7 @@ use crucible_qemu_protocol::selectable_catalog_plan::{
     SelectableCatalogPlan,
 };
 use crucible_qemu_protocol::selectable_transport::{
-    SelectablePendingTransportRecord, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
+    SelectablePendingTransportView, WHITEBOX_SHMEM_KIND_SELECTABLE_COMPLETED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING, WHITEBOX_SHMEM_KIND_SELECTABLE_REGISTERED,
     WHITEBOX_SHMEM_KIND_SELECTABLE_REPLY,
 };
@@ -415,7 +415,7 @@ impl LiveSelectableState {
     /// Projects the retained request into the bounded plugin-to-host record.
     pub(super) fn pending_transport_record(
         &self,
-    ) -> Result<SelectablePendingTransportRecord, LiveWhiteboxError> {
+    ) -> Result<SelectablePendingTransportView<'_>, LiveWhiteboxError> {
         let pending =
             self.catalog
                 .pending_request()
@@ -423,8 +423,8 @@ impl LiveSelectableState {
                     message: "selectable callback reported pending without retained catalog state"
                         .to_owned(),
                 })?;
-        SelectablePendingTransportRecord::new(
-            pending.request().clone(),
+        SelectablePendingTransportView::new(
+            pending.request(),
             pending.reply_range().guest_address(),
             pending.coordinate().raw_icount(),
         )
@@ -458,8 +458,8 @@ impl SelectableReplyService for LiveSelectableState {
         // catalog or asking QEMU to stop. A standalone guest request may use
         // the full doorbell buffer, while a deferred request must also carry
         // its process-neutral reply address to the host.
-        SelectablePendingTransportRecord::new(
-            request.clone(),
+        SelectablePendingTransportView::new(
+            request,
             reply_range.guest_address(),
             coordinate.raw_icount(),
         )
@@ -506,7 +506,7 @@ impl LiveWhiteboxMarkerShmemProducer {
         &mut self,
         current_icount: u64,
         vcpu_index: u32,
-        record: &SelectablePendingTransportRecord,
+        record: &SelectablePendingTransportView<'_>,
         buffer: &mut [u8; SELECTABLE_MESSAGE_MAX_BYTES],
     ) -> Result<(), LiveWhiteboxError> {
         let written = record.encode_into(buffer).map_err(callback_error)?;

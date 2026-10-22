@@ -485,7 +485,16 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     assert_eq!(state.catalog().total_completed_requests(), 0);
     let transport = state.pending_transport_record()?;
     assert_eq!(transport.request(), &request);
+    assert!(std::ptr::eq(transport.request(), pending.request()));
     assert_eq!(transport.guest_virtual_address(), 0x4000);
+    assert_eq!(transport.raw_icount(), pending.coordinate().raw_icount());
+    let expected_transport =
+        crucible_qemu_protocol::selectable_transport::SelectablePendingTransportRecord::new(
+            request.clone(),
+            0x4000,
+            50,
+        )?
+        .encode()?;
 
     let header = RingHeader::new();
     let mut entries = [WhiteboxMarkerEntry::default()];
@@ -517,7 +526,7 @@ fn live_catalog_retains_request_before_deferring_stop_to_exact_callback()
     assert_eq!(observed.kind(), WHITEBOX_SHMEM_KIND_SELECTABLE_PENDING);
     assert_eq!(observed.current_icount(), 2_500);
     assert_eq!(observed.vcpu_index(), 1);
-    assert_eq!(observed.payload(), transport.encode()?);
+    assert_eq!(observed.payload(), expected_transport);
     let prefix_len = observed.payload().len();
     assert!(workspace[prefix_len..].iter().all(|byte| *byte == 0xa5));
 

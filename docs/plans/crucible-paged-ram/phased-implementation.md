@@ -69,6 +69,25 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
+#### Borrowed pending transport
+
+Deferred-profile validation and live pending publication now borrow the retained
+request through `SelectablePendingTransportView`. Neither step clones its
+identifier, domain or tag merely to check length or encode the ring entry.
+The owned transport delegates to the same immutable view and encoder. The
+existing 4,608-byte Runtime workspace still holds the canonical encoded prefix;
+wire fields, complete zero-filled reply reservation and suffix behavior are
+unchanged. Initial catalog admission and decoded messages still allocate and
+require complete funding; this view grants no execution authority.
+
+All three existing transport controls pass. They check borrowed request identity,
+owned/borrowed byte equality, the maximum message, oversized refusal and an
+unchanged caller buffer after validation or capacity failure. The existing live
+catalog/ring control also requires the transport to borrow the actual retained
+catalog request. All 1,177 plugin unit tests, compilation of every protocol/plugin
+target and engineering hygiene pass. Required packaged checks are in progress.
+No case name or binding is added.
+
 #### Typed selectable reply failures
 
 The actual reply consumer and resumed delivery path now move typed ring,
@@ -85,8 +104,16 @@ unexpected-kind, unsolicited, early-resume and malformed-protocol refusals.
 The write-failure control requires its exact original full diagnostic, concrete
 trap/resume fields and the same original backend diagnostic-buffer address
 through the standard error-source chain. No new case name or binding is added.
-Compilation of all plugin targets passes. Required packaged checks are in progress.
-Backend-created dynamic diagnostics, decoded payloads and remaining catalog
+Compilation of all plugin targets and engineering hygiene pass. Mandatory
+application compilation passes at `4jizwdf0gwamjxg59ncacrnmpz6s5h2b`.
+All 5,313 committed Rust/TOML files at
+`c4b0e52be4016d2fe2f90173f9a6aef077a0739c` match immutable source
+`fc8sn62ra322kp3nldab6q65z2jdbq6p`, with comparison record SHA-256
+`5c60a93450ab8558f900178b3dbe663a9c691c64d49113766b2e39dbfce78c36`.
+ABI conformance passes at `h2qgnpc33w5jkm4wz165ir8k4f0ncpmw`.
+The fresh strict license check still stops before its boundary assertions with
+909 host-library and 963 host-test Clippy errors. The fresh exact supervision
+check is in progress. Backend-created dynamic diagnostics, decoded payloads and remaining catalog
 service errors still need complete funding; this is not an allocation-free
 execution or Source-admission qualification.
 
@@ -113,8 +140,9 @@ refusal corrects that regression. No assertion is removed or renamed.
 Decoded messages, initial counter-map insertion, admission-time pending copies
 and remaining diagnostic payloads still allocate. This removes repeated copies;
 it does not qualify complete funding, a Core Quantum issuer or CPU admission.
-Engineering hygiene passes. Mandatory compilation against the final committed
-source is in progress; all 5,313 Rust/TOML files at
+Engineering hygiene and mandatory application compilation against the final
+committed source pass, the latter at `wc21r06rqxsal59vh8kcrxni047zpc7g`.
+All 5,313 Rust/TOML files at
 `b077245bdba7c982707dcd73f1b1115fbee1bb8c` match immutable source
 `66djsciyjq6gkig2d1b3ri7kv8jfiadq`, with comparison record SHA-256
 `07e2ce704ca9046042eacfe43ed74067d0f10b9893a0e0cc8f4c81810597b4e4`.
