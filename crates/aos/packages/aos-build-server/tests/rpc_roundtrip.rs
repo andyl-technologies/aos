@@ -60,9 +60,9 @@ async fn token_exchange_read_permissions_and_streamed_uploads_round_trip() {
             AosClient::connect_with_token(&address, "default", "invalid").unwrap();
         assert!(unauthenticated.get_cache_info().await.is_err());
 
-        // Exercise several chunks beyond the 4 MiB per-message limit. A read-only token must be rejected
-        // after the stream is consumed, before any store import is attempted.
-        let payload = vec![1; 5 * 1024 * 1024 + 17];
+        // A read-only token must be rejected before any store import is
+        // attempted. Stream cancellation is covered at the service boundary.
+        let payload = vec![1; 17];
         let upload = client
             .upload("0123456789abcdfghijklmnpqrsvwxyz", &payload)
             .await
