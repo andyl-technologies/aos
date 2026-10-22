@@ -2468,6 +2468,35 @@ no tests. No new VM or configured Engine/Daemon runtime result is claimed.
 Actual paired Source issuers/native consumers, full phase construction rows,
 genuine Birth funding and full RFC acceptance remain unfinished.
 
+## Defining Stage17 crypto construction geometry
+
+Commit `6a833fd86e` projects the actual Context, proof, receipt and unsigned
+receipt-input grammars without allocating a positive DTO. Each phase uses its
+own exact schema, label, physical report and fixed digest encoding. The receipt
+MAC borrows its actual exhaustive unsigned field structure; wire encoding and
+cryptographic domains remain unchanged.
+
+The component quote counts actual retained crypto outputs, typed constructor
+controls and simultaneous canonical work, including the context output still
+live during receipt-input construction. Formatter and fixed projection/MAC
+controls are explicit. A larger independent restriction supplies no extra credit.
+This quote excludes binding/Envelope work, typed parsing, diagnostics, caller and
+async frames, live custody, publication and effects; it is not a full phase row.
+
+All eleven focused stage controls pass. Independent serializer/metadata oracles
+match all four projected shapes and actual retained outputs for all three phases.
+Exact-peak funding passes, one byte less refuses, and extra restriction leaves
+the row unchanged. Both complete Transport configurations pass 1,951 tests each
+with no failures, no filtering and sixteen existing ignores. Affected all-target
+checking, changed-file formatting and all six architecture gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 293 owned Rust/Cargo inputs
+match the commit and its exact captured source. This compilation executes no
+tests. No new VM or configured Engine/Daemon runtime result is claimed. Full
+phase funding, actual paired issuers/adopters, opaque Initial/Recipe production
+and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
