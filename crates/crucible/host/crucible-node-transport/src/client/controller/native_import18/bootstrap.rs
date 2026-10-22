@@ -19,9 +19,10 @@ use crate::hello_frames::OriginalHelloFrameDigests;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
     NATIVE_IMPORT18_BOOTSTRAP_ACK_PROOF, NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT,
     NATIVE_IMPORT18_BOOTSTRAP_FEATURE, PacketNativeImport18BootstrapAssignmentData,
-    PacketNativeImport18BootstrapMaterializationRowData, PacketNativeImport18BootstrapRequest,
-    PacketNativeImport18BootstrapReservationRowData, PacketNativeImport18BootstrapSdkRowData,
-    PacketNativeImport18BootstrapSealingData,
+    PacketNativeImport18BootstrapMaterializationRowData,
+    PacketNativeImport18BootstrapRawResponseData, PacketNativeImport18BootstrapReceiveRowData,
+    PacketNativeImport18BootstrapRequest, PacketNativeImport18BootstrapReservationRowData,
+    PacketNativeImport18BootstrapSdkRowData, PacketNativeImport18BootstrapSealingData,
 };
 use crate::retained_metadata::{
     aliases::MetadataSharedKind, requested_metadata_backing_storage_data,
@@ -36,6 +37,8 @@ mod history;
 mod materialization;
 #[path = "bootstrap/publication.rs"]
 mod publication;
+#[path = "bootstrap/receive.rs"]
+mod receive;
 #[path = "bootstrap/reservation.rs"]
 mod reservation;
 #[path = "bootstrap/signing.rs"]
@@ -72,6 +75,10 @@ pub struct OriginalNativeImport18Bootstrap {
     publication_row: Option<PacketNativeImport18BootstrapSdkRowData>,
     publication_started: bool,
     published: bool,
+    receive_row: Option<PacketNativeImport18BootstrapReceiveRowData>,
+    receive_started: bool,
+    raw_response: Option<PacketNativeImport18BootstrapRawResponseData>,
+    received: bool,
     retained: bool,
     failed: bool,
 }
@@ -121,6 +128,10 @@ impl CnpController {
             publication_row: None,
             publication_started: false,
             published: false,
+            receive_row: None,
+            receive_started: false,
+            raw_response: None,
+            received: false,
             retained: false,
             failed: true,
         });
@@ -182,6 +193,10 @@ impl OriginalNativeImport18Bootstrap {
             publication_row: _,
             publication_started: _,
             published: _,
+            receive_row: _,
+            receive_started: _,
+            raw_response,
+            received: _,
             retained: _,
             failed: _,
         } = self;
@@ -198,6 +213,9 @@ impl OriginalNativeImport18Bootstrap {
         if let Some(sealing) = sealing {
             sealing.observe_retained_into_data(&mut observer)?;
         }
+        if let Some(raw) = raw_response {
+            raw.observe_retained_into_data(&mut observer)?;
+        }
         Ok(observer.finish())
     }
 
@@ -207,7 +225,9 @@ impl OriginalNativeImport18Bootstrap {
     /// Refuses a foreign creator process or thread.
     pub fn retained_metadata_counter_scratch_data(&self) -> Result<usize, ProviderError> {
         self.row.controller.ensure_current()?;
-        Ok(if self.sdk_started || self.publication_started {
+        Ok(if self.receive_started {
+            CnpController::original_native_import18_bootstrap_receive_counter_scratch_data()
+        } else if self.sdk_started || self.publication_started {
             CnpController::original_native_import18_bootstrap_sdk_counter_scratch_data()
         } else if self.materialization_started {
             CnpController::original_native_import18_bootstrap_materialization_counter_scratch_data()

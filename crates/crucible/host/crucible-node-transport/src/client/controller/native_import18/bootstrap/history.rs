@@ -61,6 +61,14 @@ pub struct OriginalNativeImport18BootstrapHistoryData<'a> {
     pub publication_started: bool,
     /// Reports completed original publication without claiming a response.
     pub published: bool,
+    /// Borrows the exact admitted receipt component and Controller guard row.
+    pub receive_row: Option<&'a PacketNativeImport18BootstrapReceiveRowData>,
+    /// Reports spent receipt entry independently of physical progress.
+    pub receive_started: bool,
+    /// Borrows the same raw response, including any failed read or parser prefix.
+    pub raw_response: Option<&'a PacketNativeImport18BootstrapRawResponseData>,
+    /// Reports guarded raw receipt independently of SDK settlement or Source MACs.
+    pub received: bool,
     /// Borrows the moved assignment, proof, DOM and literal after either outcome.
     pub sealing: Option<crate::reference_packet::service::complete_restore::import18::bootstrap_ack::PacketNativeImport18BootstrapSealingHistoryData<'a>>,
     /// Reports only successful typed-owner retention, never bootstrap completion.
@@ -140,6 +148,10 @@ impl OriginalNativeImport18Bootstrap {
             publication_row: self.publication_row.as_ref(),
             publication_started: self.publication_started,
             published: self.published,
+            receive_row: self.receive_row.as_ref(),
+            receive_started: self.receive_started,
+            raw_response: self.raw_response.as_ref(),
+            received: self.received,
             sealing: self
                 .sealing
                 .as_ref()

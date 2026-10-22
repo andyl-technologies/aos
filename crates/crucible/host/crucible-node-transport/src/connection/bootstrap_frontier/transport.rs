@@ -17,6 +17,8 @@ use crate::reference_packet::service::complete_restore::import18::{
 };
 use crate::transport::{RetainedFrame, original_frames::FrameDirection};
 
+#[path = "transport/raw_response.rs"]
+mod raw_response;
 #[path = "transport/sealing_storage.rs"]
 mod sealing_storage;
 #[path = "transport/storage.rs"]

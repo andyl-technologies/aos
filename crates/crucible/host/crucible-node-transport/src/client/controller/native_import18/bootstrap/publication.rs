@@ -197,7 +197,11 @@ fn sealed(owner: &OriginalNativeImport18Bootstrap) -> Result<Sealed<'_>, Provide
     })
 }
 
-fn authenticate(
+/// Checks original Controller/Hello identity and physical SDK publication state.
+///
+/// # Errors
+/// Refuses changed identity, original cut, registered request or literal progress.
+pub(super) fn authenticate(
     controller: &CnpController,
     hello: &OriginalHelloJournal,
     owner: &OriginalNativeImport18Bootstrap,

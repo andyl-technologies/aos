@@ -6,7 +6,8 @@
 
 use super::*;
 use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
-    PacketNativeImport18BootstrapAckProof, PacketNativeImport18BootstrapRequest,
+    PacketNativeImport18BootstrapAckProof, PacketNativeImport18BootstrapRawResponseData,
+    PacketNativeImport18BootstrapRawResponseRowData, PacketNativeImport18BootstrapRequest,
     PacketNativeImport18BootstrapResponseDecodeData,
     PacketNativeImport18BootstrapResponseDecodeRowData,
 };
@@ -272,6 +273,58 @@ impl ClientSession {
             .connection
             .receive_original_bootstrap_raw_into_data(original, maximum, output);
         self.finish_original_bootstrap_effect_data(result, cut, 3)
+    }
+
+    /// Retains physical receipt and closed parsing under the original Hello cut.
+    ///
+    /// # Errors
+    /// Refuses occupied output, changed SDK/cut/row, framing, grammar or parsing;
+    /// every initialized raw/Value prefix survives terminal refusal.
+    pub(in crate::client) fn receive_original_bootstrap_response_into_data(
+        &mut self,
+        original: &Envelope,
+        cut: OperationalDeadline,
+        row: &PacketNativeImport18BootstrapRawResponseRowData,
+        maximum_requested: usize,
+        output: &mut Option<PacketNativeImport18BootstrapRawResponseData>,
+    ) -> Result<(), ProviderError> {
+        if output.is_some() {
+            return Err(refused());
+        }
+        self.require_original_bootstrap_effect_cut_data(cut, 3)?;
+        let result = self
+            .connection
+            .receive_original_bootstrap_response_into_data(
+                original,
+                row,
+                maximum_requested,
+                output,
+            );
+        let result = self.finish_original_bootstrap_effect_data(result, cut, 3);
+        if result.is_err() {
+            if let Some(raw) = output {
+                raw.failed = true;
+            }
+        }
+        result
+    }
+
+    /// Checks retained strict raw receipt beside the unchanged original Hello cut.
+    ///
+    /// # Errors
+    /// Refuses changed cut, creator, literal, parser output or SDK original.
+    pub(in crate::client) fn authenticate_original_bootstrap_received_raw_data(
+        &self,
+        original: &Envelope,
+        cut: OperationalDeadline,
+        raw: &PacketNativeImport18BootstrapRawResponseData,
+    ) -> Result<(), ProviderError> {
+        let deadline = self.authenticate_original_bootstrap_effect_cut_data(cut, 3);
+        let received = self
+            .connection
+            .authenticate_original_bootstrap_received_raw_data(original, raw);
+        deadline?;
+        received
     }
 
     /// Retains closed decoding and moves the actual SDK original before return.

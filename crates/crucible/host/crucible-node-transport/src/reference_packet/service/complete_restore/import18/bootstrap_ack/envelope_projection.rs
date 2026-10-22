@@ -37,26 +37,59 @@ impl PacketNativeImport18BootstrapEnvelopeProjectionData {
         entry_bytes: usize,
         entry_alignment: usize,
     ) -> Result<usize, ProviderError> {
+        self.backing_under_tree_layout(
+            &self.request,
+            self.trees[0],
+            self.native_request_trees,
+            entry_bytes,
+            entry_alignment,
+        )
+    }
+
+    /// Prices the complete response Value beside an enclosing typed SDK map.
+    ///
+    /// # Errors
+    /// Refuses unsupported tree alignment or checked layout overflow.
+    pub(crate) fn response_backing_storage_data(
+        &self,
+        entry_bytes: usize,
+        entry_alignment: usize,
+    ) -> Result<usize, ProviderError> {
+        self.backing_under_tree_layout(
+            &self.response,
+            self.trees[1],
+            self.trees[1],
+            entry_bytes,
+            entry_alignment,
+        )
+    }
+
+    fn backing_under_tree_layout(
+        &self,
+        shape: &Shape,
+        serialized: [usize; 2],
+        retained: [usize; 2],
+        entry_bytes: usize,
+        entry_alignment: usize,
+    ) -> Result<usize, ProviderError> {
         use crate::retained_metadata::requested_storage::tree_storage_data;
         use serde_json::Value;
         use std::mem::align_of;
 
         let value_entry = size_of::<String>() + size_of::<Value>();
         let value_alignment = align_of::<String>().max(align_of::<Value>());
-        let [containers, entries] = self.trees[0];
         let serialized_trees =
-            tree_storage_data(containers, entries, value_entry, value_alignment)?;
-        let [containers, entries] = self.native_request_trees;
-        let native_trees = tree_storage_data(
-            containers,
-            entries,
+            tree_storage_data(serialized[0], serialized[1], value_entry, value_alignment)?;
+        let retained_trees = tree_storage_data(
+            retained[0],
+            retained[1],
             value_entry.max(entry_bytes),
             value_alignment.max(entry_alignment),
         )?;
-        self.request
+        shape
             .retained_value_backing_bytes
             .checked_sub(serialized_trees)
-            .and_then(|bytes| bytes.checked_add(native_trees))
+            .and_then(|bytes| bytes.checked_add(retained_trees))
             .ok_or_else(invalid)
     }
 
@@ -283,7 +316,10 @@ pub fn native_import18_bootstrap_envelope_projection_counter_scratch_data() -> u
         + size_of::<Result<PacketNativeImport18BootstrapEnvelopeProjectionData, ProviderError>>()
         + size_of::<&mut Projection>()
         + size_of::<[[usize; 2]; 2]>()
-        + size_of::<[usize; 6]>()
+        + size_of::<[usize; 10]>()
+        + size_of::<&Shape>()
+        + size_of::<[[usize; 2]; 2]>()
+        + size_of::<Result<usize, ProviderError>>()
         + size_of::<&PacketNativeImport18BootstrapEnvelopeProjectionData>()
         + size_of::<&mut [usize; 2]>()
         + size_of::<&str>()

@@ -18,6 +18,11 @@ use serde_json::{Map, Value};
 use std::mem::size_of;
 
 mod preflight;
+mod raw_preflight;
+pub use raw_preflight::{
+    native_import18_bootstrap_raw_preflight_counter_scratch_data,
+    native_import18_bootstrap_raw_preflight_data,
+};
 mod storage;
 
 type BorrowedFieldMapper = for<'a> fn((&'a String, &'a Value)) -> (&'a str, &'a Value);

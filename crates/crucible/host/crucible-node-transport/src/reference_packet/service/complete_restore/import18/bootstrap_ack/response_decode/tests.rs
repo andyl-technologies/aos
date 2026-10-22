@@ -5,7 +5,7 @@ use crate::envelope::Nullable;
 use crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
 use crucible_node_format::values::MAX_ID_BYTES;
 
-fn operands() -> (Envelope, Value) {
+pub(super) fn operands() -> (Envelope, Value) {
     let row = PacketNativeStartupAllocationRow {
         retained_requested_bytes: U64::new(1),
         maximum_simultaneous_transient_bytes: U64::new(2),

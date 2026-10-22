@@ -422,7 +422,7 @@ pub(super) fn proposal(
     (original, request, proof)
 }
 
-fn seal(
+pub(super) fn seal(
     connection: &mut Connection<UnixStream>,
 ) -> (
     Envelope,
@@ -447,7 +447,7 @@ fn seal(
     (original, request, proof, bytes, slot)
 }
 
-fn response(
+pub(super) fn response(
     original: &Envelope,
     request: &PacketNativeImport18BootstrapRequest,
 ) -> serde_json::Value {
@@ -745,7 +745,7 @@ fn broken_pipe_retains_sealed_literal_and_actual_pending_original_without_retry(
     assert_eq!(bank.frames().count(), 1);
 }
 
-fn published() -> (
+pub(super) fn published() -> (
     Handshake,
     Connection<UnixStream>,
     UnixStream,

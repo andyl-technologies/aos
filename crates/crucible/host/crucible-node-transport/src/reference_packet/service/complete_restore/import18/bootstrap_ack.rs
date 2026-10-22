@@ -387,6 +387,12 @@ pub use source_retention::{
     native_import18_bootstrap_retention_counter_scratch_data,
 };
 
+mod raw_response;
+pub use raw_response::{
+    PacketNativeImport18BootstrapRawResponseData,
+    PacketNativeImport18BootstrapRawResponseHistoryData,
+    PacketNativeImport18BootstrapRawResponseRowData, PacketNativeImport18BootstrapReceiveRowData,
+};
 mod response_decode;
 pub use response_decode::{
     PacketNativeImport18BootstrapResponseDecodeData,
@@ -394,6 +400,8 @@ pub use response_decode::{
     PacketNativeImport18BootstrapResponseDecodeHistoryData,
     PacketNativeImport18BootstrapResponseDecodeRowData,
     PacketNativeImport18BootstrapResponseDecodeStep,
+    native_import18_bootstrap_raw_preflight_counter_scratch_data,
+    native_import18_bootstrap_raw_preflight_data,
     native_import18_bootstrap_response_decode_counter_scratch_data,
     native_import18_bootstrap_response_decode_into_data,
     native_import18_bootstrap_response_decode_quote_data,
