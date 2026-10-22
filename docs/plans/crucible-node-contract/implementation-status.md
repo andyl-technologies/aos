@@ -3480,6 +3480,31 @@ committed revision and its actual captured source. This gate runs no tests.
 No new full-library, configured runtime, VM or full RFC qualification follows
 from the declaration and layout-expression cleanup.
 
+## Original-owner and retained-state guard simplification
+
+Commit `40fcee8a72` flattens 39 nested conditions across 27 Transport files.
+The checks retain their original short-circuit order, actual owner comparisons,
+refusal points and accounting terms. No lint allowance or protocol changes.
+Production-library Clippy falls from 124 to 85 errors, with 1,727 warnings;
+strict qualification remains failed.
+
+The complete standard Transport library run passes 2,082 tests with zero
+failures, no filtering and 16 existing ignores. The complete raw-JSON run
+passes 2,078 tests and fails four native Bootstrap subprocess tests, with the
+same 16 ignores. Correlation, proof, reply and publication encounter an expired
+original operational deadline; one expected callback is never entered. This
+failed concurrent run does not qualify raw-JSON operation. A separate serial
+rerun of the unchanged compiled binary passes correlation, proof and publication,
+but reply still refuses during shared correlation setup. The failure remains
+unresolved; production deadlines remain unchanged.
+
+Owned-file formatting and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including
+71 integration targets. All 435 owned Rust/Cargo inputs match committed
+`40fcee8a72` and its actual captured source. That gate runs no tests. The
+library script stops at the failed raw-JSON run before its all-target check.
+No new configured runtime, VM or full RFC qualification follows.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
