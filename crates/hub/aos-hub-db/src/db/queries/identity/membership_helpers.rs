@@ -100,9 +100,12 @@ impl Database {
                   WHERE i.token_hash = ?1 AND i.email = ?2 AND i.org_id = ?5
                     AND i.accepted_at IS NULL AND i.cancelled_at IS NULL
                     AND i.expires_at > ?3 AND o.deleted_at IS NULL
-                    AND EXISTS (SELECT 1 FROM users u
-                                 WHERE u.id = ?4 AND u.email = ?2
-                                   AND u.deleted_at IS NULL)",
+                    AND EXISTS (
+                          SELECT 1 FROM user_mailboxes mailbox
+                          JOIN users u ON u.id = mailbox.user_id
+                           WHERE u.id = ?4 AND mailbox.email = ?2
+                             AND u.deleted_at IS NULL
+                        )",
                 &vals![token_hash, email, now, user_id, org_id],
             )
             .await
@@ -116,9 +119,12 @@ impl Database {
                           WHERE id = ?1 AND token_hash = ?2 AND email = ?3
                             AND accepted_at IS NULL AND cancelled_at IS NULL
                             AND expires_at > ?5 AND org_id = ?6
-                            AND EXISTS (SELECT 1 FROM users u
-                                         WHERE u.id = ?4 AND u.email = ?3
-                                           AND u.deleted_at IS NULL)",
+                            AND EXISTS (
+                                  SELECT 1 FROM user_mailboxes mailbox
+                                  JOIN users u ON u.id = mailbox.user_id
+                                   WHERE u.id = ?4 AND mailbox.email = ?3
+                                     AND u.deleted_at IS NULL
+                                )",
                     vals![record.id, token_hash, email, user_id, now, org_id],
                 )
                 .expecting(1),

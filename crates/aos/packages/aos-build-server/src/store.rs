@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+use aos_nix::StoreHash;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Metadata about a store path from the Nix SQLite DB.
@@ -210,13 +211,30 @@ impl NixStore {
 
 /// Extracts the store hash from either a full store path or a bare hash.
 ///
-/// Takes the basename (after the last `/`) and the leading segment before
-/// the first `-`, so `/root/store/abc-foo-1.0`, `abc-foo-1.0`, and `abc`
-/// all yield `abc`. Returns `None` for empty input.
-fn store_hash_from_path_or_hash(path_or_hash: &str) -> Option<&str> {
+/// Full paths must be absolute and free of explicit traversal components.
+/// Both full paths and bare identities must contain a canonical Nix store
+/// hash. Returns `None` when the input does not meet those requirements.
+fn store_hash_from_path_or_hash(path_or_hash: &str) -> Option<StoreHash> {
+    if path_or_hash.contains('/') {
+        let path = std::path::Path::new(path_or_hash);
+        if !path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        {
+            return None;
+        }
+    }
+
     let basename = path_or_hash.rsplit('/').next()?;
-    let hash = basename.split('-').next().unwrap_or(basename);
-    if hash.is_empty() { None } else { Some(hash) }
+    if basename.contains('-') {
+        StoreHash::from_store_path(path_or_hash).ok()
+    } else {
+        basename.parse().ok()
+    }
 }
 
 #[cfg(test)]
@@ -271,6 +289,8 @@ mod tests {
         )?);
         assert!(store.is_valid_path_or_hash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?);
         assert!(!store.is_valid_path_or_hash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")?);
+        assert!(!store.is_valid_path_or_hash("../../aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")?);
+        assert!(!store.is_valid_path_or_hash("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")?);
 
         Ok(())
     }

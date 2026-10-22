@@ -9,7 +9,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::CompleteEndpointProbeRequest,
     ) -> Result<pb::EndpointResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -18,6 +18,14 @@ impl RpcService {
         let record = self
             .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
             .await?;
+        self.claim_controller_fence(
+            &claims,
+            "endpoint",
+            &record.id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let generation = record.desired_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("endpoint has no desired generation".to_string())
         })?;
@@ -29,8 +37,12 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
         let operation_id = hex::encode(Sha256::digest(
             format!(
-                "delivery-endpoint-probe-v1\0{}\0{}\0{}",
-                record.id, generation, revision.content_digest
+                "delivery-endpoint-probe-v1\0{}\0{}\0{}\0{}\0{}",
+                record.id,
+                generation,
+                revision.content_digest,
+                req.controller_lease_id,
+                req.controller_generation
             )
             .as_bytes(),
         ));
@@ -58,7 +70,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportEndpointRequest,
     ) -> Result<pb::EndpointResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -67,6 +79,14 @@ impl RpcService {
         let record = self
             .managed_endpoint(auth, &req.stable_id, Permission::EndpointManage)
             .await?;
+        self.claim_controller_fence(
+            &claims,
+            "endpoint",
+            &record.id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let observation = req
             .observation
             .ok_or_else(|| RpcError::invalid("observation is required"))?;
@@ -77,7 +97,7 @@ impl RpcService {
             ));
         }
         self.db
-            .reconcile_endpoint(
+            .reconcile_endpoint_fenced(
                 &record.id,
                 observation.observed_generation,
                 observation.boundary_revision,
@@ -86,6 +106,13 @@ impl RpcService {
                 observation.tls_observed,
                 (!observation.error.is_empty()).then_some(observation.error.as_str()),
                 expected,
+                &aos_hub_db::db::ControllerLeaseFence {
+                    target_kind: "endpoint",
+                    target_id: &record.id,
+                    lease_id: &req.controller_lease_id,
+                    generation: req.controller_generation,
+                    owner_service_account_id: claims.owner_id,
+                },
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;

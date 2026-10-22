@@ -1088,6 +1088,25 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     assert_eq!(status, StatusCode::OK, "reconcile promotion: {resp}");
     assert_eq!(resp["authority"]["observedPlacementName"], "replica-west");
     assert_eq!(resp["authority"]["reconciliationState"], "ready");
+    let (status, rejected) = rpc(
+        &app,
+        "TopologyControllerService/ReportWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "expectedObservationVersion": authority_version.clone(),
+            "desiredGeneration": desired_generation,
+            "state": "ready",
+            "controllerLeaseId": "different-controller-lease",
+            "controllerGeneration": 1
+        }),
+        Some(&controller),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "conflicting controller lease: {rejected}"
+    );
     let (status, resp) = rpc(
         &app,
         "TopologyControllerService/ReportWriteAuthority",

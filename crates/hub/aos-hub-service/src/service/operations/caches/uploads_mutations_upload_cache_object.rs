@@ -179,7 +179,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportCacheUploadRequest,
     ) -> Result<pb::CacheUploadObservationResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -187,6 +187,15 @@ impl RpcService {
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_admin(auth, &cache).await?;
+        let lease_target = format!("{}:{}", req.cache_id, req.upload_ticket_id);
+        self.claim_controller_fence(
+            &claims,
+            "cache_upload",
+            &lease_target,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         self.observe_presigned_cache_upload(&cache, &req.path, &req.upload_ticket_id)
             .await
     }

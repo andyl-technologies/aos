@@ -7,6 +7,7 @@ description = "Typed client for AOS build server, Nix cache, garbage collection,
 
 [dependencies]
 aos-nar.workspace = true
+aos-nix.workspace = true
 aos-build-api = { workspace = true }
 anyhow = { workspace = true }
 connectrpc = { workspace = true }

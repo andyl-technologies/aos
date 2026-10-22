@@ -13,10 +13,10 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 #[test]
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
-            MIGRATIONS.len(),
-            8,
-            "released migrations through OCI namespace routes followed by native reference and report projections"
-        );
+        MIGRATIONS.len(),
+        11,
+        "released migrations include durable controller leases"
+    );
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
@@ -137,6 +137,51 @@ fn fresh_schema_is_final_and_foreign_key_clean() {
         )
         .unwrap();
     assert_eq!(public_boundary, (1, "active".to_string()));
+}
+
+#[test]
+fn mailbox_migration_preserves_only_established_owners() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .unwrap();
+    for migration in &MIGRATIONS[..9] {
+        connection.execute_batch(migration).unwrap();
+    }
+
+    connection
+        .execute_batch(
+            "INSERT INTO users (id, email, created_at) VALUES
+               (1, 'profile@example.test', 10),
+               (2, 'local@example.test', 20),
+               (3, 'proven@example.test', 30);
+             INSERT INTO user_identities (user_id, issuer, subject, email, last_login) VALUES
+               (1, 'https://idp.example', 'profile', 'profile@example.test', 40),
+               (3, 'https://idp.example', 'proven', 'proven@example.test', 40);
+             INSERT INTO magic_links
+               (token_hash, email, created_at, expires_at, consumed_at)
+             VALUES ('token', 'proven@example.test', 31, 50, 32);",
+        )
+        .unwrap();
+
+    connection.execute_batch(MIGRATIONS[9]).unwrap();
+
+    let owners = connection
+        .prepare("SELECT email, user_id FROM user_mailboxes ORDER BY user_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        owners,
+        vec![
+            ("local@example.test".to_string(), 2),
+            ("proven@example.test".to_string(), 3),
+        ]
+    );
 }
 
 #[test]
