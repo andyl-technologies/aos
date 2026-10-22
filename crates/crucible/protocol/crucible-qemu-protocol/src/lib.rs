@@ -138,7 +138,7 @@ pub use doorbell_marker::{
     WhiteboxMarkerPayloadGoldenVector, WhiteboxMeasurementBoundaryBody, WhiteboxMeasurementValue,
     WhiteboxMeasurementValueKind, WhiteboxMetricSampleBody, WhiteboxRandomRequestBody,
     WhiteboxReducedRational, WhiteboxSemanticMarkerBody, WhiteboxSemanticMarkerDetail,
-    decode_whitebox_marker_payload, encode_whitebox_marker_frame,
+    decode_whitebox_marker_payload, decode_whitebox_marker_payload_view, encode_whitebox_marker_frame,
     encode_whitebox_marker_payload_body,
 };
 pub use golden_vectors::{

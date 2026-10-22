@@ -365,5 +365,5 @@ pub use whitebox_doorbell::{
 };
 pub(crate) use whitebox_doorbell::{
     AppRandomDoorbellOutcome, BackendRngEvidenceError, BackendRngEvidenceRecord,
-    BackendRngEvidenceSource, handle_whitebox_app_random_callback,
+    BackendRngEvidenceSource, handle_whitebox_app_random_payload,
 };

@@ -14,6 +14,10 @@ use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
+use crucible_qemu_protocol::{
+    WHITEBOX_DOORBELL_KIND_LIFECYCLE, WhiteboxDoorbellFrameView,
+    decode_whitebox_marker_payload_view,
+};
 use crucible_qemu_shmem::MAX_FRAME_DATA;
 
 use crate::coverage::LiveTbTranslationConsumer;
@@ -23,10 +27,9 @@ use crate::{
     QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
     WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-    WhiteboxDoorbellCapabilities, WhiteboxDoorbellFrame, WhiteboxDoorbellRegistrationPlan,
+    WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan,
     WhiteboxDoorbellSetupResources, WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent,
-    WhiteboxMarkerPayload, WhiteboxMarkerSinkError, decode_whitebox_marker_payload,
-    handle_whitebox_doorbell_callback,
+    WhiteboxMarkerPayload, WhiteboxMarkerSinkError, handle_whitebox_doorbell_callback,
 };
 
 mod api;
@@ -668,8 +671,7 @@ impl LiveWhiteboxState {
         if guest_introspection::is_exchange(payload) {
             self.handle_guest_introspection(&mut reader, event, payload)
         } else if app_random::is_request(payload) {
-            drop(buffer);
-            self.handle_app_random(&mut reader, event, raw_icount, trap_tick_ps, vcpu_index)
+            self.handle_app_random(payload, event, raw_icount, trap_tick_ps, vcpu_index)
         } else if selectable::is_message(payload) {
             drop(buffer);
             let selectable = self
@@ -769,12 +771,15 @@ impl LiveWhiteboxState {
 mod tests;
 
 fn is_setup_complete_marker(payload: &[u8]) -> bool {
-    WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
-        .ok()
-        .and_then(|frame| decode_whitebox_marker_payload(&frame).ok())
-        == Some(WhiteboxMarkerPayload::Lifecycle(
-            crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
-        ))
+    WhiteboxDoorbellFrameView::decode_bounded(payload, MAX_FRAME_DATA).is_ok_and(|frame| {
+        // Decode only lifecycle bodies: probing an unrelated marker must not
+        // construct its owned strings, details or measurement vectors.
+        frame.kind() == WHITEBOX_DOORBELL_KIND_LIFECYCLE
+            && decode_whitebox_marker_payload_view(frame)
+                == Ok(WhiteboxMarkerPayload::Lifecycle(
+                    crate::WhiteboxLifecycleMarkerEvent::SetupComplete,
+                ))
+    })
 }
 
 extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(

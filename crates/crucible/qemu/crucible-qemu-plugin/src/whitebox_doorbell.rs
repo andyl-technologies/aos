@@ -38,6 +38,7 @@ pub use crucible_qemu_protocol::{
     whitebox_doorbell_abi_for_architecture,
 };
 use crucible_qemu_shmem::MAX_FRAME_DATA;
+use crucible_qemu_protocol::{WhiteboxDoorbellFrameView, decode_whitebox_marker_payload_view};
 use thiserror::Error;
 
 use crate::{PluginDeviceCallbackKind, PluginSwitch};
@@ -399,6 +400,7 @@ where
 /// Returns [`AppRandomDoorbellError`] when the white-box capability path fails,
 /// the decision source cannot record the draw, or the reply cannot be delivered
 /// at the trap icount.
+#[cfg(test)]
 pub(crate) fn handle_whitebox_app_random_callback<R, D, W>(
     doorbell: &PluginWhiteboxDoorbell,
     capability: &WhiteboxGuestInputCapability,
@@ -415,7 +417,48 @@ where
 {
     let payload =
         read_doorbell_payload(doorbell, reader, event).map_err(AppRandomDoorbellError::Doorbell)?;
-    let frame = match WhiteboxDoorbellFrame::decode_bounded(&payload, doorbell.max_payload_len()) {
+    handle_whitebox_app_random_payload(
+        doorbell, capability, decision_source, writer, node_name, event, &payload,
+    )
+}
+
+/// Serves one app-random request from an already retained guest snapshot.
+///
+/// # Errors
+///
+/// Refuses disabled mode, invalid ranges or snapshot lengths before drawing or
+/// writing. Decision and delivery failures retain their ordinary typed causes.
+pub(crate) fn handle_whitebox_app_random_payload<D, W>(
+    doorbell: &PluginWhiteboxDoorbell,
+    capability: &WhiteboxGuestInputCapability,
+    decision_source: &mut D,
+    writer: &mut W,
+    node_name: &str,
+    event: WhiteboxDoorbellTrapEvent,
+    payload: &[u8],
+) -> Result<AppRandomDoorbellOutcome, AppRandomDoorbellError>
+where
+    D: BackendRngEvidenceSource + ?Sized,
+    W: WhiteboxGuestInputWriter + ?Sized,
+{
+    if !doorbell.mode.is_on() {
+        return Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::TrapWhileDisabled,
+        ));
+    }
+    doorbell
+        .validate_payload_range(event.payload_range())
+        .map_err(AppRandomDoorbellError::Doorbell)?;
+    if payload.len() != event.payload_range().len() {
+        return Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: event.payload_range().len(),
+                actual_len: payload.len(),
+            },
+        ));
+    }
+
+    let frame = match WhiteboxDoorbellFrameView::decode_bounded(payload, doorbell.max_payload_len()) {
         Ok(frame) => frame,
         Err(error) => {
             return Ok(AppRandomDoorbellOutcome::Dropped {
@@ -531,7 +574,7 @@ impl AppRandomDoorbellRequest {
     fn from_frame(
         node_name: &str,
         event: WhiteboxDoorbellTrapEvent,
-        frame: WhiteboxDoorbellFrame,
+        frame: WhiteboxDoorbellFrameView<'_>,
     ) -> Result<Self, AppRandomDecodeDiagnostic> {
         if frame.kind() != WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST {
             return Err(AppRandomDecodeDiagnostic::new(
@@ -543,7 +586,7 @@ impl AppRandomDoorbellRequest {
         }
 
         let payload_len = frame.payload().len();
-        let payload = match decode_whitebox_marker_payload(&frame) {
+        let payload = match decode_whitebox_marker_payload_view(frame) {
             Ok(WhiteboxMarkerPayload::RandomRequest(payload)) => payload,
             Ok(payload) => {
                 return Err(AppRandomDecodeDiagnostic::new(

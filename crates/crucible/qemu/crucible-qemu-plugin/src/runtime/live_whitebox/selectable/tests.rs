@@ -729,5 +729,21 @@ fn selectable_prefix_is_disjoint_from_marker_frames() -> Result<(), Box<dyn std:
         &WhiteboxMarkerPayload::Lifecycle(WhiteboxLifecycleMarkerEvent::TestDone),
     )?;
     assert!(!super::super::is_setup_complete_marker(&test_done));
+
+    for length in 0..setup_complete.len() {
+        assert!(!super::super::is_setup_complete_marker(
+            &setup_complete[..length]
+        ));
+    }
+    for index in [0, 4, 6, 8, 12, 13] {
+        let mut malformed = setup_complete.clone();
+        malformed[index] ^= 0x80;
+        assert!(!super::super::is_setup_complete_marker(&malformed));
+    }
+
+    let mut trailing = setup_complete.clone();
+    trailing[8..12].copy_from_slice(&3_u32.to_le_bytes());
+    trailing.push(0);
+    assert!(!super::super::is_setup_complete_marker(&trailing));
     Ok(())
 }

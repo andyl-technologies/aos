@@ -627,12 +627,12 @@ fn whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolu
         Err(error) => panic!("random-request frame should decode: {error:?}"),
     };
     let virtual_request =
-        match AppRandomDoorbellRequest::from_frame("node-a", virtual_event, frame.clone()) {
+        match AppRandomDoorbellRequest::from_frame("node-a", virtual_event, frame.as_view()) {
             Ok(request) => request,
             Err(error) => panic!("virtual random request should decode: {error:?}"),
         };
     let physical_request =
-        match AppRandomDoorbellRequest::from_frame("node-a", physical_event, frame) {
+        match AppRandomDoorbellRequest::from_frame("node-a", physical_event, frame.as_view()) {
             Ok(request) => request,
             Err(error) => panic!("physical random request should decode: {error:?}"),
         };
@@ -1005,20 +1005,19 @@ fn whitebox_app_random_serves_random_request_records_decision_and_replies_at_tra
         let payload = random_request_frame(7, width_bytes, "workload");
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x8000, payload.len());
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(1, 99, range);
-        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
         let record =
             BackendRngEvidenceRecord::new("node-a", "workload", 7, width_bits, maximum_value);
         let mut decisions = RecordingAppRandomSource::with_record(record.clone());
         let mut writer = RecordingGuestInputWriter::default();
 
-        let outcome = handle_whitebox_app_random_callback(
+        let outcome = handle_whitebox_app_random_payload(
             &doorbell,
             &capability,
-            &mut reader,
             &mut decisions,
             &mut writer,
             "node-a",
             event,
+            &payload,
         )
         .unwrap();
         let AppRandomDoorbellOutcome::Served(service) = outcome else {
@@ -1029,7 +1028,6 @@ fn whitebox_app_random_serves_random_request_records_decision_and_replies_at_tra
         assert_eq!(service.injection.delivery_icount(), 99);
         assert_eq!(service.injection.payload_len(), usize::from(width_bytes));
         assert_eq!(decisions.requests.len(), 1);
-        assert_eq!(reader.calls, vec![(1, 99, range)]);
         assert_eq!(
             writer.writes,
             vec![(
@@ -1129,7 +1127,7 @@ fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
         Err(error) => panic!("wrong-kind frame header should decode: {error:?}"),
     };
     assert_eq!(
-        AppRandomDoorbellRequest::from_frame("node-a", event, wrong_kind),
+        AppRandomDoorbellRequest::from_frame("node-a", event, wrong_kind.as_view()),
         Err(AppRandomDecodeDiagnostic::new(
             AppRandomDecodeDiagnosticKind::UnexpectedKind {
                 expected: WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST,
@@ -1148,7 +1146,7 @@ fn whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8() {
         Err(error) => panic!("invalid-utf8 frame header should decode: {error:?}"),
     };
     assert_eq!(
-        AppRandomDoorbellRequest::from_frame("node-a", event, invalid_utf8),
+        AppRandomDoorbellRequest::from_frame("node-a", event, invalid_utf8.as_view()),
         Err(AppRandomDecodeDiagnostic::new(
             AppRandomDecodeDiagnosticKind::InvalidUtf8StreamTag,
         ))
@@ -1221,7 +1219,7 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
         let capability = guest_input_capability(&doorbell);
         let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Physical, 0x4000, payload.len());
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
-        let mut reader = RecordingGuestMemoryReader::with_payload(payload);
+        let mut reader = RecordingGuestMemoryReader::with_payload(payload.clone());
         let mut decisions = RecordingAppRandomSource::with_record(BackendRngEvidenceRecord::new(
             "node-a", name, 0, 8, 0,
         ));
@@ -1240,6 +1238,18 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
             Err(error) => panic!("malformed app-random case `{name}` should drop: {error}"),
         };
 
+        let borrowed_outcome = handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        )
+        .unwrap();
+        assert_eq!(borrowed_outcome, outcome);
+
         assert_eq!(
             outcome,
             AppRandomDoorbellOutcome::Dropped {
@@ -1257,6 +1267,80 @@ fn whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects
             "malformed app-random case `{name}` must not write a reply"
         );
     }
+
+    let doorbell = PluginWhiteboxDoorbell::new(
+        PluginSwitch::On,
+        WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+        128,
+    );
+    let capability = guest_input_capability(&doorbell);
+    let mut decisions = RecordingAppRandomSource::with_record(BackendRngEvidenceRecord::new(
+        "node-a", "workload", 7, 8, 0xff,
+    ));
+    let mut writer = RecordingGuestInputWriter::default();
+    let payload = random_request_frame(7, 1, "workload");
+    let range = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, payload.len() + 1);
+    let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, range);
+
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::GuestMemoryReadLengthMismatch {
+                requested_len: payload.len() + 1,
+                actual_len: payload.len(),
+            },
+        )),
+    );
+
+    let oversized = GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, 0x4000, 129);
+    let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(0, 10, oversized);
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &doorbell,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::PayloadTooLarge {
+                len: 129,
+                max_payload_len: 128
+            },
+        )),
+    );
+
+    let disabled = PluginWhiteboxDoorbell::new(
+        PluginSwitch::Off,
+        WhiteboxDoorbellTrap::X86PortIo { port: 0xe7 },
+        128,
+    );
+    assert_eq!(
+        handle_whitebox_app_random_payload(
+            &disabled,
+            &capability,
+            &mut decisions,
+            &mut writer,
+            "node-a",
+            event,
+            &payload,
+        ),
+        Err(AppRandomDoorbellError::Doorbell(
+            WhiteboxDoorbellError::TrapWhileDisabled
+        )),
+    );
+    assert!(decisions.requests.is_empty());
+    assert!(writer.writes.is_empty());
 }
 
 #[test]

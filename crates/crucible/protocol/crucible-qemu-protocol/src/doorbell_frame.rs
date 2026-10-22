@@ -78,6 +78,15 @@ impl WhiteboxDoorbellFrame {
         })
     }
 
+    /// Borrows this decoded frame's kind and original payload storage.
+    #[must_use]
+    pub fn as_view(&self) -> WhiteboxDoorbellFrameView<'_> {
+        WhiteboxDoorbellFrameView {
+            kind: self.kind,
+            payload: &self.payload,
+        }
+    }
+
     /// Encodes this frame into its canonical fixed-header byte representation.
     ///
     /// # Errors

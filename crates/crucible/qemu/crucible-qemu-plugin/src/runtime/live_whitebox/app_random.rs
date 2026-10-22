@@ -14,7 +14,7 @@ use super::*;
 use crate::{
     AppRandomDoorbellOutcome, BackendRngEvidenceError, BackendRngEvidenceRecord,
     BackendRngEvidenceSource, WhiteboxGuestInputCapability, WhiteboxGuestInputWriteError,
-    WhiteboxGuestInputWriter, handle_whitebox_app_random_callback,
+    WhiteboxGuestInputWriter, handle_whitebox_app_random_payload,
 };
 
 pub(super) fn is_request(payload: &[u8]) -> bool {
@@ -25,7 +25,7 @@ pub(super) fn is_request(payload: &[u8]) -> bool {
 impl LiveWhiteboxState {
     pub(super) fn handle_app_random(
         &mut self,
-        reader: &mut LiveGuestMemoryReader,
+        payload: &[u8],
         event: WhiteboxDoorbellTrapEvent,
         raw_icount: u64,
         trap_tick_ps: u64,
@@ -40,14 +40,14 @@ impl LiveWhiteboxState {
             current_icount: raw_icount,
         };
         let node_name = app_random.decisions.node_name().to_owned();
-        let outcome = handle_whitebox_app_random_callback(
+        let outcome = handle_whitebox_app_random_payload(
             &self.doorbell,
             &app_random.capability,
-            reader,
             &mut app_random.decisions,
             &mut writer,
             &node_name,
             event,
+            payload,
         )
         .map_err(callback_error)?;
         if let AppRandomDoorbellOutcome::Served(service) = outcome {
