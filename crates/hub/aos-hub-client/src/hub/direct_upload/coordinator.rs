@@ -356,12 +356,15 @@ impl DirectUploadCoordinator {
         let deadline = tokio::time::Instant::now()
             .checked_add(timeout)
             .ok_or(DirectClientError::Invalid)?;
+        // A validated Committed reply confirms this exact Complete for this
+        // barrier only. Pending originals still replay; a fresh or reopened
+        // barrier independently checks every original again.
+        let mut confirmed_completions = std::collections::BTreeSet::new();
         loop {
             let mut after = None;
             let mut pending = false;
             let mut count = 0u64;
             loop {
-                let discovery = before_deadline(deadline, self.control.snapshot()).await?;
                 let page = before_deadline(
                     deadline,
                     self.store.completion_page(
@@ -372,12 +375,22 @@ impl DirectUploadCoordinator {
                 .await?;
                 // Traverse every bounded journal page, including pages containing
                 // only visibility requests. Selection never changes its cursor.
-                let items: Vec<_> = page
-                    .items
-                    .iter()
-                    .filter(|item| phase.is_none_or(|phase| item.intent.dependency_phase == phase))
-                    .collect();
+                let mut items = Vec::new();
+                for item in &page.items {
+                    if phase.is_some_and(|phase| item.intent.dependency_phase != phase) {
+                        continue;
+                    }
+                    count = count.checked_add(1).ok_or(DirectClientError::Invalid)?;
+                    let fingerprint = item
+                        .request
+                        .fingerprint()
+                        .map_err(|_| DirectClientError::Invalid)?;
+                    if !confirmed_completions.contains(&fingerprint) {
+                        items.push(item);
+                    }
+                }
                 if !items.is_empty() {
+                    let discovery = before_deadline(deadline, self.control.snapshot()).await?;
                     let mut requests = Vec::with_capacity(items.len());
                     for item in &items {
                         let placements: Vec<_> = item
@@ -435,16 +448,19 @@ impl DirectUploadCoordinator {
                             .validate_for(&item.request.session, &item.intent, &placements)
                             .map_err(|_| DirectClientError::Invalid)?;
                         match status.state {
-                            DirectSessionState::Committed => {}
+                            DirectSessionState::Committed => {
+                                confirmed_completions.insert(
+                                    item.request
+                                        .fingerprint()
+                                        .map_err(|_| DirectClientError::Invalid)?,
+                                );
+                            }
                             DirectSessionState::Freezing
                             | DirectSessionState::CompletingStaging
                             | DirectSessionState::StagedVerified => pending = true,
                             _ => return Err(DirectClientError::Blocked),
                         }
                     }
-                    count = count
-                        .checked_add(items.len() as u64)
-                        .ok_or(DirectClientError::Invalid)?;
                 }
                 let Some(next) = page.next_after else {
                     break;

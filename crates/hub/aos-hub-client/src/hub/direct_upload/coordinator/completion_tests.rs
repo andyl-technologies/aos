@@ -176,7 +176,7 @@ fn reply(
 }
 
 #[tokio::test]
-async fn reopened_content_barrier_preserves_visibility_for_normal_finish() {
+async fn reopened_content_barrier_skips_confirmed_completions_and_preserves_visibility() {
     let directory =
         std::env::temp_dir().join(format!("aos-content-barrier-{}", rand::random::<u64>()));
     std::fs::create_dir(&directory).unwrap();
@@ -242,9 +242,18 @@ async fn reopened_content_barrier_preserves_visibility_for_normal_finish() {
     let content = retain_completion(
         &first,
         &profile,
-        "b-content",
+        "b-content-confirmed",
         2,
         "releases/1.0.0/release.json",
+        DirectDependencyPhase::Content,
+    )
+    .await;
+    let pending = retain_completion(
+        &first,
+        &profile,
+        "c-content-pending",
+        3,
+        "releases/2.0.0/release.json",
         DirectDependencyPhase::Content,
     )
     .await;
@@ -259,20 +268,25 @@ async fn reopened_content_barrier_preserves_visibility_for_normal_finish() {
     .await
     .unwrap();
     let content_original = content.0.clone();
+    let pending_original = pending.0.clone();
     let visibility_original = visibility.0.clone();
     let worker = std::thread::spawn(move || {
         let mut captured = Vec::new();
-        // Stage-only requires two exact Content replays across pending state.
-        // Ordinary finish then replays the untouched Visibility and Content.
+        // Only the pending original repeats across all unfinished states.
+        // A fresh ordinary barrier checks Visibility and both Content originals.
         for (original, status, state) in [
+            (&content.0, &content.1, DirectSessionState::Committed),
+            (&pending.0, &pending.1, DirectSessionState::Freezing),
             (
-                &content.0,
-                &content.1,
+                &pending.0,
+                &pending.1,
                 DirectSessionState::CompletingStaging,
             ),
-            (&content.0, &content.1, DirectSessionState::Committed),
+            (&pending.0, &pending.1, DirectSessionState::StagedVerified),
+            (&pending.0, &pending.1, DirectSessionState::Committed),
             (&visibility.0, &visibility.1, DirectSessionState::Committed),
             (&content.0, &content.1, DirectSessionState::Committed),
+            (&pending.0, &pending.1, DirectSessionState::Committed),
         ] {
             let (mut stream, batch) = request(&listener);
             assert_eq!(batch.items, vec![original.clone()]);
@@ -301,11 +315,15 @@ async fn reopened_content_barrier_preserves_visibility_for_normal_finish() {
             .unwrap();
     normal.finish(Duration::from_secs(5)).await.unwrap();
     let captured = worker.join().unwrap();
-    assert_eq!(captured.len(), 4);
-    assert_eq!(captured[0], captured[1]);
+    assert_eq!(captured.len(), 8);
     assert_eq!(captured[0].items, vec![content_original.clone()]);
-    assert_eq!(captured[2].items, vec![visibility_original]);
-    assert_eq!(captured[3].items, vec![content_original]);
+    for batch in &captured[1..5] {
+        assert_eq!(batch.items, vec![pending_original.clone()]);
+        assert_eq!(batch, &captured[1]);
+    }
+    assert_eq!(captured[5].items, vec![visibility_original]);
+    assert_eq!(captured[6].items, vec![content_original]);
+    assert_eq!(captured[7].items, vec![pending_original]);
     drop(normal);
     std::fs::remove_dir_all(directory).unwrap();
 }
