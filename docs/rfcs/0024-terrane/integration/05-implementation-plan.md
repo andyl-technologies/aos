@@ -13751,3 +13751,25 @@ The root-grant increment passes formatting, strict Linux all-target Clippy for
 both all-feature and ordinary Tokio-only profiles, the complete native source
 declaration inventory and VM supervisor syntax. Native execution and mandatory
 application-target compilation must still qualify its frozen source.
+
+The corrected inventory VM at `b00b4aa118` fails in 669.77 seconds after
+passing the original run/cap controls and malformed cold-index refusal. It
+reaches the actual exposure actor, whose drain control requires a typed denial;
+the physical queue refuses with `PermissionDenied`, but the generic native
+adapter classifies an untyped IO refusal as `Unavailable`. The adapter's broad
+fallback remains unchanged. Exposure Read refusals now carry their typed
+`Denied` result through that boundary, exposing only the requested exposure
+pattern. The regression checks preserved denial and absent policy diagnostics;
+the native control still requires denial and unchanged consumer inventory.
+The failed VM and its build directory remain retained. No exposure actor pass
+is claimed from that run.
+
+Required application-target compilation at `b00b4aa118` passes in 675.14
+seconds. Independent review matches all 8,014 immutable source files and 184
+compiler records across 59 packages. The full native host-cache VM at this
+checkpoint remains running; this compile result does not replace execution.
+
+The denial regression passes with no ignored cases. Formatting and strict
+Linux all-target Clippy pass in all-feature and ordinary Tokio-only profiles.
+Frozen native execution and mandatory application compilation of the correction
+remain required before a current-source qualification result is claimed.

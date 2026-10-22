@@ -18,6 +18,7 @@ use std::{
 };
 use terrane_format::identity::Digest;
 use terrane_sdk::host::cache::{ExposurePhase, ExposureRecord, PinRecord};
+use terrane_sdk::store::{StoreErrorKind, StoreFailure};
 use tokio::sync::oneshot;
 
 /// Retains the original index and identity of an acknowledged durable exposure.
@@ -308,19 +309,13 @@ async fn transition(
                     Operation::Check | Operation::ProtectObject { .. }
                         if !row.accepts_work(lease.generation, now) =>
                     {
-                        return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "exposure is expired or draining",
-                        ));
+                        return Err(read_denied(&lease.id));
                     }
                     Operation::Check => return Ok(lease),
                     Operation::ProtectObject { source } => {
                         let (hashes, expires) = source.exposure_pins(executor, &owner)?;
                         if expires > row.deadline {
-                            return Err(io::Error::new(
-                                io::ErrorKind::PermissionDenied,
-                                "file grant exceeds exposure deadline",
-                            ));
+                            return Err(read_denied(&lease.id));
                         }
                         let pin_owner = row.pin_owner();
                         for hash in hashes {
@@ -374,4 +369,43 @@ async fn transition(
     }
     state::finish(&mut owner, generation)?;
     Ok(lease)
+}
+
+/// Preserves the requested denial through the native IO-to-store boundary.
+fn read_denied(id: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        StoreFailure::new(StoreErrorKind::Denied {
+            verb: "read",
+            pattern: format!("exposure:{id}"),
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_denied;
+    use crate::host_cache::content::native_failure;
+    use std::error::Error;
+    use terrane_format::identity::{IdentityKind, TERRANE_V1};
+    use terrane_sdk::store::StoreErrorKind;
+
+    #[test]
+    fn exposure_read_denial_survives_native_adapter_without_policy_details()
+    -> Result<(), Box<dyn Error>> {
+        let identity = TERRANE_V1.from_digest(IdentityKind::Node, &[7; 32])?;
+        let denial = read_denied("0123456789abcdef0123456789abcdef");
+        assert_eq!(denial.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let failure = native_failure(denial, &identity);
+        assert_eq!(
+            failure.kind(),
+            &StoreErrorKind::Denied {
+                verb: "read",
+                pattern: "exposure:0123456789abcdef0123456789abcdef".into(),
+            }
+        );
+        assert!(failure.source().is_none());
+        Ok(())
+    }
 }
