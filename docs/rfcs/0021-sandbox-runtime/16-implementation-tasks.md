@@ -10547,3 +10547,14 @@ it and reject namespace creation by Controller, Host and the two guest roles.
 All 147 checker unit tests pass. The full compiled-policy checks and installed
 Host execution remain pending; this source repair does not qualify phase 0.
 The target retains its empty capability bounding set and namespace restrictions.
+
+### Separate switch-root and reexec adversary identities (execution pending)
+
+The labeled-upper handoff matrix reaches the completed switch-root attack and
+its host assertions. It then waits for a host adversary whose unit name was
+reused from the initrd. PID 1 retains the completed initrd service state across
+switch-root, so the wanted host start is lost and the command deadline fires
+before the reexec attack is armed. The host reexec adversary now has a distinct
+unit identity. Its executable, physical pin gate, four attack targets and
+verification assertions are unchanged. Formatting passes; the installed matrix
+retry is pending. The preceding failed run is not a complete handoff receipt.

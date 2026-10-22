@@ -222,7 +222,9 @@
           services = {
             aos-root-handoff-custody = custodyService;
             aos-root-handoff-state = stateService;
-            aos-root-handoff-post-pin-adversary =
+            # A distinct host identity avoids inheriting the completed initrd
+            # attack's active state across switch-root and losing this start.
+            aos-root-handoff-post-pin-reexec-adversary =
               lib.mkIf (mode == "post-pin") postPinReexecAdversary;
           };
         };
@@ -343,7 +345,7 @@ in {
       )
       postPin.succeed("test ! -s /etc/ld.so.preload")
 
-      postPin.wait_for_unit("aos-root-handoff-post-pin-adversary.service")
+      postPin.wait_for_unit("aos-root-handoff-post-pin-reexec-adversary.service")
       postPin.succeed("touch /run/aos/post-pin-reexec.arm")
       postPin.succeed("systemctl daemon-reexec")
       postPin.wait_for_unit("multi-user.target")
