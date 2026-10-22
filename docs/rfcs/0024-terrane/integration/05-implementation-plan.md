@@ -14077,3 +14077,22 @@ Native closure/restart execution and required application compilation remain
 pending frozen qualification. Active/legacy cold exposure reconciliation and
 production worker/backing transport integration remain unfinished. No trunk task
 is closed by this increment.
+
+The remaining frozen `fc36f370bc` checks have completed. Required application
+test-target compilation passes in 1,485.19 seconds; immutable review matches
+all 8,026 source files and 184 compiler records across 59 packages. This is
+compilation-only evidence. The full native host-cache VM passes in 1,506.95
+seconds, executing all 128 native library cases and 92 fixture selectors. Its
+review matches the same complete immutable source, 5,321 bound inputs and four
+installed Cargo ELFs. These results qualify the backing-record and authenticated
+census checkpoint, not the later retirement or cold-closure changes.
+
+Combined retirement qualification at `d297b9c086` fails in 749.32 seconds. The
+actual sealed-file closure actor reports `Elapsed(())`; retained serial evidence
+is `/scratch/nix-build/nix-3690968-3732011794/build/serial.log`. This checkpoint
+predates the original-probe correction described above. The timeout is retained
+as a failure; it is not a physical-release pass. The corrected surface, full
+native-cache and mandatory application checks at `4f67e30ba9` remain running
+from frozen clean source: 9,358 tracked files, fingerprint
+`e1e0c9fa95aefe6049c4eb803baa617ef68f5171d206a938e6aa42b02a76635f`.
+No trunk acceptance or production worker readiness is asserted.
