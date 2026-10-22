@@ -6,6 +6,7 @@
 }: rec {
   mkAosBazelToolchains = import ./toolchains.nix {inherit pkgs lib;};
   mkAosBazelNativeLibraries = import ./native-libraries.nix {inherit pkgs lib;};
+  mkAosBazelStaticLibraries = import ./static-libraries.nix {inherit pkgs lib;};
   mkAosBazelCrossToolchains = arguments: import ./cross-toolchains.nix ({inherit pkgs;} // arguments);
   aosBazelModules = import ./modules.nix {inherit pkgs lib;};
   aosBazelToolchains = mkAosBazelToolchains {};

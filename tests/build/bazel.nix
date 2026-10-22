@@ -38,6 +38,7 @@ in
     source-selection = import ./_bazel-source-selection.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
+    static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
     native-libraries = let
       shared = import ./_bazel-native-libraries.nix {inherit pkgs;};
       static = import ./_bazel-native-libraries.nix {
@@ -286,7 +287,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor native-libraries precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

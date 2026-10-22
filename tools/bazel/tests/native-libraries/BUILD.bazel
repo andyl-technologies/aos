@@ -2,11 +2,14 @@ load("@rules_rust//rust:defs.bzl", "rust_doc_test")
 load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary", "rust_library")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 
+exports_files(["main.c"])
+
 cc_library(
     name = "probe",
     srcs = ["probe.c"],
     hdrs = ["probe.h"],
     deps = ["@aos_native//:sqlite", "@aos_native//:zstd"],
+    visibility = ["//tools/bazel/tests/static-runtime:__pkg__"],
 )
 
 cc_binary(

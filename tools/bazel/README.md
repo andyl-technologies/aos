@@ -90,8 +90,27 @@ pinned rules receive narrow fixes for empty source roots and shared-library
 flags when converting compiler inputs into doctest commands.
 `tests/evidence/native-linux-native-libraries.json` retains the qualification.
 This qualifies native Linux imports; family qualification separately checks
-store/campaign build-script bindings. A fully static guest executable still
-requires its own adapter and checks.
+store/campaign build-script bindings.
+
+`checks.build.bazel.static-runtime.all` qualifies the native Linux static
+runtime adapter before the guest conversion. `mkAosBazelStaticLibraries`
+extends explicit static SQLite/zstd imports with declared glibc archives,
+the existing guest unwinder shim, and a rebased libm linker script. Consumers
+opt in through `@aos_native//:static_runtime` and target-only Rust flags
+`-Ctarget-feature=+crt-static` and `-Crelocation-model=static`. Execution-platform
+procedural macros keep the ordinary dynamic toolchain.
+
+The check executes C and Rust SQLite/zstd probes after package installation,
+requires classic static ELF executables without an interpreter or shared
+imports, and verifies the exact archive/script bytes and closure manifests in
+actual sandboxed link actions. An optional `retainActionGraph` build argument
+retains expanded compiler arguments; the qualification matches Rust response
+file contents against the executed input hashes before checking target and
+macro flags. Static glibc still embeds optional locale/timezone/loader data
+paths, so the Nix closure reports its glibc reference instead of treating ELF
+static linkage as proof of independence from all runtime data. This fixture
+does not qualify the guest package, foreign static targets, or VM behavior.
+`tests/evidence/native-linux-static-runtime.json` retains the qualification.
 
 Entries may select `pkgConfigFiles` explicitly. Their source-built pkg-config
 wrapper searches only those files, clears ambient search paths and sysroots,
