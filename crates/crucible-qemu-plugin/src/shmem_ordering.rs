@@ -89,6 +89,19 @@ impl PluginShmemOrdering {
         slot.publish_reached_icount(reached_icount)
     }
 
+    /// Publishes the reached icount, keeping an idle boundary already published there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the reached icount exceeds the scheduler
+    /// ceiling.
+    pub fn publish_reached_icount_retaining_idle(
+        slot: &NodeSlot,
+        reached_icount: u64,
+    ) -> Result<(), NodeSlotError> {
+        slot.publish_reached_icount_retaining_idle(reached_icount)
+    }
+
     /// Publishes the reached icount together with QEMU's settlement attestation.
     ///
     /// `settled_ceiling` is the logical ceiling QEMU sampled when it found no

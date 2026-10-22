@@ -171,6 +171,86 @@ fn a_zero_length_advance_publishes_its_boundary_and_takes_a_due_frame() {
 }
 
 #[test]
+fn a_zero_length_answer_keeps_the_idle_boundary_and_its_deadline() {
+    let slot = NodeSlot::new(KIND_VM);
+    publish_ceiling(
+        &slot,
+        0,
+        10 * TICKS_PER_INSTRUCTION,
+        AdvanceStopCondition::NextAuthenticatedIdle,
+    );
+    let state = test_live_state(473, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_ICOUNT_RAW.set(1);
+    state
+        .publish_current_icount(1)
+        .unwrap_or_else(|error| panic!("the boundary should publish: {error}"));
+
+    // Every vCPU halted at the boundary with a timer due later, and the host
+    // took that idle publication as the end of its quantum.
+    let wake = 7 * TICKS_PER_INSTRUCTION;
+    slot.publish_idle(BOUNDARY_BELOW, wake)
+        .unwrap_or_else(|error| panic!("the idle boundary should publish: {error}"));
+
+    // The host's post-quantum clamp republishes the ceiling at the reached
+    // boundary. Answering that zero-length advance must not report the
+    // halted node as running or drop the deadline it is waiting for.
+    publish_ceiling(
+        &slot,
+        BOUNDARY_BELOW,
+        BOUNDARY_BELOW,
+        AdvanceStopCondition::Ceiling,
+    );
+    let before = slot.snapshot().publish_gen;
+    assert_eq!(state.max_advance_icount(), Ok(1));
+    TEST_ICOUNT_RAW.set(0);
+
+    let answered = slot.snapshot();
+    assert_ne!(answered.publish_gen, before);
+    assert_eq!(answered.current_icount, BOUNDARY_BELOW);
+    assert_eq!(answered.status, STATUS_IDLE);
+    assert_eq!(answered.idle_wake_icount, wake);
+}
+
+#[test]
+fn a_zero_length_answer_keeps_a_running_node_running() {
+    let slot = NodeSlot::new(KIND_VM);
+    publish_ceiling(
+        &slot,
+        0,
+        10 * TICKS_PER_INSTRUCTION,
+        AdvanceStopCondition::Ceiling,
+    );
+    let state = test_live_state(474, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+    TEST_ICOUNT_RAW.set(1);
+    state
+        .publish_current_icount(1)
+        .unwrap_or_else(|error| panic!("the boundary should publish: {error}"));
+
+    publish_ceiling(
+        &slot,
+        BOUNDARY_BELOW,
+        BOUNDARY_BELOW,
+        AdvanceStopCondition::Ceiling,
+    );
+    let before = slot.snapshot().publish_gen;
+    assert_eq!(state.max_advance_icount(), Ok(1));
+    TEST_ICOUNT_RAW.set(0);
+
+    let answered = slot.snapshot();
+    assert_ne!(answered.publish_gen, before);
+    assert_eq!(answered.current_icount, BOUNDARY_BELOW);
+    assert_eq!(answered.status, STATUS_RUNNING);
+}
+
+#[test]
 fn a_running_guest_meets_a_device_deadline_at_its_next_boundary() {
     let slot = NodeSlot::new(KIND_VM);
     publish_ceiling(

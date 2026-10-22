@@ -925,6 +925,18 @@ enum IdleSchedulerWaitDisposition {
     RescanInQemu,
 }
 
+/// How a boundary publication classifies the node's reached icount.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoundaryIcountPublication {
+    /// A retirement boundary of a running node.
+    Reached,
+    /// A zero-length advance answer, which keeps an idle boundary published
+    /// at the same coordinate.
+    RetainingIdle,
+    /// QEMU's settlement through the sampled ceiling.
+    Settled(u64),
+}
+
 /// Releases exclusive fault-command pump ownership on every return path.
 struct FaultCommandPumpGuard<'a>(&'a AtomicBool);
 
@@ -1614,6 +1626,20 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
         settled_ceiling: Option<u64>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let publication = settled_ceiling.map_or(
+            BoundaryIcountPublication::Reached,
+            BoundaryIcountPublication::Settled,
+        );
+        self.publish_boundary_icount_as(raw_icount, checkpoint_handoff, boundary, publication)
+    }
+
+    fn publish_boundary_icount_as(
+        &self,
+        raw_icount: u64,
+        checkpoint_handoff: bool,
+        boundary: &'static str,
+        publication: BoundaryIcountPublication,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
             self.observe_unpublished_boundary(boundary, "paused", raw_icount);
             return Ok(());
@@ -1647,25 +1673,30 @@ impl LiveVcpuTimeCallbackState {
         }
         let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
         self.inject_due_network_inbound(current_icount, passed_delivery_floor_icount)?;
-        match settled_ceiling {
-            Some(settled_ceiling) => PluginShmemOrdering::publish_settled_icount(
-                self.slot.get(),
-                current_icount,
-                settled_ceiling,
-            )
-            .map(|_recorded| ()),
-            None => PluginShmemOrdering::publish_reached_icount(self.slot.get(), current_icount),
-        }
-        .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        let slot = self.slot.get();
+        let (kind, settled_ceiling) = match publication {
+            BoundaryIcountPublication::Reached => (
+                "reached",
+                PluginShmemOrdering::publish_reached_icount(slot, current_icount).map(|()| None),
+            ),
+            BoundaryIcountPublication::RetainingIdle => (
+                "reached",
+                PluginShmemOrdering::publish_reached_icount_retaining_idle(slot, current_icount)
+                    .map(|()| None),
+            ),
+            BoundaryIcountPublication::Settled(settled_ceiling) => (
+                "settled",
+                PluginShmemOrdering::publish_settled_icount(slot, current_icount, settled_ceiling)
+                    .map(|_recorded| Some(settled_ceiling)),
+            ),
+        };
+        let settled_ceiling = settled_ceiling
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
         self.last_raw_icount.store(raw_icount, Ordering::Release);
         self.last_icount.store(current_icount, Ordering::Release);
         self.device_wait_witness.observe_publication(
             boundary,
-            if settled_ceiling.is_some() {
-                "settled"
-            } else {
-                "reached"
-            },
+            kind,
             raw_icount,
             current_icount,
             settled_ceiling,

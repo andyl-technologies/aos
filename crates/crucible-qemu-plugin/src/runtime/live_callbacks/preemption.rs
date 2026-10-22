@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crucible_shmem::SchedulerPreemptionKind;
 
-use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState};
+use super::{BoundaryIcountPublication, LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState};
 use crate::runtime::installed_console::{DispatchAdvance, DispatchResult};
 use crate::{
     IdleHotLoopError, PluginPreemptionDecision, PluginShmemOrdering, PreemptionWindow,
@@ -86,6 +86,11 @@ impl LiveVcpuTimeCallbackState {
     /// due at the current coordinate, such as a frame delivered there, is taken
     /// at this boundary: the publication injects it without moving the clock.
     /// Each advance publication is answered at most once.
+    ///
+    /// The host's post-quantum clamp is such an advance, and it follows an
+    /// all-halted idle publication. The answer retires nothing and wakes no
+    /// vCPU, so it keeps that idle classification and wake deadline; a vCPU an
+    /// injected event makes runnable republishes running through its resume.
     fn answer_zero_length_advance(
         &self,
         raw_icount: u64,
@@ -108,7 +113,12 @@ impl LiveVcpuTimeCallbackState {
         }
         self.answered_zero_length_advance
             .store(marker, Ordering::Release);
-        self.publish_boundary_icount(raw_icount, true, "zero-length-advance", None)
+        self.publish_boundary_icount_as(
+            raw_icount,
+            true,
+            "zero-length-advance",
+            BoundaryIcountPublication::RetainingIdle,
+        )
     }
 
     // The ordinary path retains its original scheduler read and ordering.

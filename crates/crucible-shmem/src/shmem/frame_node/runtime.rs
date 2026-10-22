@@ -333,6 +333,36 @@ impl NodeSlot {
         Ok(())
     }
 
+    /// Republishes the reached icount without demoting an idle boundary there.
+    ///
+    /// An answer to an advance that ends at the node's current coordinate adds
+    /// a fresh publication but retires nothing and wakes no vCPU. When the
+    /// node already published idle at `reached_icount`, the publication keeps
+    /// that classification and its wake deadline: only a vCPU resume makes
+    /// the node running again. Any other state publishes as
+    /// [`Self::publish_reached_icount`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the reached icount exceeds the published
+    /// ceiling.
+    pub fn publish_reached_icount_retaining_idle(
+        &self,
+        reached_icount: u64,
+    ) -> Result<(), NodeSlotError> {
+        self.check_node_may_advance_to(reached_icount)?;
+        let current_ns = icount_to_virtual_ns(reached_icount);
+        let idle_here = self.status.load(Ordering::Acquire) == STATUS_IDLE
+            && self.current_icount.load(Ordering::Acquire) == reached_icount;
+        let status = if idle_here {
+            STATUS_IDLE
+        } else {
+            STATUS_RUNNING
+        };
+        self.publish_state(reached_icount, current_ns, None, status);
+        Ok(())
+    }
+
     /// Publishes a reached icount that settles the node through its ceiling.
     ///
     /// QEMU calls this when the node's next retirement would exceed the
