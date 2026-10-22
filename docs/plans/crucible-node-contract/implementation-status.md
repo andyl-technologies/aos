@@ -3505,6 +3505,33 @@ application gate compiles 180 test executables across 58 packages, including
 library script stops at the failed raw-JSON run before its all-target check.
 No new configured runtime, VM or full RFC qualification follows.
 
+## Grouped Initial construction accounting
+
+Commit `abf3e09ad9` groups the existing launch and Bootstrap constructor rows
+before combining their independent retained, transient and counter axes. Parent
+projection and native reconstruction retain the same evaluation order and field
+associations. The fixed counter additionally names both new group headers; the
+change creates no opaque Initial, Recipe, phase grant or new wire format.
+
+The borrowed Initial15 validator now ends in an explicit lexical scope before
+the origin and retained-storage census. A primitive empty-input check uses
+array membership, and the Launch decoder keeps both child-type depth
+dependencies through a private constant maximum helper. Existing checks,
+refusal behavior and decoder layouts remain intact.
+
+All 22 startup-wire, 322 snapshot and 220 connection tests pass separately in
+standard and raw-JSON modes. Transport/Engine/Daemon all-feature/all-target
+checking, owned-file formatting and all six architecture gates pass. Strict
+Transport library Clippy still fails, with 81 errors and 1,727 warnings; no
+allowance changes. These focused results do not resolve the complete raw-JSON
+run's native Bootstrap failures recorded above.
+
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 437 owned Rust/Cargo inputs match
+committed `abf3e09ad9` and its actual captured source. This gate runs no tests.
+No new complete-library, configured runtime, VM or full RFC qualification
+follows from this construction cleanup.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
