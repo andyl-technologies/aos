@@ -44,6 +44,7 @@
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
     bootstrapConfiguration = import ./bootstrap-configuration.nix;
+    bootstrapUnitReferences = import ./bootstrap-unit-references.nix;
     initrdAccountSeed = initrdAccountSeed.checks;
     initrdConfiguration = initrdConfiguration.checks;
     nativeReleaseInventory = import ./release-native-inventory.nix {inherit pkgs;};

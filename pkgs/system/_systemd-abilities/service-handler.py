@@ -1018,6 +1018,22 @@ class Handler(ResourceHandler):
         return {"resource": path}
 
 
+def image_unit_reference(value):
+    """Encodes a build-time producer identity using the runtime name rules."""
+    if not isinstance(value, dict):
+        return value
+    if set(value) != {"image_service_identity"}:
+        raise ValueError("unresolved or foreign image unit dependency")
+
+    identity = dict(value["image_service_identity"])
+    selection = identity.get("instantiation")
+    if selection and selection["kind"] == "instance":
+        identity["instantiation"] = dict(
+            selection, template_resource=image_unit_reference(selection["template_resource"]),
+        )
+    return service_identity(identity)
+
+
 def render_services(services, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -1026,6 +1042,24 @@ def render_services(services, directory):
         if not value.get("enable", value.get("enabled", False)):
             continue
         value = dict(value, instance=name, service=value.get("service", name))
+        selection = value.get("instantiation")
+        if selection and selection["kind"] == "instance":
+            value["instantiation"] = dict(
+                selection, template_resource=image_unit_reference(selection["template_resource"]),
+            )
+        activation = value.get("activation")
+        if activation:
+            value["activation"] = dict(activation, bindings=[
+                dict(binding, resource=image_unit_reference(binding["resource"]))
+                for binding in activation["bindings"]
+            ])
+        # Only image rendering accepts declared producer identities. Runtime
+        # reconciliation continues to require actual resolved effect outputs.
+        relationships = {"after", "before", "requires", "wants", "requisite", "conflicts", "binds_to", "part_of", "upholds"}
+        value["dependencies"] = {
+            field: [image_unit_reference(item) for item in items] if field in relationships else items
+            for field, items in (value.get("dependencies") or {}).items()
+        }
         realization = realize_service(value)
         if identities.intersection(realization["units"]):
             raise ValueError("service manager identities collide")

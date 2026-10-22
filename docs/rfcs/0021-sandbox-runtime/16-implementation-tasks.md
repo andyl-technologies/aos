@@ -10664,3 +10664,30 @@ still fails at USER with EPERM before the target executes. The namespace-create
 policy grant is therefore insufficient to qualify phase 0. A diagnostic against
 that exact image is required before another permission change. This standalone
 Host fixture uses 16 vCPUs without a TPM device; it is not a TPM receipt.
+
+### Retained native unit resource addresses (installed execution pending)
+
+The Root image build stopped before boot because Chrony and SSH retained deferred
+producer references in their unit definitions. Image projection now validates
+each address against its enabled producer's full contract identity, output and
+schema. Network dependencies preserve their declared manager address; service
+dependencies use the canonical runtime renderer's identity and template-instance
+escaping. Configuration paths and account names come from their actual declared
+producers. Activation prerequisites and readiness observations remain deferred;
+this projection neither runs producers nor creates their receipts.
+
+All 18 services in the actual Root fixture configuration render with the source
+renderer, including Chrony's configuration/directory inputs and SSH's key-generation
+and readiness edges. Fifteen focused Nix checks pass, including foreign identity,
+disabled producer, wrong schema/output and unsupported-operation rejection.
+The focused renderer test compares complete unit bytes against resolved runtime
+inputs for singleton and escaped template instances, including activation bindings.
+The full native checks and installed retry remain pending.
+
+The preceding read-only recovery change passes full compiled-policy and mutation
+checks at `/nix/store/dkzxmzvagdxf443yi8bdwknarzwnhvxg-aos-selinux-production-policy-1`
+and complete Rust test-target compilation at
+`/nix/store/a2rwyc9hbb6zywk7rglwlb2zvnzph5bz-aos-test-targets-0.1.0`.
+That policy receipt precedes the fixed-directory DAC change. The preceding
+combined startup build also stopped on the unresolved native unit references;
+neither failed build reached a VM or qualified a public lifecycle gate.

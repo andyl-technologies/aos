@@ -707,6 +707,50 @@ class NativeHandlerTests(unittest.TestCase):
         ])
         self.assertNotIn("SystemCallErrorNumber=", rendered)
 
+    def test_image_dependency_addresses_match_resolved_runtime_unit_bytes(self):
+        template = {"image_service_identity": {
+            "instance": "producer", "service": "unused",
+            "instantiation": {"kind": "template", "template": "worker"},
+        }}
+        instance = {"image_service_identity": {
+            "instance": "selected", "service": "unused",
+            "instantiation": {"kind": "instance", "template_resource": template, "instance": "a/b-\u00e9"},
+        }}
+        singleton = {"image_service_identity": {
+            "instance": "producer", "service": "unused",
+            "manager_identity": {"name": "declared-producer", "aliases": []},
+        }}
+        projected = service()
+        projected["dependencies"] = {
+            "after": [singleton, instance, "systemd-networkd.service"],
+            "requires": [singleton],
+            "wants": ["sysinit.target"],
+        }
+        projected["activation"] = {"bindings": [{
+            "resource": singleton, "relationship": "service-member-of-resource",
+        }]}
+        resolved = dict(projected, dependencies={
+            "after": ["declared-producer.service", "worker@a\\x2fb\\x2d\\xc3\\xa9.service", "systemd-networkd.service"],
+            "requires": ["declared-producer.service"], "wants": ["sysinit.target"],
+        }, activation={"bindings": [{
+            "resource": "declared-producer.service", "relationship": "service-member-of-resource",
+        }]})
+
+        for own_instance in [False, True]:
+            if own_instance:
+                projected["instantiation"] = instance["image_service_identity"]["instantiation"]
+                resolved["instantiation"] = dict(projected["instantiation"], template_resource="worker@.service")
+
+            with self.subTest(own_instance=own_instance), tempfile.TemporaryDirectory() as root:
+                handler_module.render_services({"example": projected}, root)
+
+                for name, text in handler_module.realize_service(resolved)["units"].items():
+                    self.assertEqual((Path(root) / name).read_bytes(), text.encode())
+        with self.assertRaises(ValueError):
+            handler_module.realize_service(projected)
+        with self.assertRaises(ValueError):
+            handler_module.image_unit_reference({"_type": "aos-effect-output"})
+
     def test_manager_observer_projection_preserves_native_units_and_enablement_links(self):
         services = {
             key: dict(
