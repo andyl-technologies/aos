@@ -9658,8 +9658,9 @@ selected command, retaining the existing V3 path family and profile MAC label.
 The consumer comparison remains unchanged. The new
 `build.sandbox-nix-offline-hardware-profile` check forces both actual metadata
 inventories, independently measures both rendered units and the helper contract,
-and compares their complete profiles under that rule. Its repaired build is
-pending; it does not approve a hardware job or perform a TPM operation.
+and compares their complete profiles under that rule. The repaired check passes
+at `/nix/store/812csv22g8vzc1mk2872mb4n8g6cffw2-sandbox-nix-offline-hardware-profile-check`.
+It does not approve a hardware job or perform a TPM operation.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
