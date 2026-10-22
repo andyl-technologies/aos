@@ -1987,9 +1987,26 @@ Three new contract controls cover duplicate and reversed order in all ten actual
 Hello manifest rosters, identifier/edition and domain/digest tie breakers, and
 oversized-roster refusal before duplicate or child errors. All 64 active format
 crate tests pass, with zero failures and the existing private child ignored.
-Complete affected-crate qualification remains pending. This reduces transient
-copies on the SDK path; its complete constructor row, native verifier and original
-root invocation remain unfinished, along with policy/ACK/model authority.
+For `966aba7b3a`, both complete standard and raw-value Transport libraries pass
+1,909 tests each, with zero failures, no filtering and 16 existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 242 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three exact VM component captures. Later
+verifier callbacks are excluded.
+
+An attempted runtime refresh passed 1,828 Daemon tests and failed nine, with
+166 existing working-tree ignores. Eight require the missing reference-device
+setting; one requires the source-built gem5 profile compiled into the binary.
+That invocation stopped before Engine runtime tests. It included preserved
+external arm-root working-tree edits. A separately configured rerun is pending;
+this failed invocation does not refresh the `f2150ce5c7` runtime qualification.
+
+This reduces transient copies on the SDK path. Its complete constructor row and
+original-root invocation remain unfinished, along with policy/ACK/model authority.
 
 ## Original Native18 Hello verifier callbacks
 
