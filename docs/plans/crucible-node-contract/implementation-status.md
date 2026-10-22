@@ -2997,6 +2997,67 @@ configured engine/daemon runtime qualification is claimed. Actual bootstrap repl
 reservation/publication, current Native18 ownership, genuine Source/Birth funding,
 opaque Initial/Recipe production and the remaining full RFC criteria remain open.
 
+## Original bootstrap reply publication and SDK custody
+
+Commit `14b0a830c5` publishes the prepared Bootstrap18 response on the same
+original public stream. The full proof, preparation and publication path shares
+one original Codec/Source/Host/SDK custody scope. The existing nonrenewing cut
+is preserved. Completion stays private until all enclosing terminal guards pass.
+
+Reservation records the exact response in the actual SDK. The unbuffered writer
+uses the previously prepared frame and advances its journal immediately after
+each successful write. A partial write retains its byte prefix and first error;
+a terminal refusal after a full transfer retains the physical completion fact.
+Only a complete physical write permits confirmation, which moves both actual
+SDK request and response records into the retained publication owner. No request
+is reconstructed during confirmation. Failed or completed attempts cannot retry.
+
+The original Hello exchange remains in the same allocation behind a checked
+borrow holder. Busy loans refuse full inspection rather than reporting absent
+custody. Publication releases its mutable stream loan before each complete
+original/SDK/output census. The independent initial formula includes additional
+SDK reservation and confirmed-record backing, clone/decoder partials and concrete
+borrow, dispatcher and I/O controls inside the existing Reply component.
+
+The fixtures announce their independently calculated initial Prepare row before
+semantic fault injection. Deliberately short retained/transient/scratch and
+whole-escrow controls remain short. Four unused later fixture transient allowances
+change from 160 MiB to 156 MiB; each later retained allowance remains 2 MiB and
+scratch remains 4 MiB. The initial row remains independently derived rather than adjusted to fit the
+announcements. The fixed 256 MiB policy cap and original five-second cut are
+unchanged. The reactive publication fixture selects
+its actual reactive participant before complete launch identities are rebuilt.
+
+Commit `18bd949f08` keeps completed-context proof inspection ahead of duplicate
+fixture censuses. It preserves every construction/effect census and the final
+complete predecessor census; the original five-second cut is unchanged. This
+supersedes the earlier full-run inspection expiry on `14b0a830c5`.
+
+The complete standard Transport library passes 1,989 tests, with zero failures,
+no filtering and 16 existing ignores (592.58 seconds). The complete raw-JSON Transport library also passes all 1,989 tests, with
+zero failures, no filtering and 16 existing ignores (590.04 seconds). The
+Transport/Engine/Daemon all-feature/all-target check passes (2 minutes 12 seconds).
+All six registered architecture checks pass. The required application-target
+compilation gate emits 180 test executables across 58 package IDs, including
+71 integration targets. All 349 owned Rust/Cargo inputs match both committed
+`18bd949f08` and its actual captured Nix source. This compilation gate does not
+execute runtime tests.
+
+The physical publication control covers 26 inherited-channel flights: producer
+and actual reactive completion, changed cut, missing preparation, broken pipe,
+and refusal, expiry and revocation at seven construction/effect boundaries. Its
+independent parent verifies the actual second frame's canonical body, correlation,
+assigned-response digest, distinct receipt MAC and BootstrapOnly state. Lower
+controls cover partial/Interrupted I/O, zero writes, full transfer followed by
+terminal refusal, unchanged backing, and the actual SDK request allocation moved
+into confirmed custody.
+
+This checkpoint grants no native phase or common Ready. The Source-side
+Bootstrap18 SDK transaction and genuine Source/Birth funding remain incomplete;
+so do opaque Initial/Recipe production, the actual five-phase native adopter,
+complete Source/runtime preservation and remaining full RFC qualification. No
+new VM or configured engine/daemon runtime result is claimed.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
