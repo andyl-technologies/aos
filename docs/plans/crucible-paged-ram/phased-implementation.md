@@ -159,7 +159,7 @@ writable fixes package finalization. Production compiler and libc identities
 remain unchanged.
 
 The installed compiler package passes at
-`nw1ci1ad50wkwdgqfnkz4pagj2c2kiq1-crucible-cc-16.2.0`. Its build compiles and
+`wzqnn5nz40d9yvyc2bq81bzlyclxjnfn-crucible-cc-16.2.0`. Its build compiles and
 executes an external public-header consumer, checks the embedded loader and
 actual libc resolution without environment overrides, and checks the C++17
 header ABI. The consumer exercises actual unused-arena return, absent
@@ -169,12 +169,25 @@ returns `ESRCH` until reuse, when the old incarnation returns `ESTALE`. The
 failure is retained and the control is corrected. The independent external
 consumer proof is
 `58ade586db97cea2abfd340b535dce61f51f983e39a8b287541d99d2d21ca9f8`.
-Core evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`.
+The installed consumer now also creates a real joinable thread on a supplied
+one-MiB stack through the exported bounded API. A deliberate live-worker
+terminal cut returns `EBUSY` and retains stack/backing debt. After releasing
+the worker, the public try-only terminal API completes within one fixed
+ten-second test bound and reports actual entry, exit cleanup, kernel exit,
+join, list/TLS removal and stack/backing return. The returned worker value is
+checked independently. Its first run incorrectly expected successful return
+to clear `first_error`; the implementation preserves the earlier `EBUSY`,
+which the corrected control now requires alongside successful `retire_status`.
+No provider implementation changed. Core evaluation passes at
+`p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`.
+The independent installed-worker package review, including equality with the
+derivation's immutable C source, is
+`d27c884827aecc96f4f2087d5306a48b50f925f971ce82ec6c19c7834691ed2b`.
 
 No QEMU loader change, caller application closure, nonwaiting
 creation/TLS/callback claim or stack profile admission follows from these
-packages. The external consumer does not create a worker; actual bounded worker
-controls are exercised by the separate libc package qualification.
+packages. The ordinary public-ABI worker is distinct from QEMU's still-missing
+application and thread-lifetime closure.
 
 #### Physical stack/member and genuine fixture-provider composition
 

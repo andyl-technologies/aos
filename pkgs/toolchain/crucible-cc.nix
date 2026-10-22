@@ -82,7 +82,7 @@ in
         name = "check";
         script = ''
           ulimit -c 0
-          "$out/bin/gcc" -std=c11 -Wall -Wextra -Werror \
+          "$out/bin/gcc" -std=c11 -Wall -Wextra -Werror -pthread \
             ${./tests/crucible-cc-consumer.c} -o installed-consumer
 
           interpreter="$(${stdenv.binutils}/bin/readelf --program-headers --wide installed-consumer)"
