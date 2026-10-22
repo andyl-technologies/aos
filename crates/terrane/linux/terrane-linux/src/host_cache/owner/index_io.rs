@@ -299,7 +299,7 @@ fn check_canonical_mode(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-fn close_checked(file: File) -> io::Result<()> {
+pub(super) fn close_checked(file: File) -> io::Result<()> {
     let descriptor = file.into_raw_fd();
     // SAFETY: into_raw_fd transferred unique ownership of this descriptor. Linux
     // releases it even on a late close error; retrying could close a reused FD.

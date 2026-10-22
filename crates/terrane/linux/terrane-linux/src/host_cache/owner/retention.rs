@@ -65,6 +65,8 @@ pub(crate) use recovery_manifest::{
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
+    #[cfg(feature = "surface-fuse")]
+    pub(super) surface_policy: Option<super::SurfaceIndexPolicy>,
     /// Immutable validated request bounds copied before the worker starts.
     pub(super) admission_bounds: super::admission::AdmissionBounds,
     /// Copies the validated immutable profile for independent lower-tier verification.
@@ -78,6 +80,12 @@ pub struct NativeMetadataOwner {
 
 /// Transfers complete command ownership to the retained physical executor.
 pub(super) enum Command {
+    #[cfg(feature = "surface-fuse")]
+    CacheSurfaceIndex {
+        root: terrane_format::identity::Digest,
+        nodes: BTreeMap<terrane_format::identity::Digest, Vec<u8>>,
+        response: oneshot::Sender<io::Result<super::NativeSurfaceIndex>>,
+    },
     /// Selects and retires original cached allocations using measured project pressure.
     EvictCache {
         incoming: u64,
@@ -192,6 +200,9 @@ impl SynchronizedState {
 
 /// Retains native proofs, exclusive state ownership and physical command resources.
 pub(super) struct Custody {
+    #[cfg(feature = "surface-fuse")]
+    pub(super) surface_indexes:
+        BTreeMap<crate::structural_index::IndexKey, super::surface_index::Job>,
     pub(super) preparation: NativeCachePreparation,
     pub(super) directory: File,
     pub(super) state: CacheState,
@@ -271,6 +282,8 @@ impl NativeMetadataOwner {
     /// Refuses unavailable thread/runtime resources, stale native preparation,
     /// unsafe/malformed state custody, another state writer and cold scratch.
     pub fn start(preparation: NativeCachePreparation) -> io::Result<Self> {
+        #[cfg(feature = "surface-fuse")]
+        let surface_policy = preparation.config.surface_index;
         let admission_bounds = super::admission::AdmissionBounds::new(&preparation.config)?;
         let chunk_profile = preparation.config.location.chunk_profile().clone();
         let consumer_reads = Arc::new(super::consumer::ReadBudget::new(
@@ -367,6 +380,16 @@ impl NativeMetadataOwner {
                     };
                     let _ = runtime.block_on(super::consumer::sweep_background(&mut executor));
                     match command {
+                        #[cfg(feature = "surface-fuse")]
+                        Command::CacheSurfaceIndex {
+                            root,
+                            nodes,
+                            response,
+                        } => {
+                            let result = runtime
+                                .block_on(super::surface_index::admit(&executor, root, nodes));
+                            let _ = response.send(result);
+                        }
                         Command::EvictCache { incoming, response } => {
                             let result = runtime.block_on(super::publication::eviction::run(
                                 &mut executor,
@@ -519,6 +542,8 @@ impl NativeMetadataOwner {
             return Err(error);
         }
         Ok(Self {
+            #[cfg(feature = "surface-fuse")]
+            surface_policy,
             admission_bounds,
             chunk_profile,
             commands: Some(commands),
@@ -865,6 +890,8 @@ impl Custody {
             }
         }
         let mut custody = Self {
+            #[cfg(feature = "surface-fuse")]
+            surface_indexes: BTreeMap::new(),
             preparation,
             directory,
             state: CacheState::default(),

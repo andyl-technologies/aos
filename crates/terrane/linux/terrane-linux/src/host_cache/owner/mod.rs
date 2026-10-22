@@ -36,6 +36,8 @@ mod recovery_state_parent;
 mod resume_error;
 mod retention;
 mod snapshot;
+#[cfg(feature = "surface-fuse")]
+mod surface_index;
 
 /// Selects the latest Unix deadline encodable by existing TOML policy snapshots.
 ///
@@ -53,7 +55,7 @@ pub use admission::{
     NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeMetadataAdmission,
     NativeMetadataAdmissionError,
 };
-pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
+pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig, SurfaceIndexPolicy};
 pub use consumer::{
     NativeConsumerLease, NativeFileBacking, NativeLeaseAccounting, NativeSealedBacking,
     NativeSealedObjectLease,
@@ -80,3 +82,5 @@ pub(crate) use retention::{
     RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};
+#[cfg(feature = "surface-fuse")]
+pub use surface_index::NativeSurfaceIndex;

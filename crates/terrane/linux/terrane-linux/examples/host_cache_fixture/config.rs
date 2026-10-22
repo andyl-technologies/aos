@@ -130,6 +130,7 @@ impl Inputs {
             queued_commands: 4,
             retirement_interval: Duration::from_secs(30),
             metadata_sync_hold_bytes: HOLD,
+            surface_index: None,
             index_repair: match self.domain.as_str() {
                 "tenant:index-recovery" | "tenant:index-mismatch" => Some(IndexRepairPolicy {
                     max_index_bytes: 65536,

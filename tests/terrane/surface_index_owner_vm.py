@@ -1,0 +1,162 @@
+"""Qualifies actual surface-index owner admission with independent Unix roles."""
+
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+
+def require(condition, message):
+    """Refuses missing evidence rather than manufacturing native authority."""
+    if not condition:
+        raise RuntimeError(message)
+
+
+def verify_surface(image, source):
+    """Matches the installed fifth executable to its actual retained Cargo event."""
+    identity = json.loads((image / "surface-identity.json").read_text())
+    require(identity["source"] == str(source), "surface image source mismatch")
+    rows = [json.loads(line) for line in (image / "surface-build.jsonl").read_text().splitlines()]
+    artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
+                 and row.get("target", {}).get("name") == "surface_index_owner_fixture"
+                 and row.get("executable")]
+    require(artifacts == [identity["artifact"]], "surface Cargo artifact mismatch")
+    artifact = artifacts[0]
+    require(artifact["target"]["kind"] == ["example"]
+            and artifact["target"]["crate_types"] == ["bin"]
+            and artifact["target"]["src_path"].endswith(
+                "/terrane/linux/terrane-linux/examples/surface_index_owner_fixture.rs")
+            and artifact["features"] == ["native-test-fixtures", "surface-fuse", "tokio"]
+            and artifact["profile"] == {"opt_level": "0", "debuginfo": 2,
+                "debug_assertions": True, "overflow_checks": True, "test": False},
+            "surface example target, features or profile mismatch")
+    executable = image / "libexec/surface-index-owner-fixture"
+    require(executable.read_bytes().startswith(b"\x7fELF")
+            and hashlib.sha256(executable.read_bytes()).hexdigest() == identity["executable_sha256"],
+            "surface installed ELF differs from actual Cargo bytes")
+    for relative, digest in identity["input_sha256"].items():
+        path = source / relative if relative.startswith("tests/") else source / "crates" / relative
+        require(hashlib.sha256(path.read_bytes()).hexdigest() == digest,
+                "surface immutable input mismatch: " + relative)
+    supervisor = source / "tests/terrane/surface_index_owner_vm.py"
+    require(Path(__file__).read_bytes() == supervisor.read_bytes(),
+            "installed surface supervisor differs from immutable source")
+
+
+def main():
+    """Runs real provision/query/publisher processes and bounded confined actors."""
+    image, source = map(Path, sys.argv[1:])
+    require(os.geteuid() == 0, "surface supervisor requires explicit administration")
+    spec = importlib.util.spec_from_file_location("native_owner_support", image / "share/host_cache_vm.py")
+    require(spec is not None and spec.loader is not None, "native support unavailable")
+    support = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = support
+    spec.loader.exec_module(support)
+    support.verify_image()
+    verify_surface(image, source)
+    # Use the same real provisioning and checked role launchers with two empty
+    # domains. These are fixture inputs, never quota or recovery receipts.
+    support.CASES = ["empty", "pin"]
+    support.BUDGET = support.HARD * len(support.CASES)
+    support.administrative_preflight("before")
+    support.scaffold()
+    support.administrative_preflight("after")
+    quota_config, publisher_config = support.configurations()
+    helper = image / "bin/aos-terrane-host"
+    ledger = support.ADMIN / "ledger.toml"
+    support.run(support.admin_command(support.PROVISION_CAPS,
+                [helper, "provision", "--config", quota_config, "--ledger", ledger]),
+                preexec_fn=support.native_descriptor_budget)
+    uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
+        os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
+    require(len(uuid) == 32, "actual surface project filesystem UUID unavailable")
+
+    def environment(case):
+        return dict(os.environ, TERRANE_CACHE_ROOT=str(support.root(case)),
+            TERRANE_CACHE_DOMAIN=support.domain(case), TERRANE_CACHE_OWNER=support.owner(case),
+            TERRANE_CACHE_PROJECT=str(support.project(case)), TERRANE_CACHE_UUID=uuid,
+            TERRANE_CACHE_BUDGET=str(support.BUDGET),
+            TERRANE_CACHE_QUOTA_SOCKET=str(support.RUNTIME / "quota.sock"),
+            TERRANE_CACHE_PUBLISHER_SOCKET=str(support.PUB_RUNTIME / "publisher.sock"))
+
+    children, logs = [], []
+    try:
+        for name in ["helper", "publisher"]:
+            logs.append((support.RUNTIME / (name + ".log")).open("wb"))
+        query = subprocess.Popen(support.admin_command(support.QUERY_CAPS,
+            [helper, "serve", "--config", quota_config, "--ledger", ledger]),
+            stdout=logs[0], stderr=subprocess.STDOUT, preexec_fn=support.native_descriptor_budget)
+        children.append(query)
+        deadline = time.monotonic() + 10
+        while True:
+            result = subprocess.run([str(helper), "query", "--config", str(quota_config),
+                "--owner", support.owner("empty"), "--domain", "public"], capture_output=True, timeout=6)
+            if result.returncode == 0:
+                break
+            require(query.poll() is None and time.monotonic() < deadline,
+                    "actual surface quota helper failed readiness")
+            time.sleep(0.02)
+        publisher = subprocess.Popen(support.role_command(841,
+            [image / "bin/terrane", "--config", publisher_config, "--role", "publish"]),
+            stdout=logs[1], stderr=subprocess.STDOUT, preexec_fn=support.native_descriptor_budget)
+        children.append(publisher)
+        executable = image / "bin/surface-index-owner-fixture"
+        deadline = time.monotonic() + 15
+        while True:
+            result = subprocess.run(support.role_command(840, [executable, "prepare"]),
+                env=environment("empty"), text=True, capture_output=True, timeout=12)
+            if result.returncode == 0:
+                require(result.stdout.splitlines() == ["PASS actual surface owner native preparation"],
+                        "surface preparation witness missing")
+                break
+            require(publisher.poll() is None and time.monotonic() < deadline,
+                    "actual surface publisher failed preparation: " + result.stderr)
+            time.sleep(0.02)
+        expected = {
+            "run": [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS cancelled surface waiter retains canonical sealed inode and warm requests share original inode",
+                "PASS surface indexes are kernel immutable; warm reuse and invalid nodes cause no durable mutation or content fetch",
+            ],
+            "cap": [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS actual separate surface cap retains sealed inode, durable hold and faulted owner",
+            ],
+        }
+        for case, mode in [("empty", "run"), ("pin", "cap")]:
+            result = subprocess.run(support.role_command(840, [executable, mode]),
+                env=environment(case), text=True, capture_output=True, timeout=30)
+            print(result.stdout, end="", flush=True)
+            print(result.stderr, end="", flush=True)
+            require(result.returncode == 0 and result.stdout.splitlines() == expected[mode],
+                    "actual surface-owner actor failed: " + mode)
+            require(not list((support.root(case) / "sealed").iterdir())
+                    and not list((support.root(case) / "chunks").iterdir()),
+                    "metadata-only surface admission fetched object content")
+        verify_surface(image, source)
+        print("PASS actual native surface-index admission and separate cap; exposure pins and worker remain unqualified", flush=True)
+    finally:
+        for child in reversed(children):
+            if child.poll() is None:
+                child.send_signal(signal.SIGCONT)
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
+        for log in logs:
+            log.close()
+        for name in ["helper", "publisher"]:
+            path = support.RUNTIME / (name + ".log")
+            if path.exists():
+                print(name + " actual surface process log:\n" + path.read_text(errors="replace"), flush=True)
+
+
+if __name__ == "__main__":
+    main()

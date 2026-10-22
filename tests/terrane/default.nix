@@ -517,6 +517,16 @@ in {
   integration.structural-index = import ./structural-index.nix {inherit pkgs sourceGateWithInputs;};
   integration.structural-mapping = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.structural-mapping-image = (import ./structural-mapping.nix {inherit pkgs lib sourceGateWithInputs;}).image;
+  integration.surface-index-owner =
+    (import ./host-cache-proof.nix {
+      inherit pkgs lib sourceGateWithInputs;
+      surfaceIndex = true;
+    }).native;
+  integration.surface-index-owner-image =
+    (import ./host-cache-proof.nix {
+      inherit pkgs lib sourceGateWithInputs;
+      surfaceIndex = true;
+    }).image;
   integration.range-client = import ./range-client.nix {inherit sourceGate;};
   integration.bundle-client = import ./bundle-client.nix {inherit sourceGate;};
   integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};

@@ -36,6 +36,10 @@ pub use manifest_source::NativeManifestSource;
 pub use metadata::NativeHostMetadataReader;
 #[cfg(feature = "native-test-fixtures")]
 pub use owner::NativePolicyStall;
+#[cfg(all(feature = "tokio", feature = "surface-fuse"))]
+pub use owner::NativeSurfaceIndex;
+#[cfg(feature = "tokio")]
+pub use owner::SurfaceIndexPolicy;
 #[cfg(feature = "tokio")]
 pub(crate) use owner::{
     AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,

@@ -13348,3 +13348,39 @@ structural, actual sealed-mapping and required application-target qualification
 remain pending for this increment. This producer boundary supplies no native
 cache admission, pin, exposure authorization or worker lifecycle; those remain
 required and T-FUSE-2 stays open.
+
+The frozen producer-binding checkpoint `039f7455cf` passes the structural proof
+in 100.47 seconds and the actual sealed-mapping ext4 VM in 144.02 seconds, each
+with all 9,320 tracked files unchanged. Independent review matches all 7,994
+immutable source files, 5,278 bound inputs and the actual installed Cargo ELF
+for each component. The structural proof executes all 22 structural and five
+inode cases. The VM additionally requires exact comparison of the real sealed
+descriptor against canonical compilation. Required application-target
+compilation for this checkpoint remains pending.
+
+Required application-target compilation at the preceding metadata checkpoint
+`037bc54017` passes in 1,475.15 seconds with all 9,318 tracked files unchanged.
+Independent review matches all 7,992 immutable source files and 184 actual
+compiler records across 59 packages. This is compilation only; runtime
+qualification is limited to the separately recorded component checks.
+
+Native surface-index admission now has an explicit optional policy and uses
+the existing serialized physical owner after genuine recovery and acknowledged
+publisher Resume. Its namespace and `(root, version)` key remain distinct from
+canonical pack indexes. A durable future hold precedes native creation; exact
+canonical-byte checks precede and follow fs-verity enablement. The owner retains
+original resources after cancellation or late failure. Fresh project accounting
+and a separate synchronized inode-allocation cap precede acknowledgment. Warm
+requests recompile checked nodes and require original native inode, seal and
+funding before reuse. Admission receipts expose no backing descriptor or
+exposure grant. Configuration defaults remain disabled. A dedicated ext4 proof
+covers the new admission path; committed native qualification remains pending.
+Cold derived-index retirement, eviction, exposure-lease pins and production
+configuration remain required before this path can provide FUSE index-cache
+acceptance. No T2 or T-FUSE-2 task is closed by this increment.
+
+Local verification of native surface admission passes the existing 22 canonical
+structural cases, strict all-feature/all-target Clippy (including the new actual
+owner fixture), Rust formatting and Nix formatting. The dedicated native check
+has not yet executed on the committed source; these local results do not prove
+its filesystem sequence or kernel-cap controls.

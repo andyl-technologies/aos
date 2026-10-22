@@ -7,6 +7,47 @@ use terrane_sdk::host::cache::{
     CachePolicy, HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits,
 };
 
+/// Bounds derived FUSE metadata separately from ordinary host-cache content.
+///
+/// These limits grant no disclosure or write authority. Admission additionally
+/// requires the actual Running owner, durable funding and native verification.
+#[derive(Clone, Copy, Debug)]
+pub struct SurfaceIndexPolicy {
+    /// Maximum expanded entries in a single canonical projection.
+    pub max_entries: u32,
+    /// Maximum combined canonical node bodies and their digest keys per request.
+    pub max_node_bytes: usize,
+    /// Maximum compiled bytes in a single derived index.
+    pub max_index_bytes: usize,
+    /// Separate cap on synchronized index-inode allocation, including verity data.
+    pub capacity_bytes: u64,
+    /// Distinct future hold retained until native retirement reconciles the job.
+    pub future_hold_bytes: u64,
+}
+
+impl SurfaceIndexPolicy {
+    pub(crate) fn validate(self, metadata_hold: u64, capacity: u64) -> io::Result<()> {
+        let payload = u64::try_from(self.max_index_bytes)
+            .map_err(|_| invalid("surface index payload exceeds native accounting"))?;
+        let floor = metadata_hold
+            .checked_add(payload)
+            .ok_or_else(|| invalid("surface index overlap overflows accounting"))?;
+        if self.max_entries == 0
+            || self.max_node_bytes < 32
+            || payload == 0
+            || self.capacity_bytes < payload
+            || self.capacity_bytes > capacity
+            || self.future_hold_bytes < floor
+            || self.future_hold_bytes > capacity
+        {
+            return Err(invalid(
+                "surface index policy requires finite funded bounds",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Bounds the payload and logical future hold of one native index repair.
 ///
 /// This policy grants no write permission or allocation guarantee. The physical
@@ -107,6 +148,8 @@ pub struct NativeCacheOwnerConfig {
     /// durable pack pinning, actual owner exclusion and fresh authenticated
     /// charge reconciliation remain mandatory. No default repair hold is guessed.
     pub index_repair: Option<IndexRepairPolicy>,
+    /// Optional bounded derived-index admission; absence disables surface writes.
+    pub surface_index: Option<SurfaceIndexPolicy>,
 }
 
 impl NativeCacheOwnerConfig {
@@ -188,6 +231,12 @@ impl NativeCacheOwnerConfig {
             .map_err(|_| invalid("inconsistent native eviction policy"))?;
         if let Some(repair) = self.index_repair {
             repair.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
+        }
+        if let Some(surface) = self.surface_index {
+            if !cfg!(feature = "surface-fuse") {
+                return Err(invalid("surface index admission requires surface-fuse"));
+            }
+            surface.validate(self.metadata_sync_hold_bytes, self.policy.capacity)?;
         }
         Ok(())
     }
@@ -288,6 +337,7 @@ mod tests {
             retirement_interval: Duration::from_secs(30),
             metadata_sync_hold_bytes: 16384,
             index_repair: None,
+            surface_index: None,
         }
     }
 

@@ -293,6 +293,7 @@ impl NativeCachePlan {
                 queued_commands: settings.queued_commands,
                 metadata_sync_hold_bytes: settings.metadata_sync_hold_bytes,
                 index_repair: settings.index_repair,
+                surface_index: None,
             };
             config.validate()?;
             prepared.push((domain.native.domain, config, settings));

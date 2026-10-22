@@ -1,0 +1,263 @@
+//! Exercises derived-index admission through the genuine native owner in a guest.
+//!
+//! Root provisions project quotas and independent service identities. This actor
+//! runs as UID 840 without capabilities, installs confinement before threads,
+//! and uses actual recovery and publisher Resume before any cache allocation.
+
+#[path = "host_cache_fixture/config.rs"]
+mod config;
+
+use std::{
+    collections::BTreeMap,
+    fs::{self, File, OpenOptions},
+    future::Future,
+    io,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    task::{Context, Poll, Waker},
+};
+use terrane_format::{
+    identity::Digest,
+    tree_builder::Tree,
+    tree_format::{ContentRef, Entry, EntryKind, LeafItem, TreeUse},
+};
+use terrane_linux::{
+    host_cache::{NativeCachePreparation, NativeMetadataOwner, SurfaceIndexPolicy},
+    host_quota::NativeProject,
+    quota_confinement,
+    structural_index::CompiledIndex,
+};
+use terrane_sdk::{host::cache::CacheState, store::TokioLocalFs};
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn main() -> Result<()> {
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    require_empty_capabilities()?;
+    let confinement = std::sync::Arc::new(quota_confinement::install()?);
+    let inputs = config::Inputs::load()?;
+    let mut settings = inputs.owner_config()?;
+    let policy = SurfaceIndexPolicy {
+        max_entries: 16,
+        max_node_bytes: 65536,
+        max_index_bytes: if mode == "cap" { 4096 } else { 65536 },
+        capacity_bytes: if mode == "cap" { 4096 } else { 131072 },
+        future_hold_bytes: config::HOLD + 65536,
+    };
+    settings.surface_index = Some(policy);
+    let preparation = NativeCachePreparation::inspect(settings, confinement)?;
+    if mode == "prepare" {
+        println!("PASS actual surface owner native preparation");
+        return Ok(());
+    }
+    if !matches!(mode.as_str(), "run" | "cap") {
+        return Err("unknown surface-owner selector".into());
+    }
+    let owner = NativeMetadataOwner::start(preparation)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (root, nodes) = tree()?;
+    let before = snapshot(&inputs)?;
+    if runtime
+        .block_on(owner.cache_surface_index(root, nodes.clone()))
+        .is_ok()
+        || snapshot(&inputs)? != before
+    {
+        return Err("surface admission before actual Resume changed state".into());
+    }
+    let completed = runtime.block_on(owner.recover())?;
+    runtime.block_on(owner.resume_recovered(completed))?;
+    println!("PASS surface admission requires actual recovery and acknowledged Resume");
+
+    let original = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            config::STATE,
+        ))?
+        .ok_or("durable surface snapshot missing")?;
+    if mode == "cap" {
+        let error = runtime
+            .block_on(owner.cache_surface_index(root, nodes))
+            .err()
+            .ok_or("separate actual surface cap unexpectedly accepted")?;
+        if error.kind() != io::ErrorKind::StorageFull {
+            return Err(error.into());
+        }
+        let canonical = canonical_path(&inputs, root);
+        let file = File::open(&canonical)?;
+        terrane_linux::verity::measure(&file)?;
+        if file.metadata()?.blocks() * 512 <= policy.capacity_bytes
+            || runtime
+                .block_on(owner.cache_surface_index(root, BTreeMap::new()))
+                .is_ok()
+        {
+            return Err("actual surface cap failure lost physical fault custody".into());
+        }
+        let retained = runtime
+            .block_on(CacheState::load(
+                &TokioLocalFs,
+                &inputs.root.join("state/cache"),
+                config::STATE,
+            ))?
+            .ok_or("durable surface snapshot missing")?;
+        if retained.reservations.len() != original.reservations.len() + 1 {
+            return Err("late surface cap failure discarded its funded job".into());
+        }
+        println!(
+            "PASS actual separate surface cap retains sealed inode, durable hold and faulted owner"
+        );
+        return Ok(());
+    }
+
+    let stall = runtime.block_on(owner.stall_policy_for_fixture())?;
+    let mut abandoned = Box::pin(owner.cache_surface_index(root, nodes.clone()));
+    let mut context = Context::from_waker(Waker::noop());
+    if !matches!(abandoned.as_mut().poll(&mut context), Poll::Pending) {
+        return Err(
+            "surface cancellation control did not enqueue behind actual held policy".into(),
+        );
+    }
+    drop(abandoned);
+    drop(stall);
+    let admitted = runtime.block_on(owner.cache_surface_index(root, nodes.clone()))?;
+    admitted.check_native_backing()?;
+    if admitted.key().root() != root || admitted.key().version() != 2 {
+        return Err("surface cache key differs from actual compilation".into());
+    }
+    let canonical = canonical_path(&inputs, root);
+    let file = File::open(&canonical)?;
+    let metadata = file.metadata()?;
+    if metadata.uid() != 840
+        || metadata.gid() != 845
+        || metadata.mode() & 0o7777 != 0o400
+        || metadata.nlink() != 1
+        || NativeProject::inspect(&file)?.project_id != inputs.project
+        || metadata.blocks() * 512 != admitted.synchronized_inode_bytes()
+    {
+        return Err("surface cache inode differs from actual native custody".into());
+    }
+    let compiled = CompiledIndex::from_nodes(root, &nodes, 262144, 16, 65536, 65536)?;
+    compiled.verify_reader(&mut File::open(&canonical)?)?;
+    println!(
+        "PASS cancelled surface waiter retains canonical sealed inode and warm requests share original inode"
+    );
+
+    // Restore owner write permission to distinguish permanent kernel sealing
+    // from a DAC-only write refusal, then restore the presentation mode.
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o600))?;
+    let attempted = OpenOptions::new().write(true).open(&canonical);
+    fs::set_permissions(&canonical, fs::Permissions::from_mode(0o400))?;
+    let error = attempted
+        .err()
+        .ok_or("sealed surface index accepted a writer")?;
+    if error.raw_os_error() != Some(libc::EPERM) {
+        return Err(error.into());
+    }
+    admitted.check_native_backing()?;
+    let stable = snapshot(&inputs)?;
+    let reused = runtime.block_on(owner.cache_surface_index(root, nodes.clone()))?;
+    reused.check_native_backing()?;
+    if snapshot(&inputs)? != stable || File::open(&canonical)?.metadata()?.ino() != metadata.ino() {
+        return Err("warm surface admission changed original inode or durable state".into());
+    }
+    let mut changed = nodes;
+    let body = changed
+        .values_mut()
+        .next()
+        .ok_or("canonical fixture has no nodes")?;
+    *body.last_mut().ok_or("canonical node is empty")? ^= 1;
+    if runtime
+        .block_on(owner.cache_surface_index(root, changed))
+        .is_ok()
+        || snapshot(&inputs)? != stable
+    {
+        return Err("misbound canonical surface input changed admitted state".into());
+    }
+    let after = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            config::STATE,
+        ))?
+        .ok_or("durable surface snapshot missing")?;
+    if after.reservations.len() != original.reservations.len() + 1
+        || !after.reservations.iter().any(|hold| {
+            hold.id.starts_with("surface-index:")
+                && hold.owner == inputs.owner
+                && hold.bytes == policy.future_hold_bytes
+        })
+        || !fs::read_dir(inputs.root.join("chunks"))?
+            .collect::<io::Result<Vec<_>>>()?
+            .is_empty()
+    {
+        return Err("surface admission funding or metadata-only boundary changed".into());
+    }
+    println!(
+        "PASS surface indexes are kernel immutable; warm reuse and invalid nodes cause no durable mutation or content fetch"
+    );
+    require_empty_capabilities()?;
+    Ok(())
+}
+
+fn snapshot(inputs: &config::Inputs) -> io::Result<Option<Vec<u8>>> {
+    match fs::read(inputs.root.join("state/cache/records.toml")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn canonical_path(inputs: &config::Inputs, root: Digest) -> std::path::PathBuf {
+    let hash: String = root.iter().map(|byte| format!("{byte:02x}")).collect();
+    inputs
+        .root
+        .join("objects")
+        .join(format!(".terrane-surface:2:{hash}"))
+}
+
+fn tree() -> Result<(Digest, BTreeMap<Digest, Vec<u8>>)> {
+    let tree = Tree::build(
+        vec![LeafItem {
+            key: b"file".to_vec(),
+            entry: Entry {
+                kind: EntryKind::File {
+                    mode: 0o444,
+                    size: 1,
+                    content: ContentRef::Inline([3; 32]),
+                    link_id: None,
+                },
+                attrs: Vec::new(),
+                attrs_present: false,
+                xattrs: Vec::new(),
+                xattrs_present: false,
+                provenance: None,
+            },
+        }],
+        None,
+        262144,
+        TreeUse::Ordinary,
+    )?;
+    Ok((
+        tree.root_identity(),
+        tree.nodes()
+            .map(|node| (node.identity(), node.encoded().to_vec()))
+            .collect(),
+    ))
+}
+
+fn require_empty_capabilities() -> Result<()> {
+    if rustix::process::geteuid().as_raw() != 840 {
+        return Err("surface actor requires UID 840".into());
+    }
+    let status = fs::read_to_string("/proc/self/status")?;
+    for field in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"] {
+        if !status
+            .lines()
+            .any(|line| line == format!("{field}:\t0000000000000000"))
+        {
+            return Err(format!("surface actor retains {field}").into());
+        }
+    }
+    Ok(())
+}
