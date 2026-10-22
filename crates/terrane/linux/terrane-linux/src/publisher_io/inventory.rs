@@ -593,6 +593,21 @@ impl NativeInventory {
                     }
                     self.check_project(&catalog, InodeKind::Directory)?;
                 }
+                name if name.starts_with(".terrane-surface:")
+                    || name.starts_with(".terrane-surface-tmp:") =>
+                {
+                    // Derived indexes belong to the physical cache owner,
+                    // outside this canonical body registry. Retain the native
+                    // custody checks but defer grammar, seal and retirement to
+                    // its exhaustive recovery before Resume. Even malformed
+                    // reserved names must reach that fail-closed reconciliation;
+                    // recognizing a namespace never adopts an index as content.
+                    let candidate = open(&objects, name, false)?;
+                    self.check(&candidate, Custody::Content, InodeKind::File)?;
+                    if candidate.metadata()?.nlink() != 1 {
+                        return Err(invalid("derived inventory candidate has aliased custody"));
+                    }
+                }
                 _ => return Err(invalid("unreconciled inventory objects namespace entry")),
             }
         }

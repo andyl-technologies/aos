@@ -13694,3 +13694,22 @@ Final formatting and strict all-target Clippy pass for both all-feature Linux
 and ordinary Tokio-only Linux profiles. The complete native source declaration
 inventory and VM supervisor syntax also pass. No SDK source changed during this
 native file-attachment increment. Runtime qualification remains pending.
+
+
+The frozen `e5c9160d45` native VM fails in 683.60 seconds, after the
+original run and cap actors pass, during malformed cold recovery. The actual
+publisher reports `unreconciled inventory objects namespace entry`: once a
+sealed file exists, its body inventory incorrectly treats cache-owned derived
+index names as canonical body candidates. This prevents even valid derived
+indexes from reaching native cold reconciliation.
+
+Publisher inventory now recognizes the two reserved flat derived-index
+prefixes as cache-owner custody, checks original regular-file identity,
+content ownership, project and single-link custody, and leaves grammar,
+permanent seal and retirement validation to exhaustive native recovery before
+Resume. It returns no body key or adoption receipt for those entries. Malformed
+reserved names still reach the existing native fail-closed control unchanged;
+the control's expected refusal and inode/funding comparisons are preserved.
+No actor timeout, capacity or malformed-name assertion is relaxed. The failed
+VM receipt and build directory remain retained. Qualification of the correction
+is pending, and no exposure runtime pass is claimed.
