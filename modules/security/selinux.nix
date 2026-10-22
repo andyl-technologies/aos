@@ -12,6 +12,12 @@
 }: let
   cfg = config.aos.security.selinux;
   immutableStage0 = cfg.bootMode == "immutable-stage0";
+  # Native stages replay retained configuration rather than the whole image.
+  # Keep the labeling selection bound to immutable source in that descriptor.
+  initrdPolicy = builtins.path {
+    path = ./_selinux-initrd-policy.nix;
+    name = "aos-selinux-initrd-policy.nix";
+  };
   protectedSandboxNetworkRoots = cfg.protectedSandboxNetworkRoots.enable;
   selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
   selectedOnlineNix = config.aos.sandbox.nixBroker.enable;
@@ -232,6 +238,8 @@ in {
     })
 
     (lib.mkIf (cfg.enable && immutableStage0) {
+      aos.activation.stages.initrd.configuration = [initrdPolicy];
+
       assertions = [
         {
           assertion = cfg.mode == "enforcing";

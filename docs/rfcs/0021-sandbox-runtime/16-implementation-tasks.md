@@ -9856,6 +9856,30 @@ inputs absent prevented the graph from rendering. All fourteen direct fixture
 assertions pass. This fixes evaluation coverage without changing production
 boot inputs, policy or authenticated service comparison.
 
+The next installed Host rerun still fails SSH configuration creation. A
+read-only diagnostic of that exact failed image confirms the generated EROFS
+SSH directory is `etc_t`, but both `/var/etc/ssh` and its visible `/etc/ssh`
+alias remain `unlabeled_t`. Replaying the retained initrd descriptor
+`/nix/store/f4whb3c8h4lbagv3mi0fpdfbgh9kkx3h-aos-native-evaluation-inputs`
+finds `selinux.enable = false`, `bootMode = "legacy"`, and
+`AOS_CONFIGURATION_SELINUX_LABELS=false`: the image's immutable-stage0
+selection was missing from the native initrd's retained operator sources.
+The labeling implementation had therefore not run on this boot.
+
+The immutable SELinux module now retains a narrow checked-in initrd policy
+source containing those two selection fields. Other image configuration is
+not imported into the native stage. The stage replay test independently
+compares its actual labeling selection with the image's selection; this
+regression fails before the fix with `"false" != "true"`. After the fix,
+the expanded signed immutable-SELinux profile replay passes at
+`/nix/store/fr5120vpk9mqjhllnsg0hghkgiz0dqlp-aos-native-profile-replay`;
+the basic stage replay and core evaluation also pass. The five superseded
+offline, Root and lifecycle installed clients were interrupted because they
+captured the missing projection. They supply no qualification receipt.
+Fresh installed reruns must establish labeling and Host readiness; no guest
+repair, policy permission or service-comparison relaxation establishes that
+result.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the

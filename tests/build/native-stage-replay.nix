@@ -21,6 +21,7 @@
   host = config.system.build.hostDeploymentBundle;
   initrd = config.system.build.initrdDeploymentBundle;
   replayedHost = (evaluate host).config;
+  replayedInitrd = (evaluate initrd).config;
   localePackages = builtins.filter (package: (package.pname or null) == "glibc-locales") host.nativeEvaluationDescriptor.nativeEvaluationInputs.packages;
   localeOnly = lib.evalPackageModules {
     packages = localePackages;
@@ -38,6 +39,12 @@
 in {
   host = replay host;
   initrd = replay initrd;
+  initrdConfigurationLabeling = assert replayedInitrd.aos.services."boot-preparations.etc-overlay-setup".environment.variables.AOS_CONFIGURATION_SELINUX_LABELS
+  == (
+    if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+    then "true"
+    else "false"
+  ); true;
   hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
   == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
   hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment
