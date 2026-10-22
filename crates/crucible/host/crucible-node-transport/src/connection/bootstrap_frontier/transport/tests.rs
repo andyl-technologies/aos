@@ -81,6 +81,34 @@ fn scope() -> (Handshake, Connection<UnixStream>, UnixStream) {
 fn scope_with_declaration_fault(
     fault: Option<usize>,
 ) -> (Handshake, Connection<UnixStream>, UnixStream) {
+    let (handshake, authority, selection, installed) = scope_inputs(fault);
+    let (stream, peer) = UnixStream::pair().unwrap();
+    let mut connection = Connection::new(
+        stream,
+        authority,
+        Rc::new(Supervisor),
+        Rc::new(Uninstalled),
+        EndpointRole::Controller,
+    )
+    .unwrap();
+    connection
+        .install_native5_controller_codec(
+            &mut Some(OriginalFrameReservation::reserve(262144, 8).unwrap()),
+            selection,
+            installed,
+        )
+        .unwrap();
+    (handshake, connection, peer)
+}
+
+pub(super) fn scope_inputs(
+    fault: Option<usize>,
+) -> (
+    Handshake,
+    ConnectionAuthority,
+    PacketControlSelection,
+    InstalledContent,
+) {
     let (_, _, _, installed) =
         crate::reference_packet::coordinator::original_native5_controller_scope();
     let mut coordinator: PacketNative5CoordinatorInstallation =
@@ -248,23 +276,7 @@ fn scope_with_declaration_fault(
         reference: canonical::content_ref(&bytes, "application/json").unwrap(),
         bytes: Bytes::new(bytes),
     };
-    let (stream, peer) = UnixStream::pair().unwrap();
-    let mut connection = Connection::new(
-        stream,
-        authority,
-        Rc::new(Supervisor),
-        Rc::new(Uninstalled),
-        EndpointRole::Controller,
-    )
-    .unwrap();
-    connection
-        .install_native5_controller_codec(
-            &mut Some(OriginalFrameReservation::reserve(262144, 8).unwrap()),
-            selection,
-            installed,
-        )
-        .unwrap();
-    (handshake, connection, peer)
+    (handshake, authority, selection, installed)
 }
 
 fn proposal(

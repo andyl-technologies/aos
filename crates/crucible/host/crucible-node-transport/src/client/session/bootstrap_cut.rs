@@ -8,6 +8,9 @@ use super::*;
 use crate::operational_time::OperationalDeadline;
 use std::mem::size_of;
 
+#[path = "bootstrap_cut/transport.rs"]
+mod transport;
+
 #[derive(Clone, Copy)]
 pub(super) struct OriginalBootstrapHelloCut(OperationalDeadline);
 

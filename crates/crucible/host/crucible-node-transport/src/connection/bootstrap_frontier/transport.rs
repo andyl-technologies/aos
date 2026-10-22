@@ -21,6 +21,41 @@ use crate::transport::{RetainedFrame, original_frames::FrameDirection};
 mod wire;
 
 impl<S: ProviderStream> Connection<S> {
+    /// Checks the original endpoint after its unused frontier has been spent.
+    ///
+    /// This allocation-free guard lends no decoded body or selected phase.
+    ///
+    /// # Errors
+    /// Refuses another actor, revoked registration or fenced/noncontroller SDK.
+    pub(crate) fn authenticate_original_bootstrap_endpoint_data(
+        &self,
+    ) -> Result<(), ProviderError> {
+        self.protocol_owner.ensure_current()?;
+        self.authority.ensure_live()?;
+        if self.fenced || self.role != EndpointRole::Controller {
+            return Err(refused());
+        }
+        Ok(())
+    }
+
+    /// Retains original SDK custody while fencing a refused Session cut.
+    pub(crate) fn contain_original_bootstrap_data(&mut self) {
+        self.contain(ConnectionFailure::Protocol);
+    }
+
+    /// Names the allocation-free endpoint's actual borrowed guard controls.
+    pub(crate) fn original_bootstrap_endpoint_counter_scratch_data() -> usize {
+        size_of::<&Self>()
+            + size_of::<std::thread::Thread>()
+            + size_of::<std::thread::ThreadId>()
+            + size_of::<u32>()
+            + size_of::<&ConnectionAuthority>()
+            + size_of::<std::sync::atomic::Ordering>()
+            + size_of::<u64>()
+            + size_of::<bool>()
+            + size_of::<[Result<(), ProviderError>; 3]>()
+    }
+
     /// Checks full immutable18 rosters beside the actual installed controller.
     ///
     /// The caller admits all exact schema-factory windows before entry.
@@ -281,3 +316,28 @@ fn refused() -> ProviderError {
 #[cfg(test)]
 #[path = "transport/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+impl<S: ProviderStream> Connection<S> {
+    /// Observes model literal custody after fencing without borrowing live policy.
+    pub(crate) fn original_bootstrap_model_storage_data(
+        &self,
+    ) -> crate::protocol_snapshot::OriginalProtocolStorageFacts {
+        let maximum = usize::try_from(self.authority.limits().frame_bytes.get()).unwrap();
+        self.original_frames
+            .as_ref()
+            .unwrap()
+            .borrow()
+            .storage_facts(maximum)
+    }
+
+    /// Lends inert model negotiation operands; it creates no Source permission.
+    pub(crate) fn original_bootstrap_model_controller_data() -> (
+        crate::handshake::Handshake,
+        ConnectionAuthority,
+        crate::reference_packet::control::PacketControlSelection,
+        crate::reference_service::InstalledContent,
+    ) {
+        tests::scope_inputs(None)
+    }
+}
