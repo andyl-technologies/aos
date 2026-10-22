@@ -2336,6 +2336,36 @@ compiles tests without running them. No new VM or configured Engine/Daemon
 runtime qualification is claimed; genuine enclosing Source/Birth funding,
 Native18 policy/ACK, opaque Initial/Recipe and full RFC acceptance remain open.
 
+## Complete original launch validation before native policy adoption
+
+Commit `3e48176797` runs the unchanged full launch validator on the original
+shared decoded launch. Its temporary coordinator and policy DATA are dropped
+before terminal observation; it installs no runtime model, Control, socket,
+native policy or ACK. The spent attempt retains its row and original pre-read
+cut, and refuses retry or substituted custody. Both validator outcomes run the
+surviving-owner observer and terminal original guards. A Copy-only loan keeps
+inspection tied to that same validated launch and cut.
+
+The complete initial calculation now includes this validator's actual factory,
+formatter and fixed controls in both Source and native projections. The valid
+producer fixture exceeds the old fixed retained partition by 7,332 bytes; its
+independent positive budget is derived from the complete row under the same
+256 MiB ceiling. Production limits and existing negative controls are unchanged.
+
+All thirteen inherited-socket validation cases pass, covering valid producer and
+reactive launches, invalid model/selection DATA, every admission boundary,
+terminal callback refusal, expiry, substituted cut and spent retry. Both complete
+Transport configurations pass 1,927 tests each with no failures, no filtering and
+sixteen existing ignores. Affected all-feature/all-target checking, formatting
+and all six architecture gates pass.
+
+The required application gate passes and compiles 180 test executables across
+58 package identities, including 71 integration targets. All 271 owned Rust/Cargo
+inputs match this committed tree and its exact captured application source.
+Compilation does not execute these targets. No new VM or configured Engine/Daemon
+runtime result is claimed. Genuine Source/Birth funding, model-absent Native18
+policy/ACK, opaque Initial/Recipe and full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
