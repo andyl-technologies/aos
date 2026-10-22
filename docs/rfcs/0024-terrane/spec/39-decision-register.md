@@ -2872,6 +2872,28 @@ is added rather than editing history.
     not establish sealing, cache pinning or worker conformance.
   - **Affects:** FUSE-7, FUSE-8 and FUSE-12.
 
+- **[D-133] Preserve retained backing custody when draining FUSE.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Exposure expiry starts drain. Stop new opens, bound in-flight
+    backing requests and abort the FUSE connection. Operations requiring the
+    disconnected worker fail with `ENOTCONN`; already disclosed descriptors,
+    cached pages and passthrough mappings may remain readable. Preserve physical
+    custody, protective pins and actual allocation charges until the retained
+    references close, including references surviving backing-id release,
+    worker exit or unmount. Expired exposures must not resume after a crash.
+  - **Rationale:** The actual AOS 7.2.3 kernel probe successfully reads and maps
+    a permanently sealed file and executes it through overlay. After closing
+    the backing id and aborting the connection, a new lookup and an existing
+    direct-I/O control fail with `ENOTCONN`, while the original passthrough
+    descriptor and mapping still return their bytes. Connection state cannot
+    establish physical reference closure or retract already disclosed data.
+  - **Compatibility:** Corrects the unreleased drain contract without changing
+    any identity, index format, wire field, requirement ID or gate name.
+    `terrane.integration.native-fuse-kernel` measures this kernel behavior;
+    it does not qualify a production broker, exposure lease or worker.
+  - **Affects:** FUSE-6, FUSE-47, FUSE-48, FUSE-50 and the exposure teardown
+    entry in the errno mapping.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

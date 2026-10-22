@@ -35,7 +35,7 @@ reach a POSIX operation.
 | Range beyond pack end | `OUT_OF_RANGE` | | no | `EIO` |
 | Root quota exceeded at commit | `RESOURCE_EXHAUSTED` | `Quota` | no | `ENOSPC` |
 | Host reservation exhausted at write | n/a (local) | | no | `EDQUOT` |
-| Exposure torn down (worker aborted, lease ended, drained for upgrade) | n/a (local) | | no; remount | `ENOTCONN` |
+| Operation requires a torn-down exposure worker (aborted, lease ended, drained for upgrade) | n/a (local) | | no; remount | `ENOTCONN` |
 | Lock request on a read-only exposure | n/a (local) | | no | `ENOLCK` |
 | Admission budget spent (warm, peer serve) | `RESOURCE_EXHAUSTED` | `Budget` | with `retry-after` | n/a |
 | Pack larger than advertised limit | `RESOURCE_EXHAUSTED` | `Limit` | no | `EFBIG` |

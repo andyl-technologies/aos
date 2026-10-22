@@ -12991,3 +12991,31 @@ overlay STATFS reply, Python vfork suspending its own server, and invoking the
 multicall executable under an unknown name. The corrected probe keeps its
 30-second outer bound and five-second subprocess bounds. Frozen-source review
 is still required before treating this as committed qualification.
+
+Frozen selection of the kernel probe at `ac3bd11d10` passes with all 9,313
+tracked files unchanged. It reuses the actual passing VM output rather than
+claiming a second execution. Independent review matches the installed Python
+source to the frozen checkout, traces it through the real rootfs and bounded
+init script, verifies the AOS executable's ELF bytes and size, and checks the
+actual kernel path and single runtime observation record. The production broker
+and task acceptance remain explicitly unexercised.
+
+Review of the proposed warm-manifest handoff correction identifies another
+constraint before claiming runtime success: final source removal requires the
+configured 30-second publisher grace, while the existing ordinary actor has a
+30-second total limit. The added warm cleanup is removed. The scoped fixture
+instead reopens the completed cold-consumer domain after its independently
+observed three-file recovery. That path has no warm producer source-retirement
+transition to finish; it still requires genuine new recovery and acknowledged
+Resume. The observer requires all three original cold inodes and their bytes to
+survive the additional scoped publication. This keeps every project assignment,
+scaffold cap, production grace and per-actor deadline unchanged. Already running
+qualification of the earlier correction remains retained and is not cancelled;
+the cold-domain change requires its own runtime and application qualification.
+
+The drain amendment is now approved and recorded as D-133. FUSE-47 and FUSE-48
+retain custody, protective pins and allocation charges through actual kernel
+closure, and promise `ENOTCONN` for operations requiring the disconnected worker.
+FUSE-6, FUSE-50 and the errno mapping use that same boundary. Already disclosed
+descriptors, cached pages and mappings are not claimed to be revoked. Requirement
+IDs and gate names remain unchanged; mounted exposure conformance is still open.

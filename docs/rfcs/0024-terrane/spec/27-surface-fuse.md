@@ -60,8 +60,8 @@ present it.
   exposure. Retained per-inode state MUST be bounded by the number of inodes
   the consumer has actually touched, not by the size of the tree.
 - **[FUSE-6]** The serve process MUST supervise workers. A worker that exits
-  MUST cause its exposure to enter a fault status; consumers observe `EIO`
-  (or `ENOTCONN` for a torn-down connection) as recorded in
+  MUST cause its exposure to enter a fault status; operations requiring that
+  worker observe `EIO` (or `ENOTCONN` for a torn-down connection) as recorded in
   [`reference/errno-mapping.md`](reference/errno-mapping.md).
 
 ## The structural index
@@ -341,11 +341,18 @@ can inspect and drive the exposure without any network access of its own.
 - **[FUSE-47]** Every exposure MUST hold a lease recorded durably by the
   serve process (not only in memory), containing the exposure id, the served
   commit, the pinned index and objects, and the deadline. A lease that is not
-  renewed by its deadline MUST cause the exposure to be drained and its pins
-  released.
+  renewed by its deadline MUST cause the exposure to be drained. Pins protecting
+  retained physical references MUST remain until those custody obligations have
+  been discharged. Expiry or abort MUST NOT acknowledge closure of retained
+  backing files or mappings; allocations remain charged until the kernel
+  actually releases them.
 - **[FUSE-48]** Draining an exposure MUST stop accepting new opens, wait for
   in-flight backing requests up to a bounded time, then abort the FUSE
-  connection. Consumers with open descriptors observe `ENOTCONN` thereafter.
+  connection. Operations requiring the disconnected worker fail with `ENOTCONN`.
+  Already disclosed descriptors, cached pages and passthrough mappings MAY
+  remain readable; abort does not revoke them. The implementation MUST preserve
+  their physical custody and accounting until actual closure, including
+  references surviving backing-id release, worker exit or unmount.
 - **[FUSE-49]** An implementation MUST NOT hand an active FUSE connection to
   a replacement worker as an upgrade mechanism. Upgrades MUST drain the
   exposure and mount a new worker generation; an implementation MAY mount
@@ -354,7 +361,8 @@ can inspect and drive the exposure without any network access of its own.
 - **[FUSE-50]** After a crash of the serve process, exposures MUST be
   recovered from their durable leases: the index and sealed objects are
   re-verified before reuse, and a lease whose deadline passed during the
-  outage is released, not resumed.
+  outage MUST NOT be resumed. Its physical custody and accounting remain subject
+  to FUSE-47 and FUSE-48 until actual retained references close.
 
 ## Options
 
